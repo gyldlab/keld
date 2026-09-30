@@ -1648,6 +1648,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
  "keld-guard",
+ "keld-ipc",
  "keld-pack",
  "keld-runtime",
  "semver",

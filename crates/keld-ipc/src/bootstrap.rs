@@ -12,6 +12,8 @@ use core::fmt::Write as _;
 #[cfg(unix)]
 use std::fs;
 use std::io;
+#[cfg(windows)]
+use std::io::{Read as _, Write as _};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 #[cfg(unix)]
@@ -33,12 +35,16 @@ use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL};
 // before the taxonomy moved to `admission`, and a crate-root export does not
 // preserve that path. Moving the owner must not break the published one.
 pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
-use crate::link::{AppLinkDeadlines, handshake_server_interruptible_until};
+use crate::link::{
+    AppLinkDeadlines, handshake_client_rendezvous, handshake_server_interruptible_until,
+    handshake_server_rendezvous,
+};
 use crate::receive::AbsoluteDeadline;
 use crate::token::{SessionToken, format_app_link};
 #[cfg(windows)]
 use crate::windows_named_pipe::{
     WaitOutcome, WindowsNamedPipeCanceller, WindowsNamedPipeServer, WindowsNamedPipeStream,
+    WindowsPeerTokenFacts,
 };
 
 #[cfg(unix)]
@@ -277,6 +283,28 @@ impl BootstrapListener {
                 listener: WindowsNamedPipeBootstrapListener::bind()?,
             })
         }
+    }
+
+    /// Binds a stable Windows lifecycle locator from a trusted install/user
+    /// identity. The existing HELLO token is only a bearer check; this method
+    /// does not authenticate the connected process. The caller MUST validate
+    /// its retained connected-peer process/token/image identity before moving
+    /// any lifecycle or installation capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying Windows listener creation/ACL validation error.
+    #[cfg(windows)]
+    pub fn bind_windows_rendezvous(
+        install_user_locator: [u8; 32],
+        token: SessionToken,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            listener: WindowsNamedPipeBootstrapListener::bind_rendezvous(
+                install_user_locator,
+                token,
+            )?,
+        })
     }
 
     /// Canonical `KELD_APP_LINK` value for the one role this listener admits.
@@ -731,6 +759,232 @@ pub struct WindowsNamedPipeBootstrapCancellation {
     stopping: Arc<AtomicBool>,
 }
 
+/// Stable install/user rendezvous for the bounded Windows lifecycle keeper.
+/// The endpoint is a locator only; caller callbacks must authenticate the exact
+/// connected peer before any attempt capability is transferred.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct WindowsLifecycleRendezvousListener {
+    server: Mutex<Option<WindowsNamedPipeServer>>,
+    admission: Mutex<()>,
+    endpoint: String,
+    binding: WindowsLifecycleBinding,
+    #[cfg(test)]
+    before_consume: Mutex<Option<TestConsumeGate>>,
+    #[cfg(test)]
+    before_receipt: Mutex<Option<TestConsumeGate>>,
+}
+
+/// Exact KEL-53 transaction scope authenticated on a lifecycle connection.
+///
+/// These identifiers are public values, not secrets. The pipe peer policy proves
+/// identity; this transcript prevents cross-install, stale-attempt and wrong-purpose
+/// handle handoffs on a freshly authenticated connection.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsLifecycleBinding {
+    installation_id: [u8; 32],
+    attempt_id: [u8; 32],
+    lifecycle_channel_id: [u8; 32],
+    purpose: WindowsLifecyclePurpose,
+}
+
+/// Client-side provenance for IDs learned from the authenticated keeper.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsLifecycleBindingKnowledge {
+    /// Install, attempt, channel and purpose were independently known before connect.
+    IndependentlyExpected,
+    /// Keeper supplied attempt/channel IDs; revalidate them against the journal after lease acquisition.
+    KeeperSuppliedAwaitingJournalRevalidation,
+}
+
+/// Context a lifecycle client must verify on the server's post-authentication challenge.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsLifecycleExpectation {
+    installation_id: [u8; 32],
+    attempt_id: Option<[u8; 32]>,
+    lifecycle_channel_id: Option<[u8; 32]>,
+    purpose: WindowsLifecyclePurpose,
+}
+
+/// Directional purpose for one lifecycle capability exchange.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WindowsLifecyclePurpose {
+    /// Coordinator transfers the exact attempt Job and lock-retention handle to its keeper.
+    CoordinatorToKeeper = 1,
+    /// Keeper transfers a query-only zero witness to the selected successor.
+    KeeperToSuccessor = 2,
+}
+
+#[cfg(windows)]
+impl WindowsLifecycleBinding {
+    /// Creates one nonempty install/attempt/channel binding with a closed purpose tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any identifier is all-zero or any two identifiers alias.
+    pub fn new(
+        installation_id: [u8; 32],
+        attempt_id: [u8; 32],
+        lifecycle_channel_id: [u8; 32],
+        purpose: WindowsLifecyclePurpose,
+    ) -> io::Result<Self> {
+        if installation_id == [0; 32]
+            || attempt_id == [0; 32]
+            || lifecycle_channel_id == [0; 32]
+            || installation_id == attempt_id
+            || installation_id == lifecycle_channel_id
+            || attempt_id == lifecycle_channel_id
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lifecycle identifiers must be nonzero and distinct",
+            ));
+        }
+        Ok(Self {
+            installation_id,
+            attempt_id,
+            lifecycle_channel_id,
+            purpose,
+        })
+    }
+
+    /// Directional lifecycle purpose authenticated on the connected pipe.
+    #[must_use]
+    pub const fn purpose(self) -> WindowsLifecyclePurpose {
+        self.purpose
+    }
+
+    /// Installs the same IDs with another closed directional purpose.
+    #[must_use]
+    pub const fn with_purpose(self, purpose: WindowsLifecyclePurpose) -> Self {
+        Self { purpose, ..self }
+    }
+
+    /// Immutable installation identity authenticated on this connection.
+    #[must_use]
+    pub const fn installation_id(&self) -> &[u8; 32] {
+        &self.installation_id
+    }
+
+    /// Attempt identity authenticated on this connection.
+    #[must_use]
+    pub const fn attempt_id(&self) -> &[u8; 32] {
+        &self.attempt_id
+    }
+
+    /// One-shot lifecycle channel identity authenticated on this connection.
+    #[must_use]
+    pub const fn lifecycle_channel_id(&self) -> &[u8; 32] {
+        &self.lifecycle_channel_id
+    }
+}
+
+#[cfg(windows)]
+impl WindowsLifecycleExpectation {
+    /// Requires an exact pre-known binding, as used for coordinator/keeper setup.
+    #[must_use]
+    pub const fn exact(binding: WindowsLifecycleBinding) -> Self {
+        Self {
+            installation_id: binding.installation_id,
+            attempt_id: Some(binding.attempt_id),
+            lifecycle_channel_id: Some(binding.lifecycle_channel_id),
+            purpose: binding.purpose,
+        }
+    }
+
+    /// Learns attempt/channel IDs from an authenticated keeper for later journal revalidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty installation ID. Discovery is only valid for
+    /// keeper-to-successor retirement, where mutation remains blocked until the
+    /// successor reacquires and validates the protected journal.
+    pub fn from_keeper(installation_id: [u8; 32]) -> io::Result<Self> {
+        if installation_id == [0; 32] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lifecycle install identity must be nonzero",
+            ));
+        }
+        Ok(Self {
+            installation_id,
+            attempt_id: None,
+            lifecycle_channel_id: None,
+            purpose: WindowsLifecyclePurpose::KeeperToSuccessor,
+        })
+    }
+
+    fn accepts(
+        &self,
+        binding: WindowsLifecycleBinding,
+    ) -> Option<WindowsLifecycleBindingKnowledge> {
+        if self.installation_id != binding.installation_id || self.purpose != binding.purpose {
+            return None;
+        }
+        match (self.attempt_id, self.lifecycle_channel_id) {
+            (Some(attempt), Some(channel))
+                if attempt == binding.attempt_id && channel == binding.lifecycle_channel_id =>
+            {
+                Some(WindowsLifecycleBindingKnowledge::IndependentlyExpected)
+            }
+            (None, None) if self.purpose == WindowsLifecyclePurpose::KeeperToSuccessor => {
+                Some(WindowsLifecycleBindingKnowledge::KeeperSuppliedAwaitingJournalRevalidation)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Retained OS process-object pin supplied by the platform peer authenticator.
+/// Implementations MUST keep the exact process object open for the rendezvous
+/// lifetime, rather than only storing a numeric PID.
+#[cfg(windows)]
+pub trait WindowsLifecyclePeerPin {
+    /// PID reported by the connected pipe and verified against the retained object.
+    fn process_id(&self) -> u32;
+
+    /// Session reported by the connected pipe and verified against the retained token.
+    fn session_id(&self) -> u32;
+
+    /// Reports whether the exact retained process object has exited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the operating system cannot query the retained handle.
+    fn has_exited(&self) -> io::Result<bool>;
+}
+
+/// Accepted lifecycle peer after PID/session, impersonated token and two-nonce
+/// HELLO checks have completed on the same non-inheritable pipe connection.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct WindowsLifecycleRendezvousPeer<P> {
+    stream: WindowsNamedPipeBootstrapStream,
+    process: P,
+    client_nonce: SessionToken,
+    server_nonce: SessionToken,
+    token_facts: WindowsPeerTokenFacts,
+    binding: WindowsLifecycleBinding,
+}
+
+/// Connected client side after it authenticated the exact named-pipe server
+/// process and completed the two-nonce HELLO exchange.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct WindowsLifecycleRendezvousClient<P> {
+    stream: WindowsNamedPipeBootstrapStream,
+    process: P,
+    client_nonce: SessionToken,
+    server_nonce: SessionToken,
+    binding: WindowsLifecycleBinding,
+    binding_knowledge: WindowsLifecycleBindingKnowledge,
+}
+
 /// One owner for the unguessable per-generation pipe name (32 random bytes,
 /// hex) shared by the production listener and the test-only connected pair.
 #[cfg(windows)]
@@ -742,6 +996,15 @@ fn random_pipe_endpoint() -> io::Result<String> {
         write!(&mut endpoint, "{byte:02x}").map_err(io::Error::other)?;
     }
     Ok(endpoint)
+}
+
+#[cfg(all(test, windows))]
+fn random_lifecycle_pipe_endpoint() -> io::Result<String> {
+    let endpoint = random_pipe_endpoint()?;
+    let nonce = endpoint
+        .strip_prefix(r"\\.\pipe\keld-")
+        .ok_or_else(|| io::Error::other("random app-link endpoint prefix changed"))?;
+    Ok(format!(r"\\.\pipe\keld-lifecycle-{nonce}"))
 }
 
 /// Test-only connected server/client pair on the shipped Windows transport,
@@ -790,6 +1053,593 @@ pub(crate) fn connected_named_pipe_pair() -> io::Result<(
 }
 
 #[cfg(windows)]
+impl WindowsLifecycleRendezvousListener {
+    /// Binds a stable local endpoint from a trusted installation/user locator.
+    /// The locator permits pre-lease discovery but conveys no attempt authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if endpoint validation, SID/DACL construction or
+    /// first-instance pipe creation/readback fails.
+    pub fn bind(
+        install_user_locator: [u8; 32],
+        binding: WindowsLifecycleBinding,
+    ) -> io::Result<Self> {
+        let endpoint =
+            WindowsNamedPipeBootstrapStream::endpoint_for_lifecycle_install(&install_user_locator);
+        let server = WindowsNamedPipeServer::bind(&endpoint)?;
+        Ok(Self {
+            server: Mutex::new(Some(server)),
+            admission: Mutex::new(()),
+            endpoint,
+            binding,
+            #[cfg(test)]
+            before_consume: Mutex::new(None),
+            #[cfg(test)]
+            before_receipt: Mutex::new(None),
+        })
+    }
+
+    /// Stable pipe locator used by a cold successor before mutable-journal reads.
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    #[cfg(test)]
+    fn install_before_consume_gate(&self, gate: TestConsumeGate) {
+        *self
+            .before_consume
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(gate);
+    }
+
+    #[cfg(test)]
+    fn install_before_receipt_gate(&self, gate: TestConsumeGate) {
+        *self
+            .before_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(gate);
+    }
+
+    /// Accepts one client after the caller authenticates the actual process and
+    /// token facts of the last HELLO writer. Rejected clients are disconnected
+    /// and the first-instance listener remains available until `deadline`.
+    /// The nonce echo establishes freshness/liveness only; caller policy proves
+    /// process identity and role before any transaction handle is transferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns host-side pipe or deadline setup errors. `Ok(None)` means the
+    /// absolute deadline elapsed without an authenticated peer.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "linear pipe admission, impersonation, nonce and process-pin transitions stay auditable"
+    )]
+    pub fn accept_until<P: WindowsLifecyclePeerPin>(
+        &self,
+        deadline: Instant,
+        mut authenticate_client: impl FnMut(u32, u32, &WindowsPeerTokenFacts) -> Option<P>,
+    ) -> io::Result<Option<WindowsLifecycleRendezvousPeer<P>>> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let server = self
+            .server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "rendezvous consumed"))?;
+        loop {
+            if Instant::now() >= deadline {
+                server.close_terminal()?;
+                self.server
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                return Ok(None);
+            }
+            match server.accept_until(Some(deadline))? {
+                WaitOutcome::Cancelled | WaitOutcome::DeadlineElapsed => {
+                    server.close_terminal()?;
+                    self.server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    return Ok(None);
+                }
+                WaitOutcome::PeerClosed => {
+                    server.disconnect_for_retry()?;
+                    continue;
+                }
+                WaitOutcome::Ready => {}
+            }
+            let mut stream = WindowsNamedPipeBootstrapStream(server.stream()?);
+            let started = Instant::now();
+            let Some((peer_timeout, peer_deadline)) =
+                peer_handshake_window(started, Some(deadline), APP_LINK_IO_DEADLINE)
+            else {
+                server.close_terminal()?;
+                self.server
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                return Ok(None);
+            };
+            stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
+            stream.set_app_link_write_deadline(Some(peer_timeout))?;
+            stream
+                .0
+                .set_absolute_deadline(Some(peer_deadline.instant()));
+            let Ok(peer_process_id) = stream.peer_process_id() else {
+                drop(stream);
+                server.disconnect_for_retry()?;
+                continue;
+            };
+            let Ok(peer_session_id) = stream.peer_session_id() else {
+                drop(stream);
+                server.disconnect_for_retry()?;
+                continue;
+            };
+            let peer_view = stream.try_clone()?;
+            let peer_pin = std::cell::RefCell::new(None);
+            let handshake = handshake_server_rendezvous(&mut stream, || {
+                let token_facts = peer_view
+                    .0
+                    .last_client_token_facts()
+                    .map_err(IpcError::from)?;
+                let pin = authenticate_client(peer_process_id, peer_session_id, &token_facts)
+                    .ok_or(IpcError::HelloAuth {
+                        detail: "lifecycle peer rejected by process identity policy",
+                    })?;
+                if pin.process_id() != peer_process_id
+                    || pin.session_id() != peer_session_id
+                    || token_facts.session_id != peer_session_id
+                    || pin.has_exited().map_err(IpcError::from)?
+                {
+                    return Err(IpcError::HelloAuth {
+                        detail: "lifecycle peer pin does not match the connected endpoint",
+                    });
+                }
+                *peer_pin.borrow_mut() = Some(pin);
+                Ok(token_facts)
+            });
+            if let Ok((client_nonce, server_nonce, token_facts)) = handshake {
+                let Some(process) = peer_pin.into_inner() else {
+                    drop(stream);
+                    server.disconnect_for_retry()?;
+                    continue;
+                };
+                if process.has_exited()? {
+                    drop(stream);
+                    server.disconnect_for_retry()?;
+                    continue;
+                }
+                let Ok(acceptance_receipt) = authenticate_lifecycle_binding_server(
+                    &mut stream,
+                    self.binding,
+                    client_nonce,
+                    server_nonce,
+                    peer_process_id,
+                    std::process::id(),
+                ) else {
+                    drop(stream);
+                    server.disconnect_for_retry()?;
+                    continue;
+                };
+                if Instant::now() >= deadline {
+                    drop(stream);
+                    server.close_terminal()?;
+                    self.server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    return Ok(None);
+                }
+                #[cfg(test)]
+                wait_at_test_consume_gate(&self.before_consume);
+                server.consume();
+                #[cfg(test)]
+                wait_at_test_consume_gate(&self.before_receipt);
+                self.server
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Err(error) = stream.write_all(&acceptance_receipt) {
+                    if Instant::now() >= deadline {
+                        return Ok(None);
+                    }
+                    return Err(error);
+                }
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                stream.0.set_absolute_deadline(None);
+                return Ok(Some(WindowsLifecycleRendezvousPeer {
+                    stream,
+                    process,
+                    client_nonce,
+                    server_nonce,
+                    token_facts,
+                    binding: self.binding,
+                }));
+            }
+            drop(stream);
+            server.disconnect_for_retry()?;
+        }
+    }
+}
+
+impl<P: WindowsLifecyclePeerPin> WindowsLifecycleRendezvousPeer<P> {
+    /// Mutable stream for the attempt/install-bound lifecycle records.
+    pub fn stream_mut(&mut self) -> &mut WindowsNamedPipeBootstrapStream {
+        &mut self.stream
+    }
+
+    /// Applies one absolute deadline to subsequent cold-path handoff records.
+    pub fn set_io_deadline(&mut self, deadline: Instant) {
+        self.stream.0.set_absolute_deadline(Some(deadline));
+    }
+
+    /// PID observed from the actual connected named-pipe handle.
+    #[must_use]
+    pub fn process_id(&self) -> u32 {
+        self.process.process_id()
+    }
+
+    /// Session observed from the pipe and corroborated by the last-writer token.
+    #[must_use]
+    pub fn session_id(&self) -> u32 {
+        self.process.session_id()
+    }
+
+    /// Retained process-object pin validated by the caller's authentication policy.
+    #[must_use]
+    pub const fn process_pin(&self) -> &P {
+        &self.process
+    }
+
+    /// Fresh client nonce, echoed by the server.
+    #[must_use]
+    pub const fn client_nonce(&self) -> &SessionToken {
+        &self.client_nonce
+    }
+
+    /// Fresh server nonce, acknowledged by the client.
+    #[must_use]
+    pub const fn server_nonce(&self) -> &SessionToken {
+        &self.server_nonce
+    }
+
+    /// Facts read from the last HELLO writer's identification token.
+    #[must_use]
+    pub const fn token_facts(&self) -> &WindowsPeerTokenFacts {
+        &self.token_facts
+    }
+
+    /// Install, attempt, lifecycle channel and purpose authenticated on this pipe.
+    #[must_use]
+    pub const fn binding(&self) -> WindowsLifecycleBinding {
+        self.binding
+    }
+}
+
+/// Connects to a stable lifecycle locator, authenticates the exact server process
+/// before sending a nonce, and completes the two-nonce HELLO exchange.
+///
+/// # Errors
+///
+/// Returns an I/O error if connect, process authentication or the bounded handshake fails.
+#[cfg(windows)]
+pub fn connect_windows_lifecycle_rendezvous_until<P: WindowsLifecyclePeerPin>(
+    endpoint: &str,
+    expectation: WindowsLifecycleExpectation,
+    deadline: Instant,
+    authenticate_server: impl FnOnce(u32, u32) -> Option<P>,
+) -> io::Result<WindowsLifecycleRendezvousClient<P>> {
+    if !WindowsNamedPipeBootstrapStream::is_lifecycle_endpoint(endpoint) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lifecycle rendezvous endpoint is not in the lifecycle protocol namespace",
+        ));
+    }
+    let mut stream = WindowsNamedPipeBootstrapStream(
+        WindowsNamedPipeServer::connect_lifecycle_client_until(endpoint, deadline)?,
+    );
+    let process_id = stream.peer_process_id()?;
+    let session_id = stream.peer_session_id()?;
+    let process = authenticate_server(process_id, session_id).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "lifecycle server process identity was not authenticated",
+        )
+    })?;
+    if process.process_id() != process_id
+        || process.session_id() != session_id
+        || process.has_exited()?
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "retained lifecycle server process pin mismatches the connected pipe",
+        ));
+    }
+    let started = Instant::now();
+    let Some((peer_timeout, peer_deadline)) =
+        peer_handshake_window(started, Some(deadline), APP_LINK_IO_DEADLINE)
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "lifecycle rendezvous deadline elapsed before handshake",
+        ));
+    };
+    stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
+    stream.set_app_link_write_deadline(Some(peer_timeout))?;
+    stream
+        .0
+        .set_absolute_deadline(Some(peer_deadline.instant()));
+    let (client_nonce, server_nonce, ()) =
+        handshake_client_rendezvous(&mut stream, || Ok(())).map_err(io::Error::other)?;
+    let (binding, binding_knowledge) = authenticate_lifecycle_binding_client(
+        &mut stream,
+        expectation,
+        client_nonce,
+        server_nonce,
+        std::process::id(),
+        process_id,
+    )?;
+    if process.has_exited()? {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "authenticated lifecycle server exited during the nonce exchange",
+        ));
+    }
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "lifecycle rendezvous deadline elapsed after handshake",
+        ));
+    }
+    stream.0.set_absolute_deadline(None);
+    Ok(WindowsLifecycleRendezvousClient {
+        stream,
+        process,
+        client_nonce,
+        server_nonce,
+        binding,
+        binding_knowledge,
+    })
+}
+
+impl<P: WindowsLifecyclePeerPin> WindowsLifecycleRendezvousClient<P> {
+    /// Mutable stream for the attempt/install-bound lifecycle records.
+    pub fn stream_mut(&mut self) -> &mut WindowsNamedPipeBootstrapStream {
+        &mut self.stream
+    }
+
+    /// Applies one absolute deadline to subsequent cold-path handoff records.
+    pub fn set_io_deadline(&mut self, deadline: Instant) {
+        self.stream.0.set_absolute_deadline(Some(deadline));
+    }
+
+    /// Server PID observed from the actual connected pipe.
+    #[must_use]
+    pub fn process_id(&self) -> u32 {
+        self.process.process_id()
+    }
+
+    /// Server session observed from the connected pipe.
+    #[must_use]
+    pub fn session_id(&self) -> u32 {
+        self.process.session_id()
+    }
+
+    /// Retained server process-object pin validated before the nonce exchange.
+    #[must_use]
+    pub const fn process_pin(&self) -> &P {
+        &self.process
+    }
+
+    /// Fresh client nonce echoed by the server.
+    #[must_use]
+    pub const fn client_nonce(&self) -> &SessionToken {
+        &self.client_nonce
+    }
+
+    /// Fresh server nonce acknowledged by the client.
+    #[must_use]
+    pub const fn server_nonce(&self) -> &SessionToken {
+        &self.server_nonce
+    }
+
+    /// Install, attempt, lifecycle channel and purpose authenticated on this pipe.
+    #[must_use]
+    pub const fn binding(&self) -> WindowsLifecycleBinding {
+        self.binding
+    }
+
+    /// States whether transaction IDs were independently known or came from the keeper.
+    #[must_use]
+    pub const fn binding_knowledge(&self) -> WindowsLifecycleBindingKnowledge {
+        self.binding_knowledge
+    }
+}
+
+#[cfg(windows)]
+const LIFECYCLE_BINDING_RECORD_LEN: usize = 8 + 1 + (32 * 3) + (32 * 2) + (4 * 2);
+
+#[cfg(windows)]
+fn lifecycle_binding_record(
+    magic: [u8; 8],
+    binding: WindowsLifecycleBinding,
+    client_nonce: SessionToken,
+    server_nonce: SessionToken,
+    client_pid: u32,
+    server_pid: u32,
+) -> [u8; LIFECYCLE_BINDING_RECORD_LEN] {
+    let mut record = [0; LIFECYCLE_BINDING_RECORD_LEN];
+    let mut cursor = 0;
+    record[cursor..cursor + magic.len()].copy_from_slice(&magic);
+    cursor += magic.len();
+    record[cursor] = binding.purpose as u8;
+    cursor += 1;
+    for identity in [
+        binding.installation_id,
+        binding.attempt_id,
+        binding.lifecycle_channel_id,
+        *client_nonce.as_bytes(),
+        *server_nonce.as_bytes(),
+    ] {
+        record[cursor..cursor + identity.len()].copy_from_slice(&identity);
+        cursor += identity.len();
+    }
+    for pid in [client_pid, server_pid] {
+        record[cursor..cursor + 4].copy_from_slice(&pid.to_le_bytes());
+        cursor += 4;
+    }
+    debug_assert_eq!(cursor, record.len());
+    record
+}
+
+#[cfg(windows)]
+fn authenticate_lifecycle_binding_server(
+    stream: &mut WindowsNamedPipeBootstrapStream,
+    binding: WindowsLifecycleBinding,
+    client_nonce: SessionToken,
+    server_nonce: SessionToken,
+    client_pid: u32,
+    server_pid: u32,
+) -> io::Result<[u8; LIFECYCLE_BINDING_RECORD_LEN]> {
+    let challenge = lifecycle_binding_record(
+        *b"KELD-LC1",
+        binding,
+        client_nonce,
+        server_nonce,
+        client_pid,
+        server_pid,
+    );
+    stream.write_all(&challenge)?;
+    let mut acknowledgement = [0; LIFECYCLE_BINDING_RECORD_LEN];
+    stream.read_exact(&mut acknowledgement)?;
+    let expected_acknowledgement = lifecycle_binding_record(
+        *b"KELD-LA1",
+        binding,
+        client_nonce,
+        server_nonce,
+        client_pid,
+        server_pid,
+    );
+    if acknowledgement != expected_acknowledgement {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "lifecycle acknowledgement does not match the authenticated install/attempt/peer",
+        ));
+    }
+    Ok(lifecycle_binding_record(
+        *b"KELD-LR1",
+        binding,
+        client_nonce,
+        server_nonce,
+        client_pid,
+        server_pid,
+    ))
+}
+
+#[cfg(windows)]
+fn authenticate_lifecycle_binding_client(
+    stream: &mut WindowsNamedPipeBootstrapStream,
+    expectation: WindowsLifecycleExpectation,
+    client_nonce: SessionToken,
+    server_nonce: SessionToken,
+    client_pid: u32,
+    server_pid: u32,
+) -> io::Result<(WindowsLifecycleBinding, WindowsLifecycleBindingKnowledge)> {
+    let mut received = [0; LIFECYCLE_BINDING_RECORD_LEN];
+    stream.read_exact(&mut received)?;
+    let binding = decode_lifecycle_challenge(
+        &received,
+        client_nonce,
+        server_nonce,
+        client_pid,
+        server_pid,
+    )?;
+    let knowledge = expectation.accepts(binding).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "keeper lifecycle challenge changed install, attempt, channel or purpose",
+        )
+    })?;
+    let acknowledgement = lifecycle_binding_record(
+        *b"KELD-LA1",
+        binding,
+        client_nonce,
+        server_nonce,
+        client_pid,
+        server_pid,
+    );
+    stream.write_all(&acknowledgement)?;
+    let expected_receipt = lifecycle_binding_record(
+        *b"KELD-LR1",
+        binding,
+        client_nonce,
+        server_nonce,
+        client_pid,
+        server_pid,
+    );
+    let mut receipt = [0; LIFECYCLE_BINDING_RECORD_LEN];
+    stream.read_exact(&mut receipt)?;
+    if receipt != expected_receipt {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "lifecycle listener did not confirm one-use context consumption",
+        ));
+    }
+    Ok((binding, knowledge))
+}
+
+#[cfg(windows)]
+fn decode_lifecycle_challenge(
+    record: &[u8; LIFECYCLE_BINDING_RECORD_LEN],
+    client_nonce: SessionToken,
+    server_nonce: SessionToken,
+    client_pid: u32,
+    server_pid: u32,
+) -> io::Result<WindowsLifecycleBinding> {
+    if record[..8] != *b"KELD-LC1"
+        || record[105..137] != *client_nonce.as_bytes()
+        || record[137..169] != *server_nonce.as_bytes()
+        || record[169..173] != client_pid.to_le_bytes()
+        || record[173..177] != server_pid.to_le_bytes()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "keeper challenge has wrong protocol, nonce or connected-process transcript",
+        ));
+    }
+    let purpose = match record[8] {
+        1 => WindowsLifecyclePurpose::CoordinatorToKeeper,
+        2 => WindowsLifecyclePurpose::KeeperToSuccessor,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "keeper challenge has an unknown lifecycle purpose",
+            ));
+        }
+    };
+    let installation_id = record[9..41]
+        .try_into()
+        .map_err(|_| io::Error::other("installation ID record range changed"))?;
+    let attempt_id = record[41..73]
+        .try_into()
+        .map_err(|_| io::Error::other("attempt ID record range changed"))?;
+    let lifecycle_channel_id = record[73..105]
+        .try_into()
+        .map_err(|_| io::Error::other("lifecycle channel record range changed"))?;
+    WindowsLifecycleBinding::new(installation_id, attempt_id, lifecycle_channel_id, purpose)
+}
+
+#[cfg(windows)]
 impl WindowsNamedPipeBootstrapListener {
     /// Creates one first-instance, remote-rejecting named pipe protected by an
     /// explicit current-TokenUser DACL and mints an independent HELLO token.
@@ -801,11 +1651,42 @@ impl WindowsNamedPipeBootstrapListener {
     pub fn bind() -> io::Result<Self> {
         let token = SessionToken::random()?;
         let endpoint = random_pipe_endpoint()?;
-        let server = WindowsNamedPipeServer::bind(&endpoint)?;
+        Self::bind_at(&endpoint, token)
+    }
+
+    /// Binds an install/user-derived keeper locator with its one-shot HELLO token.
+    /// HELLO possession does not prove peer process identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the canonical endpoint or protected pipe cannot
+    /// be created and validated.
+    pub fn bind_rendezvous(
+        install_user_locator: [u8; 32],
+        token: SessionToken,
+    ) -> io::Result<Self> {
+        let endpoint = WindowsNamedPipeBootstrapStream::endpoint_for_install(&install_user_locator);
+        Self::bind_at(&endpoint, token)
+    }
+
+    /// Binds one exact canonical Keld endpoint with the supplied one-shot token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an input error for an invalid endpoint or a pipe creation/ACL
+    /// validation error.
+    fn bind_at(endpoint: &str, token: SessionToken) -> io::Result<Self> {
+        if !WindowsNamedPipeBootstrapStream::is_keld_endpoint(endpoint) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows lifecycle endpoint is not an exact Keld named pipe",
+            ));
+        }
+        let server = WindowsNamedPipeServer::bind(endpoint)?;
         Ok(Self {
             server: Mutex::new(Some(server)),
             admission: Mutex::new(()),
-            endpoint,
+            endpoint: endpoint.to_owned(),
             token,
             stopping: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -1200,11 +2081,85 @@ impl AppLinkDeadlines for WindowsNamedPipeBootstrapStream {
 
 #[cfg(windows)]
 impl WindowsNamedPipeBootstrapStream {
+    /// Derives the canonical keeper locator from a trusted install/user identity.
+    /// It is discoverable before mutable journal reads and conveys no authority.
+    #[must_use]
+    pub fn endpoint_for_install(install_user_locator: &[u8; 32]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut endpoint = String::with_capacity(r"\\.\pipe\keld-".len() + 64);
+        endpoint.push_str(r"\\.\pipe\keld-");
+        for byte in install_user_locator {
+            endpoint.push(char::from(HEX[usize::from(byte >> 4)]));
+            endpoint.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        endpoint
+    }
+
+    /// Derives the distinct endpoint namespace for the KEL-53 lifecycle protocol.
+    ///
+    /// The prefix is a protocol discriminator checked before the nonce handshake;
+    /// lifecycle peers cannot accidentally enter the ordinary app-link parser.
+    #[must_use]
+    pub fn endpoint_for_lifecycle_install(install_user_locator: &[u8; 32]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut endpoint = String::with_capacity(r"\\.\pipe\keld-lifecycle-".len() + 64);
+        endpoint.push_str(r"\\.\pipe\keld-lifecycle-");
+        for byte in install_user_locator {
+            endpoint.push(char::from(HEX[usize::from(byte >> 4)]));
+            endpoint.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        endpoint
+    }
+
+    /// Returns the operating-system PID of the process at the other end of this
+    /// connected pipe. The caller must retain and authenticate that process
+    /// identity before transferring lifecycle or installation capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the connected pipe handle cannot report its peer.
+    pub fn peer_process_id(&self) -> io::Result<u32> {
+        self.0.peer_process_id()
+    }
+
+    /// Returns the Windows Terminal Services session ID of the process at the
+    /// other end of this connected pipe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the connected pipe handle cannot report its peer.
+    pub fn peer_session_id(&self) -> io::Result<u32> {
+        self.0.peer_session_id()
+    }
+
+    /// Reports whether this connected pipe handle can be inherited by a child.
+    /// Lifecycle endpoints must remain non-inheritable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if Windows cannot read the handle flags.
+    pub fn is_handle_inheritable(&self) -> io::Result<bool> {
+        self.0.is_inheritable()
+    }
+
     /// Returns whether `endpoint` has the exact host-minted Keld pipe shape.
     #[must_use]
     pub fn is_keld_endpoint(endpoint: &str) -> bool {
         endpoint
             .strip_prefix(r"\\.\pipe\keld-")
+            .is_some_and(|nonce| {
+                nonce.len() == 64
+                    && nonce
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+    }
+
+    /// Returns whether `endpoint` has the exact lifecycle-only pipe shape.
+    #[must_use]
+    pub fn is_lifecycle_endpoint(endpoint: &str) -> bool {
+        endpoint
+            .strip_prefix(r"\\.\pipe\keld-lifecycle-")
             .is_some_and(|nonce| {
                 nonce.len() == 64
                     && nonce
@@ -1248,8 +2203,8 @@ impl WindowsNamedPipeBootstrapStream {
 mod named_pipe_tests {
     #![allow(unsafe_code)] // test-only independent Win32 descriptor/handle oracle
 
-    use std::io::{self, Read as _, Write as _};
-    use std::os::windows::io::AsRawHandle as _;
+    use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
     use std::process::{Child, Command, Output, Stdio};
     use std::sync::{Arc, Mutex, PoisonError, mpsc};
     use std::thread;
@@ -1258,8 +2213,15 @@ mod named_pipe_tests {
     use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
     use windows_permissions::utilities::current_process_sid;
     use windows_permissions::wrappers::GetSecurityInfo;
-    use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::System::Pipes::{GetNamedPipeInfo, PIPE_REJECT_REMOTE_CLIENTS};
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::{
+        GetProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
+    };
 
     use crate::link::{AppLinkDeadlines, handshake_client};
     use crate::serve_echo_requests;
@@ -1268,10 +2230,26 @@ mod named_pipe_tests {
     use crate::{ChannelId, CorrelationId, FrameHeader, FrameKind, MAX_FRAME_LEN};
 
     use super::{
-        BootstrapRejection, BootstrapRejectionObserver, TestConsumeGate,
+        BootstrapListener, BootstrapRejection, BootstrapRejectionObserver, TestConsumeGate,
+        WindowsLifecycleBinding, WindowsLifecycleExpectation, WindowsLifecyclePeerPin,
+        WindowsLifecyclePurpose, WindowsLifecycleRendezvousListener,
         WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapListener,
-        WindowsNamedPipeBootstrapStream,
+        WindowsNamedPipeBootstrapStream, WindowsPeerTokenFacts,
     };
+
+    #[expect(
+        clippy::expect_used,
+        reason = "fixed nonzero, pairwise-distinct test IDs are a fixture invariant"
+    )]
+    fn test_lifecycle_binding() -> WindowsLifecycleBinding {
+        WindowsLifecycleBinding::new(
+            [0x11; 32],
+            [0x22; 32],
+            [0x33; 32],
+            WindowsLifecyclePurpose::CoordinatorToKeeper,
+        )
+        .expect("distinct test lifecycle identities")
+    }
 
     #[derive(Clone)]
     struct RecordingObserver {
@@ -1296,6 +2274,83 @@ mod named_pipe_tests {
         release: Mutex<mpsc::Receiver<()>>,
     }
 
+    #[derive(Debug)]
+    struct TestPeerProcess {
+        process_id: u32,
+        session_id: u32,
+        process: OwnedHandle,
+        token_facts: WindowsPeerTokenFacts,
+    }
+
+    impl TestPeerProcess {
+        fn open(process_id: u32, session_id: u32) -> Option<Self> {
+            // SAFETY: process_id came from a connected local pipe or current child.
+            let raw = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    process_id,
+                )
+            };
+            if raw.is_null() {
+                return None;
+            }
+            // SAFETY: OpenProcess returned one fresh owning process handle.
+            let process = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+            // SAFETY: process is retained; GetProcessId is read-only.
+            if unsafe { GetProcessId(process.as_raw_handle().cast()) } != process_id {
+                return None;
+            }
+            // SAFETY: process handle has PROCESS_SYNCHRONIZE and is retained.
+            if unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 0) } != WAIT_TIMEOUT {
+                return None;
+            }
+            let mut raw_token = std::ptr::null_mut();
+            // SAFETY: process is the retained exact child and token output is writable.
+            if unsafe {
+                windows_sys::Win32::System::Threading::OpenProcessToken(
+                    process.as_raw_handle().cast(),
+                    windows_sys::Win32::Security::TOKEN_QUERY,
+                    &raw mut raw_token,
+                )
+            } == 0
+            {
+                return None;
+            }
+            // SAFETY: OpenProcessToken returned one fresh owned token handle.
+            let token = unsafe { OwnedHandle::from_raw_handle(raw_token.cast()) };
+            let token_facts = crate::query_windows_peer_token_facts(&token).ok()?;
+            if token_facts.session_id != session_id {
+                return None;
+            }
+            Some(Self {
+                process_id,
+                session_id,
+                process,
+                token_facts,
+            })
+        }
+    }
+
+    impl super::WindowsLifecyclePeerPin for TestPeerProcess {
+        fn process_id(&self) -> u32 {
+            self.process_id
+        }
+
+        fn session_id(&self) -> u32 {
+            self.session_id
+        }
+
+        fn has_exited(&self) -> io::Result<bool> {
+            // SAFETY: process is a retained process object with synchronize rights.
+            match unsafe { WaitForSingleObject(self.process.as_raw_handle().cast(), 0) } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                _ => Err(io::Error::last_os_error()),
+            }
+        }
+    }
+
     impl BootstrapRejectionObserver for BlockingObserver {
         fn rejected(&self, rejection: BootstrapRejection) {
             let _ = self.observed.send(rejection);
@@ -1313,6 +2368,970 @@ mod named_pipe_tests {
             Instant::now() + Duration::from_secs(2),
         )
         .map(WindowsNamedPipeBootstrapStream)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture exercises both the installed-rendezvous client child and the legacy token helper"
+    )]
+    #[test]
+    fn install_rendezvous_bootstrap_reports_exact_pipe_peer_after_hello() {
+        const LIFECYCLE_ENDPOINT_ENV: &str = "KELD_TEST_LIFECYCLE_ENDPOINT";
+        const LIFECYCLE_SERVER_PID_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_PID";
+        const LIFECYCLE_SERVER_SESSION_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_SESSION";
+        const ENDPOINT_ENV: &str = "KELD_TEST_KEEPER_ENDPOINT";
+        const TOKEN_ENV: &str = "KELD_TEST_KEEPER_TOKEN";
+        if let (Some(endpoint), Some(server_pid), Some(server_session)) = (
+            std::env::var_os(LIFECYCLE_ENDPOINT_ENV),
+            std::env::var_os(LIFECYCLE_SERVER_PID_ENV),
+            std::env::var_os(LIFECYCLE_SERVER_SESSION_ENV),
+        ) {
+            let endpoint = endpoint.to_string_lossy();
+            let server_pid = server_pid
+                .to_string_lossy()
+                .parse::<u32>()
+                .expect("valid server PID");
+            let server_session = server_session
+                .to_string_lossy()
+                .parse::<u32>()
+                .expect("valid server session");
+            let start_gated = std::env::var_os("KELD_TEST_LIFECYCLE_START_GATED").is_some();
+            if start_gated {
+                let mut start = [0_u8; 1];
+                std::io::stdin()
+                    .read_exact(&mut start)
+                    .expect("wait for test-controlled lifecycle connect gate");
+                assert_eq!(start, [1]);
+            }
+            let expectation = if std::env::var_os("KELD_TEST_LIFECYCLE_DISCOVERY").is_some() {
+                WindowsLifecycleExpectation::from_keeper([0x11; 32])
+                    .expect("known install identity for cold successor")
+            } else {
+                let binding = if std::env::var_os("KELD_TEST_LIFECYCLE_STALE_BINDING").is_some() {
+                    WindowsLifecycleBinding::new(
+                        [0x11; 32],
+                        [0x44; 32],
+                        [0x33; 32],
+                        WindowsLifecyclePurpose::CoordinatorToKeeper,
+                    )
+                    .expect("distinct stale-attempt identities")
+                } else {
+                    test_lifecycle_binding()
+                };
+                WindowsLifecycleExpectation::exact(binding)
+            };
+            let connect_timeout = std::env::var("KELD_TEST_LIFECYCLE_CONNECT_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map_or(Duration::from_secs(5), Duration::from_millis);
+            if std::env::var_os("KELD_TEST_LIFECYCLE_BUSY_WITNESS").is_some() {
+                let (busy_tx, busy_rx) = mpsc::channel();
+                WindowsNamedPipeServer::install_connect_busy_witness(busy_tx);
+                thread::spawn(move || {
+                    if busy_rx.recv().is_ok() {
+                        println!("CLIENT_PIPE_BUSY");
+                        let _ = std::io::stdout().flush();
+                    }
+                });
+            }
+            let mut connection = crate::connect_windows_lifecycle_rendezvous_until(
+                &endpoint,
+                expectation,
+                Instant::now() + connect_timeout,
+                |pid, session| {
+                    if pid != server_pid || session != server_session {
+                        return None;
+                    }
+                    TestPeerProcess::open(pid, session)
+                },
+            )
+            .expect("authenticate actual lifecycle server process");
+            assert!(
+                !connection
+                    .stream_mut()
+                    .is_handle_inheritable()
+                    .expect("read client pipe inheritance"),
+                "lifecycle client handle must not be inheritable"
+            );
+            assert!(
+                !connection
+                    .process_pin()
+                    .has_exited()
+                    .expect("check retained server process object"),
+                "server process pin must survive the nonce exchange"
+            );
+            println!(
+                "CLIENT_LIFECYCLE_OK client={} server={} nonceC={} nonceS={} knowledge={:?}",
+                std::process::id(),
+                server_pid,
+                connection.client_nonce().to_hex(),
+                connection.server_nonce().to_hex(),
+                connection.binding_knowledge()
+            );
+            std::io::stdout()
+                .flush()
+                .expect("flush client nonce transcript");
+            if start_gated {
+                let mut exit = String::new();
+                let stdin = std::io::stdin();
+                let mut input = BufReader::new(stdin);
+                std::io::BufRead::read_line(&mut input, &mut exit)
+                    .expect("wait for parent to release authenticated client");
+                assert_eq!(exit.trim_end(), "EXIT");
+            }
+            return;
+        }
+
+        if let (Some(endpoint), Some(token_hex)) =
+            (std::env::var_os(ENDPOINT_ENV), std::env::var_os(TOKEN_ENV))
+        {
+            let endpoint = endpoint.to_string_lossy();
+            let token = SessionToken::from_hex(&token_hex.to_string_lossy())
+                .expect("valid keeper bootstrap token");
+            let mut stream = WindowsNamedPipeBootstrapStream::connect(&endpoint)
+                .expect("connect keeper bootstrap endpoint");
+            let server_pid = stream.peer_process_id().expect("read keeper process PID");
+            let server_session = stream
+                .peer_session_id()
+                .expect("read keeper process session");
+            handshake_client(&mut stream, &token).expect("authenticate keeper HELLO");
+            println!("KEEPER_SERVER_PID={server_pid} SESSION={server_session}");
+            return;
+        }
+
+        let mut install_user_locator = [0_u8; 32];
+        getrandom::fill(&mut install_user_locator).expect("install/user locator randomness");
+        let token = SessionToken::random().expect("keeper token randomness");
+        let endpoint = WindowsNamedPipeBootstrapStream::endpoint_for_install(&install_user_locator);
+        assert!(WindowsNamedPipeBootstrapStream::is_keld_endpoint(&endpoint));
+        assert_eq!(
+            endpoint,
+            WindowsNamedPipeBootstrapStream::endpoint_for_install(&install_user_locator),
+            "the same trusted install/user identity has one deterministic locator"
+        );
+        let listener = BootstrapListener::bind_windows_rendezvous(install_user_locator, token)
+            .expect("bind install/user-scoped keeper listener");
+        let child = Command::new(std::env::current_exe().expect("current test binary"))
+            .args([
+                "--exact",
+                "bootstrap::named_pipe_tests::install_rendezvous_bootstrap_reports_exact_pipe_peer_after_hello",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_ENV, &endpoint)
+            .env(TOKEN_ENV, token.to_hex())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn authenticated keeper peer");
+        let stream = listener
+            .accept_authenticated()
+            .expect("accept keeper peer")
+            .expect("peer authenticated before deadline");
+        assert_eq!(
+            stream
+                .peer_process_id()
+                .expect("read exact keeper peer PID"),
+            child.id(),
+            "the accepted process handle must bind to the actual client"
+        );
+        let client_session = stream
+            .peer_session_id()
+            .expect("read exact keeper peer session");
+        let mut server_session = 0_u32;
+        // SAFETY: current PID and writable session output are valid for this
+        // synchronous process-session query.
+        assert_ne!(
+            unsafe { ProcessIdToSessionId(std::process::id(), &raw mut server_session) },
+            0,
+            "query server session"
+        );
+        assert_eq!(client_session, server_session);
+        let output = child.wait_with_output().expect("wait authenticated client");
+        assert!(
+            output.status.success(),
+            "client failed: status={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!(
+                "KEEPER_SERVER_PID={} SESSION={server_session}",
+                std::process::id()
+            )),
+            "client must bind to the actual server process"
+        );
+        drop(stream);
+        listener
+            .shutdown()
+            .expect("consume and close keeper listener");
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the subprocess controls wrong-peer rejection, retry, exact nonce binding and process-pin retention"
+    )]
+    #[test]
+    fn lifecycle_rendezvous_rejects_wrong_process_then_authenticates_fresh_peer() {
+        use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
+        const LIFECYCLE_ENDPOINT_ENV: &str = "KELD_TEST_LIFECYCLE_ENDPOINT";
+        const SERVER_PID_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_PID";
+        const SERVER_SESSION_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_SESSION";
+        let locator = [0x61; 32];
+        let listener = Arc::new(
+            WindowsLifecycleRendezvousListener::bind(locator, test_lifecycle_binding())
+                .expect("bind install/user lifecycle locator"),
+        );
+        let endpoint = listener.endpoint().to_owned();
+        let mut server_session = 0_u32;
+        // SAFETY: this test process is live and the session output is writable.
+        assert_ne!(
+            unsafe { ProcessIdToSessionId(std::process::id(), &raw mut server_session) },
+            0
+        );
+        let allowed_client = Arc::new(AtomicU32::new(0));
+        let allowed_for_server = Arc::clone(&allowed_client);
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let listener_for_acceptor = Arc::clone(&listener);
+        let acceptor = thread::spawn(move || {
+            let accepted = listener_for_acceptor
+                .accept_until(
+                    Instant::now() + Duration::from_secs(5),
+                    |pid, session, facts| {
+                        if pid != allowed_for_server.load(AtomicOrdering::Acquire)
+                            || session != server_session
+                            || facts.session_id != session
+                            || facts.user_sid.is_empty()
+                            || facts.integrity_rid == 0
+                        {
+                            return None;
+                        }
+                        let pin = TestPeerProcess::open(pid, session)?;
+                        (&pin.token_facts == facts).then_some(pin)
+                    },
+                )
+                .expect("accept lifecycle peer");
+            accepted_tx.send(accepted).expect("publish accepted peer");
+        });
+
+        let spawn_client = |start_gated: bool,
+                            stale_binding: bool,
+                            connect_timeout_ms: Option<u64>| {
+            let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+            command
+                .args([
+                    "--exact",
+                    "bootstrap::named_pipe_tests::install_rendezvous_bootstrap_reports_exact_pipe_peer_after_hello",
+                    "--nocapture",
+                ])
+                .env(LIFECYCLE_ENDPOINT_ENV, &endpoint)
+                .env(SERVER_PID_ENV, std::process::id().to_string())
+                .env(SERVER_SESSION_ENV, server_session.to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if start_gated {
+                command
+                    .env("KELD_TEST_LIFECYCLE_START_GATED", "1")
+                    .stdin(Stdio::piped());
+            } else {
+                command.stdin(Stdio::null());
+            }
+            if stale_binding {
+                command.env("KELD_TEST_LIFECYCLE_STALE_BINDING", "1");
+            }
+            if let Some(timeout_ms) = connect_timeout_ms {
+                command.env("KELD_TEST_LIFECYCLE_CONNECT_MS", timeout_ms.to_string());
+            }
+            command.spawn().expect("spawn lifecycle client")
+        };
+
+        let rejected_client = spawn_client(false, false, None);
+        let rejected_id = rejected_client.id();
+        let rejected_output = rejected_client
+            .wait_with_output()
+            .expect("wait rejected peer");
+        assert!(
+            !rejected_output.status.success(),
+            "wrong client must not complete rendezvous"
+        );
+        assert!(
+            !String::from_utf8_lossy(&rejected_output.stdout).contains("CLIENT_LIFECYCLE_OK"),
+            "rejected client must receive no nonce echo or completion record"
+        );
+        assert!(
+            accepted_rx.try_recv().is_err(),
+            "wrong peer identity must not consume the one-shot listener"
+        );
+
+        let mut stale_client = spawn_client(true, true, None);
+        let stale_id = stale_client.id();
+        allowed_client.store(stale_id, AtomicOrdering::Release);
+        stale_client
+            .stdin
+            .as_mut()
+            .expect("stale-client gate pipe")
+            .write_all(&[1])
+            .expect("release stale-attempt client");
+        let stale_output = stale_client
+            .wait_with_output()
+            .expect("wait stale-attempt client");
+        assert!(
+            !stale_output.status.success(),
+            "stale attempt binding must be rejected before handoff"
+        );
+        assert!(
+            !String::from_utf8_lossy(&stale_output.stdout).contains("CLIENT_LIFECYCLE_OK"),
+            "stale attempt cannot receive a binding acknowledgement"
+        );
+        assert!(
+            accepted_rx.try_recv().is_err(),
+            "stale attempt must not consume this attempt's listener"
+        );
+
+        let mut accepted_client = spawn_client(true, false, None);
+        let accepted_id = accepted_client.id();
+        allowed_client.store(accepted_id, AtomicOrdering::Release);
+        accepted_client
+            .stdin
+            .as_mut()
+            .expect("accepted-client gate pipe")
+            .write_all(&[1])
+            .expect("release accepted-client gate");
+        let accepted_stdout = accepted_client
+            .stdout
+            .take()
+            .expect("accepted client stdout");
+        let mut accepted_lines = BufReader::new(accepted_stdout).lines();
+        let client_line = accepted_lines
+            .find_map(|line| match line {
+                Ok(line) if line.starts_with("CLIENT_LIFECYCLE_OK ") => Some(Ok(line)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .expect("client result line iterator ended")
+            .expect("read client result line");
+        let mut peer = accepted_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("authorized client accepted before deadline")
+            .expect("authorized peer result");
+        acceptor.join().expect("join lifecycle acceptor");
+        assert_eq!(peer.process_id(), accepted_id);
+        assert_ne!(peer.process_id(), rejected_id);
+        assert_eq!(peer.session_id(), server_session);
+        assert_eq!(peer.token_facts().session_id, server_session);
+        assert!(!peer.token_facts().user_sid.is_empty());
+        assert!(
+            !peer
+                .process_pin()
+                .has_exited()
+                .expect("check retained client process object"),
+            "client process pin must survive until the test retains the rendezvous"
+        );
+        assert_ne!(peer.client_nonce(), peer.server_nonce());
+        assert!(
+            !peer
+                .stream_mut()
+                .is_handle_inheritable()
+                .expect("server pipe inheritance"),
+            "lifecycle server handle must not be inheritable"
+        );
+        assert!(
+            client_line.contains(&peer.client_nonce().to_hex())
+                && client_line.contains(&peer.server_nonce().to_hex()),
+            "both peers must agree on the exact fresh nonce pair: {client_line}"
+        );
+        writeln!(
+            accepted_client
+                .stdin
+                .as_mut()
+                .expect("accepted client exit gate"),
+            "EXIT"
+        )
+        .expect("release accepted client after peer-pin assertions");
+        drop(accepted_client.stdin.take());
+        assert!(
+            accepted_client
+                .wait()
+                .expect("wait accepted client")
+                .success(),
+            "accepted lifecycle client exits cleanly"
+        );
+        for line in accepted_lines {
+            line.expect("drain accepted client output");
+        }
+        drop(peer);
+        let second_accept = listener.accept_until(
+            Instant::now() + Duration::from_millis(250),
+            |_, _, _| -> Option<TestPeerProcess> {
+                panic!("a consumed listener must reject before peer authorization")
+            },
+        );
+        assert!(
+            matches!(&second_accept, Err(error) if error.kind() == io::ErrorKind::NotConnected),
+            "the retained listener itself must reject a second authorized acceptance after the first connection closes: {second_accept:?}"
+        );
+        let competing_client = spawn_client(false, false, Some(250));
+        let competing_output = competing_client
+            .wait_with_output()
+            .expect("wait one-shot listener competitor");
+        assert!(
+            !competing_output.status.success(),
+            "a consumed attempt listener must reject a second successor"
+        );
+        assert!(
+            !String::from_utf8_lossy(&competing_output.stdout).contains("CLIENT_LIFECYCLE_OK"),
+            "competing successor must receive no acceptance transcript"
+        );
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "simultaneous authorized contenders and the accepted peer transcript form one adversarial oracle"
+    )]
+    #[test]
+    fn lifecycle_rendezvous_race_admits_at_most_one_authorized_client() {
+        const ENDPOINT_ENV: &str = "KELD_TEST_LIFECYCLE_ENDPOINT";
+        const SERVER_PID_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_PID";
+        const SERVER_SESSION_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_SESSION";
+        const CLIENT_TEST: &str = "bootstrap::named_pipe_tests::install_rendezvous_bootstrap_reports_exact_pipe_peer_after_hello";
+        let listener = Arc::new(
+            WindowsLifecycleRendezvousListener::bind([0x64; 32], test_lifecycle_binding())
+                .expect("bind one-shot lifecycle endpoint"),
+        );
+        let endpoint = listener.endpoint().to_owned();
+        let mut server_session = 0_u32;
+        // SAFETY: this test process is live and the session output is writable.
+        assert_ne!(
+            unsafe { ProcessIdToSessionId(std::process::id(), &raw mut server_session) },
+            0
+        );
+        let authorized_ids = Arc::new(Mutex::new([0_u32; 2]));
+        let (gate_entered_tx, gate_entered_rx) = mpsc::sync_channel(1);
+        let (gate_release_tx, gate_release_rx) = mpsc::channel();
+        listener.install_before_consume_gate(TestConsumeGate {
+            entered: gate_entered_tx,
+            release: gate_release_rx,
+        });
+        let listener_for_acceptor = Arc::clone(&listener);
+        let allowed_for_server = Arc::clone(&authorized_ids);
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let acceptor = thread::spawn(move || {
+            let accepted = listener_for_acceptor
+                .accept_until(
+                    Instant::now() + Duration::from_secs(5),
+                    move |pid, session, facts| {
+                        let authorized = allowed_for_server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .contains(&pid);
+                        if !authorized || session != server_session || facts.session_id != session {
+                            return None;
+                        }
+                        let pin = TestPeerProcess::open(pid, session)?;
+                        (pin.token_facts == *facts).then_some(pin)
+                    },
+                )
+                .expect("accept one authorized contender before deadline");
+            accepted_tx
+                .send(accepted)
+                .expect("publish the one accepted lifecycle peer");
+        });
+        let spawn_client = |busy_witness: bool| {
+            let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+            command
+                .args(["--exact", CLIENT_TEST, "--nocapture"])
+                .env(ENDPOINT_ENV, &endpoint)
+                .env(SERVER_PID_ENV, std::process::id().to_string())
+                .env(SERVER_SESSION_ENV, server_session.to_string())
+                .env("KELD_TEST_LIFECYCLE_START_GATED", "1")
+                .env("KELD_TEST_LIFECYCLE_CONNECT_MS", "1500")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if busy_witness {
+                command.env("KELD_TEST_LIFECYCLE_BUSY_WITNESS", "1");
+            }
+            command.spawn().expect("spawn authorized contender")
+        };
+        let mut first = spawn_client(false);
+        authorized_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)[0] = first.id();
+        first
+            .stdin
+            .as_mut()
+            .expect("first contender start gate")
+            .write_all(&[1])
+            .expect("release first contender");
+        gate_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first authorized contender reaches post-authentication barrier");
+
+        let mut second = spawn_client(true);
+        authorized_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)[1] = second.id();
+        let (second_output_tx, second_output_rx) = mpsc::channel();
+        let second_stdout = second.stdout.take().expect("second contender stdout");
+        let output_reader = thread::spawn(move || {
+            for line in BufReader::new(second_stdout).lines() {
+                if second_output_tx
+                    .send(line.expect("read contender output"))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        second
+            .stdin
+            .as_mut()
+            .expect("second contender start gate")
+            .write_all(&[1])
+            .expect("release second contender while first admission is held");
+        let mut saw_busy = false;
+        while !saw_busy {
+            let line = second_output_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("second contender must reach the occupied pipe while the first is held");
+            saw_busy = line == "CLIENT_PIPE_BUSY";
+        }
+        gate_release_tx
+            .send(())
+            .expect("release first contender after second observed ERROR_PIPE_BUSY");
+        let accepted = accepted_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receive the exactly-once listener result")
+            .expect("first contender completes the one-shot handshake");
+        acceptor.join().expect("join one-shot acceptor");
+        if let Some(mut stdin) = first.stdin.take() {
+            writeln!(stdin, "EXIT").expect("release accepted first contender");
+        }
+        let first_output = first.wait_with_output().expect("wait first contender");
+        if let Some(mut stdin) = second.stdin.take() {
+            let _ = writeln!(stdin, "EXIT");
+        }
+        let second_status = second.wait().expect("wait second contender");
+        output_reader.join().expect("join contender output reader");
+        let second_lines = second_output_rx.try_iter().collect::<Vec<_>>();
+        assert!(
+            !second_status.success(),
+            "the authorized contender that observed ERROR_PIPE_BUSY cannot complete after one-shot consumption: {second_lines:?}"
+        );
+        assert!(
+            !second_lines
+                .iter()
+                .any(|line| line.starts_with("CLIENT_LIFECYCLE_OK ")),
+            "losing authorized contender receives no success transcript: {second_lines:?}"
+        );
+        assert!(
+            first_output.status.success(),
+            "the first admitted contender exits cleanly: {}",
+            String::from_utf8_lossy(&first_output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&first_output.stdout).contains("CLIENT_LIFECYCLE_OK "),
+            "the accepted contender completed the exact nonce transcript"
+        );
+        let accepted_pid = accepted.process_id();
+        assert!(
+            authorized_ids
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&accepted_pid),
+            "accepted peer must be one of the two authorized contenders"
+        );
+        drop(accepted);
+    }
+
+    #[test]
+    fn authenticated_keeper_supplies_attempt_to_cold_successor() {
+        const ENDPOINT_ENV: &str = "KELD_TEST_LIFECYCLE_ENDPOINT";
+        const SERVER_PID_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_PID";
+        const SERVER_SESSION_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_SESSION";
+        let binding = WindowsLifecycleBinding::new(
+            [0x11; 32],
+            [0x22; 32],
+            [0x33; 32],
+            WindowsLifecyclePurpose::KeeperToSuccessor,
+        )
+        .expect("independent keeper attempt context");
+        let listener = WindowsLifecycleRendezvousListener::bind([0x62; 32], binding)
+            .expect("bind lifecycle keeper endpoint");
+        let endpoint = listener.endpoint().to_owned();
+        let mut server_session = 0_u32;
+        // SAFETY: this test process is live and the session output is writable.
+        assert_ne!(
+            unsafe { ProcessIdToSessionId(std::process::id(), &raw mut server_session) },
+            0
+        );
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "bootstrap::named_pipe_tests::install_rendezvous_bootstrap_reports_exact_pipe_peer_after_hello",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_ENV, &endpoint)
+            .env(SERVER_PID_ENV, std::process::id().to_string())
+            .env(SERVER_SESSION_ENV, server_session.to_string())
+            .env("KELD_TEST_LIFECYCLE_DISCOVERY", "1")
+            .env("KELD_TEST_LIFECYCLE_START_GATED", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut successor = command.spawn().expect("spawn cold successor fixture");
+        successor
+            .stdin
+            .as_mut()
+            .expect("successor start gate")
+            .write_all(&[1])
+            .expect("release successor connect");
+        let peer = listener
+            .accept_until(
+                Instant::now() + Duration::from_secs(5),
+                |pid, session, facts| {
+                    if session != server_session || facts.session_id != session {
+                        return None;
+                    }
+                    let pin = TestPeerProcess::open(pid, session)?;
+                    (pin.token_facts == *facts).then_some(pin)
+                },
+            )
+            .expect("accept authenticated cold successor")
+            .expect("successor connected before deadline");
+        assert_eq!(peer.binding(), binding);
+        let stdout = successor.stdout.take().expect("successor stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let record = lines
+            .find_map(|line| match line {
+                Ok(line) if line.starts_with("CLIENT_LIFECYCLE_OK ") => Some(Ok(line)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .expect("cold successor result line")
+            .expect("read cold successor result");
+        assert!(
+            record.contains("knowledge=KeeperSuppliedAwaitingJournalRevalidation"),
+            "discovered attempt must remain untrusted until lease/journal revalidation: {record}"
+        );
+        writeln!(
+            successor.stdin.as_mut().expect("successor release gate"),
+            "EXIT"
+        )
+        .expect("release authenticated successor");
+        drop(successor.stdin.take());
+        assert!(successor.wait().expect("wait successor").success());
+        assert!(
+            peer.process_pin()
+                .has_exited()
+                .expect("successor process exit"),
+            "keeper retains exact successor process object through release"
+        );
+    }
+
+    #[test]
+    fn expired_final_receipt_does_not_admit_lifecycle_peer() {
+        const ENDPOINT_ENV: &str = "KELD_TEST_LIFECYCLE_ENDPOINT";
+        const SERVER_PID_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_PID";
+        const SERVER_SESSION_ENV: &str = "KELD_TEST_LIFECYCLE_SERVER_SESSION";
+        let binding = test_lifecycle_binding();
+        let listener = WindowsLifecycleRendezvousListener::bind([0x73; 32], binding)
+            .expect("bind lifecycle deadline endpoint");
+        let endpoint = listener.endpoint().to_owned();
+        let mut server_session = 0_u32;
+        // SAFETY: this live process PID and writable session output are valid.
+        assert_ne!(
+            unsafe { ProcessIdToSessionId(std::process::id(), &raw mut server_session) },
+            0
+        );
+        let (gate_entered_tx, gate_entered_rx) = mpsc::sync_channel(1);
+        let (gate_release_tx, gate_release_rx) = mpsc::channel();
+        listener.install_before_receipt_gate(TestConsumeGate {
+            entered: gate_entered_tx,
+            release: gate_release_rx,
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let acceptor = thread::spawn(move || {
+            let accepted = listener
+                .accept_until(deadline, |pid, session, facts| {
+                    if session != server_session || facts.session_id != session {
+                        return None;
+                    }
+                    let pin = TestPeerProcess::open(pid, session)?;
+                    (pin.token_facts == *facts).then_some(pin)
+                })
+                .expect("accept lifecycle peer through deadline");
+            accepted_tx
+                .send(accepted.is_some())
+                .expect("publish lifecycle admission result");
+        });
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "bootstrap::named_pipe_tests::install_rendezvous_bootstrap_reports_exact_pipe_peer_after_hello",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_ENV, &endpoint)
+            .env(SERVER_PID_ENV, std::process::id().to_string())
+            .env(SERVER_SESSION_ENV, server_session.to_string())
+            .env("KELD_TEST_LIFECYCLE_START_GATED", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut client = command.spawn().expect("spawn deadline-bound client");
+        client
+            .stdin
+            .as_mut()
+            .expect("client start gate")
+            .write_all(&[1])
+            .expect("release deadline-bound client");
+        gate_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server reached post-consume receipt gate");
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let (_timer_tx, timer_rx) = mpsc::channel::<()>();
+        assert_eq!(
+            timer_rx.recv_timeout(remaining + Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "timer must expire after the handshake deadline"
+        );
+        gate_release_tx
+            .send(())
+            .expect("release expired receipt gate");
+        assert!(
+            !accepted_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("server reports deadline result"),
+            "receipt missing before deadline must not admit peer"
+        );
+        acceptor.join().expect("join deadline-bound acceptor");
+        let output = client
+            .wait_with_output()
+            .expect("wait client whose receipt was refused");
+        assert!(!output.status.success(), "client must require LR1");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("CLIENT_LIFECYCLE_OK"),
+            "client emits no accepted marker without the final receipt"
+        );
+    }
+
+    #[test]
+    fn lifecycle_client_rejects_fake_server_before_sending_nonce() {
+        const ENDPOINT_ENV: &str = "KELD_TEST_LIFECYCLE_FAKE_SERVER_ENDPOINT";
+        if let Some(endpoint) = std::env::var_os(ENDPOINT_ENV) {
+            let result = crate::connect_windows_lifecycle_rendezvous_until(
+                &endpoint.to_string_lossy(),
+                WindowsLifecycleExpectation::exact(test_lifecycle_binding()),
+                Instant::now() + Duration::from_secs(5),
+                |_, _| None::<TestPeerProcess>,
+            );
+            assert!(
+                matches!(result, Err(error) if error.kind() == io::ErrorKind::PermissionDenied),
+                "an untrusted endpoint process must be rejected before HELLO"
+            );
+            return;
+        }
+
+        let endpoint = super::random_lifecycle_pipe_endpoint().expect("mint fake-server endpoint");
+        let server = WindowsNamedPipeServer::bind(&endpoint).expect("bind fake server");
+        let child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "bootstrap::named_pipe_tests::lifecycle_client_rejects_fake_server_before_sending_nonce",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_ENV, &endpoint)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn lifecycle client against fake endpoint");
+        assert_eq!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(5)))
+                .expect("accept fake endpoint client"),
+            WaitOutcome::Ready
+        );
+        let mut stream = WindowsNamedPipeBootstrapStream(server.stream().expect("fake stream"));
+        let mut byte = [0_u8; 1];
+        let read = stream.read(&mut byte);
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "fake endpoint must receive no HELLO byte, got {read:?}"
+        );
+        server.consume();
+        drop(stream);
+        let output = child.wait_with_output().expect("wait fake-endpoint client");
+        assert!(
+            output.status.success(),
+            "client did not reject the fake endpoint: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn ordinary_and_lifecycle_pipe_namespaces_refuse_cross_protocol_connects() {
+        let locator = [0x72; 32];
+        let app_link = WindowsNamedPipeBootstrapStream::endpoint_for_install(&locator);
+        let lifecycle = WindowsNamedPipeBootstrapStream::endpoint_for_lifecycle_install(&locator);
+        assert!(WindowsNamedPipeBootstrapStream::is_keld_endpoint(&app_link));
+        assert!(!WindowsNamedPipeBootstrapStream::is_lifecycle_endpoint(
+            &app_link
+        ));
+        assert!(WindowsNamedPipeBootstrapStream::is_lifecycle_endpoint(
+            &lifecycle
+        ));
+        assert!(!WindowsNamedPipeBootstrapStream::is_keld_endpoint(
+            &lifecycle
+        ));
+
+        let app_to_lifecycle = WindowsNamedPipeBootstrapStream::connect(&lifecycle)
+            .expect_err("ordinary app-link client must refuse lifecycle namespace");
+        assert_eq!(app_to_lifecycle.kind(), io::ErrorKind::InvalidInput);
+        let lifecycle_to_app = crate::connect_windows_lifecycle_rendezvous_until(
+            &app_link,
+            WindowsLifecycleExpectation::exact(test_lifecycle_binding()),
+            Instant::now() + Duration::from_secs(1),
+            |_, _| None::<TestPeerProcess>,
+        )
+        .expect_err("lifecycle client must refuse ordinary app-link namespace");
+        assert_eq!(lifecycle_to_app.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn lifecycle_context_record_has_exact_shape_and_binds_nonce_pair_and_roles() {
+        let binding = test_lifecycle_binding();
+        let client_nonce = SessionToken::from_bytes([0x44; 32]);
+        let server_nonce = SessionToken::from_bytes([0x55; 32]);
+        let challenge = super::lifecycle_binding_record(
+            *b"KELD-LC1",
+            binding,
+            client_nonce,
+            server_nonce,
+            0x1122_3344,
+            0x5566_7788,
+        );
+        assert_eq!(challenge.len(), 177);
+        assert_eq!(&challenge[..8], b"KELD-LC1");
+        assert_eq!(
+            challenge[8],
+            WindowsLifecyclePurpose::CoordinatorToKeeper as u8
+        );
+        assert_eq!(&challenge[9..41], &[0x11; 32]);
+        assert_eq!(&challenge[41..73], &[0x22; 32]);
+        assert_eq!(&challenge[73..105], &[0x33; 32]);
+        assert_eq!(&challenge[105..137], &[0x44; 32]);
+        assert_eq!(&challenge[137..169], &[0x55; 32]);
+        assert_eq!(&challenge[169..173], &0x1122_3344_u32.to_le_bytes());
+        assert_eq!(&challenge[173..177], &0x5566_7788_u32.to_le_bytes());
+        let acknowledgement = super::lifecycle_binding_record(
+            *b"KELD-LA1",
+            binding,
+            client_nonce,
+            server_nonce,
+            0x1122_3344,
+            0x5566_7788,
+        );
+        assert_eq!(&acknowledgement[..8], b"KELD-LA1");
+        let acceptance_receipt = super::lifecycle_binding_record(
+            *b"KELD-LR1",
+            binding,
+            client_nonce,
+            server_nonce,
+            0x1122_3344,
+            0x5566_7788,
+        );
+        assert_eq!(&acceptance_receipt[..8], b"KELD-LR1");
+        assert_ne!(
+            challenge,
+            super::lifecycle_binding_record(
+                *b"KELD-LC1",
+                binding,
+                server_nonce,
+                client_nonce,
+                0x1122_3344,
+                0x5566_7788,
+            ),
+            "replayed or swapped nonce transcript differs"
+        );
+        let wrong_purpose = WindowsLifecycleBinding::new(
+            [0x11; 32],
+            [0x22; 32],
+            [0x33; 32],
+            WindowsLifecyclePurpose::KeeperToSuccessor,
+        )
+        .expect("distinct wrong-purpose context");
+        assert_ne!(
+            challenge,
+            super::lifecycle_binding_record(
+                *b"KELD-LC1",
+                wrong_purpose,
+                client_nonce,
+                server_nonce,
+                0x1122_3344,
+                0x5566_7788,
+            ),
+            "role-direction mismatch differs"
+        );
+    }
+
+    #[test]
+    fn connected_pipe_reports_exact_opposite_process_pid() {
+        const ENDPOINT_ENV: &str = "KELD_TEST_PEER_PID_ENDPOINT";
+        if let Some(endpoint) = std::env::var_os(ENDPOINT_ENV) {
+            let stream = WindowsNamedPipeBootstrapStream::connect(&endpoint.to_string_lossy())
+                .expect("connect peer PID child");
+            let server_pid = stream.peer_process_id().expect("read server process PID");
+            println!("CLIENT_PEER_PID={server_pid}");
+            return;
+        }
+
+        let endpoint = super::random_pipe_endpoint().expect("mint pipe endpoint");
+        let server = WindowsNamedPipeServer::bind(&endpoint).expect("bind pipe server");
+        let child = Command::new(std::env::current_exe().expect("current test binary"))
+            .args([
+                "--exact",
+                "bootstrap::named_pipe_tests::connected_pipe_reports_exact_opposite_process_pid",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_ENV, &endpoint)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn pipe client child");
+        match server
+            .accept_until(Some(Instant::now() + Duration::from_secs(2)))
+            .expect("accept pipe client")
+        {
+            WaitOutcome::Ready => {}
+            outcome => panic!("pipe client did not connect: {outcome:?}"),
+        }
+        let stream = WindowsNamedPipeBootstrapStream(server.stream().expect("server stream"));
+        assert_eq!(
+            stream.peer_process_id().expect("read client process PID"),
+            child.id(),
+            "server must report the exact connecting process"
+        );
+        server.consume();
+        drop(stream);
+        drop(server);
+        let output = child.wait_with_output().expect("wait for pipe client");
+        assert!(
+            output.status.success(),
+            "client failed: status={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("CLIENT_PEER_PID={}", std::process::id())),
+            "client must report the exact server PID, got {stdout:?}"
+        );
     }
 
     fn frame(header: FrameHeader, payload: &[u8]) -> Vec<u8> {

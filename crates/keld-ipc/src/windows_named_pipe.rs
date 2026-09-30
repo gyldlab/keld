@@ -29,19 +29,27 @@ use windows_sys::Win32::Foundation::{
     GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
     WAIT_TIMEOUT,
 };
+use windows_sys::Win32::Security::{
+    GetLengthSid, GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsValidSid,
+    RevertToSelf, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER, TokenIntegrityLevel,
+    TokenSessionId, TokenUser,
+};
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_CREATE_PIPE_INSTANCE, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeInfo, PIPE_READMODE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+    GetNamedPipeClientSessionId, GetNamedPipeInfo, GetNamedPipeServerProcessId,
+    GetNamedPipeServerSessionId, ImpersonateNamedPipeClient, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, GetCurrentThread, INFINITE, OpenThreadToken, ResetEvent, SetEvent,
+    WaitForMultipleObjects, WaitForSingleObject,
 };
 #[cfg(test)]
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
@@ -94,6 +102,7 @@ pub(crate) struct WindowsNamedPipeCanceller {
 #[derive(Debug)]
 pub(crate) struct WindowsNamedPipeStream {
     inner: Arc<ServerInner>,
+    local_is_server: bool,
     read_event: OwnedEvent,
     write_event: OwnedEvent,
     read_timeout: Mutex<Option<Duration>>,
@@ -112,6 +121,18 @@ pub(crate) struct PipeSecurityFacts {
     pub(crate) one_ace_mask: u32,
     pub(crate) handle_flags: u32,
     pub(crate) pipe_flags: u32,
+}
+
+/// Token facts observed from a process or the writer of a connected local pipe
+/// message. The byte SID is the exact Windows SID encoding.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WindowsPeerTokenFacts {
+    /// Binary Windows `TokenUser` SID.
+    pub user_sid: Vec<u8>,
+    /// Session ID from the token.
+    pub session_id: u32,
+    /// Mandatory integrity RID from the token.
+    pub integrity_rid: u32,
 }
 
 impl WindowsNamedPipeServer {
@@ -259,6 +280,7 @@ impl WindowsNamedPipeServer {
     pub(crate) fn stream(&self) -> io::Result<WindowsNamedPipeStream> {
         Ok(WindowsNamedPipeStream {
             inner: Arc::clone(&self.inner),
+            local_is_server: true,
             read_event: OwnedEvent::new()?,
             write_event: OwnedEvent::new()?,
             read_timeout: Mutex::new(None),
@@ -333,6 +355,17 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn connect_client(endpoint: &str) -> io::Result<WindowsNamedPipeStream> {
+        Self::connect_client_with_flags(endpoint, FILE_FLAG_OVERLAPPED)
+    }
+
+    pub(crate) fn connect_lifecycle_client(endpoint: &str) -> io::Result<WindowsNamedPipeStream> {
+        Self::connect_client_with_flags(
+            endpoint,
+            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+        )
+    }
+
+    fn connect_client_with_flags(endpoint: &str, flags: u32) -> io::Result<WindowsNamedPipeStream> {
         let endpoint_wide = wide(endpoint);
         // SAFETY: endpoint_wide is NUL terminated; no security template is
         // supplied; the returned handle is checked and transferred once.
@@ -343,7 +376,7 @@ impl WindowsNamedPipeServer {
                 0,
                 ptr::null(),
                 OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
+                flags,
                 ptr::null_mut(),
             )
         };
@@ -352,6 +385,16 @@ impl WindowsNamedPipeServer {
         }
         // SAFETY: CreateFileW returned a valid newly owned handle.
         let pipe = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
+        let mut pipe_flags = 0_u32;
+        // SAFETY: `pipe` owns the live client endpoint and `pipe_flags` is writable.
+        if unsafe { GetHandleInformation(pipe.as_raw_handle().cast(), &raw mut pipe_flags) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pipe_flags & HANDLE_FLAG_INHERIT != 0 {
+            return Err(io::Error::other(
+                "named-pipe client handle must be non-inheritable",
+            ));
+        }
         // SAFETY: null security/name pointers request an unnamed manual-reset
         // event. The returned non-null handle is transferred once below.
         let raw_cancel = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
@@ -376,6 +419,7 @@ impl WindowsNamedPipeServer {
                 #[cfg(test)]
                 force_cancel_error: AtomicBool::new(false),
             }),
+            local_is_server: false,
             read_event: OwnedEvent::new()?,
             write_event: OwnedEvent::new()?,
             read_timeout: Mutex::new(None),
@@ -398,12 +442,32 @@ impl WindowsNamedPipeServer {
         endpoint: &str,
         deadline: Instant,
     ) -> io::Result<WindowsNamedPipeStream> {
+        Self::connect_client_until_with(endpoint, deadline, false)
+    }
+
+    pub(crate) fn connect_lifecycle_client_until(
+        endpoint: &str,
+        deadline: Instant,
+    ) -> io::Result<WindowsNamedPipeStream> {
+        Self::connect_client_until_with(endpoint, deadline, true)
+    }
+
+    fn connect_client_until_with(
+        endpoint: &str,
+        deadline: Instant,
+        lifecycle_identity: bool,
+    ) -> io::Result<WindowsNamedPipeStream> {
         let endpoint_wide = wide(endpoint);
         loop {
             if Instant::now() >= deadline {
                 return Err(connect_deadline_error());
             }
-            match Self::connect_client(endpoint) {
+            let connected = if lifecycle_identity {
+                Self::connect_lifecycle_client(endpoint)
+            } else {
+                Self::connect_client(endpoint)
+            };
+            match connected {
                 Ok(stream) => {
                     if Instant::now() >= deadline {
                         drop(stream);
@@ -549,6 +613,7 @@ impl WindowsNamedPipeStream {
     pub(crate) fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             inner: Arc::clone(&self.inner),
+            local_is_server: self.local_is_server,
             read_event: OwnedEvent::new()?,
             write_event: OwnedEvent::new()?,
             read_timeout: Mutex::new(
@@ -579,6 +644,95 @@ impl WindowsNamedPipeStream {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = timeout;
         Ok(())
+    }
+
+    pub(crate) fn peer_process_id(&self) -> io::Result<u32> {
+        let pipe = self.raw_pipe()?;
+        let mut pid = 0_u32;
+        // SAFETY: the connected pipe handle stays owned by `self`, and `pid` is
+        // writable storage. The selected API queries the opposite endpoint.
+        let succeeded = unsafe {
+            if self.local_is_server {
+                GetNamedPipeClientProcessId(pipe, &raw mut pid)
+            } else {
+                GetNamedPipeServerProcessId(pipe, &raw mut pid)
+            }
+        };
+        if succeeded == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid == 0 {
+            return Err(io::Error::other("named pipe peer PID is zero"));
+        }
+        Ok(pid)
+    }
+
+    pub(crate) fn peer_session_id(&self) -> io::Result<u32> {
+        let pipe = self.raw_pipe()?;
+        let mut session_id = 0_u32;
+        // SAFETY: the connected pipe handle stays owned by `self`, and the
+        // output is writable storage. Query the opposite endpoint's session.
+        let succeeded = unsafe {
+            if self.local_is_server {
+                GetNamedPipeClientSessionId(pipe, &raw mut session_id)
+            } else {
+                GetNamedPipeServerSessionId(pipe, &raw mut session_id)
+            }
+        };
+        if succeeded == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(session_id)
+    }
+
+    pub(crate) fn is_inheritable(&self) -> io::Result<bool> {
+        let pipe = self.raw_pipe()?;
+        let mut flags = 0_u32;
+        // SAFETY: pipe remains owned by the connected stream and flags is writable.
+        if unsafe { GetHandleInformation(pipe, &raw mut flags) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(flags & HANDLE_FLAG_INHERIT != 0)
+    }
+
+    /// Impersonates the client that wrote the last frame and snapshots its
+    /// `TokenUser`, `TokenSessionId` and `TokenIntegrityLevel`, always reverting before
+    /// returning. This is available only on a connected server end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the endpoint is a client, impersonation fails,
+    /// token query fails or the returned SID buffer is malformed.
+    pub(crate) fn last_client_token_facts(&self) -> io::Result<WindowsPeerTokenFacts> {
+        if !self.local_is_server {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "client token facts require the local server endpoint",
+            ));
+        }
+        let pipe = self.raw_pipe()?;
+        // SAFETY: `pipe` is the retained connected server endpoint; Windows
+        // impersonates the context of the client that wrote its last message.
+        if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let facts = (|| {
+            let mut raw_token = ptr::null_mut();
+            // SAFETY: GetCurrentThread is a pseudo-handle for this synchronous
+            // thread, and raw_token is writable HANDLE storage.
+            if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &raw mut raw_token) }
+                == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: OpenThreadToken returned one fresh non-null owning token handle.
+            let token = unsafe { OwnedHandle::from_raw_handle(raw_token.cast()) };
+            query_windows_peer_token_facts(&token)
+        })();
+        // Revert even when opening/querying the client token failed.
+        // SAFETY: this thread successfully impersonated the connected client above.
+        abort_if_revert_failed(unsafe { RevertToSelf() } != 0);
+        facts
     }
 
     pub(crate) fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
@@ -659,6 +813,179 @@ impl WindowsNamedPipeStream {
             .map(AsRawHandle::as_raw_handle)
             .ok_or_else(closed_pipe_error)
     }
+}
+
+/// Reads stable user/session/integrity facts from an owned Windows access token.
+/// The token must have `TOKEN_QUERY` access; the function returns copied values and
+/// retains no pointer into the token buffers.
+///
+/// # Errors
+///
+/// Returns an I/O error if a token query fails or Windows returns malformed,
+/// truncated or out-of-buffer SID data.
+pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<WindowsPeerTokenFacts> {
+    let raw_token = token.as_raw_handle().cast();
+    let (user_buffer, user_length) = token_information_buffer(raw_token, TokenUser)?;
+    if user_length < std::mem::size_of::<TOKEN_USER>() {
+        return Err(io::Error::other(
+            "TokenUser buffer is shorter than its header",
+        ));
+    }
+    let user = user_buffer.as_ptr().cast::<TOKEN_USER>();
+    // SAFETY: GetTokenInformation populated an aligned buffer and the returned
+    // length was checked against TOKEN_USER.
+    let user_sid = unsafe { (*user).User.Sid };
+    let user_sid = sid_bytes_in_token_buffer(&user_buffer, user_length, user_sid)?;
+
+    let mut session_id = 0_u32;
+    let mut session_length = 0_u32;
+    let session_size =
+        u32::try_from(std::mem::size_of_val(&session_id)).map_err(io::Error::other)?;
+    // SAFETY: token remains owned and both output buffers are writable.
+    if unsafe {
+        GetTokenInformation(
+            raw_token,
+            TokenSessionId,
+            (&raw mut session_id).cast(),
+            session_size,
+            &raw mut session_length,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if session_length != session_size {
+        return Err(io::Error::other(
+            "TokenSessionId returned an unexpected size",
+        ));
+    }
+
+    let (integrity_buffer, integrity_length) =
+        token_information_buffer(raw_token, TokenIntegrityLevel)?;
+    if integrity_length < std::mem::size_of::<TOKEN_MANDATORY_LABEL>() {
+        return Err(io::Error::other(
+            "TokenIntegrityLevel buffer is shorter than its header",
+        ));
+    }
+    let label = integrity_buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>();
+    // SAFETY: GetTokenInformation populated an aligned buffer and the returned
+    // length was checked against TOKEN_MANDATORY_LABEL.
+    let integrity_label_sid = unsafe { (*label).Label.Sid };
+    validate_sid_in_token_buffer(&integrity_buffer, integrity_length, integrity_label_sid)?;
+    // SAFETY: SID is valid and bounded to the returned token buffer.
+    let subauthority_count = unsafe { GetSidSubAuthorityCount(integrity_label_sid) };
+    if subauthority_count.is_null() {
+        return Err(io::Error::other("integrity SID has no subauthority count"));
+    }
+    // SAFETY: validated SID header owns its subauthority-count byte.
+    let count = unsafe { *subauthority_count };
+    if count == 0 {
+        return Err(io::Error::other("integrity SID has no RID"));
+    }
+    // SAFETY: last subauthority index is in range for the validated SID.
+    let rid = unsafe { GetSidSubAuthority(integrity_label_sid, u32::from(count - 1)) };
+    if rid.is_null() {
+        return Err(io::Error::other("integrity SID has no final RID"));
+    }
+    // SAFETY: GetSidSubAuthority returned the last in-range RID of a validated
+    // SID contained within the returned token buffer.
+    let integrity_rid = unsafe { *rid };
+    Ok(WindowsPeerTokenFacts {
+        user_sid,
+        session_id,
+        integrity_rid,
+    })
+}
+
+fn token_information_buffer(
+    token: windows_sys::Win32::Foundation::HANDLE,
+    class: windows_sys::Win32::Security::TOKEN_INFORMATION_CLASS,
+) -> io::Result<(Vec<usize>, usize)> {
+    let mut required = 0_u32;
+    // SAFETY: the null output/zero size query asks Windows only for the required
+    // buffer size; `required` is writable output storage.
+    unsafe {
+        GetTokenInformation(token, class, ptr::null_mut(), 0, &raw mut required);
+    }
+    if required == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let required_usize = usize::try_from(required).map_err(io::Error::other)?;
+    let word = std::mem::size_of::<usize>();
+    let words = required_usize
+        .checked_add(word - 1)
+        .ok_or_else(|| io::Error::other("token information buffer size overflow"))?
+        / word;
+    let mut buffer = vec![0_usize; words];
+    let capacity = words
+        .checked_mul(word)
+        .ok_or_else(|| io::Error::other("token information buffer capacity overflow"))?;
+    let capacity_u32 = u32::try_from(capacity).map_err(io::Error::other)?;
+    let mut returned = 0_u32;
+    // SAFETY: `buffer` is usize-aligned and writable for `capacity_u32` bytes;
+    // its returned length is checked before any structure or SID is read.
+    if unsafe {
+        GetTokenInformation(
+            token,
+            class,
+            buffer.as_mut_ptr().cast(),
+            capacity_u32,
+            &raw mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let returned = usize::try_from(returned).map_err(io::Error::other)?;
+    if returned == 0 || returned > capacity {
+        return Err(io::Error::other(
+            "Windows returned an invalid token-information length",
+        ));
+    }
+    Ok((buffer, returned))
+}
+
+fn sid_bytes_in_token_buffer(
+    buffer: &[usize],
+    returned: usize,
+    sid: windows_sys::Win32::Security::PSID,
+) -> io::Result<Vec<u8>> {
+    let sid_length = validate_sid_in_token_buffer(buffer, returned, sid)?;
+    // SAFETY: the SID pointer is non-null, valid, and the complete byte range
+    // was checked to lie within the live GetTokenInformation buffer.
+    Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), sid_length) }.to_vec())
+}
+
+fn validate_sid_in_token_buffer(
+    buffer: &[usize],
+    returned: usize,
+    sid: windows_sys::Win32::Security::PSID,
+) -> io::Result<usize> {
+    let start = buffer.as_ptr() as usize;
+    let end = start
+        .checked_add(returned)
+        .ok_or_else(|| io::Error::other("token buffer address overflow"))?;
+    let sid_start = sid as usize;
+    if sid.is_null() || sid_start < start || sid_start >= end {
+        return Err(io::Error::other(
+            "token SID pointer is outside the returned buffer",
+        ));
+    }
+    // SAFETY: SID begins within a live returned TokenUser/TokenIntegrity buffer.
+    if unsafe { IsValidSid(sid) } == 0 {
+        return Err(io::Error::other("token SID is invalid"));
+    }
+    // SAFETY: SID validity was just confirmed by Windows.
+    let sid_length = usize::try_from(unsafe { GetLengthSid(sid) }).map_err(io::Error::other)?;
+    let sid_end = sid_start
+        .checked_add(sid_length)
+        .ok_or_else(|| io::Error::other("token SID address overflow"))?;
+    if sid_length == 0 || sid_end > end {
+        return Err(io::Error::other(
+            "token SID extends beyond the returned buffer",
+        ));
+    }
+    Ok(sid_length)
 }
 
 impl Read for WindowsNamedPipeStream {
@@ -1065,6 +1392,14 @@ fn closed_pipe_error() -> io::Error {
     io::Error::new(io::ErrorKind::NotConnected, "named-pipe handle is closed")
 }
 
+fn abort_if_revert_failed(reverted: bool) {
+    if !reverted {
+        // Microsoft documents that the process must shut down because it
+        // otherwise continues under the impersonated client's security context.
+        std::process::abort();
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn process_handle_count() -> io::Result<u32> {
     let mut count = 0;
@@ -1091,6 +1426,43 @@ mod cancellation_tests {
                 .expect_err("aborted transfer remains a timeout")
                 .raw_os_error(),
             Some(121)
+        );
+    }
+}
+
+#[cfg(test)]
+mod revert_failure_tests {
+    use std::process::Command;
+
+    use super::abort_if_revert_failed;
+
+    const CHILD_ENV: &str = "KELD_TEST_REVERT_FAILURE_CHILD";
+    const AFTER_REVERT_MARKER: &str = "KELD_TEST_AFTER_REVERT_FAILURE";
+
+    #[test]
+    fn revert_to_self_failure_aborts_process_before_any_retry_or_protocol_work() {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            abort_if_revert_failed(false);
+            println!("{AFTER_REVERT_MARKER}");
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "windows_named_pipe::revert_failure_tests::revert_to_self_failure_aborts_process_before_any_retry_or_protocol_work",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run fail-closed subprocess");
+        assert!(
+            !output.status.success(),
+            "failed revert must terminate process"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(AFTER_REVERT_MARKER),
+            "no protocol retry/admission can run after a failed revert"
         );
     }
 }

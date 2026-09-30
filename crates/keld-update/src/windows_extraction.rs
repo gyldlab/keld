@@ -16,9 +16,12 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::provenance::match_identity;
-use crate::windows_fs::{create_directory_relative, qualify_volume};
+use crate::windows_fs::{
+    create_directory_relative, create_directory_relative_with_profile,
+    create_file_relative_with_profile, qualify_volume,
+};
 use crate::{
-    AdmittedInstallation, ArchiveEntryKind, ArtifactDomain, ArtifactIdentity,
+    AdmittedInstallation, ArchiveEntryKind, ArtifactDomain, ArtifactIdentity, DirectInstallMode,
     DirectInstallationIdentity, LoadedWindowsBaseline, ProvenanceField, UpdateError,
     ValidatedArchive, VerifiedFull,
 };
@@ -40,8 +43,15 @@ pub struct WindowsExtractionRoot {
 
 #[derive(Debug)]
 enum RootAuthority {
-    OwnerPrivate { _ancestors: Vec<Dir> },
-    Machine { _loaded: Box<LoadedWindowsBaseline> },
+    OwnerPrivate {
+        _ancestors: Vec<Dir>,
+    },
+    Machine {
+        _loaded: Box<LoadedWindowsBaseline>,
+    },
+    ActivationWriter {
+        snapshot: Box<crate::windows_baseline::WindowsActivationWriteSnapshot>,
+    },
 }
 
 impl RootAuthority {
@@ -53,6 +63,9 @@ impl RootAuthority {
             Self::Machine { .. } => {
                 keld_guard::require_windows_system_token()?;
                 keld_guard::validate_windows_machine_directory(directory)
+            }
+            Self::ActivationWriter { snapshot } => {
+                keld_guard::validate_windows_install_directory(directory, snapshot.profile())
             }
         }
     }
@@ -91,7 +104,7 @@ impl AdmittedInstallation {
     ///
     /// # Errors
     /// Refuses unsupported paths/volumes, reparses, missing `versions`, or any
-    /// root descriptor outside the exact current-user protected ACL policy.
+    /// root descriptor outside the exact provenance-selected protection profile.
     pub fn open_windows_extraction_root(&self) -> Result<WindowsExtractionRoot, UpdateError> {
         open_root(self).map_err(|error| extraction_error(None, "root admission", error))
     }
@@ -101,14 +114,54 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
     if admitted.identity.target != "windows-x64" {
         return Err(refusal("only the Windows x64 v0 package cell is supported"));
     }
+    if admitted.identity.update_root.parent() != Some(admitted.identity.install_root.as_path())
+        || admitted.identity.install_root.parent().is_none()
+        || admitted
+            .identity
+            .update_root
+            .file_name()
+            .is_none_or(|name| name.eq_ignore_ascii_case("install-provenance"))
+    {
+        return Err(refusal("direct extraction root topology is invalid"));
+    }
+    match admitted.identity.install_mode {
+        DirectInstallMode::PerUserDirect => open_owner_private_root(admitted),
+        DirectInstallMode::MachineUacDirect => Err(refusal(
+            "MachineUacDirect staging requires authenticated helper admission and an exclusive writer lease",
+        )),
+        DirectInstallMode::MachineSeamlessDirect => Err(refusal(
+            "MachineSeamlessDirect staging requires the SYSTEM baseline loader",
+        )),
+    }
+}
+
+fn open_owner_private_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoot> {
     let path = &admitted.identity.update_root;
     let ancestors = open_ancestors(path)?;
+    let last = ancestors
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| refusal("missing staging root"))?;
+    let install_index = last
+        .checked_sub(1)
+        .filter(|index| *index > 0)
+        .ok_or_else(|| refusal("install root must be beneath the volume root"))?;
+    let volume = ancestors[0].dir_metadata()?.dev();
+    for (index, directory) in ancestors.iter().enumerate() {
+        if directory.dir_metadata()?.dev() != volume {
+            return Err(refusal("owner-private ancestors cross volumes"));
+        }
+        let object = directory.try_clone()?.into_std_file();
+        if index == 0 {
+            crate::windows_fs::require_volume_root_handle(&object)?;
+            keld_guard::validate_windows_machine_volume_anchor(&object)?;
+        } else if index == install_index || index == last {
+            keld_guard::validate_windows_owner_private_directory(&object)?;
+        }
+    }
     let root = ancestors
         .last()
         .ok_or_else(|| refusal("missing staging root"))?;
-    let root_file = root.try_clone()?.into_std_file();
-    keld_guard::validate_windows_owner_private_directory(&root_file)?;
-    qualify_volume(&root_file)?;
     let versions = root.open_dir_nofollow("versions")?;
     let versions_metadata = versions.dir_metadata()?;
     ensure_directory(&versions_metadata)?;
@@ -169,6 +222,7 @@ pub(crate) fn open_ancestors(path: &Path) -> io::Result<Vec<Dir>> {
 pub(crate) enum ExtractionEvent {
     PreCreate,
     AfterStageCreate,
+    BeforePayloadWrite,
     BeforeMember,
     BeforeFileFlush,
     BeforeReadback,
@@ -178,6 +232,26 @@ pub(crate) enum ExtractionEvent {
 pub(crate) enum StageProtection {
     OwnerPrivate,
     Machine,
+    MachineUac,
+}
+
+impl StageProtection {
+    const fn install_profile(self) -> keld_guard::WindowsInstallProtectionProfile {
+        match self {
+            Self::OwnerPrivate => keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+            Self::Machine => keld_guard::WindowsInstallProtectionProfile::MachineSystem,
+            Self::MachineUac => keld_guard::WindowsInstallProtectionProfile::MachineUac,
+        }
+    }
+
+    fn create_directory(self, parent: &StdFile, component: &str) -> io::Result<StdFile> {
+        match self {
+            Self::MachineUac => {
+                create_directory_relative_with_profile(parent, component, self.install_profile())
+            }
+            Self::OwnerPrivate | Self::Machine => create_directory_relative(parent, component),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -187,9 +261,74 @@ struct CopyRange {
 }
 
 impl WindowsExtractionRoot {
+    pub(crate) fn from_activation_write_snapshot(
+        snapshot: crate::windows_baseline::WindowsActivationWriteSnapshot,
+    ) -> Result<Self, UpdateError> {
+        let installation = snapshot.identity().clone();
+        match installation.install_mode {
+            DirectInstallMode::PerUserDirect => {}
+            #[cfg(test)]
+            DirectInstallMode::MachineUacDirect => {}
+            #[cfg(not(test))]
+            DirectInstallMode::MachineUacDirect => {
+                return Err(extraction_error(
+                    None,
+                    "machine-uac activation authority",
+                    refusal("production UAC staging requires authenticated helper admission"),
+                ));
+            }
+            DirectInstallMode::MachineSeamlessDirect => {
+                return Err(extraction_error(
+                    None,
+                    "machine-seamless writer mechanism",
+                    refusal("MachineSeamlessDirect remains gated on its privileged coordinator"),
+                ));
+            }
+        }
+        let versions = snapshot
+            .retained_versions()
+            .map_err(|error| extraction_error(None, "writer versions handle", error))?;
+        let parent = versions
+            .try_clone()
+            .map_err(|error| extraction_error(None, "writer versions handle", error))?
+            .into_std_file();
+        keld_guard::validate_windows_install_directory(&parent, snapshot.profile())
+            .map_err(|error| extraction_error(None, "writer versions profile", error))?;
+        let floor = snapshot.floor().clone();
+        Ok(Self {
+            installation,
+            floor,
+            authority: RootAuthority::ActivationWriter {
+                snapshot: Box::new(snapshot),
+            },
+            versions,
+        })
+    }
+
     pub(crate) fn from_loaded(loaded: LoadedWindowsBaseline) -> Result<Self, UpdateError> {
-        keld_guard::require_windows_system_token()
-            .map_err(|error| extraction_error(None, "machine staging authority", error))?;
+        let mode = loaded.identity().install_mode;
+        match mode {
+            DirectInstallMode::MachineSeamlessDirect => {
+                keld_guard::require_windows_system_token()
+                    .map_err(|error| extraction_error(None, "machine staging authority", error))?;
+            }
+            DirectInstallMode::MachineUacDirect => {
+                return Err(extraction_error(
+                    None,
+                    "machine-uac activation authority",
+                    refusal(
+                        "a read-only baseline snapshot does not carry the authenticated exclusive writer lease",
+                    ),
+                ));
+            }
+            DirectInstallMode::PerUserDirect => {
+                return Err(extraction_error(
+                    None,
+                    "machine staging mode",
+                    refusal("machine staging requires a machine-wide direct mode"),
+                ));
+            }
+        }
         let versions = loaded
             .retained_versions()
             .map_err(|error| extraction_error(None, "machine versions handle", error))?;
@@ -197,18 +336,30 @@ impl WindowsExtractionRoot {
             .try_clone()
             .map_err(|error| extraction_error(None, "machine versions handle", error))?
             .into_std_file();
-        keld_guard::validate_windows_machine_directory(&parent)
-            .map_err(|error| extraction_error(None, "machine versions protection", error))?;
+        match mode {
+            DirectInstallMode::MachineSeamlessDirect => {
+                keld_guard::validate_windows_machine_directory(&parent).map_err(|error| {
+                    extraction_error(None, "machine versions protection", error)
+                })?;
+            }
+            DirectInstallMode::MachineUacDirect | DirectInstallMode::PerUserDirect => {
+                unreachable!("mode checked above")
+            }
+        }
         let installation = loaded.identity().clone();
         let floor =
             crate::provenance::validate_version_floor(&installation, loaded.version_floor())?;
         Ok(Self {
             installation,
             floor,
-            // One cold ownership allocation retains the whole loaded lease without
-            // inflating the existing owner-private variant or losing metadata pins.
-            authority: RootAuthority::Machine {
-                _loaded: Box::new(loaded),
+            // Retain the loaded identity/ancestry until activation consumes these pins.
+            authority: match mode {
+                DirectInstallMode::MachineSeamlessDirect => RootAuthority::Machine {
+                    _loaded: Box::new(loaded),
+                },
+                DirectInstallMode::MachineUacDirect | DirectInstallMode::PerUserDirect => {
+                    unreachable!("mode checked above")
+                }
             },
             versions,
         })
@@ -255,6 +406,23 @@ impl WindowsExtractionRoot {
         getrandom::fill(&mut random)
             .map_err(|error| extraction_error(None, "stage identity", error))?;
         let name = format!("incomplete-{}", crate::error::hex_digest(&random));
+        let protection = match self.installation.install_mode {
+            DirectInstallMode::PerUserDirect | DirectInstallMode::MachineSeamlessDirect => {
+                StageProtection::OwnerPrivate
+            }
+            DirectInstallMode::MachineUacDirect
+                if matches!(self.authority, RootAuthority::ActivationWriter { .. }) =>
+            {
+                StageProtection::MachineUac
+            }
+            DirectInstallMode::MachineUacDirect => {
+                return Err(extraction_error(
+                    None,
+                    "machine-uac activation authority",
+                    refusal("protected staging requires the authenticated exclusive writer lease"),
+                ));
+            }
+        };
         observe(ExtractionEvent::PreCreate, &name)
             .map_err(|error| extraction_error(None, "before creation", error))?;
         // Re-observe policy at the mutation boundary; never repair a changed ACL.
@@ -266,15 +434,17 @@ impl WindowsExtractionRoot {
         self.authority
             .validate_parent(&parent)
             .map_err(|error| extraction_error(None, "versions protection", error))?;
-        let stage = create_directory_relative(&parent, &name).map_err(|error| {
-            extraction_error(Some(&name), "stage creation (outcome unconfirmed)", error)
-        })?;
+        let stage = protection
+            .create_directory(&parent, &name)
+            .map_err(|error| {
+                extraction_error(Some(&name), "stage creation (outcome unconfirmed)", error)
+            })?;
         let result = populate_stage(
             stage,
             &name,
             &validated,
             &mut source,
-            StageProtection::OwnerPrivate,
+            protection,
             &mut observe,
         );
         let (directories, files) =
@@ -337,7 +507,9 @@ pub(crate) fn populate_stage(
         .try_clone()
         .map_err(operation)?
         .into_std_file();
-    let tree = create_directory_relative(&tree_parent, "tree").map_err(operation)?;
+    let tree = protection
+        .create_directory(&tree_parent, "tree")
+        .map_err(operation)?;
     directories.push(Dir::from_std_file(tree));
     let mut parents = BTreeMap::from([("", 1_usize)]);
     for entry in validated.entries() {
@@ -350,7 +522,9 @@ pub(crate) fn populate_stage(
         match entry.kind() {
             ArchiveEntryKind::Directory => {
                 let parent_file = parent.try_clone().map_err(operation)?.into_std_file();
-                let child = create_directory_relative(&parent_file, leaf).map_err(operation)?;
+                let child = protection
+                    .create_directory(&parent_file, leaf)
+                    .map_err(operation)?;
                 parents.insert(entry.name(), directories.len());
                 directories.push(Dir::from_std_file(child));
             }
@@ -389,22 +563,41 @@ fn copy_read_back(
     if protection == StageProtection::Machine {
         keld_guard::require_windows_system_token()?;
     }
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .share_mode(FILE_SHARE_READ)
-        .follow(FollowSymlinks::No);
-    if protection == StageProtection::Machine {
-        options.access_mode(FILE_GENERIC_WRITE | WRITE_DAC);
-    }
-    let mut output = parent.open_with(leaf, &options)?;
+    let mut output = match protection {
+        StageProtection::MachineUac => File::from_std(create_file_relative_with_profile(
+            &parent.try_clone()?.into_std_file(),
+            leaf,
+            protection.install_profile(),
+        )?),
+        StageProtection::OwnerPrivate | StageProtection::Machine => {
+            let mut options = OpenOptions::new();
+            options
+                .write(true)
+                .create_new(true)
+                .share_mode(FILE_SHARE_READ)
+                .follow(FollowSymlinks::No);
+            if protection == StageProtection::Machine {
+                options.access_mode(FILE_GENERIC_WRITE | WRITE_DAC);
+            }
+            parent.open_with(leaf, &options)?
+        }
+    };
     let original = output.metadata()?;
     ensure_regular(&original)?;
     if original.dev() != parent.dir_metadata()?.dev() {
         return Err(refusal("created file crosses its parent volume"));
     }
-    keld_guard::validate_windows_owner_private_file(&output.try_clone()?.into_std())?;
+    match protection {
+        StageProtection::OwnerPrivate | StageProtection::Machine => {
+            keld_guard::validate_windows_owner_private_file(&output.try_clone()?.into_std())?;
+        }
+        StageProtection::MachineUac => {
+            keld_guard::validate_windows_admin_machine_file(&output.try_clone()?.into_std())?;
+        }
+    }
+    if protection == StageProtection::MachineUac {
+        observe(ExtractionEvent::BeforePayloadWrite, diagnostic)?;
+    }
     source.seek(SeekFrom::Start(offset))?;
     let mut left = size;
     let mut buffer = [0_u8; COPY_BYTES];
@@ -442,10 +635,12 @@ fn copy_read_back(
     }
     let retained_object = retained.try_clone()?.into_std();
     match protection {
-        StageProtection::OwnerPrivate => {
-            keld_guard::validate_windows_owner_private_file(&retained_object)?;
+        StageProtection::OwnerPrivate | StageProtection::Machine | StageProtection::MachineUac => {
+            keld_guard::validate_windows_install_file(
+                &retained_object,
+                protection.install_profile(),
+            )?;
         }
-        StageProtection::Machine => keld_guard::validate_windows_machine_file(&retained_object)?,
     }
     let mut readback = blake3::Hasher::new();
     loop {

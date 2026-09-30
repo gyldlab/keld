@@ -21,6 +21,8 @@ impl ProvenanceUnavailable {
 /// Provenance identity field that disagreed with the running host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvenanceField {
+    /// Explicit installer-selected Windows mode.
+    InstallMode,
     /// Canonical application id.
     AppId,
     /// Requested update channel.
@@ -46,6 +48,7 @@ pub enum ProvenanceField {
 impl ProvenanceField {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::InstallMode => "installMode",
             Self::AppId => "app.id",
             Self::Channel => "channel",
             Self::Target => "target",

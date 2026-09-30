@@ -8,6 +8,7 @@ mod reader;
 mod role;
 mod substitutions;
 mod support;
+mod writer;
 
 use support::{baseline, trust_for};
 

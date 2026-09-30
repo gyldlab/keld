@@ -118,9 +118,31 @@ pub(super) fn run(root: &Path) {
     reject_completion_object_mismatches(root);
     reject_missing_metadata(root);
     reject_unknown_state(root);
+    reject_orphan_previous_known_good(root);
     admit_only_named_diagnostic_directories(root);
     reject_parent_delete_child(root);
     println!("KELD_KEL266_SUBSTITUTIONS_PASSED");
+}
+
+fn reject_orphan_previous_known_good(root: &Path) {
+    let trust = provision(root, "orphan-previous-known-good");
+    drop(
+        initialize_windows_baseline(&baseline(&trust), &root.join("source.tar"), &trust)
+            .expect("baseline before orphan record substitution"),
+    );
+    let path = trust.installation.update_root.join("previous-known-good");
+    let bytes = crate::records::encode_pointer(
+        crate::records::PointerKind::PreviousKnownGood,
+        &trust.installation.baseline,
+    )
+    .expect("canonical baseline pointer");
+    fs::write(&path, bytes).expect("plant valid but orphan previous-known-good");
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "a no-journal loader must not ignore previous-known-good metadata"
+    );
+    fs::remove_file(&path).expect("remove isolated orphan fixture");
+    drop(load_windows_baseline(&trust).expect("baseline after orphan removal"));
 }
 
 fn reject_completion_object_mismatches(root: &Path) {

@@ -2,32 +2,10 @@
 
 Spec: `docs/architecture/02-ipc.md`. Hot path.
 
-- Wire = versioned protocol. Frame layout/`FrameKind`/flags/handshake change → version bump + wire review gate + spec §2, one PR.
-- Every privileged-channel `Err` reply MUST be written with `write_call_error` and a
-  `CallError { code, message }` whose `code` is a registered `KELD-*` owned by the crate that
-  failed. A per-channel `Err` encoding, or a payload with no code, is a defect: peers match on
-  `code` and MUST NOT parse it out of `message`. Changing the payload's fields is a public-API
-  review gate (onboarding 04 §14), not a `PROTOCOL_VERSION` bump. Shape: spec 02 §2.
-- Test wire constants as facts (`HEADER_LEN == 16`), not struct layout. Assert hot struct sizes.
-- Tests MUST follow repository `.agents/testing.md`.
-- State-machine readers/writers. No async, no steady-state alloc (`Vec`/frame = wrong design).
-- Credit-window backpressure; no unbounded queues. Every OS-block await has deadline.
-  v0: `SO_RCVTIMEO`/`SO_SNDTIMEO` of 5s on the connected stream; expiry is `KELD-IPC-006`.
-  Exception (KEL-72 `LIFECYCLE_CHANNEL`): `HELLO` still uses `APP_LINK_IO_DEADLINE`;
-  the host then sets a short reader poll (`SO_RCVTIMEO`) and retries **idle**
-  timeouts via `read_frame_interruptible` so a quiet `whenReady` wait is not
-  `KELD-IPC-006` and so Drop can join. After the first byte of a frame, the
-  rest of that frame (header remainder + payload) must complete within
-  `APP_LINK_IO_DEADLINE` or the stall is `KELD-IPC-006` — per-`recv`
-  `SO_RCVTIMEO` resets every syscall and is not an overall frame deadline.
-  Non-blocking streams are unsupported: `WouldBlock` means poll expiry on a
-  blocking socket, not a readiness loop. Win32 `TcpStream::shutdown` on a cloned
-  handle does not wake a blocking `read` (rust-lang/rust#121594) — that is not
-  peer-FIN. The writer deadline (`SO_SNDTIMEO`) stays `APP_LINK_IO_DEADLINE`.
-  `read_frame` still cannot retry after Timeout. Spec 02 §2/§7 v0 host lifecycle.
-- Production `unsafe` is limited to `windows_named_pipe` (KEL-101's Win32
-  pipe/overlapped ABI) and future `shm`; both deny `unsafe_op_in_unsafe_fn` and
-  require local `// SAFETY:` proofs. Wire framing/codec/handshake modules remain
-  safe and MUST NOT import either ABI owner.
-- postcard on hot path; JSON only for `--inspect-ipc` debug.
-- Fuzz decode paths — malformed webview input is expected, not a bug.
+- KIPC frame/ordinary `HELLO` changes MUST bump `PROTOCOL_VERSION`, update spec 02 and get wire review. Separate-version protocols need a disjoint pre-handshake endpoint, owner spec and cross-protocol negatives; a shared endpoint needs a global bump.
+- Every privileged-channel `Err` reply MUST use `write_call_error` with a registered `KELD-*` `CallError.code` owned by the failing crate. Peers match `code`, never parse `message`. Payload-field changes are public-API review (onboarding 04 §14), not protocol bumps. See spec 02 §2.
+- Assert wire facts (e.g. `HEADER_LEN == 16`), not struct layout; assert hot struct sizes. Tests follow `.agents/testing.md`.
+- Readers/writers are state machines: no async, steady-state allocation or unbounded queues. Every OS-block await has a deadline.
+- v0 streams use 5s `SO_RCVTIMEO`/`SO_SNDTIMEO`; expiry is `KELD-IPC-006`. KEL-72 lifecycle `HELLO` uses `APP_LINK_IO_DEADLINE`, then short receive polling retries idle timeout via `read_frame_interruptible` so quiet `whenReady` and Drop/join work. After a frame's first byte, finish header+payload within `APP_LINK_IO_DEADLINE` or return `KELD-IPC-006`; per-recv timeout resets and is not an overall deadline. Nonblocking streams are unsupported (`WouldBlock` is blocking-socket poll expiry); `read_frame` cannot retry after timeout. On Windows, cloned `TcpStream::shutdown` does not wake blocking read (rust-lang/rust#121594) and is not peer-FIN. Writer deadline remains `APP_LINK_IO_DEADLINE`.
+- Production `unsafe` is limited to `windows_named_pipe` and future `shm`; both deny `unsafe_op_in_unsafe_fn` and require local `// SAFETY:` proofs. Pipe/event/overlapped calls stay KEL-101's ABI. KEL-270 may call `GetNamedPipeClientProcessId`, `GetNamedPipeServerProcessId`, `GetNamedPipeClientSessionId`, `GetNamedPipeServerSessionId`, `GetHandleInformation`, `ImpersonateNamedPipeClient`, `OpenThreadToken(TOKEN_QUERY)`, `GetTokenInformation(TokenUser/TokenSessionId/TokenIntegrityLevel)`, `IsValidSid`, `GetLengthSid`, `GetSidSubAuthorityCount` and `GetSidSubAuthority`; it MUST `RevertToSelf` on every path. No token mutation/duplication or identity minting. Framing/codec/handshake stay safe.
+- Postcard is hot-path; JSON only for `--inspect-ipc` debug. Fuzz decode paths: malformed webview input is expected, not a bug.
