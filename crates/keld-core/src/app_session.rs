@@ -4331,6 +4331,7 @@ impl PrimaryRouterHandle {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(clippy::unused_self))]
     fn pending_echo_corr_for(&self, attempt: u32) -> Option<CorrelationId> {
         #[cfg(target_os = "macos")]
         {
@@ -4488,6 +4489,12 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
+    // KEL-142 renderer waiters exist only on macOS; the cross-platform
+    // generation owner keeps the same cleanup call sites as intentional no-ops.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(clippy::unused_self, clippy::unnecessary_wraps)
+    )]
     fn fail_pending_echo_for_attempt(
         &self,
         attempt: u32,
@@ -4504,6 +4511,10 @@ impl PrimaryRouterHandle {
         }
     }
 
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(clippy::unused_self, clippy::unnecessary_wraps)
+    )]
     fn fail_any_pending_echo(&self, detail: &'static str) -> Result<(), HostAppError> {
         #[cfg(target_os = "macos")]
         {
