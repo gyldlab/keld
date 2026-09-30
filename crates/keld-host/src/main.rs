@@ -36,7 +36,9 @@ fn main() {
         == Some(std::ffi::OsStr::new(WINDOWS_DEV_STAGE_CLEANUP_ARG))
     {
         if let Err(error) = run_windows_dev_stage_cleanup(&windows_args) {
-            println!("{error}");
+            let mut output = std::io::stdout().lock();
+            let _ = writeln!(output, "{error}");
+            let _ = output.flush();
             process::exit(1);
         }
         return;
@@ -234,7 +236,7 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
         format!("KELD-CORE-037: attempt process-family cleanup failed: {error}.")
     })?;
     cleanup
-        .wait_and_delete_after_family_exit()
+        .wait_and_delete_after_family_exit(&attempt_job)
         .map_err(|error| error.to_string())?;
     match signal {
         Ok(

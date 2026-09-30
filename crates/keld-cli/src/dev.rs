@@ -38,6 +38,8 @@ pub use crate::doctor::RENDERER_LOAD_CODE;
 
 #[cfg(windows)]
 const WINDOWS_STAGE_CLEANUP_READY_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(windows)]
+const WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT: usize = 8 * 1024;
 
 /// Errors starting a dev session.
 #[derive(Debug)]
@@ -546,12 +548,21 @@ fn await_windows_stage_cleanup_sentinel(
     timeout: Duration,
 ) -> Result<WindowsStageCleanupSentinel, DevError> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (diagnostic_tx, diagnostic_rx) = mpsc::sync_channel(1);
     let ready_thread = thread::Builder::new()
         .name(String::from("keld-stage-cleanup-readiness"))
         .spawn(move || {
+            let mut reader = BufReader::new(stdout);
             let mut ready = String::new();
-            let result = BufReader::new(stdout).read_line(&mut ready).map(|_| ready);
-            let _ = ready_tx.send(result);
+            if let Err(source) = reader.read_line(&mut ready) {
+                let _ = ready_tx.send(Err(source));
+                return;
+            }
+            if ready_tx.send(Ok(ready)).is_err() {
+                return;
+            }
+            let result = read_windows_stage_cleanup_diagnostics(&mut reader);
+            let _ = diagnostic_tx.send(result);
         });
     let ready_thread = match ready_thread {
         Ok(thread) => thread,
@@ -559,6 +570,8 @@ fn await_windows_stage_cleanup_sentinel(
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
                 stdin,
+                None,
+                &diagnostic_rx,
                 &format!("could not start readiness reader: {source}"),
             );
         }
@@ -566,63 +579,95 @@ fn await_windows_stage_cleanup_sentinel(
     let ready = match ready_rx.recv_timeout(timeout) {
         Ok(Ok(ready)) => ready,
         Ok(Err(source)) => {
-            let _ = ready_thread.join();
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
                 stdin,
+                Some(ready_thread),
+                &diagnostic_rx,
                 &format!("readiness pipe failed: {source}"),
             );
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = sentinel.kill();
-            let _ = ready_thread.join();
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
                 stdin,
+                Some(ready_thread),
+                &diagnostic_rx,
                 &format!("timed out after {timeout:?}"),
             );
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let _ = sentinel.kill();
-            let _ = ready_thread.join();
             return failed_windows_stage_cleanup_readiness(
                 &mut sentinel,
                 stdin,
+                Some(ready_thread),
+                &diagnostic_rx,
                 "readiness reader stopped without a result",
             );
         }
     };
-    if ready_thread.join().is_err() {
-        return failed_windows_stage_cleanup_readiness(
-            &mut sentinel,
-            stdin,
-            "readiness reader panicked",
-        );
-    }
     if ready.trim_end() != "KELD_WINDOWS_DEV_STAGE_CLEANUP_READY" {
         return failed_windows_stage_cleanup_readiness(
             &mut sentinel,
             stdin,
+            Some(ready_thread),
+            &diagnostic_rx,
             &format!("unexpected readiness record {ready:?}"),
         );
     }
     Ok(WindowsStageCleanupSentinel {
         child: sentinel,
         stdin: Some(stdin),
+        reader_thread: Some(ready_thread),
+        diagnostics: diagnostic_rx,
     })
+}
+
+#[cfg(windows)]
+fn read_windows_stage_cleanup_diagnostics(mut reader: impl io::Read) -> io::Result<String> {
+    let mut captured = Vec::with_capacity(WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT);
+    let mut chunk = [0_u8; 1024];
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let remaining = WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT - captured.len();
+                let retained = read.min(remaining);
+                captured.extend_from_slice(&chunk[..retained]);
+                truncated |= retained < read;
+            }
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+            Err(source) => return Err(source),
+        }
+    }
+    let mut detail = String::from_utf8_lossy(&captured).into_owned();
+    if truncated {
+        detail.push_str("\n[additional cleanup diagnostics truncated]");
+    }
+    Ok(detail)
 }
 
 #[cfg(windows)]
 fn failed_windows_stage_cleanup_readiness(
     sentinel: &mut std::process::Child,
     stdin: std::process::ChildStdin,
+    reader_thread: Option<thread::JoinHandle<()>>,
+    diagnostics: &mpsc::Receiver<io::Result<String>>,
     reason: &str,
 ) -> Result<WindowsStageCleanupSentinel, DevError> {
     drop(stdin);
     let _ = sentinel.kill();
     let status = sentinel.wait()?;
+    let reader_panicked = reader_thread.is_some_and(|thread| thread.join().is_err());
+    let detail = diagnostics
+        .recv()
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
     Err(DevError::Runtime(format!(
-        "Windows dev-stage cleanup sentinel failed readiness ({reason}) with {status}"
+        "Windows dev-stage cleanup sentinel failed readiness ({reason}) with {status}: {}; reader panicked={reader_panicked}",
+        detail.trim()
     )))
 }
 
@@ -630,6 +675,8 @@ fn failed_windows_stage_cleanup_readiness(
 struct WindowsStageCleanupSentinel {
     child: std::process::Child,
     stdin: Option<std::process::ChildStdin>,
+    reader_thread: Option<thread::JoinHandle<()>>,
+    diagnostics: mpsc::Receiver<io::Result<String>>,
 }
 
 #[cfg(windows)]
@@ -643,12 +690,30 @@ impl WindowsStageCleanupSentinel {
         stdin.write_all(WINDOWS_DEV_STAGE_CLEANUP_RELEASE_V1)?;
         drop(stdin);
         let status = self.child.wait()?;
+        let reader_panicked = self
+            .reader_thread
+            .take()
+            .is_some_and(|thread| thread.join().is_err());
         if status.success() {
             return Ok(());
         }
+        let detail = self
+            .diagnostics
+            .recv()
+            .map_err(|source| {
+                DevError::Runtime(format!(
+                    "Windows dev-stage cleanup diagnostic reader ended without a result: {source}"
+                ))
+            })?
+            .map_err(|source| {
+                DevError::Runtime(format!(
+                    "Windows dev-stage cleanup diagnostic pipe failed: {source}"
+                ))
+            })?;
         Err(DevError::Doctor(format!(
-            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {status}. \
+            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {status}: {} (reader panicked={reader_panicked}). \
              Remove `{}` only after confirming the complete attempt process family has exited.",
+            detail.trim(),
             stage_root.display()
         )))
     }
@@ -799,6 +864,43 @@ mod tests {
         };
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(error.to_string().contains("timed out"), "{error}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn cleanup_sentinel_keeps_post_readiness_diagnostics_readable() {
+        let mut child = Command::new("cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "echo KELD_WINDOWS_DEV_STAGE_CLEANUP_READY & more & echo KELD_TEST_LATE_CLEANUP_FAILURE & exit /b 7",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn diagnostic cleanup fixture");
+        let stdin = child.stdin.take().expect("cleanup release stdin");
+        let stdout = child.stdout.take().expect("cleanup diagnostic stdout");
+        let sentinel =
+            await_windows_stage_cleanup_sentinel(child, stdin, stdout, Duration::from_secs(5))
+                .expect("cleanup fixture must announce readiness");
+
+        let error = sentinel
+            .wait(Path::new("unused-test-stage"))
+            .expect_err("fixture must return a cleanup error");
+        assert!(
+            error.to_string().contains("KELD_TEST_LATE_CLEANUP_FAILURE"),
+            "post-readiness helper output must reach its owner: {error}"
+        );
+
+        let oversized =
+            std::io::Cursor::new(vec![b'x'; WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT + 1]);
+        let bounded = read_windows_stage_cleanup_diagnostics(oversized)
+            .expect("diagnostic reader must drain beyond its retained cap");
+        assert!(bounded.ends_with("[additional cleanup diagnostics truncated]"));
+        assert!(bounded.len() < WINDOWS_STAGE_CLEANUP_DIAGNOSTIC_LIMIT + 128);
     }
 
     #[test]
