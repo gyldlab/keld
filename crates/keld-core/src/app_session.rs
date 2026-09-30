@@ -32,7 +32,7 @@ use std::process::{Command, Stdio};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::{Arc, Mutex};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -64,11 +64,13 @@ use keld_ipc::codec::{decode, encode};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use keld_ipc::link::{AppLinkDeadlines, read_validated_frame_interruptible, write_frame};
+use keld_ipc::link::{
+    AppLinkDeadlines, read_primary_app_frame_interruptible, write_frame,
+};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::{
-    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
-    LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
+    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, CallError, ECHO_CHANNEL,
+    IpcError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use keld_runtime::linux_strict::LinuxStrictProfile;
@@ -4044,6 +4046,10 @@ type PlatformPrimaryOwnerHandle = DirectPrimaryOwnerHandle;
 struct PrimaryRouterHandle {
     current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
     readers: Arc<Mutex<HashMap<u32, PrimaryReader>>>,
+    pending_echo: Arc<Mutex<Option<PendingPrimaryEcho>>>,
+    pending_echo_attempt: Arc<AtomicU32>,
+    pending_echo_corr: Arc<AtomicU32>,
+    next_host_corr: Arc<AtomicU32>,
     window_ready: Arc<AtomicBool>,
     last_window_closed: Arc<AtomicBool>,
     recovery_armed: Arc<AtomicBool>,
@@ -4061,6 +4067,28 @@ struct ActivePrimaryGeneration {
     attempt: u32,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct PendingPrimaryEcho {
+    attempt: u32,
+    correlation: CorrelationId,
+    reply: SyncSender<Result<PrimaryEchoReply, HostAppError>>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Debug)]
+enum PrimaryEchoReply {
+    Reply(Vec<u8>),
+    Err(CallError),
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Debug)]
+struct PrimaryEchoCall {
+    attempt: u32,
+    correlation: CorrelationId,
+    reply: Receiver<Result<PrimaryEchoReply, HostAppError>>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -4101,6 +4129,172 @@ impl PrimaryRouterHandle {
         let _transition = self.shutdown.transition_guard();
         self.last_window_closed.store(true, Ordering::Release);
         self.write_event_guarded(LifecycleEvent::LastWindowClosed)
+    }
+
+    fn mint_host_correlation(&self) -> CorrelationId {
+        loop {
+            let raw = self.next_host_corr.fetch_add(1, Ordering::AcqRel);
+            if raw != 0 {
+                return CorrelationId(raw);
+            }
+        }
+    }
+
+    fn pending_echo_corr_for(&self, attempt: u32) -> Option<CorrelationId> {
+        let correlation = self.pending_echo_corr.load(Ordering::Acquire);
+        if correlation == 0 || self.pending_echo_attempt.load(Ordering::Acquire) != attempt {
+            return None;
+        }
+        Some(CorrelationId(correlation))
+    }
+
+    fn begin_echo_call(&self, payload: &[u8]) -> Result<PrimaryEchoCall, HostAppError> {
+        let _transition = self.shutdown.transition_guard();
+        if !self.shutdown.is_running() {
+            return Err(app_detail(
+                "renderer Echo call",
+                "application session is quiescing",
+            ));
+        }
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| app_detail("renderer Echo call", "generation lock poisoned"))?;
+        let active = current.as_mut().ok_or_else(|| {
+            app_detail(
+                "renderer Echo call",
+                "no admitted primary generation is available",
+            )
+        })?;
+        let mut pending = self
+            .pending_echo
+            .lock()
+            .map_err(|_| app_detail("renderer Echo call", "pending-call lock poisoned"))?;
+        if pending.is_some() {
+            return Err(app_detail(
+                "renderer Echo call",
+                "another application call is already pending",
+            ));
+        }
+
+        let correlation = self.mint_host_correlation();
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        *pending = Some(PendingPrimaryEcho {
+            attempt: active.attempt,
+            correlation,
+            reply: reply_tx,
+        });
+        self.pending_echo_attempt
+            .store(active.attempt, Ordering::Release);
+        self.pending_echo_corr
+            .store(correlation.0, Ordering::Release);
+
+        if let Err(source) = write_frame(
+            &mut active.writer,
+            FrameKind::Call,
+            0,
+            ECHO_CHANNEL,
+            correlation,
+            payload,
+        ) {
+            self.pending_echo_corr.store(0, Ordering::Release);
+            self.pending_echo_attempt.store(0, Ordering::Release);
+            pending.take();
+            return Err(app_ipc("renderer Echo call write", &source));
+        }
+
+        Ok(PrimaryEchoCall {
+            attempt: active.attempt,
+            correlation,
+            reply: reply_rx,
+        })
+    }
+
+    fn finish_pending_echo(
+        &self,
+        attempt: u32,
+        correlation: CorrelationId,
+        outcome: PrimaryEchoReply,
+    ) -> Result<(), HostAppError> {
+        let mut pending = self
+            .pending_echo
+            .lock()
+            .map_err(|_| app_detail("renderer Echo reply", "pending-call lock poisoned"))?;
+        let Some(waiter) = pending.as_ref() else {
+            return Err(app_detail(
+                "renderer Echo reply",
+                "reply arrived without a pending host call",
+            ));
+        };
+        if waiter.attempt != attempt || waiter.correlation != correlation {
+            return Err(app_detail(
+                "renderer Echo reply",
+                "reply does not match the pending generation/correlation",
+            ));
+        }
+        self.pending_echo_corr.store(0, Ordering::Release);
+        self.pending_echo_attempt.store(0, Ordering::Release);
+        let Some(waiter) = pending.take() else {
+            return Err(app_detail(
+                "renderer Echo reply",
+                "pending host call disappeared before terminal delivery",
+            ));
+        };
+        drop(pending);
+        let _ = waiter.reply.try_send(Ok(outcome));
+        Ok(())
+    }
+
+    fn fail_pending_echo_for_attempt(
+        &self,
+        attempt: u32,
+        detail: &'static str,
+    ) -> Result<(), HostAppError> {
+        let mut pending = self
+            .pending_echo
+            .lock()
+            .map_err(|_| app_detail("renderer Echo retirement", "pending-call lock poisoned"))?;
+        if pending.as_ref().is_none_or(|waiter| waiter.attempt != attempt) {
+            return Ok(());
+        }
+        self.pending_echo_corr.store(0, Ordering::Release);
+        self.pending_echo_attempt.store(0, Ordering::Release);
+        let Some(waiter) = pending.take() else {
+            return Ok(());
+        };
+        drop(pending);
+        let _ = waiter
+            .reply
+            .try_send(Err(app_detail("renderer Echo call", detail)));
+        Ok(())
+    }
+
+    fn cancel_echo_call(
+        &self,
+        attempt: u32,
+        correlation: CorrelationId,
+        detail: &'static str,
+    ) -> Result<bool, HostAppError> {
+        let mut pending = self
+            .pending_echo
+            .lock()
+            .map_err(|_| app_detail("renderer Echo cancellation", "pending-call lock poisoned"))?;
+        let matches = pending.as_ref().is_some_and(|waiter| {
+            waiter.attempt == attempt && waiter.correlation == correlation
+        });
+        if !matches {
+            return Ok(false);
+        }
+        self.pending_echo_corr.store(0, Ordering::Release);
+        self.pending_echo_attempt.store(0, Ordering::Release);
+        let Some(waiter) = pending.take() else {
+            return Ok(false);
+        };
+        drop(pending);
+        let _ = waiter
+            .reply
+            .try_send(Err(app_detail("renderer Echo call", detail)));
+        Ok(true)
     }
 
     // Caller retains shutdown.transition through the write and any admission
@@ -4160,6 +4354,10 @@ impl PrimaryRouterHandle {
         }
         drop(current_guard);
         drop(transition);
+        self.fail_pending_echo_for_attempt(
+            attempt,
+            "application call retired by accepted lifecycle Quit",
+        )?;
         self.guardian.prepare_accepted_shutdown()?;
         let mut current_guard = self
             .current
@@ -4291,6 +4489,15 @@ impl PrimaryRouterHandle {
             .name(format!("keld-core-primary-router-{attempt}"))
             .spawn(move || {
                 let mut result = read_primary_frames(&mut stream, &handle, attempt, &reader_stop);
+                if result.is_err()
+                    && let Err(cleanup) = handle.fail_pending_echo_for_attempt(
+                        attempt,
+                        "application call ended with the primary reader",
+                    )
+                    && let Err(primary) = result
+                {
+                    result = Err(append_app_cleanup(primary, [Err(cleanup)]));
+                }
                 if result.is_err() && !handle.is_current(attempt) {
                     result = Ok(());
                 }
@@ -4322,10 +4529,15 @@ impl PrimaryRouterHandle {
                 && let Some(active) = current.take()
             {
                 active.reader_stop.store(true, Ordering::Release);
-                finish_link_shutdown(
+                let pending = self.fail_pending_echo_for_attempt(
+                    attempt,
+                    "application call retired with the primary generation",
+                );
+                let link = finish_link_shutdown(
                     active.writer.shutdown_app_link(),
                     "retired primary generation link close",
-                )?;
+                );
+                collapse_app_results([pending, link])?;
             }
         }
         // The reader may be waiting for GuardianOwner to acknowledge the
@@ -4373,6 +4585,10 @@ impl PrimaryRouter {
         let handle = PrimaryRouterHandle {
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            pending_echo: Arc::new(Mutex::new(None)),
+            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(true)),
@@ -4396,6 +4612,10 @@ impl PrimaryRouter {
         let handle = PrimaryRouterHandle {
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            pending_echo: Arc::new(Mutex::new(None)),
+            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(false)),
@@ -4424,6 +4644,10 @@ impl PrimaryRouter {
                 Err(poisoned) => poisoned.into_inner(),
             };
             if let Some(active) = current.take() {
+                let _ = self.handle.fail_pending_echo_for_attempt(
+                    active.attempt,
+                    "application call retired by router shutdown",
+                );
                 let _ = active.writer.shutdown_app_link();
             }
         }
@@ -4466,9 +4690,11 @@ fn read_primary_frames(
         // kel133 AC1-AC2: the shared validator admits only the primary
         // session's declared frames (echo/lifecycle CALLs and PING); the old
         // unknown-channel and unexpected-kind arms below it are deleted.
-        let policy = ReceivePolicy::primary_app_receiver();
-        let (header, payload) =
-            match read_validated_frame_interruptible(reader, &policy, reader_stop) {
+        let (header, payload) = match read_primary_app_frame_interruptible(
+            reader,
+            reader_stop,
+            || handle.pending_echo_corr_for(attempt),
+        ) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
                     if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -4488,6 +4714,10 @@ fn read_primary_frames(
                         return Ok(());
                     }
                     if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
+                        handle.fail_pending_echo_for_attempt(
+                            attempt,
+                            "application call ended because the app link disconnected",
+                        )?;
                         // The KEL-75/KEL-78 owner decides whether this generation
                         // is recoverable. Its Revoked update retires this writer
                         // before a successor is installed; only its terminal
@@ -4507,6 +4737,22 @@ fn read_primary_frames(
             return Ok(());
         }
         match (header.kind(), header.channel()) {
+            (FrameKind::Reply, ECHO_CHANNEL) => {
+                handle.finish_pending_echo(
+                    attempt,
+                    header.corr(),
+                    PrimaryEchoReply::Reply(payload),
+                )?;
+            }
+            (FrameKind::Err, ECHO_CHANNEL) => {
+                let error: CallError =
+                    decode(&payload).map_err(|source| app_ipc("renderer Echo Err", &source))?;
+                handle.finish_pending_echo(
+                    attempt,
+                    header.corr(),
+                    PrimaryEchoReply::Err(error),
+                )?;
+            }
             (FrameKind::Call, ECHO_CHANNEL) if handle.shutdown.is_running() => {
                 let reply = keld_ipc::echo::handle_echo(&payload)
                     .map_err(|source| app_ipc("echo dispatch", &source))?;
@@ -5996,6 +6242,215 @@ mod tests {
     use GuardianOwnerCommand as TestPrimaryOwnerCommand;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn primary_echo_test_router() -> (
+        PrimaryRouter,
+        PrimaryRouterHandle,
+        std::os::unix::net::UnixStream,
+        Receiver<TestPrimaryOwnerCommand>,
+        Receiver<AppWindowCommand>,
+    ) {
+        let (server, client) = std::os::unix::net::UnixStream::pair().expect("Echo router pair");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("Echo client read deadline");
+        let (command_tx, command_rx) = mpsc::channel();
+        let (window_tx, window_rx) = mpsc::channel();
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            PlatformPrimaryOwnerHandle { command_tx },
+            SessionShutdownState::new(),
+        )
+        .expect("Echo primary router");
+        let handle = router.handle();
+        (router, handle, client, command_rx, window_rx)
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn host_echo_reply_shares_primary_reader_with_bun_call_and_ping() {
+        use keld_ipc::echo::{EchoRequest, EchoResponse};
+        use keld_ipc::link::{read_frame, write_frame};
+
+        let (router, handle, mut client, _owner_rx, _window_rx) = primary_echo_test_router();
+        let request = EchoRequest {
+            message: "renderer".to_owned(),
+            count: 42,
+        };
+        let request_bytes = encode(&request).expect("encode renderer Echo");
+        let call = handle
+            .begin_echo_call(&request_bytes)
+            .expect("host-originated Echo call");
+
+        let (outbound, outbound_payload) = read_frame(&mut client).expect("outbound renderer Call");
+        assert_eq!(outbound.kind, FrameKind::Call);
+        assert_eq!(outbound.channel, ECHO_CHANNEL);
+        assert_eq!(outbound.corr, call.correlation);
+        assert_eq!(outbound_payload, request_bytes);
+
+        write_frame(
+            &mut client,
+            FrameKind::Ping,
+            0,
+            keld_ipc::ChannelId(99),
+            CorrelationId(0),
+            &[],
+        )
+        .expect("write interleaved Ping");
+        let (pong, pong_payload) = read_frame(&mut client).expect("read interleaved Ping");
+        assert_eq!(pong.kind, FrameKind::Ping);
+        assert_eq!(pong.channel, keld_ipc::ChannelId(99));
+        assert_eq!(pong.corr, CorrelationId(0));
+        assert!(pong_payload.is_empty());
+
+        let bun_request = EchoRequest {
+            message: "bun".to_owned(),
+            count: 7,
+        };
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            ECHO_CHANNEL,
+            CorrelationId(91),
+            &encode(&bun_request).expect("encode Bun Echo"),
+        )
+        .expect("write interleaved Bun Call");
+        let (bun_reply, bun_payload) = read_frame(&mut client).expect("read Bun Echo Reply");
+        assert_eq!(bun_reply.kind, FrameKind::Reply);
+        assert_eq!(bun_reply.channel, ECHO_CHANNEL);
+        assert_eq!(bun_reply.corr, CorrelationId(91));
+        assert_eq!(
+            decode::<EchoResponse>(&bun_payload).expect("decode Bun Echo Reply"),
+            EchoResponse {
+                message: bun_request.message,
+                count: bun_request.count,
+            }
+        );
+
+        let expected = encode(&EchoResponse {
+            message: request.message,
+            count: request.count,
+        })
+        .expect("encode renderer Echo Reply");
+        write_frame(
+            &mut client,
+            FrameKind::Reply,
+            0,
+            ECHO_CHANNEL,
+            call.correlation,
+            &expected,
+        )
+        .expect("write renderer Echo Reply");
+        match call
+            .reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("renderer Echo terminal outcome")
+            .expect("renderer Echo success")
+        {
+            PrimaryEchoReply::Reply(payload) => assert_eq!(payload, expected),
+            PrimaryEchoReply::Err(error) => panic!("unexpected renderer Echo Err: {error}"),
+        }
+
+        router.shutdown().expect("Echo router shutdown");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn second_host_echo_call_is_busy_until_the_first_reply_retires() {
+        use keld_ipc::link::{read_frame, write_frame};
+
+        let (router, handle, mut client, _owner_rx, _window_rx) = primary_echo_test_router();
+        let first = handle.begin_echo_call(&[1, 2, 3]).expect("first Echo call");
+        let (outbound, _) = read_frame(&mut client).expect("first Echo frame");
+        assert_eq!(outbound.corr, first.correlation);
+
+        let second = handle
+            .begin_echo_call(&[4, 5])
+            .expect_err("second Echo call must fail busy");
+        assert!(
+            second.to_string().contains("already pending"),
+            "unexpected busy error: {second}"
+        );
+
+        write_frame(
+            &mut client,
+            FrameKind::Reply,
+            0,
+            ECHO_CHANNEL,
+            first.correlation,
+            &[9],
+        )
+        .expect("complete first Echo");
+        match first
+            .reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first terminal outcome")
+            .expect("first success")
+        {
+            PrimaryEchoReply::Reply(payload) => assert_eq!(payload, [9]),
+            PrimaryEchoReply::Err(error) => panic!("unexpected first Err: {error}"),
+        }
+
+        let third = handle.begin_echo_call(&[6]).expect("third Echo after retirement");
+        let (third_frame, _) = read_frame(&mut client).expect("third Echo frame");
+        assert_eq!(third_frame.corr, third.correlation);
+        write_frame(
+            &mut client,
+            FrameKind::Reply,
+            0,
+            ECHO_CHANNEL,
+            third.correlation,
+            &[8],
+        )
+        .expect("complete third Echo");
+        assert!(third.reply.recv_timeout(Duration::from_secs(2)).is_ok());
+
+        router.shutdown().expect("busy router shutdown");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn wrong_correlation_cannot_complete_host_echo_waiter() {
+        use keld_ipc::link::{read_frame, write_frame};
+
+        let (router, handle, mut client, _owner_rx, window_rx) = primary_echo_test_router();
+        let call = handle.begin_echo_call(&[1]).expect("host Echo call");
+        let (outbound, _) = read_frame(&mut client).expect("host Echo frame");
+        assert_eq!(outbound.corr, call.correlation);
+        let wrong = CorrelationId(call.correlation.0.wrapping_add(1).max(1));
+        write_frame(
+            &mut client,
+            FrameKind::Reply,
+            0,
+            ECHO_CHANNEL,
+            wrong,
+            &[2],
+        )
+        .expect("wrong-corr reply bytes");
+
+        let terminal = call
+            .reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("wrong corr must terminalize the pending call")
+            .expect_err("wrong corr cannot become a successful reply");
+        assert!(
+            terminal.to_string().contains("primary reader"),
+            "unexpected waiter failure: {terminal}"
+        );
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("protocol failure wakes UI"),
+            AppWindowCommand::Fatal
+        );
+        assert!(
+            router.shutdown().is_err(),
+            "wrong correlation must remain a router/session failure"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn initial_ready_router() -> (
         PrimaryRouterHandle,
         std::os::unix::net::UnixStream,
@@ -6011,6 +6466,10 @@ mod tests {
                 reader_stop: Arc::new(AtomicBool::new(false)),
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            pending_echo: Arc::new(Mutex::new(None)),
+            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(false)),
@@ -6135,6 +6594,10 @@ mod tests {
                 reader_stop: Arc::new(AtomicBool::new(false)),
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            pending_echo: Arc::new(Mutex::new(None)),
+            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(false)),
