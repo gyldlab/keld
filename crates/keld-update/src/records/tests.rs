@@ -1,7 +1,9 @@
+#[cfg(windows)]
+use super::lifecycle_installation_id;
 use super::{
     MAX_LOCAL_RECORD_BYTES, PointerKind, decode_activation_journal, decode_complete, decode_floor,
     decode_pointer, decode_provenance, encode_activation_journal, encode_complete, encode_floor,
-    encode_pointer, encode_provenance, lifecycle_installation_id,
+    encode_pointer, encode_provenance,
 };
 use crate::records::{ActivationJournal, ActivationPhase};
 use crate::tests::expected_identity;
@@ -23,6 +25,7 @@ fn floor_has_exact_canonical_bytes_and_distinct_pointer_schemas() {
     let artifact = expected_identity().baseline;
     let current = encode_pointer(PointerKind::Current, &artifact).expect("current");
     let good = encode_pointer(PointerKind::LastKnownGood, &artifact).expect("LKG");
+    let previous = encode_pointer(PointerKind::PreviousKnownGood, &artifact).expect("previous LKG");
     assert_eq!(
         decode_pointer(PointerKind::Current, &current).expect("current bytes"),
         artifact
@@ -31,12 +34,21 @@ fn floor_has_exact_canonical_bytes_and_distinct_pointer_schemas() {
         decode_pointer(PointerKind::LastKnownGood, &good).expect("LKG bytes"),
         artifact
     );
+    assert_eq!(
+        decode_pointer(PointerKind::PreviousKnownGood, &previous).expect("previous LKG bytes"),
+        artifact
+    );
+    assert!(previous.starts_with(br#"{"schema":"keld.previous-known-good/v1""#));
     assert!(matches!(
         decode_pointer(PointerKind::Current, &good),
         Err(UpdateError::LocalRecordInvalid { .. })
     ));
     assert!(matches!(
         decode_pointer(PointerKind::LastKnownGood, &current),
+        Err(UpdateError::LocalRecordInvalid { .. })
+    ));
+    assert!(matches!(
+        decode_pointer(PointerKind::LastKnownGood, &previous),
         Err(UpdateError::LocalRecordInvalid { .. })
     ));
 }
@@ -90,6 +102,7 @@ fn provenance_roundtrip_preserves_every_identity_and_trusted_scope_field() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn lifecycle_installation_id_binds_the_versioned_canonical_provenance() {
     let provenance = InstallProvenance {

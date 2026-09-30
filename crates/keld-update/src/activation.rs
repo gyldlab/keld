@@ -88,6 +88,7 @@ pub(crate) fn recovery_decision(
 /// Callers may use this only to refuse malformed or phase-inconsistent state; the
 /// returned classification from [`recovery_decision`] remains gated on independent
 /// process-family evidence.
+#[cfg(windows)]
 pub(crate) fn validate_protected_recovery_state(
     journal: &ActivationJournal,
     current: &ArtifactIdentity,
