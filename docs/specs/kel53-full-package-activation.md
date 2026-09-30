@@ -35,12 +35,14 @@ KEL-266 AC4–6 completion: delegated approval comment
 This supplement closes coherent admission, higher-release staging and committed-state
 LPAC evidence within the same issue; it does not claim activation or installed boot.
 
-Windows direct-install mode amendment: the product direction is approved in the active
-maintainer session, but this amendment remains draft until the exact KEL-53 text is
-reviewed and its approval receipt is recorded. It supersedes any earlier implication
-that the machine-protected baseline is the only direct-install mode or that one helper
-mechanism is already selected. No implementation may rely on this draft amendment until
-its exact-content approval and required implementation gates are complete.
+Windows direct-install mode amendment: exact content was approved in the user's
+approval of Linear PR #290 head `b78c89b061049647421dda69034c9f35079d9441`, via Linear
+comment `e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`. The approved pre-receipt KEL-53 file
+SHA-256 is `6b4fda6e8bcbb388886d8254d5bc8558cd706533e6c28a061c478dc1acc42442`. This
+amendment supersedes any earlier implication that the machine-protected baseline is the
+only direct-install mode or that one helper mechanism is selected. Its implementation
+and native acceptance gates remain open; in particular, this approval does not select
+or authorize the machine-seamless authority.
 
 ## 1. Goal & non-goals
 
@@ -73,7 +75,7 @@ Non-goals:
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
 - no implementation before this approved corrected specification lands.
 
-### Windows direct-install modes (draft amendment)
+### Windows direct-install modes (approved contract; implementation gates remain)
 
 One KEL-53 transaction owns signed package verification, anti-downgrade policy,
 staging, the activation journal, installation-wide exclusive ownership, exact candidate
