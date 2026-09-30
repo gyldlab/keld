@@ -146,6 +146,7 @@ pub(super) fn trust_for(install: &Path) -> WindowsBaselineTrust {
         .expect("native fixed NTFS fixture volume");
     WindowsBaselineTrust {
         installation: identity,
+        owner: crate::InstallOwner::Direct,
         publisher_scope: [0x26; 32],
         volume_guid: volume,
     }
@@ -153,13 +154,34 @@ pub(super) fn trust_for(install: &Path) -> WindowsBaselineTrust {
 
 pub(super) fn provision(root: &Path, label: &str) -> WindowsBaselineTrust {
     let parent = directory(root);
+    let profile = keld_guard::WindowsInstallProtectionProfile::MachineSystem;
     let install =
-        crate::windows_fs::create_directory_relative(&parent, label).expect("private install");
+        crate::windows_fs::create_directory_relative_with_profile(&parent, label, profile)
+            .expect("machine-profile install");
     let update =
-        crate::windows_fs::create_directory_relative(&install, "updates").expect("private update");
-    let _versions = crate::windows_fs::create_directory_relative(&update, "versions")
-        .expect("private versions");
+        crate::windows_fs::create_directory_relative_with_profile(&install, "updates", profile)
+            .expect("machine-profile update");
+    let _versions =
+        crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
+            .expect("machine-profile versions");
     trust_for(&root.join(label))
+}
+
+pub(super) fn provision_machine_uac(root: &Path, label: &str) -> WindowsBaselineTrust {
+    keld_guard::require_windows_system_token().expect("SYSTEM creates isolated UAC fixture");
+    let parent = directory(root);
+    let profile = keld_guard::WindowsInstallProtectionProfile::MachineUac;
+    let install =
+        crate::windows_fs::create_directory_relative_with_profile(&parent, label, profile)
+            .expect("create exact Administrators-owned fixture install root");
+    let update =
+        crate::windows_fs::create_directory_relative_with_profile(&install, "updates", profile)
+            .expect("create exact Administrators-owned update root");
+    crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
+        .expect("create exact Administrators-owned versions root");
+    let mut trust = trust_for(&root.join(label));
+    trust.installation.install_mode = crate::DirectInstallMode::MachineUacDirect;
+    trust
 }
 
 pub(super) fn baseline(trust: &WindowsBaselineTrust) -> VerifiedBaseline {

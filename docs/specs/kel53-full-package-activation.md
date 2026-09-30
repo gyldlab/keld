@@ -8,6 +8,12 @@ Approval: original corrected contract: Linear comment `b343d835-1528-461f-bda4-0
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"3d5d51e31237c365847a1e9b866880ba06429e2e","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"df61a6f6-3215-44a8-8780-7ae242fc74ab","source":"delegated-maintainer-session-2026-09-26"}
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"3d5d51e31237c365847a1e9b866880ba06429e2e","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"212a2039-f729-4708-a983-9a348d299bd5","source":"delegated-maintainer-session-2026-09-26"}
 
+Windows multi-mode product decision and T1 synchronization authorization: owner decision
+recorded in Linear comment `e5572b4a-9643-4847-8ed2-c419e2198fc6`, bound to the
+pre-receipt activation-spec SHA-256 `4213CE3E9BED2EA380622A162763702EC321DC50297E2DB275844A983B73EAFF`
+and Architecture 06 SHA-256 `F14586C97AA475561A15DDFDB988E839E3FB6594DE3407C65669AA5EF3F8D40E`.
+The no-repeat-UAC product mode is approved; its specific privileged mechanism is not.
+
 KEL-265 T3b amendment: delegated approval comment
 `559df4c6-b8b1-4a47-ae81-2311e2743eb6`, approved content head
 `bb3d863e20d495349aa64807bafa598ffa4f31b0`, file SHA-256
@@ -31,13 +37,17 @@ LPAC evidence within the same issue; it does not claim activation or installed b
 
 ## 1. Goal & non-goals
 
-Keld's direct updater must first prove one safe signed full-package
-install/activation/recovery path. The first admitted cell is a Windows x64
-direct-distribution package whose complete file tree fits the existing v0 canonical
-archive. The updater verifies one signed release, stages exact bytes, publishes one
-attempt-bound candidate, and either commits its exact health receipt or restores the
-retained last-known-good package. Delta patches remain a later optional transport
-optimization.
+Keld's direct updater must prove one safe signed full-package
+install/activation/recovery path. The first admitted package cell is Windows x64
+direct distribution whose complete file tree fits the existing v0 canonical archive.
+Its default installation mode is per-user with seamless no-UAC updates. An explicitly
+selected Program Files installation supports both per-update explicit-UAC activation
+and opt-in seamless machine-wide activation, with the latter's privileged mechanism
+gated on separate proof. Package/deployment-managed installs defer mutation to their
+owner. One updater verifies a signed release, stages exact bytes, journals and publishes
+one attempt-bound candidate, confirms its exact health receipt, then commits or recovers
+to the retained last-known-good package. Delta patches remain a later optional
+transport optimization.
 
 Non-goals:
 
@@ -49,6 +59,10 @@ Non-goals:
   back in the first slice;
 - no arbitrary relaunch helper, shell command, self-update plugin, or role-writable
   update state;
+- no inference of install mode from Program Files, LocalAppData, executable path,
+  registry location, environment or writable configuration;
+- no selected no-UAC machine coordinator until its named authentication, replay,
+  writer, lifecycle, health and recovery proofs pass;
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
 - no implementation before this approved corrected specification lands.
 
@@ -89,16 +103,36 @@ Current durability inputs are Microsoft `FlushFileBuffers` and
 `MoveFileExW(MOVEFILE_WRITE_THROUGH)`, POSIX synchronized I/O and directory
 cache requirements, and Apple's `F_FULLFSYNC`. They define adapter order;
 implementation still needs real-OS crash-cut evidence for each admitted filesystem.
+Windows lease sharing and lock lifetime follow the documented [`CreateFileW` share
+compatibility and handle-close rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew);
+record replacement uses only the documented same-volume [`MoveFileExW` replace-existing/
+write-through flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw). Explicit UAC owner
+assignment follows Microsoft's [`TOKEN_OWNER` valid-owner-group rule](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_token_owner)
+and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object); the candidate still runs in the initiating user's ordinary session under
+[UAC](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works).
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
-1. Given a direct-distribution installation, startup consumes an installer-created,
-   OS-protected provenance record naming the exact app id, channel, target, install
-   root, update root, installed baseline artifact and compiled-in signing-key identity.
-   It also binds the admitted strict/distinct-OS-principal security profile. A missing,
-   mutable, mismatched, legacy-profile or package-manager/store-owned record refuses
-   direct update before feed access or filesystem mutation. Paths or executable names
-   never infer channel owner.
+1. Given a direct-distribution installation, startup consumes installer-created
+   `keld.install-provenance/v2` binding the exact app id, channel, target, install root,
+   update root, installed baseline artifact, compiled-in signing-key identity, explicit
+   install mode and mode-specific OS protection profile. Mode-less v1 provenance is
+   unsupported until an explicit trusted migration records one mode; location never
+   supplies that choice. Mutation checks are evaluated against the
+   selected mode's admitted writer authority: provenance changed by a principal outside
+   that authority fails, while owning-user control of a `PerUserDirect` installation is
+   an explicit threat exclusion. Direct modes are `PerUserDirect` (default,
+   user-owned LocalAppData tree), `MachineUacDirect` (explicit Program Files mode with
+   Administrators/SYSTEM write and ordinary-user/Keld-role read/execute), and
+   `MachineSeamlessDirect` (opt-in machine mode with SYSTEM-protected state and a
+   separately approved narrow coordinator). Package/deployment-managed ownership is
+   recorded as `Managed(owner)` and refuses Keld direct mutation. Missing, mismatched,
+   unsupported or legacy-profile provenance refuses before feed access or filesystem
+   mutation. A mode change requires an explicit trusted transition. Paths or executable
+   names never infer mode or channel owner.
+   A per-user install is protected from restricted Keld roles, but not from its owning
+   user or arbitrary native code already running as that same user. Machine-wide ACLs
+   do not claim protection from administrators.
    Before publishing provenance, the installer durably seeds `version-floor`,
    `current` and `last-known-good` to that same baseline artifact/version;
    provenance is the transaction's final commit record. Once direct provenance exists,
@@ -192,11 +226,13 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
     `fsync`; macOS later adds `F_FULLFSYNC` before rename plus
     directory synchronization. An unsupported barrier, remote filesystem or failed
     read-back makes that cell unsupported.
-12. In an admitted strict/distinct-OS-principal package, hostile app roles and webviews
-    cannot write provenance, trust root, version floor, journal, staged package,
-    pointers, helper input or install tree. Legacy same-user role mode refuses direct
-    update because its token cannot be ACL-distinguished from the per-user host.
-    Administrators and arbitrary same-user native malware remain outside this boundary.
+12. In every admitted direct mode, hostile app roles and webviews cannot write
+    provenance, trust root, version floor, journal, staged package, pointers, helper
+    input or install tree. The per-user updater and application host may share the
+    ordinary user's OS identity; strict role restrictions must still deny Keld roles
+    access to the user-owned updater state. Legacy same-user role mode refuses direct
+    update because its token cannot be distinguished from the host. Administrators and
+    arbitrary same-user native malware remain outside this boundary.
 13. Every Slice-A package contains `.keld/update-policy.v1` with exact UTF-8
     bytes `{"schema":1,"dataMigration":"none"}\n`, covered by
     `contentBlake3`. Missing, duplicate or different policy refuses
@@ -212,6 +248,77 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
     `full.contentBlake3`, fall back once to `full` in the same
     attempt where safe, and retain the same journal, health, trust-floor and rollback
     contracts.
+16. `PerUserDirect` is the default Windows installer choice. Installation and update
+    state live under that user's LocalAppData-owned tree; the normal updater obtains its
+    exclusive write lease as that ordinary user without UAC. Keld roles remain unable to
+    write the state. Setup records the owner and mode before direct admission, provisions
+    the stable activation-lease file with the owner-private descriptor, and seeds the
+    same baseline/floor/current/LKG invariants as machine installation.
+17. `MachineUacDirect` uses an installer-provisioned Program Files protection profile
+    owned by BUILTIN Administrators, with a protected DACL granting full control only to
+    BUILTIN Administrators and SYSTEM and read/execute (`0x1200A9`) to ordinary
+    BUILTIN Users/Keld roles. The installer must be able to assign Administrators as a
+    valid owner group in its actual token (`SE_GROUP_OWNER`, not deny-only); otherwise
+    installation fails without owner/ACL takeover or repair. It provisions the stable
+    activation-lease file and protected ancestors with this profile. Each activation that needs protected mutation requests UAC for a
+    fixed signed updater helper; denial/cancellation causes zero protected writes. This
+    UAC helper is the Machine-UAC authority adapter for the common verifier and
+    transaction: it authenticates its bootstrap from the admitted host, obtains the
+    lease, and independently revalidates the ordinary user's bounded cache input under
+    retained read handles before any protected write. A user-side `VerifiedFull`
+    receipt is not privileged proof. The production stage entry consumes an opaque
+    mode-bound activation-write capability from this authenticated helper after it has
+    freshly reloaded protected provenance and floor; a read-only `LoadedWindowsBaseline`
+    or logical `AdmittedInstallation` alone cannot authorize protected staging. The
+    helper creates a fresh protected sibling stage
+    through the shared extraction/copy/readback pipeline; every directory and file has
+    the exact Machine-UAC owner/DACL at creation, before payload bytes are written.
+    It must not rename a user-owned stage into Program Files or seal a user-writable
+    stage after the fact. Fake host, stale attempt, changed source bytes, a source with
+    writable handles/mappings, or an unauthenticated endpoint fails before protected
+    publication. Caller paths/argv/environment do not authorize mutation. The optional post-exit
+    helper in criterion 10 is a different, narrower component; it only completes an
+    already journaled attempt through inherited sealed handles and does not parse feeds
+    or packages. The UAC helper owns the attempt while alive and launches the exact
+    candidate under the initiating ordinary user's token/session (including
+    over-the-shoulder approval), retaining exact-health/commit/rollback rules. If it exits
+    or Windows restarts before resolution, recovery requires renewed UAC consent or
+    halts with the journal unresolved; it must not claim an unproved rollback. The app
+    and Bun roles never run elevated or as SYSTEM.
+18. `MachineSeamlessDirect` is an explicit install-time opt-in. It preserves the same
+    updater transaction and requires its coordinator to authenticate exact host,
+    installation and fresh attempt; prevent replay; acquire installation-wide exclusive
+    writer ownership; bind candidate health and process-family lifecycle; launch the
+    application as the ordinary user; and recover safely across crash/reboot. The
+    product mode is approved, but the Windows authority mechanism is not. Task Scheduler,
+    a service or another Windows-native mechanism may be selected only after each named
+    negative and positive control passes. A task start/trigger is never update
+    authorization. No implementation of a privileged coordinator is authorized by this
+    criterion alone. Its trusted initializer seeds the stable activation lease with the
+    SYSTEM profile.
+19. `Managed(owner)` provenance makes `keld-update` return a typed owner-delegation
+    result before fetching, staging or mutating. MSIX/App Installer, Store and enterprise
+    deployment remain the only update authorities for their managed installation.
+20. Each direct mode uses one trusted-installer-created regular `activation.lock` file
+    under the protected update root. It is persistent, never deleted/recreated/replaced,
+    and its presence does not identify a live owner; do not reuse KEL-266's
+    `bootstrap.lock`. A writer opens the existing file read/write with exclusive sharing
+    (share mode zero), no reparse following or inheritance. A snapshot reader opens it
+    read-only with `FILE_SHARE_READ` only and holds that short lease for one coherent
+    mutable-record snapshot. Normal startup retains only immutable selected-tree and
+    ancestry pins after releasing mutable journal/floor/current/LKG record pins. The
+    writer retains the exclusive lease while the candidate performs its authenticated
+    bootstrap read; the candidate closes mutable-record pins and acknowledges bootstrap
+    before application execution, retaining only immutable selected-tree pins and its
+    health endpoint through the 30-second window. Sharing conflict is a typed busy/refusal with no retry or
+    sleep. Missing, wrong-kind, wrong-volume or wrong-profile lock state fails closed.
+    On Windows machine-wide profiles, ordinary-user read access to this lease also lets
+    a local native process hold a conflicting share-mode handle and deny update
+    availability until that handle closes. This is an availability-only residual: the
+    updater must fail closed before protected writes, and no integrity claim depends on
+    successful lease acquisition. The contract does not promise update availability
+    against hostile local native users. This follows from the documented
+    [CreateFile sharing rules](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew).
 
 ## 4. Design
 
@@ -229,6 +336,8 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
 | Helper / Windows package | journal + inherited handles → post-exit publish | arbitrary path, replay or mixed set | independently substitute every helper input |
 | User data / package owner | signed no-migration policy → rollback eligibility | binary rollback after migration | absent/changed policy refuses pre-launch |
 | Evidence / task owner | exact source + OS receipts → task artifact | mock/stale head closes native row | exact-head provenance validator |
+| Install mode / trusted installer + KEL-53 | explicit mode choice → immutable owner/protection provenance | path/environment selects authority | substitute path/env/registry; refuse before feed/write |
+| Writer authority / mode adapter + `keld-update` | one exact attempt → one temporary exclusive write lease | UAC/start trigger mistaken for attempt authentication or concurrent writer admitted | wrong authority and competing writer leave journal/pointers unchanged |
 
 The exact portable `.keld/update-policy.v1` path and bytes are owned once by `keld-pack`;
 `keld-update` depends on that producer-side owner and checks the authenticated archive
@@ -253,14 +362,27 @@ the floor reopens replay; an un-hashed policy permits substitution.
 Compatibility fallback: unsupported packaging/channel/filesystem cells keep the current
 version and report the missing predecessor or owning update mechanism.
 
-**Target boundary change:** `keld-update` remains the crash/recovery owner and the
-host remains the only principal minter. The host creates the attempt health channel;
-the candidate receives only its attempt-bound endpoint. If needed, the Windows helper
-inherits the observer endpoint, a sealed forward-once candidate endpoint, borrowed
-update-root/lock handles and one host-process wait handle after trusted spawn. It
-temporarily owns the journaled activation through health/rollback, then exits; it
-cannot mint identity or survive as a general updater. No live boundary changes in this
-spec-only PR.
+**Target boundary:** `keld-update` remains the common transaction and recovery owner;
+the admitted host remains the only attempt/health identity minter. The host creates the
+attempt health channel and the candidate receives only its attempt-bound endpoint. The
+mode-specific adapter obtains the one temporary write lease for that attempt: the
+ordinary user-owned updater for `PerUserDirect`, an explicitly elevated signed helper
+for `MachineUacDirect`, or a still-unselected narrow coordinator for
+`MachineSeamlessDirect`. `Managed(owner)` obtains no Keld write lease. Every adapter
+executes the same journal, floor, pointer, health, commit, rollback and crash-recovery
+transitions. UAC/task/service wake-up is not attempt authentication. A helper may own a
+live attempt only for the bounded health/commit/rollback lifecycle; it cannot mint
+identity or survive as a general updater.
+
+**Cross-owner contract:** KEL-135 owns verified publisher/app/profile identity. KEL-53
+alone mints `ActivePackageSelection` from journal/current/LKG state and owns install-mode
+provenance, update journal and the sole writer. KEL-254 owns OS verification of
+installed-image and protection profiles but never selects current/LKG or mints an active
+selection. KEL-96/core consumes that exact `ActivePackageSelection`, performs host boot
+admission and returns its opaque `ValidatedBootSelection` to the ordinary-user host.
+None of the consumer/identity owners infers install mode or mutates updater state.
+KEL-254's current Program Files draft must include per-user and Machine-UAC protection
+profiles before any direct mode ships.
 
 ### Internal state and transition contract
 
@@ -280,6 +402,7 @@ struct ActivationAttempt {
     candidate: ArtifactIdentity,
     coordinator_image_blake3: [u8; 32],
     health_channel_id: [u8; 32],
+    lifecycle_channel_id: [u8; 32],
     rollback_target: ArtifactIdentity,
     prior_floor: StrictSemver,
     prior_last_known_good: ArtifactIdentity,
@@ -302,6 +425,7 @@ struct RollbackAttempt {
     expected_previous_known_good: Option<ArtifactIdentity>,
     coordinator_image_blake3: [u8; 32],
     health_channel_id: Option<[u8; 32]>,
+    lifecycle_channel_id: [u8; 32],
     cause: FailureClass,
 }
 ```
@@ -309,21 +433,200 @@ struct RollbackAttempt {
 The journal is a strict versioned local record. Unknown versions, duplicate fields,
 noncanonical values and pointer/artifact mismatches fail closed. The host generates the
 random `attempt_id`; config, roles, environment and feed cannot supply it.
+The journal also carries a fresh `lifecycle_channel_id`, distinct from both the
+attempt and health identities. A stable rendezvous locator is derived from trusted,
+immutable installation identity and user/session scope, so a cold successor can
+discover the keeper without reading mutable journal data while the keeper holds the
+share-zero lease. The locator is not authorization and MUST NOT disclose secrets. After
+peer authentication, the keeper supplies the bound attempt ID and both sides bind a
+one-use challenge/ack to install, attempt, peer process and connection generation.
+
+The lifecycle `installation_id` is owned by `keld-update`; callers MUST NOT mint it
+from a path, random value, command-line value or separate installer assertion. The
+updater derives its 32 bytes as
+`BLAKE3(UTF8("keld.installation-binding/provenance-v2/v1\0") || u64_le(n) || p)`,
+where `p` is the exact canonical encoded `keld.install-provenance/v2` record and `n`
+is its byte length. This binds the explicit mode, owner, app/channel/target, install and
+update roots, signing-key identity, baseline artifact, profile, principal model,
+publisher scope and volume. The running host derives the expected ID from trusted
+packaging configuration; recovery recomputes it only after reading protected provenance
+and matching every field to that configuration. Equal provenance yields a stable ID;
+relocation changes the ID. This digest is binding context, not a secret or peer
+authentication. A future provenance schema MUST preserve an explicitly defined v2
+projection or introduce a separately versioned lifecycle-ID derivation.
+
+Before any Job witness or lease-retention capability moves, each side MUST authenticate
+the actual connected named-pipe peer and same-session profile. The health token is
+never reused for keeper recovery or exposed to app roles.
+
+The lifecycle rendezvous MUST NOT treat the existing bearer-token `HELLO`, a pipe DACL,
+PID, SID or signed publisher alone as peer authentication. Both ends retain the actual
+connected pipe and process objects, verify exact permitted role/image plus token user,
+session and integrity, bind the independently expected install and attempt, and reject
+exit or identity changes during acquisition. The client sends a fresh nonce; the server
+returns a fresh challenge and the client acknowledges the full transcript. These values
+prove freshness/liveness only; OS peer identity authenticates. The client MUST set
+`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` when opening its pipe to the server.
+The server validates the last HELLO writer's thread token through
+`ImpersonateNamedPipeClient`/`TOKEN_QUERY`, always reverting impersonation. Client and
+server pipe handles MUST be non-inheritable
+and MUST NOT be duplicated to app roles. If the connected endpoint can be inherited or
+duplicated to an untrusted role, PID queries do not establish who wrote the message and
+the mechanism refuses to transfer handles. A one-shot generation is consumed before
+any capability transfer; simultaneous successors, stale attempt IDs and transcript
+replay all refuse. If `RevertToSelf` fails, the process MUST terminate immediately and
+MUST NOT return to the accept/retry path.
+
+The lifecycle pipe uses the dedicated `\\.\pipe\keld-lifecycle-<64 lowercase hex>`
+namespace, disjoint from ordinary `\\.\pipe\keld-<64 lowercase hex>` app-link pipes.
+The two clients MUST reject the other namespace before opening a pipe; the endpoint
+prefix is the protocol discriminator before the distinct nonce handshake. After the
+client/server nonce exchange, the server sends one fixed-size 177-byte `KELD-LC1`
+binding challenge; the client returns `KELD-LA1` only after validating it against its
+independent expectation. The server consumes its one-shot listener before sending the
+same-context `KELD-LR1` acceptance receipt. The server returns an admitted peer only
+after the receipt write completes before its deadline; the client returns only after
+verifying that receipt before its deadline. The record is: 8-byte magic,
+1-byte purpose, 32-byte
+installation ID, 32-byte attempt ID, 32-byte lifecycle-channel ID, 32-byte client
+nonce, 32-byte server nonce, 4-byte client PID and 4-byte server PID (PIDs little
+endian). Purpose is a closed tag for coordinator-to-keeper or keeper-to-successor.
+The client MUST compare install and purpose before acknowledgement. A cold successor
+may learn attempt/channel only from the authenticated keeper, and MUST mark those IDs
+as unverified until it reacquires the writer lease and revalidates them against the
+protected journal; it MUST NOT mutate journal or pointers on a mismatch. Both peers
+MUST validate the actual connected process objects and fresh nonce pair. Mismatch,
+wrong purpose, stale exact-attempt expectation, malformed/truncated challenge or
+acknowledgement/receipt MUST fail closed before any handle transfer. `LC1`/`LA1`/`LR1` version this
+dedicated lifecycle subprotocol; ordinary app-link frames are unchanged.
+
+After LR1, the coordinator sends one exact 89-byte `KELD-HO1` bundle on the same
+consumed connection: 8-byte magic, coordinator-to-keeper purpose byte, 32-byte
+attempt ID, 32-byte lifecycle-channel ID, 8-byte target-process Job handle and
+8-byte target-process activation-lock handle (handle values little endian). The
+duplicated Job has only `JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE`; the lease handle
+has only `FILE_READ_ATTRIBUTES | SYNCHRONIZE`. The keeper adopts the exact process
+handles, re-attenuates both, rejects inherited/wrong-object handles, and independently
+queries a nonzero Job family before sending the exact 76-byte `KELD-HR1` receipt
+(magic, attempt ID, channel ID, active count). The coordinator retains its local Job
+and writer-lease owners until HR1 matches; a failed transfer keeps local ownership
+and halts. If a malformed/truncated HO1 leaves remote handle values unknown, the
+dedicated keeper MUST terminate before returning to any caller so process teardown
+closes those handles. After delivery may have begun, the coordinator MUST NOT close
+remote handles by their saved numeric values: the keeper may already have closed and
+reused those slots. Instead it terminates and waits for the exact pinned keeper while
+retaining its own Job/lease handles.
+
+After the pinned coordinator exits, the keeper terminates the exact Job and MUST
+observe zero before sending a query witness over the one-shot successor connection. Its 81-byte
+`KELD-QO1` record contains magic, keeper-to-successor purpose, attempt ID, channel ID
+and the remote query-only Job handle. The successor independently queries zero and
+sends a 76-byte `KELD-QA1` receipt with the same attempt/channel and zero count. Only
+after exact QA1 does the keeper close its activation-lock retention and send the
+matching `KELD-QF1` final receipt. The successor returns from the lifecycle API only
+after QF1, then acquires the writer lease and revalidates install, journal attempt
+and channel before mutation. Before QA1 the keeper MUST retain the lock and halt on
+failure. Observing Job zero alone does not authorize lease release: the successor
+must cross the explicit QA1 gate. If QA1 succeeds but QF1 delivery is lost, the
+successor MUST still halt without journal/pointer writes; another writer without the
+retirement witness also refuses. The records carry handles only over the authenticated, one-use connection;
+PID/name discovery never substitutes for a retained process object or Job handle.
+
+Primary API contracts: [GetNamedPipeClientProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeclientprocessid),
+[GetNamedPipeServerProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid),
+[ImpersonateNamedPipeClient](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient),
+and [DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle).
+
+**Lease and snapshot ownership:** every direct installation receives a trusted-installer-
+created stable `activation.lock` regular file under `update_root`. The file is never
+deleted/recreated/replaced; existence is not live-owner evidence. A writer opens this
+existing object read/write with share mode zero, no reparse following or inheritance.
+Normal selection/recovery readers open read-only with `FILE_SHARE_READ` only and hold
+that shared lease only while reading one coherent set of mutable records. A sharing
+conflict is busy/refusal, without sleep or retry. The writer lease remains held through
+the active attempt and health window. The authenticated candidate-boot path is the only
+reader exception: while the coordinator keeps journal/current stable, it reads the exact
+attempt and current briefly, closes mutable-record handles and acknowledges bootstrap
+completion before app execution/health can permit record replacement. It retains only
+immutable selected-version/tree pins and its attempt endpoint during the health window.
+Normal host selection closes mutable journal/pointer/floor pins after snapshot and keeps
+only the selected immutable artifact pins. Lock presence never decides whether the
+previous coordinator/candidate family is live; recovery still requires the independent
+process-family owner. `bootstrap.lock` remains only the KEL-266 initializer marker.
+
+The process-family owner is an independent input to the common transaction: an
+activation lease or a valid journal cannot prove an earlier host/candidate is gone.
+On Windows, KEL-96/runtime owns ordinary-user host admission and process-family
+observation; KEL-53 consumes that exact result before recovery or replacement. The
+current `keld dev` outer-Job plus host-inner-Job tests prove developer-session cleanup
+ordering only; they do not establish an installed updater launcher or a
+MachineSeamless writer mechanism.
+
+Windows recovery MUST NOT interpret `OpenJobObject` not-found as
+`ActiveProcesses == 0`. A temporary object name is removed when its handle count
+reaches zero even while kernel references may remain; a persisted Job name or attempt
+ID is only a locator while an authenticated keeper still retains the exact handle.
+Recovery requires a live retained-handle zero observation or separately qualified,
+durable retirement evidence. Without either, it halts and preserves the journal and
+all pointers. A supported user-mode boot-epoch proof has not been established.
+Source: [Windows object life cycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/life-cycle-of-an-object).
+
+**Bounded per-attempt lifecycle keeper (proof slice; no production activation writes).**
+The first Windows implementation slice MUST use the exact unnamed attempt Job object
+and transfer/duplicate its handle; opening a Job by persisted name is forbidden. The
+keeper runs outside that Job and receives only the least rights needed to terminate
+the exact family and query its active count (`JOB_OBJECT_TERMINATE` and
+`JOB_OBJECT_QUERY`); it receives no assign, limit-change, file-write or transaction
+command authority. It retains only the reduced, non-writable duplicate of the stable
+`activation.lock` object needed to keep the existing writer exclusion alive, plus the
+exact coordinator process observation needed to distinguish coordinator death from
+pipe loss. KEL-53 remains the only writer of journal, floor and pointers.
+
+The keeper may terminate and observe the exact Job only after the authenticated
+coordinator process object is signaled. Writer exclusion is not retired when a pipe
+closes, a Job name disappears, or a PID is absent. Retirement requires a fresh,
+attempt-bound, one-shot authenticated handoff of the exact Job witness. The selected
+successor independently queries that witness and acknowledges the exact zero result
+over the authenticated connection. The keeper releases its lock-retention handle only
+after that acknowledgement; the successor then acquires the exclusive writer lease and
+revalidates the protected install and journal attempt. Reacquiring before release is
+impossible while the share-zero retention handle remains open. A competing writer that
+wins after release cannot mutate a pending attempt without the matching retirement
+witness and MUST refuse recovery. No authenticated handoff or proof means journal and
+all pointers remain unchanged and recovery halts.
+
+Adversarial proof MUST separately cover coordinator death, keeper death, both owners
+lost before handoff, wrong Job/host, stale and replayed attempts, competing writer,
+exact Job-family zero, and fake endpoint. The lifecycle code must not be connected to
+production pointer/floor/activation/commit writes until these controls pass. Reboot,
+hibernate and all-owners-lost recovery remain unsupported unless a documented Windows
+mechanism proves durable retirement; otherwise ambiguous recovery halts with evidence
+preserved.
 
 The single-writer transition is:
 
-1. verify protected direct provenance and acquire the update lock;
-2. verify/extract `full`, including `.complete` and policy;
-3. retain and validate current as the rollback target plus both known-good slots;
-4. persist `PublishPending`;
-5. advance the semantic-version trust floor;
-6. publish `current` to the candidate;
-7. persist `AwaitingHealth` and launch with a private health channel;
-8. on exact health, persist `HealthAccepted`, publish the prior LKG to
+1. verify protected direct provenance and mode, acquire the mode-supplied stable lease,
+   then verify/extract `full`, including `.complete` and policy;
+2. retain and validate current as the rollback target plus both known-good slots;
+3. persist `PublishPending`;
+4. advance the semantic-version trust floor;
+5. publish `current` to the candidate;
+6. persist `AwaitingHealth` and launch with a private health channel;
+7. on exact health, persist `HealthAccepted`, publish the prior LKG to
    `previous-known-good`, publish `last-known-good` to candidate, remove the
    journal, then clean retention without deleting either known-good slot;
-9. on failure, persist `RollbackPending`, publish `current` to the
+8. on failure, persist `RollbackPending`, publish `current` to the
    validated rollback target, remove the journal, then report failure.
+
+Windows replaces fixed mutable record slots through a narrow same-parent
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` adapter; the existing
+absent-target version-directory publication remains separate. A transition writes a
+new protected sibling with the mode's exact DACL, flushes and reads it back, closes
+conflicting record pins, performs the fixed replacement under the stable lease, then
+reopens/reads back the exact bytes and descriptor before the next step. It does not
+truncate in place, copy across volumes, schedule work after reboot, or accept caller
+paths/flags. A replacement error is effect-aware; it does not claim the old bytes stayed
+unchanged after a possible publication.
 
 Startup without a journal validates current, both known-good slots, their complete
 markers/policies and the floor. A valid current must equal last-known-good or
@@ -357,12 +660,31 @@ publication and never rolls back. `current` may point below it after health
 failure; that is intentional local rollback, not permission to reinstall an old release.
 
 The installer synchronizes the immutable baseline package, seeds floor/current/LKG to
-that exact artifact, then creates the protected provenance record as its final commit.
-`Direct` records exact identity/channel/target/roots/key/baseline and admitted
-strict/distinct-OS-principal profile identity.
-`Managed(mechanism)` always refuses direct mutation. Missing provenance is
-unsupported. Location, registry heuristics and writable config never manufacture
-`Direct`.
+that exact artifact, then creates immutable provenance as its final commit. `Direct`
+records exact identity/channel/target/roots/key/baseline, install mode, owner and its
+mode-specific OS protection profile. `Managed(mechanism)` always refuses direct
+mutation. Missing provenance is unsupported. Location, registry heuristics and
+writable config never manufacture a mode or `Direct` ownership.
+
+`PerUserDirect` is the default and stores the application and updater state beneath
+the owning user's LocalAppData tree. Its updater uses the ordinary user identity and
+does not display UAC; strict Keld role restrictions deny role access to update state,
+while the security claim excludes the owning user and arbitrary native malware running
+as that user. `MachineUacDirect` stores machine-wide state in a Program Files-style root
+whose installer-provisioned DACL allows elevated Administrators and SYSTEM to mutate,
+and ordinary users/Keld roles only to read/execute. It is not KEL-266's SYSTEM-only
+profile and never repairs ownership/DACL during an update. `MachineSeamlessDirect` is an
+opt-in SYSTEM-protected profile whose narrow writer mechanism remains a separate proof
+gate. `Managed(mechanism)` performs no direct feed, stage or protected write.
+
+The product and ownership boundary is explicit: KEL-135 owns verified publisher/app/
+profile identity; KEL-53 owns install-mode provenance, update journal, active-package
+selection and the sole writer; KEL-254 owns OS verification of installed-image and
+protection profiles plus the read-only selection boundary, never write authority;
+KEL-96 owns host boot admission and consumes the exact opaque selection as the ordinary
+user, without inferring install mode or mutating updater state. KEL-254's current
+Program Files draft must include per-user and Machine-UAC protection profiles before
+any direct mode ships.
 
 Windows x64 direct distribution is first because its tree fits v0. KEL-137 is an
 explicit predecessor for macOS/Linux or any package requiring metadata absent from v0.
@@ -471,12 +793,14 @@ unsafe permission is granted.
 
 ### T4a: protected Windows baseline bootstrap (KEL-266)
 
-This bounded amendment implements acceptance criterion 1 before activation. The
+This bounded amendment implements the machine-baseline portion of acceptance criterion 1 before activation. The
 installer is a one-shot, externally provisioned LocalSystem process; the ordinary
 host receives read authority only. It adds no service, elevation path, recovery,
 health, activation selection or role grant. KEL-254 still owns installed boot and
 must compare these protected publisher facts with KEL-135's independently verified
-current-image identity. Its fresh-role read provisioning remains separate.
+current-image identity. Its fresh-role read provisioning remains separate. This is the
+KEL-266 `MachineSeamlessDirect` baseline predecessor only; it does not define the
+default per-user bootstrap or the distinct Machine-UAC ACL/helper contract.
 
 | Atom / owner | Boundary and observable contract | Independent falsifier |
 |---|---|---|
@@ -507,8 +831,9 @@ with normal guard-validated components; UNC, device aliases, reparses, relative/
 components, empty components and alternate separators refuse. `update_root` is one
 direct child of `install_root`; `versions` is a direct child of `update_root`.
 The externally provisioned initial install root contains only that update directory,
-which contains only empty `versions`. Install/update/versions initially have the exact
-existing SYSTEM-private descriptor. No initializer creates or repairs the scaffold.
+which contains only empty `versions`. Install/update/versions already have the exact
+`windows-system-users-rx-v1` MachineSystem descriptor. No initializer creates, seals
+or repairs the scaffold; it validates these committed roots before mutation.
 Every earlier named ancestor below the volume root already has the committed machine
 descriptor. No user-owned intermediate path (for example a development workspace) is
 an admitted installation location.
@@ -547,15 +872,18 @@ The version directory name is the complete validated baseline version string.
 
 The only successful initialization order is:
 
-1. Prove actual SYSTEM authority, topology, volume, descriptors and fresh state; create
-   `bootstrap.lock` exclusively with create-new under the private update root and retain
-   its handle. Existing lock/state refuses; no PID guessing, takeover or stale cleanup.
+1. Prove actual SYSTEM authority, topology, volume, exact MachineSystem descriptors and
+   fresh state; create `bootstrap.lock` exclusively with its exact MachineSystem
+   descriptor at object creation and retain its handle. Existing lock/state refuses;
+   no PID guessing, takeover or stale cleanup. Seed the persistent `activation.lock`
+   with that same exact descriptor and exclusive sharing.
 2. Fully validate the authenticated exact baseline before extraction; create one fresh
    incomplete sibling and populate it with shared T3b mechanics.
-3. Seal/read back every stage object. For payload files and `content.tar`, establish
-   final protection on the original writable handle before its final file flush and
-   protected readback; directory sealing remains bottom-up. Write `.complete` last within the stage, flush its
-   writable handle, seal it and verify its final bytes and descriptor.
+3. Seal/read back each owner-private stage directory bottom-up. Payload files and
+   `content.tar` receive their final MachineSystem descriptor before the original
+   writable handle's final flush and protected readback. Create `.complete` with its
+   final MachineSystem descriptor, write and flush it, then verify its exact bytes and
+   descriptor.
 4. Close rename-blocking stage handles while retaining protected ancestors. Publish to
    the absent final version name using same-volume `MoveFileExW` with only
    `MOVEFILE_WRITE_THROUGH`; no replacement or cross-volume-copy flags. Reopen and
@@ -563,9 +891,10 @@ The only successful initialization order is:
 5. Seed floor, current and LKG in order: each uses a fresh same-parent temporary file,
    final protection, writable-handle flush, close, absent-target write-through rename
    and protected readback. Any conflicting target or incomplete prior state refuses.
-6. Seal/read back install/update/versions and the retained lock. Publish protected
-   provenance by that same file procedure LAST. Re-read through the production loader
-   and separately validate the exact complete initial seed state before returning success.
+6. Revalidate the unchanged install/update/versions descriptors and retained lock; do
+   not rewrite already trusted scaffold ACLs. Publish protected provenance by that same
+   file procedure LAST. Re-read through the production loader and separately validate
+   the exact complete initial seed state before returning success.
 
 Failures retain diagnostic incomplete state and never silently reseed. The bootstrap
 lock may remain after a commit; it is not activation/recovery authority. The read-only
@@ -659,7 +988,10 @@ Implement in:
   recovery;
 - `keld-pack`: Windows v0 package and exact no-migration policy;
 - existing host/runtime owners: private health channel and candidate lifecycle;
-- a minimal signed Windows helper only if locked-file acceptance requires it;
+- trusted installer: immutable per-user/machine-UAC/machine-seamless/managed mode
+  provenance and owner-specific protection profile;
+- a minimal signed helper for explicit-UAC activation and, if separately approved, for
+  locked-file publication;
 - existing doctor/build diagnostics and native fixtures.
 
 Must not touch in Slice A:
@@ -673,9 +1005,10 @@ Must not touch in Slice A:
 
 ## 6. Tasks
 
-- [ ] T1 — promote this spec with architecture 06 synchronization, generated docs and
-  exact-head review. No implementation starts until this approved corrected specification
-  lands.
+- [x] T1 — synchronized this approved multi-mode contract with Architecture 06, regenerated
+  included docs, and independently reviewed the exact cross-document head. Direct-mode
+  implementation follows this contract; the product decision does not authorize a
+  seamless privileged mechanism.
 - [ ] T2 — v0 manifest/full verifier plus protected provenance admission/refusal; no
   delta dependency.
 - [ ] T3a — produce canonical Windows x64 v0 full packages on a Windows host, with the
@@ -686,12 +1019,25 @@ Must not touch in Slice A:
 - [ ] T3b — after T3a, add two-pass protected Windows extraction beneath the admitted
   staging root; retain guard-owned case/NFC/namespace rejection, hostile archive corpus,
   and real reparse/rename substitution refusal before any write.
-- [ ] T4a — KEL-266: actual SYSTEM initializer, protected exact-baseline seeds and
-  provenance-last publication, read-only loader and persistent ancestry proof; no activation.
-- [ ] T4b — Windows x64 direct vertical: journal, floor/current/LKG order, attempt-bound
-  30-second health and crash cut at every persisted boundary.
-- [ ] T5 — Windows helper if required, managed-channel refusal, hostile-role denial,
-  locked file/disk/interference/concurrency and next-attempt recovery.
+- [ ] T4a — KEL-266: actual SYSTEM initializer, protected exact-baseline seeds,
+  provenance-last publication, stable activation-lease seeding, read-only loader and
+  persistent ancestry proof; no activation.
+- [ ] T4b — common Windows x64 direct transaction: journal, floor/current/LKG order,
+  attempt-bound 30-second health, one mode-supplied write lease, and crash cut at every
+  persisted boundary; no per-mode state machine fork.
+- [ ] T4c — default per-user install/bootstrap and no-UAC authority; prove v2 owner/mode
+  provenance, stable lease seeding and hostile-role write denial under the user's LocalAppData tree.
+- [ ] T4d — explicit-UAC Program Files authority; prove the installer token can assign
+  BUILTIN Administrators as owner (`SE_GROUP_OWNER`, not deny-only), exact protected
+  ancestor/state DACLs and canonical descriptors on published records; filtered-token
+  denial-zero-write; authenticated helper bootstrap, exact candidate revalidation,
+  initiating-user candidate launch and live-owner health/rollback;
+  after owner death/reboot recovery obtains fresh consent or safely halts.
+- [ ] T4e — machine-seamless product row remains gated: prove exact host/install/attempt
+  auth, replay resistance, writer/read-pin handoff, family lifecycle, ordinary candidate,
+  exact health and crash recovery before selecting or implementing any native mechanism.
+- [ ] T5 — managed-owner refusal, hostile-role denial, locked file/disk/interference/
+  concurrency and next-attempt recovery.
 - [ ] T6 — after KEL-137, repeat independently for each macOS/Linux format/channel.
 - [ ] T7 — separately approve signed data compatibility/migration before a migrating
   release can use automatic binary rollback.
@@ -702,12 +1048,15 @@ Must not touch in Slice A:
 
 | Criteria | Proof and falsifier |
 |---|---|
-| 1, 11–12 | protected provenance/channel/profile/ACL table and installer seed crash cuts; legacy mode refuses before feed/write; mutate every identity/root/owner/floor and attempt hostile-role writes |
+| 1, 11–12, 16 | provenance/mode/channel/profile/ACL table and installer seed crash cuts; mode/path/owner substitution refuses before feed/write; per-user installer uses LocalAppData with no UAC and actual hostile-role write denials |
 | 2–4 | signed v0 fixtures, duplicate-member parser, equal-precedence build-metadata release pair, floor selection including equal-precedence/different-metadata and below-baseline replay, numeric mutations (`0`, `-1`, fraction, exponent, `2^53 - 1`, `2^53`), shorter/exact/longer compressed and decompressed byte counts, digest boundaries and complete ustar golden bytes; selecting a present delta fails Slice A |
 | 5, 13 | independent canonical Windows tar/policy goldens; producer-to-verifier size/hash agreement; missing/duplicate/changed policy refusal; link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases and ancestor collisions reject before output; T3b separately tests extraction-order and filesystem reparse/rename substitution |
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
-| 10–11 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; substitute every inherited endpoint/input |
+| 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
+| 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
+| 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
+| 20 | real Windows stable `activation.lock` remains present across release/crash; multiple short read leases coexist and block the writer; exactly one share-zero writer is admitted after readers close; missing/wrong-profile lock refuses; a surviving child cannot be mistaken for a dead process family; candidate closes mutable-record pins and acknowledges bootstrap before app code/health, while immutable selected-tree pins remain held; writer replaces mutable records during candidate health without replacing/deleting pinned immutable trees |
 | 14 | deterministic fault injection followed by one successful attempt; delta code absent |
 | 15 | future base/patch/reconstructed-content mutations and same-attempt full fallback |
 
@@ -717,14 +1066,15 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
 
 ## 8. Review gates triggered
 
-- unsafe: none in this spec; conditional for platform/helper implementation;
+- unsafe: none in this contract; conditional on each exact native/helper implementation;
 - public API: yes — canonical package contents, update admission and unsupported-cell
   diagnostics are author-facing contracts;
-- permission model: yes — protected provenance/update authority and hostile-role denial
-  decide who can mutate executable state, though no app grant is added;
+- permission model: yes — the install-mode protection profiles, UAC elevation and
+  hostile-role denial decide who can mutate executable state, though no app grant is added;
 - dependency addition: none;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
-  and canonical package content are narrowed and require exact independent review.
+  and canonical package content are narrowed and require exact independent review; any
+  new host/coordinator authentication channel remains separately owned and gated.
 
 ## 9. Perf impact
 
@@ -736,8 +1086,23 @@ fallback rate and end-to-end success before adding complexity.
 
 ## 10. Open questions
 
-None in the technical contract. Approval is bound to the content heads and Linear
-receipts recorded above. Manifest/full verification, logical provenance admission,
-Windows packaging and protected incomplete extraction have landed. T4a implementation
-requires its own native acceptance; activation, health, recovery and the later tasks
-remain separate work. This task list does not claim those unfinished paths are shipped.
+The product mode selection is approved; the following are implementation/evidence gates,
+not requests to revisit that decision:
+
+- T4b's common journal, health and persisted recovery need implementation and real
+  Windows crash-cut evidence.
+- T4c must prove the default per-user install root, mode/provenance seeding and actual
+  role write denial; the owning user's authority remains outside the threat claim.
+- T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,
+  over-the-shoulder user-token launch, and exact health/rollback under the live elevated
+  owner. Reboot/owner death requires new consent or safe halt.
+- T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
+  falsifier before any privileged seamless mechanism is selected. The task probe is only
+  wake-up feasibility.
+- KEL-254's installed-image consumer and KEL-96's host admission must consume the exact
+  updater selection under each admitted direct-mode profile without acquiring updater
+  write authority. KEL-135 remains sole publisher/app/profile identity owner.
+
+Manifest/full verification, logical provenance admission, Windows packaging and protected
+incomplete extraction have landed. T4a initialization and every activation/mode cell
+retain their separate native acceptance; this specification does not claim them shipped.

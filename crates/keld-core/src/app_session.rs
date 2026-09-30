@@ -762,15 +762,19 @@ impl WindowsDevStageCleanup {
         Ok(Self { root, host })
     }
 
-    /// Waits for the exact staged host object and deletes only its validated
-    /// owner-private nonce directory.
+    /// Waits for the exact staged host object, verifies the exact attempt Job
+    /// has no active processes, and then deletes only its validated owner-private
+    /// nonce directory.
     ///
     /// # Errors
     ///
     /// Returns `KELD-CORE-037` if waiting, final ACL validation, or deletion
     /// fails. A concurrent orderly CLI deletion is accepted as idempotent.
     #[allow(unsafe_code)] // read-only wait on the owned staged-host process handle
-    pub fn wait_and_delete(self) -> Result<(), HostAppError> {
+    pub fn wait_and_delete_after_family_exit(
+        self,
+        attempt_job: &keld_runtime::windows_job::WindowsProcessJob,
+    ) -> Result<(), HostAppError> {
         use std::os::windows::io::AsRawHandle as _;
 
         // SAFETY: `host` is a live owning process handle. An infinite kernel
@@ -781,6 +785,20 @@ impl WindowsDevStageCleanup {
             return Err(app_io(
                 "Windows dev-stage cleanup host wait",
                 &io::Error::last_os_error(),
+            ));
+        }
+        let active_processes = attempt_job.active_processes().map_err(|source| {
+            app_detail(
+                "Windows dev-stage cleanup attempt Job query",
+                source.to_string(),
+            )
+        })?;
+        if active_processes != 0 {
+            return Err(app_detail(
+                "Windows dev-stage cleanup attempt Job proof",
+                format!(
+                    "refusing stage deletion while the exact attempt Job reports {active_processes} active processes"
+                ),
             ));
         }
         validate_windows_dev_stage_acl(&self.root)
@@ -2440,7 +2458,8 @@ fn run_app_direct(
         .arg("run")
         .arg(root.join(&entry_path))
         .current_dir(&root)
-        .env_remove(DEV_LEASE_ENV);
+        .env_remove(DEV_LEASE_ENV)
+        .env_remove(keld_runtime::windows_job::WINDOWS_LAUNCH_GATE_ENV);
     #[cfg(all(debug_assertions, windows))]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
         == Some(std::ffi::OsStr::new("1"))

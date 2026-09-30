@@ -138,7 +138,7 @@ nix = { version = "=0.31.3", default-features = false, features = ["fs", "signal
 #   does not implement the frozen manual LPAC contract. License MIT OR
 #   Apache-2.0; MSRV 1.71 <= workspace 1.97. Unsafe is isolated to reviewed
 #   Windows platform modules with exact handle/pointer lifetime proofs.
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_Isolation", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_Isolation", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 # --- Dependency review (KEL-78/T4 / AGENTS.md gate) ---
 # Name: seccompiler =0.5.0 (rust-vmm)
 # Purpose: compile Keld's fixed Linux syscall-deny policy into architecture-

@@ -4,11 +4,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _};
-use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt as _};
-use windows_sys::Win32::Storage::FileSystem::{
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, WRITE_DAC,
-};
+use cap_std::fs::{Dir, File as CapFile};
 
 use super::{
     LoadedWindowsBaseline, Roots, WindowsBaselineReceipt, WindowsBaselineTrust, error,
@@ -16,10 +12,13 @@ use super::{
 };
 use crate::records::{self, PointerKind};
 use crate::windows_extraction::{StageProtection, open_source, populate_stage};
-use crate::windows_fs::{create_directory_relative, publish_new};
+use crate::windows_fs::{
+    create_directory_relative, create_file_relative_exclusive_with_profile,
+    create_file_relative_with_profile, publish_new,
+};
 use crate::{InstallOwner, InstallProvenance, UpdateError, VerifiedBaseline};
 
-/// Initializes one externally provisioned SYSTEM-private machine scaffold.
+/// Initializes one externally provisioned SYSTEM-protected machine scaffold.
 ///
 /// Trusted configuration must come from the deployment authority. Successful return
 /// requires production read-only reload and exact baseline seed validation.
@@ -39,6 +38,7 @@ pub fn initialize_windows_baseline(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BaselineBoundary {
     LockCreated,
+    ActivationLockCreated,
     StageCreated,
     StagePopulated,
     CompletePublished,
@@ -46,7 +46,7 @@ pub(super) enum BaselineBoundary {
     FloorPublished,
     CurrentPublished,
     LastKnownGoodPublished,
-    RootsSealed,
+    RootsVerified,
     ProvenancePublished,
 }
 
@@ -56,6 +56,7 @@ pub(super) fn initialize_with_observer(
     trust: &WindowsBaselineTrust,
     mut observe: impl FnMut(BaselineBoundary) -> io::Result<()>,
 ) -> Result<WindowsBaselineReceipt, UpdateError> {
+    trust.require_direct_owner()?;
     keld_guard::require_windows_system_token()
         .map_err(|cause| error("installer authority", cause))?;
     crate::provenance::match_identity(&trust.installation, verified.installation())?;
@@ -69,6 +70,9 @@ pub(super) fn initialize_with_observer(
         .ok_or_else(|| error("topology", "update name absent"))?;
     let mut lock = acquire_bootstrap_lock(&roots, update_name)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
+    seed_activation_lock(&roots)?;
+    observe(BaselineBoundary::ActivationLockCreated)
+        .map_err(|cause| error("activation lock boundary", cause))?;
 
     let mut source =
         open_source(archive).map_err(|cause| error("baseline source admission", cause))?;
@@ -135,7 +139,7 @@ pub(super) fn initialize_with_observer(
     )?;
     observe(BaselineBoundary::LastKnownGoodPublished)
         .map_err(|cause| error("LKG boundary", cause))?;
-    seal_roots_and_commit(&roots, update_name, &mut lock, &mut observe)?;
+    commit_baseline(&roots, &mut lock, &mut observe)?;
     drop(lock);
     drop(version);
     drop(roots);
@@ -154,28 +158,45 @@ fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, Upda
     exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
     exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
     exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC)
-        .share_mode(0)
-        .follow(FollowSymlinks::No);
-    let lock = roots
+    let update = roots
         .update
-        .open_with("bootstrap.lock", &options)
-        .map_err(|cause| error("exclusive bootstrap lock", cause))?
-        .into_std();
-    keld_guard::validate_windows_owner_private_file(&lock)
+        .try_clone()
+        .map_err(|cause| error("exclusive bootstrap parent", cause))?
+        .into_std_file();
+    let lock = create_file_relative_exclusive_with_profile(
+        &update,
+        "bootstrap.lock",
+        keld_guard::WindowsInstallProtectionProfile::MachineSystem,
+    )
+    .map_err(|cause| error("exclusive bootstrap lock", cause))?;
+    keld_guard::validate_windows_machine_file(&lock)
         .map_err(|cause| error("bootstrap lock protection", cause))?;
     lock.sync_all()
         .map_err(|cause| error("bootstrap lock flush", cause))?;
     Ok(lock)
 }
 
-fn seal_roots_and_commit(
+fn seed_activation_lock(roots: &Roots) -> Result<(), UpdateError> {
+    let update = roots
+        .update
+        .try_clone()
+        .map_err(|cause| error("activation lease parent", cause))?
+        .into_std_file();
+    let file = create_file_relative_exclusive_with_profile(
+        &update,
+        "activation.lock",
+        keld_guard::WindowsInstallProtectionProfile::MachineSystem,
+    )
+    .map_err(|cause| error("activation lease creation", cause))?;
+    file.sync_all()
+        .map_err(|cause| error("activation lease flush", cause))?;
+    keld_guard::validate_windows_machine_file(&file)
+        .map_err(|cause| error("activation lease readback protection", cause))?;
+    Ok(())
+}
+
+fn commit_baseline(
     roots: &Roots,
-    update_name: &str,
     lock: &mut File,
     observe: &mut impl FnMut(BaselineBoundary) -> io::Result<()>,
 ) -> Result<(), UpdateError> {
@@ -191,28 +212,14 @@ fn seal_roots_and_commit(
         &trust.publisher_scope,
         &trust.volume_guid,
     )?;
-    // Prepare this private file before sealing the roots. The only later namespace
-    // mutation is its absent-target publication, which is the final commit record.
+    // Prepare the exact-profile provenance record before its absent-target publication,
+    // which remains the final baseline commit record.
     let provenance_temp = prepare_record(install, &provenance)?;
-    keld_guard::seal_windows_machine_file(lock).map_err(|cause| error("lock seal", cause))?;
     lock.sync_all()
-        .map_err(|cause| error("sealed lock flush", cause))?;
-    seal_child(&roots.update, "versions", true).map_err(|cause| error("versions seal", cause))?;
-    seal_child(install, update_name, true).map_err(|cause| error("update seal", cause))?;
-    let parent_index = roots
-        .ancestors
-        .len()
-        .checked_sub(2)
-        .ok_or_else(|| error("install parent", "missing ancestor"))?;
-    let install_name = trust
-        .installation
-        .install_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| error("install parent", "missing component"))?;
-    seal_child(&roots.ancestors[parent_index], install_name, true)
-        .map_err(|cause| error("install seal", cause))?;
-    observe(BaselineBoundary::RootsSealed).map_err(|cause| error("root boundary", cause))?;
+        .map_err(|cause| error("bootstrap lock flush", cause))?;
+    keld_guard::validate_windows_machine_file(lock)
+        .map_err(|cause| error("bootstrap lock protection", cause))?;
+    observe(BaselineBoundary::RootsVerified).map_err(|cause| error("root boundary", cause))?;
     publish_prepared(install, &provenance_temp, "install-provenance", &provenance)?;
     observe(BaselineBoundary::ProvenancePublished)
         .map_err(|cause| error("provenance boundary", cause))?;
@@ -227,23 +234,25 @@ fn random_name(prefix: &str) -> Result<String, UpdateError> {
 
 fn prepare_record(parent: &Dir, bytes: &[u8]) -> Result<String, UpdateError> {
     let name = random_name("pending")?;
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC)
-        .share_mode(FILE_SHARE_READ)
-        .follow(FollowSymlinks::No);
-    let mut output = parent
-        .open_with(&name, &options)
-        .map_err(|cause| error("record creation", cause))?;
+    let parent_file = parent
+        .try_clone()
+        .map_err(|cause| error("record parent", cause))?
+        .into_std_file();
+    let mut output = CapFile::from_std(
+        create_file_relative_with_profile(
+            &parent_file,
+            &name,
+            keld_guard::WindowsInstallProtectionProfile::MachineSystem,
+        )
+        .map_err(|cause| error("record creation", cause))?,
+    );
     super::ensure_regular(
         &output
             .metadata()
             .map_err(|cause| error("record metadata", cause))?,
     )
     .map_err(|cause| error("record kind", cause))?;
-    keld_guard::validate_windows_owner_private_file(
+    keld_guard::validate_windows_machine_file(
         &output
             .try_clone()
             .map_err(|cause| error("record handle", cause))?
@@ -253,14 +262,16 @@ fn prepare_record(parent: &Dir, bytes: &[u8]) -> Result<String, UpdateError> {
     output
         .write_all(bytes)
         .map_err(|cause| error("record write", cause))?;
-    let mut output = output.into_std();
-    keld_guard::seal_windows_machine_file(&mut output)
-        .map_err(|cause| error("record seal", cause))?;
+    let output = output.into_std();
     output
         .sync_all()
         .map_err(|cause| error("record flush", cause))?;
     drop(output);
-    let (_, observed) = read_record(parent, &name)?;
+    let (_, observed) = read_record(
+        parent,
+        &name,
+        keld_guard::WindowsInstallProtectionProfile::MachineSystem,
+    )?;
     if observed != bytes {
         return Err(error("record readback", "flushed bytes differ"));
     }
@@ -283,7 +294,11 @@ fn publish_prepared(
         .map_err(|cause| error("record parent", cause))?
         .into_std_file();
     publish_new(&retained, temporary, leaf).map_err(|cause| error("record publication", cause))?;
-    let (_, observed) = read_record(parent, leaf)?;
+    let (_, observed) = read_record(
+        parent,
+        leaf,
+        keld_guard::WindowsInstallProtectionProfile::MachineSystem,
+    )?;
     if observed != bytes {
         return Err(error("published record readback", "published bytes differ"));
     }

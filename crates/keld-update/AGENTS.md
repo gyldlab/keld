@@ -1,24 +1,10 @@
 # keld-update invariants
 
-Extends root AGENTS.md. Owner/load: updater/always; trigger: this crate.
-Contract: docs/specs/kel53-full-package-activation.md T3b/T4a (KEL-265/266).
+Root floor applies. Owner/load: updater/always; trigger: this crate.
+Contract: KEL-53 T3b/T4a/T4b; KEL-265/266/270.
 
-- Production unsafe only in src/windows_fs.rs: read-only
-  GetVolumeInformationByHandleW, GetFinalPathNameByHandleW, GetDriveTypeW;
-  directory-only relative NtCreateFile, RtlNtStatusToDosError and successful
-  handle RAII; MoveFileExW only absent-target same-parent publication with
-  MOVEFILE_WRITE_THROUGH. No copy/replace, generic ABI/flags or ambient mkdir.
-  Use pinned bindings, checked live buffers, local SAFETY proofs and
-  deny(unsafe_op_in_unsafe_fn).
-- Relative creation takes one validated component and retained parent, create-new/
-  no-reparse with guard-owned atomic protection, no handle inheritance or delete sharing.
-  Guard owns ACL and package-name policy.
-- Preserve installation/key/profile identity. Validate actual descriptors and fixed
-  NTFS before writes; logical provenance is not OS proof. Retain source, ancestors
-  and readback handles for owner lifetime.
-- T3b never creates .complete, publishes versions or advances floor/pointers.
-  T4a alone initializes baseline; actual SYSTEM, persistent ancestry and provenance
-  last are required. Failure leaves incomplete state, never completion.
-- Test Win32 mapping/reparse/handle fixtures need local SAFETY proofs; reuse runtime
-  LPAC launch. Native failure controls and independent unsafe/security review required.
-  Retire allowance when these operations leave updater.
+- Production unsafe MUST stay in src/windows_fs.rs: volume/path queries, relative NT creation/RAII and reduced-rights activation.lock duplication. MoveFileExW is same-parent WRITE_THROUGH: publish_new stays absent-target; typed record replacement is only journal/floor/current/LKG/previous-known-good, REPLACE_EXISTING | WRITE_THROUGH under the stable lease after protected-sibling flush/readback. No caller paths/flags, copy or ambient mkdir. Use pinned bindings, checked buffers, local SAFETY proofs and unsafe-op denial.
+- Relative creation takes one validated component and retained parent, create-new/no-reparse, guard-owned profile, no inherited handles/delete share. Guard owns ACL/name policy.
+- Preserve install/key/profile identity. Check actual descriptors and fixed NTFS before writes; logical provenance is not OS proof. Retain source/ancestor/readback handles for owner lifetime.
+- T3b never creates .complete, publishes versions or advances floor/pointers. T4a alone seeds the baseline as actual SYSTEM, with persistent ancestry and provenance last; failure stays incomplete.
+- Mapping/reparse/handle fixtures need local SAFETY; reuse runtime LPAC. Require OS failure controls and independent unsafe/security review. Retire allowances when operations leave updater.

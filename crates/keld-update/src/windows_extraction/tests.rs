@@ -19,7 +19,8 @@ use keld_guard::{
 use tempfile::TempDir;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE,
 };
 use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READONLY, PAGE_READWRITE};
 
@@ -29,8 +30,8 @@ use crate::tests::{
     manifest_json, observation, release_json, signing_key,
 };
 use crate::{
-    DirectInstallationIdentity, InstallOwner, ManifestDecision, ProvenanceField, SigningKeyId,
-    UpdateVerifier,
+    DirectInstallMode, DirectInstallationIdentity, InstallOwner, ManifestDecision, ProvenanceField,
+    SigningKeyId, UpdateVerifier,
 };
 
 // This fixture was pinned independently with Python stdlib tarfile USTAR_FORMAT,
@@ -47,13 +48,15 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("isolated extraction fixture");
         let mut identity = expected_identity();
+        identity.install_mode = DirectInstallMode::PerUserDirect;
         identity.install_root = temp.path().join("install");
-        identity.update_root = temp.path().join("updates");
-        fs::create_dir(&identity.install_root).expect("fixture install root");
+        identity.update_root = identity.install_root.join("updates");
         let parent = cap_std::fs::Dir::open_ambient_dir(temp.path(), ambient_authority())
             .expect("retained fixture parent")
             .into_std_file();
-        let update = crate::windows_fs::create_directory_relative(&parent, "updates")
+        let install = crate::windows_fs::create_directory_relative(&parent, "install")
+            .expect("guard-protected install root");
+        let update = crate::windows_fs::create_directory_relative(&install, "updates")
             .expect("guard-protected update root");
         let versions = crate::windows_fs::create_directory_relative(&update, "versions")
             .expect("guard-protected versions root");
@@ -79,6 +82,141 @@ impl Fixture {
     fn receipt(&self, content: &[u8]) -> crate::VerifiedFull {
         authenticated_receipt(self.identity.clone(), &signing_key(), "1.0.0", content)
     }
+}
+
+#[test]
+fn logical_uac_admission_cannot_open_a_protected_stage_without_writer_authority() {
+    let fixture = Fixture::new();
+    let mut identity = fixture.identity.clone();
+    identity.install_mode = DirectInstallMode::MachineUacDirect;
+    let admitted = admitted_for(identity, &signing_key(), "1.0.0");
+    let error = admitted
+        .open_windows_extraction_root()
+        .expect_err("a logical observation is not an authenticated UAC writer capability");
+    assert!(
+        error.to_string().contains("exclusive writer lease"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_dir(fixture.versions())
+            .expect("per-user fixture versions remain present")
+            .count(),
+        0,
+        "refusal precedes any protected stage creation"
+    );
+}
+
+#[test]
+fn owner_private_root_refuses_install_profile_and_topology_substitution() {
+    let fixture = Fixture::new();
+    let install = fixture.temp.path().join("unprotected-install");
+    let update = install.join("updates");
+    fs::create_dir(&install).expect("ordinary inherited install fixture");
+    fs::create_dir(&update).expect("ordinary inherited update fixture");
+    fs::create_dir(update.join("versions")).expect("ordinary inherited versions fixture");
+
+    let mut identity = fixture.identity.clone();
+    identity.install_root = install;
+    identity.update_root = update.clone();
+    let admitted = admitted_for(identity.clone(), &signing_key(), "1.0.0");
+    assert!(
+        admitted.open_windows_extraction_root().is_err(),
+        "matching topology cannot compensate for a missing owner-private install profile"
+    );
+
+    identity.update_root = fixture.temp.path().join("sibling-updates");
+    let admitted = admitted_for(identity, &signing_key(), "1.0.0");
+    assert!(
+        admitted.open_windows_extraction_root().is_err(),
+        "a sibling update root cannot substitute for the trusted direct child"
+    );
+}
+
+#[test]
+#[ignore = "operator runs from the elevated installing administrator token"]
+fn elevated_uac_creator_applies_profile_before_payload_write() {
+    assert!(
+        keld_guard::require_windows_system_token().is_err(),
+        "Machine-UAC stage qualification uses an elevated administrator, not SYSTEM"
+    );
+    let fixture = Fixture::new();
+    let mut identity = fixture.identity.clone();
+    identity.install_mode = DirectInstallMode::MachineUacDirect;
+    let receipt = authenticated_receipt(identity, &signing_key(), "1.1.0", GOLDEN_TAR);
+    let source_path = fixture.source(GOLDEN_TAR);
+    let mut source = open_source(&source_path).expect("lock ordinary-user package cache input");
+    let validated = receipt
+        .validate_windows_archive(&mut source)
+        .expect("elevated helper revalidates exact signed package bytes");
+    let parent = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(fixture.temp.path())
+        .expect("retain user cache parent");
+    let stage = crate::windows_fs::create_directory_relative_with_profile(
+        &parent,
+        "machine-uac-stage",
+        keld_guard::WindowsInstallProtectionProfile::MachineUac,
+    )
+    .expect("create Administrators/SYSTEM-owned stage before payload");
+    keld_guard::validate_windows_admin_machine_directory(&stage)
+        .expect("stage root has exact profile before copy");
+    let mut before_payload_write = 0_usize;
+    let (directories, files) = populate_stage(
+        stage,
+        "machine-uac-stage",
+        &validated,
+        &mut source,
+        StageProtection::MachineUac,
+        &mut |event, diagnostic| {
+            if event == ExtractionEvent::BeforePayloadWrite {
+                let relative = if diagnostic == "content.tar" {
+                    PathBuf::from("content.tar")
+                } else {
+                    PathBuf::from("tree").join(diagnostic)
+                };
+                let path = fixture.temp.path().join("machine-uac-stage").join(relative);
+                let file = File::open(path).expect("destination exists before its flush");
+                keld_guard::validate_windows_admin_machine_file(&file).expect(
+                    "exact Machine-UAC file profile is present before the first payload write",
+                );
+                assert_eq!(
+                    file.metadata().expect("inspect new destination").len(),
+                    0,
+                    "before-write observation must precede every payload byte"
+                );
+                before_payload_write += 1;
+            }
+            Ok(())
+        },
+    )
+    .expect("shared extraction/readback succeeds under Machine-UAC profile");
+    assert_eq!(
+        before_payload_write,
+        files.len(),
+        "every destination file must pass the pre-write control"
+    );
+    for directory in &directories {
+        keld_guard::validate_windows_admin_machine_directory(
+            &directory
+                .try_clone()
+                .expect("directory handle")
+                .into_std_file(),
+        )
+        .expect("every output directory has Machine-UAC profile");
+    }
+    for file in &files {
+        keld_guard::validate_windows_admin_machine_file(
+            &file.try_clone().expect("file handle").into_std(),
+        )
+        .expect("every output file has Machine-UAC profile");
+    }
+    assert_eq!(
+        fs::read(fixture.temp.path().join("machine-uac-stage/content.tar"))
+            .expect("read copied package"),
+        GOLDEN_TAR
+    );
 }
 
 fn admitted_for(
@@ -280,7 +418,7 @@ fn signed_golden_extracts_only_incomplete_stage_with_exact_bytes() {
 #[test]
 fn tilde_in_existing_update_root_preserves_authenticated_extraction() {
     let mut fixture = Fixture::new();
-    let renamed = fixture.temp.path().join("updates~stable");
+    let renamed = fixture.identity.install_root.join("updates~stable");
     fs::rename(&fixture.identity.update_root, &renamed)
         .expect("rename preserves protected directory descriptors");
     fixture.identity.update_root = renamed;

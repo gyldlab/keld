@@ -4444,8 +4444,9 @@ mod tests {
             "set -euo pipefail\n{}\nrender_parent=$(cd \"$1\" && pwd -P)\nwhoami.exe() {{ echo 'GNU whoami rejects Windows arguments' >&2; return 64; }}\nrestore_docker_output_dir \"$render_parent/keld-mermaid-render.fixture\"\n",
             &renderer[start..end]
         );
+        temp.write("native-dacl-restore.sh", &script);
         let output = Command::new("bash")
-            .args(["-c", &script, "kel152-native-test"])
+            .arg(temp.path().join("native-dacl-restore.sh"))
             .arg(&parent)
             .output()
             .expect("execute native restoration");

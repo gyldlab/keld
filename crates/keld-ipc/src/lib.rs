@@ -35,8 +35,12 @@ pub use bootstrap::{
 };
 #[cfg(windows)]
 pub use bootstrap::{
+    WindowsLifecycleBinding, WindowsLifecycleBindingKnowledge, WindowsLifecycleExpectation,
+    WindowsLifecyclePeerPin, WindowsLifecyclePurpose, WindowsLifecycleRendezvousClient,
+    WindowsLifecycleRendezvousListener, WindowsLifecycleRendezvousPeer,
     WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapCancellation,
     WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
+    connect_windows_lifecycle_rendezvous_until,
 };
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
@@ -49,6 +53,8 @@ pub use session::{
     serve_echo_session, serve_echo_session_until_stopped,
 };
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
+#[cfg(windows)]
+pub use windows_named_pipe::{WindowsPeerTokenFacts, query_windows_peer_token_facts};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).
 ///
