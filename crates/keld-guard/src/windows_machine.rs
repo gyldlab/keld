@@ -15,8 +15,11 @@ use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-const DIRECTORY: &str = "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
-const FILE: &str = "O:SYD:P(A;;FA;;;SY)(A;;0x1200a9;;;BU)";
+const SYSTEM_DIRECTORY: &str = "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
+const SYSTEM_FILE: &str = "O:SYD:P(A;;FA;;;SY)(A;;0x1200a9;;;BU)";
+const ADMIN_DIRECTORY: &str =
+    "O:S-1-5-32-544D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
+const ADMIN_FILE: &str = "O:S-1-5-32-544D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;0x1200a9;;;BU)";
 
 /// Requires the actual current process `TokenUser` to be `LocalSystem`.
 ///
@@ -45,6 +48,98 @@ pub fn validate_windows_machine_directory(object: &File) -> io::Result<()> {
 /// Refuses a non-file, reparse point, wrong owner, or any noncanonical ACE.
 pub fn validate_windows_machine_file(object: &File) -> io::Result<()> {
     validate(object, false)
+}
+
+/// Validates the SYSTEM/Administrators-writable Program Files directory profile.
+///
+/// # Errors
+/// Refuses a non-directory, reparse point, wrong owner or noncanonical DACL.
+pub fn validate_windows_admin_machine_directory(object: &File) -> io::Result<()> {
+    validate_admin_profile(object, true)
+}
+
+/// Validates the SYSTEM/Administrators-writable Program Files regular-file profile.
+///
+/// # Errors
+/// Refuses a non-file, reparse point, wrong owner or noncanonical DACL.
+pub fn validate_windows_admin_machine_file(object: &File) -> io::Result<()> {
+    validate_admin_profile(object, false)
+}
+
+/// Validates the exact selected Windows updater-state protection profile.
+///
+/// # Errors
+/// Refuses a wrong object type, reparse point, owner, DACL or profile.
+pub fn validate_windows_install_directory(
+    object: &File,
+    profile: crate::WindowsInstallProtectionProfile,
+) -> io::Result<()> {
+    match profile {
+        crate::WindowsInstallProtectionProfile::PerUserOwnerPrivate => {
+            crate::validate_windows_owner_private_directory(object)
+        }
+        crate::WindowsInstallProtectionProfile::MachineUac => {
+            validate_windows_admin_machine_directory(object)
+        }
+        crate::WindowsInstallProtectionProfile::MachineSystem => {
+            validate_windows_machine_directory(object)
+        }
+    }
+}
+
+/// Validates the exact selected Windows updater-state regular-file profile.
+///
+/// # Errors
+/// Refuses a wrong object type, reparse point, owner, DACL or profile.
+pub fn validate_windows_install_file(
+    object: &File,
+    profile: crate::WindowsInstallProtectionProfile,
+) -> io::Result<()> {
+    match profile {
+        crate::WindowsInstallProtectionProfile::PerUserOwnerPrivate => {
+            crate::validate_windows_owner_private_file(object)
+        }
+        crate::WindowsInstallProtectionProfile::MachineUac => {
+            validate_windows_admin_machine_file(object)
+        }
+        crate::WindowsInstallProtectionProfile::MachineSystem => {
+            validate_windows_machine_file(object)
+        }
+    }
+}
+
+/// Builds the canonical directory descriptor for a trusted installation bootstrap.
+///
+/// # Errors
+/// Refuses to construct a descriptor when the current token cannot name the
+/// per-user owner or Windows cannot parse the fixed machine profile.
+pub fn windows_install_directory_security(
+    profile: crate::WindowsInstallProtectionProfile,
+) -> io::Result<LocalBox<SecurityDescriptor>> {
+    match profile {
+        crate::WindowsInstallProtectionProfile::PerUserOwnerPrivate => {
+            crate::windows_owner_private_directory_security()
+        }
+        crate::WindowsInstallProtectionProfile::MachineUac => ADMIN_DIRECTORY.parse(),
+        crate::WindowsInstallProtectionProfile::MachineSystem => SYSTEM_DIRECTORY.parse(),
+    }
+}
+
+/// Builds the canonical regular-file descriptor for a trusted installation bootstrap.
+///
+/// # Errors
+/// Refuses to construct a descriptor when the current token cannot name the
+/// per-user owner or Windows cannot parse the fixed machine profile.
+pub fn windows_install_file_security(
+    profile: crate::WindowsInstallProtectionProfile,
+) -> io::Result<LocalBox<SecurityDescriptor>> {
+    match profile {
+        crate::WindowsInstallProtectionProfile::PerUserOwnerPrivate => {
+            crate::windows_owner_private_file_security()
+        }
+        crate::WindowsInstallProtectionProfile::MachineUac => ADMIN_FILE.parse(),
+        crate::WindowsInstallProtectionProfile::MachineSystem => SYSTEM_FILE.parse(),
+    }
 }
 
 /// Seals an existing SYSTEM-private directory to the committed machine policy.
@@ -88,6 +183,23 @@ pub fn validate_windows_machine_volume_anchor(object: &File) -> io::Result<()> {
     validate_anchor_descriptor(&descriptor)
 }
 
+/// Validates a trusted, non-leaf ancestor above a machine installation root.
+///
+/// Unlike an install-state directory, ancestors may be owned by SYSTEM,
+/// Administrators or `TrustedInstaller`. Untrusted principals may traverse/read and
+/// add a subdirectory, but cannot add files, delete, replace, write data or change
+/// the descriptor. The installation root and every state descendant are validated
+/// independently against their selected exact profile.
+///
+/// # Errors
+/// Refuses reparses, untrusted owners, unsupported ACE forms or untrusted effective
+/// mutation rights.
+pub fn validate_windows_machine_ancestor_directory(object: &File) -> io::Result<()> {
+    ensure_kind(object, true)?;
+    let descriptor = descriptor(object)?;
+    validate_anchor_descriptor(&descriptor)
+}
+
 fn descriptor(object: &File) -> io::Result<LocalBox<SecurityDescriptor>> {
     GetSecurityInfo(
         object,
@@ -111,14 +223,48 @@ fn ensure_kind(object: &File, directory: bool) -> io::Result<()> {
 }
 
 fn validate(object: &File, directory: bool) -> io::Result<()> {
-    ensure_kind(object, directory)?;
-    let descriptor = descriptor(object)?;
-    validate_descriptor(&descriptor, directory)
+    validate_with_profile(
+        object,
+        directory,
+        crate::WindowsInstallProtectionProfile::MachineSystem,
+    )
 }
 
-fn validate_descriptor(actual: &SecurityDescriptor, directory: bool) -> io::Result<()> {
-    let expected: LocalBox<SecurityDescriptor> =
-        if directory { DIRECTORY } else { FILE }.parse()?;
+fn validate_admin_profile(object: &File, directory: bool) -> io::Result<()> {
+    validate_with_profile(
+        object,
+        directory,
+        crate::WindowsInstallProtectionProfile::MachineUac,
+    )
+}
+
+fn validate_with_profile(
+    object: &File,
+    directory: bool,
+    profile: crate::WindowsInstallProtectionProfile,
+) -> io::Result<()> {
+    ensure_kind(object, directory)?;
+    let descriptor = descriptor(object)?;
+    validate_descriptor(&descriptor, directory, profile)
+}
+
+fn validate_descriptor(
+    actual: &SecurityDescriptor,
+    directory: bool,
+    profile: crate::WindowsInstallProtectionProfile,
+) -> io::Result<()> {
+    let expected_sddl = match (profile, directory) {
+        (crate::WindowsInstallProtectionProfile::MachineSystem, true) => SYSTEM_DIRECTORY,
+        (crate::WindowsInstallProtectionProfile::MachineSystem, false) => SYSTEM_FILE,
+        (crate::WindowsInstallProtectionProfile::MachineUac, true) => ADMIN_DIRECTORY,
+        (crate::WindowsInstallProtectionProfile::MachineUac, false) => ADMIN_FILE,
+        (crate::WindowsInstallProtectionProfile::PerUserOwnerPrivate, _) => {
+            return Err(io::Error::other(
+                "owner-private profile is validated by its dedicated descriptor owner",
+            ));
+        }
+    };
+    let expected: LocalBox<SecurityDescriptor> = expected_sddl.parse()?;
     if actual.owner() != expected.owner() || !actual.as_sddl()?.to_string_lossy().contains("D:P") {
         return Err(io::Error::other("machine owner or DACL protection differs"));
     }
@@ -130,7 +276,7 @@ fn validate_descriptor(actual: &SecurityDescriptor, directory: bool) -> io::Resu
         .ok_or_else(|| io::Error::other("canonical DACL absent"))?;
     if actual_acl.len() != expected_acl.len() {
         return Err(io::Error::other(
-            "machine DACL must contain exactly two rules",
+            "machine DACL ACE count differs from selected profile",
         ));
     }
     for index in 0..expected_acl.len() {
@@ -146,7 +292,7 @@ fn validate_descriptor(actual: &SecurityDescriptor, directory: bool) -> io::Resu
             || actual.sid() != expected.sid()
         {
             return Err(io::Error::other(
-                "machine access rule differs from SYSTEM/full and Users/RX",
+                "machine access rule differs from selected protection profile",
             ));
         }
     }
@@ -154,8 +300,12 @@ fn validate_descriptor(actual: &SecurityDescriptor, directory: bool) -> io::Resu
 }
 
 fn seal(object: &mut File, directory: bool) -> io::Result<()> {
-    let expected: LocalBox<SecurityDescriptor> =
-        if directory { DIRECTORY } else { FILE }.parse()?;
+    let expected: LocalBox<SecurityDescriptor> = if directory {
+        SYSTEM_DIRECTORY
+    } else {
+        SYSTEM_FILE
+    }
+    .parse()?;
     SetSecurityInfo(
         object,
         SeObjectType::SE_FILE_OBJECT,
@@ -235,8 +385,20 @@ mod tests {
         ] {
             let descriptor: LocalBox<SecurityDescriptor> =
                 sddl.parse().expect("literal descriptor");
-            validate_descriptor(&descriptor, directory).expect("literal machine contract");
-            assert!(validate_descriptor(&descriptor, !directory).is_err());
+            validate_descriptor(
+                &descriptor,
+                directory,
+                crate::WindowsInstallProtectionProfile::MachineSystem,
+            )
+            .expect("literal machine contract");
+            assert!(
+                validate_descriptor(
+                    &descriptor,
+                    !directory,
+                    crate::WindowsInstallProtectionProfile::MachineSystem
+                )
+                .is_err()
+            );
         }
         for sddl in [
             "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)",
@@ -246,7 +408,69 @@ mod tests {
             "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)(A;;FW;;;BU)",
         ] {
             let descriptor: LocalBox<SecurityDescriptor> = sddl.parse().expect("mutated literal");
-            assert!(validate_descriptor(&descriptor, true).is_err(), "{sddl}");
+            assert!(
+                validate_descriptor(
+                    &descriptor,
+                    true,
+                    crate::WindowsInstallProtectionProfile::MachineSystem
+                )
+                .is_err(),
+                "{sddl}"
+            );
+        }
+    }
+
+    #[test]
+    fn uac_machine_profile_requires_exact_admin_system_and_users_rights() {
+        let directory = "O:S-1-5-32-544D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
+        let file = "O:S-1-5-32-544D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;0x1200a9;;;BU)";
+        for (sddl, is_directory) in [(directory, true), (file, false)] {
+            let descriptor: LocalBox<SecurityDescriptor> =
+                sddl.parse().expect("literal UAC descriptor");
+            validate_descriptor(
+                &descriptor,
+                is_directory,
+                crate::WindowsInstallProtectionProfile::MachineUac,
+            )
+            .expect("literal UAC profile");
+        }
+        let generated_directory =
+            windows_install_directory_security(crate::WindowsInstallProtectionProfile::MachineUac)
+                .expect("fixed UAC directory descriptor");
+        validate_descriptor(
+            &generated_directory,
+            true,
+            crate::WindowsInstallProtectionProfile::MachineUac,
+        )
+        .expect("generated UAC directory profile");
+        let generated_file =
+            windows_install_file_security(crate::WindowsInstallProtectionProfile::MachineUac)
+                .expect("fixed UAC file descriptor");
+        validate_descriptor(
+            &generated_file,
+            false,
+            crate::WindowsInstallProtectionProfile::MachineUac,
+        )
+        .expect("generated UAC file profile");
+        for sddl in [
+            "O:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)",
+            "O:S-1-5-32-544D:(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)",
+            "O:S-1-5-32-544D:P(A;OICI;0x1200a9;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)",
+            "O:S-1-5-32-544D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;BU)",
+            "O:S-1-5-32-544D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:S-1-5-32-544D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)(A;;FW;;;BU)",
+        ] {
+            let descriptor: LocalBox<SecurityDescriptor> =
+                sddl.parse().expect("mutated UAC descriptor");
+            assert!(
+                validate_descriptor(
+                    &descriptor,
+                    true,
+                    crate::WindowsInstallProtectionProfile::MachineUac
+                )
+                .is_err(),
+                "{sddl}"
+            );
         }
     }
 

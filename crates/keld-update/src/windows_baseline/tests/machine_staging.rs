@@ -124,12 +124,16 @@ fn refuse_context_and_floor(
     // These one-field controls deliberately mutate private receipt storage. The
     // public authenticated API cannot create these contradictory capabilities.
     for field in [
+        ProvenanceField::InstallMode,
         ProvenanceField::InstallRoot,
         ProvenanceField::SigningKey,
         ProvenanceField::Profile,
     ] {
         let mut changed = receipt.clone();
         match field {
+            ProvenanceField::InstallMode => {
+                changed.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+            }
             ProvenanceField::InstallRoot => changed.installation.install_root.push("foreign"),
             ProvenanceField::SigningKey => {
                 changed.installation.signing_key_id = SigningKeyId::from_public_key(&[0x44; 32]);
@@ -205,6 +209,19 @@ fn refuse_changed_descriptor(
 
 fn assert_metadata_pins(trust: &WindowsBaselineTrust, retained: bool) {
     let update = &trust.installation.update_root;
+    let writer = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(update.join("activation.lock"));
+    if retained {
+        assert!(
+            writer.is_err(),
+            "retained read owner keeps the shared lease"
+        );
+    } else {
+        drop(writer.expect("released read owner permits a writer"));
+    }
     let version = update.join("versions/1.0.0");
     for path in [
         trust.installation.install_root.join("install-provenance"),
@@ -254,6 +271,7 @@ fn protected_bytes(trust: &WindowsBaselineTrust) -> BTreeMap<PathBuf, Vec<u8>> {
     for relative in [
         "install-provenance",
         "updates/bootstrap.lock",
+        "updates/activation.lock",
         "updates/version-floor",
         "updates/current",
         "updates/last-known-good",

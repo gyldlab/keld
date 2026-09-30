@@ -48,6 +48,7 @@ fn snapshot(install: &Path) -> Vec<Snapshot> {
     }
     for relative in [
         "install-provenance",
+        "updates/activation.lock",
         "updates/version-floor",
         "updates/current",
         "updates/last-known-good",
@@ -84,7 +85,7 @@ fn real_lpac_cannot_mutate_committed_baseline() {
         &version,
         Some(&install),
     );
-    assert!(output.contains("KELD_266_LPAC_BASELINE protected_files=7 write_denied=true delete_access_denied=true dac_denied=true owner_denied=true create_denied=true"),
+    assert!(output.contains("KELD_266_LPAC_BASELINE protected_files=8 write_denied=true delete_access_denied=true dac_denied=true owner_denied=true create_denied=true"),
         "committed-state probe must actually run: {output}");
     let after = snapshot(&install);
     assert_eq!(after.len(), before.len());

@@ -37,14 +37,17 @@ mod windows_owner_private;
 #[cfg(windows)]
 pub use windows_machine::{
     require_windows_system_token, seal_windows_machine_directory, seal_windows_machine_file,
-    validate_windows_machine_directory, validate_windows_machine_file,
-    validate_windows_machine_volume_anchor,
+    validate_windows_admin_machine_directory, validate_windows_admin_machine_file,
+    validate_windows_install_directory, validate_windows_install_file,
+    validate_windows_machine_ancestor_directory, validate_windows_machine_directory,
+    validate_windows_machine_file, validate_windows_machine_volume_anchor,
+    windows_install_directory_security, windows_install_file_security,
 };
 
 #[cfg(windows)]
 pub use windows_owner_private::{
     validate_windows_owner_private_directory, validate_windows_owner_private_file,
-    windows_owner_private_directory_security,
+    windows_owner_private_directory_security, windows_owner_private_file_security,
 };
 
 use std::fmt;
@@ -66,6 +69,32 @@ pub use admit::{
     expected_layer_for,
 };
 pub use probe::{ProbeReport, run_synthetic_probes};
+
+/// Canonical Windows installation-state protection profiles owned by `keld-guard`.
+///
+/// The profile label is persisted by the updater, but only the matching OS-backed
+/// validator proves the actual descriptor. It is not proof by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowsInstallProtectionProfile {
+    /// User-owned installation protected from restricted Keld roles.
+    PerUserOwnerPrivate,
+    /// Program Files installation writable by elevated Administrators and SYSTEM.
+    MachineUac,
+    /// SYSTEM-owned machine installation with ordinary users read/execute only.
+    MachineSystem,
+}
+
+impl WindowsInstallProtectionProfile {
+    /// Stable local-record profile identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PerUserOwnerPrivate => "windows-per-user-role-rx-v1",
+            Self::MachineUac => "windows-administrators-system-users-rx-v1",
+            Self::MachineSystem => "windows-system-users-rx-v1",
+        }
+    }
+}
 
 /// An unforgeable identity minted by the host for each peer.
 ///

@@ -91,6 +91,7 @@ pub(super) fn mutation_child() {
 fn probe_committed_records(install: &Path) {
     for relative in [
         "install-provenance",
+        "updates/activation.lock",
         "updates/version-floor",
         "updates/current",
         "updates/last-known-good",
@@ -137,7 +138,7 @@ fn probe_committed_records(install: &Path) {
     // RolePrivate positively proves data/attribute mutation; it does not grant
     // DELETE or WRITE_DAC. Those requested rights are denial-only observations.
     println!(
-        "KELD_266_LPAC_BASELINE protected_files=7 write_denied=true delete_access_denied=true dac_denied=true owner_denied=true create_denied=true"
+        "KELD_266_LPAC_BASELINE protected_files=8 write_denied=true delete_access_denied=true dac_denied=true owner_denied=true create_denied=true"
     );
 }
 

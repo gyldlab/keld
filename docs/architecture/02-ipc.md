@@ -57,6 +57,21 @@ ordinary-user token before admission, followed by an authorized same-user echo
 and a fresh successor generation. The DACL does not exclude an administrator or
 a malicious process running as the same user; the HELLO token remains mandatory.
 
+**Windows updater lifecycle rendezvous (KEL-53 proof slice):** this is a distinct,
+one-peer protocol on the dedicated `\\.\pipe\keld-lifecycle-<64 lowercase hex>`
+namespace, disjoint from reusable app-link pipes. Clients reject the other namespace
+before connect, so this discriminator selects the separate parser/nonce handshake
+before any divergent record is read. After exact peer/process/token validation and
+fresh client/server nonces, the server sends a fixed-size `KELD-LC1` binding challenge;
+the client returns `KELD-LA1` only after validating install, purpose, both nonces and
+both connected-process PIDs. The listener consumes its one-shot before sending a
+same-context `KELD-LR1` receipt; the client cannot return an admitted connection before
+verifying it. A cold successor may learn attempt/channel from the authenticated
+keeper, but must revalidate them against the protected journal after lease acquisition
+before mutation. LC1/LA1/LR1 version this KEL-53 protocol separately from generic kipc
+frames; production capability handoff remains disconnected until lifecycle proof gates
+pass. See KEL-53 for the record and failure contract.
+
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
 gives the accepted stream to one logical private router with serialized writes.

@@ -1,9 +1,13 @@
+#[cfg(windows)]
+use super::lifecycle_installation_id;
 use super::{
-    MAX_LOCAL_RECORD_BYTES, PointerKind, decode_complete, decode_floor, decode_pointer,
-    decode_provenance, encode_complete, encode_floor, encode_pointer, encode_provenance,
+    MAX_LOCAL_RECORD_BYTES, PointerKind, decode_activation_journal, decode_complete, decode_floor,
+    decode_pointer, decode_provenance, encode_activation_journal, encode_complete, encode_floor,
+    encode_pointer, encode_provenance,
 };
+use crate::records::{ActivationJournal, ActivationPhase};
 use crate::tests::expected_identity;
-use crate::{InstallOwner, InstallProvenance, UpdateError};
+use crate::{DirectInstallMode, InstallOwner, InstallProvenance, UpdateError};
 
 const VOLUME: &str = r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\";
 
@@ -21,6 +25,7 @@ fn floor_has_exact_canonical_bytes_and_distinct_pointer_schemas() {
     let artifact = expected_identity().baseline;
     let current = encode_pointer(PointerKind::Current, &artifact).expect("current");
     let good = encode_pointer(PointerKind::LastKnownGood, &artifact).expect("LKG");
+    let previous = encode_pointer(PointerKind::PreviousKnownGood, &artifact).expect("previous LKG");
     assert_eq!(
         decode_pointer(PointerKind::Current, &current).expect("current bytes"),
         artifact
@@ -29,12 +34,21 @@ fn floor_has_exact_canonical_bytes_and_distinct_pointer_schemas() {
         decode_pointer(PointerKind::LastKnownGood, &good).expect("LKG bytes"),
         artifact
     );
+    assert_eq!(
+        decode_pointer(PointerKind::PreviousKnownGood, &previous).expect("previous LKG bytes"),
+        artifact
+    );
+    assert!(previous.starts_with(br#"{"schema":"keld.previous-known-good/v1""#));
     assert!(matches!(
         decode_pointer(PointerKind::Current, &good),
         Err(UpdateError::LocalRecordInvalid { .. })
     ));
     assert!(matches!(
         decode_pointer(PointerKind::LastKnownGood, &current),
+        Err(UpdateError::LocalRecordInvalid { .. })
+    ));
+    assert!(matches!(
+        decode_pointer(PointerKind::LastKnownGood, &previous),
         Err(UpdateError::LocalRecordInvalid { .. })
     ));
 }
@@ -86,6 +100,101 @@ fn provenance_roundtrip_preserves_every_identity_and_trusted_scope_field() {
     ] {
         assert!(decode_provenance(altered.as_bytes()).is_err(), "{altered}");
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn lifecycle_installation_id_binds_the_versioned_canonical_provenance() {
+    let provenance = InstallProvenance {
+        identity: expected_identity(),
+        owner: InstallOwner::Direct,
+    };
+    let canonical =
+        encode_provenance(&provenance, &[0xab; 32], VOLUME).expect("canonical v2 provenance");
+    assert_eq!(
+        canonical,
+        br#"{"schema":"keld.install-provenance/v2","owner":"direct","protection_profile":"windows-system-users-rx-v1","identity":{"install_mode":"machine-seamless-direct","app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","install_root":"C:\\Program Files\\KeldFixture","update_root":"C:\\ProgramData\\KeldFixture\\updates","signing_key_id":"0871f3aabc26e4582c508af5c03884e6a96f0989d1dd8cfb49cd17ed25792433","baseline":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"profile_digest":"0202020202020202020202020202020202020202020202020202020202020202","principal_model":"strict-distinct-os-principals"},"publisher_scope":"abababababababababababababababababababababababababababababababab","volume_guid":"\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\"}"#,
+        "canonical provenance v2 bytes and field order are frozen by this vector"
+    );
+    let expected_length = u64::try_from(canonical.len()).expect("bounded record length");
+    let mut expected = blake3::Hasher::new();
+    expected.update(b"keld.installation-binding/provenance-v2/v1\0");
+    expected.update(&expected_length.to_le_bytes());
+    expected.update(&canonical);
+    let expected = *expected.finalize().as_bytes();
+    let actual = lifecycle_installation_id(&provenance, &[0xab; 32], VOLUME)
+        .expect("domain-separated lifecycle ID");
+    assert_eq!(actual, expected);
+    assert_eq!(
+        crate::error::hex_digest(&actual),
+        "884410cbb07068c6a1d2799859cab6db99bdbd0114639362276f853c8b5454ba"
+    );
+
+    let mut changed = provenance.clone();
+    changed.identity.install_root.push("-relocated");
+    assert_ne!(
+        lifecycle_installation_id(&changed, &[0xab; 32], VOLUME).expect("changed root ID"),
+        actual
+    );
+    assert_ne!(
+        lifecycle_installation_id(&provenance, &[0xac; 32], VOLUME).expect("changed publisher ID"),
+        actual
+    );
+    assert_ne!(
+        lifecycle_installation_id(
+            &provenance,
+            &[0xab; 32],
+            r"\\?\Volume{11234567-89ab-cdef-0123-456789abcdef}\",
+        )
+        .expect("changed volume ID"),
+        actual
+    );
+    changed = provenance.clone();
+    changed.identity.install_mode = DirectInstallMode::MachineUacDirect;
+    assert_ne!(
+        lifecycle_installation_id(&changed, &[0xab; 32], VOLUME).expect("changed install mode ID"),
+        actual
+    );
+}
+
+#[test]
+fn provenance_binds_each_explicit_mode_to_its_own_profile_and_refuses_v1() {
+    let mut provenance = InstallProvenance {
+        identity: expected_identity(),
+        owner: InstallOwner::Direct,
+    };
+    for (mode, profile) in [
+        (
+            DirectInstallMode::PerUserDirect,
+            "windows-per-user-role-rx-v1",
+        ),
+        (
+            DirectInstallMode::MachineUacDirect,
+            "windows-administrators-system-users-rx-v1",
+        ),
+        (
+            DirectInstallMode::MachineSeamlessDirect,
+            "windows-system-users-rx-v1",
+        ),
+    ] {
+        provenance.identity.install_mode = mode;
+        let bytes = encode_provenance(&provenance, &[0xab; 32], VOLUME).expect("mode record");
+        let text = String::from_utf8(bytes.clone()).expect("UTF-8");
+        assert!(text.contains(profile), "{text}");
+        assert_eq!(
+            decode_provenance(&bytes).expect("mode read").provenance,
+            provenance
+        );
+        let mismatched_profile = text.replace(profile, "windows-owner-private-v0");
+        assert!(decode_provenance(mismatched_profile.as_bytes()).is_err());
+    }
+
+    let legacy =
+        String::from_utf8(encode_provenance(&provenance, &[0xab; 32], VOLUME).expect("v2 record"))
+            .expect("UTF-8")
+            .replace("keld.install-provenance/v2", "keld.install-provenance/v1")
+            .replace(r#""install_mode":"machine-seamless-direct","#, "");
+    assert!(decode_provenance(legacy.as_bytes()).is_err());
 }
 
 #[test]
@@ -165,4 +274,113 @@ fn codec_enforces_the_exact_record_size_ceiling_on_write_and_read() {
     let mut oversized = exact;
     oversized.push(b' ');
     assert!(decode_pointer(PointerKind::Current, &oversized).is_err());
+}
+
+fn activation_journal() -> ActivationJournal {
+    let baseline = expected_identity().baseline;
+    let mut previous = baseline.clone();
+    previous.version = "0.9.0".to_owned();
+    previous.content_blake3 = [0x33; 32];
+    let mut candidate = baseline.clone();
+    candidate.version = "1.1.0".to_owned();
+    candidate.content_blake3 = [0x44; 32];
+    ActivationJournal {
+        attempt_id: [0x11; 32],
+        candidate,
+        rollback_target: baseline.clone(),
+        prior_floor: baseline.version.clone(),
+        prior_last_known_good: baseline,
+        prior_previous_known_good: Some(previous),
+        helper_image_blake3: [0x55; 32],
+        health_channel_id: [0x66; 32],
+        lifecycle_channel_id: [0x88; 32],
+        phase: ActivationPhase::PublishPending,
+    }
+}
+
+#[test]
+fn activation_journal_uses_exact_canonical_bytes_and_roundtrips_all_context() {
+    let journal = activation_journal();
+    let bytes = encode_activation_journal(&journal).expect("activation journal");
+    let text = String::from_utf8(bytes.clone()).expect("UTF-8");
+    assert!(text.starts_with(r#"{"schema":"keld.activation-journal/v1","attempt_id":"1111"#));
+    assert!(text.ends_with(r#""phase":{"phase":"publish-pending"}}"#));
+    assert_eq!(
+        decode_activation_journal(&bytes).expect("canonical journal"),
+        journal
+    );
+
+    let mut accepted = journal;
+    accepted.phase = ActivationPhase::HealthAccepted {
+        health_receipt_digest: [0x77; 32],
+    };
+    let accepted_bytes = encode_activation_journal(&accepted).expect("accepted journal");
+    assert!(
+        String::from_utf8_lossy(&accepted_bytes)
+            .contains(r#""phase":{"phase":"health-accepted","health_receipt_digest":"7777"#)
+    );
+    assert_eq!(
+        decode_activation_journal(&accepted_bytes).expect("accepted journal read"),
+        accepted
+    );
+}
+
+#[test]
+fn activation_journal_rejects_noncanonical_or_substituted_context() {
+    let bytes = encode_activation_journal(&activation_journal()).expect("journal");
+    let text = String::from_utf8(bytes).expect("UTF-8");
+    let duplicate_attempt = text.replacen(
+        r#""attempt_id":""#,
+        r#""attempt_id":"0000000000000000000000000000000000000000000000000000000000000000","attempt_id":""#,
+        1,
+    );
+    let duplicate_lifecycle = text.replace(&"88".repeat(32), &"66".repeat(32));
+    let cases = [
+        text.replace("keld.activation-journal/v1", "keld.activation-journal/v2"),
+        text.replace(
+            r#""schema":"keld.activation-journal/v1""#,
+            r#""schema":"keld.activation-journal/v1","unknown":0"#,
+        ),
+        duplicate_attempt,
+        text.replace("1.1.0", "1.0.0"),
+        text.replace("1.1.0", "01.1.0"),
+        text.replace(r#""prior_floor":"1.0.0""#, r#""prior_floor":"0.5.0""#),
+        duplicate_lifecycle,
+        text.replace("candidate", "other-app-candidate"),
+        text.replace("rollback_target", "untrusted_rollback_target"),
+        text.replace("publish-pending", "future-phase"),
+        format!("{{ {text}"),
+    ];
+    for altered in cases {
+        assert!(
+            decode_activation_journal(altered.as_bytes()).is_err(),
+            "accepted substituted journal: {altered}"
+        );
+    }
+}
+
+#[test]
+fn activation_journal_encoder_refuses_floor_below_known_good_history() {
+    let mut journal = activation_journal();
+    journal.prior_floor = "0.5.0".to_owned();
+    assert!(
+        encode_activation_journal(&journal).is_err(),
+        "encoded journal history cannot place the prior floor below its rollback artifacts"
+    );
+}
+
+#[test]
+fn activation_journal_rejects_previous_known_good_not_older_than_prior_lkg() {
+    let mut journal = activation_journal();
+    journal.prior_floor = "2.0.0".to_owned();
+    journal.candidate.version = "3.0.0".to_owned();
+    journal
+        .prior_previous_known_good
+        .as_mut()
+        .expect("prior previous")
+        .version = "2.0.0".to_owned();
+    assert!(
+        encode_activation_journal(&journal).is_err(),
+        "historical previous slot cannot equal or outrank its prior LKG"
+    );
 }

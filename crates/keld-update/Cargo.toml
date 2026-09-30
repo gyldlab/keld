@@ -29,6 +29,8 @@ getrandom = { workspace = true }
 windows-sys = { workspace = true, features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_System_SystemServices"] }
 
 [target.'cfg(windows)'.dev-dependencies]
+# QF1 integration tests must exercise the canonical lifecycle rendezvous with the real updater snapshot.
+keld-ipc = { workspace = true }
 keld-runtime = { workspace = true }
 tempfile = { workspace = true }
 windows-permissions = { workspace = true }

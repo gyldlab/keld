@@ -28,6 +28,24 @@ pub fn windows_owner_private_directory_security() -> io::Result<LocalBox<Securit
     .parse()
 }
 
+/// Builds the canonical inherited current-user regular-file descriptor.
+///
+/// This is suitable only beneath a validated owner-private directory.
+///
+/// # Errors
+/// Returns an I/O error when the current token user cannot be read or the descriptor
+/// cannot be built.
+pub fn windows_owner_private_file_security() -> io::Result<LocalBox<SecurityDescriptor>> {
+    let current = current_process_sid()?;
+    let sid = ConvertSidToStringSid(&current)?;
+    format!(
+        "O:{}D:AI(A;ID;FA;;;{})",
+        sid.to_string_lossy(),
+        sid.to_string_lossy()
+    )
+    .parse()
+}
+
 /// Checks the exact owner-private directory object and descriptor by retained handle.
 ///
 /// # Errors
@@ -141,6 +159,10 @@ mod tests {
         let directory = windows_owner_private_directory_security().expect("current-user policy");
         validate_descriptor(&directory, ObjectKind::Directory).expect("canonical directory");
         assert!(validate_descriptor(&directory, ObjectKind::File).is_err());
+
+        let file = windows_owner_private_file_security().expect("inherited current-user file");
+        validate_descriptor(&file, ObjectKind::File).expect("canonical inherited file");
+        assert!(validate_descriptor(&file, ObjectKind::Directory).is_err());
 
         let current = current_process_sid().expect("TokenUser");
         let sid = ConvertSidToStringSid(&current).expect("SID text");

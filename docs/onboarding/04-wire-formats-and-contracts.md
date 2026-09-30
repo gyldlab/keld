@@ -751,7 +751,8 @@ Before you touch anything in this document's scope:
 
 | Change | Requires |
 |---|---|
-| Frame layout, `FrameKind`, flags, or handshake | Protocol version bump + spec [`02` §2](../architecture/02-ipc.md) edit + code, **one PR**, wire review gate |
+| Shared KIPC frame layout, `FrameKind`, flags, or ordinary handshake | Global protocol version bump + spec [`02` §2](../architecture/02-ipc.md) edit + code, **one PR**, wire review gate |
+| A separate protocol with a divergent handshake | It MAY use an independent version only behind a disjoint endpoint namespace selected before parsing/handshake. Document the owner and wire contract in spec [`02` §2](../architecture/02-ipc.md), and test both cross-protocol refusals; a shared endpoint requires the global version bump above. |
 | A new channel or a change to an existing payload struct | Public API review gate; contract belongs in a `.k.ts` schema once `@keld/schema` exists |
 | Manifest schema (`keld.permissions.jsonc`) | Permission-model review gate **and** wire review gate |
 | Update feed format | Wire review gate |

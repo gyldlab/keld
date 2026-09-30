@@ -2,6 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::os::windows::fs::OpenOptionsExt as _;
+use std::path::Path;
 
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
@@ -38,6 +39,7 @@ fn ordinary_user_reads_but_cannot_mutate_committed_baseline() {
         version.clone(),
         version.join("tree"),
         install.join("install-provenance"),
+        update.join("activation.lock"),
         update.join("version-floor"),
         update.join("current"),
         update.join("last-known-good"),
@@ -60,6 +62,7 @@ fn ordinary_user_reads_but_cannot_mutate_committed_baseline() {
             );
         }
     }
+    assert_activation_lock_is_readable(update);
     let content = version.join("tree/nest/one");
     assert_eq!(fs::read(&content).expect("ordinary payload read"), [b'!']);
     assert_eq!(
@@ -113,4 +116,12 @@ fn ordinary_user_reads_but_cannot_mutate_committed_baseline() {
         "OS effect independently demonstrates why the ancestor rule matters"
     );
     println!("KELD_KEL266_ORDINARY_DENIAL_FINISHED={}", root.display());
+}
+
+fn assert_activation_lock_is_readable(update: &Path) {
+    assert!(
+        fs::read(update.join("activation.lock"))
+            .expect("ordinary user reads the activation lock")
+            .is_empty()
+    );
 }
