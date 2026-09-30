@@ -220,8 +220,16 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
 ];
 
-const FUZZ_WORKSPACE_COMMANDS: &[&str] =
-    &["cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml"];
+const FUZZ_WORKSPACE_STEPS: &[(&str, &str)] = &[
+    (
+        "Check keld-ipc fuzz workspace",
+        "cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
+    ),
+    (
+        "Check keld-wv fuzz workspace",
+        "cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml",
+    ),
+];
 
 const ROOT_TEST_RECIPE_COMMANDS: &[&str] = &[
     "#!/usr/bin/env bash",
@@ -1220,42 +1228,41 @@ fn check_check_job_if_avoids_matrix(text: &str) -> Result<(), String> {
 fn check_fuzz_workspace_step(text: &str) -> Result<(), String> {
     let Some(check_job) = workflow_job_block(text, "check") else {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for the keld-ipc fuzz workspace."
+            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for the stable fuzz workspaces."
         ));
     };
-    let step = "Check keld-ipc fuzz workspace";
-    let count = workflow_direct_named_step_count(&check_job, step);
-    if count != 1 {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
-        ));
-    }
-    let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
-    })?;
-    let expected_keys = ["if".to_owned(), "run".to_owned()];
-    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its exact Ubuntu/router condition and direct run command."
-        ));
-    }
     let condition = "matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'";
-    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(condition) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `{condition}` so the stable fuzz build runs only on the rust-routed Ubuntu row."
-        ));
-    }
-    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
-    })?;
-    if commands
-        .iter()
-        .map(String::as_str)
-        .ne(FUZZ_WORKSPACE_COMMANDS.iter().copied())
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must directly run the stable fuzz-workspace cargo check without a wrapper, campaign, retry, or exit suppression."
-        ));
+    let expected_keys = ["if".to_owned(), "run".to_owned()];
+    for (step, command) in FUZZ_WORKSPACE_STEPS {
+        let count = workflow_direct_named_step_count(&check_job, step);
+        if count != 1 {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+            ));
+        }
+        let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+        })?;
+        if workflow_named_step_direct_keys(&block, step).as_deref()
+            != Some(expected_keys.as_slice())
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its exact Ubuntu/router condition and direct run command."
+            ));
+        }
+        if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(condition) {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `{condition}` so the stable fuzz build runs only on the rust-routed Ubuntu row."
+            ));
+        }
+        let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+        })?;
+        if commands.len() != 1 || commands[0] != *command {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must directly run the stable fuzz-workspace cargo check without a wrapper, campaign, retry, or exit suppression."
+            ));
+        }
     }
     Ok(())
 }
@@ -2515,6 +2522,10 @@ mod tests {
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
             "          cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
+            "      - name: Check keld-wv fuzz workspace",
+            "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
+            "        run: |",
+            "          cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml",
             "      - name: clippy (warnings deny)",
             "        shell: bash",
             "        run: cargo clippy -p fixture --all-targets -- -D warnings",
@@ -3608,6 +3619,15 @@ mod tests {
         temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
         let error = check(temp.path()).expect_err("missing fuzz workspace check must fail");
         assert!(error.contains("Check keld-ipc fuzz workspace"), "{error}");
+    }
+
+    #[test]
+    fn missing_wv_fuzz_workspace_step_fails() {
+        let temp = complete_fixture();
+        let step = "      - name: Check keld-wv fuzz workspace\n        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'\n        run: |\n          cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml\n";
+        temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
+        let error = check(temp.path()).expect_err("missing keld-wv fuzz workspace check must fail");
+        assert!(error.contains("Check keld-wv fuzz workspace"), "{error}");
     }
 
     #[test]

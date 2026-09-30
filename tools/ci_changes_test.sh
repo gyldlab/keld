@@ -202,6 +202,10 @@ wv_classification="$(result_for_paths crates/keld-wv/src/lib.rs)"
 expect_flags "keld-wv change enables GUI smoke and Ubuntu WebKitGTK apt" "$wv_flags" "$wv_classification"
 expect_package_token "keld-wv change includes host consumer" keld-host "$wv_classification"
 
+wv_fuzz_classification="$(result_for_paths crates/keld-wv/fuzz/Cargo.toml)"
+expect_flags "keld-wv fuzz workspace routes through the owning Rust closure" "$wv_flags" "$wv_fuzz_classification"
+expect_package_token "keld-wv fuzz workspace includes host consumer" keld-host "$wv_fuzz_classification"
+
 manifest_classification="$(result_for_paths Cargo.lock)"
 expect_flags "workspace manifest routes every dependent Rust lane" "$manifest" "$manifest_classification"
 expect_package_token "workspace manifest selects host" keld-host "$manifest_classification"
