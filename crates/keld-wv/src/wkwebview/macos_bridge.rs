@@ -50,10 +50,16 @@ const PAGE_FACADE_SCRIPT: &str = r#"
     } else {
       const code = typeof msg.code === "string" ? msg.code : "KELD-WV-011";
       const detail = typeof msg.detail === "string" ? msg.detail : "renderer bridge request failed";
-      waiter.reject(new Error(code + ": " + detail));
+      waiter.reject(new Error(detail.startsWith(code) ? detail : code + ": " + detail));
     }
   };
   window.addEventListener("message", onResult, false);
+  window.addEventListener("pagehide", () => {
+    if (pending === null) return;
+    const waiter = pending;
+    pending = null;
+    waiter.reject(new Error("KELD-WV-011: renderer document navigated before reply"));
+  }, false);
 
   const invoke = function invoke(channel, payload, opts) {
     if (opts !== undefined) return fail("opts is not supported by this bridge");
@@ -170,6 +176,7 @@ const ISOLATED_BRIDGE_SCRIPT: &str = r#"
 #[derive(Debug)]
 pub struct RendererBridgeRequest {
     webview: WebviewId,
+    navigation: u64,
     request: u32,
     channel: u16,
     payload: Vec<u8>,
@@ -186,6 +193,16 @@ impl RendererBridgeRequest {
     #[must_use]
     pub const fn request(&self) -> u32 {
         self.request
+    }
+
+    /// Returns the host-owned navigation generation that admitted this call.
+    ///
+    /// This value never crosses the page/native envelope. It only prevents a
+    /// late outcome from an old document settling a newer document that reused
+    /// the same renderer-local request id.
+    #[must_use]
+    pub const fn navigation(&self) -> u64 {
+        self.navigation
     }
 
     /// Returns the declared application channel selected by the facade.
@@ -208,6 +225,8 @@ pub enum RendererBridgeOutcome {
     Reply {
         /// `WebView` that owns the renderer promise.
         webview: WebviewId,
+        /// Host-owned navigation generation that admitted the request.
+        navigation: u64,
         /// Renderer-local request id.
         request: u32,
         /// Application reply bytes.
@@ -217,6 +236,8 @@ pub enum RendererBridgeOutcome {
     Error {
         /// `WebView` that owns the renderer promise.
         webview: WebviewId,
+        /// Host-owned navigation generation that admitted the request.
+        navigation: u64,
         /// Renderer-local request id.
         request: u32,
         /// Stable KELD diagnostic code.
@@ -238,6 +259,13 @@ impl RendererBridgeOutcome {
     const fn request(&self) -> u32 {
         match self {
             Self::Reply { request, .. } | Self::Error { request, .. } => *request,
+        }
+    }
+
+    #[must_use]
+    const fn navigation(&self) -> u64 {
+        match self {
+            Self::Reply { navigation, .. } | Self::Error { navigation, .. } => *navigation,
         }
     }
 }
@@ -262,12 +290,14 @@ impl RendererBridgeEndpoint {
 
 #[derive(Debug)]
 struct PendingRequest {
+    navigation: u64,
     request: u32,
 }
 
 #[derive(Debug)]
 struct BridgeState {
     webview: WebviewId,
+    expected_webview: Option<usize>,
     navigation_generation: u64,
     document_nonce: Option<String>,
     pending: Option<PendingRequest>,
@@ -278,11 +308,27 @@ impl BridgeState {
     fn new(webview: WebviewId) -> Self {
         Self {
             webview,
+            expected_webview: None,
             navigation_generation: 0,
             document_nonce: None,
             pending: None,
             destroyed: false,
         }
+    }
+
+    fn bind_webview(&mut self, address: usize) -> Result<(), &'static str> {
+        match self.expected_webview {
+            None => {
+                self.expected_webview = Some(address);
+                Ok(())
+            }
+            Some(expected) if expected == address => Ok(()),
+            Some(_) => Err("renderer bridge WebView identity changed"),
+        }
+    }
+
+    fn accepts_webview(&self, address: usize) -> bool {
+        self.expected_webview == Some(address)
     }
 
     fn navigation_started(&mut self) {
@@ -300,6 +346,12 @@ impl BridgeState {
     fn bind(&mut self) -> Result<String, &'static str> {
         if self.destroyed {
             return Err("renderer bridge was destroyed");
+        }
+        if self.expected_webview.is_none() {
+            return Err("renderer bridge WebView identity is not bound");
+        }
+        if self.navigation_generation == 0 {
+            self.navigation_generation = 1;
         }
         if self.document_nonce.is_some() {
             return Err("document is already bound");
@@ -334,20 +386,24 @@ impl BridgeState {
         if self.pending.is_some() {
             return Err("another renderer invoke is already pending");
         }
-        self.pending = Some(PendingRequest { request });
+        self.pending = Some(PendingRequest {
+            navigation: self.navigation_generation,
+            request,
+        });
         Ok(RendererBridgeRequest {
             webview: self.webview,
+            navigation: self.navigation_generation,
             request,
             channel,
             payload,
         })
     }
 
-    fn settle(&mut self, request: u32) -> bool {
+    fn settle(&mut self, navigation: u64, request: u32) -> bool {
         if self
             .pending
             .as_ref()
-            .is_some_and(|pending| pending.request == request)
+            .is_some_and(|pending| pending.navigation == navigation && pending.request == request)
         {
             self.pending = None;
             true
@@ -381,7 +437,7 @@ pub(super) struct InstalledRendererBridge {
 struct HandlerIvars {
     state: Arc<Mutex<BridgeState>>,
     requests: SyncSender<RendererBridgeRequest>,
-    controller: Retained<WKUserContentController>,
+    controller_address: usize,
     world: Retained<WKContentWorld>,
 }
 
@@ -414,14 +470,14 @@ impl KeldScriptMessageHandler {
     fn new(
         state: Arc<Mutex<BridgeState>>,
         requests: SyncSender<RendererBridgeRequest>,
-        controller: Retained<WKUserContentController>,
+        controller_address: usize,
         world: Retained<WKContentWorld>,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
         let object = mtm.alloc::<Self>().set_ivars(HandlerIvars {
             state,
             requests,
-            controller,
+            controller_address,
             world,
         });
         // SAFETY: object is freshly allocated with fully initialized ivars.
@@ -457,7 +513,7 @@ impl MacRendererBridge {
         let handler = KeldScriptMessageHandler::new(
             Arc::clone(&state),
             endpoint.requests,
-            controller.clone(),
+            Retained::as_ptr(&controller).cast::<()>() as usize,
             isolated_world.clone(),
             mtm,
         );
@@ -535,6 +591,10 @@ impl MacRendererBridge {
                 "live WKWebView is not bound to its dedicated renderer controller",
             ));
         }
+        let address = std::ptr::from_ref(webview).cast::<()>() as usize;
+        lock_state(&self.state)
+            .bind_webview(address)
+            .map_err(bridge_error)?;
         Ok(())
     }
 
@@ -548,7 +608,8 @@ impl MacRendererBridge {
         outcome: RendererBridgeOutcome,
     ) -> Result<(), WvError> {
         let request = outcome.request();
-        if !lock_state(&self.state).settle(request) {
+        let navigation = outcome.navigation();
+        if !lock_state(&self.state).settle(navigation, request) {
             return Ok(());
         }
         let payload = PageOutcome::from(outcome);
@@ -606,16 +667,32 @@ fn handle_message(
     message: &WKScriptMessage,
 ) {
     let ivars = handler.ivars();
-    if !std::ptr::eq(
-        std::ptr::from_ref(controller),
-        Retained::as_ptr(&ivars.controller),
-    ) {
+    let controller_address = std::ptr::from_ref(controller).cast::<()>() as usize;
+    if controller_address != ivars.controller_address {
+        report_detail_rejection("renderer message used the wrong content controller");
+        return;
+    }
+    // SAFETY: WebKit supplies a live content-world object to this UI-thread callback.
+    let world = unsafe { message.world() };
+    if !std::ptr::eq(Retained::as_ptr(&world), Retained::as_ptr(&ivars.world)) {
+        report_detail_rejection("renderer message came from the wrong content world");
         return;
     }
     // SAFETY: WebKit supplies a live frame object to this UI-thread callback.
     let frame: Retained<WKFrameInfo> = unsafe { message.frameInfo() };
     // SAFETY: frame is live and queried on the WebKit UI thread.
     if !unsafe { frame.isMainFrame() } {
+        report_detail_rejection("renderer message came from a subframe");
+        return;
+    }
+    // SAFETY: callback WebView is live on the AppKit main thread.
+    let Some(webview) = (unsafe { message.webView() }) else {
+        report_detail_rejection("renderer message has no live WebView");
+        return;
+    };
+    let webview_address = Retained::as_ptr(&webview).cast::<()>() as usize;
+    if !lock_state(&ivars.state).accepts_webview(webview_address) {
+        report_detail_rejection("renderer message came from the wrong WebView");
         return;
     }
     // SAFETY: message body is a live Objective-C object owned by WebKit.
@@ -650,10 +727,6 @@ fn handle_message(
                 }
             };
             report_bind(&ivars.state, &nonce);
-            // SAFETY: callback WebView is live on the main thread.
-            let Some(webview) = (unsafe { message.webView() }) else {
-                return;
-            };
             let Ok(json) = serde_json::to_string(&nonce) else {
                 return;
             };
@@ -684,7 +757,7 @@ fn handle_message(
             match ivars.requests.try_send(call) {
                 Ok(()) => {}
                 Err(TrySendError::Full(call) | TrySendError::Disconnected(call)) => {
-                    let _ = lock_state(&ivars.state).settle(call.request);
+                    let _ = lock_state(&ivars.state).settle(call.navigation, call.request);
                     reply_immediate_error(
                         message,
                         &ivars.world,
@@ -784,8 +857,9 @@ fn report_bind(state: &Arc<Mutex<BridgeState>>, nonce: &str) {
 fn report_admission(call: &RendererBridgeRequest) {
     if std::env::var_os("KELD_KEL142_ACCEPTANCE_REPORT").is_some() {
         eprintln!(
-            "KELD_KEL142_RENDERER_ADMIT webview={} request={} channel={} payload_len={}",
+            "KELD_KEL142_RENDERER_ADMIT webview={} navigation={} request={} channel={} payload_len={}",
             call.webview.0,
+            call.navigation,
             call.request,
             call.channel,
             call.payload.len()
@@ -800,6 +874,7 @@ mod tests {
     #[test]
     fn navigation_invalidates_document_and_pending_renderer_call() {
         let mut state = BridgeState::new(WebviewId(7));
+        state.bind_webview(0x7000).expect("bind WebView");
         let nonce = state.bind().expect("bind");
         state
             .admit_invoke(&nonce, 11, ECHO_CHANNEL, vec![1, 2])
@@ -816,6 +891,7 @@ mod tests {
     #[test]
     fn one_pending_call_and_declared_channel_are_independent_guards() {
         let mut state = BridgeState::new(WebviewId(3));
+        state.bind_webview(0x3000).expect("bind WebView");
         let nonce = state.bind().expect("bind");
         assert!(matches!(
             state.admit_invoke(&nonce, 1, 2, vec![]),
@@ -828,8 +904,37 @@ mod tests {
             state.admit_invoke(&nonce, 3, ECHO_CHANNEL, vec![]),
             Err("another renderer invoke is already pending")
         ));
-        assert!(state.settle(2));
-        assert!(!state.settle(2), "one app reply can settle only once");
+        let navigation = state.navigation_generation;
+        assert!(state.settle(navigation, 2));
+        assert!(
+            !state.settle(navigation, 2),
+            "one app reply can settle only once"
+        );
+    }
+
+    #[test]
+    fn old_navigation_result_cannot_settle_reused_request_id() {
+        let mut state = BridgeState::new(WebviewId(5));
+        state.bind_webview(0x5000).expect("bind WebView");
+        let old_nonce = state.bind().expect("old bind");
+        let old = state
+            .admit_invoke(&old_nonce, 1, ECHO_CHANNEL, vec![1])
+            .expect("old call");
+        state.navigation_started();
+
+        let new_nonce = state.bind().expect("new bind");
+        let new = state
+            .admit_invoke(&new_nonce, 1, ECHO_CHANNEL, vec![2])
+            .expect("new call reuses local request id");
+        assert_ne!(old.navigation(), new.navigation());
+        assert!(
+            !state.settle(old.navigation(), old.request()),
+            "late old outcome must not consume the new document's waiter"
+        );
+        assert!(
+            state.settle(new.navigation(), new.request()),
+            "current document still settles exactly once"
+        );
     }
 
     #[test]
@@ -849,6 +954,7 @@ mod tests {
         }
         assert!(PAGE_FACADE_SCRIPT.contains("writable: false"));
         assert!(PAGE_FACADE_SCRIPT.contains("configurable: false"));
+        assert!(PAGE_FACADE_SCRIPT.contains("pagehide"));
         assert!(ISOLATED_BRIDGE_SCRIPT.contains("document: documentNonce"));
         assert!(ISOLATED_BRIDGE_SCRIPT.contains("__keld_wv_link_v1"));
     }

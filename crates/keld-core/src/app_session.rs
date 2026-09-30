@@ -3244,11 +3244,13 @@ fn start_renderer_dispatch(
         .spawn(move || {
             while let Ok(request) = requests.recv() {
                 let webview = request.webview();
+                let navigation = request.navigation();
                 let local_request = request.request();
                 if request.channel() != ECHO_CHANNEL.0 {
                     if outcomes
                         .send(RendererBridgeOutcome::Error {
                             webview,
+                            navigation,
                             request: local_request,
                             code: String::from("KELD-WV-011"),
                             detail: String::from("renderer channel is not declared by this build"),
@@ -3264,6 +3266,7 @@ fn start_renderer_dispatch(
                     if outcomes
                         .send(RendererBridgeOutcome::Error {
                             webview,
+                            navigation,
                             request: local_request,
                             code: String::from("KELD-WV-011"),
                             detail: String::from(
@@ -3278,25 +3281,28 @@ fn start_renderer_dispatch(
                 };
                 if std::env::var_os("KELD_KEL142_ACCEPTANCE_REPORT").is_some() {
                     eprintln!(
-                        "KELD_KEL142_KIPC_CALL webview={} request={} corr={}",
-                        webview.0, local_request, call.correlation.0
+                        "KELD_KEL142_KIPC_CALL webview={} navigation={} request={} corr={}",
+                        webview.0, navigation, local_request, call.correlation.0
                     );
                 }
 
                 let outcome = match call.reply.recv() {
                     Ok(Ok(PrimaryEchoReply::Reply(payload))) => RendererBridgeOutcome::Reply {
                         webview,
+                        navigation,
                         request: local_request,
                         payload,
                     },
                     Ok(Ok(PrimaryEchoReply::Err(error))) => RendererBridgeOutcome::Error {
                         webview,
+                        navigation,
                         request: local_request,
                         code: error.code,
                         detail: error.message,
                     },
                     Ok(Err(_)) | Err(_) => RendererBridgeOutcome::Error {
                         webview,
+                        navigation,
                         request: local_request,
                         code: String::from("KELD-WV-011"),
                         detail: String::from("application link ended before the renderer reply"),
