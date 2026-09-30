@@ -1,0 +1,21 @@
+{
+  "name": "@keld/api",
+  "version": "0.0.1",
+  "packageManager": "bun@1.4.2",
+  "type": "module",
+  "description": "Backend-independent Keld application lifecycle and channel API",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "7.0.2"
+  }
+}

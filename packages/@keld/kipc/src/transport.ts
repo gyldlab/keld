@@ -1049,6 +1049,42 @@ export function isCallError(e: unknown): e is KeldCallError {
   return typeof code === "string" && code.startsWith("KELD-");
 }
 
+export function encodePostcardString(value: string, field = "postcard string"): Uint8Array {
+  if (typeof value !== "string") {
+    throw kipcError("KELD-IPC-003", `${field} must be a string`);
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    const unit = value.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw kipcError("KELD-IPC-003", `${field} contains an unpaired UTF-16 surrogate`);
+      }
+      i += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw kipcError("KELD-IPC-003", `${field} contains an unpaired UTF-16 surrogate`);
+    }
+  }
+  const utf8 = new TextEncoder().encode(value);
+  const prefix = encodeVarint(utf8.length);
+  const out = new Uint8Array(prefix.length + utf8.length);
+  out.set(prefix, 0);
+  out.set(utf8, prefix.length);
+  return out;
+}
+
+export function encodeCallError(code: string, message: string): Uint8Array {
+  if (!code.startsWith("KELD-")) {
+    throw kipcError("KELD-IPC-003", "CallError code is not a KELD-* identifier");
+  }
+  const encodedCode = encodePostcardString(code, "CallError code");
+  const encodedMessage = encodePostcardString(message, "CallError message");
+  const out = new Uint8Array(encodedCode.length + encodedMessage.length);
+  out.set(encodedCode, 0);
+  out.set(encodedMessage, encodedCode.length);
+  return out;
+}
+
 export function decodeCallError(payload: Uint8Array): { code: string; message: string } {
   const [code, afterCode] = decodePostcardStringAt(payload, 0);
   const [message, end] = decodePostcardStringAt(payload, afterCode);
