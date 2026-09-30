@@ -169,14 +169,18 @@ D4 note remains outside the frozen decision block so its approved digest does no
     uses the same user's ordinary authority without UAC; `MachineUacDirect` verifies
     and stages candidate bytes in a separate user-owned location, then obtains explicit
     UAC only for protected activation. Its one-shot OS-authenticated handoff binds the
-    initiating user's SID, logon session and caller process and carries read-only source
-    handles, never caller paths. The elevated updater verifies its Authenticode signer
-    and image digest against the protected helper identity, pins the source objects
-    against write/delete substitution, revalidates the signed manifest/artifact from
-    those exact handles, creates the protected journal/attempt, copies to a protected
+    initiating user's SID, logon session and caller process. It may identify staged
+    candidate files only with KEL-53's bounded lookup locator beneath the authenticated
+    user's owner-private staging root; the locator conveys no authority and is not an
+    arbitrary caller path. After authenticating the handoff, the elevated updater
+    resolves that locator through the Windows path owner, opens and retains the exact
+    read-only source handles itself, denies concurrent write/delete where the platform
+    permits, and independently revalidates the signed manifest/artifact from those
+    handles. It verifies its Authenticode signer and image digest against the protected
+    helper identity, creates the protected journal/attempt, copies to a protected
     sibling stage and verifies/read-backs the copy before publication. It accepts no
-    authority from argv/environment/cwd, limits writes to that installation's package
-    and update roots, and launches the candidate using the exact initiating user's
+    mutation authority from argv/environment/cwd, limits writes to that installation's
+    package and update roots, and launches the candidate using the exact initiating user's
     ordinary token and logon session, even when UAC used alternate administrator
     credentials. If that token cannot be securely reused, it refuses launch and leaves
     journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install,
@@ -221,14 +225,15 @@ D4 note remains outside the frozen decision block so its approved digest does no
 19. Given an explicit-UAC machine update, when the elevated updater receives a request,
     then the native Windows acceptance independently exercises valid one-attempt
     activation, forged request, stale/replayed attempt, wrong host/image, cross-install
-    request, source-handle replacement/reparse/write races, alternate UAC credentials,
-    wrong SID/logon/helper session, substituted or unavailable token/process handles,
-    invalid elevation/integrity level, token/process association mismatch, failed
-    impersonation/reversion, unavailable desktop/profile, path/argument
-    substitution and attempted writes outside the exact package/update roots. It kills
-    the coordinator/updater at every durable journal boundary and proves recovery follows
-    the journal or halts without changing pointers. The launched host and Bun tokens
-    match the initiating user/session and remain non-elevated.
+    request, outside-root/traversal/reparse source locators, source-handle replacement/
+    write races, alternate UAC credentials, wrong SID/logon/helper session, substituted
+    or unavailable token/process handles, invalid elevation/integrity level,
+    token/process association mismatch, failed impersonation/reversion, unavailable
+    desktop/profile, argument substitution and attempted writes outside the exact
+    package/update roots. It kills the coordinator/updater at every durable journal
+    boundary and proves recovery follows the journal or halts without changing pointers.
+    The launched host and Bun tokens match the initiating user/session and remain
+    non-elevated.
 
 ## 4. Design
 
@@ -509,7 +514,7 @@ opaque outside their owner except for the documented read-only identity accessor
 | 6–10, 16 | Native Windows component/reparse/path tests plus strict descriptor mutations; under each admitted token, attempt descriptor/entry/renderer replacement and prove the protected namespace denies it; malformed bytes and escaping/missing targets fail pre-resource; KEL-102 proves one exact manifest read. |
 | 7–8, 16–18 | Per-user owner, ordinary machine user, explicit-UAC activator and each admitted hostile role/webview token exercise distinct access cells. Machine standard-user probes attempt create/write/delete/rename/WRITE_DAC/WRITE_OWNER at roots, versions, provenance, journal, pointers and update state. Per-user tests verify owner write access while hostile roles cannot mutate updater state; they explicitly do not claim defense from same-user native malware. Mutate owner, inherited/explicit ACE, role ACE and reparse ancestor; every forbidden grant is detected before boot. |
 | 12, 15 | Signed Windows fixture for two distinct app identities; capture WebView2-reported UDFs and prove each is the exact LocalAppData profile path and they differ. |
-| 13–14, 18 | Managed-owner fixtures prove no direct provenance, competing selector or writer. Mode-matched tests prove per-user no-UAC update, explicit-UAC machine activation and pre-gate seamless-mode refusal without mutation. |
+| 13–14, 18–19 | Managed-owner fixtures prove no direct provenance, competing selector or writer. Mode-matched tests prove per-user no-UAC update, explicit-UAC machine activation and pre-gate seamless-mode refusal without mutation. Machine-UAC tests prove the only source locator resolves beneath the authenticated owner's private staging root; absolute/outside-root/traversal/reparse/cross-install locators and changed or concurrently writable source objects refuse before protected publication. |
 
 Anti-flake: use named fixtures and fresh per-run install roots; no sleep-sync. Process,
 window, file-access, installer commit, and resource-order witnesses use explicit handles,
