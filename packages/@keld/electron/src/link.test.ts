@@ -796,6 +796,57 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
   );
 
   test(
+    "an application handler can await quit without deadlocking the shared reader",
+    async () => {
+      const peer = bindPeer();
+      let session: LifecycleLink | undefined;
+      let markHandlerFinished: () => void = () => undefined;
+      const handlerFinished = new Promise<void>((resolve) => {
+        markHandlerFinished = resolve;
+      });
+      try {
+        const connectP = LifecycleLink.connect(peer.link, {
+          ...handlers,
+          async onApplicationCall(channel, payload) {
+            expect(channel).toBe(ECHO_CHANNEL);
+            await session!.quit();
+            markHandlerFinished();
+            return payload;
+          },
+        });
+        const socket = await peer.opened;
+        await peer.reader.readFrame();
+        writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+        session = await connectP;
+
+        writeAll(socket, encodeFrame(FrameKind.Call, ECHO_CHANNEL, 51, new Uint8Array([0x21])));
+
+        const quitCall = await rejectWithin(
+          1_000,
+          peer.reader.readFrame(),
+          "Echo handler could not issue lifecycle Quit while the reader was active",
+        );
+        expect(quitCall.header.kind).toBe(FrameKind.Call);
+        expect(quitCall.header.channel).toBe(LIFECYCLE_CHANNEL);
+        writeAll(
+          socket,
+          encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, quitCall.header.corr, new Uint8Array()),
+        );
+
+        await rejectWithin(
+          1_000,
+          handlerFinished,
+          "Echo handler did not resume after lifecycle Quit Reply",
+        );
+      } finally {
+        session?.close();
+        peer.listener.stop(true);
+      }
+    },
+    5_000,
+  );
+
+  test(
     "HELLO readFrame against a live silent peer is KELD-IPC-006",
     async () => {
       const peer = bindPeer();
