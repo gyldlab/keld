@@ -158,7 +158,8 @@ independent per-user, machine-UAC, machine-seamless and managed-owner cells. The
 cell additionally tests request-to-user/session binding, exact signed helper identity,
 initiating-token handle provenance and lifetime, TokenUser/AuthenticationId/session/
 elevation/integrity validation, association to the initiating process, alternate UAC
-credentials, unavailable/substituted token handles, one-shot read-only source handles,
+credentials, unavailable/substituted token handles, one-shot source locator and
+elevated-owner-opened read-only source handles,
 source-file substitution/reparse/write races, independent signature/artifact
 revalidation, replay and cross-install refusal, protected copy/readback, mutation
 confinement, exact initiating-user candidate token, wrong-session refusal, process-family lifecycle,
