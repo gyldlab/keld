@@ -31,8 +31,10 @@ use std::process::ExitStatus;
 use std::process::{Command, Stdio};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+#[cfg(target_os = "macos")]
+use std::sync::mpsc::SyncSender;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::{Arc, Mutex};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -57,6 +59,8 @@ use keld_guard::ManifestError;
 use keld_guard::verified_manifest::VerifiedManifest;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::load_verified_manifest;
+#[cfg(target_os = "macos")]
+use keld_ipc::CallError;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::codec::{decode, encode};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -65,7 +69,7 @@ use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::link::{AppLinkDeadlines, read_primary_app_frame_interruptible, write_frame};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::{
-    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, CallError, ECHO_CHANNEL, IpcError,
+    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
     LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -4229,9 +4233,13 @@ type PlatformPrimaryOwnerHandle = DirectPrimaryOwnerHandle;
 struct PrimaryRouterHandle {
     current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
     readers: Arc<Mutex<HashMap<u32, PrimaryReader>>>,
+    #[cfg(target_os = "macos")]
     pending_echo: Arc<Mutex<Option<PendingPrimaryEcho>>>,
+    #[cfg(target_os = "macos")]
     pending_echo_attempt: Arc<AtomicU32>,
+    #[cfg(target_os = "macos")]
     pending_echo_corr: Arc<AtomicU32>,
+    #[cfg(target_os = "macos")]
     next_host_corr: Arc<AtomicU32>,
     window_ready: Arc<AtomicBool>,
     last_window_closed: Arc<AtomicBool>,
@@ -4252,21 +4260,21 @@ struct ActivePrimaryGeneration {
     reader_stop: Arc<AtomicBool>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[cfg(target_os = "macos")]
 struct PendingPrimaryEcho {
     attempt: u32,
     correlation: CorrelationId,
     reply: SyncSender<Result<PrimaryEchoReply, HostAppError>>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[cfg(target_os = "macos")]
 #[derive(Debug)]
 enum PrimaryEchoReply {
     Reply(Vec<u8>),
     Err(CallError),
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct PrimaryEchoCall {
     correlation: CorrelationId,
@@ -4313,6 +4321,7 @@ impl PrimaryRouterHandle {
         self.write_event_guarded(LifecycleEvent::LastWindowClosed)
     }
 
+    #[cfg(target_os = "macos")]
     fn mint_host_correlation(&self) -> CorrelationId {
         loop {
             let raw = self.next_host_corr.fetch_add(1, Ordering::AcqRel);
@@ -4323,13 +4332,23 @@ impl PrimaryRouterHandle {
     }
 
     fn pending_echo_corr_for(&self, attempt: u32) -> Option<CorrelationId> {
-        let correlation = self.pending_echo_corr.load(Ordering::Acquire);
-        if correlation == 0 || self.pending_echo_attempt.load(Ordering::Acquire) != attempt {
-            return None;
+        #[cfg(target_os = "macos")]
+        {
+            let correlation = self.pending_echo_corr.load(Ordering::Acquire);
+            if correlation == 0 || self.pending_echo_attempt.load(Ordering::Acquire) != attempt {
+                None
+            } else {
+                Some(CorrelationId(correlation))
+            }
         }
-        Some(CorrelationId(correlation))
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = attempt;
+            None
+        }
     }
 
+    #[cfg(target_os = "macos")]
     fn begin_echo_call(&self, payload: &[u8]) -> Result<PrimaryEchoCall, HostAppError> {
         let transition = self.shutdown.transition_guard();
         if !self.shutdown.is_running() {
@@ -4402,6 +4421,7 @@ impl PrimaryRouterHandle {
         })
     }
 
+    #[cfg(target_os = "macos")]
     fn finish_pending_echo(
         &self,
         attempt: u32,
@@ -4437,6 +4457,7 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     fn fail_pending_echo(
         &self,
         attempt: Option<u32>,
@@ -4472,11 +4493,27 @@ impl PrimaryRouterHandle {
         attempt: u32,
         detail: &'static str,
     ) -> Result<(), HostAppError> {
-        self.fail_pending_echo(Some(attempt), detail)
+        #[cfg(target_os = "macos")]
+        {
+            self.fail_pending_echo(Some(attempt), detail)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (attempt, detail);
+            Ok(())
+        }
     }
 
     fn fail_any_pending_echo(&self, detail: &'static str) -> Result<(), HostAppError> {
-        self.fail_pending_echo(None, detail)
+        #[cfg(target_os = "macos")]
+        {
+            self.fail_pending_echo(None, detail)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = detail;
+            Ok(())
+        }
     }
 
     fn retire_current_generation_locked(
@@ -4794,9 +4831,13 @@ impl PrimaryRouter {
         let handle = PrimaryRouterHandle {
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(target_os = "macos")]
             pending_echo: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
             pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
@@ -4821,9 +4862,13 @@ impl PrimaryRouter {
         let handle = PrimaryRouterHandle {
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(target_os = "macos")]
             pending_echo: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
             pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
@@ -4945,6 +4990,7 @@ fn read_primary_frames(
             return Ok(());
         }
         match (header.kind(), header.channel()) {
+            #[cfg(target_os = "macos")]
             (FrameKind::Reply, ECHO_CHANNEL) => {
                 handle.finish_pending_echo(
                     attempt,
@@ -4952,6 +4998,7 @@ fn read_primary_frames(
                     PrimaryEchoReply::Reply(payload),
                 )?;
             }
+            #[cfg(target_os = "macos")]
             (FrameKind::Err, ECHO_CHANNEL) => {
                 let error: CallError =
                     decode(&payload).map_err(|source| app_ipc("renderer Echo Err", &source))?;
@@ -6497,7 +6544,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn host_echo_reply_shares_primary_reader_with_bun_call_and_ping() {
         use keld_ipc::echo::{EchoRequest, EchoResponse};
         use keld_ipc::link::{read_frame, write_frame};
@@ -6651,7 +6698,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn second_host_echo_call_is_busy_until_the_first_reply_retires() {
         use keld_ipc::link::{read_frame, write_frame};
 
@@ -6707,7 +6754,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn wrong_correlation_cannot_complete_host_echo_waiter() {
         use keld_ipc::link::{read_frame, write_frame};
 
@@ -6741,7 +6788,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn app_link_disconnect_terminalizes_pending_echo_and_fresh_session_still_works() {
         use keld_ipc::link::{read_frame, write_frame};
 
@@ -6815,9 +6862,13 @@ mod tests {
                 reader_stop: Arc::new(AtomicBool::new(false)),
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(target_os = "macos")]
             pending_echo: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
             pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
@@ -6943,9 +6994,13 @@ mod tests {
                 reader_stop: Arc::new(AtomicBool::new(false)),
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(target_os = "macos")]
             pending_echo: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
             pending_echo_attempt: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             pending_echo_corr: Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
