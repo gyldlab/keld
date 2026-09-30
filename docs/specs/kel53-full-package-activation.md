@@ -492,8 +492,9 @@ installed-image and protection profiles but never selects current/LKG or mints a
 selection. KEL-96/core consumes that exact `ActivePackageSelection`, performs host boot
 admission and returns its opaque `ValidatedBootSelection` to the ordinary-user host.
 None of the consumer/identity owners infers install mode or mutates updater state.
-KEL-254's current Program Files draft must include per-user and Machine-UAC protection
-profiles before any direct mode ships.
+KEL-254's approved installed-root spec defines the per-user and Machine-UAC protection
+profiles; their native implementation and verification remain required before those
+direct modes ship.
 
 ### Internal state and transition contract
 
@@ -793,9 +794,9 @@ profile identity; KEL-53 owns install-mode provenance, update journal, active-pa
 selection and the sole writer; KEL-254 owns OS verification of installed-image and
 protection profiles plus the read-only selection boundary, never write authority;
 KEL-96 owns host boot admission and consumes the exact opaque selection as the ordinary
-user, without inferring install mode or mutating updater state. KEL-254's current
-Program Files draft must include per-user and Machine-UAC protection profiles before
-any direct mode ships.
+user, without inferring install mode or mutating updater state. KEL-254's approved
+installed-root spec defines the per-user and Machine-UAC protection profiles; their
+native implementation and verification remain required before those direct modes ship.
 
 Windows x64 direct distribution is first because its tree fits v0. KEL-137 is an
 explicit predecessor for macOS/Linux or any package requiring metadata absent from v0.
