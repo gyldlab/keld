@@ -1,10 +1,13 @@
 # Spec: authenticated Windows installed-root boot
-Status: draft
+Status: approved
 Linear: KEL-254 · Owner: GYLDLAB · Updated: 2026-09-30
 Prior exact draft approval: Linear comment `82b31e46-c970-4e92-89a6-7c7ec2484ee2` at
 head `0867931a5478adc71ecb69ec4982782d35a83f34`, file SHA-256
 `8bc3123e3f8cb8d568a87aea7b6b82d583e7bb7a7287c1bf1132571340d4f7d2`. That approval
-applies to the prior bytes only; this multi-mode revision remains draft.
+applies to the prior bytes only. The multi-mode revision was approved by Linear comment
+`e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`, binding PR #290 head
+`b78c89b061049647421dda69034c9f35079d9441` and the approved spec-content SHA-256
+`c00c670aa23a8f26a8705e0f2a64899c823d959a17dc4d20c41ce9bd4c1c2ec9`.
 
 ## 1. Goal & non-goals
 
@@ -54,11 +57,9 @@ Non-goals:
   exact bytes.
 
 This successor does not change the four-unique architecture or add a trust principal.
-The product direction for Windows direct installs is approved; this revised spec remains
-draft until its exact content is signed off. Its implementation PR MUST update
-architecture 03/06 and clarify KEL-96 D4 outside the frozen decision block so the
-documented release boundary matches the contract without changing KEL-96's decision
-digest.
+This exact spec revision and its install-mode contract are approved. The implementation
+PR MUST keep architecture 03/06 and the KEL-96 D4 applicability note synchronized; the
+D4 note remains outside the frozen decision block so its approved digest does not change.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -476,9 +477,10 @@ opaque outside their owner except for the documented read-only identity accessor
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 — obtain exact-content approval for this revised contract and synchronize
+- [x] T1 — exact-content approval recorded; synchronize
   architecture 03/06 plus the KEL-96 D4 applicability note in the same spec PR. Keep
-  all KEL-96 dev-stage behavior and the frozen KEL-96 decision digest unchanged.
+  all KEL-96 dev-stage behavior and the frozen KEL-96 decision digest unchanged. Product
+  acceptance and implementation remain tracked in later tasks.
 - [ ] T2 — in the KEL-53 owner issue, implement mode-aware provenance and active
   selection, per-user initialization, shared baseline/current/LKG/journal/candidate
   validation, immutable version-tree and mode-specific ACL readback, and a typed opaque
@@ -543,9 +545,9 @@ boot files it consumes.
 ## 10. Open questions
 
 No unresolved product choice remains for the three direct modes or managed-owner
-delegation. This revised spec is still `draft` because its exact text and mode-specific
-acceptance matrix have not yet been signed off. Before implementation, obtain that
-content approval and the required independent exact-head review.
+delegation. This spec's exact content was approved by Linear comment
+`e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`. The UAC and per-mode native acceptance cells
+remain implementation gates and are not claimed passed here.
 
 The machine-seamless authority is an explicit proof gate, not an open invitation to
 choose a convenient mechanism. KEL-270 must first prove exact attempt identity, fresh
