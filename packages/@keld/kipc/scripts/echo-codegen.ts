@@ -4,10 +4,10 @@ import { resolve } from "node:path";
 const STRUCT_NAMES = ["EchoRequest", "EchoResponse"] as const;
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const rustSourcePath = resolve(repositoryRoot, "crates/keld-ipc/src/echo.rs");
-const generatedPath = resolve(
-  repositoryRoot,
-  "crates/keld-cli/templates/hello/src/echo.generated.ts",
-);
+const generatedPaths = [
+  resolve(repositoryRoot, "crates/keld-cli/templates/hello/src/echo.generated.ts"),
+  resolve(repositoryRoot, "packages/@keld/api/src/echo.generated.ts"),
+] as const;
 
 type StructName = (typeof STRUCT_NAMES)[number];
 type SupportedRustType = "String" | "u32";
@@ -98,17 +98,21 @@ export function assertEchoArtifactFresh(rustSource: string, artifact: Uint8Array
 }
 
 function generate(): void {
-  writeFileSync(generatedPath, currentGeneratedBytes(), "utf8");
+  const generated = currentGeneratedBytes();
+  for (const path of generatedPaths) writeFileSync(path, generated, "utf8");
 }
 
 function check(): void {
-  let actual: Buffer;
-  try {
-    actual = readFileSync(generatedPath);
-  } catch (error) {
-    fail(`cannot read ${generatedPath}: ${String(error)}; run bun run echo:generate`);
+  const rustSource = readFileSync(rustSourcePath, "utf8");
+  for (const path of generatedPaths) {
+    let actual: Buffer;
+    try {
+      actual = readFileSync(path);
+    } catch (error) {
+      fail(`cannot read ${path}: ${String(error)}; run bun run echo:generate`);
+    }
+    assertEchoArtifactFresh(rustSource, actual);
   }
-  assertEchoArtifactFresh(readFileSync(rustSourcePath, "utf8"), actual);
 }
 
 if (import.meta.main) {

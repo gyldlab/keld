@@ -36,11 +36,44 @@ pub(crate) fn dev_stage_count(project: &Path) -> usize {
         .count()
 }
 
+fn bundle_t1b_entry(repo: &Path, project: &Path, harness: &str) -> String {
+    let source = project.join("src/t1b-entry.ts");
+    let bundled = project.join("src/t1b-entry.bundle.js");
+    let api_link = serde_json::to_string(
+        &repo
+            .join("packages/@keld/api/src/link.ts")
+            .to_string_lossy(),
+    )
+    .expect("encode canonical @keld/api link path");
+    let kipc = serde_json::to_string(
+        &repo
+            .join("packages/@keld/kipc/src/transport.ts")
+            .to_string_lossy(),
+    )
+    .expect("encode canonical @keld/kipc transport path");
+    let prelude = format!(
+        "import {{ DrainSignal, FrameKind, FrameReader, LIFECYCLE_CHANNEL, WriteQueue, errorFromErrFrame, isWin32PipeEndpoint, parseAppLink, withIoDeadline }} from {api_link};\n\
+         import {{ parseWin32DiagnosticPort }} from {kipc};\n"
+    );
+    fs::write(&source, format!("{prelude}{harness}")).expect("write T1b bundle entry");
+    let output = Command::new("bun")
+        .arg("build")
+        .arg(&source)
+        .args(["--target=bun", "--format=esm", "--outfile"])
+        .arg(&bundled)
+        .output()
+        .expect("bundle T1b fixture through canonical @keld/api owner");
+    assert!(output.status.success(), "T1b API bundle failed: {output:?}");
+    let entry = fs::read_to_string(&bundled).expect("read bundled T1b entry");
+    fs::remove_file(source).expect("remove temporary T1b source");
+    fs::remove_file(bundled).expect("remove temporary T1b bundle");
+    entry
+}
+
 pub(crate) struct ProductFixture {
     pub(crate) root: tempfile::TempDir,
     pub(crate) project: PathBuf,
-    pub(crate) link_source: String,
-    pub(crate) harness: &'static str,
+    pub(crate) entry_source: String,
     pub(crate) native_census: OnceLock<PathBuf>,
 }
 
@@ -53,19 +86,15 @@ impl ProductFixture {
             .parent()
             .and_then(Path::parent)
             .expect("keld-host crate beneath workspace");
-        let link_source = fs::read_to_string(repo.join("packages/@keld/electron/src/link.ts"))
-            .expect("reuse canonical KEL-72 TypeScript link owner")
-            .replace("../../kipc/src/transport.ts", "./kipc-transport.ts");
-        fs::copy(
-            repo.join("packages/@keld/kipc/src/transport.ts"),
-            project.join("src/kipc-transport.ts"),
-        )
-        .expect("canonical kipc transport beside the concatenated LifecycleLink");
+        let entry_source = bundle_t1b_entry(
+            repo,
+            &project,
+            include_str!("../../../fixtures/t1b_harness.ts"),
+        );
         Self {
             root,
             project,
-            link_source,
-            harness: include_str!("../../../fixtures/t1b_harness.ts"),
+            entry_source,
             native_census: OnceLock::new(),
         }
     }
@@ -78,9 +107,8 @@ impl ProductFixture {
     }
 
     pub(crate) fn stage(&self) -> keld_cli::boot::DevBootStage {
-        let mut entry = self.link_source.clone();
-        entry.push_str(self.harness);
-        fs::write(self.project.join("src/main.ts"), entry).expect("fixture entry");
+        fs::write(self.project.join("src/main.ts"), &self.entry_source)
+            .expect("bundled fixture entry");
         if !self.project.join("index.html").exists() {
             fs::write(
                 self.project.join("index.html"),

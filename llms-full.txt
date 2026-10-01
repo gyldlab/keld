@@ -4912,6 +4912,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Linux GPU safe-mode preparation failed
 - fix: Launch through Keld's process entry before creating a webview; Keld exact-self re-execs with the mitigation, so do not mutate or export the process environment manually.
 
+## KELD-WV-011
+
+- crate: keld-wv
+- message: Renderer bridge request rejected before application dispatch
+- fix: Reload the current main-frame document and invoke only the declared Keld renderer API; do not supply stale document state, undeclared channels, oversized payloads, or page-selected authority.
+
 ## KELD-CLI-010
 
 - crate: keld-cli

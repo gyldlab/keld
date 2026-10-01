@@ -23,6 +23,7 @@ import {
   connectKipcSocket,
   decodePostcardStringAt,
   decodeVarint,
+  encodePostcardString,
   encodeVarint,
   echoReplyWaiter,
   kipcError,
@@ -34,37 +35,9 @@ import {
   type ReceivePolicy,
 } from "./kipc-transport.ts";
 
-const textEncoder = new TextEncoder();
-
-function encodeString(s: string): Uint8Array {
-  if (typeof s !== "string") {
-    throw kipcError("KELD-IPC-003", "echo message must be a string");
-  }
-  // TextEncoder replaces unpaired UTF-16 surrogates with U+FFFD. Reject
-  // unrepresentable input instead of sending a different Rust String.
-  for (let i = 0; i < s.length; i += 1) {
-    const unit = s.charCodeAt(i);
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw kipcError("KELD-IPC-003", "echo message contains an unpaired UTF-16 surrogate");
-      }
-      i += 1;
-    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-      throw kipcError("KELD-IPC-003", "echo message contains an unpaired UTF-16 surrogate");
-    }
-  }
-  const utf8 = textEncoder.encode(s);
-  const lenPrefix = encodeVarint(utf8.length);
-  const out = new Uint8Array(lenPrefix.length + utf8.length);
-  out.set(lenPrefix, 0);
-  out.set(utf8, lenPrefix.length);
-  return out;
-}
-
 /** Postcard encoding of `EchoRequest`: struct-as-tuple, field order = declaration order. */
 export function encodeEchoRequest(req: EchoRequest): Uint8Array {
-  const message = encodeString(req.message);
+  const message = encodePostcardString(req.message, "echo message");
   const count = encodeVarint(req.count);
   const out = new Uint8Array(message.length + count.length);
   out.set(message, 0);

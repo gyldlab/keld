@@ -1,6 +1,6 @@
 //! Linux fixture construction and temporary project ownership.
 
-use super::stage::assert_imported_kipc_sidecar_exists;
+use super::stage::assert_self_contained_kipc_entry;
 use std::{fs, os::unix::fs::PermissionsExt as _, process::Command};
 
 pub(crate) const DEV_HELPER_TEST: &str = "keld_dev_linux_helper";
@@ -38,6 +38,51 @@ impl StageFixture {
 }
 
 pub(crate) const PRODUCT_TITLE: &str = "KEL96 T4 Linux Fixture";
+
+fn bundle_t1b_entry(repo: &std::path::Path, project: &std::path::Path) -> String {
+    let source = project.join("src/t1b-entry.ts");
+    let bundled = project.join("src/t1b-entry.bundle.js");
+    let api_link = serde_json::to_string(
+        &repo
+            .join("packages/@keld/api/src/link.ts")
+            .to_string_lossy(),
+    )
+    .expect("encode canonical @keld/api link path");
+    let kipc = serde_json::to_string(
+        &repo
+            .join("packages/@keld/kipc/src/transport.ts")
+            .to_string_lossy(),
+    )
+    .expect("encode canonical @keld/kipc transport path");
+    let prelude = format!(
+        "import {{ DrainSignal, FrameKind, FrameReader, LIFECYCLE_CHANNEL, WriteQueue, errorFromErrFrame, isWin32PipeEndpoint, parseAppLink, withIoDeadline }} from {api_link};\n\
+         import {{ parseWin32DiagnosticPort }} from {kipc};\n"
+    );
+    fs::write(
+        &source,
+        format!(
+            "{prelude}{}",
+            include_str!("../../../fixtures/t1b_harness.ts")
+        ),
+    )
+    .expect("write Linux T1b bundle entry");
+    let output = Command::new("bun")
+        .arg("build")
+        .arg(&source)
+        .args(["--target=bun", "--format=esm", "--outfile"])
+        .arg(&bundled)
+        .output()
+        .expect("bundle Linux T1b fixture through canonical @keld/api owner");
+    assert!(
+        output.status.success(),
+        "Linux T1b API bundle failed: {output:?}"
+    );
+    let entry = fs::read_to_string(&bundled).expect("read bundled Linux T1b entry");
+    fs::remove_file(source).expect("remove temporary Linux T1b source");
+    fs::remove_file(bundled).expect("remove temporary Linux T1b bundle");
+    entry
+}
+
 pub(crate) struct ProductFixture {
     pub(crate) root: tempfile::TempDir,
     pub(crate) project: std::path::PathBuf,
@@ -57,23 +102,17 @@ impl ProductFixture {
             ),
         )
         .expect("product config");
-        // create_project already wrote src/kipc-transport.ts. Keep it: Linux
-        // strict remaps src/main.ts to /code/main.ts and binds the sidecar to
-        // /code/kipc-transport.ts as its own file mount.
-        fs::write(
-            project.join("src/main.ts"),
-            format!(
-                "{}{}",
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../packages/@keld/electron/src/link.ts"
-                ))
-                .replace("../../kipc/src/transport.ts", "./kipc-transport.ts"),
-                include_str!("../../../fixtures/t1b_harness.ts")
-            ),
-        )
-        .expect("product entry");
-        assert_imported_kipc_sidecar_exists(&project);
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root");
+        let entry = bundle_t1b_entry(repo, &project);
+        fs::write(project.join("src/main.ts"), entry).expect("product entry");
+        let sidecar = project.join("src/kipc-transport.ts");
+        if sidecar.exists() {
+            fs::remove_file(&sidecar).expect("remove obsolete Linux KIPC sidecar");
+        }
+        assert_self_contained_kipc_entry(&project);
         fs::write(
             project.join("index.html"),
             format!("<!doctype html>{DARK_BG}\n"),

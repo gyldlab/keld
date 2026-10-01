@@ -7,9 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Fails if `src/main.ts` imports `./kipc-transport.ts` but the sidecar is
-/// missing. The Linux death test remaps the entry to `/code/main.ts`; Bun
-/// then resolves that import at `/code/kipc-transport.ts`.
+/// Fails if the stock scaffold imports `./kipc-transport.ts` without
+/// staging the matching sidecar that Linux strict binds beside `/code/main.ts`.
 pub(crate) fn assert_imported_kipc_sidecar_exists(root: &Path) {
     let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main.ts");
     assert!(
@@ -19,6 +18,22 @@ pub(crate) fn assert_imported_kipc_sidecar_exists(root: &Path) {
     assert!(
         root.join("src").join("kipc-transport.ts").is_file(),
         "entry imports ./kipc-transport.ts but src/kipc-transport.ts is missing under {}",
+        root.display()
+    );
+}
+
+/// Confirms the KEL-142 fixture is self-contained before Linux strict remaps
+/// `src/main.ts` to `/code/main.ts`. The canonical `@keld/api` owner is
+/// bundled into that entry, so no stale compatibility sidecar may remain.
+pub(crate) fn assert_self_contained_kipc_entry(root: &Path) {
+    let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main.ts");
+    assert!(
+        !main.contains("kipc-transport.ts"),
+        "bundled Linux entry retained a local transport import: {main}"
+    );
+    assert!(
+        !root.join("src").join("kipc-transport.ts").exists(),
+        "self-contained Linux entry retained an obsolete src/kipc-transport.ts under {}",
         root.display()
     );
 }

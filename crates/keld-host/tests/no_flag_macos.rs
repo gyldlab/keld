@@ -22,6 +22,8 @@ mod media;
 mod profiles;
 #[path = "no_flag/macos/recovery.rs"]
 mod recovery;
+#[path = "no_flag/macos/renderer_bridge.rs"]
+mod renderer_bridge;
 #[path = "no_flag/macos/startup_rollback.rs"]
 mod startup_rollback;
 #[path = "no_flag/macos/support/mod.rs"]

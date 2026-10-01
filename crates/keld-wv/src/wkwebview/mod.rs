@@ -41,7 +41,11 @@ use crate::profile::{
 };
 use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
+mod macos_bridge;
 mod macos_profile;
+
+use macos_bridge::{BridgeNavigationHandle, MacRendererBridge};
+pub use macos_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest};
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use macos_profile::MacMediaPromptProbe;
@@ -58,6 +62,7 @@ struct View {
 
 enum WkUserEvent {
     App(AppWindowCommand),
+    Renderer(RendererBridgeOutcome),
 }
 
 /// The macOS [`WebEngine`] backend.
@@ -69,6 +74,8 @@ pub struct WkWebViewEngine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<WkUserEvent>>,
     views: BTreeMap<u32, View>,
+    renderer_bridges: BTreeMap<u32, MacRendererBridge>,
+    renderer_outcomes: Option<Receiver<RendererBridgeOutcome>>,
     next_id: u32,
     profile: MacProfileOwner,
     profile_test_media_seed_allow: bool,
@@ -130,6 +137,8 @@ impl WkWebViewEngine {
         Ok(Self {
             event_loop: Some(event_loop),
             views: BTreeMap::new(),
+            renderer_bridges: BTreeMap::new(),
+            renderer_outcomes: None,
             next_id: 1,
             profile,
             profile_test_media_seed_allow,
@@ -253,7 +262,27 @@ impl WkWebViewEngine {
         spec: &WebviewSpec,
         events: Sender<AppWindowEvent>,
     ) -> Result<WebviewId, WvError> {
-        self.create_internal(spec, Some(events))
+        self.create_internal(spec, Some(events), None)
+    }
+
+    /// Creates the initial app window with the approved KEL-142 renderer bridge.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed webview/bridge error when the isolated-world bridge
+    /// cannot be installed before first navigation.
+    pub fn create_app_with_renderer_bridge(
+        &mut self,
+        spec: &WebviewSpec,
+        events: Sender<AppWindowEvent>,
+        endpoint: RendererBridgeEndpoint,
+    ) -> Result<WebviewId, WvError> {
+        if self.renderer_outcomes.is_some() || !self.renderer_bridges.is_empty() {
+            return Err(WvError::RendererBridge {
+                detail: String::from("this minimum slice supports one bridged WebView"),
+            });
+        }
+        self.create_internal(spec, Some(events), Some(endpoint))
     }
 
     /// Runs the live macOS event loop until a Quit or fatal app-session command.
@@ -269,6 +298,10 @@ impl WkWebViewEngine {
     ///
     /// Returns [`WvError::EventLoop`] if the loop already ran, the bridge/UI
     /// reports a fatal session command, or tao exits non-zero.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one UI-loop owner keeps terminal, window, and renderer wake ordering contiguous"
+    )]
     pub fn run_app_until_quit(
         &mut self,
         commands: Receiver<AppWindowCommand>,
@@ -288,11 +321,18 @@ impl WkWebViewEngine {
         let fatal_for_bridge = Arc::clone(&fatal_outcome);
         let bridge = spawn_app_wake_bridge(
             commands,
-            proxy,
+            proxy.clone(),
             stop_for_bridge,
             terminal_intent_for_bridge,
             fatal_for_bridge,
         )?;
+        let renderer_bridge = self
+            .renderer_outcomes
+            .take()
+            .map(|outcomes| {
+                spawn_renderer_outcome_bridge(outcomes, proxy, Arc::clone(&stop_bridge))
+            })
+            .transpose()?;
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
@@ -300,6 +340,7 @@ impl WkWebViewEngine {
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
         let fatal_in_loop = Arc::clone(&fatal_outcome);
         let mut views = std::mem::take(&mut self.views);
+        let mut renderer_bridges = std::mem::take(&mut self.renderer_bridges);
         let code = event_loop.run_return(move |event, _, control_flow| {
             let terminal =
                 is_terminal_app_event(&event) || terminal_intent_in_loop.load(Ordering::Acquire);
@@ -307,6 +348,7 @@ impl WkWebViewEngine {
                 *control_flow = ControlFlow::Wait;
             } else if navigation_deadline_expired(&startup_in_loop, navigation_deadline, terminal) {
                 navigation_timed_out_in_loop.store(true, Ordering::Release);
+                destroy_renderer_bridges(&mut renderer_bridges);
                 views.clear();
                 *control_flow = ControlFlow::Exit;
                 return;
@@ -315,20 +357,48 @@ impl WkWebViewEngine {
             }
             match event {
                 Event::UserEvent(WkUserEvent::App(AppWindowCommand::Quit)) => {
+                    destroy_renderer_bridges(&mut renderer_bridges);
                     views.clear();
                     *control_flow = ControlFlow::Exit;
                 }
                 Event::UserEvent(WkUserEvent::App(AppWindowCommand::Fatal)) => {
                     fatal_in_loop.store(true, Ordering::Release);
+                    destroy_renderer_bridges(&mut renderer_bridges);
                     views.clear();
                     *control_flow = ControlFlow::Exit;
+                }
+                Event::UserEvent(WkUserEvent::Renderer(outcome)) => {
+                    let id = outcome.webview().0;
+                    let delivered =
+                        renderer_bridges
+                            .get(&id)
+                            .zip(views.get(&id))
+                            .map(|(bridge, view)| {
+                                let native = view.webview.webview();
+                                bridge.deliver(&native, outcome)
+                            });
+                    if delivered.is_some_and(|result| result.is_err()) {
+                        fatal_in_loop.store(true, Ordering::Release);
+                        destroy_renderer_bridges(&mut renderer_bridges);
+                        views.clear();
+                        *control_flow = ControlFlow::Exit;
+                    }
                 }
                 Event::WindowEvent {
                     window_id,
                     event: WindowEvent::CloseRequested,
                     ..
                 } => {
-                    views.retain(|_, view| view.window.id() != window_id);
+                    let closing: Vec<u32> = views
+                        .iter()
+                        .filter_map(|(id, view)| (view.window.id() == window_id).then_some(*id))
+                        .collect();
+                    for id in closing {
+                        if let Some(bridge) = renderer_bridges.remove(&id) {
+                            bridge.destroy();
+                        }
+                        views.remove(&id);
+                    }
                     if views.is_empty() {
                         let _ = events.send(AppWindowEvent::LastWindowClosed);
                     }
@@ -338,6 +408,9 @@ impl WkWebViewEngine {
         });
         stop_bridge.store(true, Ordering::Release);
         let _ = bridge.join();
+        if let Some(renderer_bridge) = renderer_bridge {
+            let _ = renderer_bridge.join();
+        }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if let Some(probe) = self.media_prompt_probe.take() {
             probe.finish();
@@ -361,8 +434,9 @@ impl WkWebViewEngine {
         &mut self,
         spec: &WebviewSpec,
         app_events: Option<Sender<AppWindowEvent>>,
+        renderer_endpoint: Option<RendererBridgeEndpoint>,
     ) -> Result<WebviewId, WvError> {
-        let result = self.create_internal_inner(spec, app_events);
+        let result = self.create_internal_inner(spec, app_events, renderer_endpoint);
         if result.is_err()
             && self.views.is_empty()
             && let Err(cleanup) = self.profile.clean_shutdown()
@@ -378,6 +452,7 @@ impl WkWebViewEngine {
         &mut self,
         spec: &WebviewSpec,
         app_events: Option<Sender<AppWindowEvent>>,
+        renderer_endpoint: Option<RendererBridgeEndpoint>,
     ) -> Result<WebviewId, WvError> {
         let Some(event_loop) = self.event_loop.as_ref() else {
             return Err(WvError::EventLoop(String::from(
@@ -397,20 +472,32 @@ impl WkWebViewEngine {
             .map_err(|error| WvError::Window(error.to_string()))?;
         mark_startup(&self.startup, StartupPhase::WindowCreated);
         let id = self.next_id;
+        let webview_id = WebviewId(id);
         let configuration = self.profile.configuration_for_view()?;
+        let installed = renderer_endpoint
+            .map(|endpoint| MacRendererBridge::install(webview_id, &configuration, endpoint))
+            .transpose()?;
+        let navigation = installed
+            .as_ref()
+            .map(|installed| installed.bridge.navigation_handle());
         let builder = guarded_default_media_builder(
-            WebviewId(id),
-            page_load_trace_handler(Arc::clone(&self.startup), app_events),
+            webview_id,
+            page_load_trace_handler(Arc::clone(&self.startup), app_events, navigation),
             self.profile_test_media_seed_allow,
         )
         .with_webview_configuration(configuration);
         let webview = builder.build_initial_window(&spec.initial, &window)?;
         let native_webview = webview.webview();
         self.profile.verify_webview(&native_webview)?;
+        if let Some(installed) = installed {
+            installed.bridge.verify_webview(&native_webview)?;
+            self.renderer_outcomes = Some(installed.outcomes);
+            self.renderer_bridges.insert(id, installed.bridge);
+        }
         mark_startup(&self.startup, StartupPhase::WebviewAttached);
         self.next_id += 1;
         self.views.insert(id, View { webview, window });
-        Ok(WebviewId(id))
+        Ok(webview_id)
     }
 
     fn view(&self, id: WebviewId) -> Result<&View, WvError> {
@@ -422,10 +509,13 @@ impl WkWebViewEngine {
 
 impl WebEngine for WkWebViewEngine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
-        self.create_internal(spec, None)
+        self.create_internal(spec, None, None)
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
+        if let Some(bridge) = self.renderer_bridges.get(&id.0) {
+            bridge.navigation_handle().navigation_started();
+        }
         let view = self.view(id)?;
         match target {
             NavTarget::Html(html) => view.webview.load_html(&html),
@@ -462,6 +552,9 @@ impl WebEngine for WkWebViewEngine {
 
     fn destroy(&mut self, id: WebviewId) -> Result<(), WvError> {
         // Dropping the `View` releases the webview, then closes the window.
+        if let Some(bridge) = self.renderer_bridges.remove(&id.0) {
+            bridge.destroy();
+        }
         self.views
             .remove(&id.0)
             .map(|_| ())
@@ -525,6 +618,37 @@ fn spawn_app_wake_bridge(
         .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
 }
 
+fn spawn_renderer_outcome_bridge(
+    outcomes: Receiver<RendererBridgeOutcome>,
+    proxy: EventLoopProxy<WkUserEvent>,
+    stop: Arc<AtomicBool>,
+) -> Result<thread::JoinHandle<()>, WvError> {
+    thread::Builder::new()
+        .name("keld-wv-macos-renderer-wake".to_owned())
+        .spawn(move || {
+            loop {
+                match outcomes.recv_timeout(Duration::from_millis(100)) {
+                    Ok(outcome) => {
+                        let _ = proxy.send_event(WkUserEvent::Renderer(outcome));
+                    }
+                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        })
+        .map_err(|error| {
+            WvError::EventLoop(format!("failed to start renderer outcome bridge: {error}"))
+        })
+}
+
+fn destroy_renderer_bridges(bridges: &mut BTreeMap<u32, MacRendererBridge>) {
+    for bridge in bridges.values() {
+        bridge.destroy();
+    }
+    bridges.clear();
+}
+
 fn app_loop_result(navigation_timed_out: bool, fatal: bool, code: i32) -> Result<(), WvError> {
     if fatal {
         Err(WvError::EventLoop(String::from(
@@ -572,8 +696,14 @@ fn navigation_deadline_expired(
 fn page_load_trace_handler(
     startup: Arc<Mutex<StartupTrace>>,
     app_events: Option<Sender<AppWindowEvent>>,
+    renderer_navigation: Option<BridgeNavigationHandle>,
 ) -> impl Fn(wry::PageLoadEvent, String) + 'static {
     move |event, url| {
+        if matches!(event, wry::PageLoadEvent::Started)
+            && let Some(renderer_navigation) = renderer_navigation.as_ref()
+        {
+            renderer_navigation.navigation_started();
+        }
         #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
         let _ = url;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -633,7 +763,7 @@ mod startup_tests {
     #[test]
     fn page_load_handler_marks_nav_finished_on_finished() -> Result<(), String> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
-        let handler = page_load_trace_handler(Arc::clone(&startup), None);
+        let handler = page_load_trace_handler(Arc::clone(&startup), None, None);
         handler(wry::PageLoadEvent::Finished, String::new());
         let guard = startup
             .lock()
@@ -649,7 +779,7 @@ mod startup_tests {
     #[test]
     fn page_load_handler_ignores_started_for_nav_finished() -> Result<(), String> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
-        let handler = page_load_trace_handler(Arc::clone(&startup), None);
+        let handler = page_load_trace_handler(Arc::clone(&startup), None, None);
         handler(wry::PageLoadEvent::Started, String::new());
         let guard = startup
             .lock()
@@ -664,7 +794,7 @@ mod startup_tests {
     fn app_page_load_handler_emits_navigation_ready_once() {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
         let (events_tx, events_rx) = std::sync::mpsc::channel();
-        let handler = page_load_trace_handler(Arc::clone(&startup), Some(events_tx));
+        let handler = page_load_trace_handler(Arc::clone(&startup), Some(events_tx), None);
         handler(wry::PageLoadEvent::Started, String::new());
         assert!(events_rx.try_recv().is_err());
         handler(wry::PageLoadEvent::Finished, String::new());

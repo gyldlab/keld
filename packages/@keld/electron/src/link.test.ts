@@ -13,6 +13,7 @@ import {
   APP_LINK_IO_DEADLINE_MS,
   decodeCallError,
   DrainSignal,
+  ECHO_CHANNEL,
   encodeHeader,
   errorFromErrFrame,
   FLAG_RAW,
@@ -697,6 +698,153 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
     onLastWindowClosed(): void {},
     onLinkDead(): void {},
   };
+
+  test(
+    "host Echo Call returns one correlated Reply on the shared lifecycle session",
+    async () => {
+      const peer = bindPeer();
+      let session: LifecycleLink | undefined;
+      try {
+        let calls = 0;
+        const connectP = LifecycleLink.connect(peer.link, {
+          ...handlers,
+          async onApplicationCall(channel, payload) {
+            calls += 1;
+            expect(channel).toBe(ECHO_CHANNEL);
+            return Uint8Array.from([...payload, 0x7f]);
+          },
+        });
+        const socket = await peer.opened;
+        const hello = await peer.reader.readFrame();
+        expect(hello.header.kind).toBe(FrameKind.Hello);
+        writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+        session = await connectP;
+
+        writeAll(
+          socket,
+          encodeFrame(FrameKind.Call, ECHO_CHANNEL, 41, new Uint8Array([0x11, 0x22])),
+        );
+        const reply = await rejectWithin(
+          2_000,
+          peer.reader.readFrame(),
+          "shared app-link did not return the Echo Reply",
+        );
+        expect(reply.header.kind).toBe(FrameKind.Reply);
+        expect(reply.header.channel).toBe(ECHO_CHANNEL);
+        expect(reply.header.corr).toBe(41);
+        expect(Array.from(reply.payload)).toEqual([0x11, 0x22, 0x7f]);
+        expect(calls).toBe(1);
+      } finally {
+        session?.close();
+        peer.listener.stop(true);
+      }
+    },
+    5_000,
+  );
+
+  test(
+    "a slow application handler does not block Ping or the shared reader",
+    async () => {
+      const peer = bindPeer();
+      let session: LifecycleLink | undefined;
+      let releaseHandler: () => void = () => undefined;
+      const handlerGate = new Promise<void>((resolve) => {
+        releaseHandler = resolve;
+      });
+      try {
+        const connectP = LifecycleLink.connect(peer.link, {
+          ...handlers,
+          async onApplicationCall(channel, payload) {
+            expect(channel).toBe(ECHO_CHANNEL);
+            await handlerGate;
+            return payload;
+          },
+        });
+        const socket = await peer.opened;
+        await peer.reader.readFrame();
+        writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+        session = await connectP;
+
+        writeAll(socket, encodeFrame(FrameKind.Call, ECHO_CHANNEL, 41, new Uint8Array([0x11])));
+        writeAll(socket, encodeFrame(FrameKind.Ping, 0, 1, new Uint8Array()));
+
+        const pong = await rejectWithin(
+          1_000,
+          peer.reader.readFrame(),
+          "slow application handler blocked the app-link reader",
+        );
+        expect(pong.header.kind).toBe(FrameKind.Ping);
+        expect(pong.header.corr).toBe(1);
+
+        releaseHandler();
+        const reply = await rejectWithin(
+          1_000,
+          peer.reader.readFrame(),
+          "Echo Reply did not resume after the handler completed",
+        );
+        expect(reply.header.kind).toBe(FrameKind.Reply);
+        expect(reply.header.channel).toBe(ECHO_CHANNEL);
+        expect(reply.header.corr).toBe(41);
+        expect(Array.from(reply.payload)).toEqual([0x11]);
+      } finally {
+        releaseHandler();
+        session?.close();
+        peer.listener.stop(true);
+      }
+    },
+    5_000,
+  );
+
+  test(
+    "an application handler can await quit without deadlocking the shared reader",
+    async () => {
+      const peer = bindPeer();
+      let session: LifecycleLink | undefined;
+      let markHandlerFinished: () => void = () => undefined;
+      const handlerFinished = new Promise<void>((resolve) => {
+        markHandlerFinished = resolve;
+      });
+      try {
+        const connectP = LifecycleLink.connect(peer.link, {
+          ...handlers,
+          async onApplicationCall(channel, payload) {
+            expect(channel).toBe(ECHO_CHANNEL);
+            await session!.quit();
+            markHandlerFinished();
+            return payload;
+          },
+        });
+        const socket = await peer.opened;
+        await peer.reader.readFrame();
+        writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+        session = await connectP;
+
+        writeAll(socket, encodeFrame(FrameKind.Call, ECHO_CHANNEL, 51, new Uint8Array([0x21])));
+
+        const quitCall = await rejectWithin(
+          1_000,
+          peer.reader.readFrame(),
+          "Echo handler could not issue lifecycle Quit while the reader was active",
+        );
+        expect(quitCall.header.kind).toBe(FrameKind.Call);
+        expect(quitCall.header.channel).toBe(LIFECYCLE_CHANNEL);
+        writeAll(
+          socket,
+          encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, quitCall.header.corr, new Uint8Array()),
+        );
+
+        await rejectWithin(
+          1_000,
+          handlerFinished,
+          "Echo handler did not resume after lifecycle Quit Reply",
+        );
+      } finally {
+        session?.close();
+        peer.listener.stop(true);
+      }
+    },
+    5_000,
+  );
 
   test(
     "HELLO readFrame against a live silent peer is KELD-IPC-006",

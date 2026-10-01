@@ -1,6 +1,6 @@
 //! Existing Windows project-fixture resource owners.
 
-use std::fs;
+use std::{fs, process::Command};
 
 use crate::{DARK_BG, PRODUCT_TITLE};
 
@@ -29,6 +29,50 @@ impl StageFixture {
     }
 }
 
+fn bundle_t1b_entry(repo: &std::path::Path, project: &std::path::Path) -> String {
+    let source = project.join("src/t1b-entry.ts");
+    let bundled = project.join("src/t1b-entry.bundle.js");
+    let api_link = serde_json::to_string(
+        &repo
+            .join("packages/@keld/api/src/link.ts")
+            .to_string_lossy(),
+    )
+    .expect("encode canonical @keld/api link path");
+    let kipc = serde_json::to_string(
+        &repo
+            .join("packages/@keld/kipc/src/transport.ts")
+            .to_string_lossy(),
+    )
+    .expect("encode canonical @keld/kipc transport path");
+    let prelude = format!(
+        "import {{ DrainSignal, FrameKind, FrameReader, LIFECYCLE_CHANNEL, WriteQueue, errorFromErrFrame, isWin32PipeEndpoint, parseAppLink, withIoDeadline }} from {api_link};\n\
+         import {{ parseWin32DiagnosticPort }} from {kipc};\n"
+    );
+    fs::write(
+        &source,
+        format!(
+            "{prelude}{}",
+            include_str!("../../../fixtures/t1b_harness.ts")
+        ),
+    )
+    .expect("write Windows T1b bundle entry");
+    let output = Command::new("bun")
+        .arg("build")
+        .arg(&source)
+        .args(["--target=bun", "--format=esm", "--outfile"])
+        .arg(&bundled)
+        .output()
+        .expect("bundle Windows T1b fixture through canonical @keld/api owner");
+    assert!(
+        output.status.success(),
+        "Windows T1b API bundle failed: {output:?}"
+    );
+    let entry = fs::read_to_string(&bundled).expect("read bundled Windows T1b entry");
+    fs::remove_file(source).expect("remove temporary Windows T1b source");
+    fs::remove_file(bundled).expect("remove temporary Windows T1b bundle");
+    entry
+}
+
 pub(crate) struct ProductFixture {
     pub(crate) root: tempfile::TempDir,
     pub(crate) project: std::path::PathBuf,
@@ -46,22 +90,12 @@ impl ProductFixture {
             ),
         )
         .expect("product config");
-        fs::write(
-            project.join("src/kipc-transport.ts"),
-            include_str!("../../../../../../packages/@keld/kipc/src/transport.ts"),
-        )
-        .expect("canonical kipc transport");
-        let link = include_str!("../../../../../../packages/@keld/electron/src/link.ts")
-            .replace("../../kipc/src/transport.ts", "./kipc-transport.ts");
-        fs::write(
-            project.join("src/main.ts"),
-            format!(
-                "{}{}",
-                link,
-                include_str!("../../../fixtures/t1b_harness.ts")
-            ),
-        )
-        .expect("product entry");
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root");
+        let entry = bundle_t1b_entry(repo, &project);
+        fs::write(project.join("src/main.ts"), entry).expect("product entry");
         fs::write(
             project.join("index.html"),
             format!("<!doctype html>{DARK_BG}\n"),
