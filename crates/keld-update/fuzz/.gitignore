@@ -2,4 +2,7 @@
 /artifacts/
 /coverage/
 /corpus/activation_journal/*
+!/corpus/activation_journal/canonical-awaiting-health
+!/corpus/activation_journal/canonical-health-accepted
 !/corpus/activation_journal/canonical-publish-pending
+!/corpus/activation_journal/canonical-rollback-pending

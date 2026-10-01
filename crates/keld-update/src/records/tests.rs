@@ -326,12 +326,39 @@ fn activation_journal_uses_exact_canonical_bytes_and_roundtrips_all_context() {
 }
 
 #[test]
-fn retained_activation_journal_fuzz_seed_is_a_valid_canonical_record() {
-    let bytes = include_bytes!("../../fuzz/corpus/activation_journal/canonical-publish-pending");
-    let decoded = decode_activation_journal(bytes).expect("retained fuzzer seed");
-    assert_eq!(decoded.attempt_id, [0x11; 32]);
-    assert_eq!(decoded.candidate.version, "1.1.0");
-    assert_eq!(decoded.phase, ActivationPhase::PublishPending);
+fn retained_activation_journal_fuzz_seeds_cover_each_phase() {
+    let seeds: [(&str, &[u8], ActivationPhase); 4] = [
+        (
+            "publish-pending",
+            &include_bytes!("../../fuzz/corpus/activation_journal/canonical-publish-pending")[..],
+            ActivationPhase::PublishPending,
+        ),
+        (
+            "awaiting-health",
+            &include_bytes!("../../fuzz/corpus/activation_journal/canonical-awaiting-health")[..],
+            ActivationPhase::AwaitingHealth,
+        ),
+        (
+            "health-accepted",
+            &include_bytes!("../../fuzz/corpus/activation_journal/canonical-health-accepted")[..],
+            ActivationPhase::HealthAccepted {
+                health_receipt_digest: [0x77; 32],
+            },
+        ),
+        (
+            "rollback-pending",
+            &include_bytes!("../../fuzz/corpus/activation_journal/canonical-rollback-pending")[..],
+            ActivationPhase::RollbackPending {
+                failure: crate::records::ActivationFailureClass::HealthRejected,
+            },
+        ),
+    ];
+    for (name, bytes, expected_phase) in seeds {
+        let decoded = decode_activation_journal(bytes).expect("retained canonical fuzzer seed");
+        assert_eq!(decoded.attempt_id, [0x11; 32], "{name}");
+        assert_eq!(decoded.candidate.version, "1.1.0", "{name}");
+        assert_eq!(decoded.phase, expected_phase, "{name}");
+    }
 }
 
 #[test]

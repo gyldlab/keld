@@ -16,6 +16,8 @@ native Windows; this target does not claim those APIs ran under Linux.
 The decoder enforces the local-record size bound, canonical serialization, strict
 schema and complete journal invariants. Fuzz success proves neither native storage
 protection nor safe process-family recovery; those remain separate Windows gates.
+Its retained corpus includes one canonical record for each transaction phase so
+mutations begin from every valid phase-specific shape.
 
 Every crash must retain its minimized corpus input and become a deterministic
 regression in `crates/keld-update/src/tests.rs` before its disposition is recorded.
