@@ -28,7 +28,7 @@ mod error;
 mod full;
 mod manifest;
 mod provenance;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, test, feature = "fuzzing"))]
 mod records;
 #[cfg(windows)]
 mod windows_baseline;
@@ -56,6 +56,9 @@ pub use provenance::{
     InstallOwner, InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId,
     UpdateVerifier,
 };
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use records::fuzz_activation_journal;
 #[cfg(windows)]
 pub use windows_baseline::{
     LoadedWindowsBaseline, WindowsActivationWriteSnapshot, WindowsBaselineReceipt,
