@@ -7,6 +7,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Fails if the stock scaffold imports `./kipc-transport.ts` without
+/// staging the matching sidecar that Linux strict binds beside `/code/main.ts`.
+pub(crate) fn assert_imported_kipc_sidecar_exists(root: &Path) {
+    let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main.ts");
+    assert!(
+        main.contains("from \"./kipc-transport.ts\""),
+        "entry must import ./kipc-transport.ts so Linux /code/main.ts can resolve the sidecar: {main}"
+    );
+    assert!(
+        root.join("src").join("kipc-transport.ts").is_file(),
+        "entry imports ./kipc-transport.ts but src/kipc-transport.ts is missing under {}",
+        root.display()
+    );
+}
+
 /// Confirms the KEL-142 fixture is self-contained before Linux strict remaps
 /// `src/main.ts` to `/code/main.ts`. The canonical `@keld/api` owner is
 /// bundled into that entry, so no stale compatibility sidecar may remain.
