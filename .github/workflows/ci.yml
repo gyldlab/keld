@@ -122,6 +122,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
         run: |
           cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml
+      - name: Check keld-wv fuzz workspace
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
+        run: |
+          cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml
       - name: Local workspace path and process contracts
         shell: bash
         run: |
