@@ -93,6 +93,7 @@ export const app = {
     const list = listeners.get(event) ?? [];
     list.push(listener);
     listeners.set(event, list);
+    if (event === "ready") ignoreIfUnawaited(observeReady());
   },
 
   removeListener: removeAppListener,
