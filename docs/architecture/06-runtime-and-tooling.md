@@ -103,6 +103,18 @@
   not make it an installed updater launcher or select a MachineSeamless writer
   mechanism. KEL-101 separately owns the named-pipe/DACL boundary; this KEL-96
   slice makes no LPAC or privileged-dispatch claim.
+- **Windows installed-root product direction (KEL-254/KEL-53):** the default direct
+  install is per-user under the user's application location, with automatic updates
+  under the same-user authority and no UAC. Program Files installs support explicit-UAC
+  activation, and an opt-in seamless mode only after KEL-270 supplies its lifecycle
+  proof and a separately approved architecture/spec amendment selects and qualifies
+  the privileged authority. KEL-270 does not select the mechanism. All direct modes
+  share one KEL-53 updater state machine; only acquisition of its activation write
+  lease differs. The ordinary application host and
+  Bun roles remain non-SYSTEM. MSIX, App Installer, Store, enterprise and other
+  deployment-owned installs remain with that owner and cannot acquire a competing Keld
+  writer. This is approved product direction, not evidence that installed boot or the
+  seamless authority is implemented; KEL-96 currently boots the Windows dev stage.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -443,9 +455,16 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   the matching Windows-host streaming producer as a library API. Windows extraction
   binds the receipt's installation/key/profile to an actual owner-private, fixed-NTFS
   staging root and retains flushed/read-back files in an unpublished incomplete stage.
-  The platform loader that proves installer provenance protection, live feed
-  orchestration, completed-version publication, activation, health and recovery remain
-  unimplemented.
+  KEL-266 additionally implements actual-SYSTEM machine-baseline initialization and a
+  read-only protected baseline loader. It does not provide per-user initialization or
+  mode-aware active selection. Live feed orchestration, completed-version publication,
+  activation, exact health, rollback and recovery remain unimplemented. Planned Windows
+  direct modes share this state machine: same-user authority for per-user installs,
+  explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
+  lifecycle proof and a separately approved architecture/spec amendment selects and
+  qualifies the authority. In UAC mode, only KEL-53's bounded updater runs elevated; it
+  must launch the candidate under the exact initiating user's ordinary token. Managed
+  deployment owners retain mutation.
 - Optional delta: only a measured later transport optimization. It reconstructs the
   same full-package content identity, retains a same-attempt full fallback and cannot
   change activation, health, trust-floor or rollback semantics.
@@ -870,23 +889,23 @@ package requiring executable modes, links or other v0-excluded metadata remain b
 on an approved KEL-137 representation.
 
 The trusted installer creates canonical `keld.install-provenance/v2` naming app id,
-channel, target, install root, update root, installed baseline artifact, compiled-in
-signing-key identity, install mode, installation owner and the admitted mode-specific OS
-protection profile.
-`PerUserDirect` is the default and records its LocalAppData user owner. `MachineUacDirect`
-records the Program Files profile writable by elevated Administrators/SYSTEM and
-read/execute for ordinary users/Keld roles. `MachineSeamlessDirect` is explicit opt-in
-and retains the SYSTEM-protected machine profile; its runtime authority remains a
-separate unselected gate. Legacy mode-less provenance fails closed until a trusted
-migration records a mode. `Managed(mechanism)` records the package/deployment owner and
-refuses direct mutation before feed access. `Direct` admits the updater only when every
-recorded value matches the running host. Provenance changed by a principal outside its
-mode's admitted writer authority refuses before feed access or filesystem mutation;
-owning-user modification is excluded from the PerUserDirect threat claim. Missing or
-mismatched provenance refuses. Paths, executable names,
-registry-location guesses and writable config never infer mode or direct ownership.
-Legacy same-user role mode refuses direct update because its role token cannot be
-restricted away from updater state. The installer first writes and synchronizes the immutable
+channel, target, explicit install mode, owner, install root, update root, installed
+baseline artifact, compiled-in signing-key identity, channel owner and admitted
+mode-specific OS protection profile. `PerUserDirect` is the default and records its
+LocalAppData user owner; application roles cannot write updater metadata, while the
+installing user retains normal package/update authority and arbitrary native malware
+under that user remains outside the threat claim. `MachineUacDirect` records the Program
+Files profile writable by elevated Administrators/SYSTEM and read/execute for ordinary
+users/Keld roles. `MachineSeamlessDirect` is explicit opt-in and retains the
+SYSTEM-protected machine profile; its runtime authority remains a separate unselected
+gate. `Managed(mechanism)` records the package/deployment owner and refuses direct
+mutation before feed access. `Direct` admits the updater only when every recorded value
+matches the running host. Provenance changed by a principal outside its mode's admitted
+writer authority refuses before feed access or filesystem mutation. Missing/mutable/
+mismatched provenance refuses. Paths, executable names, registry-location guesses and
+writable config never infer mode or direct ownership. Legacy same-user role mode refuses
+direct update because its role token cannot be restricted away from updater state. The
+installer first writes and synchronizes the immutable
 baseline version directory, then durably seeds `version-floor`, `current` and
 `last-known-good` to that exact baseline artifact/version, and publishes provenance
 last as the install transaction's commit record. Once direct provenance exists, a

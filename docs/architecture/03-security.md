@@ -269,24 +269,32 @@ manifest decoder.
 Current code verifies signed manifests/full artifacts and the Windows canonical
 archive, and extracts to observed owner-private incomplete stages. KEL-266 adds an
 actual SYSTEM-only protected machine-baseline installer/loader and SYSTEM staging
-cell. The active KEL-270 work now records explicit mode metadata and a strict journal
-codec/recovery classifier, but it does not yet publish current/LKG, run an activation
-writer or provide candidate health/rollback. The following is the reviewed
-full-lifecycle contract; no mode is shipped from provenance or state-model code alone.
+cell. KEL-270 records explicit mode metadata and a strict journal codec/recovery
+classifier, but it does not publish current/LKG, run a production activation writer,
+confirm candidate health or perform production rollback. Per-user and mode-aware
+provenance/initialization remain implementation work. Architecture 06 and KEL-53 own
+the exact support cells. The following is the reviewed full-lifecycle contract; no
+mode is shipped from provenance or state-model code alone.
 V0 update manifests are signed with
 ed25519 and verified by the host's compiled-in public key. Every release has a bounded
 full package whose transport and canonical
 content have separate BLAKE3 checks; optional later deltas must reconstruct that same
 full-content digest. Protected installer provenance, rather than path heuristics,
 decides whether the direct updater owns the installation channel and records the explicit
-install mode plus its mode-specific OS protection profile. The default is per-user and
-user-owned; its owner and arbitrary native malware already running as that user are
-outside the threat claim, while hostile Keld roles remain denied write access. The
-Program Files UAC profile admits the trusted elevated writer (Administrators/SYSTEM) and
-ordinary-user/Keld-role read/execute. The opt-in seamless machine profile remains
-SYSTEM-protected with its privileged mechanism unselected. Managed/package-owned installs
-remain with their deployment owner. Legacy same-user role mode refuses direct update.
-The host keeps the
+install mode plus its mode-specific OS protection profile. Windows direct installs
+target three cells: per-user is the default and updates under the same user's authority
+without UAC; machine-wide explicit UAC obtains an elevated activation lease after
+verification and staging; machine-wide seamless activation is opt-in and remains disabled
+until its lifecycle proof and a separately approved architecture/spec amendment select
+and qualify a narrow authority. KEL-270 does not select that mechanism. These modes use
+the same verification, anti-downgrade, journal, exclusive activation, candidate health,
+commit/rollback and crash-recovery state machine; only write-lease acquisition varies.
+The Program Files UAC profile admits the trusted elevated writer (Administrators/SYSTEM)
+and ordinary-user/Keld-role read/execute. Managed installs remain owned by their
+deployment mechanism and must not gain a competing Keld writer. The per-user mode does
+not claim protection from arbitrary native malware running as the installing user;
+hostile Keld roles remain denied write access. Legacy same-user role mode refuses direct
+update. The host keeps the
 semantic-version trust floor separate from `current`, an exact attempt journal and
 `last-known-good`; candidate health cannot advance LKG unless its private receipt
 matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed

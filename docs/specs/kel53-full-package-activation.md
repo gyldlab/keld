@@ -35,6 +35,20 @@ KEL-266 AC4–6 completion: delegated approval comment
 This supplement closes coherent admission, higher-release staging and committed-state
 LPAC evidence within the same issue; it does not claim activation or installed boot.
 
+Windows direct-install mode amendment: exact content was approved in the user's
+approval of Linear PR #290 head `b78c89b061049647421dda69034c9f35079d9441`, via Linear
+comment `e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`. The approved pre-receipt KEL-53 file
+SHA-256 is `6b4fda6e8bcbb388886d8254d5bc8558cd706533e6c28a061c478dc1acc42442`. This
+amendment supersedes any earlier implication that the machine-protected baseline is the
+only direct-install mode or that one helper mechanism is selected. Its implementation
+and native acceptance gates remain open; in particular, this approval does not select
+or authorize the machine-seamless authority.
+Post-approval consistency correction: the Machine-UAC summary now matches the detailed
+adapter contract below: the request carries only a bounded, non-authoritative source
+locator, and the elevated owner opens, pins and verifies the source handles itself.
+This resolves contradictory summary wording without changing an install mode or
+authority boundary.
+
 ## 1. Goal & non-goals
 
 Keld's direct updater must prove one safe signed full-package
@@ -66,6 +80,99 @@ Non-goals:
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
 - no implementation before this approved corrected specification lands.
 
+### Windows direct-install modes (approved contract; implementation gates remain)
+
+One KEL-53 transaction owns signed package verification, anti-downgrade policy,
+staging, the activation journal, installation-wide exclusive ownership, exact candidate
+launch, health confirmation, commit/rollback and crash recovery. Install mode changes
+only how that transaction obtains its activation write lease; it MUST NOT create three
+updater state machines or move journal/pointer policy into the authority adapter.
+
+| Mode | Install and update authority | Required boundary |
+|---|---|---|
+| `PerUserDirect` (default) | Install beneath the installing user's application location. Verify, stage and activate under that user's ordinary authority with no UAC. | The same-user owner can mutate its own files; Keld does not claim protection from arbitrary native malware under that account. Supervised app roles remain unable to mutate updater state where the admitted profile supports distinct OS principals. |
+| `MachineUacDirect` | Install beneath a protected machine root. Download and verify into a separate user-owned staging area; when protected activation is required, request UAC and use the signed/elevated updater for the exact attempt. | The application host and Bun roles remain non-elevated/non-SYSTEM. Before elevation, bind the request to the initiating user's SID, logon-session identity and caller process. It may carry only KEL-53's bounded source lookup locator beneath that authenticated user's owner-private staging root; the locator conveys no authority and cannot select an install root or write destination. The elevated component's Authenticode signer and exact image digest must match the protected helper identity. It resolves the locator through the Windows path owner, opens and pins the exact read-only source handles, denies concurrent write/delete where the platform permits, and independently verifies the signed manifest/artifact from those handles. It then creates the protected journal/attempt, copies verified bytes into a protected sibling stage and verifies/read-backs the copy before publication. It accepts no mutation authority from argv, environment, cwd, or arbitrary caller paths and mutates only this installation's package/update roots through common KEL-53 code. Candidate launch must use the exact initiating user's ordinary token and logon session, even if UAC used alternate administrator credentials; if that token cannot be securely reused, it refuses launch and preserves journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install, replaced-source or wrong-session requests refuse before protected mutation. If the elevated owner dies, recovery is journal-bound and fail-closed; retry may require another explicit UAC grant. |
+| `MachineSeamlessDirect` | Install beneath a protected machine root; later activation obtains a narrow privileged write lease without repeated UAC. | Opt-in only. The mechanism is not selected by this requirement. It remains unavailable until the KEL-270 proof gate below passes and an exact-reviewed Windows-native authority is selected. Host/Bun remain ordinary-user processes. |
+| `ManagedOwner` | MSIX, App Installer, Store, enterprise deployment and package-manager owners perform their own update. | Keld MUST refuse direct activation and MUST NOT register a competing writer or selector. |
+
+For `MachineUacDirect`, `keld-update::WindowsUacAuthorityAdapter` owns capture and
+transfer of the initiating user's actual primary-token and process capabilities. The
+ordinary updater opens the primary token from its retained initiating-process handle;
+the elevated owner validates that the transferred token is the token of that exact
+process object, not a separately supplied token with matching strings. It rereads and
+validates the token's user SID, logon-session
+`AuthenticationId`, session id, elevation type and integrity level, plus the initiating
+process identity/image, against the one-shot request. Identity strings alone MUST NOT
+be used to recreate a token. Retain the exact token/process handles until the candidate
+host is launched and its process handle is retained; retain the candidate process and
+health witnesses through transaction commit or rollback. If the exact capability cannot
+be transferred or its provenance cannot be validated—including when UAC used alternate
+administrator credentials—refuse before protected mutation. If the token capability is
+lost after mutation, roll back under the same writer lease or preserve the journal and
+require explicit recovery. The one-shot authenticated request may name the staged source
+only as a lookup locator beneath the authenticated user's owner-private staging root;
+that locator conveys no write authority. While impersonating the authenticated client,
+the adapter uses the existing Windows path owner to reject reparse/substitution and open
+the source files read-only, retaining the exact file objects and denying concurrent
+write/delete where the platform permits. It reverts before privileged operations,
+verifies the signed manifest and archive from those same retained handles, copies into a
+protected sibling stage, and reads back the exact bytes before KEL-53's normal
+publication order. Any source race or inability to pin stable bytes refuses before
+publication. It never reopens an untrusted source by caller-provided path after pinning.
+
+**UAC launch qualification target, not yet proven:** evaluate an authenticated local
+IPC request from the exact initiating process; impersonate the last authenticated
+client message only at `SecurityImpersonation`; open and duplicate that thread token
+into a primary token with `DuplicateTokenEx(TokenPrimary)`; always check impersonation
+success and revert before protected updater operations. The candidate launch target is
+`CreateProcessWithTokenW` using that retained primary token, only when the elevated
+helper has the required `SeImpersonatePrivilege` and runs in the same interactive
+session as the captured initiating user. Verify the resulting host token, session,
+integrity/elevation, image, profile/environment and desktop before resources. A session
+mismatch, missing privilege, identification-only token, failed reversion, unavailable
+desktop/profile or failed token proof refuses before publication; if detected after
+publication, roll back or preserve the journal under the same writer lease. Do not
+substitute the elevated administrator token. `CreateProcessAsUser` is not an automatic
+fallback: its token-session behavior and additional caller privileges need separate
+exact proof. A pre-existing ordinary-user launcher MAY be reused only if its installed
+lifecycle and authenticated handoff independently satisfy the same contract. This
+qualification does not select or constrain the separate machine-seamless mechanism.
+
+Mode is authenticated installation provenance, never inferred from Program Files paths,
+ACL observations, executable location, command line, environment, or caller flags. The
+same candidate bytes, floor, journal transitions, health predicate and rollback rules
+apply to each direct mode. Only the lease-acquisition adapter and its native evidence
+matrix vary.
+
+`MachineSeamlessDirect` keeps KEL-270's approved bounded proof slice as a prerequisite:
+exact attempt Job handle, bounded keeper, one-shot authenticated result transfer,
+writer-lease/lifecycle coupling, and fail-closed recovery. No production pointer,
+floor, activation, commit or rollback writes connect to that keeper slice until it
+passes coordinator-death, keeper-death, wrong-Job/host, replay/stale-attempt, competing
+writer, process-family-zero and ambiguous-reboot controls. A Windows Service, Scheduled
+Task, installer helper or other mechanism is not preselected. If all-owners-lost or
+reboot state cannot be proven, recovery preserves journal/pointers and halts.
+
+The amendment expands acceptance coverage for AC1/6/7/8/10/12/14 and T4b/T5 into
+independent per-user, machine-UAC, machine-seamless and managed-owner cells. The UAC
+cell additionally tests request-to-user/session binding, exact signed helper identity,
+initiating-token handle provenance and lifetime, TokenUser/AuthenticationId/session/
+elevation/integrity validation, association to the initiating process, alternate UAC
+credentials, unavailable/substituted token handles, one-shot source locator and
+elevated-owner-opened read-only source handles,
+source-file substitution/reparse/write races, independent signature/artifact
+revalidation, replay and cross-install refusal, protected copy/readback, mutation
+confinement, exact initiating-user candidate token, wrong-session refusal, process-family lifecycle,
+helper/coordinator death at every persisted boundary, and journal-bound recovery with
+renewed consent where required. A positive control proves the exact authorized operation
+can complete. Per-user tests assert same-user no-UAC activation and its stated threat
+exclusion. Machine-UAC
+tests assert explicit elevation only at protected activation and prove the application
+never runs elevated. Machine-seamless tests remain refusal-only until KEL-270's proof
+gate and selected mechanism pass. Managed-owner controls prove no direct writer. Each
+cell runs the same durable state-machine trace and crash-cut matrix; a pass in one
+authority cell does not close another.
+
 ## 2. Spec refs
 
 - `docs/architecture/06-runtime-and-tooling.md` §4/§4a owns the v0 feed,
@@ -90,6 +197,16 @@ Non-goals:
   policy; package validation consumes it and must not copy a second list.
 - KEL-90/KEL-129 own measurements and budgets.
 - PR #30 landed the current signed-manifest/feed wire contract.
+- Microsoft documents token-based process launch in [`CreateProcessAsUser`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasusera)
+  and [`Processes in the Client Security Context`](https://learn.microsoft.com/en-us/windows/win32/secauthz/processes-in-the-client-security-context).
+  These platform contracts do not by themselves prove Keld's initiating-user token
+  handoff or process lifecycle.
+- The Windows UAC qualification candidate also depends on Microsoft's contracts for
+  [`ImpersonateNamedPipeClient`](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient),
+  [`DuplicateTokenEx`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-duplicatetokenex),
+  and [`CreateProcessWithTokenW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw).
+  These define token type, access-right and session constraints; Keld still requires
+  exact Windows proof for request binding and lifecycle.
 
 This approved corrected contract keeps the v0 JSON fields but intentionally revises their validation,
 client-selection and canonical-package semantics before any updater implementation
@@ -381,8 +498,9 @@ installed-image and protection profiles but never selects current/LKG or mints a
 selection. KEL-96/core consumes that exact `ActivePackageSelection`, performs host boot
 admission and returns its opaque `ValidatedBootSelection` to the ordinary-user host.
 None of the consumer/identity owners infers install mode or mutates updater state.
-KEL-254's current Program Files draft must include per-user and Machine-UAC protection
-profiles before any direct mode ships.
+KEL-254's approved installed-root spec defines the per-user and Machine-UAC protection
+profiles; their native implementation and verification remain required before those
+direct modes ship.
 
 ### Internal state and transition contract
 
@@ -682,9 +800,9 @@ profile identity; KEL-53 owns install-mode provenance, update journal, active-pa
 selection and the sole writer; KEL-254 owns OS verification of installed-image and
 protection profiles plus the read-only selection boundary, never write authority;
 KEL-96 owns host boot admission and consumes the exact opaque selection as the ordinary
-user, without inferring install mode or mutating updater state. KEL-254's current
-Program Files draft must include per-user and Machine-UAC protection profiles before
-any direct mode ships.
+user, without inferring install mode or mutating updater state. KEL-254's approved
+installed-root spec defines the per-user and Machine-UAC protection profiles; their
+native implementation and verification remain required before those direct modes ship.
 
 Windows x64 direct distribution is first because its tree fits v0. KEL-137 is an
 explicit predecessor for macOS/Linux or any package requiring metadata absent from v0.
