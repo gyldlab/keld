@@ -19,5 +19,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "activation_journal"
+path = "fuzz_targets/activation_journal.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

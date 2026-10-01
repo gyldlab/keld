@@ -1,3 +1,5 @@
-target/
-artifacts/
-coverage/
+/target/
+/artifacts/
+/coverage/
+/corpus/activation_journal/*
+!/corpus/activation_journal/canonical-publish-pending

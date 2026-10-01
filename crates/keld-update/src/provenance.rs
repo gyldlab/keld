@@ -13,7 +13,7 @@ use crate::error::{ProvenanceField, ProvenanceUnavailable, UpdateError, hex_dige
 pub struct SigningKeyId([u8; 32]);
 
 impl SigningKeyId {
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, test, feature = "fuzzing"))]
     pub(crate) const fn from_digest(digest: [u8; 32]) -> Self {
         Self(digest)
     }
@@ -71,7 +71,7 @@ impl DirectInstallMode {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, test, feature = "fuzzing"))]
     pub(crate) const fn protection_profile(self) -> keld_guard::WindowsInstallProtectionProfile {
         match self {
             Self::PerUserDirect => keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
@@ -82,7 +82,7 @@ impl DirectInstallMode {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, test, feature = "fuzzing"))]
     pub(crate) fn parse(value: &str) -> Result<Self, UpdateError> {
         match value {
             "per-user-direct" => Ok(Self::PerUserDirect),

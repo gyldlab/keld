@@ -326,6 +326,15 @@ fn activation_journal_uses_exact_canonical_bytes_and_roundtrips_all_context() {
 }
 
 #[test]
+fn retained_activation_journal_fuzz_seed_is_a_valid_canonical_record() {
+    let bytes = include_bytes!("../../fuzz/corpus/activation_journal/canonical-publish-pending");
+    let decoded = decode_activation_journal(bytes).expect("retained fuzzer seed");
+    assert_eq!(decoded.attempt_id, [0x11; 32]);
+    assert_eq!(decoded.candidate.version, "1.1.0");
+    assert_eq!(decoded.phase, ActivationPhase::PublishPending);
+}
+
+#[test]
 fn activation_journal_rejects_noncanonical_or_substituted_context() {
     let bytes = encode_activation_journal(&activation_journal()).expect("journal");
     let text = String::from_utf8(bytes).expect("UTF-8");

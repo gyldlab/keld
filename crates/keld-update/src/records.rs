@@ -385,6 +385,16 @@ pub(crate) fn decode_activation_journal(bytes: &[u8]) -> Result<ActivationJourna
     Ok(journal)
 }
 
+/// Raw-byte fuzzer hook for the canonical activation-journal decoder.
+///
+/// This entry point exists only when the non-product `fuzzing` feature is enabled.
+/// It exercises the production decoder and returns whether the input was admitted.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_activation_journal(bytes: &[u8]) -> bool {
+    decode_activation_journal(bytes).is_ok()
+}
+
 pub(crate) fn validate_activation_journal(journal: &ActivationJournal) -> Result<(), UpdateError> {
     if journal.lifecycle_channel_id == journal.attempt_id
         || journal.lifecycle_channel_id == journal.health_channel_id
