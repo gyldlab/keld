@@ -1374,7 +1374,7 @@ pub fn connect_windows_lifecycle_rendezvous_until<P: WindowsLifecyclePeerPin>(
             "lifecycle rendezvous deadline elapsed before handshake",
         ));
     };
-    stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
+    stream.set_app_link_read_deadline(Some(peer_timeout))?;
     stream.set_app_link_write_deadline(Some(peer_timeout))?;
     stream
         .0
@@ -2818,25 +2818,23 @@ mod named_pipe_tests {
         let allowed_for_server = Arc::clone(&authorized_ids);
         let (accepted_tx, accepted_rx) = mpsc::channel();
         let acceptor = thread::spawn(move || {
-            let accepted = listener_for_acceptor
-                .accept_until(
-                    Instant::now() + Duration::from_secs(5),
-                    move |pid, session, facts| {
-                        let authorized = allowed_for_server
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .contains(&pid);
-                        if !authorized || session != server_session || facts.session_id != session {
-                            return None;
-                        }
-                        let pin = TestPeerProcess::open(pid, session)?;
-                        (pin.token_facts == *facts).then_some(pin)
-                    },
-                )
-                .expect("accept one authorized contender before deadline");
+            let accepted = listener_for_acceptor.accept_until(
+                Instant::now() + Duration::from_secs(5),
+                move |pid, session, facts| {
+                    let authorized = allowed_for_server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .contains(&pid);
+                    if !authorized || session != server_session || facts.session_id != session {
+                        return None;
+                    }
+                    let pin = TestPeerProcess::open(pid, session)?;
+                    (pin.token_facts == *facts).then_some(pin)
+                },
+            );
             accepted_tx
                 .send(accepted)
-                .expect("publish the one accepted lifecycle peer");
+                .expect("publish the one lifecycle accept result");
         });
         let spawn_client = |busy_witness: bool| {
             let mut command = Command::new(std::env::current_exe().expect("current test binary"));
@@ -2901,10 +2899,59 @@ mod named_pipe_tests {
         gate_release_tx
             .send(())
             .expect("release first contender after second observed ERROR_PIPE_BUSY");
-        let accepted = accepted_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("receive the exactly-once listener result")
-            .expect("first contender completes the one-shot handshake");
+        let accepted = match accepted_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(Some(accepted))) => accepted,
+            result => {
+                let accept_failure = match result {
+                    Ok(Err(error)) => format!(
+                        "accept_until error kind={:?} raw={:?}: {error}",
+                        error.kind(),
+                        error.raw_os_error()
+                    ),
+                    Ok(Ok(None)) => "accept_until reached its deadline without a peer".to_owned(),
+                    Err(error) => format!("acceptor result channel error: {error:?}"),
+                    Ok(Ok(Some(_))) => "unexpected accepted-peer result".to_owned(),
+                };
+                let _ = gate_release_tx.send(());
+                drop(first.stdin.take());
+                drop(second.stdin.take());
+                let _ = first.kill();
+                let first_output = first.wait_with_output();
+                let _ = second.kill();
+                let second_output = second.wait_with_output();
+                let output_reader = output_reader.join();
+                let second_lines = second_output_rx.try_iter().collect::<Vec<_>>();
+                let acceptor_result = acceptor.join();
+                let first_diagnostic = first_output.map_or_else(
+                    |error| format!("capture-error={error}"),
+                    |output| {
+                        format!(
+                            "status={} stdout={:?} stderr={:?}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        )
+                    },
+                );
+                let second_diagnostic = second_output.map_or_else(
+                    |error| format!("capture-error={error}"),
+                    |output| {
+                        format!(
+                            "status={} stderr={:?}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stderr)
+                        )
+                    },
+                );
+                panic!(
+                    "one-shot lifecycle accept failed: {accept_failure}; first-client {first_diagnostic}; \
+                     second-client {second_diagnostic}; second-stdout={second_lines:?}; \
+                     stdout-reader-panicked={}; acceptor-panicked={}",
+                    output_reader.is_err(),
+                    acceptor_result.is_err()
+                );
+            }
+        };
         acceptor.join().expect("join one-shot acceptor");
         if let Some(mut stdin) = first.stdin.take() {
             writeln!(stdin, "EXIT").expect("release accepted first contender");
