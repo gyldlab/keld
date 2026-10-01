@@ -1,10 +1,10 @@
 //! One-shot machine baseline initialization and read-only provenance ownership.
 
 use std::collections::BTreeSet;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 use cap_fs_ext::{DirExt as _, FollowSymlinks, MetadataExt as _, OpenOptionsFollowExt as _};
-use cap_std::fs::{Dir, File, OpenOptions, OpenOptionsExt as _};
+use cap_std::fs::{Dir, File, File as CapFile, OpenOptions, OpenOptionsExt as _};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
@@ -12,7 +12,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use crate::windows_extraction::{ensure_directory, ensure_regular, open_ancestors};
 use crate::windows_fs::{
-    qualified_volume_root, require_volume_root_handle, validate_volume_locator,
+    create_file_relative_with_profile, publish_new, qualified_volume_root,
+    require_volume_root_handle, validate_volume_locator,
 };
 use crate::{AdmittedInstallation, ArtifactIdentity};
 use crate::{
@@ -248,6 +249,14 @@ impl WindowsActivationWriteSnapshot {
     pub(crate) const fn profile(&self) -> keld_guard::WindowsInstallProtectionProfile {
         self.roots.profile()
     }
+
+    pub(crate) fn verify_published_version(
+        &self,
+        expected: &ArtifactIdentity,
+        content_size: u64,
+    ) -> Result<(), UpdateError> {
+        load::verify_completed_version(&self.roots, expected, content_size)
+    }
 }
 
 impl WindowsRecoveryInspection {
@@ -453,7 +462,7 @@ fn open_roots(trust: &WindowsBaselineTrust, private: bool) -> io::Result<Roots> 
     })
 }
 
-fn exact_entries(directory: &Dir, expected: &[&str]) -> io::Result<()> {
+pub(crate) fn exact_entries(directory: &Dir, expected: &[&str]) -> io::Result<()> {
     let mut names = BTreeSet::new();
     for entry in directory.entries()? {
         let name = entry?
@@ -540,6 +549,92 @@ fn read_record(
     file.read_to_end(&mut bytes)
         .map_err(|cause| error("protected record read", cause))?;
     Ok((file, bytes))
+}
+
+/// Prepares one protected record sibling, then publishes it only at an absent target.
+///
+/// The same owner handles installer-baseline records and completed package markers;
+/// the caller selects only the already-admitted directory profile and fixed leaf.
+pub(crate) fn publish_new_record(
+    parent: &Dir,
+    leaf: &str,
+    bytes: &[u8],
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> Result<(), UpdateError> {
+    let temporary = prepare_record(parent, bytes, profile)?;
+    publish_prepared_record(parent, &temporary, leaf, bytes, profile)
+}
+
+fn prepare_record(
+    parent: &Dir,
+    bytes: &[u8],
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> Result<String, UpdateError> {
+    if bytes.len() > crate::records::MAX_LOCAL_RECORD_BYTES {
+        return Err(error("record creation", "record exceeds 64 KiB"));
+    }
+    let temporary = random_leaf_name("pending").map_err(|cause| error("record identity", cause))?;
+    let retained_parent = parent
+        .try_clone()
+        .map_err(|cause| error("record parent", cause))?
+        .into_std_file();
+    let mut output = CapFile::from_std(
+        create_file_relative_with_profile(&retained_parent, &temporary, profile)
+            .map_err(|cause| error("record creation", cause))?,
+    );
+    ensure_regular(
+        &output
+            .metadata()
+            .map_err(|cause| error("record metadata", cause))?,
+    )
+    .map_err(|cause| error("record kind", cause))?;
+    keld_guard::validate_windows_install_file(
+        &output
+            .try_clone()
+            .map_err(|cause| error("record handle", cause))?
+            .into_std(),
+        profile,
+    )
+    .map_err(|cause| error("record protection", cause))?;
+    output
+        .write_all(bytes)
+        .map_err(|cause| error("record write", cause))?;
+    let output = output.into_std();
+    output
+        .sync_all()
+        .map_err(|cause| error("record flush", cause))?;
+    drop(output);
+    let (_, observed) = read_record(parent, &temporary, profile)?;
+    if observed != bytes {
+        return Err(error("record readback", "flushed bytes differ"));
+    }
+    Ok(temporary)
+}
+
+fn publish_prepared_record(
+    parent: &Dir,
+    temporary: &str,
+    leaf: &str,
+    bytes: &[u8],
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> Result<(), UpdateError> {
+    let retained_parent = parent
+        .try_clone()
+        .map_err(|cause| error("record parent", cause))?
+        .into_std_file();
+    publish_new(&retained_parent, temporary, leaf)
+        .map_err(|cause| error("record publication", cause))?;
+    let (_, observed) = read_record(parent, leaf, profile)?;
+    if observed != bytes {
+        return Err(error("published record readback", "published bytes differ"));
+    }
+    Ok(())
+}
+
+pub(crate) fn random_leaf_name(prefix: &str) -> io::Result<String> {
+    let mut random = [0_u8; 32];
+    getrandom::fill(&mut random).map_err(io::Error::other)?;
+    Ok(format!("{prefix}-{}", crate::error::hex_digest(&random)))
 }
 
 fn seal_child(parent: &Dir, leaf: &str, directory: bool) -> io::Result<()> {

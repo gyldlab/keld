@@ -23,7 +23,7 @@ use crate::windows_fs::{
 use crate::{
     AdmittedInstallation, ArchiveEntryKind, ArtifactDomain, ArtifactIdentity, DirectInstallMode,
     DirectInstallationIdentity, LoadedWindowsBaseline, ProvenanceField, UpdateError,
-    ValidatedArchive, VerifiedFull,
+    ValidatedArchive, VerifiedFull, VersionPublicationOutcome,
 };
 
 const COPY_BYTES: usize = 16 * 1024;
@@ -78,11 +78,19 @@ impl RootAuthority {
 /// it releases handles and leaves the named incomplete stage for diagnosis.
 #[derive(Debug)]
 pub struct ExtractedWindowsStage<'root> {
-    _root: &'root mut WindowsExtractionRoot,
+    root: &'root mut WindowsExtractionRoot,
     name: String,
     identity: ArtifactIdentity,
-    _directories: Vec<Dir>,
-    _files: Vec<File>,
+    content_size: u64,
+    directories: Vec<Dir>,
+    files: Vec<File>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VersionPublicationBoundary {
+    CompleteMarkerPublished,
+    BeforeVersionRename,
+    VersionDirectoryPublished,
 }
 
 impl ExtractedWindowsStage<'_> {
@@ -97,6 +105,274 @@ impl ExtractedWindowsStage<'_> {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Publishes this verified stage as one complete, immutable version directory.
+    ///
+    /// This does not change the version floor, active pointer, known-good slots or
+    /// activation journal. The stage is consumable only when its root retains the
+    /// installation-wide activation writer lease.
+    ///
+    /// # Errors
+    /// Refuses a stage without the writer lease, any stage or destination substitution,
+    /// profile/readback mismatch, and any failure at the completion-marker or
+    /// absent-target version-publication boundary. A post-rename readback failure
+    /// reports that the destination may exist but remains unselected.
+    pub fn publish_version(self) -> Result<ArtifactIdentity, UpdateError> {
+        self.publish_version_inner(|_, _| Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_version_with_observer(
+        self,
+        observe: impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
+    ) -> Result<ArtifactIdentity, UpdateError> {
+        self.publish_version_inner(observe)
+    }
+
+    fn publish_version_inner(
+        self,
+        mut observe: impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
+    ) -> Result<ArtifactIdentity, UpdateError> {
+        let stage_name = self.name.clone();
+        let candidate = self.identity.clone();
+        let content_size = self.content_size;
+        let root = &*self.root;
+        let snapshot = match &root.authority {
+            RootAuthority::ActivationWriter { snapshot } => snapshot.as_ref(),
+            RootAuthority::OwnerPrivate { .. } | RootAuthority::Machine { .. } => {
+                return Err(version_publication_error(
+                    &candidate,
+                    &stage_name,
+                    VersionPublicationOutcome::StageRetained,
+                    "publishing a version requires the retained exclusive activation-writer lease",
+                ));
+            }
+        };
+        let stage = self.directories.first().ok_or_else(|| {
+            version_publication_error(
+                &candidate,
+                &stage_name,
+                VersionPublicationOutcome::StageRetained,
+                "retained stage directory is absent",
+            )
+        })?;
+        prepare_complete_stage(
+            root,
+            stage,
+            snapshot.profile(),
+            &candidate,
+            &stage_name,
+            content_size,
+            &mut observe,
+        )?;
+
+        // This cloned directory handle has no delete sharing. Release it with the
+        // retained tree/file handles before the same-volume directory rename.
+        drop(self.files);
+        drop(self.directories);
+        publish_complete_stage(
+            root,
+            snapshot,
+            &candidate,
+            &stage_name,
+            content_size,
+            &mut observe,
+        )?;
+        Ok(candidate)
+    }
+}
+
+fn prepare_complete_stage(
+    root: &WindowsExtractionRoot,
+    stage: &Dir,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+    candidate: &ArtifactIdentity,
+    stage_name: &str,
+    content_size: u64,
+    observe: &mut impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
+) -> Result<(), UpdateError> {
+    let stage_file = stage
+        .try_clone()
+        .map_err(|cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::StageRetained,
+                format!("retained stage directory clone failed: {cause}"),
+            )
+        })?
+        .into_std_file();
+    root.authority
+        .validate_parent(&stage_file)
+        .map_err(|cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::StageRetained,
+                format!("staging profile changed before completion: {cause}"),
+            )
+        })?;
+    drop(stage_file);
+    crate::windows_baseline::exact_entries(stage, &["content.tar", "tree"]).map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::StageRetained,
+            format!("incomplete stage contents are not exact: {cause}"),
+        )
+    })?;
+    let collision =
+        version_target_collides(&root.versions, &candidate.version).map_err(|cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::StageRetained,
+                format!("version target census failed before completion: {cause}"),
+            )
+        })?;
+    if collision {
+        return Err(version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::StageRetained,
+            "candidate version collides with an existing Windows case-insensitive name",
+        ));
+    }
+    let complete = crate::records::encode_complete(candidate, content_size).map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::StageRetained,
+            format!("completion record encoding failed: {cause}"),
+        )
+    })?;
+    crate::windows_baseline::publish_new_record(stage, ".complete", &complete, profile).map_err(
+        |cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::StageRetained,
+                format!("completion record was not published: {cause}"),
+            )
+        },
+    )?;
+    observe(
+        VersionPublicationBoundary::CompleteMarkerPublished,
+        stage_name,
+    )
+    .map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::StageRetained,
+            format!("failure after completion-marker publication: {cause}"),
+        )
+    })?;
+    crate::windows_baseline::exact_entries(stage, &[".complete", "content.tar", "tree"]).map_err(
+        |cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::StageRetained,
+                format!("completed stage contents are not exact: {cause}"),
+            )
+        },
+    )
+}
+
+fn publish_complete_stage(
+    root: &WindowsExtractionRoot,
+    snapshot: &crate::WindowsActivationWriteSnapshot,
+    candidate: &ArtifactIdentity,
+    stage_name: &str,
+    content_size: u64,
+    observe: &mut impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
+) -> Result<(), UpdateError> {
+    let versions = root
+        .versions
+        .try_clone()
+        .map_err(|cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::StageRetained,
+                format!("retained versions directory clone failed: {cause}"),
+            )
+        })?
+        .into_std_file();
+    root.authority.validate_parent(&versions).map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::StageRetained,
+            format!("versions profile changed before rename: {cause}"),
+        )
+    })?;
+    observe(VersionPublicationBoundary::BeforeVersionRename, stage_name).map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::StageRetained,
+            format!("failure before version-directory rename: {cause}"),
+        )
+    })?;
+    crate::windows_fs::publish_new(&versions, stage_name, &candidate.version).map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::DestinationUnconfirmed,
+            format!("absent-target write-through rename did not confirm its effect: {cause}"),
+        )
+    })?;
+    observe(
+        VersionPublicationBoundary::VersionDirectoryPublished,
+        stage_name,
+    )
+    .map_err(|cause| {
+        version_publication_error(
+            candidate,
+            stage_name,
+            VersionPublicationOutcome::DestinationUnconfirmed,
+            format!("failure after version-directory rename: {cause}"),
+        )
+    })?;
+    snapshot
+        .verify_published_version(candidate, content_size)
+        .map_err(|cause| {
+            version_publication_error(
+                candidate,
+                stage_name,
+                VersionPublicationOutcome::DestinationUnconfirmed,
+                format!("final version readback failed: {cause}"),
+            )
+        })
+}
+
+fn version_publication_error(
+    candidate: &ArtifactIdentity,
+    stage_name: &str,
+    outcome: VersionPublicationOutcome,
+    detail: impl std::fmt::Display,
+) -> UpdateError {
+    UpdateError::VersionPublication {
+        version: candidate.version.clone(),
+        stage_name: stage_name.to_owned(),
+        outcome,
+        detail: detail.to_string(),
+    }
+}
+
+fn version_target_collides(versions: &Dir, candidate: &str) -> io::Result<bool> {
+    for entry in versions.entries()? {
+        let name = entry?
+            .file_name()
+            .into_string()
+            .map_err(|_| io::Error::other("non-UTF-8 entry in versions directory"))?;
+        if keld_guard::validate_windows_package_paths(&[candidate, &name]).is_err() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl AdmittedInstallation {
@@ -402,10 +678,8 @@ impl WindowsExtractionRoot {
         let mut source = open_source(archive)
             .map_err(|error| extraction_error(None, "source admission", error))?;
         let validated = verified.validate_windows_archive(&mut source)?;
-        let mut random = [0_u8; 32];
-        getrandom::fill(&mut random)
+        let name = crate::windows_baseline::random_leaf_name("incomplete")
             .map_err(|error| extraction_error(None, "stage identity", error))?;
-        let name = format!("incomplete-{}", crate::error::hex_digest(&random));
         let protection = match self.installation.install_mode {
             DirectInstallMode::PerUserDirect | DirectInstallMode::MachineSeamlessDirect => {
                 StageProtection::OwnerPrivate
@@ -450,11 +724,12 @@ impl WindowsExtractionRoot {
         let (directories, files) =
             result.map_err(|error| extraction_error(Some(&name), "stage contents", error))?;
         Ok(ExtractedWindowsStage {
-            _root: self,
+            root: self,
             name,
             identity: verified.identity().clone(),
-            _directories: directories,
-            _files: files,
+            content_size: verified.content_size(),
+            directories,
+            files,
         })
     }
 }

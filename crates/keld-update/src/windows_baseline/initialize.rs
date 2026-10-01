@@ -1,21 +1,17 @@
 //! Publication is a one-shot installer transaction, never ordinary host mutation.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
-
-use cap_std::fs::{Dir, File as CapFile};
 
 use super::{
     LoadedWindowsBaseline, Roots, WindowsBaselineReceipt, WindowsBaselineTrust, error,
-    exact_entries, open_roots, read_record, seal_child,
+    exact_entries, open_roots, prepare_record, publish_new_record, publish_prepared_record,
+    random_leaf_name, seal_child,
 };
 use crate::records::{self, PointerKind};
 use crate::windows_extraction::{StageProtection, open_source, populate_stage};
-use crate::windows_fs::{
-    create_directory_relative, create_file_relative_exclusive_with_profile,
-    create_file_relative_with_profile, publish_new,
-};
+use crate::windows_fs::{create_directory_relative, create_file_relative_exclusive_with_profile};
 use crate::{InstallOwner, InstallProvenance, UpdateError, VerifiedBaseline};
 
 /// Initializes one externally provisioned SYSTEM-protected machine scaffold.
@@ -77,7 +73,8 @@ pub(super) fn initialize_with_observer(
     let mut source =
         open_source(archive).map_err(|cause| error("baseline source admission", cause))?;
     let validated = verified.validate_windows_archive(&mut source)?;
-    let name = random_name("incomplete")?;
+    let name =
+        random_leaf_name("incomplete").map_err(|cause| error("temporary identity", cause))?;
     let parent = roots
         .versions
         .try_clone()
@@ -107,35 +104,38 @@ pub(super) fn initialize_with_observer(
     }
     seal_child(stage, "tree", true).map_err(|cause| error("tree seal", cause))?;
     let complete = records::encode_complete(verified.identity(), verified.content_size())?;
-    publish_record(stage, ".complete", &complete)?;
+    publish_new_record(stage, ".complete", &complete, roots.profile())?;
     observe(BaselineBoundary::CompletePublished)
         .map_err(|cause| error("complete boundary", cause))?;
     seal_child(&roots.versions, &name, true).map_err(|cause| error("stage seal", cause))?;
     drop(files);
     drop(directories);
-    publish_new(&parent, &name, &verified.identity().version)
+    crate::windows_fs::publish_new(&parent, &name, &verified.identity().version)
         .map_err(|cause| error("version publication", cause))?;
     observe(BaselineBoundary::VersionPublished)
         .map_err(|cause| error("version boundary", cause))?;
     let version = super::load::validate_initial_version(&roots)?;
 
-    publish_record(
+    publish_new_record(
         &roots.update,
         "version-floor",
         &records::encode_floor(&verified.identity().version)?,
+        roots.profile(),
     )?;
     observe(BaselineBoundary::FloorPublished).map_err(|cause| error("floor boundary", cause))?;
-    publish_record(
+    publish_new_record(
         &roots.update,
         "current",
         &records::encode_pointer(PointerKind::Current, verified.identity())?,
+        roots.profile(),
     )?;
     observe(BaselineBoundary::CurrentPublished)
         .map_err(|cause| error("current boundary", cause))?;
-    publish_record(
+    publish_new_record(
         &roots.update,
         "last-known-good",
         &records::encode_pointer(PointerKind::LastKnownGood, verified.identity())?,
+        roots.profile(),
     )?;
     observe(BaselineBoundary::LastKnownGoodPublished)
         .map_err(|cause| error("LKG boundary", cause))?;
@@ -214,93 +214,24 @@ fn commit_baseline(
     )?;
     // Prepare the exact-profile provenance record before its absent-target publication,
     // which remains the final baseline commit record.
-    let provenance_temp = prepare_record(install, &provenance)?;
+    let provenance_temp = prepare_record(
+        install,
+        &provenance,
+        trust.installation.install_mode.protection_profile(),
+    )?;
     lock.sync_all()
         .map_err(|cause| error("bootstrap lock flush", cause))?;
     keld_guard::validate_windows_machine_file(lock)
         .map_err(|cause| error("bootstrap lock protection", cause))?;
     observe(BaselineBoundary::RootsVerified).map_err(|cause| error("root boundary", cause))?;
-    publish_prepared(install, &provenance_temp, "install-provenance", &provenance)?;
+    publish_prepared_record(
+        install,
+        &provenance_temp,
+        "install-provenance",
+        &provenance,
+        trust.installation.install_mode.protection_profile(),
+    )?;
     observe(BaselineBoundary::ProvenancePublished)
         .map_err(|cause| error("provenance boundary", cause))?;
-    Ok(())
-}
-
-fn random_name(prefix: &str) -> Result<String, UpdateError> {
-    let mut random = [0_u8; 32];
-    getrandom::fill(&mut random).map_err(|cause| error("temporary identity", cause))?;
-    Ok(format!("{prefix}-{}", crate::error::hex_digest(&random)))
-}
-
-fn prepare_record(parent: &Dir, bytes: &[u8]) -> Result<String, UpdateError> {
-    let name = random_name("pending")?;
-    let parent_file = parent
-        .try_clone()
-        .map_err(|cause| error("record parent", cause))?
-        .into_std_file();
-    let mut output = CapFile::from_std(
-        create_file_relative_with_profile(
-            &parent_file,
-            &name,
-            keld_guard::WindowsInstallProtectionProfile::MachineSystem,
-        )
-        .map_err(|cause| error("record creation", cause))?,
-    );
-    super::ensure_regular(
-        &output
-            .metadata()
-            .map_err(|cause| error("record metadata", cause))?,
-    )
-    .map_err(|cause| error("record kind", cause))?;
-    keld_guard::validate_windows_machine_file(
-        &output
-            .try_clone()
-            .map_err(|cause| error("record handle", cause))?
-            .into_std(),
-    )
-    .map_err(|cause| error("private record protection", cause))?;
-    output
-        .write_all(bytes)
-        .map_err(|cause| error("record write", cause))?;
-    let output = output.into_std();
-    output
-        .sync_all()
-        .map_err(|cause| error("record flush", cause))?;
-    drop(output);
-    let (_, observed) = read_record(
-        parent,
-        &name,
-        keld_guard::WindowsInstallProtectionProfile::MachineSystem,
-    )?;
-    if observed != bytes {
-        return Err(error("record readback", "flushed bytes differ"));
-    }
-    Ok(name)
-}
-
-fn publish_record(parent: &Dir, leaf: &str, bytes: &[u8]) -> Result<(), UpdateError> {
-    let temporary = prepare_record(parent, bytes)?;
-    publish_prepared(parent, &temporary, leaf, bytes)
-}
-
-fn publish_prepared(
-    parent: &Dir,
-    temporary: &str,
-    leaf: &str,
-    bytes: &[u8],
-) -> Result<(), UpdateError> {
-    let retained = parent
-        .try_clone()
-        .map_err(|cause| error("record parent", cause))?
-        .into_std_file();
-    publish_new(&retained, temporary, leaf).map_err(|cause| error("record publication", cause))?;
-    let (_, observed) = read_record(
-        parent,
-        leaf,
-        keld_guard::WindowsInstallProtectionProfile::MachineSystem,
-    )?;
-    if observed != bytes {
-        return Err(error("published record readback", "published bytes differ"));
-    }
     Ok(())
 }

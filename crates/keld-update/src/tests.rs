@@ -848,6 +848,37 @@ fn archive_invalid_error_has_stable_code_and_repair_guidance() {
 }
 
 #[test]
+fn version_publication_errors_distinguish_pre_and_post_rename_effects() {
+    let stage_retained = UpdateError::VersionPublication {
+        version: "2.0.0".to_owned(),
+        stage_name: "incomplete-test".to_owned(),
+        outcome: crate::VersionPublicationOutcome::StageRetained,
+        detail: "completion record refused".to_owned(),
+    };
+    assert_code(&stage_retained, "KELD-UPDATE-015");
+    assert!(stage_retained.to_string().contains("was not published"));
+    assert!(
+        stage_retained
+            .to_string()
+            .contains("stage `incomplete-test` remains diagnostic")
+    );
+
+    let destination_unconfirmed = UpdateError::VersionPublication {
+        version: "2.0.0".to_owned(),
+        stage_name: "incomplete-test".to_owned(),
+        outcome: crate::VersionPublicationOutcome::DestinationUnconfirmed,
+        detail: "final readback failed".to_owned(),
+    };
+    assert_code(&destination_unconfirmed, "KELD-UPDATE-015");
+    assert!(destination_unconfirmed.to_string().contains("may exist"));
+    assert!(
+        destination_unconfirmed
+            .to_string()
+            .contains("never select by directory presence")
+    );
+}
+
+#[test]
 fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
     let mut empty = Vec::new();
     append_required_policy(&mut empty);

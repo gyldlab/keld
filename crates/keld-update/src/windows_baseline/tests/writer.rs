@@ -7,7 +7,10 @@ use std::io::Cursor;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::ops::{Deref, DerefMut};
 use std::os::windows::io::FromRawHandle as _;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use super::support::{self, GOLDEN};
@@ -34,6 +37,10 @@ const LIFECYCLE_HELPER_TEST: &str =
 const RECOVERY_COMPOSITION_HELPER_ENV: &str = "KELD_WINDOWS_RECOVERY_COMPOSITION_HELPER";
 const RECOVERY_COMPOSITION_HELPER_TEST: &str =
     "windows_baseline::tests::writer::windows_recovery_composition_process_helper";
+const VERSION_PUBLICATION_HELPER_ENV: &str = "KELD_VERSION_PUBLICATION_CRASH_CUT";
+const VERSION_PUBLICATION_HELPER_TEST: &str =
+    "windows_baseline::tests::writer::windows_version_publication_crash_helper";
+const VERSION_PUBLICATION_VOLUME_ENV: &str = "KELD_VERSION_PUBLICATION_VOLUME";
 
 #[test]
 fn per_user_writer_snapshot_excludes_readers_and_competing_writers() {
@@ -115,6 +122,374 @@ fn per_user_writer_snapshot_excludes_readers_and_competing_writers() {
         "1.0.0",
         "staging cannot change protected baseline selection"
     );
+}
+
+#[test]
+fn per_user_writer_publishes_complete_version_without_selecting_it() {
+    let fixture = tempfile::tempdir().expect("per-user immutable-version fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted per-user verifier");
+    let baseline = load_windows_baseline(&trust).expect("load exact baseline");
+    let observation = baseline.observation().clone();
+    drop(baseline);
+    let candidate = higher_release(&verifier, &observation);
+    let source = fixture.path().join("candidate.tar");
+    std::fs::write(&source, GOLDEN).expect("write verified candidate source");
+
+    let update = &trust.installation.update_root;
+    let before = ["version-floor", "current", "last-known-good"]
+        .map(|name| std::fs::read(update.join(name)).expect("read active record before publish"));
+    assert!(!update.join("previous-known-good").exists());
+    assert!(!update.join("activation-journal").exists());
+
+    let snapshot = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("acquire exact per-user activation writer");
+    let mut root = snapshot
+        .open_extraction_root()
+        .expect("retain the exclusive writer lease through staging");
+    let stage = root
+        .extract(&candidate, &source)
+        .expect("extract verified candidate as an incomplete stage");
+    let diagnostic_name = stage.name().to_owned();
+    let published = stage
+        .publish_version()
+        .expect("publish complete immutable version under the writer lease");
+    assert_eq!(&published, candidate.identity());
+
+    let version = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(&published.version);
+    assert!(version.is_dir());
+    assert!(!version.join("incomplete").exists());
+    assert!(
+        !trust
+            .installation
+            .update_root
+            .join("versions")
+            .join(&diagnostic_name)
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read(version.join("content.tar")).expect("retained authenticated archive"),
+        GOLDEN
+    );
+    let complete = crate::records::decode_complete(
+        &std::fs::read(version.join(".complete")).expect("read completion record"),
+    )
+    .expect("canonical completion record");
+    assert_eq!(complete.artifact, *candidate.identity());
+    assert_eq!(complete.content_size, GOLDEN.len() as u64);
+    keld_guard::validate_windows_owner_private_directory(&support::directory(&version))
+        .expect("renamed version retains the exact owner-private descriptor");
+
+    let after = ["version-floor", "current", "last-known-good"]
+        .map(|name| std::fs::read(update.join(name)).expect("read active record after publish"));
+    assert_eq!(
+        after, before,
+        "version publication cannot select a candidate"
+    );
+    assert!(!update.join("previous-known-good").exists());
+    assert!(!update.join("activation-journal").exists());
+    assert!(
+        load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
+        "the exclusive writer lease remains held by the extraction root"
+    );
+
+    drop(root);
+    let reopen_error = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect_err("an unjournaled complete version is never selected by directory presence");
+    assert!(
+        reopen_error
+            .to_string()
+            .contains("unreferenced version entry"),
+        "unreferenced candidate must fail closed: {reopen_error}"
+    );
+}
+
+#[test]
+fn per_user_version_publication_refuses_windows_case_alias_without_writing_marker() {
+    let fixture = tempfile::tempdir().expect("version-name collision fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted per-user verifier");
+    let baseline = load_windows_baseline(&trust).expect("load exact baseline");
+    let observation = baseline.observation().clone();
+    drop(baseline);
+    let candidate = higher_release_version(&verifier, &observation, "2.0.0-alpha");
+    let source = fixture.path().join("candidate.tar");
+    std::fs::write(&source, GOLDEN).expect("write verified candidate source");
+
+    let snapshot = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("acquire exact per-user activation writer");
+    let mut root = snapshot
+        .open_extraction_root()
+        .expect("retain the exclusive writer lease");
+    let alias = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join("2.0.0-ALPHA");
+    std::fs::create_dir(&alias).expect("plant a case alias under the writer lease");
+    std::fs::write(alias.join("sentinel"), b"preserve me").expect("write collision sentinel");
+
+    let stage = root
+        .extract(&candidate, &source)
+        .expect("extract candidate with a case-alias target");
+    let stage_path = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(stage.name());
+    let error = stage
+        .publish_version()
+        .expect_err("Windows ordinal case alias must refuse before marker or rename");
+    assert_eq!(error.code(), "KELD-UPDATE-015");
+    assert!(matches!(
+        error,
+        crate::UpdateError::VersionPublication {
+            outcome: crate::VersionPublicationOutcome::StageRetained,
+            ..
+        }
+    ));
+    assert!(!stage_path.join(".complete").exists());
+    assert_eq!(
+        std::fs::read(alias.join("sentinel")).expect("collision sentinel preserved"),
+        b"preserve me"
+    );
+}
+
+#[test]
+fn version_publication_reports_unconfirmed_effect_after_rename() {
+    let fixture = tempfile::tempdir().expect("post-rename publication failure fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted per-user verifier");
+    let baseline = load_windows_baseline(&trust).expect("load exact baseline");
+    let observation = baseline.observation().clone();
+    drop(baseline);
+    let candidate = higher_release(&verifier, &observation);
+    let source = fixture.path().join("candidate.tar");
+    std::fs::write(&source, GOLDEN).expect("write verified candidate source");
+    let update = &trust.installation.update_root;
+    let before = ["version-floor", "current", "last-known-good"]
+        .map(|name| std::fs::read(update.join(name)).expect("read active record before cut"));
+
+    let snapshot = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("acquire exact per-user activation writer");
+    let mut root = snapshot
+        .open_extraction_root()
+        .expect("retain the exclusive writer lease");
+    let stage = root
+        .extract(&candidate, &source)
+        .expect("extract verified candidate");
+    let error = stage
+        .publish_version_with_observer(|boundary, _| {
+            if boundary
+                == crate::windows_extraction::VersionPublicationBoundary::VersionDirectoryPublished
+            {
+                return Err(std::io::Error::other("injected after rename"));
+            }
+            Ok(())
+        })
+        .expect_err("post-rename readback refusal is effect-aware");
+    assert_eq!(error.code(), "KELD-UPDATE-015");
+    assert!(matches!(
+        error,
+        crate::UpdateError::VersionPublication {
+            outcome: crate::VersionPublicationOutcome::DestinationUnconfirmed,
+            ..
+        }
+    ));
+    let version = update.join("versions").join("2.0.0");
+    assert!(version.join(".complete").is_file());
+    let after = ["version-floor", "current", "last-known-good"]
+        .map(|name| std::fs::read(update.join(name)).expect("read active record after cut"));
+    assert_eq!(after, before, "publication cannot mutate active records");
+    assert!(!update.join("previous-known-good").exists());
+    assert!(!update.join("activation-journal").exists());
+    drop(root);
+    assert!(
+        load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
+        "unconfirmed unjournaled version must stay fail-closed"
+    );
+}
+
+#[test]
+fn per_user_version_publication_crash_cuts_leave_only_unselected_artifacts() {
+    support::assert_ordinary_token();
+    for cut in ["complete-marker", "version-directory"] {
+        let fixture = tempfile::tempdir().expect("version publication crash-cut fixture");
+        let trust = seed_per_user_baseline(fixture.path());
+        let verifier = crate::UpdateVerifier::new(
+            trust.installation.clone(),
+            crate::tests::signing_key().verifying_key().to_bytes(),
+        )
+        .expect("trusted per-user verifier");
+        let source = fixture.path().join("candidate.tar");
+        std::fs::write(&source, GOLDEN).expect("write verified candidate source");
+        let update = &trust.installation.update_root;
+        let before = ["version-floor", "current", "last-known-good"]
+            .map(|name| std::fs::read(update.join(name)).expect("read active record before cut"));
+
+        let marker = run_version_publication_crash_child(fixture.path(), &trust.volume_guid, cut);
+        let stage_name = marker
+            .split_once(" stage=")
+            .expect("child reports the exact diagnostic stage")
+            .1
+            .to_owned();
+        let versions = update.join("versions");
+        let stage = versions.join(&stage_name);
+        let candidate = versions.join("2.0.0");
+        match cut {
+            "complete-marker" => {
+                assert!(stage.join(".complete").is_file());
+                assert!(
+                    !candidate.exists(),
+                    "crash before rename cannot publish the final version name"
+                );
+                drop(
+                    load_windows_activation_write_snapshot(&trust, &verifier)
+                        .expect("incomplete diagnostic stages do not select a candidate"),
+                );
+            }
+            "version-directory" => {
+                assert!(!stage.exists(), "the rename consumes the diagnostic leaf");
+                assert!(candidate.join(".complete").is_file());
+                let error = load_windows_activation_write_snapshot(&trust, &verifier)
+                    .expect_err("an unjournaled version refuses recovery and selection");
+                assert!(
+                    error.to_string().contains("unreferenced version entry"),
+                    "the directory alone cannot authorize selection: {error}"
+                );
+            }
+            _ => unreachable!("parent supplies a closed cut selector"),
+        }
+        let after = ["version-floor", "current", "last-known-good"]
+            .map(|name| std::fs::read(update.join(name)).expect("read active record after cut"));
+        assert_eq!(
+            after, before,
+            "the publication cut cannot mutate active records"
+        );
+        assert!(!update.join("previous-known-good").exists());
+        assert!(!update.join("activation-journal").exists());
+    }
+}
+
+#[test]
+#[ignore = "private immutable-version publication crash-cut subprocess entry point"]
+fn windows_version_publication_crash_helper() {
+    support::assert_ordinary_token();
+    let root =
+        PathBuf::from(std::env::var_os("KELD_VERSION_PUBLICATION_ROOT").expect("fixture root"));
+    let cut = std::env::var(VERSION_PUBLICATION_HELPER_ENV).expect("publication cut");
+    assert!(matches!(
+        cut.as_str(),
+        "complete-marker" | "version-directory"
+    ));
+    let install = root.join("KeldPerUserFixture");
+    let mut trust = support::trust_for(&install);
+    trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+    trust.volume_guid = std::env::var(VERSION_PUBLICATION_VOLUME_ENV).expect("fixture volume GUID");
+    let verifier = crate::UpdateVerifier::new(
+        trust.installation.clone(),
+        crate::tests::signing_key().verifying_key().to_bytes(),
+    )
+    .expect("trusted per-user verifier");
+    let baseline = load_windows_baseline(&trust).expect("load exact baseline");
+    let observation = baseline.observation().clone();
+    drop(baseline);
+    let candidate = higher_release(&verifier, &observation);
+    let snapshot = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("acquire the writer lease in the child process");
+    let mut extraction = snapshot
+        .open_extraction_root()
+        .expect("retain the transaction owner in the child process");
+    let stage = extraction
+        .extract(&candidate, &root.join("candidate.tar"))
+        .expect("extract exact candidate before the requested crash cut");
+    let _ = stage.publish_version_with_observer(|boundary, stage_name| {
+        let requested = matches!(
+            (cut.as_str(), boundary),
+            (
+                "complete-marker",
+                crate::windows_extraction::VersionPublicationBoundary::CompleteMarkerPublished
+            ) | (
+                "version-directory",
+                crate::windows_extraction::VersionPublicationBoundary::VersionDirectoryPublished
+            )
+        );
+        if requested {
+            println!("KELD_VERSION_PUBLICATION_CUT={cut} stage={stage_name}");
+            std::io::stdout()
+                .flush()
+                .expect("flush exact crash-boundary witness");
+            std::process::exit(91);
+        }
+        Ok(())
+    });
+    panic!("the requested immutable-version publication cut was not reached");
+}
+
+fn run_version_publication_crash_child(root: &Path, volume: &str, cut: &str) -> String {
+    let mut child = ChildReaper::new(
+        Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                VERSION_PUBLICATION_HELPER_TEST,
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KELD_VERSION_PUBLICATION_ROOT", root)
+            .env(VERSION_PUBLICATION_VOLUME_ENV, volume)
+            .env(VERSION_PUBLICATION_HELPER_ENV, cut)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn version publication crash-cut child"),
+    );
+    let stdout = child.stdout.take().expect("child stdout");
+    let (line_tx, line_rx) = mpsc::sync_channel(1);
+    let reader = thread::spawn(move || {
+        let mut lines = BufReader::new(stdout).lines();
+        let marker = lines.find_map(|line| match line {
+            Ok(line) if line.starts_with("KELD_VERSION_PUBLICATION_CUT=") => Some(Ok(line)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        });
+        let _ = line_tx.send(marker);
+        for line in lines {
+            if line.is_err() {
+                break;
+            }
+        }
+    });
+    let marker = line_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("child reaches the named publication boundary")
+        .expect("read child stdout")
+        .expect("child writes boundary marker");
+    let status = child.wait().expect("reap crash-cut child");
+    reader.join().expect("join crash-cut stdout reader");
+    assert_eq!(
+        status.code(),
+        Some(91),
+        "child must exit at the requested cut"
+    );
+    assert!(marker.contains(&format!("KELD_VERSION_PUBLICATION_CUT={cut}")));
+    marker
 }
 
 #[test]
@@ -1432,11 +1807,19 @@ fn higher_release(
     verifier: &crate::UpdateVerifier,
     observation: &crate::ProvenanceObservation,
 ) -> crate::VerifiedFull {
+    higher_release_version(verifier, observation, "2.0.0")
+}
+
+fn higher_release_version(
+    verifier: &crate::UpdateVerifier,
+    observation: &crate::ProvenanceObservation,
+    version: &str,
+) -> crate::VerifiedFull {
     let admitted = verifier.admit(observation).expect("admit real provenance");
     let compressed = zstd::stream::encode_all(Cursor::new(GOLDEN), 0)
         .expect("compress authenticated full package");
     let release = release_json(
-        "2.0.0",
+        version,
         &compressed.len().to_string(),
         &digest_hex(&compressed),
         &GOLDEN.len().to_string(),
