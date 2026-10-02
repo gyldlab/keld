@@ -3,6 +3,7 @@
 mod alias;
 mod capture;
 mod machine_staging;
+mod per_user;
 mod qualification;
 mod reader;
 mod role;

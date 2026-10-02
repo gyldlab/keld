@@ -454,11 +454,14 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   with exact no-migration policy admission. `keld-pack::produce_windows_v0` supplies
   the matching Windows-host streaming producer as a library API. Windows extraction
   binds the receipt's installation/key/profile to an actual owner-private, fixed-NTFS
-  staging root and retains flushed/read-back files in an unpublished incomplete stage.
-  KEL-266 additionally implements actual-SYSTEM machine-baseline initialization and a
-  read-only protected baseline loader. It does not provide per-user initialization or
-  mode-aware active selection. Live feed orchestration, completed-version publication,
-  activation, exact health, rollback and recovery remain unimplemented. Planned Windows
+  staging root and retains flushed/read-back files in an unpublished incomplete stage;
+  PerUserDirect can publish an immutable complete version under the retained writer
+  lease, without selecting it. KEL-266 implements actual-SYSTEM machine-baseline
+  initialization and a read-only protected baseline loader. KEL-270 adds the
+  PerUserDirect baseline/bootstrap primitive with owner-private records and provenance-last
+  commit; neither path supplies mode-aware active selection. Live feed orchestration,
+  journaled candidate activation, exact health, rollback and recovery remain
+  unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
   lifecycle proof and a separately approved architecture/spec amendment selects and
