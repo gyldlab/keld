@@ -37,9 +37,11 @@ pub(crate) enum RecoveryDecision {
     ResumeCandidateHealth,
     /// Candidate failed and the validated prior known-good must be restored.
     Rollback { target: ArtifactIdentity },
-    /// Exact health was accepted; finish the ordered known-good pointer commit.
+    /// Exact health was accepted; finish the ordered known-good pointer commit, retire
+    /// the superseded version (if any) and remove the journal.
     FinishCommit,
-    /// Exact rollback was durably chosen; finish the pointer and remove the journal.
+    /// Exact rollback was durably chosen; finish the pointer, retire the candidate and
+    /// remove the journal.
     FinishRollback { target: ArtifactIdentity },
     /// The recorded phase and observed protected state are inconsistent or unsafe.
     Refuse(RecoveryRefusal),
@@ -276,7 +278,17 @@ fn classify_protected_recovery_state(
                 target: rollback_target.clone(),
             }
         }
-        ActivationPhase::HealthAccepted { .. } => {
+        ActivationPhase::HealthAccepted {
+            health_receipt_digest,
+        } => {
+            let recorded = crate::records::activation_health_receipt_digest(
+                &journal.attempt_id,
+                &journal.health_channel_id,
+                &journal.candidate,
+            );
+            if recorded.as_ref() != Ok(health_receipt_digest) {
+                return RecoveryDecision::Refuse(RecoveryRefusal::InvalidJournalContext);
+            }
             if version_floor != candidate_floor {
                 return RecoveryDecision::Refuse(RecoveryRefusal::FloorMismatch);
             }

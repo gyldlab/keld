@@ -5,8 +5,8 @@ use std::io;
 use std::path::Path;
 
 use super::{
-    LoadedWindowsBaseline, Roots, WindowsBaselineReceipt, WindowsBaselineTrust, error,
-    exact_entries, open_roots, prepare_record, publish_new_record, publish_prepared_record,
+    LoadedWindowsBaseline, RecordTarget, Roots, WindowsBaselineReceipt, WindowsBaselineTrust,
+    error, exact_entries, open_roots, prepare_record, publish_new_record, publish_prepared_record,
     random_leaf_name, seal_child,
 };
 use crate::records::{self, PointerKind};
@@ -472,7 +472,7 @@ fn commit_baseline(
     publish_prepared_record(
         install,
         &provenance_temp,
-        "install-provenance",
+        RecordTarget::Absent("install-provenance"),
         &provenance,
         trust.installation.install_mode.protection_profile(),
     )?;

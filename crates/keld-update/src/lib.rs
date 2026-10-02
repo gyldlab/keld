@@ -14,8 +14,9 @@
 //! installer provenance last. Its read-only loader retains protected identity/floor
 //! handles. Under the exclusive writer lease, one common journaled transaction
 //! activates a published version, binds an exact attempt health receipt, commits or
-//! rolls back, and resumes from every persisted cut; candidate launch, health
-//! observation and current-image signer verification remain host-owned.
+//! rolls back, and resumes from every persisted cut. Production admission of that
+//! transaction is currently `PerUserDirect` only; candidate launch, health observation,
+//! process-family evidence and current-image signer verification remain host-owned.
 //! A [`ProvenanceObservation::Protected`] test value
 //! proves policy logic only; it is not real package-signature or ACL evidence. The full
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and

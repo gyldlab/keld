@@ -186,17 +186,30 @@ pub(crate) fn require_volume_root_handle(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Fixed mutable record slots that the activation transaction may replace.
+/// The closed set of mutable record slots the activation transaction may replace.
 ///
 /// Version directories, provenance, `.complete` markers and the activation lease are
 /// deliberately absent: they are absent-target publications or never replaced.
-const REPLACEABLE_RECORD_SLOTS: [&str; 5] = [
-    "activation-journal",
-    "version-floor",
-    "current",
-    "last-known-good",
-    "previous-known-good",
-];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordSlot {
+    Journal,
+    Floor,
+    Current,
+    LastKnownGood,
+    PreviousKnownGood,
+}
+
+impl RecordSlot {
+    pub(crate) const fn leaf(self) -> &'static str {
+        match self {
+            Self::Journal => "activation-journal",
+            Self::Floor => "version-floor",
+            Self::Current => "current",
+            Self::LastKnownGood => "last-known-good",
+            Self::PreviousKnownGood => "previous-known-good",
+        }
+    }
+}
 
 /// Publishes to an absent sibling using the retained parent's actual volume path.
 pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io::Result<()> {
@@ -204,8 +217,9 @@ pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io:
     // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
     // this synchronous call and are distinct single-component siblings under the
     // retained parent's observed volume-GUID path. The caller retains protected
-    // ancestry and exclusive bootstrap ownership. The sole fixed flag requests
-    // write-through; replacement, cross-volume copy and delayed work are absent.
+    // ancestry and either exclusive bootstrap ownership or the share-zero activation
+    // writer lease. The sole fixed flag requests write-through; replacement,
+    // cross-volume copy and delayed work are absent.
     let success = unsafe {
         MoveFileExW(
             source.as_ptr(),
@@ -221,16 +235,17 @@ pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io:
 
 /// Replaces one fixed activation record slot with a prepared same-parent sibling.
 ///
-/// The destination must be one of the closed mutable record slots; every other leaf
-/// refuses before the system call. The caller holds the stable share-zero activation
-/// lease and has already flushed and read back the protected sibling.
-pub(crate) fn replace_record_slot(parent: &File, source: &str, slot: &str) -> io::Result<()> {
-    if !REPLACEABLE_RECORD_SLOTS.contains(&slot) {
+/// The destination is typed to the closed slot set and the source must be a generated
+/// `pending-*` sibling; anything else refuses before the system call. The caller holds
+/// the stable share-zero activation lease and has already flushed and read back the
+/// protected sibling.
+pub(crate) fn replace_record_slot(parent: &File, source: &str, slot: RecordSlot) -> io::Result<()> {
+    if !crate::windows_baseline::is_generated_leaf(source, "pending") {
         return Err(unsupported(
-            "replacement is limited to the fixed activation record slots",
+            "replacement source must be a generated pending record sibling",
         ));
     }
-    let (source, destination) = sibling_paths(parent, source, slot)?;
+    let (source, destination) = sibling_paths(parent, source, slot.leaf())?;
     // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
     // this synchronous call and are distinct single-component siblings under the
     // retained parent's observed volume-GUID path. The destination is one fixed

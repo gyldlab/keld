@@ -18,14 +18,22 @@ pub enum VersionPublicationOutcome {
     DestinationUnconfirmed,
 }
 
-/// Whether an activation-transaction refusal may follow a durable protected write.
+/// What an activation-transaction refusal leaves behind, and therefore what may happen next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationEffect {
-    /// Refused before this call replaced, published, retired or removed any protected record.
+    /// No activation journal exists for this refusal: the installation selects exactly
+    /// what it selected before the call, and any version the refused attempt published
+    /// was retired again under the same writer lease.
     ProtectedStateUnchanged,
-    /// A durable step may have been written. The journal, if present, is authoritative and
-    /// only journal-bound recovery under the writer lease may continue the attempt.
+    /// An activation journal exists and is authoritative, whether or not this call wrote.
+    /// Only journal-bound recovery under the writer lease may continue the attempt.
     JournalBoundRecoveryRequired,
+    /// The attempt is resolved and its journal removed; only never-selectable leftovers
+    /// (a renamed journal or retired version trees) could not be deleted yet.
+    ResolvedWithLeftovers,
+    /// No journal exists, but a published version that no journal references could not
+    /// be retired; every later writer halts until a trusted repair retires it.
+    UnjournaledVersionRetained,
 }
 
 impl ProvenanceUnavailable {
@@ -241,6 +249,19 @@ pub enum UpdateError {
 }
 
 impl UpdateError {
+    /// Builds the one activation-transaction refusal shape.
+    pub(crate) fn activation(
+        step: &'static str,
+        effect: ActivationEffect,
+        detail: impl fmt::Display,
+    ) -> Self {
+        Self::Activation {
+            step,
+            effect,
+            detail: detail.to_string(),
+        }
+    }
+
     /// Stable `KELD-UPDATE-*` code for this refusal.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -367,16 +388,24 @@ fn fmt_activation_error(
     effect: ActivationEffect,
     detail: &str,
 ) -> fmt::Result {
-    match effect {
-        ActivationEffect::ProtectedStateUnchanged => write!(
-            f,
-            "KELD-UPDATE-016: activation {step} refused ({detail}). No protected record was changed by this call; keep the current installation and retry only with an exact attempt, receipt and retirement witness."
-        ),
-        ActivationEffect::JournalBoundRecoveryRequired => write!(
-            f,
-            "KELD-UPDATE-016: activation {step} was not confirmed ({detail}). A protected record may have changed; preserve the activation journal and versions, and continue only through journal-bound recovery under the writer lease after the process family is proven retired."
-        ),
-    }
+    let guidance = match effect {
+        ActivationEffect::ProtectedStateUnchanged => {
+            "No activation journal exists and the installation selects what it did before; correct the refused input or state before a new attempt."
+        }
+        ActivationEffect::JournalBoundRecoveryRequired => {
+            "An activation journal remains authoritative; preserve it and the versions, and continue only through journal-bound recovery under the writer lease."
+        }
+        ActivationEffect::ResolvedWithLeftovers => {
+            "The attempt is resolved; only never-selectable leftovers remain, and a later transaction retries their deletion."
+        }
+        ActivationEffect::UnjournaledVersionRetained => {
+            "A published version is referenced by no journal and could not be retired; later writers halt until a trusted repair retires it."
+        }
+    };
+    write!(
+        f,
+        "KELD-UPDATE-016: activation {step} refused ({detail}). {guidance}"
+    )
 }
 
 fn fmt_extraction_error(

@@ -10,7 +10,7 @@ fn journal(phase: ActivationPhase) -> ActivationJournal {
     let mut candidate = baseline.clone();
     candidate.version = "1.1.0".to_owned();
     candidate.content_blake3 = [0x44; 32];
-    ActivationJournal {
+    let mut journal = ActivationJournal {
         attempt_id: [0x11; 32],
         candidate,
         rollback_target: baseline.clone(),
@@ -20,8 +20,26 @@ fn journal(phase: ActivationPhase) -> ActivationJournal {
         helper_image_blake3: [0x55; 32],
         health_channel_id: [0x66; 32],
         lifecycle_channel_id: [0x88; 32],
-        phase,
-    }
+        phase: ActivationPhase::PublishPending,
+    };
+    set_phase(&mut journal, phase);
+    journal
+}
+
+/// Sets `phase`; an accepted-health phase records the digest of this journal's own
+/// attempt, health channel and candidate, as the transaction does.
+fn set_phase(journal: &mut ActivationJournal, phase: ActivationPhase) {
+    journal.phase = match phase {
+        ActivationPhase::HealthAccepted { .. } => ActivationPhase::HealthAccepted {
+            health_receipt_digest: crate::records::activation_health_receipt_digest(
+                &journal.attempt_id,
+                &journal.health_channel_id,
+                &journal.candidate,
+            )
+            .expect("canonical receipt digest"),
+        },
+        other => other,
+    };
 }
 
 fn snapshot(journal: &ActivationJournal) -> RecoverySnapshot {
@@ -268,9 +286,12 @@ fn every_persisted_cut_resumes_the_exact_next_spec_step_for_commit_and_rollback(
     );
 
     let mut committed = forward.clone();
-    committed.phase = ActivationPhase::HealthAccepted {
-        health_receipt_digest: [0x77; 32],
-    };
+    set_phase(
+        &mut committed,
+        ActivationPhase::HealthAccepted {
+            health_receipt_digest: [0; 32],
+        },
+    );
     let mut commit_slots = slots.clone();
     let commit = trace(&mut committed, &mut commit_slots);
     assert_eq!(
@@ -328,7 +349,7 @@ fn every_persisted_cut_resumes_the_exact_next_spec_step_for_commit_and_rollback(
         ),
     ] {
         let mut journal = start.clone();
-        journal.phase = phase.clone();
+        set_phase(&mut journal, phase.clone());
         let mut slots = prior_slots(&journal);
         if !matches!(phase, ActivationPhase::PublishPending) {
             slots.floor = journal.candidate.version.clone();
@@ -457,4 +478,34 @@ fn off_trace_slots_refuse_in_every_phase_without_a_write_step() {
         Err(RecoveryRefusal::CurrentFloorMismatch),
         "rollback never adopts an unrelated current artifact"
     );
+}
+
+#[test]
+fn accepted_health_with_a_digest_for_other_attempt_fields_refuses() {
+    let accepted = journal(ActivationPhase::HealthAccepted {
+        health_receipt_digest: [0; 32],
+    });
+    let mut slots = prior_slots(&accepted);
+    slots.floor = accepted.candidate.version.clone();
+    slots.current = accepted.candidate.clone();
+    assert_eq!(
+        next_activation_step(&accepted, &slots.view(), true),
+        Ok(ActivationStep::PreservePriorKnownGood),
+        "the digest of the journal's own attempt, channel and candidate is accepted"
+    );
+    for mutate in [
+        |journal: &mut ActivationJournal| journal.attempt_id[0] ^= 1,
+        |journal: &mut ActivationJournal| journal.health_channel_id[0] ^= 1,
+        |journal: &mut ActivationJournal| journal.candidate.content_blake3[0] ^= 1,
+    ] {
+        let mut mixed = accepted.clone();
+        mutate(&mut mixed);
+        let mut mixed_slots = slots.clone();
+        mixed_slots.current = mixed.candidate.clone();
+        assert_eq!(
+            next_activation_step(&mixed, &mixed_slots.view(), true),
+            Err(RecoveryRefusal::InvalidJournalContext),
+            "a recorded digest that no longer matches its journal fields halts"
+        );
+    }
 }

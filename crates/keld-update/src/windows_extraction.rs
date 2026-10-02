@@ -593,8 +593,10 @@ impl WindowsExtractionRoot {
     /// # Errors
     /// Refuses a root without the writer lease, a zero coordinator digest, a candidate
     /// outside the installation scope or not above the floor, any unverified or
-    /// unreferenced version, or a failed durable step. Effects are reported by
-    /// [`crate::ActivationEffect`].
+    /// unreferenced version, or a failed durable step. Every refusal is
+    /// [`UpdateError::Activation`]; its [`crate::ActivationEffect`] states what remains.
+    /// A refusal before the `PublishPending` journal exists retires the versions this
+    /// attempt published, so no orphan outlives the call.
     pub fn begin_activation(
         self,
         candidate: &ArtifactIdentity,
@@ -611,12 +613,11 @@ impl WindowsExtractionRoot {
                 snapshot.begin_activation(candidate, coordinator_image_blake3)
             }
             RootAuthority::OwnerPrivate { .. } | RootAuthority::Machine { .. } => {
-                Err(UpdateError::Activation {
-                    step: "activation writer authority",
-                    effect: crate::ActivationEffect::ProtectedStateUnchanged,
-                    detail: "activation requires the retained exclusive activation-writer lease"
-                        .to_owned(),
-                })
+                Err(UpdateError::activation(
+                    "activation writer authority",
+                    crate::ActivationEffect::ProtectedStateUnchanged,
+                    "activation requires the retained exclusive activation-writer lease",
+                ))
             }
         }
     }

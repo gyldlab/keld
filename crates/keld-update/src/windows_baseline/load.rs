@@ -95,18 +95,21 @@ pub fn load_windows_activation_write_snapshot(
 }
 
 /// Loads a protected pending activation's journal and pointer observations under the
-/// exclusive per-user writer lease without returning any recovery or mutation command.
+/// exclusive per-user writer lease.
 ///
-/// The returned opaque owner retains the lease, protected ancestry and referenced version
-/// pins while a trusted host compares its QF1 retirement witness with the inspected journal.
-/// It is for evidence composition only; the existing writer loader continues to refuse every
-/// pending journal until the host explicitly integrates both authorities.
+/// The returned owner retains the lease, protected ancestry and referenced version pins.
+/// Loading writes nothing; the owner's only mutation paths are
+/// [`WindowsRecoveryInspection::recover`], which first requires an exact process-family
+/// retirement binding for the inspected journal, and
+/// [`WindowsRecoveryInspection::resume_unlaunched`] for a never-launched attempt. The
+/// ordinary writer loader continues to refuse every pending journal.
 ///
 /// # Errors
 ///
 /// Refuses managed or privileged modes, a busy/missing lease, provenance/profile mismatch,
 /// absent or malformed journal, unsupported state, inconsistent phase/pointer/floor facts,
-/// or any version tree that is missing, substituted or unreferenced.
+/// or any referenced version tree that is missing, substituted or unreferenced. Only the
+/// one version whose retirement is the journal's next step may already be absent.
 pub fn load_windows_recovery_inspection(
     trust: &WindowsBaselineTrust,
     verifier: &UpdateVerifier,

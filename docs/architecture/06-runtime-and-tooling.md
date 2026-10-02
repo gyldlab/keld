@@ -459,8 +459,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   lease, without selecting it. KEL-266 implements actual-SYSTEM machine-baseline
   initialization and a read-only protected baseline loader. KEL-270 adds the
   PerUserDirect baseline/bootstrap primitive with owner-private records and provenance-last
-  commit; neither path supplies mode-aware active selection. Live feed orchestration,
-  journaled candidate activation, exact health, rollback and recovery remain
+  commit, and the common journaled transaction: PerUserDirect activates a published
+  version, binds an exact attempt health receipt, commits or rolls back, and resumes from
+  every persisted cut under the writer lease. Live feed orchestration, host candidate
+  launch, the private health channel and its 30-second `Ready` observation, installed-host
+  lifecycle composition and read-only selection of a committed update remain
   unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
@@ -986,7 +989,7 @@ does not enter this transaction:
    private attempt-bound health channel.
 6. On accepted health, durably write `health-accepted`, publish the prior
    last-known-good to `previous-known-good`, publish
-   `last-known-good` to the candidate, retire the superseded older version, then
+   `last-known-good` to the candidate, retire the superseded older version (if any), then
    remove the journal durably. Deleting retired trees afterwards is best-effort
    cleanup that never touches either known-good slot.
 7. On launch/health failure, durably write `rollback-pending`, republish
@@ -1002,12 +1005,36 @@ same-parent absent-target write-through adapter, to a generated `retired-<64 hex
 name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
 directory, so the census admits them only as never-selectable diagnostics. Retiring
 under the journal closes the crash window in which a removed journal would leave an
-orphan complete version that halts every later writer. An open handle anywhere in the
-retiring tree makes the rename fail; the journal then stays for journal-bound recovery.
+orphan complete version that halts every later writer. On NTFS an open file handle
+anywhere in the retiring tree, with any sharing mode, makes the rename fail; the journal
+then stays for journal-bound recovery. A process still executing a mapped image from
+that tree does not block the rename: it keeps running from the retired tree, cannot
+open further files by their original path, and its tree is deleted only after it
+exits. A launched candidate is therefore retired only after process-family retirement,
+and the host must not run other instances from a superseded version.
 Journal removal is a write-through rename of the journal to a generated `pending-*`
 leaf followed by deletion. A crash before any record sibling's publication rename
-leaves only such a `pending-*` file; the next writer admits it only with the exact
-installation profile and removes it under the lease before its first step.
+leaves only such a `pending-*` file. The census admits `pending-*` names; before its
+first write, the next transaction removes each one only after verifying a regular,
+single-link file with the exact installation profile, and refuses anything else.
+A refusal of a new attempt before its `PublishPending` journal exists retires every
+version that attempt published, so a refused start leaves no orphan. A process crash
+in that window still leaves an orphan and halts (tracked as a separate amendment).
+
+A `PublishPending` journal is resumable under the exclusive writer lease alone: no
+candidate is launched before `AwaitingHealth` is durable, and every live transaction
+owner retains the share-zero lease (or its keeper retains a duplicate), so acquiring
+the lease proves no prior owner can still write and no candidate family exists. Every
+resumed owner durably re-mints the attempt's health and lifecycle channel identities
+before continuing, so no health receipt or retirement witness from a lost owner binds
+to the resumed run. Launched phases still require an exact process-family retirement
+binding.
+
+`HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
+attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical
+artifact-identity encoding of the candidate and `n` its byte length. The receipt binds
+the attempt, its private health channel and the exact candidate; recovery recomputes
+the digest from the journal's own fields and halts on a mismatch.
 
 No required pointer or journal is removed before its replacement is durable. A temporary
 file is created in the same directory as its target; cross-filesystem copy/delete is a
@@ -1074,7 +1101,8 @@ journal, first acquire its exclusive attempt lease. If another coordinator retai
 lease, that owner continues and the new process performs no recovery. After acquisition,
 the platform process-family owner must prove the recorded coordinator and candidate
 have exited; an unknown/live process state halts rather than starting a second
-candidate. Windows places the candidate in the helper/host's kill-on-close Job and
+candidate. The one exception is an unlaunched `publish-pending` attempt, which the lease
+alone proves has no live owner or candidate family. Windows places the candidate in the helper/host's kill-on-close Job and
 waits for its zero-active-process observation before recovery proceeds.
 
 1. For `publish-pending`, validate the floor and `current` against the exact
@@ -1108,7 +1136,7 @@ evidence.
   writable file handle, close all stage handles, then publish the absent final version
   directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Reopen the
   final directory and read back every digest, policy and marker before pointer
-  publication. Journal/pointer/policy record replacement separately uses a
+  publication. Journal/pointer record replacement separately uses a
   same-directory temporary file, `FlushFileBuffers`, and same-volume
   `MoveFileExW` with replace-existing plus write-through. Neither path sets
   `MOVEFILE_COPY_ALLOWED` or claims directory-handle `FlushFileBuffers`.

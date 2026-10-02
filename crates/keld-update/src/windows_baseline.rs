@@ -20,10 +20,12 @@ use crate::{
     DirectInstallMode, DirectInstallationIdentity, InstallOwner, ProvenanceObservation, UpdateError,
 };
 
-pub(crate) mod activate;
+mod activate;
 mod initialize;
 mod load;
 
+#[cfg(test)]
+pub(crate) use activate::CRASH_CUT_HOOK;
 pub use activate::{
     ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
     WindowsActivationOutcome, WindowsActivationResolution, WindowsRecoveryOutcome,
@@ -177,8 +179,9 @@ pub struct WindowsActivationWriteSnapshot {
 ///
 /// This owner can inspect one canonical activation journal and its protected pointer/floor
 /// context. It exposes no active-package selection or extraction root. Its only mutation
-/// path is [`Self::recover`], which requires an exact process-family retirement binding
-/// for the inspected journal before the common transaction may write.
+/// paths are [`Self::recover`], which requires an exact process-family retirement binding
+/// for the inspected journal before the common transaction may write, and
+/// [`Self::resume_unlaunched`], which admits only a never-launched `PublishPending` attempt.
 #[derive(Debug)]
 pub struct WindowsRecoveryInspection {
     roots: Roots,
@@ -579,7 +582,22 @@ pub(crate) fn publish_new_record(
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> Result<(), UpdateError> {
     let temporary = prepare_record(parent, bytes, profile)?;
-    publish_prepared_record(parent, &temporary, leaf, bytes, profile)
+    publish_prepared_record(
+        parent,
+        &temporary,
+        RecordTarget::Absent(leaf),
+        bytes,
+        profile,
+    )
+}
+
+/// Where a prepared protected record sibling is published.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecordTarget<'leaf> {
+    /// A fixed leaf that must not exist yet.
+    Absent(&'leaf str),
+    /// One existing activation record slot, replaced under the writer lease.
+    Replace(crate::windows_fs::RecordSlot),
 }
 
 fn prepare_record(
@@ -631,7 +649,7 @@ fn prepare_record(
 fn publish_prepared_record(
     parent: &Dir,
     temporary: &str,
-    leaf: &str,
+    target: RecordTarget<'_>,
     bytes: &[u8],
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> Result<(), UpdateError> {
@@ -639,8 +657,18 @@ fn publish_prepared_record(
         .try_clone()
         .map_err(|cause| error("record parent", cause))?
         .into_std_file();
-    publish_new(&retained_parent, temporary, leaf)
-        .map_err(|cause| error("record publication", cause))?;
+    let leaf = match target {
+        RecordTarget::Absent(leaf) => {
+            publish_new(&retained_parent, temporary, leaf)
+                .map_err(|cause| error("record publication", cause))?;
+            leaf
+        }
+        RecordTarget::Replace(slot) => {
+            crate::windows_fs::replace_record_slot(&retained_parent, temporary, slot)
+                .map_err(|cause| error("record replacement", cause))?;
+            slot.leaf()
+        }
+    };
     let (_, observed) = read_record(parent, leaf, profile)?;
     if observed != bytes {
         return Err(error("published record readback", "published bytes differ"));

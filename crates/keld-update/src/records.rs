@@ -18,7 +18,7 @@ const ACTIVATION_JOURNAL_SCHEMA: &str = "keld.activation-journal/v1";
 #[cfg(windows)]
 const LIFECYCLE_INSTALLATION_BINDING_DOMAIN: &[u8] =
     b"keld.installation-binding/provenance-v2/v1\0";
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 const ACTIVATION_HEALTH_RECEIPT_DOMAIN: &[u8] = b"keld.activation-health-receipt/v1\0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,8 +259,9 @@ pub(crate) fn lifecycle_installation_id(
 ///
 /// The encoding is domain separated and binds the attempt, its private health channel
 /// and the canonical candidate identity, so a receipt for another attempt, channel or
-/// artifact can never produce the journaled value.
-#[cfg(windows)]
+/// artifact can never produce the journaled value. Recovery recomputes it from the
+/// journal's own fields, so a corrupt or mixed `HealthAccepted` journal halts.
+#[cfg(any(windows, test))]
 pub(crate) fn activation_health_receipt_digest(
     attempt_id: &[u8; 32],
     health_channel_id: &[u8; 32],

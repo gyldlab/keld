@@ -5,9 +5,6 @@
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
-use std::os::windows::fs::OpenOptionsExt as _;
-
-use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 use super::support::{self, CUT_ENV, GOLDEN, ROOT_ENV};
 use super::writer::{higher_release_version, seed_per_user_baseline};
@@ -33,6 +30,16 @@ fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
 
 /// Extracts, publishes and starts activation of `version` under one writer lease.
 fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActivationAttempt {
+    let (root, published) = publish(trust, version);
+    root.begin_activation(&published, COORDINATOR)
+        .expect("journal and select the published candidate")
+}
+
+/// Publishes one complete immutable version and keeps the writer lease in its root.
+fn publish(
+    trust: &WindowsBaselineTrust,
+    version: &str,
+) -> (crate::WindowsExtractionRoot, crate::ArtifactIdentity) {
     let verifier = verifier(trust);
     let snapshot = load_windows_activation_write_snapshot(trust, &verifier)
         .expect("acquire the exclusive per-user writer lease");
@@ -59,8 +66,7 @@ fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActivationAttemp
         .expect("extract the authenticated candidate")
         .publish_version()
         .expect("publish the complete immutable version");
-    root.begin_activation(&published, COORDINATOR)
-        .expect("journal and select the published candidate")
+    (root, published)
 }
 
 fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
@@ -185,54 +191,65 @@ fn assert_resolved(
     );
 }
 
-fn assert_unchanged_refusal(result: Result<impl std::fmt::Debug, UpdateError>, step: &str) {
-    match result.expect_err("binding mismatch must refuse") {
+fn assert_refusal(
+    result: Result<impl std::fmt::Debug, UpdateError>,
+    step: &str,
+    effect: ActivationEffect,
+) {
+    match result.expect_err("the transaction must refuse") {
         UpdateError::Activation {
             step: refused,
-            effect: ActivationEffect::ProtectedStateUnchanged,
+            effect: observed,
             ..
-        } => assert_eq!(refused, step),
-        other => panic!("expected an unchanged {step} refusal, got {other:?}"),
+        } => assert_eq!((refused, observed), (step, effect)),
+        other => panic!("expected a {step} refusal with {effect:?}, got {other:?}"),
     }
 }
 
 #[test]
-fn record_replacement_refuses_every_leaf_outside_the_fixed_slots_before_renaming() {
+fn record_replacement_requires_a_generated_sibling_and_an_existing_file_slot() {
+    use crate::windows_fs::{RecordSlot, replace_record_slot};
     let fixture = tempfile::tempdir().expect("record slot fixture");
     let path = fixture.path();
-    std::fs::write(path.join("install-provenance"), b"protected").expect("existing record");
-    std::fs::write(path.join("pending-source"), b"replacement").expect("prepared sibling");
+    let pending = format!("pending-{}", "a".repeat(64));
+    std::fs::write(path.join("current"), b"previous").expect("existing slot");
+    std::fs::write(path.join("last-known-good"), b"known-good").expect("another slot");
+    std::fs::write(path.join("install-provenance"), b"protected").expect("provenance");
+    std::fs::write(path.join(&pending), b"replacement").expect("prepared sibling");
+    std::fs::create_dir(path.join("version-floor")).expect("directory at a slot name");
     let parent = support::directory(path);
-    for leaf in [
-        "install-provenance",
-        "activation.lock",
-        "bootstrap.lock",
-        ".complete",
-        "1.0.0",
-        "versions",
-    ] {
+
+    for source in ["last-known-good", "install-provenance", "pending-short"] {
         assert!(
-            crate::windows_fs::replace_record_slot(&parent, "pending-source", leaf).is_err(),
-            "{leaf} is not a replaceable activation record slot"
+            replace_record_slot(&parent, source, RecordSlot::Current).is_err(),
+            "{source} is not a generated pending sibling"
         );
     }
-    assert_eq!(
-        std::fs::read(path.join("install-provenance")).expect("record after refusals"),
-        b"protected"
-    );
     assert!(
-        path.join("pending-source").exists(),
-        "a refused replacement never consumes the prepared sibling"
+        replace_record_slot(&parent, &pending, RecordSlot::Floor).is_err(),
+        "MOVEFILE_REPLACE_EXISTING refuses a directory destination"
     );
+    for (leaf, bytes) in [
+        ("current", &b"previous"[..]),
+        ("last-known-good", b"known-good"),
+        ("install-provenance", b"protected"),
+        (pending.as_str(), b"replacement"),
+    ] {
+        assert_eq!(
+            std::fs::read(path.join(leaf)).expect("record after refusals"),
+            bytes,
+            "{leaf} is untouched by every refused replacement"
+        );
+    }
+    assert!(path.join("version-floor").is_dir());
 
-    std::fs::write(path.join("current"), b"previous").expect("existing slot");
-    crate::windows_fs::replace_record_slot(&parent, "pending-source", "current")
-        .expect("a fixed slot is replaced in place of the existing record");
+    replace_record_slot(&parent, &pending, RecordSlot::Current)
+        .expect("a generated sibling replaces an existing fixed file slot");
     assert_eq!(
         std::fs::read(path.join("current")).expect("replaced slot"),
         b"replacement"
     );
-    assert!(!path.join("pending-source").exists());
+    assert!(!path.join(&pending).exists());
 }
 
 #[test]
@@ -337,7 +354,7 @@ fn per_user_rollback_restores_the_target_retires_the_candidate_and_keeps_the_flo
 }
 
 #[test]
-fn substituted_health_receipts_refuse_without_protected_writes() {
+fn substituted_health_receipts_refuse_before_any_write_and_leave_recovery_authoritative() {
     for substitution in ["attempt", "channel", "candidate"] {
         let fixture = tempfile::tempdir().expect("receipt falsifier fixture");
         let trust = seed_per_user_baseline(fixture.path());
@@ -353,9 +370,10 @@ fn substituted_health_receipts_refuse_without_protected_writes() {
             _ => candidate.content_blake3[0] ^= 1,
         }
         let substituted = ActivationHealthReceipt::new(attempt_id, health_channel_id, candidate);
-        assert_unchanged_refusal(
+        assert_refusal(
             attempt.accept_health(&substituted),
             "health receipt binding",
+            ActivationEffect::JournalBoundRecoveryRequired,
         );
         assert_eq!(
             observe(&trust),
@@ -402,9 +420,10 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
             flip(channel),
         ),
     ];
-    assert_unchanged_refusal(
+    assert_refusal(
         attempt.roll_back(ActivationFailureClass::ProcessCrash, &substituted[0]),
         "process-family retirement binding",
+        ActivationEffect::JournalBoundRecoveryRequired,
     );
     assert_eq!(
         observe(&trust),
@@ -415,9 +434,10 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
     for wrong in &substituted {
         let inspection =
             load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
-        assert_unchanged_refusal(
+        assert_refusal(
             inspection.recover(wrong, COORDINATOR),
             "process-family retirement binding",
+            ActivationEffect::JournalBoundRecoveryRequired,
         );
         assert_eq!(observe(&trust), before);
     }
@@ -425,11 +445,24 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
         ProcessFamilyRetirement::from_exact_zero_observation(installation, attempt_id, channel);
     let inspection =
         load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
-    assert_unchanged_refusal(
+    assert_refusal(
         inspection.recover(&exact, flip(COORDINATOR)),
         "coordinator identity",
+        ActivationEffect::JournalBoundRecoveryRequired,
     );
     assert_eq!(observe(&trust), before);
+    let inspection =
+        load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
+    assert_refusal(
+        inspection.resume_unlaunched(COORDINATOR),
+        "unlaunched resume",
+        ActivationEffect::JournalBoundRecoveryRequired,
+    );
+    assert_eq!(
+        observe(&trust),
+        before,
+        "a launched attempt is never resumed without a retirement binding"
+    );
 
     assert_eq!(
         recover_exact(&trust).expect("exact retirement recovers the lost attempt"),
@@ -440,36 +473,138 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
 }
 
 #[test]
-fn an_open_handle_in_the_retiring_tree_preserves_the_journal_for_recovery() {
+fn a_refusal_before_the_journal_retires_the_published_candidate() {
+    let fixture = tempfile::tempdir().expect("pre-journal refusal fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+
+    let (root, published) = publish(&trust, "2.0.0");
+    assert_refusal(
+        root.begin_activation(&published, [0; 32]),
+        "activation start",
+        ActivationEffect::ProtectedStateUnchanged,
+    );
+    let refused = observe(&trust);
+    assert_eq!(refused.journal, None);
+    assert_eq!(
+        (refused.floor.as_str(), refused.current.as_str()),
+        ("1.0.0", "1.0.0")
+    );
+    assert_eq!(refused.versions, names(&["1.0.0", "retired-*"]));
+
+    let (root, published) = publish(&trust, "2.0.0");
+    let mut unrelated = published;
+    unrelated.content_blake3[0] ^= 1;
+    assert_refusal(
+        root.begin_activation(&unrelated, COORDINATOR),
+        "activation start",
+        ActivationEffect::ProtectedStateUnchanged,
+    );
+    let mut expected = names(&["1.0.0"]);
+    expected.insert("retired-*".to_owned());
+    assert_eq!(
+        observe(&trust).versions,
+        expected,
+        "an identity that does not match the published version never becomes runnable"
+    );
+
+    commit(&trust, "2.0.0");
+    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
+}
+
+#[test]
+fn an_unlaunched_attempt_resumes_under_the_lease_with_fresh_channels() {
+    let fixture = tempfile::tempdir().expect("unlaunched resume fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let stdout = support::child(
+        CRASH_HELPER,
+        fixture.path(),
+        "first-commit",
+        "floor-advanced",
+        CRASH_EXIT,
+    );
+    assert!(
+        stdout.contains("KELD_ACTIVATION_CUT=floor-advanced"),
+        "{stdout}"
+    );
+    let lost = observe(&trust)
+        .journal
+        .expect("the lost attempt is journaled");
+    assert_eq!(lost.phase, ActivationPhase::PublishPending);
+
+    let inspection = load_windows_recovery_inspection(&trust, &verifier(&trust))
+        .expect("inspect the unlaunched attempt");
+    let attempt = inspection
+        .resume_unlaunched(COORDINATOR)
+        .expect("a never-launched attempt resumes under the writer lease alone");
+    assert_eq!(attempt.attempt_id(), &lost.attempt_id);
+    assert_ne!(attempt.health_channel_id(), &lost.health_channel_id);
+    assert_ne!(attempt.lifecycle_channel_id(), &lost.lifecycle_channel_id);
+    let resumed = observe(&trust)
+        .journal
+        .expect("the resumed attempt stays journaled");
+    assert_eq!(resumed.phase, ActivationPhase::AwaitingHealth);
+    assert_eq!(
+        &resumed.lifecycle_channel_id,
+        attempt.lifecycle_channel_id()
+    );
+
+    let stale = ProcessFamilyRetirement::from_exact_zero_observation(
+        *attempt.lifecycle_installation_id(),
+        lost.attempt_id,
+        lost.lifecycle_channel_id,
+    );
+    assert_refusal(
+        attempt.roll_back(ActivationFailureClass::ProcessCrash, &stale),
+        "process-family retirement binding",
+        ActivationEffect::JournalBoundRecoveryRequired,
+    );
+    assert_eq!(
+        recover_exact(&trust).expect("the re-minted channel binds recovery"),
+        WindowsActivationOutcome::RolledBack
+    );
+    assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
+}
+
+/// First regular file below `tree/` that sits inside at least one subdirectory.
+fn nested_file(tree: &std::path::Path) -> std::path::PathBuf {
+    let mut directories = vec![tree.to_path_buf()];
+    let mut fallback = None;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory).expect("read retiring tree") {
+            let path = entry.expect("retiring tree entry").path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if directory != tree {
+                return path;
+            } else {
+                fallback.get_or_insert(path);
+            }
+        }
+    }
+    fallback.expect("the retiring tree contains a file")
+}
+
+#[test]
+fn an_open_nested_handle_in_the_retiring_tree_preserves_the_journal() {
     let fixture = tempfile::tempdir().expect("blocked retirement fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let attempt = begin(&trust, "3.0.0");
-    let retiree = trust
+    let retiring_tree = trust
         .installation
         .update_root
         .join("versions")
         .join("1.0.0")
-        .join("content.tar");
-    let holder = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .open(&retiree)
-        .expect("hold a file inside the version being retired");
+        .join("tree");
+    // std opens with read, write and delete sharing; NTFS still refuses the directory
+    // rename while any descendant handle is open.
+    let holder = std::fs::File::open(nested_file(&retiring_tree))
+        .expect("hold a nested file inside the version being retired");
     let health = receipt(&attempt);
-    let error = attempt
-        .accept_health(&health)
-        .expect_err("Windows refuses to rename a directory with an open descendant");
-    assert!(
-        matches!(
-            error,
-            UpdateError::Activation {
-                step: "version retirement",
-                effect: ActivationEffect::JournalBoundRecoveryRequired,
-                ..
-            }
-        ),
-        "{error:?}"
+    assert_refusal(
+        attempt.accept_health(&health),
+        "version retirement",
+        ActivationEffect::JournalBoundRecoveryRequired,
     );
     let blocked = observe(&trust);
     assert!(matches!(
@@ -486,16 +621,71 @@ fn an_open_handle_in_the_retiring_tree_preserves_the_journal_for_recovery() {
     assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
 }
 
+#[test]
+fn a_process_running_from_a_retired_tree_defers_only_its_deletion() {
+    let fixture = tempfile::tempdir().expect("running retiree fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let attempt = begin(&trust, "3.0.0");
+    let image = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join("1.0.0")
+        .join("tree")
+        .join("retiree-host.exe");
+    let system = std::env::var_os("SystemRoot").expect("Windows system root");
+    std::fs::copy(
+        std::path::Path::new(&system)
+            .join("System32")
+            .join("cmd.exe"),
+        &image,
+    )
+    .expect("place an executable image inside the version being retired");
+    let mut running = std::process::Command::new(&image)
+        .args(["/c", "pause"])
+        .current_dir(fixture.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run an image from the retiring tree");
+
+    let health = receipt(&attempt);
+    let resolution = attempt
+        .accept_health(&health)
+        .expect("a mapped image does not block the directory rename");
+    assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
+    match resolution.cleanup_error() {
+        Some(UpdateError::Activation {
+            effect: ActivationEffect::ResolvedWithLeftovers,
+            ..
+        }) => {}
+        other => panic!("deleting a running image must be reported as a leftover: {other:?}"),
+    }
+    let resolved = observe(&trust);
+    assert_eq!(resolved.journal, None);
+    let mut expected = names(&["2.0.0", "3.0.0"]);
+    expected.insert("retired-*".to_owned());
+    assert_eq!(resolved.versions, expected);
+
+    running.kill().expect("stop the image");
+    running.wait().expect("reap the image");
+    commit(&trust, "4.0.0");
+    assert_resolved(&trust, "4.0.0", Some("3.0.0"), "4.0.0", &["3.0.0", "4.0.0"]);
+}
+
 /// Recovers the protected journal with a retirement binding read back from it.
 ///
 /// The caller has already observed the prior owner's exit; that observation is the
 /// family-retirement evidence this binding names.
 fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcome, UpdateError> {
     let inspection = load_windows_recovery_inspection(trust, &verifier(trust))?;
+    let lost_channel = *inspection.lifecycle_channel_id();
     let retirement = ProcessFamilyRetirement::from_exact_zero_observation(
         *inspection.lifecycle_installation_id(),
         *inspection.attempt_id(),
-        *inspection.lifecycle_channel_id(),
+        lost_channel,
     );
     match inspection.recover(&retirement, COORDINATOR)? {
         WindowsRecoveryOutcome::Resolved(resolution) => {
@@ -503,9 +693,13 @@ fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcom
             Ok(resolution.outcome())
         }
         WindowsRecoveryOutcome::AwaitingHealth(attempt) => {
-            assert_eq!(
-                observe(trust).journal.map(|journal| journal.phase),
-                Some(ActivationPhase::AwaitingHealth)
+            let journal = observe(trust)
+                .journal
+                .expect("resumed attempt is journaled");
+            assert_eq!(journal.phase, ActivationPhase::AwaitingHealth);
+            assert_ne!(
+                journal.lifecycle_channel_id, lost_channel,
+                "a resumed owner never reuses the lost owner's lifecycle channel"
             );
             let health = receipt(&attempt);
             let resolution = attempt.accept_health(&health)?;
@@ -514,7 +708,7 @@ fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcom
     }
 }
 
-/// Expected recovery for one persisted cut of the 2.0.0 -> 3.0.0 attempt.
+/// Expected recovery after one persisted cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterCut {
     /// No journal references the published candidate; startup halts on the orphan.
@@ -530,7 +724,20 @@ enum AfterCut {
     AlreadyRolledBack,
 }
 
-const COMMIT_CUTS: [(&str, AfterCut); 16] = [
+/// One crash scenario: which owner crashes, on top of which installed history.
+#[derive(Debug, Clone, Copy)]
+struct Scenario {
+    /// Child case: a live `commit`/`rollback` owner (prefixed `first-` for the first
+    /// update), or a `recover`ing owner after `first_crash`.
+    case: &'static str,
+    /// Whether one update already committed, so previous-known-good exists.
+    prior_commit: bool,
+    /// For recovering-owner cuts: the live-owner crash that leaves the journal.
+    first_crash: Option<&'static str>,
+    cuts: &'static [(&'static str, AfterCut)],
+}
+
+const COMMIT_PATH: &[(&str, AfterCut)] = &[
     ("prepared:publish-pending", AfterCut::OrphanHalts),
     ("publish-pending", AfterCut::ResumesThenCommits),
     ("prepared:floor-advanced", AfterCut::ResumesThenCommits),
@@ -552,7 +759,7 @@ const COMMIT_CUTS: [(&str, AfterCut); 16] = [
     ("journal-removed", AfterCut::AlreadyCommitted),
 ];
 
-const ROLLBACK_CUTS: [(&str, AfterCut); 6] = [
+const ROLLBACK_PATH: &[(&str, AfterCut)] = &[
     ("prepared:rollback-pending", AfterCut::RollsBack),
     ("rollback-pending", AfterCut::RollsBack),
     ("prepared:rollback-target-restored", AfterCut::RollsBack),
@@ -561,99 +768,225 @@ const ROLLBACK_CUTS: [(&str, AfterCut); 6] = [
     ("journal-removed", AfterCut::AlreadyRolledBack),
 ];
 
+const RECOVERY_ROLLBACK_PATH: &[(&str, AfterCut)] = &[
+    ("rollback-pending", AfterCut::RollsBack),
+    ("prepared:rollback-target-restored", AfterCut::RollsBack),
+    ("rollback-target-restored", AfterCut::RollsBack),
+    ("version-retired", AfterCut::RollsBack),
+    ("journal-removed", AfterCut::AlreadyRolledBack),
+];
+
+const RECOVERY_RESUME_PATH: &[(&str, AfterCut)] = &[
+    ("prepared:channels-reminted", AfterCut::ResumesThenCommits),
+    ("channels-reminted", AfterCut::ResumesThenCommits),
+    ("candidate-selected", AfterCut::ResumesThenCommits),
+    ("awaiting-health", AfterCut::RollsBack),
+];
+
+const SCENARIOS: [Scenario; 6] = [
+    Scenario {
+        case: "commit",
+        prior_commit: true,
+        first_crash: None,
+        cuts: COMMIT_PATH,
+    },
+    Scenario {
+        case: "first-commit",
+        prior_commit: false,
+        first_crash: None,
+        cuts: COMMIT_PATH,
+    },
+    Scenario {
+        case: "rollback",
+        prior_commit: true,
+        first_crash: None,
+        cuts: ROLLBACK_PATH,
+    },
+    Scenario {
+        case: "first-rollback",
+        prior_commit: false,
+        first_crash: None,
+        cuts: ROLLBACK_PATH,
+    },
+    Scenario {
+        case: "recover",
+        prior_commit: true,
+        first_crash: Some("awaiting-health"),
+        cuts: RECOVERY_ROLLBACK_PATH,
+    },
+    Scenario {
+        case: "recover",
+        prior_commit: true,
+        first_crash: Some("floor-advanced"),
+        cuts: RECOVERY_RESUME_PATH,
+    },
+];
+
 #[test]
 fn every_persisted_activation_cut_resumes_commits_rolls_back_or_halts() {
     support::assert_user_principal_token();
-    for (case, cuts) in [
-        ("commit", &COMMIT_CUTS[..]),
-        ("rollback", &ROLLBACK_CUTS[..]),
-    ] {
-        for &(cut, after) in cuts {
-            run_crash_cut(case, cut, after);
+    for scenario in SCENARIOS {
+        for &(cut, after) in scenario.cuts {
+            // The first update has no superseded previous-known-good to retire.
+            if cut == "version-retired" && scenario.case == "first-commit" {
+                continue;
+            }
+            run_crash_cut(scenario, cut, after);
         }
     }
 }
 
-fn run_crash_cut(case: &str, cut: &str, after: AfterCut) {
+fn run_crash_cut(scenario: Scenario, cut: &str, after: AfterCut) {
     let fixture = tempfile::tempdir().expect("activation crash-cut fixture");
     let trust = seed_per_user_baseline(fixture.path());
-    commit(&trust, "2.0.0");
-    let committed = observe(&trust);
+    let (prior, candidate, prior_previous) = if scenario.prior_commit {
+        commit(&trust, "2.0.0");
+        ("2.0.0", "3.0.0", Some("1.0.0"))
+    } else {
+        ("1.0.0", "2.0.0", None)
+    };
+    let label = format!("{}/{:?}/{cut}", scenario.case, scenario.first_crash);
+    let before = observe(&trust);
+    let (lost_channel, at_cut) = crash_children(&trust, fixture.path(), scenario, cut, &label);
+    assert!(
+        [prior, candidate].contains(&at_cut.floor.as_str()),
+        "{label}: the floor never drops or skips: {at_cut:?}"
+    );
+    assert!(
+        [prior, candidate].contains(&at_cut.last_known_good.as_str()),
+        "{label}: {at_cut:?}"
+    );
+    if cut == "channels-reminted" {
+        assert_ne!(
+            at_cut
+                .journal
+                .as_ref()
+                .map(|journal| journal.lifecycle_channel_id),
+            lost_channel,
+            "{label}: the resumed owner durably re-mints its lifecycle channel"
+        );
+    }
 
-    let stdout = support::child(CRASH_HELPER, fixture.path(), case, cut, CRASH_EXIT);
-    assert!(
-        stdout.contains(&format!("KELD_ACTIVATION_CUT={cut}")),
-        "{case}/{cut}: child must stop at the named boundary: {stdout}"
-    );
-    let at_cut = observe(&trust);
-    assert!(
-        ["2.0.0", "3.0.0"].contains(&at_cut.floor.as_str()),
-        "{case}/{cut}: the floor never drops or skips: {at_cut:?}"
-    );
-    assert!(
-        at_cut.last_known_good == "2.0.0" || at_cut.last_known_good == "3.0.0",
-        "{case}/{cut}: {at_cut:?}"
-    );
-
+    let committed_versions = [prior, candidate];
+    let rolled_back_versions: Vec<&str> = prior_previous.into_iter().chain([prior]).collect();
     match after {
         AfterCut::OrphanHalts => {
-            assert_eq!(at_cut.journal, None);
+            assert_eq!(at_cut.journal, None, "{label}");
             assert_eq!(
                 (&at_cut.floor, &at_cut.current, &at_cut.last_known_good),
-                (
-                    &committed.floor,
-                    &committed.current,
-                    &committed.last_known_good
-                ),
-                "{case}/{cut}: nothing was selected before the journal"
+                (&before.floor, &before.current, &before.last_known_good),
+                "{label}: nothing was selected before the journal"
             );
             let error = load_windows_activation_write_snapshot(&trust, &verifier(&trust))
                 .expect_err("an unjournaled complete version halts startup");
             assert!(
                 error.to_string().contains("unreferenced version entry"),
-                "{case}/{cut}: {error}"
+                "{label}: {error}"
             );
         }
         AfterCut::AlreadyCommitted | AfterCut::AlreadyRolledBack => {
-            // The journal name is durably gone; only never-read leftovers remain: the
-            // renamed journal and the retired tree. Both are admitted as diagnostics,
-            // and the next transaction removes them before and after its own steps.
-            assert_eq!(at_cut.journal, None, "{case}/{cut}");
-            assert_eq!(at_cut.pending_records, 1, "{case}/{cut}: {at_cut:?}");
-            assert!(
-                at_cut.versions.contains("retired-*"),
-                "{case}/{cut}: {at_cut:?}"
-            );
-            let (current, previous, versions) = if after == AfterCut::AlreadyCommitted {
-                ("3.0.0", "2.0.0", ["2.0.0", "3.0.0"])
+            let committed = after == AfterCut::AlreadyCommitted;
+            let (current, previous, retained): (&str, Option<&str>, Vec<&str>) = if committed {
+                (candidate, Some(prior), committed_versions.to_vec())
             } else {
-                ("2.0.0", "1.0.0", ["1.0.0", "2.0.0"])
+                (prior, prior_previous, rolled_back_versions.clone())
             };
-            assert_eq!(at_cut.current, current, "{case}/{cut}");
-            assert_eq!(at_cut.previous_known_good.as_deref(), Some(previous));
-            let mut retained = names(&versions);
-            retained.insert("retired-*".to_owned());
-            assert_eq!(at_cut.versions, retained, "{case}/{cut}");
-            commit(&trust, "4.0.0");
-            assert_resolved(&trust, "4.0.0", Some(current), "4.0.0", &[current, "4.0.0"]);
+            // Commit retires only when a superseded version exists; rollback always does.
+            let retired = !committed || scenario.prior_commit;
+            let next = if scenario.prior_commit {
+                "4.0.0"
+            } else {
+                "3.0.0"
+            };
+            assert_leftovers_then_next_commit(
+                &trust,
+                &at_cut,
+                &label,
+                (current, previous, &retained, retired),
+                next,
+            );
         }
         AfterCut::ResumesThenCommits | AfterCut::FinishesCommit => {
             assert_eq!(
-                recover_exact(&trust).unwrap_or_else(|error| panic!("{case}/{cut}: {error}")),
+                recover_exact(&trust).unwrap_or_else(|error| panic!("{label}: {error}")),
                 WindowsActivationOutcome::Committed,
-                "{case}/{cut}"
+                "{label}"
             );
-            assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
+            assert_resolved(
+                &trust,
+                candidate,
+                Some(prior),
+                candidate,
+                &committed_versions,
+            );
         }
         AfterCut::RollsBack => {
             assert_eq!(
-                recover_exact(&trust).unwrap_or_else(|error| panic!("{case}/{cut}: {error}")),
+                recover_exact(&trust).unwrap_or_else(|error| panic!("{label}: {error}")),
                 WindowsActivationOutcome::RolledBack,
-                "{case}/{cut}"
+                "{label}"
             );
-            assert_resolved(&trust, "2.0.0", Some("1.0.0"), "3.0.0", &["1.0.0", "2.0.0"]);
+            assert_resolved(
+                &trust,
+                prior,
+                prior_previous,
+                candidate,
+                &rolled_back_versions,
+            );
         }
     }
+}
+
+/// Runs the optional first live-owner crash, then the scenario owner up to `cut`.
+///
+/// Returns the lifecycle channel journaled before the scenario owner ran and the
+/// protected state the scenario owner left at its cut.
+fn crash_children(
+    trust: &WindowsBaselineTrust,
+    root: &std::path::Path,
+    scenario: Scenario,
+    cut: &str,
+    label: &str,
+) -> (Option<[u8; 32]>, Observed) {
+    if let Some(first) = scenario.first_crash {
+        let stdout = support::child(CRASH_HELPER, root, "commit", first, CRASH_EXIT);
+        assert!(
+            stdout.contains(&format!("KELD_ACTIVATION_CUT={first}")),
+            "{stdout}"
+        );
+    }
+    let lost_channel = observe(trust)
+        .journal
+        .map(|journal| journal.lifecycle_channel_id);
+    let stdout = support::child(CRASH_HELPER, root, scenario.case, cut, CRASH_EXIT);
+    assert!(
+        stdout.contains(&format!("KELD_ACTIVATION_CUT={cut}")),
+        "{label}: child must stop at the named boundary: {stdout}"
+    );
+    (lost_channel, observe(trust))
+}
+
+/// After a cut that follows journal removal, only never-read leftovers remain: the
+/// renamed journal and any retired tree. Both are admitted as diagnostics, and the next
+/// transaction removes them before and after its own steps.
+fn assert_leftovers_then_next_commit(
+    trust: &WindowsBaselineTrust,
+    at_cut: &Observed,
+    label: &str,
+    (current, previous, retained, retired): (&str, Option<&str>, &[&str], bool),
+    next: &str,
+) {
+    assert_eq!(at_cut.journal, None, "{label}");
+    assert_eq!(at_cut.pending_records, 1, "{label}: {at_cut:?}");
+    assert_eq!(at_cut.current, current, "{label}");
+    assert_eq!(at_cut.previous_known_good.as_deref(), previous, "{label}");
+    let mut expected = names(retained);
+    if retired {
+        expected.insert("retired-*".to_owned());
+    }
+    assert_eq!(at_cut.versions, expected, "{label}");
+    commit(trust, next);
+    assert_resolved(trust, next, Some(current), next, &[current, next]);
 }
 
 fn crash_at_requested_cut(durable: bool, label: &'static str) {
@@ -680,20 +1013,28 @@ fn windows_activation_crash_helper() {
     let case = std::env::var(support::CASE_ENV).expect("activation case");
     let mut trust = support::trust_for(&root.join("KeldPerUserFixture"));
     trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
-    crate::windows_baseline::activate::CRASH_CUT_HOOK
+    crate::windows_baseline::CRASH_CUT_HOOK
         .set(crash_at_requested_cut)
         .expect("install the crash-cut hook once");
-    let attempt = begin(&trust, "3.0.0");
-    match case.as_str() {
-        "commit" => {
-            let health = receipt(&attempt);
-            let _ = attempt.accept_health(&health);
-        }
-        "rollback" => {
-            let retirement = retirement(&attempt);
-            let _ = attempt.roll_back(ActivationFailureClass::HealthRejected, &retirement);
-        }
-        other => panic!("unknown activation case {other}"),
+    if case == "recover" {
+        // The parent observed the lost owner's exit before starting this successor.
+        let _ = recover_exact(&trust);
+        panic!("the requested recovery cut was not reached");
+    }
+    let candidate = if case.starts_with("first-") {
+        "2.0.0"
+    } else {
+        "3.0.0"
+    };
+    let attempt = begin(&trust, candidate);
+    if case.ends_with("commit") {
+        let health = receipt(&attempt);
+        let _ = attempt.accept_health(&health);
+    } else if case.ends_with("rollback") {
+        let retirement = retirement(&attempt);
+        let _ = attempt.roll_back(ActivationFailureClass::HealthRejected, &retirement);
+    } else {
+        panic!("unknown activation case {case}");
     }
     panic!("the requested activation cut was not reached");
 }

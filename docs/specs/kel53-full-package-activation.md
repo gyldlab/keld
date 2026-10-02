@@ -28,11 +28,16 @@ KEL-266 T4a amendment: delegated approval comment
 The independent design approval does not replace native qualification or final-diff
 security, unsafe and public-contract review.
 
-KEL-270 T4b amendment (proposed, owner acceptance pending): retire each unreferenced
-version under the journal before journal removal, and remove the journal by
-write-through rename, instead of removing the journal first and cleaning retention
-afterwards. Rationale and native evidence are in the KEL-270 T4b claim/decision comments
-and its pull request; the change narrows a liveness gap and adds no authority.
+KEL-270 T4b amendment (proposed, owner acceptance pending). Three bounded changes to the
+common transaction, each narrowing a liveness or replay gap without adding authority:
+1. Retire each unreferenced version under the journal before journal removal, and
+   remove the journal by write-through rename, instead of removing the journal first
+   and cleaning retention afterwards.
+2. Resume an unlaunched `PublishPending` attempt under the exclusive writer lease alone.
+3. Durably re-mint the health and lifecycle channel identities whenever an attempt is
+   resumed.
+Rationale and native evidence are in KEL-270 comments `b571afdb` and `f6b1e538` and the
+T4b pull request.
 
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
@@ -323,7 +328,7 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
 9. The previous last-known-good pointer and package remain unchanged until exact health
    is durably recorded. The owner then journals `health-accepted`, moves the prior
    last-known-good to `previous-known-good`, publishes `last-known-good` to
-   the candidate, retires the superseded older version, and removes the journal.
+   the candidate, retires the superseded older version (if any), and removes the journal.
    Failure journals `rollback-pending`, republishes `current` to the attempt's
    validated rollback target, retires the failed candidate, and only then removes the
    journal. Neither path lowers the trust floor; bounded cleanup retains both
@@ -739,7 +744,7 @@ The single-writer transition is:
 6. persist `AwaitingHealth` and launch with a private health channel;
 7. on exact health, persist `HealthAccepted`, publish the prior LKG to
    `previous-known-good`, publish `last-known-good` to candidate, retire the
-   superseded older version, then remove the journal; deleting retired trees is
+   superseded older version (if any), then remove the journal; deleting retired trees is
    best-effort cleanup that never touches either known-good slot;
 8. on failure, persist `RollbackPending`, publish `current` to the
    validated rollback target, retire the failed candidate, remove the journal, then
@@ -751,12 +756,36 @@ same-parent absent-target write-through adapter, to a generated `retired-<64 hex
 name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
 directory, so the census admits them only as never-selectable diagnostics. Retiring
 under the journal closes the crash window in which a removed journal would leave an
-orphan complete version that halts every later writer. An open handle anywhere in the
-retiring tree makes the rename fail; the journal then stays for journal-bound recovery.
+orphan complete version that halts every later writer. On NTFS an open file handle
+anywhere in the retiring tree, with any sharing mode, makes the rename fail; the journal
+then stays for journal-bound recovery. A process still executing a mapped image from
+that tree does not block the rename: it keeps running from the retired tree, cannot
+open further files by their original path, and its tree is deleted only after it
+exits. A launched candidate is therefore retired only after process-family retirement,
+and the host must not run other instances from a superseded version.
 Journal removal is a write-through rename of the journal to a generated `pending-*`
 leaf followed by deletion. A crash before any record sibling's publication rename
-leaves only such a `pending-*` file; the next writer admits it only with the exact
-installation profile and removes it under the lease before its first step.
+leaves only such a `pending-*` file. The census admits `pending-*` names; before its
+first write, the next transaction removes each one only after verifying a regular,
+single-link file with the exact installation profile, and refuses anything else.
+A refusal of a new attempt before its `PublishPending` journal exists retires every
+version that attempt published, so a refused start leaves no orphan. A process crash
+in that window still leaves an orphan and halts (tracked as a separate amendment).
+
+A `PublishPending` journal is resumable under the exclusive writer lease alone: no
+candidate is launched before `AwaitingHealth` is durable, and every live transaction
+owner retains the share-zero lease (or its keeper retains a duplicate), so acquiring
+the lease proves no prior owner can still write and no candidate family exists. Every
+resumed owner durably re-mints the attempt's health and lifecycle channel identities
+before continuing, so no health receipt or retirement witness from a lost owner binds
+to the resumed run. Launched phases still require an exact process-family retirement
+binding.
+
+`HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
+attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical
+artifact-identity encoding of the candidate and `n` its byte length. The receipt binds
+the attempt, its private health channel and the exact candidate; recovery recomputes
+the digest from the journal's own fields and halts on a mismatch.
 
 Windows replaces fixed mutable record slots through a narrow same-parent
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` adapter; the existing
