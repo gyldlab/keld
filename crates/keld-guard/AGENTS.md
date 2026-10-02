@@ -27,6 +27,8 @@ crate-local threat model doc exists until one is checked in.
   Missing file is `ManifestError`, not Allow.
 - Tests MUST follow repository `.agents/testing.md`.
 
-## KEL-53 T3 namespace FFI
-Owner/load: guard/always. Trigger: `validate_windows_package_paths`.
-MUST allow only `NormalizeString` (C) and `CompareStringOrdinal` (ignore-case); use owned UTF-16 buffers, checked i32 lengths/results, and inline SAFETY proofs for pointer bounds/lifetime/output. MUST test on Windows. Remove rule/API when guard ownership ends.
+## KEL-53 T3 package-path FFI
+Owner/load: guard/always; trigger `validate_windows_package_paths`. Allow only `NormalizeString` (C) and `CompareStringOrdinal` (ignore-case); use owned UTF-16, checked i32 lengths/results and inline SAFETY for bounds/lifetime. Windows tests; retire with API.
+
+## KEL-270 T4d admin-owner token FFI
+Owner/load: guard/always; trigger `require_windows_machine_uac_owner_token`. Production FFI: `GetCurrentProcess`, `GetCurrentThread`, `GetLastError`, `OpenProcessToken(TOKEN_QUERY)`, `OpenThreadToken(TOKEN_QUERY, TRUE)`, `GetTokenInformation(TokenGroups, TokenElevation)` only. Only `ERROR_NO_TOKEN` proves no impersonation; other errors refuse. Keep handles in RAII; bounds-check buffer/group/SID reads with inline SAFETY. Require elevated TokenElevation and BUILTIN Administrators `SE_GROUP_OWNER|SE_GROUP_ENABLED`, not deny-only, before creation. Tests cover SID/flags/errors and live thread impersonation via test-only `ImpersonateSelf`/`RevertToSelf`; operator tests cover elevated and filtered tokens. Retire with API.

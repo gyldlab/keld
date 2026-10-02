@@ -12,6 +12,9 @@ use windows_permissions::wrappers::{GetSecurityInfo, SetSecurityInfo};
 use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
+mod uac_token;
+pub use uac_token::require_windows_machine_uac_owner_token;
+
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
