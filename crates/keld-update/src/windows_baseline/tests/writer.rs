@@ -346,7 +346,7 @@ fn version_publication_reports_unconfirmed_effect_after_rename() {
 
 #[test]
 fn per_user_version_publication_crash_cuts_leave_only_unselected_artifacts() {
-    support::assert_ordinary_token();
+    support::assert_user_principal_token();
     for cut in ["complete-marker", "version-directory"] {
         let fixture = tempfile::tempdir().expect("version publication crash-cut fixture");
         let trust = seed_per_user_baseline(fixture.path());
@@ -408,7 +408,7 @@ fn per_user_version_publication_crash_cuts_leave_only_unselected_artifacts() {
 #[test]
 #[ignore = "private immutable-version publication crash-cut subprocess entry point"]
 fn windows_version_publication_crash_helper() {
-    support::assert_ordinary_token();
+    support::assert_user_principal_token();
     let root =
         PathBuf::from(std::env::var_os("KELD_VERSION_PUBLICATION_ROOT").expect("fixture root"));
     let cut = std::env::var(VERSION_PUBLICATION_HELPER_ENV).expect("publication cut");
