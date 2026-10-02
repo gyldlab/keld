@@ -18,6 +18,8 @@ const ACTIVATION_JOURNAL_SCHEMA: &str = "keld.activation-journal/v1";
 #[cfg(windows)]
 const LIFECYCLE_INSTALLATION_BINDING_DOMAIN: &[u8] =
     b"keld.installation-binding/provenance-v2/v1\0";
+#[cfg(any(windows, test))]
+const ACTIVATION_HEALTH_RECEIPT_DOMAIN: &[u8] = b"keld.activation-health-receipt/v1\0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProvenanceRecord {
@@ -93,9 +95,12 @@ pub(crate) enum ActivationPhase {
     },
 }
 
-/// Closed failure category persisted when an attempt enters rollback.
+/// Closed failure category persisted when an activation attempt enters rollback.
+///
+/// Arbitrary diagnostic text is never transaction input; only these categories are
+/// journaled and replayed by recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ActivationFailureClass {
+pub enum ActivationFailureClass {
     /// The candidate could not be started or exited before Ready.
     CandidateLaunch,
     /// The candidate returned a mismatched or rejected health receipt.
@@ -250,6 +255,30 @@ pub(crate) fn lifecycle_installation_id(
     Ok(installation_id)
 }
 
+/// Digest of one exact attempt-bound health receipt, persisted by `HealthAccepted`.
+///
+/// The encoding is domain separated and binds the attempt, its private health channel
+/// and the canonical candidate identity, so a receipt for another attempt, channel or
+/// artifact can never produce the journaled value. Recovery recomputes it from the
+/// journal's own fields, so a corrupt or mixed `HealthAccepted` journal halts.
+#[cfg(any(windows, test))]
+pub(crate) fn activation_health_receipt_digest(
+    attempt_id: &[u8; 32],
+    health_channel_id: &[u8; 32],
+    candidate: &ArtifactIdentity,
+) -> Result<[u8; 32], UpdateError> {
+    let artifact = encode(&wire_artifact(candidate)?)?;
+    let length = u64::try_from(artifact.len())
+        .map_err(|_| invalid("canonical artifact length does not fit u64"))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(ACTIVATION_HEALTH_RECEIPT_DOMAIN);
+    hasher.update(attempt_id);
+    hasher.update(health_channel_id);
+    hasher.update(&length.to_le_bytes());
+    hasher.update(&artifact);
+    Ok(*hasher.finalize().as_bytes())
+}
+
 pub(crate) fn decode_provenance(bytes: &[u8]) -> Result<ProvenanceRecord, UpdateError> {
     let wire: WireProvenance = decode(bytes)?;
     schema(&wire.schema, PROVENANCE_SCHEMA)?;
@@ -342,7 +371,7 @@ pub(crate) fn decode_pointer(
     artifact(wire.artifact)
 }
 
-#[cfg(test)]
+#[cfg(any(windows, test))]
 pub(crate) fn encode_activation_journal(
     journal: &ActivationJournal,
 ) -> Result<Vec<u8>, UpdateError> {
@@ -471,8 +500,7 @@ fn same_artifact_scope(left: &ArtifactIdentity, right: &ArtifactIdentity) -> boo
     left.app_id == right.app_id && left.channel == right.channel && left.target == right.target
 }
 
-#[cfg(test)]
-#[cfg(test)]
+#[cfg(any(windows, test))]
 fn wire_activation_phase(phase: &ActivationPhase) -> WireActivationPhase {
     match phase {
         ActivationPhase::PublishPending => WireActivationPhase::PublishPending {},
@@ -504,7 +532,7 @@ fn activation_phase(phase: WireActivationPhase) -> Result<ActivationPhase, Updat
 }
 
 impl ActivationFailureClass {
-    #[cfg(test)]
+    #[cfg(any(windows, test))]
     const fn as_str(self) -> &'static str {
         match self {
             Self::CandidateLaunch => "candidate-launch",

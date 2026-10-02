@@ -459,8 +459,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   lease, without selecting it. KEL-266 implements actual-SYSTEM machine-baseline
   initialization and a read-only protected baseline loader. KEL-270 adds the
   PerUserDirect baseline/bootstrap primitive with owner-private records and provenance-last
-  commit; neither path supplies mode-aware active selection. Live feed orchestration,
-  journaled candidate activation, exact health, rollback and recovery remain
+  commit, and the common journaled transaction: PerUserDirect activates a published
+  version, binds an exact attempt health receipt, commits or rolls back, and resumes from
+  every persisted cut under the writer lease. Live feed orchestration, host candidate
+  launch, the private health channel and its 30-second `Ready` observation, installed-host
+  lifecycle composition and read-only selection of a committed update remain
   unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
@@ -986,14 +989,63 @@ does not enter this transaction:
    private attempt-bound health channel.
 6. On accepted health, durably write `health-accepted`, publish the prior
    last-known-good to `previous-known-good`, publish
-   `last-known-good` to the candidate, remove the journal durably, and only then
-   apply bounded cleanup that retains both known-good slots.
+   `last-known-good` to the candidate, retire the superseded older version (if any), then
+   remove the journal durably. Deleting retired trees afterwards is best-effort
+   cleanup that never touches either known-good slot.
 7. On launch/health failure, durably write `rollback-pending`, republish
-   `current` to the attempt's validated rollback target, remove the journal durably,
-   and report failure. Rollback never changes the floor. The failed candidate therefore
+   `current` to the attempt's validated rollback target, retire the failed candidate,
+   remove the journal durably, and report failure. Rollback never changes the floor. The failed candidate therefore
    cannot be automatically selected again at the same version: selection returns the
    successful no-update result until a newly signed release advances beyond that floor.
    Failures that occur before step 3 may retry the same signed version after repair.
+
+Retirement is the only mutation of a published version. While the journal still
+authorizes it, the writer renames the one unreferenced version directory, with the
+same-parent absent-target write-through adapter, to a generated `retired-<64 hex>`
+name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
+directory, so the census admits them only as never-selectable diagnostics. Retiring
+under the journal closes the crash window in which a removed journal would leave an
+orphan complete version that halts every later writer. On NTFS an open file handle
+anywhere in the retiring tree, with any sharing mode, makes the rename fail; the journal
+then stays for journal-bound recovery. A process still executing a mapped image from
+that tree does not block the rename: it keeps running from the retired tree, cannot
+open further files by their original path, and its tree is deleted only after it
+exits. A launched candidate is therefore retired only after process-family retirement,
+and the host must not run other instances from a superseded version.
+Journal removal is a write-through rename of the journal to a generated `pending-*`
+leaf followed by deletion. A crash before any record sibling's publication rename
+leaves only such a `pending-*` file. The census admits `pending-*` names; before its
+first write, the next transaction removes each one only after verifying a regular,
+single-link file with the exact installation profile, and refuses anything else.
+A refusal of a new attempt before its `PublishPending` journal exists retires every
+version that attempt published, so a refused start leaves no orphan unless that
+retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
+in that window still leaves an orphan; the ordinary loader halts on it, and only the
+explicit unjournaled-version repair, admitted when no journal exists and every record
+validates, retires it under the writer lease. The repair first verifies and pins every
+referenced version, removes stale `pending-*` record siblings, and admits for retirement
+only strict-SemVer entries whose completion record names that version in the
+installation's scope; any other unknown or damaged entry, including a non-directory under a
+generated name, refuses the repair before any rename and needs manual recovery.
+
+A `PublishPending` journal is resumable under the exclusive writer lease alone: no
+candidate is launched before `AwaitingHealth` is durable, and every live transaction
+owner retains the share-zero lease (or its keeper retains a duplicate), so acquiring
+the lease proves no prior owner can still write and no candidate family exists. Every
+resumed owner durably re-mints the attempt's health and lifecycle channel identities
+before continuing, so no health receipt or retirement witness from a lost owner binds
+to the resumed run. Launched phases still require an exact process-family retirement
+binding. That binding is an exact installation/attempt/lifecycle-channel value that the
+host composes from the QF1 retirement witness or its own retained Job-zero observation;
+`keld-update` cannot authenticate its producer. A sealed witness type was rejected
+because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
+graph.
+
+`HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
+attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical
+artifact-identity encoding of the candidate and `n` its byte length. The receipt binds
+the attempt, its private health channel and the exact candidate; recovery recomputes
+the digest from the journal's own fields and halts on a mismatch.
 
 No required pointer or journal is removed before its replacement is durable. A temporary
 file is created in the same directory as its target; cross-filesystem copy/delete is a
@@ -1023,9 +1075,10 @@ the stable lease, then reopens and verifies exact bytes and profile before advan
 It never truncates in place, copies across volumes, schedules work after reboot or
 accepts caller paths/flags. A failure after replacement is effect-aware and does not
 claim the old bytes stayed unchanged. The `keld-update` crate rule still keeps
-`publish_new` absent-target-only and now permits only a separate fixed-slot replacement
-under the stable lease. That native replacement adapter is not implemented yet; its
-exact diff requires independent unsafe/security review before it may be used.
+`publish_new` absent-target-only and permits only the separate fixed-slot replacement
+adapter, which refuses every leaf outside journal/floor/current/last-known-good/
+previous-known-good before the system call. Its exact diff requires independent
+unsafe/security review.
 
 **Health identity.** A candidate receives a private host-owned channel minted for the
 journaled attempt. Its receipt repeats the attempt id and full artifact identity. The
@@ -1051,14 +1104,16 @@ no endpoint and follows the recovery path below.
 **Startup recovery.** With no journal, validate the protected provenance, floor,
 `current`, both known-good slots, policy and complete markers. If current is
 valid, it must equal last-known-good or previous-known-good; any other complete artifact
-is an orphan and halts. If current is invalid and last-known-good is valid, republish
+is an orphan and halts (generated `incomplete-*` and `retired-*` diagnostics are not
+artifacts). If current is invalid and last-known-good is valid, republish
 last-known-good. Missing/invalid last-known-good after installation halts;
 previous-known-good may be absent only before the first successful update. With a valid
 journal, first acquire its exclusive attempt lease. If another coordinator retains the
 lease, that owner continues and the new process performs no recovery. After acquisition,
 the platform process-family owner must prove the recorded coordinator and candidate
 have exited; an unknown/live process state halts rather than starting a second
-candidate. Windows places the candidate in the helper/host's kill-on-close Job and
+candidate. The one exception is an unlaunched `publish-pending` attempt, which the lease
+alone proves has no live owner or candidate family. Windows places the candidate in the helper/host's kill-on-close Job and
 waits for its zero-active-process observation before recovery proceeds.
 
 1. For `publish-pending`, validate the floor and `current` against the exact
@@ -1071,8 +1126,10 @@ waits for its zero-active-process observation before recovery proceeds.
    rollback.
 2. `awaiting-health` rolls back only after the process-family proof above; recovery
    never accepts an old receipt.
-3. `health-accepted` completes both known-good publications and journal removal.
-4. `rollback-pending` completes current rollback and journal removal only when
+3. `health-accepted` completes both known-good publications, the superseded
+   version's retirement and journal removal.
+4. `rollback-pending` completes current rollback, the candidate's retirement and
+   journal removal only when
    floor, both known-good slots, coordinator/helper identity, optional health identity
    and current exactly match its recorded context. Any substitution halts.
 
@@ -1090,7 +1147,7 @@ evidence.
   writable file handle, close all stage handles, then publish the absent final version
   directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Reopen the
   final directory and read back every digest, policy and marker before pointer
-  publication. Journal/pointer/policy record replacement separately uses a
+  publication. Journal/pointer record replacement separately uses a
   same-directory temporary file, `FlushFileBuffers`, and same-volume
   `MoveFileExW` with replace-existing plus write-through. Neither path sets
   `MOVEFILE_COPY_ALLOWED` or claims directory-handle `FlushFileBuffers`.

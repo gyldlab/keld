@@ -879,6 +879,44 @@ fn version_publication_errors_distinguish_pre_and_post_rename_effects() {
 }
 
 #[test]
+fn activation_errors_name_what_remains_and_the_only_safe_next_action() {
+    let expectations = [
+        (
+            crate::ActivationEffect::ProtectedStateUnchanged,
+            "No activation journal exists",
+        ),
+        (
+            crate::ActivationEffect::JournalBoundRecoveryRequired,
+            "journal-bound recovery under the writer lease",
+        ),
+        (
+            crate::ActivationEffect::ResolvedWithLeftovers,
+            "only never-selectable leftovers remain",
+        ),
+        (
+            crate::ActivationEffect::UnjournaledVersionRetained,
+            "later writers halt until the explicit unjournaled-version repair",
+        ),
+    ];
+    for (effect, guidance) in expectations {
+        let error = UpdateError::Activation {
+            step: "record publication",
+            effect,
+            detail: "rename failed".to_owned(),
+        };
+        assert_code(&error, "KELD-UPDATE-016");
+        let text = error.to_string();
+        assert!(
+            text.starts_with(
+                "KELD-UPDATE-016: activation record publication refused (rename failed)."
+            ),
+            "{text}"
+        );
+        assert!(text.contains(guidance), "{effect:?}: {text}");
+    }
+}
+
+#[test]
 fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
     let mut empty = Vec::new();
     append_required_policy(&mut empty);

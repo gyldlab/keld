@@ -1169,11 +1169,17 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
             "QF1 composition cannot modify {name}"
         );
     }
-    drop(inspection);
     assert!(
         load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
         "matching or mismatched QF1 cannot bypass the ordinary pending-journal refusal"
     );
+    // The host composes the authenticated zero witness into the exact updater binding.
+    let witnessed = crate::ProcessFamilyRetirement::from_exact_zero_observation(
+        *retired_binding.installation_id(),
+        *retired_binding.attempt_id(),
+        *retired_binding.lifecycle_channel_id(),
+    );
+    let recovered = inspection.recover(&witnessed, [0x55; 32]);
     writeln!(keeper.stdin.as_mut().expect("keeper stdin"), "EXIT")
         .expect("release keeper helper after QF1 evidence capture");
     drop(keeper.stdin.take());
@@ -1182,17 +1188,91 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
         "QF1_KEEPER_EXIT"
     );
     assert!(keeper.wait().expect("wait keeper").success());
-    assert_eq!(
-        std::fs::read(&journal_path).expect("journal after composition"),
-        journal_before
-    );
-    for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
-        assert_eq!(
-            std::fs::read(trust.installation.update_root.join(name))
-                .expect("pointer after composition"),
-            *before
+    if substitution != QfBindingSubstitution::None {
+        assert!(
+            matches!(
+                recovered,
+                Err(crate::UpdateError::Activation {
+                    step: "process-family retirement binding",
+                    effect: crate::ActivationEffect::JournalBoundRecoveryRequired,
+                    ..
+                })
+            ),
+            "a QF1 witness for another attempt or channel authorizes no write: {recovered:?}"
         );
+        assert_eq!(
+            std::fs::read(&journal_path).expect("journal after composition"),
+            journal_before
+        );
+        for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
+            assert_eq!(
+                std::fs::read(trust.installation.update_root.join(name))
+                    .expect("pointer after composition"),
+                *before
+            );
+        }
+        return;
     }
+    let crate::WindowsRecoveryOutcome::AwaitingHealth(attempt) =
+        recovered.expect("the exact QF1 witness authorizes journal-bound recovery")
+    else {
+        panic!("a publish-pending journal resumes to a live awaiting-health attempt");
+    };
+    assert_eq!(attempt.attempt_id(), &attempt_id);
+    assert_ne!(
+        attempt.lifecycle_channel_id(),
+        &channel_id,
+        "the resumed owner re-mints its lifecycle channel"
+    );
+    assert_eq!(attempt.candidate().version, "2.0.0");
+    assert!(
+        matches!(
+            attempt.roll_back(crate::ActivationFailureClass::ProcessCrash, &witnessed),
+            Err(crate::UpdateError::Activation {
+                step: "process-family retirement binding",
+                effect: crate::ActivationEffect::JournalBoundRecoveryRequired,
+                ..
+            })
+        ),
+        "the lost owner's QF1 witness cannot retire the resumed owner's family"
+    );
+    // The resumed owner launched nothing; recovery binds its own re-minted channel.
+    let inspection = load_windows_recovery_inspection(&trust, &verifier)
+        .expect("reacquire the lease for the resumed attempt");
+    let resumed = crate::ProcessFamilyRetirement::from_exact_zero_observation(
+        *inspection.lifecycle_installation_id(),
+        *inspection.attempt_id(),
+        *inspection.lifecycle_channel_id(),
+    );
+    let crate::WindowsRecoveryOutcome::Resolved(resolution) = inspection
+        .recover(&resumed, [0x55; 32])
+        .expect("the resumed attempt's own binding authorizes its rollback")
+    else {
+        panic!("an awaiting-health attempt that lost its owner rolls back");
+    };
+    assert_eq!(
+        resolution.outcome(),
+        crate::WindowsActivationOutcome::RolledBack
+    );
+    assert_eq!(resolution.current(), &trust.installation.baseline);
+    assert!(!journal_path.exists(), "resolution removes the journal");
+    assert!(
+        !trust
+            .installation
+            .update_root
+            .join("versions")
+            .join("2.0.0")
+            .exists(),
+        "the failed candidate is retired before journal removal"
+    );
+    let reopened = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("the resolved installation admits the ordinary writer");
+    assert_eq!(
+        reopened.version_floor(),
+        "2.0.0",
+        "rollback keeps the floor"
+    );
+    assert_eq!(reopened.current(), &trust.installation.baseline);
 }
 
 #[test]
@@ -1815,6 +1895,13 @@ fn managed_owner_refuses_baseline_and_writer_before_filesystem_admission() {
         crate::UpdateError::ManagedInstall { ref mechanism }
             if mechanism == "Microsoft Store MSIX"
     ));
+    let recovery_error = load_windows_recovery_inspection(&trust, &verifier)
+        .expect_err("managed recovery refuses before filesystem admission");
+    assert!(matches!(
+        recovery_error,
+        crate::UpdateError::ManagedInstall { ref mechanism }
+            if mechanism == "Microsoft Store MSIX"
+    ));
     assert!(
         !install.exists(),
         "early owner refusal creates no install tree"
@@ -1828,7 +1915,7 @@ fn higher_release(
     higher_release_version(verifier, observation, "2.0.0")
 }
 
-fn higher_release_version(
+pub(super) fn higher_release_version(
     verifier: &crate::UpdateVerifier,
     observation: &crate::ProvenanceObservation,
     version: &str,
@@ -1931,7 +2018,7 @@ fn seed_pending_activation_journal(
 
     let attempt_id = [0x88; 32];
     let lifecycle_channel_id = [0x77; 32];
-    let journal = ActivationJournal {
+    let mut journal = ActivationJournal {
         attempt_id,
         candidate,
         rollback_target: baseline.clone(),
@@ -1943,6 +2030,17 @@ fn seed_pending_activation_journal(
         lifecycle_channel_id,
         phase,
     };
+    if let ActivationPhase::HealthAccepted { .. } = journal.phase {
+        // An accepted phase records the digest of this journal's own receipt fields.
+        journal.phase = ActivationPhase::HealthAccepted {
+            health_receipt_digest: crate::records::activation_health_receipt_digest(
+                &journal.attempt_id,
+                &journal.health_channel_id,
+                &journal.candidate,
+            )
+            .expect("canonical receipt digest"),
+        };
+    }
     let journal_bytes =
         crate::records::encode_activation_journal(&journal).expect("encode exact pending journal");
     let update = support::directory(&trust.installation.update_root);
@@ -1985,7 +2083,7 @@ fn copy_fixture_tree(
     }
 }
 
-fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineTrust {
+pub(super) fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineTrust {
     let install_path = root.join("KeldPerUserFixture");
     let mut trust = support::trust_for(&install_path);
     trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;

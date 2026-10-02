@@ -95,18 +95,21 @@ pub fn load_windows_activation_write_snapshot(
 }
 
 /// Loads a protected pending activation's journal and pointer observations under the
-/// exclusive per-user writer lease without returning any recovery or mutation command.
+/// exclusive per-user writer lease.
 ///
-/// The returned opaque owner retains the lease, protected ancestry and referenced version
-/// pins while a trusted host compares its QF1 retirement witness with the inspected journal.
-/// It is for evidence composition only; the existing writer loader continues to refuse every
-/// pending journal until the host explicitly integrates both authorities.
+/// The returned owner retains the lease, protected ancestry and referenced version pins.
+/// Loading writes nothing; the owner's only mutation paths are
+/// [`WindowsRecoveryInspection::recover`], which first requires an exact process-family
+/// retirement binding for the inspected journal, and
+/// [`WindowsRecoveryInspection::resume_unlaunched`] for a never-launched attempt. The
+/// ordinary writer loader continues to refuse every pending journal.
 ///
 /// # Errors
 ///
 /// Refuses managed or privileged modes, a busy/missing lease, provenance/profile mismatch,
 /// absent or malformed journal, unsupported state, inconsistent phase/pointer/floor facts,
-/// or any version tree that is missing, substituted or unreferenced.
+/// or any referenced version tree that is missing, substituted or unreferenced. Only the
+/// one version whose retirement is the journal's next step may already be absent.
 pub fn load_windows_recovery_inspection(
     trust: &WindowsBaselineTrust,
     verifier: &UpdateVerifier,
@@ -155,6 +158,18 @@ pub fn load_windows_recovery_inspection(
         journal.prior_previous_known_good.as_ref(),
     )?;
 
+    // A version whose retirement is the next journal step may already be renamed by
+    // a lost owner; it is admitted by name but never pinned, validated or selected.
+    let retiree = crate::activation::retirement_due(
+        &journal,
+        &crate::activation::ProtectedSlots {
+            version_floor: &records.version_floor,
+            current: &records.current,
+            last_known_good: &records.last_known_good,
+            previous_known_good: records.previous_known_good.as_ref(),
+        },
+    )
+    .cloned();
     let mut selected = vec![records.current.clone(), records.last_known_good.clone()];
     if let Some(previous) = &records.previous_known_good
         && !selected.contains(previous)
@@ -169,7 +184,7 @@ pub fn load_windows_recovery_inspection(
     .into_iter()
     .chain(journal.prior_previous_known_good.iter())
     {
-        if !selected.contains(artifact) {
+        if !selected.contains(artifact) && retiree.as_ref() != Some(artifact) {
             selected.push(artifact.clone());
         }
     }
@@ -188,9 +203,9 @@ pub fn load_windows_recovery_inspection(
         validate_selected_artifact(&trust.installation.baseline, artifact, &prior_floor)?;
     }
     validate_artifact_scope_and_baseline(&trust.installation.baseline, &journal.candidate)?;
-    let version_pins = pin_selected_versions(&roots, &selected)?;
+    let version_pins = pin_selected_versions(&roots, &selected, retiree.as_ref())?;
     Ok(WindowsRecoveryInspection {
-        _roots: roots,
+        roots,
         lease,
         admitted,
         lifecycle_installation_id,
@@ -199,8 +214,71 @@ pub fn load_windows_recovery_inspection(
         current: records.current,
         last_known_good: records.last_known_good,
         previous_known_good: records.previous_known_good,
-        _version_pins: version_pins,
+        version_pins,
     })
+}
+
+/// Retires complete versions that neither a protected record nor a journal references,
+/// under the exclusive per-user writer lease.
+///
+/// Such a version is left only by an activation start that crashed, or whose own
+/// retirement failed, after publication but before its `PublishPending` journal. The
+/// ordinary writer loader keeps halting on it, because selection never follows directory
+/// presence. This explicit repair is admitted only when no activation journal exists and
+/// every protected record validates. It first re-verifies and pins every referenced
+/// version, then removes stale `pending-*` record siblings, then validates every other
+/// non-generated entry as a strict-SemVer version with a completion record in this
+/// installation's scope before renaming any of them to a generated, never-selectable
+/// `retired-*` name, and finally re-runs the version census. It returns how many versions
+/// it retired.
+///
+/// # Errors
+/// Refuses managed or privileged modes, a busy or missing lease, a pending journal (use
+/// journal-bound recovery), any provenance or record inconsistency, and any unknown or
+/// damaged version entry (including a non-directory under a generated name), each before
+/// any rename and with its own diagnostic: such an entry needs manual recovery, because
+/// repeating the repair cannot fix it. Only a failed rename reports the retryable
+/// [`crate::ActivationEffect::UnjournaledVersionRetained`]. No path changes a record.
+pub fn repair_windows_unjournaled_versions(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+) -> Result<usize, UpdateError> {
+    trust.require_direct_owner()?;
+    crate::provenance::match_identity(&trust.installation, &verifier.expected)?;
+    if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
+        return Err(error(
+            "unjournaled version repair mode",
+            "only PerUserDirect has production writer admission",
+        ));
+    }
+    let roots = open_roots(trust, false).map_err(|cause| error("repair root admission", cause))?;
+    let lease = super::open_activation_lease(&roots.update, roots.profile(), true)
+        .map_err(|cause| error("exclusive repair lease", cause))?;
+    let state = load_writer_state(trust, verifier, &roots)?;
+    let referenced = state
+        .selected
+        .iter()
+        .map(|artifact| artifact.version.clone())
+        .collect::<BTreeSet<_>>();
+    // Hold every referenced tree open first: a referenced version must be verified before
+    // anything moves, and its open handles keep any later rename away from it.
+    let pins = pin_versions(&roots, &state.selected)?;
+    super::activate::remove_stale_record_preparations(&roots)?;
+    // An unknown or damaged entry keeps its own diagnostic: repeating the repair cannot
+    // fix it, so it needs manual recovery. Only a failed rename is retryable.
+    let admitted = super::activate::admit_unreferenced_versions(&roots, &referenced)?;
+    let retired =
+        super::activate::retire_admitted_versions(&roots, &admitted).map_err(|cause| {
+            crate::UpdateError::activation(
+                "unjournaled version repair",
+                crate::ActivationEffect::UnjournaledVersionRetained,
+                super::activate::refusal_detail(&cause),
+            )
+        })?;
+    validate_activation_version_census(&roots, &state.selected, None)?;
+    drop(pins);
+    drop(lease);
+    Ok(retired)
 }
 
 #[cfg(test)]
@@ -239,7 +317,7 @@ fn load_activation_write_snapshot_inner(
     let lease = super::open_activation_lease(&roots.update, profile, true)
         .map_err(|cause| error("exclusive activation writer lease", cause))?;
     let state = load_writer_state(trust, verifier, &roots)?;
-    let version_pins = pin_selected_versions(&roots, &state.selected)?;
+    let version_pins = pin_selected_versions(&roots, &state.selected, None)?;
     Ok(WindowsActivationWriteSnapshot {
         roots,
         lease,
@@ -248,7 +326,7 @@ fn load_activation_write_snapshot_inner(
         current: state.current,
         last_known_good: state.last_known_good,
         previous_known_good: state.previous_known_good,
-        _version_pins: version_pins,
+        version_pins,
     })
 }
 
@@ -381,6 +459,7 @@ fn read_writer_records(
                 | "bootstrap.lock",
             ) => {}
             Some("activation-journal") if allow_pending_journal => {}
+            Some(name) if super::is_generated_leaf(name, "pending") => {}
             Some("activation-journal") => {
                 return Err(error(
                     "activation recovery",
@@ -476,21 +555,68 @@ fn validate_recovery_known_good_history(
     Ok(())
 }
 
-fn pin_selected_versions(
+/// Re-verifies and pins every selected version, keyed by its version directory name.
+///
+/// `retiree` is the one journal-authorized unreferenced version that may still be
+/// present under its version name; it is admitted by the census but never opened.
+pub(super) fn pin_selected_versions(
     roots: &Roots,
     selected: &[crate::ArtifactIdentity],
-) -> Result<Vec<VersionPins>, UpdateError> {
-    validate_activation_version_census(roots, selected)?;
+    retiree: Option<&crate::ArtifactIdentity>,
+) -> Result<BTreeMap<String, VersionPins>, UpdateError> {
+    validate_activation_version_census(roots, selected, retiree)?;
+    pin_versions(roots, selected)
+}
+
+/// Re-verifies and pins each selected version without a directory census.
+fn pin_versions(
+    roots: &Roots,
+    selected: &[crate::ArtifactIdentity],
+) -> Result<BTreeMap<String, VersionPins>, UpdateError> {
     selected
         .iter()
         .map(|artifact| {
             let completion = read_version_completion(roots, artifact)?;
-            validate_version_contents(roots, completion)
+            Ok((
+                artifact.version.clone(),
+                validate_version_contents(roots, completion)?,
+            ))
         })
         .collect()
 }
 
-fn validate_selected_artifact(
+/// Admits one unreferenced entry for retirement: a protected directory whose completion
+/// record decodes and names exactly this version within the installation's scope.
+pub(super) fn validate_unjournaled_version(roots: &Roots, name: &str) -> Result<(), UpdateError> {
+    let version = open_directory(&roots.versions, name, roots.profile())?;
+    let (_, bytes) = read_record(&version, ".complete", roots.profile())?;
+    let complete = records::decode_complete(&bytes)?;
+    if complete.artifact.version != name {
+        return Err(error(
+            "unjournaled version admission",
+            "completion record names a different version",
+        ));
+    }
+    validate_artifact_scope_and_baseline(&roots.trust.installation.baseline, &complete.artifact)?;
+    Ok(())
+}
+
+/// Pins one version published under the held writer lease.
+///
+/// The census admits only the already-pinned selections, this candidate and generated
+/// diagnostics; the candidate's completion record, archive and tree are fully re-verified.
+pub(super) fn pin_published_version(
+    roots: &Roots,
+    pinned: &[crate::ArtifactIdentity],
+    candidate: &crate::ArtifactIdentity,
+) -> Result<VersionPins, UpdateError> {
+    let mut selected = pinned.to_vec();
+    selected.push(candidate.clone());
+    validate_activation_version_census(roots, &selected, None)?;
+    validate_version_contents(roots, read_version_completion(roots, candidate)?)
+}
+
+pub(super) fn validate_selected_artifact(
     baseline: &crate::ArtifactIdentity,
     selected: &crate::ArtifactIdentity,
     floor: &semver::Version,
@@ -505,7 +631,7 @@ fn validate_selected_artifact(
     Ok(())
 }
 
-fn validate_artifact_scope_and_baseline(
+pub(super) fn validate_artifact_scope_and_baseline(
     baseline: &crate::ArtifactIdentity,
     selected: &crate::ArtifactIdentity,
 ) -> Result<semver::Version, UpdateError> {
@@ -543,9 +669,11 @@ fn validate_artifact_scope_and_baseline(
 fn validate_activation_version_census(
     roots: &Roots,
     selected: &[crate::ArtifactIdentity],
+    retiree: Option<&crate::ArtifactIdentity>,
 ) -> Result<(), UpdateError> {
     let selected_names = selected
         .iter()
+        .chain(retiree)
         .map(|artifact| artifact.version.as_str())
         .collect::<BTreeSet<_>>();
     for entry in roots
@@ -561,12 +689,10 @@ fn validate_activation_version_census(
         if selected_names.contains(name.as_str()) {
             continue;
         }
-        let diagnostic = name.strip_prefix("incomplete-").is_some_and(|suffix| {
-            suffix.len() == 64
-                && suffix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        });
+        // Incomplete stages and retired versions carry generated names that can never
+        // equal a SemVer version directory, so they are never selectable.
+        let diagnostic = super::is_generated_leaf(&name, "incomplete")
+            || super::is_generated_leaf(&name, "retired");
         if !diagnostic {
             return Err(error(
                 "activation versions",
@@ -756,13 +882,7 @@ fn validate_version_census(roots: &Roots) -> Result<(), UpdateError> {
         }
         let diagnostic = name
             .to_str()
-            .and_then(|name| name.strip_prefix("incomplete-"))
-            .is_some_and(|suffix| {
-                suffix.len() == 64
-                    && suffix
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            });
+            .is_some_and(|name| super::is_generated_leaf(name, "incomplete"));
         if !diagnostic {
             return Err(error(
                 "initial versions",

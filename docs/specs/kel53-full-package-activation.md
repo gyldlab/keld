@@ -28,6 +28,25 @@ KEL-266 T4a amendment: delegated approval comment
 The independent design approval does not replace native qualification or final-diff
 security, unsafe and public-contract review.
 
+KEL-270 T4b amendment: owner approval comment
+`a0329498-a115-4bcb-a277-0f32a42d7a86` (all four points), approved content head
+`caf2c82b52b2c4a95d5fd0ce2003e611267439e2`, file SHA-256
+`4355824b8514acd51713ff920b5b4143759a9f3563209eab3df4a51707ddefed`. The owner approved it
+in the active maintainer session on 2026-10-02. Four bounded changes to the common
+transaction, each narrowing a liveness or replay gap; none grants authority beyond the
+existing exclusive writer lease, and item 4 adds one public repair entry point:
+1. Retire each unreferenced version under the journal before journal removal, and
+   remove the journal by write-through rename, instead of removing the journal first
+   and cleaning retention afterwards.
+2. Resume an unlaunched `PublishPending` attempt under the exclusive writer lease alone.
+3. Durably re-mint the health and lifecycle channel identities whenever an attempt is
+   resumed.
+4. Add an explicit repair entry that, under the exclusive writer lease and only when no
+   journal exists and every record validates, retires complete versions that no record
+   references; the ordinary loader still halts on them.
+Rationale and native evidence are in KEL-270 comments `b571afdb` and `f6b1e538` and the
+T4b pull request.
+
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
 `a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
@@ -317,10 +336,11 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
 9. The previous last-known-good pointer and package remain unchanged until exact health
    is durably recorded. The owner then journals `health-accepted`, moves the prior
    last-known-good to `previous-known-good`, publishes `last-known-good` to
-   the candidate, and removes the journal. Failure journals
-   `rollback-pending`, republishes `current` to the attempt's validated
-   rollback target, and only then removes the journal. Neither path lowers the trust
-   floor; bounded cleanup retains both known-good slots.
+   the candidate, retires the superseded older version (if any), and removes the journal.
+   Failure journals `rollback-pending`, republishes `current` to the attempt's
+   validated rollback target, retires the failed candidate, and only then removes the
+   journal. Neither path lowers the trust floor; bounded cleanup retains both
+   known-good slots.
 10. If Windows requires a post-exit helper, the signed helper inherits only protected
     update-root/lock handles, the host-process wait handle, the observer/server endpoint
     and a sealed forward-once candidate endpoint for the already-minted health channel.
@@ -731,10 +751,60 @@ The single-writer transition is:
 5. publish `current` to the candidate;
 6. persist `AwaitingHealth` and launch with a private health channel;
 7. on exact health, persist `HealthAccepted`, publish the prior LKG to
-   `previous-known-good`, publish `last-known-good` to candidate, remove the
-   journal, then clean retention without deleting either known-good slot;
+   `previous-known-good`, publish `last-known-good` to candidate, retire the
+   superseded older version (if any), then remove the journal; deleting retired trees is
+   best-effort cleanup that never touches either known-good slot;
 8. on failure, persist `RollbackPending`, publish `current` to the
-   validated rollback target, remove the journal, then report failure.
+   validated rollback target, retire the failed candidate, remove the journal, then
+   report failure.
+
+Retirement is the only mutation of a published version. While the journal still
+authorizes it, the writer renames the one unreferenced version directory, with the
+same-parent absent-target write-through adapter, to a generated `retired-<64 hex>`
+name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
+directory, so the census admits them only as never-selectable diagnostics. Retiring
+under the journal closes the crash window in which a removed journal would leave an
+orphan complete version that halts every later writer. On NTFS an open file handle
+anywhere in the retiring tree, with any sharing mode, makes the rename fail; the journal
+then stays for journal-bound recovery. A process still executing a mapped image from
+that tree does not block the rename: it keeps running from the retired tree, cannot
+open further files by their original path, and its tree is deleted only after it
+exits. A launched candidate is therefore retired only after process-family retirement,
+and the host must not run other instances from a superseded version.
+Journal removal is a write-through rename of the journal to a generated `pending-*`
+leaf followed by deletion. A crash before any record sibling's publication rename
+leaves only such a `pending-*` file. The census admits `pending-*` names; before its
+first write, the next transaction removes each one only after verifying a regular,
+single-link file with the exact installation profile, and refuses anything else.
+A refusal of a new attempt before its `PublishPending` journal exists retires every
+version that attempt published, so a refused start leaves no orphan unless that
+retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
+in that window still leaves an orphan; the ordinary loader halts on it, and only the
+explicit unjournaled-version repair, admitted when no journal exists and every record
+validates, retires it under the writer lease. The repair first verifies and pins every
+referenced version, removes stale `pending-*` record siblings, and admits for retirement
+only strict-SemVer entries whose completion record names that version in the
+installation's scope; any other unknown or damaged entry, including a non-directory under a
+generated name, refuses the repair before any rename and needs manual recovery.
+
+A `PublishPending` journal is resumable under the exclusive writer lease alone: no
+candidate is launched before `AwaitingHealth` is durable, and every live transaction
+owner retains the share-zero lease (or its keeper retains a duplicate), so acquiring
+the lease proves no prior owner can still write and no candidate family exists. Every
+resumed owner durably re-mints the attempt's health and lifecycle channel identities
+before continuing, so no health receipt or retirement witness from a lost owner binds
+to the resumed run. Launched phases still require an exact process-family retirement
+binding. That binding is an exact installation/attempt/lifecycle-channel value that the
+host composes from the QF1 retirement witness or its own retained Job-zero observation;
+`keld-update` cannot authenticate its producer. A sealed witness type was rejected
+because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
+graph.
+
+`HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
+attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical
+artifact-identity encoding of the candidate and `n` its byte length. The receipt binds
+the attempt, its private health channel and the exact candidate; recovery recomputes
+the digest from the journal's own fields and halts on a mismatch.
 
 Windows replaces fixed mutable record slots through a narrow same-parent
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` adapter; the existing
@@ -748,7 +818,8 @@ unchanged after a possible publication.
 
 Startup without a journal validates current, both known-good slots, their complete
 markers/policies and the floor. A valid current must equal last-known-good or
-previous-known-good; any other complete artifact is an orphan and halts. If current is
+previous-known-good; any other complete artifact is an orphan and halts (generated
+`incomplete-*` and `retired-*` diagnostics are not artifacts). If current is
 invalid but last-known-good is valid, recovery republishes last-known-good. A
 missing/invalid last-known-good after installation halts even when current runs;
 previous-known-good may be absent only before the first successful update. Recovery
@@ -759,8 +830,9 @@ before resuming. With current already at the candidate it requires floor exactly
 to candidate and advances to `AwaitingHealth` without republishing. Every other
 combination, including floor above candidate, halts. `AwaitingHealth` rolls back
 only after the process-family
-proof. `HealthAccepted` finishes both known-good publications.
-`RollbackPending` finishes rollback only after floor, both known-good slots,
+proof. `HealthAccepted` finishes both known-good publications and the superseded
+version's retirement. `RollbackPending` finishes rollback and the candidate's
+retirement only after floor, both known-good slots,
 coordinator/helper identity, optional health identity and current exactly match its
 recorded context. Corrupt or mixed state halts without deleting evidence.
 
@@ -1142,7 +1214,12 @@ Must not touch in Slice A:
   persistent ancestry proof; no activation.
 - [ ] T4b — common Windows x64 direct transaction: journal, floor/current/LKG order,
   attempt-bound 30-second health, one mode-supplied write lease, and crash cut at every
-  persisted boundary; no per-mode state machine fork.
+  persisted boundary; no per-mode state machine fork. Progress: the common transaction
+  (production journal, fixed-slot write-through replacement, one step function for
+  forward progress and recovery, exact receipt/retirement/coordinator binding and
+  version retirement) passes PerUserDirect subprocess crash cuts at every persisted
+  boundary. The host-owned private health channel, 30-second `Ready` observation and
+  installed-host QF1 composition remain.
 - [ ] T4c — default per-user install/bootstrap and no-UAC authority; prove v2 owner/mode
   provenance, stable lease seeding and hostile-role write denial under the user's LocalAppData tree.
 - [ ] T4d — explicit-UAC Program Files authority; prove the installer token can assign
@@ -1207,8 +1284,9 @@ fallback rate and end-to-end success before adding complexity.
 The product mode selection is approved; the following are implementation/evidence gates,
 not requests to revisit that decision:
 
-- T4b's common journal, health and persisted recovery need implementation and real
-  Windows crash-cut evidence.
+- T4b's common journal and persisted recovery have real Windows PerUserDirect
+  crash-cut evidence; the host-owned attempt-bound health channel, 30-second `Ready`
+  observation and installed-host lifecycle composition remain open.
 - T4c must prove the default per-user install root, mode/provenance seeding and actual
   role write denial; the owning user's authority remains outside the threat claim.
 - T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,

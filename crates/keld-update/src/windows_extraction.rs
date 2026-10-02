@@ -581,6 +581,48 @@ impl WindowsExtractionRoot {
         })
     }
 
+    /// Starts the common journaled activation for a version published under this root.
+    ///
+    /// The root must retain the exclusive activation-writer lease that published the
+    /// candidate. Under that same lease the transaction re-verifies and pins the
+    /// complete candidate and every referenced version, mints fresh attempt, health and
+    /// lifecycle identities, durably journals `PublishPending`, advances the floor,
+    /// selects `current` and journals `AwaitingHealth`. The returned attempt keeps the
+    /// lease until health commits or rolls it back.
+    ///
+    /// # Errors
+    /// Refuses a root without the writer lease, a zero coordinator digest, a candidate
+    /// outside the installation scope or not above the floor, any unverified or
+    /// unreferenced version, or a failed durable step. Every refusal is
+    /// [`UpdateError::Activation`]; its [`crate::ActivationEffect`] states what remains.
+    /// A refusal before the `PublishPending` journal exists retires the versions this
+    /// attempt published, so no orphan outlives the call unless that retirement itself
+    /// fails ([`crate::ActivationEffect::UnjournaledVersionRetained`]).
+    pub fn begin_activation(
+        self,
+        candidate: &ArtifactIdentity,
+        coordinator_image_blake3: [u8; 32],
+    ) -> Result<crate::WindowsActivationAttempt, UpdateError> {
+        let Self {
+            authority,
+            versions,
+            ..
+        } = self;
+        drop(versions);
+        match authority {
+            RootAuthority::ActivationWriter { snapshot } => {
+                snapshot.begin_activation(candidate, coordinator_image_blake3)
+            }
+            RootAuthority::OwnerPrivate { .. } | RootAuthority::Machine { .. } => {
+                Err(UpdateError::activation(
+                    "writer authority",
+                    crate::ActivationEffect::ProtectedStateUnchanged,
+                    "activation requires the retained exclusive activation-writer lease",
+                ))
+            }
+        }
+    }
+
     pub(crate) fn from_loaded(loaded: LoadedWindowsBaseline) -> Result<Self, UpdateError> {
         let mode = loaded.identity().install_mode;
         match mode {

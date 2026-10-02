@@ -18,6 +18,25 @@ pub enum VersionPublicationOutcome {
     DestinationUnconfirmed,
 }
 
+/// What an activation-transaction refusal leaves behind, and therefore what may happen next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationEffect {
+    /// No activation journal exists for this refusal: the installation selects exactly
+    /// what it selected before the call, and any version the refused attempt published
+    /// was retired again under the same writer lease.
+    ProtectedStateUnchanged,
+    /// An activation journal exists and is authoritative, whether or not this call wrote.
+    /// Only journal-bound recovery under the writer lease may continue the attempt.
+    JournalBoundRecoveryRequired,
+    /// The attempt is resolved and its journal removed; only never-selectable leftovers
+    /// (a renamed journal or retired version trees) could not be deleted yet.
+    ResolvedWithLeftovers,
+    /// No journal exists, but a published version that no journal references could not
+    /// be retired; every later writer halts until the explicit unjournaled-version repair
+    /// retires it under the writer lease.
+    UnjournaledVersionRetained,
+}
+
 impl ProvenanceUnavailable {
     const fn as_str(self) -> &'static str {
         match self {
@@ -219,9 +238,45 @@ pub enum UpdateError {
         /// Non-secret failure detail.
         detail: String,
     },
+    /// The common journaled activation transaction refused or could not confirm a step.
+    Activation {
+        /// Transaction boundary that refused the operation.
+        step: &'static str,
+        /// Whether protected state may have changed before the refusal.
+        effect: ActivationEffect,
+        /// Non-secret failure detail.
+        detail: String,
+    },
 }
 
 impl UpdateError {
+    /// Builds the one activation-transaction refusal shape.
+    #[cfg(windows)]
+    pub(crate) fn activation(
+        step: &'static str,
+        effect: ActivationEffect,
+        detail: impl fmt::Display,
+    ) -> Self {
+        Self::Activation {
+            step,
+            effect,
+            detail: detail.to_string(),
+        }
+    }
+
+    /// The failed step and detail of this refusal, without its code or guidance, for
+    /// re-labelling under an enclosing activation refusal.
+    #[cfg(windows)]
+    pub(crate) fn step_and_detail(&self) -> (&'static str, String) {
+        match self {
+            Self::Activation { step, detail, .. } | Self::Baseline { step, detail } => {
+                (step, detail.clone())
+            }
+            Self::LocalRecordInvalid { detail } => ("local record", detail.clone()),
+            other => ("update", other.to_string()),
+        }
+    }
+
     /// Stable `KELD-UPDATE-*` code for this refusal.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -241,6 +296,7 @@ impl UpdateError {
             Self::ArchiveInvalid { .. } => "KELD-UPDATE-011",
             Self::Extraction { .. } => "KELD-UPDATE-012",
             Self::VersionPublication { .. } => "KELD-UPDATE-015",
+            Self::Activation { .. } => "KELD-UPDATE-016",
         }
     }
 }
@@ -325,27 +381,65 @@ impl fmt::Display for UpdateError {
                 incomplete_stage,
                 step,
                 detail,
-            } => {
-                write!(
-                    f,
-                    "KELD-UPDATE-012: Windows extraction {step} failed ({detail}). "
-                )?;
-                if let Some(name) = incomplete_stage {
-                    write!(
-                        f,
-                        "Preserve any incomplete stage at `{name}` for diagnosis; it is not a runnable version. "
-                    )?;
-                }
-                f.write_str("Keep the current installation and repair the protected staging root or artifact before retrying.")
-            }
+            } => fmt_extraction_error(f, incomplete_stage.as_deref(), step, detail),
             Self::VersionPublication {
                 version,
                 stage_name,
                 outcome,
                 detail,
             } => fmt_version_publication_error(f, version, stage_name, *outcome, detail),
+            Self::Activation {
+                step,
+                effect,
+                detail,
+            } => fmt_activation_error(f, step, *effect, detail),
         }
     }
+}
+
+fn fmt_activation_error(
+    f: &mut fmt::Formatter<'_>,
+    step: &str,
+    effect: ActivationEffect,
+    detail: &str,
+) -> fmt::Result {
+    let guidance = match effect {
+        ActivationEffect::ProtectedStateUnchanged => {
+            "No activation journal exists and the installation selects what it did before; correct the refused input or state before a new attempt."
+        }
+        ActivationEffect::JournalBoundRecoveryRequired => {
+            "An activation journal remains authoritative; preserve it and the versions, and continue only through journal-bound recovery under the writer lease."
+        }
+        ActivationEffect::ResolvedWithLeftovers => {
+            "The attempt is resolved; only never-selectable leftovers remain, and a later transaction retries their deletion."
+        }
+        ActivationEffect::UnjournaledVersionRetained => {
+            "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease. If that repair refuses an unknown or damaged entry, that entry needs manual recovery."
+        }
+    };
+    write!(
+        f,
+        "KELD-UPDATE-016: activation {step} refused ({detail}). {guidance}"
+    )
+}
+
+fn fmt_extraction_error(
+    f: &mut fmt::Formatter<'_>,
+    incomplete_stage: Option<&str>,
+    step: &str,
+    detail: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-012: Windows extraction {step} failed ({detail}). "
+    )?;
+    if let Some(name) = incomplete_stage {
+        write!(
+            f,
+            "Preserve any incomplete stage at `{name}` for diagnosis; it is not a runnable version. "
+        )?;
+    }
+    f.write_str("Keep the current installation and repair the protected staging root or artifact before retrying.")
 }
 
 fn fmt_version_publication_error(

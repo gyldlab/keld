@@ -2936,8 +2936,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   lease, without selecting it. KEL-266 implements actual-SYSTEM machine-baseline
   initialization and a read-only protected baseline loader. KEL-270 adds the
   PerUserDirect baseline/bootstrap primitive with owner-private records and provenance-last
-  commit; neither path supplies mode-aware active selection. Live feed orchestration,
-  journaled candidate activation, exact health, rollback and recovery remain
+  commit, and the common journaled transaction: PerUserDirect activates a published
+  version, binds an exact attempt health receipt, commits or rolls back, and resumes from
+  every persisted cut under the writer lease. Live feed orchestration, host candidate
+  launch, the private health channel and its 30-second `Ready` observation, installed-host
+  lifecycle composition and read-only selection of a committed update remain
   unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
@@ -3463,14 +3466,63 @@ does not enter this transaction:
    private attempt-bound health channel.
 6. On accepted health, durably write `health-accepted`, publish the prior
    last-known-good to `previous-known-good`, publish
-   `last-known-good` to the candidate, remove the journal durably, and only then
-   apply bounded cleanup that retains both known-good slots.
+   `last-known-good` to the candidate, retire the superseded older version (if any), then
+   remove the journal durably. Deleting retired trees afterwards is best-effort
+   cleanup that never touches either known-good slot.
 7. On launch/health failure, durably write `rollback-pending`, republish
-   `current` to the attempt's validated rollback target, remove the journal durably,
-   and report failure. Rollback never changes the floor. The failed candidate therefore
+   `current` to the attempt's validated rollback target, retire the failed candidate,
+   remove the journal durably, and report failure. Rollback never changes the floor. The failed candidate therefore
    cannot be automatically selected again at the same version: selection returns the
    successful no-update result until a newly signed release advances beyond that floor.
    Failures that occur before step 3 may retry the same signed version after repair.
+
+Retirement is the only mutation of a published version. While the journal still
+authorizes it, the writer renames the one unreferenced version directory, with the
+same-parent absent-target write-through adapter, to a generated `retired-<64 hex>`
+name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
+directory, so the census admits them only as never-selectable diagnostics. Retiring
+under the journal closes the crash window in which a removed journal would leave an
+orphan complete version that halts every later writer. On NTFS an open file handle
+anywhere in the retiring tree, with any sharing mode, makes the rename fail; the journal
+then stays for journal-bound recovery. A process still executing a mapped image from
+that tree does not block the rename: it keeps running from the retired tree, cannot
+open further files by their original path, and its tree is deleted only after it
+exits. A launched candidate is therefore retired only after process-family retirement,
+and the host must not run other instances from a superseded version.
+Journal removal is a write-through rename of the journal to a generated `pending-*`
+leaf followed by deletion. A crash before any record sibling's publication rename
+leaves only such a `pending-*` file. The census admits `pending-*` names; before its
+first write, the next transaction removes each one only after verifying a regular,
+single-link file with the exact installation profile, and refuses anything else.
+A refusal of a new attempt before its `PublishPending` journal exists retires every
+version that attempt published, so a refused start leaves no orphan unless that
+retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
+in that window still leaves an orphan; the ordinary loader halts on it, and only the
+explicit unjournaled-version repair, admitted when no journal exists and every record
+validates, retires it under the writer lease. The repair first verifies and pins every
+referenced version, removes stale `pending-*` record siblings, and admits for retirement
+only strict-SemVer entries whose completion record names that version in the
+installation's scope; any other unknown or damaged entry, including a non-directory under a
+generated name, refuses the repair before any rename and needs manual recovery.
+
+A `PublishPending` journal is resumable under the exclusive writer lease alone: no
+candidate is launched before `AwaitingHealth` is durable, and every live transaction
+owner retains the share-zero lease (or its keeper retains a duplicate), so acquiring
+the lease proves no prior owner can still write and no candidate family exists. Every
+resumed owner durably re-mints the attempt's health and lifecycle channel identities
+before continuing, so no health receipt or retirement witness from a lost owner binds
+to the resumed run. Launched phases still require an exact process-family retirement
+binding. That binding is an exact installation/attempt/lifecycle-channel value that the
+host composes from the QF1 retirement witness or its own retained Job-zero observation;
+`keld-update` cannot authenticate its producer. A sealed witness type was rejected
+because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
+graph.
+
+`HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
+attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical
+artifact-identity encoding of the candidate and `n` its byte length. The receipt binds
+the attempt, its private health channel and the exact candidate; recovery recomputes
+the digest from the journal's own fields and halts on a mismatch.
 
 No required pointer or journal is removed before its replacement is durable. A temporary
 file is created in the same directory as its target; cross-filesystem copy/delete is a
@@ -3500,9 +3552,10 @@ the stable lease, then reopens and verifies exact bytes and profile before advan
 It never truncates in place, copies across volumes, schedules work after reboot or
 accepts caller paths/flags. A failure after replacement is effect-aware and does not
 claim the old bytes stayed unchanged. The `keld-update` crate rule still keeps
-`publish_new` absent-target-only and now permits only a separate fixed-slot replacement
-under the stable lease. That native replacement adapter is not implemented yet; its
-exact diff requires independent unsafe/security review before it may be used.
+`publish_new` absent-target-only and permits only the separate fixed-slot replacement
+adapter, which refuses every leaf outside journal/floor/current/last-known-good/
+previous-known-good before the system call. Its exact diff requires independent
+unsafe/security review.
 
 **Health identity.** A candidate receives a private host-owned channel minted for the
 journaled attempt. Its receipt repeats the attempt id and full artifact identity. The
@@ -3528,14 +3581,16 @@ no endpoint and follows the recovery path below.
 **Startup recovery.** With no journal, validate the protected provenance, floor,
 `current`, both known-good slots, policy and complete markers. If current is
 valid, it must equal last-known-good or previous-known-good; any other complete artifact
-is an orphan and halts. If current is invalid and last-known-good is valid, republish
+is an orphan and halts (generated `incomplete-*` and `retired-*` diagnostics are not
+artifacts). If current is invalid and last-known-good is valid, republish
 last-known-good. Missing/invalid last-known-good after installation halts;
 previous-known-good may be absent only before the first successful update. With a valid
 journal, first acquire its exclusive attempt lease. If another coordinator retains the
 lease, that owner continues and the new process performs no recovery. After acquisition,
 the platform process-family owner must prove the recorded coordinator and candidate
 have exited; an unknown/live process state halts rather than starting a second
-candidate. Windows places the candidate in the helper/host's kill-on-close Job and
+candidate. The one exception is an unlaunched `publish-pending` attempt, which the lease
+alone proves has no live owner or candidate family. Windows places the candidate in the helper/host's kill-on-close Job and
 waits for its zero-active-process observation before recovery proceeds.
 
 1. For `publish-pending`, validate the floor and `current` against the exact
@@ -3548,8 +3603,10 @@ waits for its zero-active-process observation before recovery proceeds.
    rollback.
 2. `awaiting-health` rolls back only after the process-family proof above; recovery
    never accepts an old receipt.
-3. `health-accepted` completes both known-good publications and journal removal.
-4. `rollback-pending` completes current rollback and journal removal only when
+3. `health-accepted` completes both known-good publications, the superseded
+   version's retirement and journal removal.
+4. `rollback-pending` completes current rollback, the candidate's retirement and
+   journal removal only when
    floor, both known-good slots, coordinator/helper identity, optional health identity
    and current exactly match its recorded context. Any substitution halts.
 
@@ -3567,7 +3624,7 @@ evidence.
   writable file handle, close all stage handles, then publish the absent final version
   directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Reopen the
   final directory and read back every digest, policy and marker before pointer
-  publication. Journal/pointer/policy record replacement separately uses a
+  publication. Journal/pointer record replacement separately uses a
   same-directory temporary file, `FlushFileBuffers`, and same-volume
   `MoveFileExW` with replace-existing plus write-through. Neither path sets
   `MOVEFILE_COPY_ALLOWED` or claims directory-handle `FlushFileBuffers`.
@@ -3847,7 +3904,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — The retained filesystem broker is implemented with verified-snapshot binding, guard-selected retained scopes, bounded no-follow traversal and regular-file I/O. Native Windows and Linux rows on exact landed ancestor `d22e454...` are publicly reported in [PR #262](https://github.com/gyldlab/keld/pull/262), while the final three-OS terminal artifact is authenticated in private Linear only and therefore is not yet a public proof surface. No production host caller is wired, and the other planned native services are absent. | [code](../../crates/keld-native/src/fs.rs), [test](../../crates/keld-native/tests/retained_fs.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-130 | `d22e454aaff103f065ebbc0aabf7e0680232d3e4` |
 | `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-update` | All | **Partial** — Windows x64 fixed-NTFS packages support actual-SYSTEM machine-baseline initialization/admission and a native PerUserDirect baseline/bootstrap primitive under the installing user's owner-private profile. The per-user initializer seeds a verified immutable baseline, stable activation lease, floor/current/LKG and provenance-last commit. Ordinary-token no-UAC, real LPAC mutation denial and 11 baseline crash cuts pass. Native Windows updater tests also prove higher-release extraction and immutable complete-version publication under the retained writer lease; an unjournaled version remains unselected and active records/journal stay unchanged. Full installer/host integration, mode-aware active selection, feed orchestration, update activation, exact health, commit/rollback and recovery remain absent. | [code](../../crates/keld-update/src/lib.rs), [code](../../crates/keld-update/src/baseline.rs), [code](../../crates/keld-update/src/windows_baseline.rs), [code](../../crates/keld-update/src/windows_baseline/initialize.rs), [code](../../crates/keld-update/src/windows_baseline/load.rs), [code](../../crates/keld-update/src/windows_extraction.rs), [code](../../crates/keld-update/src/error.rs), [test](../../crates/keld-update/src/windows_baseline/tests/qualification.rs), [test](../../crates/keld-update/src/windows_baseline/tests/reader.rs), [test](../../crates/keld-update/src/windows_baseline/tests/machine_staging.rs), [test](../../crates/keld-update/src/windows_baseline/tests/role.rs), [test](../../crates/keld-update/src/windows_baseline/tests/writer.rs), [test](../../crates/keld-update/src/windows_baseline/tests/per_user.rs), [test](../../crates/keld-update/src/windows_extraction/tests.rs), [test](../../crates/keld-update/src/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-263, KEL-265, KEL-266, KEL-270 | `d87c8758ec6ef9b3e9af87152828de0366e6bf7e` |
+| `crate.keld-update` | All | **Partial** — Windows x64 fixed-NTFS packages support actual-SYSTEM machine-baseline initialization/admission and a native PerUserDirect baseline/bootstrap primitive under the installing user's owner-private profile. The per-user initializer seeds a verified immutable baseline, stable activation lease, floor/current/LKG and provenance-last commit. Ordinary-token no-UAC, real LPAC mutation denial and 11 baseline crash cuts pass. Native Windows updater tests also prove higher-release extraction and immutable complete-version publication under the retained writer lease; an unjournaled version remains unselected and active records/journal stay unchanged. KEL-270 T4b adds the common journaled PerUserDirect transaction (activation, exact receipt binding, commit/rollback, version retirement and recovery from every persisted cut); its evidence is pinned after merge. Installer/host integration, host candidate launch and 30-second health, read-only committed-state selection, feed orchestration and the machine modes remain absent. | [code](../../crates/keld-update/src/lib.rs), [code](../../crates/keld-update/src/baseline.rs), [code](../../crates/keld-update/src/windows_baseline.rs), [code](../../crates/keld-update/src/windows_baseline/initialize.rs), [code](../../crates/keld-update/src/windows_baseline/load.rs), [code](../../crates/keld-update/src/windows_extraction.rs), [code](../../crates/keld-update/src/error.rs), [test](../../crates/keld-update/src/windows_baseline/tests/qualification.rs), [test](../../crates/keld-update/src/windows_baseline/tests/reader.rs), [test](../../crates/keld-update/src/windows_baseline/tests/machine_staging.rs), [test](../../crates/keld-update/src/windows_baseline/tests/role.rs), [test](../../crates/keld-update/src/windows_baseline/tests/writer.rs), [test](../../crates/keld-update/src/windows_baseline/tests/per_user.rs), [test](../../crates/keld-update/src/windows_extraction/tests.rs), [test](../../crates/keld-update/src/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-263, KEL-265, KEL-266, KEL-270 | `d87c8758ec6ef9b3e9af87152828de0366e6bf7e` |
 | `crate.keld-pack` | All | **Partial** — Windows hosts can stream canonical Windows v0 tar/zstd update packages with the fixed no-migration policy and byte-domain size/BLAKE3 receipts; other hosts refuse production before I/O. Installers, signing, notarization, CLI build integration and cross-host assembly remain absent. | [code](../../crates/keld-pack/src/lib.rs), [code](../../crates/keld-pack/src/producer.rs), [test](../../crates/keld-pack/src/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-263 | `3e59c2c00d07544ea835afc97ce75530db792217` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
@@ -5601,6 +5658,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-update
 - message: An immutable Windows version could not be confirmed at its final publication boundary
 - fix: Preserve the named stage and any transaction journal. If the destination may exist, do not select it from directory presence; inspect protected state and use journal-bound recovery before retrying.
+
+## KELD-UPDATE-016
+
+- crate: keld-update
+- message: The common journaled activation transaction refused or could not confirm a step
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery.
 
 ## KELD-PACK-001
 

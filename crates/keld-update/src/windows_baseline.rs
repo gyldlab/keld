@@ -1,6 +1,6 @@
 //! One-shot machine baseline initialization and read-only provenance ownership.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};
 
 use cap_fs_ext::{DirExt as _, FollowSymlinks, MetadataExt as _, OpenOptionsFollowExt as _};
@@ -20,15 +20,23 @@ use crate::{
     DirectInstallMode, DirectInstallationIdentity, InstallOwner, ProvenanceObservation, UpdateError,
 };
 
+mod activate;
 mod initialize;
 mod load;
 
+#[cfg(test)]
+pub(crate) use activate::CRASH_CUT_HOOK;
+pub use activate::{
+    ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
+    WindowsActivationOutcome, WindowsActivationResolution, WindowsRecoveryOutcome,
+};
 pub use initialize::{
     initialize_windows_baseline, initialize_windows_machine_uac_baseline,
     initialize_windows_per_user_baseline,
 };
 pub use load::{
-    load_windows_activation_write_snapshot, load_windows_baseline, load_windows_recovery_inspection,
+    load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
 };
 
 /// Trusted deployment/host inputs, independent of the record being authenticated.
@@ -151,9 +159,11 @@ pub struct WindowsBaselineReceipt {
 
 /// Coherent protected activation snapshot held under the exclusive installation lease.
 ///
-/// It exposes only validated state and an unpublished extraction root; it cannot mutate
-/// journal, floor or active pointers. The production loader currently admits only
-/// `PerUserDirect`; machine-UAC and machine-seamless authority remain separate gates.
+/// It exposes only validated state and an extraction root. Journal, floor and pointer
+/// writes happen only through [`crate::WindowsExtractionRoot::begin_activation`] after
+/// a complete version is published under this same lease. The production loader
+/// currently admits only `PerUserDirect`; machine-UAC and machine-seamless authority
+/// remain separate gates.
 #[derive(Debug)]
 pub struct WindowsActivationWriteSnapshot {
     roots: Roots,
@@ -163,18 +173,19 @@ pub struct WindowsActivationWriteSnapshot {
     current: ArtifactIdentity,
     last_known_good: ArtifactIdentity,
     previous_known_good: Option<ArtifactIdentity>,
-    _version_pins: Vec<VersionPins>,
+    version_pins: BTreeMap<String, VersionPins>,
 }
 
 /// Read-only protected recovery observations held under the exclusive installation lease.
 ///
 /// This owner can inspect one canonical activation journal and its protected pointer/floor
-/// context. It exposes no active-package selection, extraction root, journal writer or
-/// recovery command. Callers must retain it while comparing the observed IDs with an
-/// independently authenticated retirement witness.
+/// context. It exposes no active-package selection or extraction root. Its only mutation
+/// paths are [`Self::recover`], which requires an exact process-family retirement binding
+/// for the inspected journal before the common transaction may write, and
+/// [`Self::resume_unlaunched`], which admits only a never-launched `PublishPending` attempt.
 #[derive(Debug)]
 pub struct WindowsRecoveryInspection {
-    _roots: Roots,
+    roots: Roots,
     lease: File,
     admitted: AdmittedInstallation,
     lifecycle_installation_id: [u8; 32],
@@ -183,7 +194,7 @@ pub struct WindowsRecoveryInspection {
     current: ArtifactIdentity,
     last_known_good: ArtifactIdentity,
     previous_known_good: Option<ArtifactIdentity>,
-    _version_pins: Vec<VersionPins>,
+    version_pins: BTreeMap<String, VersionPins>,
 }
 
 impl WindowsActivationWriteSnapshot {
@@ -572,7 +583,22 @@ pub(crate) fn publish_new_record(
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> Result<(), UpdateError> {
     let temporary = prepare_record(parent, bytes, profile)?;
-    publish_prepared_record(parent, &temporary, leaf, bytes, profile)
+    publish_prepared_record(
+        parent,
+        &temporary,
+        RecordTarget::Absent(leaf),
+        bytes,
+        profile,
+    )
+}
+
+/// Where a prepared protected record sibling is published.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecordTarget<'leaf> {
+    /// A fixed leaf that must not exist yet.
+    Absent(&'leaf str),
+    /// One fixed activation record slot, replaced (or created) under the writer lease.
+    Replace(crate::windows_fs::RecordSlot),
 }
 
 fn prepare_record(
@@ -624,7 +650,7 @@ fn prepare_record(
 fn publish_prepared_record(
     parent: &Dir,
     temporary: &str,
-    leaf: &str,
+    target: RecordTarget<'_>,
     bytes: &[u8],
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> Result<(), UpdateError> {
@@ -632,8 +658,18 @@ fn publish_prepared_record(
         .try_clone()
         .map_err(|cause| error("record parent", cause))?
         .into_std_file();
-    publish_new(&retained_parent, temporary, leaf)
-        .map_err(|cause| error("record publication", cause))?;
+    let leaf = match target {
+        RecordTarget::Absent(leaf) => {
+            publish_new(&retained_parent, temporary, leaf)
+                .map_err(|cause| error("record publication", cause))?;
+            leaf
+        }
+        RecordTarget::Replace(slot) => {
+            crate::windows_fs::replace_record_slot(&retained_parent, temporary, slot)
+                .map_err(|cause| error("record replacement", cause))?;
+            slot.leaf()
+        }
+    };
     let (_, observed) = read_record(parent, leaf, profile)?;
     if observed != bytes {
         return Err(error("published record readback", "published bytes differ"));
@@ -645,6 +681,18 @@ pub(crate) fn random_leaf_name(prefix: &str) -> io::Result<String> {
     let mut random = [0_u8; 32];
     getrandom::fill(&mut random).map_err(io::Error::other)?;
     Ok(format!("{prefix}-{}", crate::error::hex_digest(&random)))
+}
+
+/// Whether `name` is exactly `<prefix>-<64 lowercase hex>`, as minted by [`random_leaf_name`].
+pub(crate) fn is_generated_leaf(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 fn seal_child(parent: &Dir, leaf: &str, directory: bool) -> io::Result<()> {
