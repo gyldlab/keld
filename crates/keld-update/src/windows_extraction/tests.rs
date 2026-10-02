@@ -133,6 +133,56 @@ fn owner_private_root_refuses_install_profile_and_topology_substitution() {
 }
 
 #[test]
+fn owner_private_stage_cannot_publish_a_version_without_the_writer_lease() {
+    let fixture = Fixture::new();
+    let source = fixture.source(GOLDEN_TAR);
+    let receipt = authenticated_receipt(
+        fixture.identity.clone(),
+        &signing_key(),
+        "1.0.0",
+        GOLDEN_TAR,
+    );
+    let mut root = fixture
+        .admitted("1.0.0")
+        .open_windows_extraction_root()
+        .expect("owner-private preflight root");
+    let stage = root
+        .extract(&receipt, &source)
+        .expect("verified incomplete stage");
+    let stage_name = stage.name().to_owned();
+    let error = stage
+        .publish_version()
+        .expect_err("owner-private staging is not the activation writer");
+    assert_eq!(error.code(), "KELD-UPDATE-015");
+    assert!(matches!(
+        &error,
+        UpdateError::VersionPublication {
+            version,
+            stage_name: observed_stage,
+            outcome: VersionPublicationOutcome::StageRetained,
+            ..
+        } if version == "2.0.0" && observed_stage == &stage_name
+    ));
+    let stage_path = fixture.versions().join(stage_name);
+    assert!(stage_path.is_dir(), "the diagnostic stage is retained");
+    assert!(
+        !stage_path.join(".complete").exists(),
+        "refusal precedes the durable completion marker"
+    );
+    assert!(
+        !fixture.versions().join("2.0.0").exists(),
+        "no final version directory was published"
+    );
+    assert_eq!(
+        fs::read_dir(&fixture.identity.update_root)
+            .expect("update root remains available")
+            .count(),
+        1,
+        "no floor, pointer, lease, journal or provenance was created"
+    );
+}
+
+#[test]
 #[ignore = "operator runs from the elevated installing administrator token"]
 fn elevated_uac_creator_applies_profile_before_payload_write() {
     assert!(

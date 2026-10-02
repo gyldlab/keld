@@ -32,7 +32,7 @@ pub(super) const CUT_ENV: &str = "KELD_KEL266_NATIVE_CUT";
 pub(super) const GOLDEN: &[u8] =
     include_bytes!("../../../../keld-pack/tests/fixtures/windows-v0-content.tar");
 
-pub(super) fn assert_ordinary_token() {
+pub(super) fn assert_user_principal_token() {
     let sid = windows_permissions::utilities::current_process_sid().expect("actual TokenUser");
     let text = windows_permissions::wrappers::ConvertSidToStringSid(&sid).expect("TokenUser text");
     let text = text.to_string_lossy();
@@ -40,6 +40,11 @@ pub(super) fn assert_ordinary_token() {
         text.starts_with("S-1-5-21-") || text.starts_with("S-1-12-1-"),
         "ordinary-user proof cannot use a service or SYSTEM identity: {text}"
     );
+    println!("KELD_KEL266_USER_PRINCIPAL sid={text}");
+}
+
+pub(super) fn assert_ordinary_token() {
+    assert_user_principal_token();
     let mut raw = std::ptr::null_mut();
     // SAFETY: the pseudo process handle is used synchronously; the output is a
     // writable HANDLE slot. On success ownership immediately enters RAII.
@@ -72,7 +77,7 @@ pub(super) fn assert_ordinary_token() {
         elevation.TokenIsElevated, 0,
         "ordinary-user denial proof must be unelevated"
     );
-    println!("KELD_KEL266_ORDINARY_TOKEN sid={text} elevated=0");
+    println!("KELD_KEL266_ORDINARY_TOKEN elevated=0");
 }
 
 pub(super) fn directory(path: &Path) -> File {

@@ -941,6 +941,22 @@ fn validate_version_contents(
     })
 }
 
+pub(super) fn verify_completed_version(
+    roots: &Roots,
+    expected: &crate::ArtifactIdentity,
+    expected_content_size: u64,
+) -> Result<(), UpdateError> {
+    let completion = read_version_completion(roots, expected)?;
+    if completion.record.content_size != expected_content_size {
+        return Err(error(
+            "completion size",
+            "recorded content size differs from the verified package receipt",
+        ));
+    }
+    drop(validate_version_contents(roots, completion)?);
+    Ok(())
+}
+
 fn open_directory(
     parent: &Dir,
     leaf: &str,

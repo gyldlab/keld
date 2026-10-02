@@ -782,6 +782,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Local installer record is malformed, noncanonical or unsupported
 - fix: Preserve the record for diagnosis and repair or reinstall through the trusted installer. Record presence never proves protected state.
 
+## KELD-UPDATE-015
+
+- crate: keld-update
+- message: An immutable Windows version could not be confirmed at its final publication boundary
+- fix: Preserve the named stage and any transaction journal. If the destination may exist, do not select it from directory presence; inspect protected state and use journal-bound recovery before retrying.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

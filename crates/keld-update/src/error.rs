@@ -9,6 +9,15 @@ pub enum ProvenanceUnavailable {
     Unprotected,
 }
 
+/// Whether immutable-version publication may have completed before the refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionPublicationOutcome {
+    /// The candidate remains under its diagnostic staging name and was not published.
+    StageRetained,
+    /// The final version rename may have completed, but readback did not confirm it.
+    DestinationUnconfirmed,
+}
+
 impl ProvenanceUnavailable {
     const fn as_str(self) -> &'static str {
         match self {
@@ -199,6 +208,17 @@ pub enum UpdateError {
         /// Underlying refusal, without archive member contents.
         detail: String,
     },
+    /// Immutable version publication failed with an effect that callers must inspect.
+    VersionPublication {
+        /// Exact candidate version; never sufficient by itself to select the package.
+        version: String,
+        /// Generated diagnostic staging leaf.
+        stage_name: String,
+        /// Whether the final version name may now exist.
+        outcome: VersionPublicationOutcome,
+        /// Non-secret failure detail.
+        detail: String,
+    },
 }
 
 impl UpdateError {
@@ -220,6 +240,7 @@ impl UpdateError {
             Self::ArtifactProcessing { .. } => "KELD-UPDATE-010",
             Self::ArchiveInvalid { .. } => "KELD-UPDATE-011",
             Self::Extraction { .. } => "KELD-UPDATE-012",
+            Self::VersionPublication { .. } => "KELD-UPDATE-015",
         }
     }
 }
@@ -317,7 +338,32 @@ impl fmt::Display for UpdateError {
                 }
                 f.write_str("Keep the current installation and repair the protected staging root or artifact before retrying.")
             }
+            Self::VersionPublication {
+                version,
+                stage_name,
+                outcome,
+                detail,
+            } => fmt_version_publication_error(f, version, stage_name, *outcome, detail),
         }
+    }
+}
+
+fn fmt_version_publication_error(
+    f: &mut fmt::Formatter<'_>,
+    version: &str,
+    stage_name: &str,
+    outcome: VersionPublicationOutcome,
+    detail: &str,
+) -> fmt::Result {
+    match outcome {
+        VersionPublicationOutcome::StageRetained => write!(
+            f,
+            "KELD-UPDATE-015: immutable version `{version}` was not published ({detail}); stage `{stage_name}` remains diagnostic. This operation does not mutate current, floor or journal; preserve any transaction journal and do not treat the stage as runnable."
+        ),
+        VersionPublicationOutcome::DestinationUnconfirmed => write!(
+            f,
+            "KELD-UPDATE-015: immutable version `{version}` may exist but its final readback was not confirmed ({detail}); `{stage_name}` is the attempted stage name, not proof of the current filesystem state. This operation does not mutate current, floor or journal; preserve any transaction journal, and never select by directory presence."
+        ),
     }
 }
 
