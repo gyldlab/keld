@@ -28,6 +28,12 @@ KEL-266 T4a amendment: delegated approval comment
 The independent design approval does not replace native qualification or final-diff
 security, unsafe and public-contract review.
 
+KEL-270 T4b amendment (proposed, owner acceptance pending): retire each unreferenced
+version under the journal before journal removal, and remove the journal by
+write-through rename, instead of removing the journal first and cleaning retention
+afterwards. Rationale and native evidence are in the KEL-270 T4b claim/decision comments
+and its pull request; the change narrows a liveness gap and adds no authority.
+
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
 `a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
@@ -317,10 +323,11 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
 9. The previous last-known-good pointer and package remain unchanged until exact health
    is durably recorded. The owner then journals `health-accepted`, moves the prior
    last-known-good to `previous-known-good`, publishes `last-known-good` to
-   the candidate, and removes the journal. Failure journals
-   `rollback-pending`, republishes `current` to the attempt's validated
-   rollback target, and only then removes the journal. Neither path lowers the trust
-   floor; bounded cleanup retains both known-good slots.
+   the candidate, retires the superseded older version, and removes the journal.
+   Failure journals `rollback-pending`, republishes `current` to the attempt's
+   validated rollback target, retires the failed candidate, and only then removes the
+   journal. Neither path lowers the trust floor; bounded cleanup retains both
+   known-good slots.
 10. If Windows requires a post-exit helper, the signed helper inherits only protected
     update-root/lock handles, the host-process wait handle, the observer/server endpoint
     and a sealed forward-once candidate endpoint for the already-minted health channel.
@@ -731,10 +738,25 @@ The single-writer transition is:
 5. publish `current` to the candidate;
 6. persist `AwaitingHealth` and launch with a private health channel;
 7. on exact health, persist `HealthAccepted`, publish the prior LKG to
-   `previous-known-good`, publish `last-known-good` to candidate, remove the
-   journal, then clean retention without deleting either known-good slot;
+   `previous-known-good`, publish `last-known-good` to candidate, retire the
+   superseded older version, then remove the journal; deleting retired trees is
+   best-effort cleanup that never touches either known-good slot;
 8. on failure, persist `RollbackPending`, publish `current` to the
-   validated rollback target, remove the journal, then report failure.
+   validated rollback target, retire the failed candidate, remove the journal, then
+   report failure.
+
+Retirement is the only mutation of a published version. While the journal still
+authorizes it, the writer renames the one unreferenced version directory, with the
+same-parent absent-target write-through adapter, to a generated `retired-<64 hex>`
+name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
+directory, so the census admits them only as never-selectable diagnostics. Retiring
+under the journal closes the crash window in which a removed journal would leave an
+orphan complete version that halts every later writer. An open handle anywhere in the
+retiring tree makes the rename fail; the journal then stays for journal-bound recovery.
+Journal removal is a write-through rename of the journal to a generated `pending-*`
+leaf followed by deletion. A crash before any record sibling's publication rename
+leaves only such a `pending-*` file; the next writer admits it only with the exact
+installation profile and removes it under the lease before its first step.
 
 Windows replaces fixed mutable record slots through a narrow same-parent
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` adapter; the existing
@@ -748,7 +770,8 @@ unchanged after a possible publication.
 
 Startup without a journal validates current, both known-good slots, their complete
 markers/policies and the floor. A valid current must equal last-known-good or
-previous-known-good; any other complete artifact is an orphan and halts. If current is
+previous-known-good; any other complete artifact is an orphan and halts (generated
+`incomplete-*` and `retired-*` diagnostics are not artifacts). If current is
 invalid but last-known-good is valid, recovery republishes last-known-good. A
 missing/invalid last-known-good after installation halts even when current runs;
 previous-known-good may be absent only before the first successful update. Recovery
@@ -759,8 +782,9 @@ before resuming. With current already at the candidate it requires floor exactly
 to candidate and advances to `AwaitingHealth` without republishing. Every other
 combination, including floor above candidate, halts. `AwaitingHealth` rolls back
 only after the process-family
-proof. `HealthAccepted` finishes both known-good publications.
-`RollbackPending` finishes rollback only after floor, both known-good slots,
+proof. `HealthAccepted` finishes both known-good publications and the superseded
+version's retirement. `RollbackPending` finishes rollback and the candidate's
+retirement only after floor, both known-good slots,
 coordinator/helper identity, optional health identity and current exactly match its
 recorded context. Corrupt or mixed state halts without deleting evidence.
 
@@ -1142,7 +1166,12 @@ Must not touch in Slice A:
   persistent ancestry proof; no activation.
 - [ ] T4b — common Windows x64 direct transaction: journal, floor/current/LKG order,
   attempt-bound 30-second health, one mode-supplied write lease, and crash cut at every
-  persisted boundary; no per-mode state machine fork.
+  persisted boundary; no per-mode state machine fork. Progress: the common transaction
+  (production journal, fixed-slot write-through replacement, one step function for
+  forward progress and recovery, exact receipt/retirement/coordinator binding and
+  version retirement) passes PerUserDirect subprocess crash cuts at every persisted
+  boundary. The host-owned private health channel, 30-second `Ready` observation and
+  installed-host QF1 composition remain.
 - [ ] T4c — default per-user install/bootstrap and no-UAC authority; prove v2 owner/mode
   provenance, stable lease seeding and hostile-role write denial under the user's LocalAppData tree.
 - [ ] T4d — explicit-UAC Program Files authority; prove the installer token can assign
@@ -1207,8 +1236,9 @@ fallback rate and end-to-end success before adding complexity.
 The product mode selection is approved; the following are implementation/evidence gates,
 not requests to revisit that decision:
 
-- T4b's common journal, health and persisted recovery need implementation and real
-  Windows crash-cut evidence.
+- T4b's common journal and persisted recovery have real Windows PerUserDirect
+  crash-cut evidence; the host-owned attempt-bound health channel, 30-second `Ready`
+  observation and installed-host lifecycle composition remain open.
 - T4c must prove the default per-user install root, mode/provenance seeding and actual
   role write denial; the owning user's authority remains outside the threat claim.
 - T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,

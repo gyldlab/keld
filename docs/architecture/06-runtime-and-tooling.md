@@ -986,14 +986,28 @@ does not enter this transaction:
    private attempt-bound health channel.
 6. On accepted health, durably write `health-accepted`, publish the prior
    last-known-good to `previous-known-good`, publish
-   `last-known-good` to the candidate, remove the journal durably, and only then
-   apply bounded cleanup that retains both known-good slots.
+   `last-known-good` to the candidate, retire the superseded older version, then
+   remove the journal durably. Deleting retired trees afterwards is best-effort
+   cleanup that never touches either known-good slot.
 7. On launch/health failure, durably write `rollback-pending`, republish
-   `current` to the attempt's validated rollback target, remove the journal durably,
-   and report failure. Rollback never changes the floor. The failed candidate therefore
+   `current` to the attempt's validated rollback target, retire the failed candidate,
+   remove the journal durably, and report failure. Rollback never changes the floor. The failed candidate therefore
    cannot be automatically selected again at the same version: selection returns the
    successful no-update result until a newly signed release advances beyond that floor.
    Failures that occur before step 3 may retry the same signed version after repair.
+
+Retirement is the only mutation of a published version. While the journal still
+authorizes it, the writer renames the one unreferenced version directory, with the
+same-parent absent-target write-through adapter, to a generated `retired-<64 hex>`
+name. Generated `incomplete-*` and `retired-*` names can never equal a SemVer version
+directory, so the census admits them only as never-selectable diagnostics. Retiring
+under the journal closes the crash window in which a removed journal would leave an
+orphan complete version that halts every later writer. An open handle anywhere in the
+retiring tree makes the rename fail; the journal then stays for journal-bound recovery.
+Journal removal is a write-through rename of the journal to a generated `pending-*`
+leaf followed by deletion. A crash before any record sibling's publication rename
+leaves only such a `pending-*` file; the next writer admits it only with the exact
+installation profile and removes it under the lease before its first step.
 
 No required pointer or journal is removed before its replacement is durable. A temporary
 file is created in the same directory as its target; cross-filesystem copy/delete is a
@@ -1023,9 +1037,10 @@ the stable lease, then reopens and verifies exact bytes and profile before advan
 It never truncates in place, copies across volumes, schedules work after reboot or
 accepts caller paths/flags. A failure after replacement is effect-aware and does not
 claim the old bytes stayed unchanged. The `keld-update` crate rule still keeps
-`publish_new` absent-target-only and now permits only a separate fixed-slot replacement
-under the stable lease. That native replacement adapter is not implemented yet; its
-exact diff requires independent unsafe/security review before it may be used.
+`publish_new` absent-target-only and permits only the separate fixed-slot replacement
+adapter, which refuses every leaf outside journal/floor/current/last-known-good/
+previous-known-good before the system call. Its exact diff requires independent
+unsafe/security review.
 
 **Health identity.** A candidate receives a private host-owned channel minted for the
 journaled attempt. Its receipt repeats the attempt id and full artifact identity. The
@@ -1051,7 +1066,8 @@ no endpoint and follows the recovery path below.
 **Startup recovery.** With no journal, validate the protected provenance, floor,
 `current`, both known-good slots, policy and complete markers. If current is
 valid, it must equal last-known-good or previous-known-good; any other complete artifact
-is an orphan and halts. If current is invalid and last-known-good is valid, republish
+is an orphan and halts (generated `incomplete-*` and `retired-*` diagnostics are not
+artifacts). If current is invalid and last-known-good is valid, republish
 last-known-good. Missing/invalid last-known-good after installation halts;
 previous-known-good may be absent only before the first successful update. With a valid
 journal, first acquire its exclusive attempt lease. If another coordinator retains the
@@ -1071,8 +1087,10 @@ waits for its zero-active-process observation before recovery proceeds.
    rollback.
 2. `awaiting-health` rolls back only after the process-family proof above; recovery
    never accepts an old receipt.
-3. `health-accepted` completes both known-good publications and journal removal.
-4. `rollback-pending` completes current rollback and journal removal only when
+3. `health-accepted` completes both known-good publications, the superseded
+   version's retirement and journal removal.
+4. `rollback-pending` completes current rollback, the candidate's retirement and
+   journal removal only when
    floor, both known-good slots, coordinator/helper identity, optional health identity
    and current exactly match its recorded context. Any substitution halts.
 

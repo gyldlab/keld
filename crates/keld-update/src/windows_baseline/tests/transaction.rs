@@ -87,7 +87,7 @@ fn commit(trust: &WindowsBaselineTrust, version: &str) {
         .expect("exact health commits the candidate");
     assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
     assert_eq!(resolution.current().version, version);
-    assert!(resolution.retired_cleanup_error().is_none());
+    assert!(resolution.cleanup_error().is_none());
 }
 
 /// Decoded protected state: floor, current, LKG, previous, journal, version names.
@@ -282,7 +282,7 @@ fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versio
         .accept_health(&health)
         .expect("exact health commits the first update");
     assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
-    assert!(resolution.retired_cleanup_error().is_none());
+    assert!(resolution.cleanup_error().is_none());
     assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
 
     commit(&trust, "3.0.0");
@@ -499,7 +499,7 @@ fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcom
     );
     match inspection.recover(&retirement, COORDINATOR)? {
         WindowsRecoveryOutcome::Resolved(resolution) => {
-            assert!(resolution.retired_cleanup_error().is_none());
+            assert!(resolution.cleanup_error().is_none());
             Ok(resolution.outcome())
         }
         WindowsRecoveryOutcome::AwaitingHealth(attempt) => {
@@ -614,23 +614,28 @@ fn run_crash_cut(case: &str, cut: &str, after: AfterCut) {
                 "{case}/{cut}: {error}"
             );
         }
-        AfterCut::AlreadyCommitted => {
-            assert_resolved(
-                &trust,
-                "3.0.0",
-                Some("2.0.0"),
-                "3.0.0",
-                &["2.0.0", "3.0.0", "retired-*"],
+        AfterCut::AlreadyCommitted | AfterCut::AlreadyRolledBack => {
+            // The journal name is durably gone; only never-read leftovers remain: the
+            // renamed journal and the retired tree. Both are admitted as diagnostics,
+            // and the next transaction removes them before and after its own steps.
+            assert_eq!(at_cut.journal, None, "{case}/{cut}");
+            assert_eq!(at_cut.pending_records, 1, "{case}/{cut}: {at_cut:?}");
+            assert!(
+                at_cut.versions.contains("retired-*"),
+                "{case}/{cut}: {at_cut:?}"
             );
-        }
-        AfterCut::AlreadyRolledBack => {
-            assert_resolved(
-                &trust,
-                "2.0.0",
-                Some("1.0.0"),
-                "3.0.0",
-                &["1.0.0", "2.0.0", "retired-*"],
-            );
+            let (current, previous, versions) = if after == AfterCut::AlreadyCommitted {
+                ("3.0.0", "2.0.0", ["2.0.0", "3.0.0"])
+            } else {
+                ("2.0.0", "1.0.0", ["1.0.0", "2.0.0"])
+            };
+            assert_eq!(at_cut.current, current, "{case}/{cut}");
+            assert_eq!(at_cut.previous_known_good.as_deref(), Some(previous));
+            let mut retained = names(&versions);
+            retained.insert("retired-*".to_owned());
+            assert_eq!(at_cut.versions, retained, "{case}/{cut}");
+            commit(&trust, "4.0.0");
+            assert_resolved(&trust, "4.0.0", Some(current), "4.0.0", &[current, "4.0.0"]);
         }
         AfterCut::ResumesThenCommits | AfterCut::FinishesCommit => {
             assert_eq!(

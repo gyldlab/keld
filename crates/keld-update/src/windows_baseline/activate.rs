@@ -97,7 +97,7 @@ pub enum WindowsActivationOutcome {
 pub struct WindowsActivationResolution {
     outcome: WindowsActivationOutcome,
     current: ArtifactIdentity,
-    retired_cleanup: Option<UpdateError>,
+    cleanup: Option<UpdateError>,
 }
 
 impl WindowsActivationResolution {
@@ -113,13 +113,16 @@ impl WindowsActivationResolution {
         &self.current
     }
 
-    /// First failure while deleting retired, never-selectable version trees, if any.
+    /// First failure while deleting never-read leftovers, if any.
     ///
-    /// Resolution does not depend on this deletion; a remaining `retired-*` tree is
-    /// admitted by later census as diagnostic state and removed by a later resolution.
+    /// Leftovers are the renamed journal (`pending-*`) and retired version trees
+    /// (`retired-*`). Resolution does not depend on deleting them: later census admits
+    /// both as never-selectable diagnostics, the next transaction removes stale
+    /// `pending-*` siblings before its first step, and a later resolution retries the
+    /// retired-tree deletion.
     #[must_use]
-    pub const fn retired_cleanup_error(&self) -> Option<&UpdateError> {
-        self.retired_cleanup.as_ref()
+    pub const fn cleanup_error(&self) -> Option<&UpdateError> {
+        self.cleanup.as_ref()
     }
 }
 
@@ -640,18 +643,30 @@ impl Transaction {
                 ));
             }
         };
-        self.mutated = true;
-        // A resurrected journal after this removal re-resolves to this same removal:
-        // every pointer already matches its resolved phase and the retiree is gone.
-        self.roots
+        // Removal is a write-through rename to a generated never-read `pending-*` leaf,
+        // so the fixed journal name is durably absent before resolution is reported.
+        let removed = super::random_leaf_name("pending")
+            .map_err(|cause| self.fault("journal removal", cause))?;
+        let parent = self
+            .roots
             .update
-            .remove_file(JOURNAL)
+            .try_clone()
+            .map_err(|cause| self.fault("journal removal", cause))?
+            .into_std_file();
+        self.mutated = true;
+        crate::windows_fs::publish_new(&parent, JOURNAL, &removed)
             .map_err(|cause| self.fault("journal removal", cause))?;
         observe(true, "journal-removed");
+        let cleanup = self
+            .roots
+            .update
+            .remove_file(&removed)
+            .map_err(|cause| cleanup_error(format!("{removed}: {cause}")))
+            .and_then(|()| self.remove_retired_versions());
         Ok(WindowsActivationResolution {
             outcome,
             current: self.current.clone(),
-            retired_cleanup: self.remove_retired_versions().err(),
+            cleanup: cleanup.err(),
         })
     }
 
@@ -775,7 +790,7 @@ fn unchanged(step: &'static str, detail: impl std::fmt::Display) -> UpdateError 
 
 fn cleanup_error(detail: String) -> UpdateError {
     UpdateError::Activation {
-        step: "retired version cleanup",
+        step: "resolved leftover cleanup",
         effect: ActivationEffect::ProtectedStateUnchanged,
         detail,
     }
