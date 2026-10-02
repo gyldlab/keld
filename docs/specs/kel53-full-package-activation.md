@@ -28,8 +28,9 @@ KEL-266 T4a amendment: delegated approval comment
 The independent design approval does not replace native qualification or final-diff
 security, unsafe and public-contract review.
 
-KEL-270 T4b amendment (proposed, owner acceptance pending). Three bounded changes to the
-common transaction, each narrowing a liveness or replay gap without adding authority:
+KEL-270 T4b amendment (proposed, owner acceptance pending). Four bounded changes to the
+common transaction, each narrowing a liveness or replay gap; none grants authority beyond
+the existing exclusive writer lease, and item 4 adds one public repair entry point:
 1. Retire each unreferenced version under the journal before journal removal, and
    remove the journal by write-through rename, instead of removing the journal first
    and cleaning retention afterwards.
@@ -772,10 +773,15 @@ leaves only such a `pending-*` file. The census admits `pending-*` names; before
 first write, the next transaction removes each one only after verifying a regular,
 single-link file with the exact installation profile, and refuses anything else.
 A refusal of a new attempt before its `PublishPending` journal exists retires every
-version that attempt published, so a refused start leaves no orphan. A process crash
+version that attempt published, so a refused start leaves no orphan unless that
+retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
 in that window still leaves an orphan; the ordinary loader halts on it, and only the
 explicit unjournaled-version repair, admitted when no journal exists and every record
-validates, retires it under the writer lease.
+validates, retires it under the writer lease. The repair first verifies and pins every
+referenced version, removes stale `pending-*` record siblings, and admits for retirement
+only strict-SemVer entries whose completion record names that version in the
+installation's scope; any other unknown or damaged entry refuses the repair before any
+rename.
 
 A `PublishPending` journal is resumable under the exclusive writer lease alone: no
 candidate is launched before `AwaitingHealth` is durable, and every live transaction

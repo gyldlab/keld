@@ -485,6 +485,12 @@ fn a_refusal_before_the_journal_retires_only_the_published_candidate() {
         .join("versions")
         .join(format!("incomplete-{}", "b".repeat(64)));
     std::fs::create_dir(&diagnostic).expect("a live diagnostic stage beside the versions");
+    let earlier_retired = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(format!("retired-{}", "c".repeat(64)));
+    std::fs::create_dir(&earlier_retired).expect("an earlier retired tree");
 
     let (root, published) = publish(&trust, "3.0.0");
     assert_refusal(
@@ -518,6 +524,10 @@ fn a_refusal_before_the_journal_retires_only_the_published_candidate() {
         "an identity that does not match the published version never becomes runnable"
     );
 
+    assert!(
+        earlier_retired.is_dir() && diagnostic.is_dir(),
+        "generated entries are neither renamed nor deleted by a refused start"
+    );
     std::fs::remove_dir(&diagnostic).expect("remove the diagnostic fixture");
     commit(&trust, "3.0.0");
     assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
@@ -580,14 +590,100 @@ fn an_unretirable_refused_candidate_halts_until_the_explicit_repair() {
 fn the_unjournaled_repair_refuses_a_pending_journal() {
     let fixture = tempfile::tempdir().expect("repair refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
-    let attempt = begin(&trust, "2.0.0");
-    drop(attempt);
+    // A publish-pending journal references a candidate that no pointer selects yet: the
+    // one state in which an unguarded repair would retire a journaled version.
+    let stdout = support::child(
+        CRASH_HELPER,
+        fixture.path(),
+        "first-commit",
+        "publish-pending",
+        CRASH_EXIT,
+    );
+    assert!(
+        stdout.contains("KELD_ACTIVATION_CUT=publish-pending"),
+        "{stdout}"
+    );
     let before = observe(&trust);
+    assert_eq!(
+        before.journal.as_ref().map(|journal| &journal.phase),
+        Some(&ActivationPhase::PublishPending)
+    );
+    assert!(before.versions.contains("2.0.0"));
+    let error = crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust))
+        .expect_err("a journaled attempt belongs to journal-bound recovery");
+    assert!(
+        error
+            .to_string()
+            .contains("pending journal requires the process-family recovery owner"),
+        "{error}"
+    );
+    assert_eq!(
+        observe(&trust),
+        before,
+        "the refused repair renames nothing"
+    );
+    assert_eq!(
+        recover_exact(&trust).expect("recovery resumes the journaled candidate"),
+        WindowsActivationOutcome::Committed
+    );
+    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
+}
+
+#[test]
+fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename() {
+    for stray in ["9.9.9", "not-a-version"] {
+        let fixture = tempfile::tempdir().expect("stray entry fixture");
+        let trust = seed_per_user_baseline(fixture.path());
+        let (root, published) = publish(&trust, "2.0.0");
+        drop(root);
+        drop(published);
+        std::fs::create_dir(trust.installation.update_root.join("versions").join(stray))
+            .expect("an entry no writer published");
+        let before = observe(&trust);
+        let error = crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust))
+            .expect_err("an unknown or damaged entry refuses the whole repair");
+        assert!(
+            matches!(
+                error,
+                UpdateError::Activation {
+                    effect: ActivationEffect::UnjournaledVersionRetained,
+                    ..
+                }
+            ),
+            "{stray}: {error:?}"
+        );
+        assert_eq!(
+            observe(&trust),
+            before,
+            "{stray}: the valid unjournaled 2.0.0 is not retired either"
+        );
+    }
+}
+
+#[test]
+fn the_unjournaled_repair_never_retires_a_case_variant_of_a_referenced_tree() {
+    let fixture = tempfile::tempdir().expect("case variant fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0-rc.1");
+    let versions = trust.installation.update_root.join("versions");
+    std::fs::rename(versions.join("2.0.0-rc.1"), versions.join("2.0.0-RC.1"))
+        .expect("store the current tree under a case-variant name");
+    let error = load_windows_activation_write_snapshot(&trust, &verifier(&trust))
+        .expect_err("the exact-name census halts on the case variant");
+    assert!(
+        error.to_string().contains("unreferenced version entry"),
+        "{error}"
+    );
     assert!(
         crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust)).is_err(),
-        "a journaled attempt belongs to journal-bound recovery, never to the repair"
+        "the repair still halts on the census instead of retiring the current tree"
     );
-    assert_eq!(observe(&trust), before);
+    let observed = observe(&trust);
+    assert!(
+        observed.versions.contains("2.0.0-RC.1") && !observed.versions.contains("retired-*"),
+        "the referenced tree is never renamed: {observed:?}"
+    );
+    assert_eq!(observed.current, "2.0.0-rc.1");
 }
 
 #[test]

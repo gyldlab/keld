@@ -1018,10 +1018,15 @@ leaves only such a `pending-*` file. The census admits `pending-*` names; before
 first write, the next transaction removes each one only after verifying a regular,
 single-link file with the exact installation profile, and refuses anything else.
 A refusal of a new attempt before its `PublishPending` journal exists retires every
-version that attempt published, so a refused start leaves no orphan. A process crash
+version that attempt published, so a refused start leaves no orphan unless that
+retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
 in that window still leaves an orphan; the ordinary loader halts on it, and only the
 explicit unjournaled-version repair, admitted when no journal exists and every record
-validates, retires it under the writer lease.
+validates, retires it under the writer lease. The repair first verifies and pins every
+referenced version, removes stale `pending-*` record siblings, and admits for retirement
+only strict-SemVer entries whose completion record names that version in the
+installation's scope; any other unknown or damaged entry refuses the repair before any
+rename.
 
 A `PublishPending` journal is resumable under the exclusive writer lease alone: no
 candidate is launched before `AwaitingHealth` is durable, and every live transaction

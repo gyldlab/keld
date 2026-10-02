@@ -263,6 +263,18 @@ impl UpdateError {
         }
     }
 
+    /// The failed step and detail of this refusal, without its code or guidance, for
+    /// re-labelling under an enclosing activation refusal.
+    pub(crate) fn step_and_detail(&self) -> (&'static str, String) {
+        match self {
+            Self::Activation { step, detail, .. } | Self::Baseline { step, detail } => {
+                (step, detail.clone())
+            }
+            Self::LocalRecordInvalid { detail } => ("local record", detail.clone()),
+            other => ("update", other.to_string()),
+        }
+    }
+
     /// Stable `KELD-UPDATE-*` code for this refusal.
     #[must_use]
     pub const fn code(&self) -> &'static str {

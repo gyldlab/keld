@@ -225,14 +225,18 @@ pub fn load_windows_recovery_inspection(
 /// retirement failed, after publication but before its `PublishPending` journal. The
 /// ordinary writer loader keeps halting on it, because selection never follows directory
 /// presence. This explicit repair is admitted only when no activation journal exists and
-/// every protected record validates. It renames each unreferenced version to a generated,
-/// never-selectable `retired-*` name, then re-runs the version census and re-verifies the
-/// referenced trees. It returns how many versions it retired.
+/// every protected record validates. It first re-verifies and pins every referenced
+/// version, then removes stale `pending-*` record siblings, then validates every other
+/// non-generated entry as a strict-SemVer version with a completion record in this
+/// installation's scope before renaming any of them to a generated, never-selectable
+/// `retired-*` name, and finally re-runs the version census. It returns how many versions
+/// it retired.
 ///
 /// # Errors
 /// Refuses managed or privileged modes, a busy or missing lease, a pending journal (use
-/// journal-bound recovery), any provenance or record inconsistency, and a failed
-/// retirement. A failure leaves every record unchanged.
+/// journal-bound recovery), any provenance or record inconsistency, and any unknown or
+/// damaged version entry, each before any rename. A failed retirement reports
+/// [`crate::ActivationEffect::UnjournaledVersionRetained`]. No path changes a record.
 pub fn repair_windows_unjournaled_versions(
     trust: &WindowsBaselineTrust,
     verifier: &UpdateVerifier,
@@ -254,9 +258,20 @@ pub fn repair_windows_unjournaled_versions(
         .iter()
         .map(|artifact| artifact.version.clone())
         .collect::<BTreeSet<_>>();
+    // Hold every referenced tree open first: a referenced version must be verified before
+    // anything moves, and its open handles keep any later rename away from it.
+    let pins = pin_versions(&roots, &state.selected)?;
     super::activate::remove_stale_record_preparations(&roots)?;
-    let retired = super::activate::retire_unreferenced_versions(&roots, &referenced)?;
-    drop(pin_selected_versions(&roots, &state.selected, None)?);
+    let retired =
+        super::activate::retire_unreferenced_versions(&roots, &referenced).map_err(|cause| {
+            crate::UpdateError::activation(
+                "unjournaled version repair",
+                crate::ActivationEffect::UnjournaledVersionRetained,
+                super::activate::refusal_detail(&cause),
+            )
+        })?;
+    validate_activation_version_census(&roots, &state.selected, None)?;
+    drop(pins);
     drop(lease);
     Ok(retired)
 }
@@ -545,6 +560,14 @@ pub(super) fn pin_selected_versions(
     retiree: Option<&crate::ArtifactIdentity>,
 ) -> Result<BTreeMap<String, VersionPins>, UpdateError> {
     validate_activation_version_census(roots, selected, retiree)?;
+    pin_versions(roots, selected)
+}
+
+/// Re-verifies and pins each selected version without a directory census.
+fn pin_versions(
+    roots: &Roots,
+    selected: &[crate::ArtifactIdentity],
+) -> Result<BTreeMap<String, VersionPins>, UpdateError> {
     selected
         .iter()
         .map(|artifact| {
@@ -555,6 +578,22 @@ pub(super) fn pin_selected_versions(
             ))
         })
         .collect()
+}
+
+/// Admits one unreferenced entry for retirement: a protected directory whose completion
+/// record decodes and names exactly this version within the installation's scope.
+pub(super) fn validate_unjournaled_version(roots: &Roots, name: &str) -> Result<(), UpdateError> {
+    let version = open_directory(&roots.versions, name, roots.profile())?;
+    let (_, bytes) = read_record(&version, ".complete", roots.profile())?;
+    let complete = records::decode_complete(&bytes)?;
+    if complete.artifact.version != name {
+        return Err(error(
+            "unjournaled version admission",
+            "completion record names a different version",
+        ));
+    }
+    validate_artifact_scope_and_baseline(&roots.trust.installation.baseline, &complete.artifact)?;
+    Ok(())
 }
 
 /// Pins one version published under the held writer lease.

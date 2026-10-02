@@ -263,7 +263,8 @@ impl WindowsActivationWriteSnapshot {
     /// Journals and selects one complete version published under this exact lease.
     ///
     /// Any refusal before the `PublishPending` journal exists retires every version the
-    /// attempt published but no record references, so no orphan outlives the call.
+    /// attempt published but no record references, so no orphan outlives the call unless
+    /// that retirement itself fails.
     pub(crate) fn begin_activation(
         self,
         candidate: &ArtifactIdentity,
@@ -350,7 +351,7 @@ impl WindowsActivationWriteSnapshot {
         {
             if transaction.journal_present() {
                 transaction.journaled = true;
-                return Err(transaction.refault(cause));
+                return Err(transaction.refault(&cause));
             }
             drop(transaction.pins.remove(&candidate.version));
             return Err(abandon_unjournaled(
@@ -539,7 +540,7 @@ impl Transaction {
         installation_id: [u8; 32],
     ) -> Result<WindowsActivationAttempt, UpdateError> {
         let [_, health_channel_id, lifecycle_channel_id] =
-            mint_identities().map_err(|cause| self.refault(cause))?;
+            mint_identities().map_err(|cause| self.refault(&cause))?;
         let mut journal = self.journal.clone();
         if health_channel_id == journal.attempt_id || lifecycle_channel_id == journal.attempt_id {
             return Err(self.fault(
@@ -585,7 +586,7 @@ impl Transaction {
                 ActivationStep::AdvanceFloor => {
                     let floor = self.journal.candidate.version.clone();
                     let bytes =
-                        records::encode_floor(&floor).map_err(|cause| self.refault(cause))?;
+                        records::encode_floor(&floor).map_err(|cause| self.refault(&cause))?;
                     self.write_record(
                         RecordTarget::Replace(RecordSlot::Floor),
                         &bytes,
@@ -651,7 +652,7 @@ impl Transaction {
         label: &'static str,
     ) -> Result<(), UpdateError> {
         let bytes =
-            records::encode_activation_journal(&journal).map_err(|cause| self.refault(cause))?;
+            records::encode_activation_journal(&journal).map_err(|cause| self.refault(&cause))?;
         self.write_record(RecordTarget::Replace(RecordSlot::Journal), &bytes, label)?;
         self.journal = journal;
         Ok(())
@@ -673,7 +674,8 @@ impl Transaction {
                 RecordTarget::Absent(RecordSlot::PreviousKnownGood.leaf())
             }
         };
-        let bytes = records::encode_pointer(kind, artifact).map_err(|cause| self.refault(cause))?;
+        let bytes =
+            records::encode_pointer(kind, artifact).map_err(|cause| self.refault(&cause))?;
         self.write_record(target, &bytes, label)
     }
 
@@ -687,10 +689,10 @@ impl Transaction {
     ) -> Result<(), UpdateError> {
         let profile = self.roots.profile();
         let temporary = super::prepare_record(&self.roots.update, bytes, profile)
-            .map_err(|cause| self.refault(cause))?;
+            .map_err(|cause| self.refault(&cause))?;
         observe(false, label);
         super::publish_prepared_record(&self.roots.update, &temporary, target, bytes, profile)
-            .map_err(|cause| self.refault(cause))?;
+            .map_err(|cause| self.refault(&cause))?;
         observe(true, label);
         Ok(())
     }
@@ -712,7 +714,7 @@ impl Transaction {
         // makes the rename fail and leaves the journal for later recovery.
         drop(self.pins.remove(&retiree.version));
         retire_version_directory(&self.roots, &retiree.version)
-            .map_err(|cause| self.refault(cause))?;
+            .map_err(|cause| self.refault(&cause))?;
         observe(true, "version-retired");
         Ok(())
     }
@@ -757,11 +759,11 @@ impl Transaction {
 
     /// Removes stale record siblings only after every recovery identity check passed.
     fn remove_stale_record_preparations(&self) -> Result<(), UpdateError> {
-        remove_stale_record_preparations(&self.roots).map_err(|cause| self.refault(cause))
+        remove_stale_record_preparations(&self.roots).map_err(|cause| self.refault(&cause))
     }
 
     fn version_present(&self, version: &str) -> Result<bool, UpdateError> {
-        version_present(&self.roots, version).map_err(|cause| self.refault(cause))
+        version_present(&self.roots, version).map_err(|cause| self.refault(&cause))
     }
 
     fn journal_present(&self) -> bool {
@@ -803,17 +805,15 @@ impl Transaction {
     }
 
     /// Re-labels a lower-level refusal with this transaction's effect.
-    fn refault(&self, cause: UpdateError) -> UpdateError {
-        match cause {
-            UpdateError::Baseline { step, detail }
-            | UpdateError::Activation { step, detail, .. } => self.fault(step, detail),
-            other => self.fault("record", other),
-        }
+    fn refault(&self, cause: &UpdateError) -> UpdateError {
+        let (step, detail) = cause.step_and_detail();
+        self.fault(step, detail)
     }
 }
 
 /// Retires every unreferenced complete version left by an attempt refused before its
-/// journal existed, so no orphan outlives the call.
+/// journal existed, so no orphan outlives the call unless that retirement itself fails
+/// ([`ActivationEffect::UnjournaledVersionRetained`]).
 ///
 /// Under the held lease the snapshot census admitted no unreferenced version, so any
 /// non-generated entry outside `referenced` was published during this lease session.
@@ -837,15 +837,19 @@ fn abandon_unjournaled(
 }
 
 /// Renames every complete version that no record references to a generated `retired-*`
-/// name, skipping referenced versions and generated diagnostics; returns the count.
+/// name and returns the count.
 ///
-/// The caller holds the exclusive writer lease and has established that no activation
-/// journal exists, so an unreferenced complete version cannot be selected by any record.
+/// Referenced versions (compared case-insensitively, as NTFS resolves them) and generated
+/// diagnostics are skipped. Every other entry must be a strict-SemVer directory whose
+/// completion record names exactly that version within this installation's scope; all
+/// are validated before the first rename, so an unknown or damaged entry refuses with no
+/// rename. The caller holds the exclusive writer lease, keeps the referenced trees
+/// pinned, and has established that no activation journal exists.
 pub(super) fn retire_unreferenced_versions(
     roots: &Roots,
     referenced: &BTreeSet<String>,
 ) -> Result<usize, UpdateError> {
-    let mut retired = 0;
+    let mut retiring = Vec::new();
     for entry in roots
         .versions
         .entries()
@@ -856,26 +860,27 @@ pub(super) fn retire_unreferenced_versions(
             .file_name()
             .into_string()
             .map_err(|_| super::error("unjournaled version census", "non-UTF-8 entry"))?;
-        if referenced.contains(&name)
+        if referenced
+            .iter()
+            .any(|version| version.eq_ignore_ascii_case(&name))
             || super::is_generated_leaf(&name, "incomplete")
             || super::is_generated_leaf(&name, "retired")
         {
             continue;
         }
-        retire_version_directory(roots, &name)?;
-        retired += 1;
+        super::load::validate_unjournaled_version(roots, &name)?;
+        retiring.push(name);
     }
-    Ok(retired)
+    for name in &retiring {
+        retire_version_directory(roots, name)?;
+    }
+    Ok(retiring.len())
 }
 
 /// The step and detail of a lower-level refusal, without its own code or guidance.
-fn refusal_detail(cause: &UpdateError) -> String {
-    match cause {
-        UpdateError::Activation { step, detail, .. } | UpdateError::Baseline { step, detail } => {
-            format!("{step}: {detail}")
-        }
-        other => other.to_string(),
-    }
+pub(super) fn refusal_detail(cause: &UpdateError) -> String {
+    let (step, detail) = cause.step_and_detail();
+    format!("{step}: {detail}")
 }
 
 /// Renames one version directory to a generated `retired-*` sibling and proves its

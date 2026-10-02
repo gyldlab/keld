@@ -596,7 +596,8 @@ impl WindowsExtractionRoot {
     /// unreferenced version, or a failed durable step. Every refusal is
     /// [`UpdateError::Activation`]; its [`crate::ActivationEffect`] states what remains.
     /// A refusal before the `PublishPending` journal exists retires the versions this
-    /// attempt published, so no orphan outlives the call.
+    /// attempt published, so no orphan outlives the call unless that retirement itself
+    /// fails ([`crate::ActivationEffect::UnjournaledVersionRetained`]).
     pub fn begin_activation(
         self,
         candidate: &ArtifactIdentity,
