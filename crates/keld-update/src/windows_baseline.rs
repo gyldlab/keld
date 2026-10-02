@@ -23,7 +23,10 @@ use crate::{
 mod initialize;
 mod load;
 
-pub use initialize::{initialize_windows_baseline, initialize_windows_per_user_baseline};
+pub use initialize::{
+    initialize_windows_baseline, initialize_windows_machine_uac_baseline,
+    initialize_windows_per_user_baseline,
+};
 pub use load::{
     load_windows_activation_write_snapshot, load_windows_baseline, load_windows_recovery_inspection,
 };
@@ -382,7 +385,9 @@ fn open_roots(trust: &WindowsBaselineTrust, private: bool) -> io::Result<Roots> 
     if private
         && !matches!(
             identity.install_mode,
-            DirectInstallMode::PerUserDirect | DirectInstallMode::MachineSeamlessDirect
+            DirectInstallMode::PerUserDirect
+                | DirectInstallMode::MachineSeamlessDirect
+                | DirectInstallMode::MachineUacDirect
         )
     {
         return Err(io::Error::other(

@@ -520,7 +520,7 @@ impl StageProtection {
         }
     }
 
-    fn create_directory(self, parent: &StdFile, component: &str) -> io::Result<StdFile> {
+    pub(crate) fn create_directory(self, parent: &StdFile, component: &str) -> io::Result<StdFile> {
         match self {
             Self::MachineUac => {
                 create_directory_relative_with_profile(parent, component, self.install_profile())

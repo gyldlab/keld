@@ -64,8 +64,9 @@ pub use records::fuzz_activation_journal;
 pub use windows_baseline::{
     LoadedWindowsBaseline, WindowsActivationWriteSnapshot, WindowsBaselineReceipt,
     WindowsBaselineTrust, WindowsRecoveryInspection, initialize_windows_baseline,
-    initialize_windows_per_user_baseline, load_windows_activation_write_snapshot,
-    load_windows_baseline, load_windows_recovery_inspection,
+    initialize_windows_machine_uac_baseline, initialize_windows_per_user_baseline,
+    load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection,
 };
 #[cfg(windows)]
 pub use windows_extraction::{ExtractedWindowsStage, WindowsExtractionRoot};

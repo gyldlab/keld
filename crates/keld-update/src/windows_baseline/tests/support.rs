@@ -27,6 +27,7 @@ use crate::windows_baseline::WindowsBaselineTrust;
 use crate::{BaselineVerifier, VerifiedBaseline};
 
 pub(super) const ROOT_ENV: &str = "KELD_KEL266_NATIVE_ROOT";
+pub(super) const MACHINE_UAC_ROOT_ENV: &str = "KELD_KEL270_MACHINE_UAC_ROOT";
 pub(super) const CASE_ENV: &str = "KELD_KEL266_NATIVE_CASE";
 pub(super) const CUT_ENV: &str = "KELD_KEL266_NATIVE_CUT";
 pub(super) const GOLDEN: &[u8] =
@@ -179,6 +180,29 @@ pub(super) fn provision(root: &Path, label: &str) -> WindowsBaselineTrust {
 
 pub(super) fn provision_machine_uac(root: &Path, label: &str) -> WindowsBaselineTrust {
     keld_guard::require_windows_system_token().expect("SYSTEM creates isolated UAC fixture");
+    let parent = directory(root);
+    let profile = keld_guard::WindowsInstallProtectionProfile::MachineUac;
+    let install =
+        crate::windows_fs::create_directory_relative_with_profile(&parent, label, profile)
+            .expect("create exact Administrators-owned fixture install root");
+    let update =
+        crate::windows_fs::create_directory_relative_with_profile(&install, "updates", profile)
+            .expect("create exact Administrators-owned update root");
+    crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
+        .expect("create exact Administrators-owned versions root");
+    let mut trust = trust_for(&root.join(label));
+    trust.installation.install_mode = crate::DirectInstallMode::MachineUacDirect;
+    trust
+}
+
+pub(super) fn provision_machine_uac_as_administrator(
+    root: &Path,
+    label: &str,
+) -> WindowsBaselineTrust {
+    keld_guard::require_windows_non_system_token()
+        .expect("explicit-UAC installer must not be SYSTEM");
+    keld_guard::require_windows_machine_uac_owner_token()
+        .expect("explicit-UAC installer requires an elevated owner-capable Administrators token");
     let parent = directory(root);
     let profile = keld_guard::WindowsInstallProtectionProfile::MachineUac;
     let install =

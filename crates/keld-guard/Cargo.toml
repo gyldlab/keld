@@ -18,7 +18,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Globalization"] }
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Security", "Win32_System_SystemServices", "Win32_System_Threading"] }
 windows-permissions = { workspace = true }
 
 [lints]

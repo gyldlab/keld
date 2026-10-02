@@ -11,7 +11,7 @@ use super::{
 };
 use crate::records::{self, PointerKind};
 use crate::windows_extraction::{StageProtection, open_source, populate_stage};
-use crate::windows_fs::{create_directory_relative, create_file_relative_exclusive_with_profile};
+use crate::windows_fs::create_file_relative_exclusive_with_profile;
 use crate::{InstallOwner, InstallProvenance, UpdateError, VerifiedBaseline};
 
 /// Initializes one externally provisioned SYSTEM-protected machine scaffold.
@@ -60,10 +60,38 @@ pub fn initialize_windows_per_user_baseline(
     })
 }
 
+/// Initializes a `MachineUacDirect` baseline under a live, explicitly elevated
+/// Administrators token.
+///
+/// The installer supplies trusted identity/configuration and the exact verified
+/// baseline. This function does not create or launch a helper, does not mutate an
+/// existing installation, and does not activate updates. It seeds the same common
+/// baseline transaction used by the other direct modes, with the Program Files
+/// Administrators/SYSTEM protection profile.
+///
+/// # Errors
+/// Refuses managed or mismatched installations, thread impersonation, non-elevated or
+/// filtered administrator tokens, malformed token data, unsupported scaffolds,
+/// existing/partial state and every publication/readback failure.
+pub fn initialize_windows_machine_uac_baseline(
+    verified: &VerifiedBaseline,
+    archive: &Path,
+    trust: &WindowsBaselineTrust,
+) -> Result<WindowsBaselineReceipt, UpdateError> {
+    initialize_with_authority(
+        verified,
+        archive,
+        trust,
+        BaselineAuthority::MachineUac,
+        |_| Ok(()),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BaselineAuthority {
     MachineSystem,
     PerUser,
+    MachineUac,
 }
 
 impl BaselineAuthority {
@@ -71,6 +99,7 @@ impl BaselineAuthority {
         match self {
             Self::MachineSystem => crate::DirectInstallMode::MachineSeamlessDirect,
             Self::PerUser => crate::DirectInstallMode::PerUserDirect,
+            Self::MachineUac => crate::DirectInstallMode::MachineUacDirect,
         }
     }
 
@@ -78,6 +107,7 @@ impl BaselineAuthority {
         match self {
             Self::MachineSystem => StageProtection::Machine,
             Self::PerUser => StageProtection::OwnerPrivate,
+            Self::MachineUac => StageProtection::MachineUac,
         }
     }
 }
@@ -130,6 +160,22 @@ pub(super) fn initialize_per_user_with_observer(
 }
 
 #[cfg(test)]
+pub(super) fn initialize_machine_uac_with_observer(
+    verified: &VerifiedBaseline,
+    archive: &Path,
+    trust: &WindowsBaselineTrust,
+    mut observe: impl FnMut(BaselineBoundary) -> io::Result<()>,
+) -> Result<WindowsBaselineReceipt, UpdateError> {
+    initialize_with_authority(
+        verified,
+        archive,
+        trust,
+        BaselineAuthority::MachineUac,
+        &mut observe,
+    )
+}
+
+#[cfg(test)]
 pub(super) fn initialize_per_user_with_token_check(
     verified: &VerifiedBaseline,
     archive: &Path,
@@ -141,6 +187,23 @@ pub(super) fn initialize_per_user_with_token_check(
         archive,
         trust,
         BaselineAuthority::PerUser,
+        |_| Ok(()),
+        |_| token_check(),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn initialize_machine_uac_with_token_check(
+    verified: &VerifiedBaseline,
+    archive: &Path,
+    trust: &WindowsBaselineTrust,
+    token_check: impl FnOnce() -> io::Result<()>,
+) -> Result<WindowsBaselineReceipt, UpdateError> {
+    initialize_with_authority_and_token_check(
+        verified,
+        archive,
+        trust,
+        BaselineAuthority::MachineUac,
         |_| Ok(()),
         |_| token_check(),
     )
@@ -162,6 +225,10 @@ fn initialize_with_authority(
         |authority| match authority {
             BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),
             BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),
+            BaselineAuthority::MachineUac => {
+                keld_guard::require_windows_non_system_token()?;
+                keld_guard::require_windows_machine_uac_owner_token()
+            }
         },
     )
 }
@@ -233,7 +300,9 @@ fn publish_baseline_version(
         .try_clone()
         .map_err(|cause| error("versions handle", cause))?
         .into_std_file();
-    let stage = create_directory_relative(&parent, &name)
+    let stage = authority
+        .stage_protection()
+        .create_directory(&parent, &name)
         .map_err(|cause| error("stage creation", cause))?;
     observe(BaselineBoundary::StageCreated).map_err(|cause| error("stage boundary", cause))?;
     let (directories, files) = populate_stage(
@@ -268,6 +337,24 @@ fn publish_baseline_version(
                     .into_std_file();
                 keld_guard::validate_windows_install_directory(&file, roots.profile())
                     .map_err(|cause| error("stage directory profile", cause))?;
+            }
+        }
+        BaselineAuthority::MachineUac => {
+            for directory in &directories {
+                let file = directory
+                    .try_clone()
+                    .map_err(|cause| error("stage directory handle", cause))?
+                    .into_std_file();
+                keld_guard::validate_windows_install_directory(&file, roots.profile())
+                    .map_err(|cause| error("stage directory profile", cause))?;
+            }
+            for file in &files {
+                let file = file
+                    .try_clone()
+                    .map_err(|cause| error("stage file handle", cause))?
+                    .into_std();
+                keld_guard::validate_windows_install_file(&file, roots.profile())
+                    .map_err(|cause| error("stage file profile", cause))?;
             }
         }
     }
