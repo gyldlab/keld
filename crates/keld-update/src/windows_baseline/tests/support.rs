@@ -189,6 +189,22 @@ pub(super) fn provision_machine_uac(root: &Path, label: &str) -> WindowsBaseline
     trust
 }
 
+pub(super) fn provision_per_user(root: &Path, label: &str) -> WindowsBaselineTrust {
+    let parent = directory(root);
+    let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
+    let install =
+        crate::windows_fs::create_directory_relative_with_profile(&parent, label, profile)
+            .expect("create exact owner-private per-user install root");
+    let update =
+        crate::windows_fs::create_directory_relative_with_profile(&install, "updates", profile)
+            .expect("create exact owner-private per-user update root");
+    crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
+        .expect("create exact owner-private per-user versions root");
+    let mut trust = trust_for(&root.join(label));
+    trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+    trust
+}
+
 pub(super) fn baseline(trust: &WindowsBaselineTrust) -> VerifiedBaseline {
     let compressed = zstd::stream::encode_all(Cursor::new(GOLDEN), 0).expect("fixture compression");
     let release = release_json(
