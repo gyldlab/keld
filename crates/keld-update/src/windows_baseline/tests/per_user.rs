@@ -10,7 +10,8 @@ use windows_permissions::{LocalBox, SecurityDescriptor};
 
 use super::support::{self, CASE_ENV, CUT_ENV, GOLDEN, ROOT_ENV};
 use crate::windows_baseline::initialize::{
-    BaselineBoundary, initialize_per_user_with_observer, initialize_windows_per_user_baseline,
+    BaselineBoundary, initialize_per_user_with_observer, initialize_per_user_with_token_check,
+    initialize_windows_per_user_baseline,
 };
 use crate::windows_baseline::{WindowsBaselineTrust, load_windows_baseline};
 use crate::{DirectInstallMode, InstallOwner, InstallProvenance, UpdateError};
@@ -169,6 +170,71 @@ fn per_user_baseline_initializer_refuses_wrong_mode_before_path_admission() {
     assert!(
         !install.exists(),
         "mode refusal precedes all path admission"
+    );
+}
+
+#[test]
+fn per_user_baseline_initializer_refuses_token_query_failure_before_path_admission() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    let absent_archive = source.with_file_name("missing-authenticated-baseline.tar");
+    let error = initialize_per_user_with_token_check(
+        &support::baseline(&trust),
+        &absent_archive,
+        &trust,
+        || Err(std::io::Error::other("injected token query failure")),
+    )
+    .expect_err("unknown token identity must refuse before filesystem admission");
+    assert!(matches!(
+        error,
+        UpdateError::Baseline {
+            step: "installer authority",
+            ..
+        }
+    ));
+    assert!(
+        error.to_string().contains("injected token query failure"),
+        "the guard query failure remains diagnosable: {error}"
+    );
+    let update = &trust.installation.update_root;
+    assert!(!update.join("bootstrap.lock").exists());
+    assert!(!update.join("activation.lock").exists());
+    assert!(!update.join("version-floor").exists());
+    assert!(!update.join("current").exists());
+    assert!(!update.join("last-known-good").exists());
+    assert!(
+        !trust
+            .installation
+            .install_root
+            .join("install-provenance")
+            .exists()
+    );
+    assert!(!absent_archive.exists());
+
+    let mut invalid_trust = trust.clone();
+    let missing_install = trust
+        .installation
+        .install_root
+        .with_file_name("missing-install-root");
+    invalid_trust.installation.install_root = missing_install.clone();
+    invalid_trust.installation.update_root = missing_install.join("updates");
+    let invalid_error = initialize_per_user_with_token_check(
+        &support::baseline(&invalid_trust),
+        &absent_archive,
+        &invalid_trust,
+        || Err(std::io::Error::other("injected token query failure")),
+    )
+    .expect_err("token query failure must precede even root admission");
+    assert!(matches!(
+        invalid_error,
+        UpdateError::Baseline {
+            step: "installer authority",
+            ..
+        }
+    ));
+    assert!(
+        !missing_install.exists(),
+        "failed token observation must not create or admit the install root"
     );
 }
 

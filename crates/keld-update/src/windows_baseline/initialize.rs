@@ -46,9 +46,10 @@ pub fn initialize_windows_baseline(
 /// last as the commit record.
 ///
 /// # Errors
-/// Refuses any non-PerUserDirect identity, managed owner, SYSTEM token, mismatched
-/// baseline, unsupported scaffold, existing/partial state or publication/readback
-/// failure. A refusal never repairs or automatically reseeds existing state.
+/// Refuses any non-PerUserDirect identity, managed owner, SYSTEM token or token-query
+/// failure, mismatched baseline, unsupported scaffold, existing/partial state or
+/// publication/readback failure. A refusal never repairs or automatically reseeds
+/// existing state.
 pub fn initialize_windows_per_user_baseline(
     verified: &VerifiedBaseline,
     archive: &Path,
@@ -128,12 +129,50 @@ pub(super) fn initialize_per_user_with_observer(
     )
 }
 
+#[cfg(test)]
+pub(super) fn initialize_per_user_with_token_check(
+    verified: &VerifiedBaseline,
+    archive: &Path,
+    trust: &WindowsBaselineTrust,
+    token_check: impl FnOnce() -> io::Result<()>,
+) -> Result<WindowsBaselineReceipt, UpdateError> {
+    initialize_with_authority_and_token_check(
+        verified,
+        archive,
+        trust,
+        BaselineAuthority::PerUser,
+        |_| Ok(()),
+        |_| token_check(),
+    )
+}
+
 fn initialize_with_authority(
     verified: &VerifiedBaseline,
     archive: &Path,
     trust: &WindowsBaselineTrust,
     authority: BaselineAuthority,
+    observe: impl FnMut(BaselineBoundary) -> io::Result<()>,
+) -> Result<WindowsBaselineReceipt, UpdateError> {
+    initialize_with_authority_and_token_check(
+        verified,
+        archive,
+        trust,
+        authority,
+        observe,
+        |authority| match authority {
+            BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),
+            BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),
+        },
+    )
+}
+
+fn initialize_with_authority_and_token_check(
+    verified: &VerifiedBaseline,
+    archive: &Path,
+    trust: &WindowsBaselineTrust,
+    authority: BaselineAuthority,
     mut observe: impl FnMut(BaselineBoundary) -> io::Result<()>,
+    token_check: impl FnOnce(BaselineAuthority) -> io::Result<()>,
 ) -> Result<WindowsBaselineReceipt, UpdateError> {
     trust.require_direct_owner()?;
     if trust.installation.install_mode != authority.mode() {
@@ -146,17 +185,7 @@ fn initialize_with_authority(
             ),
         ));
     }
-    match authority {
-        BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token()
-            .map_err(|cause| error("installer authority", cause))?,
-        BaselineAuthority::PerUser if keld_guard::require_windows_system_token().is_ok() => {
-            return Err(error(
-                "installer authority",
-                "PerUserDirect baseline initialization cannot run as LocalSystem",
-            ));
-        }
-        BaselineAuthority::PerUser => {}
-    }
+    token_check(authority).map_err(|cause| error("installer authority", cause))?;
     crate::provenance::match_identity(&trust.installation, verified.installation())?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;

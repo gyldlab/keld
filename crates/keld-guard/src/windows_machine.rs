@@ -26,12 +26,29 @@ const ADMIN_FILE: &str = "O:S-1-5-32-544D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;0x1200a9;
 /// # Errors
 /// Refuses all other users, including elevated administrators, or token-query failure.
 pub fn require_windows_system_token() -> io::Result<()> {
-    let current = current_process_sid()?;
-    let system: LocalBox<Sid> = SYSTEM.parse()?;
-    if current.as_ref() != system.as_ref() {
-        return Err(io::Error::other("initializer TokenUser is not LocalSystem"));
+    if process_token_is_system(current_process_sid())? {
+        Ok(())
+    } else {
+        Err(io::Error::other("initializer TokenUser is not LocalSystem"))
     }
-    Ok(())
+}
+
+/// Requires the actual current process `TokenUser` not to be `LocalSystem`.
+///
+/// # Errors
+/// Refuses `LocalSystem` and propagates token-query or identity-comparison failures.
+pub fn require_windows_non_system_token() -> io::Result<()> {
+    if process_token_is_system(current_process_sid())? {
+        Err(io::Error::other("initializer TokenUser is LocalSystem"))
+    } else {
+        Ok(())
+    }
+}
+
+fn process_token_is_system(current: io::Result<LocalBox<Sid>>) -> io::Result<bool> {
+    let current = current?;
+    let system: LocalBox<Sid> = SYSTEM.parse()?;
+    Ok(current.as_ref() == system.as_ref())
 }
 
 /// Validates the committed SYSTEM-owned, protected SYSTEM/Users-RX directory policy.
@@ -376,6 +393,23 @@ fn validate_anchor_descriptor(descriptor: &SecurityDescriptor) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_identity_comparison_distinguishes_system_and_other_users() {
+        let system: LocalBox<Sid> = SYSTEM.parse().expect("literal SYSTEM SID");
+        let user: LocalBox<Sid> = "S-1-5-21-100-200-300-1001"
+            .parse()
+            .expect("literal user SID");
+        assert!(process_token_is_system(Ok(system)).expect("SYSTEM identity query"));
+        assert!(!process_token_is_system(Ok(user)).expect("ordinary identity query"));
+    }
+
+    #[test]
+    fn token_identity_query_failure_is_not_misclassified_as_non_system() {
+        let error = process_token_is_system(Err(io::Error::other("injected token query failure")))
+            .expect_err("unknown token identity must remain an error");
+        assert_eq!(error.to_string(), "injected token query failure");
+    }
 
     #[test]
     fn machine_descriptor_fields_have_independent_falsifiers() {
