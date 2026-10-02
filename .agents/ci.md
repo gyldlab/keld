@@ -15,9 +15,10 @@ are source of truth; this file owns the design invariants.
   gitleaks, and rejects missing, cancelled, failed, or selected-as-skipped evidence.
 - Mermaid is separate from broad documentation routing: changed/added/deleted/malformed
   diagram blocks and parser/renderer/config/pin/router/workflow inputs select it; prose-only
-  changes do not. Local and hosted routing share the same applicability owner. Unknown
-  comparisons fail safe to full rendering. `just ci-full` retains explicit full-corpus
-  assurance. Zero-candidate rendering performs no Docker probe; `CI required` rejects a
+  changes do not. Local and hosted routing share the same applicability owner: `just ci`
+  routes its Rust, TypeScript, deny and Mermaid lanes through `ci-route` and the same
+  `tools/ci_changes.sh` outputs. Unknown comparisons fail safe to every lane. `just ci-full`
+  retains explicit full assurance. Zero-candidate rendering performs no Docker probe; `CI required` rejects a
   selected Mermaid job that is skipped, missing, cancelled, or failed.
 - Build closures come from current metadata where available. Unknown/shared/workspace
   graph/comparison-base inputs fail safe by enabling every possibly affected lane,

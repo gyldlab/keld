@@ -1,5 +1,6 @@
 # Keld task runner — exact local verification of applicable gates.
-# Mermaid follows the shared changed-input router; `just ci-full` forces its whole corpus.
+# Expensive lanes follow the shared changed-input router used by hosted CI; `just ci-full`
+# forces every lane.
 
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
@@ -12,23 +13,36 @@ hello:
     cargo run -p keld-host --bin keld-host -- --hello
 
 # Run every applicable CI gate locally (deny requires `cargo install cargo-deny --locked`).
+# Cheap policy gates always run; each `*-ci` lane runs only when the router selects it.
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript-ci rust-ci deny-ci
 
-# Full assurance mode explicitly validates every tracked Mermaid block.
-ci-full: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+# Full assurance mode forces every routed lane.
+ci-full: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript-full rust-full deny-full
 
-mermaid-ci:
+# Runs one lane's full recipe when `tools/ci_changes.sh local` selects it. An unknown
+# comparison selects every lane; an unreadable answer fails instead of skipping green.
+ci-route lane full:
     #!/usr/bin/env bash
     set -euo pipefail
-    selected=$(tools/ci_changes.sh local | sed -n 's/^mermaid=//p')
+    selected=$(tools/ci_changes.sh local | sed -n "s/^$1=//p")
     case "$selected" in
-        true) just mermaid-full ;;
-        false) echo "Mermaid route: skipped; no diagram or renderer input changed." ;;
-        *) echo "Mermaid route: invalid applicability '$selected'; refusing skipped-green result." >&2; exit 1 ;;
+        true) just "$2" ;;
+        false) echo "$1 route: skipped; no $1 input changed against origin/main." ;;
+        *) echo "$1 route: invalid applicability '$selected'; refusing skipped-green result." >&2; exit 1 ;;
     esac
 
+mermaid-ci: (ci-route "mermaid" "mermaid-full")
 mermaid-full: mermaid-test mermaid-check mermaid-render-check
+
+typescript-ci: (ci-route "ts" "typescript-full")
+typescript-full: typescript
+
+rust-ci: (ci-route "rust" "rust-full")
+rust-full: fmt-check clippy test doc
+
+deny-ci: (ci-route "deny" "deny-full")
+deny-full: deny
 
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:

@@ -318,72 +318,81 @@ fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
+/// Routed local lanes: router output name, `just` lane prefix, and the gates its full
+/// recipe must own. `just ci` may name these gates only through `<prefix>-ci`.
+const ROUTED_LOCAL_LANES: [(&str, &str, &[&str]); 4] = [
+    ("mermaid", "mermaid", &["mermaid-test", "mermaid-check", "mermaid-render-check"]),
+    ("ts", "typescript", &["typescript"]),
+    ("rust", "rust", &["fmt-check", "clippy", "test", "doc"]),
+    ("deny", "deny", &["deny"]),
+];
+
+fn just_dependencies<'a>(justfile: &'a str, recipe: &str) -> Option<Vec<&'a str>> {
+    let prefix = format!("{recipe}:");
+    justfile
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .map(|deps| deps.split_whitespace().collect())
+}
+
+fn check_routed_local_gates(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
-    let ci_line = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
+    let ci_deps = just_dependencies(&justfile, "ci")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
-    if !ci_line
-        .split_whitespace()
-        .any(|token| token == "mermaid-ci")
-        || ["mermaid-test", "mermaid-check", "mermaid-render-check"]
-            .iter()
-            .any(|gate| ci_line.split_whitespace().any(|token| token == *gate))
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `mermaid-ci` target, not unconditional Mermaid targets."
-        ));
-    }
-    let routine_deps = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .skip(1)
-        .map(|token| if token == "mermaid-ci" { "mermaid-full" } else { token })
-        .collect::<Vec<_>>();
-    let full_deps = justfile
-        .lines()
-        .find(|line| line.starts_with("ci-full:"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .skip(1)
-        .collect::<Vec<_>>();
-    if !full_deps.contains(&"mermaid-full") || routine_deps != full_deps {
-        return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
-        ));
-    }
-    let full_line = justfile
-        .lines()
-        .find(|line| line.starts_with("mermaid-full:"))
-        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-full:`."))?;
-    if !["mermaid-test", "mermaid-check", "mermaid-render-check"]
-        .iter()
-        .all(|gate| full_line.split_whitespace().any(|token| token == *gate))
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `mermaid-full:` must retain parser tests, structural checks, and pinned rendering."
-        ));
-    }
-    let routed = just_recipe_commands(&justfile, "mermaid-ci")
-        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-ci:`."))?;
-    let routed = routed.join("\n");
-    for input in [
-        "tools/ci_changes.sh local",
-        "just mermaid-full",
-        "no diagram or renderer input changed",
-    ] {
-        if !routed.contains(input) {
+    let full_deps = just_dependencies(&justfile, "ci-full")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the `ci-full:` recipe."))?;
+    for (output, lane, gates) in ROUTED_LOCAL_LANES {
+        let routed = format!("{lane}-ci");
+        let full = format!("{lane}-full");
+        if !ci_deps.contains(&routed.as_str())
+            || gates.iter().any(|gate| ci_deps.contains(gate))
+        {
             return Err(format!(
-                "CI-HYGIENE: `{JUSTFILE}` `mermaid-ci:` must route `{input}` and fail closed on unknown applicability."
+                "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `{routed}` target, not unconditional {lane} gates."
+            ));
+        }
+        let expected = format!("{routed}: (ci-route \"{output}\" \"{full}\")");
+        if !justfile.lines().any(|line| line == expected) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` must define `{expected}` so the {lane} lane follows the shared router."
+            ));
+        }
+        let owned = just_dependencies(&justfile, &full)
+            .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `{full}:`."))?;
+        if !gates.iter().all(|gate| owned.contains(gate)) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `{full}:` must retain every {lane} gate: {}.",
+                gates.join(", ")
             ));
         }
     }
-    if !routed.contains("*)") || !routed.contains("exit 1 ;;") {
+    let forced = ci_deps
+        .iter()
+        .map(|dep| {
+            dep.strip_suffix("-ci")
+                .filter(|lane| ROUTED_LOCAL_LANES.iter().any(|(_, known, _)| known == lane))
+                .map_or_else(|| (*dep).to_owned(), |lane| format!("{lane}-full"))
+        })
+        .collect::<Vec<_>>();
+    if forced.iter().map(String::as_str).ne(full_deps.iter().copied()) {
         return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `mermaid-ci:` must reject unknown applicability instead of returning a skipped-green success."
+            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force every routed lane while running the same remaining local gates."
+        ));
+    }
+    let route = just_recipe_commands(&justfile, "ci-route lane full")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `ci-route lane full:`."))?
+        .join("
+");
+    for input in ["tools/ci_changes.sh local", "just \"$2\"", "route: skipped"] {
+        if !route.contains(input) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `ci-route:` must route `{input}` and fail closed on unknown applicability."
+            ));
+        }
+    }
+    if !route.contains("*)") || !route.contains("exit 1 ;;") {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci-route:` must reject unknown applicability instead of returning a skipped-green result."
         ));
     }
     Ok(())
@@ -2382,7 +2391,7 @@ fn check(root: &Path) -> Result<(), String> {
     check_ci_profile_does_not_retry(root)?;
     check_root_audit_contract(root)?;
     check_root_test_display_contract(root)?;
-    check_mermaid_local_gate(root)?;
+    check_routed_local_gates(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
     check_issue_templates(root)?;
@@ -2749,21 +2758,28 @@ mod tests {
         temp.write(
             JUSTFILE,
             concat!(
-                "ci: audit-docs mermaid-ci test\n",
+                "ci: audit-docs mermaid-ci typescript-ci rust-ci deny-ci\n",
                 "audit-docs:\n",
                 "    {{python_command}} -B docs/audits/verify.py\n",
                 "    {{python_command}} -B docs/audits/test_verify.py\n",
-                "ci-full: audit-docs mermaid-full test\n",
-                "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
-                "mermaid-ci:\n",
+                "ci-full: audit-docs mermaid-full typescript-full rust-full deny-full\n",
+                "ci-route lane full:\n",
                 "    #!/usr/bin/env bash\n",
                 "    set -euo pipefail\n",
-                "    selected=$(tools/ci_changes.sh local | sed -n 's/^mermaid=//p')\n",
+                "    selected=$(tools/ci_changes.sh local | sed -n \"s/^$1=//p\")\n",
                 "    case \"$selected\" in\n",
-                "        true) just mermaid-full ;;\n",
-                "        false) echo \"Mermaid route: skipped; no diagram or renderer input changed.\" ;;\n",
+                "        true) just \"$2\" ;;\n",
+                "        false) echo \"$1 route: skipped; no $1 input changed.\" ;;\n",
                 "        *) exit 1 ;;\n",
                 "    esac\n",
+                "mermaid-ci: (ci-route \"mermaid\" \"mermaid-full\")\n",
+                "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
+                "typescript-ci: (ci-route \"ts\" \"typescript-full\")\n",
+                "typescript-full: typescript\n",
+                "rust-ci: (ci-route \"rust\" \"rust-full\")\n",
+                "rust-full: fmt-check clippy test doc\n",
+                "deny-ci: (ci-route \"deny\" \"deny-full\")\n",
+                "deny-full: deny\n",
                 "test:\n",
                 "    #!/usr/bin/env bash\n",
                 "    set -euo pipefail\n",
@@ -2791,13 +2807,48 @@ mod tests {
     }
 
     #[test]
+    fn expensive_local_lanes_follow_the_shared_router_and_ci_full_forces_them() {
+        for (needle, replacement, expected) in [
+            ("rust-ci deny-ci\n", "rust-ci deny-ci clippy\n", "unconditional rust gates"),
+            (
+                "ci: audit-docs mermaid-ci typescript-ci rust-ci",
+                "ci: audit-docs mermaid-ci typescript-ci",
+                "routed `rust-ci`",
+            ),
+            (
+                "rust-ci: (ci-route \"rust\" \"rust-full\")",
+                "rust-ci: rust-full",
+                "shared router",
+            ),
+            (
+                "rust-full: fmt-check clippy test doc",
+                "rust-full: fmt-check clippy test",
+                "every rust gate",
+            ),
+            (
+                "typescript-full rust-full deny-full",
+                "typescript-full rust-ci deny-full",
+                "force every routed lane",
+            ),
+            ("just \"$2\"", "true", "fail closed"),
+        ] {
+            let temp = complete_fixture();
+            let justfile = read(temp.path(), JUSTFILE).expect("just fixture");
+            assert!(justfile.contains(needle), "fixture lacks {needle}");
+            temp.write(JUSTFILE, &justfile.replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("routed lane mutation must fail");
+            assert!(error.contains(expected), "{needle}: {error}");
+        }
+    }
+
+    #[test]
     fn public_audit_gate_is_mandatory_locally_and_in_docs_ci() {
         let temp = complete_fixture();
         temp.write(
             JUSTFILE,
             &read(temp.path(), JUSTFILE).expect("just fixture").replacen(
-                "ci: audit-docs mermaid-ci test",
-                "ci: mermaid-ci test",
+                "ci: audit-docs mermaid-ci",
+                "ci: mermaid-ci",
                 1,
             ),
         );

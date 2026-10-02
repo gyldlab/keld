@@ -137,11 +137,10 @@ Crate invariants in `AGENTS.md`: `wv`, `ipc`, `guard`, `compat`, `runtime`,
 
 ## Verification floor
 
-- Routine `just ci` routes Mermaid when relevant; `just ci-full` forces all diagrams.
+- `just ci` runs the lanes the shared change router selects; `just ci-full` forces all.
   New behavior MUST have tests.
-- Before done, agents MUST run and report actual format, warning-denied workspace clippy,
-  and workspace test output. Conditional gates use `.agents/index.md`; MUST NOT claim
-  unrun OS/path passed.
+- Before done, agents MUST run `just ci` and report actual output and skipped lanes.
+  Conditional gates use `.agents/index.md`; MUST NOT claim unrun OS/path passed.
 - Tests, failures, CI, docs/rendering, and dependency changes MUST load their routed
   playbook before selecting a fix or proof.
 
