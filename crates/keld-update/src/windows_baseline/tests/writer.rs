@@ -294,17 +294,30 @@ fn version_publication_reports_unconfirmed_effect_after_rename() {
     let stage = root
         .extract(&candidate, &source)
         .expect("extract verified candidate");
+    let mut destination_tampered = false;
     let error = stage
         .publish_version_with_observer(|boundary, _| {
             if boundary
                 == crate::windows_extraction::VersionPublicationBoundary::VersionDirectoryPublished
             {
-                return Err(std::io::Error::other("injected after rename"));
+                std::fs::write(
+                    update.join("versions").join("2.0.0").join("content.tar"),
+                    b"tampered after rename",
+                )?;
+                destination_tampered = true;
             }
             Ok(())
         })
-        .expect_err("post-rename readback refusal is effect-aware");
+        .expect_err("final readback must reject content changed after publication");
     assert_eq!(error.code(), "KELD-UPDATE-015");
+    assert!(
+        destination_tampered,
+        "the observer mutates only after rename"
+    );
+    assert!(
+        error.to_string().contains("final version readback failed"),
+        "the refusal comes from final version validation: {error}"
+    );
     assert!(matches!(
         error,
         crate::UpdateError::VersionPublication {
@@ -314,6 +327,11 @@ fn version_publication_reports_unconfirmed_effect_after_rename() {
     ));
     let version = update.join("versions").join("2.0.0");
     assert!(version.join(".complete").is_file());
+    assert_eq!(
+        std::fs::read(version.join("content.tar")).expect("read mutated destination"),
+        b"tampered after rename",
+        "the final readback test must actually corrupt the published archive"
+    );
     let after = ["version-floor", "current", "last-known-good"]
         .map(|name| std::fs::read(update.join(name)).expect("read active record after cut"));
     assert_eq!(after, before, "publication cannot mutate active records");
