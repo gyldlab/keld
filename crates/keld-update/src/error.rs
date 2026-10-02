@@ -251,6 +251,7 @@ pub enum UpdateError {
 
 impl UpdateError {
     /// Builds the one activation-transaction refusal shape.
+    #[cfg(windows)]
     pub(crate) fn activation(
         step: &'static str,
         effect: ActivationEffect,
@@ -265,6 +266,7 @@ impl UpdateError {
 
     /// The failed step and detail of this refusal, without its code or guidance, for
     /// re-labelling under an enclosing activation refusal.
+    #[cfg(windows)]
     pub(crate) fn step_and_detail(&self) -> (&'static str, String) {
         match self {
             Self::Activation { step, detail, .. } | Self::Baseline { step, detail } => {
