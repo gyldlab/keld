@@ -35,7 +35,8 @@ pub use initialize::{
     initialize_windows_per_user_baseline,
 };
 pub use load::{
-    load_windows_activation_write_snapshot, load_windows_baseline, load_windows_recovery_inspection,
+    load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
 };
 
 /// Trusted deployment/host inputs, independent of the record being authenticated.
@@ -596,7 +597,7 @@ pub(crate) fn publish_new_record(
 pub(crate) enum RecordTarget<'leaf> {
     /// A fixed leaf that must not exist yet.
     Absent(&'leaf str),
-    /// One existing activation record slot, replaced under the writer lease.
+    /// One fixed activation record slot, replaced (or created) under the writer lease.
     Replace(crate::windows_fs::RecordSlot),
 }
 

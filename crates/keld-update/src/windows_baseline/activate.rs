@@ -153,7 +153,8 @@ pub struct WindowsActivationAttempt {
 }
 
 impl WindowsActivationAttempt {
-    /// Single-use attempt identity recorded in the protected journal.
+    /// Attempt identity recorded in the protected journal; a resumed owner keeps it and
+    /// receives fresh channel identities instead.
     #[must_use]
     pub const fn attempt_id(&self) -> &[u8; 32] {
         &self.transaction.journal.attempt_id
@@ -365,7 +366,7 @@ impl WindowsActivationWriteSnapshot {
                 installation_id,
             }),
             Progress::Resolved(_) => {
-                Err(transaction.fault("activation start", "a fresh attempt resolved before health"))
+                Err(transaction.fault("start", "a fresh attempt resolved before health"))
             }
         }
     }
@@ -377,7 +378,9 @@ impl WindowsRecoveryInspection {
     /// A publish-pending attempt re-mints its health and lifecycle channel identities and
     /// resumes to a live `AwaitingHealth` attempt; an `AwaitingHealth` attempt is rolled
     /// back because its owner was lost before health; `HealthAccepted` and
-    /// `RollbackPending` finish their recorded resolution.
+    /// `RollbackPending` finish their recorded resolution. A publish-pending journal also
+    /// accepts [`Self::resume_unlaunched`], which needs no binding because nothing was
+    /// launched; this method checks the binding for every phase.
     ///
     /// # Errors
     /// A retirement binding or coordinator digest that differs from the protected
@@ -524,7 +527,7 @@ impl Transaction {
         match self.advance()? {
             Progress::Resolved(resolution) => Ok(resolution),
             Progress::AwaitingHealth => Err(self.fault(
-                "activation resolution",
+                "resolution",
                 "a resolving journal phase returned to the health decision",
             )),
         }
@@ -570,7 +573,7 @@ impl Transaction {
             let step = next_activation_step(&self.journal, &self.slots(), retiree_present)
                 .map_err(|refusal| {
                     self.fault(
-                        "activation state",
+                        "state",
                         format!("journal and protected slots disagree: {refusal:?}"),
                     )
                 })?;
@@ -629,10 +632,7 @@ impl Transaction {
                 }
             }
         }
-        Err(self.fault(
-            "activation state",
-            "transaction exceeded its bounded step count",
-        ))
+        Err(self.fault("state", "transaction exceeded its bounded step count"))
     }
 
     fn write_phase(
@@ -807,7 +807,7 @@ impl Transaction {
         match cause {
             UpdateError::Baseline { step, detail }
             | UpdateError::Activation { step, detail, .. } => self.fault(step, detail),
-            other => self.fault("activation record", other),
+            other => self.fault("record", other),
         }
     }
 }
@@ -822,39 +822,60 @@ fn abandon_unjournaled(
     referenced: &BTreeSet<String>,
     cause: &UpdateError,
 ) -> UpdateError {
-    let retired = (|| {
-        for entry in roots
-            .versions
-            .entries()
-            .map_err(|error| super::error("unjournaled version census", error))?
+    let cause = refusal_detail(cause);
+    match retire_unreferenced_versions(roots, referenced) {
+        Ok(_) => UpdateError::activation("start", ActivationEffect::ProtectedStateUnchanged, cause),
+        Err(retirement) => UpdateError::activation(
+            "start",
+            ActivationEffect::UnjournaledVersionRetained,
+            format!(
+                "{cause}; retiring the unjournaled version failed: {}",
+                refusal_detail(&retirement)
+            ),
+        ),
+    }
+}
+
+/// Renames every complete version that no record references to a generated `retired-*`
+/// name, skipping referenced versions and generated diagnostics; returns the count.
+///
+/// The caller holds the exclusive writer lease and has established that no activation
+/// journal exists, so an unreferenced complete version cannot be selected by any record.
+pub(super) fn retire_unreferenced_versions(
+    roots: &Roots,
+    referenced: &BTreeSet<String>,
+) -> Result<usize, UpdateError> {
+    let mut retired = 0;
+    for entry in roots
+        .versions
+        .entries()
+        .map_err(|error| super::error("unjournaled version census", error))?
+    {
+        let entry = entry.map_err(|error| super::error("unjournaled version census", error))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| super::error("unjournaled version census", "non-UTF-8 entry"))?;
+        if referenced.contains(&name)
+            || super::is_generated_leaf(&name, "incomplete")
+            || super::is_generated_leaf(&name, "retired")
         {
-            let entry = entry.map_err(|error| super::error("unjournaled version census", error))?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| super::error("unjournaled version census", "non-UTF-8 entry"))?;
-            if referenced.contains(&name)
-                || super::is_generated_leaf(&name, "incomplete")
-                || super::is_generated_leaf(&name, "retired")
-            {
-                continue;
-            }
-            retire_version_directory(roots, &name)?;
+            continue;
         }
-        Ok::<(), UpdateError>(())
-    })();
-    let effect = if retired.is_ok() {
-        ActivationEffect::ProtectedStateUnchanged
-    } else {
-        ActivationEffect::UnjournaledVersionRetained
-    };
-    let detail = match retired {
-        Ok(()) => cause.to_string(),
-        Err(retirement) => {
-            format!("{cause}; retiring the unjournaled version failed: {retirement}")
+        retire_version_directory(roots, &name)?;
+        retired += 1;
+    }
+    Ok(retired)
+}
+
+/// The step and detail of a lower-level refusal, without its own code or guidance.
+fn refusal_detail(cause: &UpdateError) -> String {
+    match cause {
+        UpdateError::Activation { step, detail, .. } | UpdateError::Baseline { step, detail } => {
+            format!("{step}: {detail}")
         }
-    };
-    UpdateError::activation("activation start", effect, detail)
+        other => other.to_string(),
+    }
 }
 
 /// Renames one version directory to a generated `retired-*` sibling and proves its
@@ -923,7 +944,7 @@ fn remove_retired_versions(roots: &Roots) -> Result<(), UpdateError> {
 /// never read as records. The census admits them by name; this removal additionally
 /// requires a regular single-link file with the installation's exact profile and refuses
 /// anything else.
-fn remove_stale_record_preparations(roots: &Roots) -> Result<(), UpdateError> {
+pub(super) fn remove_stale_record_preparations(roots: &Roots) -> Result<(), UpdateError> {
     let entries = roots
         .update
         .entries()

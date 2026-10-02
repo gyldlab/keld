@@ -126,6 +126,8 @@ fn observe(trust: &WindowsBaselineTrust) -> Observed {
         let name = name.into_string().expect("UTF-8 version entry");
         versions.insert(if name.starts_with("retired-") {
             "retired-*".to_owned()
+        } else if name.starts_with("incomplete-") {
+            "incomplete-*".to_owned()
         } else {
             name
         });
@@ -207,7 +209,7 @@ fn assert_refusal(
 }
 
 #[test]
-fn record_replacement_requires_a_generated_sibling_and_an_existing_file_slot() {
+fn record_replacement_requires_a_generated_sibling_and_a_file_destination() {
     use crate::windows_fs::{RecordSlot, replace_record_slot};
     let fixture = tempfile::tempdir().expect("record slot fixture");
     let path = fixture.path();
@@ -473,42 +475,119 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
 }
 
 #[test]
-fn a_refusal_before_the_journal_retires_the_published_candidate() {
+fn a_refusal_before_the_journal_retires_only_the_published_candidate() {
     let fixture = tempfile::tempdir().expect("pre-journal refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let diagnostic = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(format!("incomplete-{}", "b".repeat(64)));
+    std::fs::create_dir(&diagnostic).expect("a live diagnostic stage beside the versions");
 
-    let (root, published) = publish(&trust, "2.0.0");
+    let (root, published) = publish(&trust, "3.0.0");
     assert_refusal(
         root.begin_activation(&published, [0; 32]),
-        "activation start",
+        "start",
         ActivationEffect::ProtectedStateUnchanged,
     );
     let refused = observe(&trust);
     assert_eq!(refused.journal, None);
     assert_eq!(
         (refused.floor.as_str(), refused.current.as_str()),
-        ("1.0.0", "1.0.0")
+        ("2.0.0", "2.0.0")
     );
-    assert_eq!(refused.versions, names(&["1.0.0", "retired-*"]));
+    assert_eq!(
+        refused.versions,
+        names(&["1.0.0", "2.0.0", "incomplete-*", "retired-*"]),
+        "only the refused candidate is retired; known-good and diagnostic entries stay"
+    );
 
-    let (root, published) = publish(&trust, "2.0.0");
+    let (root, published) = publish(&trust, "3.0.0");
     let mut unrelated = published;
     unrelated.content_blake3[0] ^= 1;
     assert_refusal(
         root.begin_activation(&unrelated, COORDINATOR),
-        "activation start",
+        "start",
         ActivationEffect::ProtectedStateUnchanged,
     );
-    let mut expected = names(&["1.0.0"]);
-    expected.insert("retired-*".to_owned());
     assert_eq!(
         observe(&trust).versions,
-        expected,
+        names(&["1.0.0", "2.0.0", "incomplete-*", "retired-*"]),
         "an identity that does not match the published version never becomes runnable"
     );
 
+    std::fs::remove_dir(&diagnostic).expect("remove the diagnostic fixture");
+    commit(&trust, "3.0.0");
+    assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
+}
+
+#[test]
+fn an_unretirable_refused_candidate_halts_until_the_explicit_repair() {
+    let fixture = tempfile::tempdir().expect("retained candidate fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let verifier = verifier(&trust);
+    let (root, published) = publish(&trust, "2.0.0");
+    let candidate_tree = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join("2.0.0")
+        .join("tree");
+    let holder = std::fs::File::open(nested_file(&candidate_tree))
+        .expect("hold a file inside the refused candidate");
+    assert_refusal(
+        root.begin_activation(&published, [0; 32]),
+        "start",
+        ActivationEffect::UnjournaledVersionRetained,
+    );
+    let error = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect_err("an unjournaled complete version halts every ordinary writer");
+    assert!(
+        error.to_string().contains("unreferenced version entry"),
+        "{error}"
+    );
+    assert!(
+        crate::repair_windows_unjournaled_versions(&trust, &verifier).is_err(),
+        "the repair cannot retire a tree that is still open"
+    );
+    drop(holder);
+
+    assert_eq!(
+        crate::repair_windows_unjournaled_versions(&trust, &verifier)
+            .expect("the explicit repair retires the unjournaled version"),
+        1
+    );
+    let repaired = observe(&trust);
+    assert_eq!(repaired.journal, None);
+    assert_eq!(
+        (repaired.floor.as_str(), repaired.current.as_str()),
+        ("1.0.0", "1.0.0"),
+        "the repair never selects or advances anything"
+    );
+    assert_eq!(repaired.versions, names(&["1.0.0", "retired-*"]));
+    assert_eq!(
+        crate::repair_windows_unjournaled_versions(&trust, &verifier)
+            .expect("an orphan-free installation repairs nothing"),
+        0
+    );
     commit(&trust, "2.0.0");
     assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
+}
+
+#[test]
+fn the_unjournaled_repair_refuses_a_pending_journal() {
+    let fixture = tempfile::tempdir().expect("repair refusal fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let attempt = begin(&trust, "2.0.0");
+    drop(attempt);
+    let before = observe(&trust);
+    assert!(
+        crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust)).is_err(),
+        "a journaled attempt belongs to journal-bound recovery, never to the repair"
+    );
+    assert_eq!(observe(&trust), before);
 }
 
 #[test]
@@ -856,33 +935,13 @@ fn run_crash_cut(scenario: Scenario, cut: &str, after: AfterCut) {
         [prior, candidate].contains(&at_cut.last_known_good.as_str()),
         "{label}: {at_cut:?}"
     );
-    if cut == "channels-reminted" {
-        assert_ne!(
-            at_cut
-                .journal
-                .as_ref()
-                .map(|journal| journal.lifecycle_channel_id),
-            lost_channel,
-            "{label}: the resumed owner durably re-mints its lifecycle channel"
-        );
-    }
+    assert_remint_boundary(cut, &at_cut, lost_channel, &label);
 
     let committed_versions = [prior, candidate];
     let rolled_back_versions: Vec<&str> = prior_previous.into_iter().chain([prior]).collect();
     match after {
         AfterCut::OrphanHalts => {
-            assert_eq!(at_cut.journal, None, "{label}");
-            assert_eq!(
-                (&at_cut.floor, &at_cut.current, &at_cut.last_known_good),
-                (&before.floor, &before.current, &before.last_known_good),
-                "{label}: nothing was selected before the journal"
-            );
-            let error = load_windows_activation_write_snapshot(&trust, &verifier(&trust))
-                .expect_err("an unjournaled complete version halts startup");
-            assert!(
-                error.to_string().contains("unreferenced version entry"),
-                "{label}: {error}"
-            );
+            assert_orphan_halts_then_repairs(&trust, &before, &at_cut, &label, (prior, candidate));
         }
         AfterCut::AlreadyCommitted | AfterCut::AlreadyRolledBack => {
             let committed = after == AfterCut::AlreadyCommitted;
@@ -964,6 +1023,73 @@ fn crash_children(
         "{label}: child must stop at the named boundary: {stdout}"
     );
     (lost_channel, observe(trust))
+}
+
+/// At a re-mint cut, a prepared sibling leaves the lost channel journaled and the durable
+/// rewrite replaces it.
+fn assert_remint_boundary(
+    cut: &str,
+    at_cut: &Observed,
+    lost_channel: Option<[u8; 32]>,
+    label: &str,
+) {
+    if !cut.ends_with("channels-reminted") {
+        return;
+    }
+    let journaled = at_cut
+        .journal
+        .as_ref()
+        .expect("a resumed attempt stays journaled")
+        .lifecycle_channel_id;
+    let lost = lost_channel.expect("the lost attempt was journaled");
+    if cut == "channels-reminted" {
+        assert_ne!(
+            journaled, lost,
+            "{label}: the resumed owner durably re-mints its lifecycle channel"
+        );
+    } else {
+        assert_eq!(
+            journaled, lost,
+            "{label}: a prepared re-mint is not yet the journaled channel"
+        );
+    }
+}
+
+/// A crash between publication and the journal leaves an orphan: the ordinary loader
+/// halts and selects nothing, and only the explicit repair retires it.
+fn assert_orphan_halts_then_repairs(
+    trust: &WindowsBaselineTrust,
+    before: &Observed,
+    at_cut: &Observed,
+    label: &str,
+    (prior, candidate): (&str, &str),
+) {
+    assert_eq!(at_cut.journal, None, "{label}");
+    assert_eq!(
+        (&at_cut.floor, &at_cut.current, &at_cut.last_known_good),
+        (&before.floor, &before.current, &before.last_known_good),
+        "{label}: nothing was selected before the journal"
+    );
+    let error = load_windows_activation_write_snapshot(trust, &verifier(trust))
+        .expect_err("an unjournaled complete version halts startup");
+    assert!(
+        error.to_string().contains("unreferenced version entry"),
+        "{label}: {error}"
+    );
+    assert_eq!(
+        crate::repair_windows_unjournaled_versions(trust, &verifier(trust))
+            .unwrap_or_else(|error| panic!("{label}: {error}")),
+        1,
+        "{label}: the explicit repair retires the crash orphan"
+    );
+    commit(trust, candidate);
+    assert_resolved(
+        trust,
+        candidate,
+        Some(prior),
+        candidate,
+        &[prior, candidate],
+    );
 }
 
 /// After a cut that follows journal removal, only never-read leftovers remain: the

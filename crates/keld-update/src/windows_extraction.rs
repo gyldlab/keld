@@ -614,7 +614,7 @@ impl WindowsExtractionRoot {
             }
             RootAuthority::OwnerPrivate { .. } | RootAuthority::Machine { .. } => {
                 Err(UpdateError::activation(
-                    "activation writer authority",
+                    "writer authority",
                     crate::ActivationEffect::ProtectedStateUnchanged,
                     "activation requires the retained exclusive activation-writer lease",
                 ))

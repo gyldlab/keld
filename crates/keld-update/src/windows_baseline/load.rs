@@ -218,6 +218,49 @@ pub fn load_windows_recovery_inspection(
     })
 }
 
+/// Retires complete versions that neither a protected record nor a journal references,
+/// under the exclusive per-user writer lease.
+///
+/// Such a version is left only by an activation start that crashed, or whose own
+/// retirement failed, after publication but before its `PublishPending` journal. The
+/// ordinary writer loader keeps halting on it, because selection never follows directory
+/// presence. This explicit repair is admitted only when no activation journal exists and
+/// every protected record validates. It renames each unreferenced version to a generated,
+/// never-selectable `retired-*` name, then re-runs the version census and re-verifies the
+/// referenced trees. It returns how many versions it retired.
+///
+/// # Errors
+/// Refuses managed or privileged modes, a busy or missing lease, a pending journal (use
+/// journal-bound recovery), any provenance or record inconsistency, and a failed
+/// retirement. A failure leaves every record unchanged.
+pub fn repair_windows_unjournaled_versions(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+) -> Result<usize, UpdateError> {
+    trust.require_direct_owner()?;
+    crate::provenance::match_identity(&trust.installation, &verifier.expected)?;
+    if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
+        return Err(error(
+            "unjournaled version repair mode",
+            "only PerUserDirect has production writer admission",
+        ));
+    }
+    let roots = open_roots(trust, false).map_err(|cause| error("repair root admission", cause))?;
+    let lease = super::open_activation_lease(&roots.update, roots.profile(), true)
+        .map_err(|cause| error("exclusive repair lease", cause))?;
+    let state = load_writer_state(trust, verifier, &roots)?;
+    let referenced = state
+        .selected
+        .iter()
+        .map(|artifact| artifact.version.clone())
+        .collect::<BTreeSet<_>>();
+    super::activate::remove_stale_record_preparations(&roots)?;
+    let retired = super::activate::retire_unreferenced_versions(&roots, &referenced)?;
+    drop(pin_selected_versions(&roots, &state.selected, None)?);
+    drop(lease);
+    Ok(retired)
+}
+
 #[cfg(test)]
 pub(crate) fn load_windows_activation_write_snapshot_for_test(
     trust: &WindowsBaselineTrust,

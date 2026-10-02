@@ -36,6 +36,9 @@ common transaction, each narrowing a liveness or replay gap without adding autho
 2. Resume an unlaunched `PublishPending` attempt under the exclusive writer lease alone.
 3. Durably re-mint the health and lifecycle channel identities whenever an attempt is
    resumed.
+4. Add an explicit repair entry that, under the exclusive writer lease and only when no
+   journal exists and every record validates, retires complete versions that no record
+   references; the ordinary loader still halts on them.
 Rationale and native evidence are in KEL-270 comments `b571afdb` and `f6b1e538` and the
 T4b pull request.
 
@@ -770,7 +773,9 @@ first write, the next transaction removes each one only after verifying a regula
 single-link file with the exact installation profile, and refuses anything else.
 A refusal of a new attempt before its `PublishPending` journal exists retires every
 version that attempt published, so a refused start leaves no orphan. A process crash
-in that window still leaves an orphan and halts (tracked as a separate amendment).
+in that window still leaves an orphan; the ordinary loader halts on it, and only the
+explicit unjournaled-version repair, admitted when no journal exists and every record
+validates, retires it under the writer lease.
 
 A `PublishPending` journal is resumable under the exclusive writer lease alone: no
 candidate is launched before `AwaitingHealth` is durable, and every live transaction

@@ -32,7 +32,8 @@ pub enum ActivationEffect {
     /// (a renamed journal or retired version trees) could not be deleted yet.
     ResolvedWithLeftovers,
     /// No journal exists, but a published version that no journal references could not
-    /// be retired; every later writer halts until a trusted repair retires it.
+    /// be retired; every later writer halts until the explicit unjournaled-version repair
+    /// retires it under the writer lease.
     UnjournaledVersionRetained,
 }
 
@@ -399,7 +400,7 @@ fn fmt_activation_error(
             "The attempt is resolved; only never-selectable leftovers remain, and a later transaction retries their deletion."
         }
         ActivationEffect::UnjournaledVersionRetained => {
-            "A published version is referenced by no journal and could not be retired; later writers halt until a trusted repair retires it."
+            "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease."
         }
     };
     write!(

@@ -73,7 +73,7 @@ pub use windows_baseline::{
     WindowsRecoveryInspection, WindowsRecoveryOutcome, initialize_windows_baseline,
     initialize_windows_machine_uac_baseline, initialize_windows_per_user_baseline,
     load_windows_activation_write_snapshot, load_windows_baseline,
-    load_windows_recovery_inspection,
+    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
 };
 #[cfg(windows)]
 pub use windows_extraction::{ExtractedWindowsStage, WindowsExtractionRoot};
