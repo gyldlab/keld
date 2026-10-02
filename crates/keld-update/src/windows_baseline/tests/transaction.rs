@@ -197,6 +197,45 @@ fn assert_unchanged_refusal(result: Result<impl std::fmt::Debug, UpdateError>, s
 }
 
 #[test]
+fn record_replacement_refuses_every_leaf_outside_the_fixed_slots_before_renaming() {
+    let fixture = tempfile::tempdir().expect("record slot fixture");
+    let path = fixture.path();
+    std::fs::write(path.join("install-provenance"), b"protected").expect("existing record");
+    std::fs::write(path.join("pending-source"), b"replacement").expect("prepared sibling");
+    let parent = support::directory(path);
+    for leaf in [
+        "install-provenance",
+        "activation.lock",
+        "bootstrap.lock",
+        ".complete",
+        "1.0.0",
+        "versions",
+    ] {
+        assert!(
+            crate::windows_fs::replace_record_slot(&parent, "pending-source", leaf).is_err(),
+            "{leaf} is not a replaceable activation record slot"
+        );
+    }
+    assert_eq!(
+        std::fs::read(path.join("install-provenance")).expect("record after refusals"),
+        b"protected"
+    );
+    assert!(
+        path.join("pending-source").exists(),
+        "a refused replacement never consumes the prepared sibling"
+    );
+
+    std::fs::write(path.join("current"), b"previous").expect("existing slot");
+    crate::windows_fs::replace_record_slot(&parent, "pending-source", "current")
+        .expect("a fixed slot is replaced in place of the existing record");
+    assert_eq!(
+        std::fs::read(path.join("current")).expect("replaced slot"),
+        b"replacement"
+    );
+    assert!(!path.join("pending-source").exists());
+}
+
+#[test]
 fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versions() {
     support::assert_user_principal_token();
     let fixture = tempfile::tempdir().expect("per-user activation fixture");
