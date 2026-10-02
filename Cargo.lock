@@ -1551,6 +1551,7 @@ dependencies = [
  "getrandom 0.4.3",
  "keld-guard",
  "keld-ipc",
+ "keld-native",
  "keld-runtime",
  "keld-wv",
  "nix",

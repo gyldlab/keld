@@ -1647,6 +1647,56 @@ fn privilege_metadata_strip() {
 }
 
 #[test]
+fn macos_t3_adapter_recorder_denied_read_zero_allowed_nonzero() {
+    let fixture = OwnedRoot::new("t3-adapter-recorder");
+    let root = fixture.path().join("granted");
+    std::fs::create_dir(&root).expect("create recorder root");
+    let allowed = root.join("allowed.txt");
+    std::fs::write(&allowed, b"allowed-recorder").expect("seed recorder file");
+    let verified = subtree_manifest(fixture.path(), &root);
+    let broker = FsBroker::prepare(&verified).expect("prepare recorder broker");
+    let cancelled = AtomicBool::new(false);
+
+    let denied = fixture.path().join("outside.txt");
+    fs_test_reset_counters();
+    let error = broker
+        .read(
+            &verified,
+            Principal::AppProcess,
+            &spelling(&denied),
+            &cancelled,
+        )
+        .expect_err("out-of-scope recorder read must deny");
+    assert_eq!(error.code(), "KELD-GUARD002");
+    let denied_counters = fs_test_counters();
+    assert_eq!(denied_counters.walk_entries, 0);
+    assert_eq!(denied_counters.target_opens, 0);
+    assert_eq!(denied_counters.content_reads, 0);
+
+    fs_test_reset_counters();
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&allowed),
+                &cancelled,
+            )
+            .expect("allowed recorder read"),
+        b"allowed-recorder"
+    );
+    let allowed_counters = fs_test_counters();
+    assert!(
+        allowed_counters.target_opens > 0,
+        "allowed read never entered the production target adapter"
+    );
+    assert!(
+        allowed_counters.content_reads > 0,
+        "allowed read never entered production content I/O"
+    );
+}
+
+#[test]
 #[ignore = "requires a non-virtualized macOS device with /dev/disk0 and set-ID semantics"]
 fn macos_retained_filesystem_acceptance_emitter() {
     let begin = emit_environment();
