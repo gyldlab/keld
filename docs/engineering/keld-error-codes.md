@@ -788,6 +788,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: An immutable Windows version could not be confirmed at its final publication boundary
 - fix: Preserve the named stage and any transaction journal. If the destination may exist, do not select it from directory presence; inspect protected state and use journal-bound recovery before retrying.
 
+## KELD-UPDATE-016
+
+- crate: keld-update
+- message: The common journaled activation transaction refused or could not confirm a step
+- fix: If no protected record changed, keep the current installation and retry with the exact attempt, health receipt and retirement witness. Otherwise preserve the activation journal and versions and continue only through journal-bound recovery under the writer lease after the process family is proven retired.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

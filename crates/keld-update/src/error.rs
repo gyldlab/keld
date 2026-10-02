@@ -18,6 +18,16 @@ pub enum VersionPublicationOutcome {
     DestinationUnconfirmed,
 }
 
+/// Whether an activation-transaction refusal may follow a durable protected write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationEffect {
+    /// Refused before this call replaced, published, retired or removed any protected record.
+    ProtectedStateUnchanged,
+    /// A durable step may have been written. The journal, if present, is authoritative and
+    /// only journal-bound recovery under the writer lease may continue the attempt.
+    JournalBoundRecoveryRequired,
+}
+
 impl ProvenanceUnavailable {
     const fn as_str(self) -> &'static str {
         match self {
@@ -219,6 +229,15 @@ pub enum UpdateError {
         /// Non-secret failure detail.
         detail: String,
     },
+    /// The common journaled activation transaction refused or could not confirm a step.
+    Activation {
+        /// Transaction boundary that refused the operation.
+        step: &'static str,
+        /// Whether protected state may have changed before the refusal.
+        effect: ActivationEffect,
+        /// Non-secret failure detail.
+        detail: String,
+    },
 }
 
 impl UpdateError {
@@ -241,6 +260,7 @@ impl UpdateError {
             Self::ArchiveInvalid { .. } => "KELD-UPDATE-011",
             Self::Extraction { .. } => "KELD-UPDATE-012",
             Self::VersionPublication { .. } => "KELD-UPDATE-015",
+            Self::Activation { .. } => "KELD-UPDATE-016",
         }
     }
 }
@@ -325,27 +345,57 @@ impl fmt::Display for UpdateError {
                 incomplete_stage,
                 step,
                 detail,
-            } => {
-                write!(
-                    f,
-                    "KELD-UPDATE-012: Windows extraction {step} failed ({detail}). "
-                )?;
-                if let Some(name) = incomplete_stage {
-                    write!(
-                        f,
-                        "Preserve any incomplete stage at `{name}` for diagnosis; it is not a runnable version. "
-                    )?;
-                }
-                f.write_str("Keep the current installation and repair the protected staging root or artifact before retrying.")
-            }
+            } => fmt_extraction_error(f, incomplete_stage.as_deref(), step, detail),
             Self::VersionPublication {
                 version,
                 stage_name,
                 outcome,
                 detail,
             } => fmt_version_publication_error(f, version, stage_name, *outcome, detail),
+            Self::Activation {
+                step,
+                effect,
+                detail,
+            } => fmt_activation_error(f, step, *effect, detail),
         }
     }
+}
+
+fn fmt_activation_error(
+    f: &mut fmt::Formatter<'_>,
+    step: &str,
+    effect: ActivationEffect,
+    detail: &str,
+) -> fmt::Result {
+    match effect {
+        ActivationEffect::ProtectedStateUnchanged => write!(
+            f,
+            "KELD-UPDATE-016: activation {step} refused ({detail}). No protected record was changed by this call; keep the current installation and retry only with an exact attempt, receipt and retirement witness."
+        ),
+        ActivationEffect::JournalBoundRecoveryRequired => write!(
+            f,
+            "KELD-UPDATE-016: activation {step} was not confirmed ({detail}). A protected record may have changed; preserve the activation journal and versions, and continue only through journal-bound recovery under the writer lease after the process family is proven retired."
+        ),
+    }
+}
+
+fn fmt_extraction_error(
+    f: &mut fmt::Formatter<'_>,
+    incomplete_stage: Option<&str>,
+    step: &str,
+    detail: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-012: Windows extraction {step} failed ({detail}). "
+    )?;
+    if let Some(name) = incomplete_stage {
+        write!(
+            f,
+            "Preserve any incomplete stage at `{name}` for diagnosis; it is not a runnable version. "
+        )?;
+    }
+    f.write_str("Keep the current installation and repair the protected staging root or artifact before retrying.")
 }
 
 fn fmt_version_publication_error(

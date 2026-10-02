@@ -1169,11 +1169,17 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
             "QF1 composition cannot modify {name}"
         );
     }
-    drop(inspection);
     assert!(
         load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
         "matching or mismatched QF1 cannot bypass the ordinary pending-journal refusal"
     );
+    // The host composes the authenticated zero witness into the exact updater binding.
+    let witnessed = crate::ProcessFamilyRetirement::from_exact_zero_observation(
+        *retired_binding.installation_id(),
+        *retired_binding.attempt_id(),
+        *retired_binding.lifecycle_channel_id(),
+    );
+    let recovered = inspection.recover(&witnessed, [0x55; 32]);
     writeln!(keeper.stdin.as_mut().expect("keeper stdin"), "EXIT")
         .expect("release keeper helper after QF1 evidence capture");
     drop(keeper.stdin.take());
@@ -1182,17 +1188,65 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
         "QF1_KEEPER_EXIT"
     );
     assert!(keeper.wait().expect("wait keeper").success());
-    assert_eq!(
-        std::fs::read(&journal_path).expect("journal after composition"),
-        journal_before
-    );
-    for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
-        assert_eq!(
-            std::fs::read(trust.installation.update_root.join(name))
-                .expect("pointer after composition"),
-            *before
+    if substitution != QfBindingSubstitution::None {
+        assert!(
+            matches!(
+                recovered,
+                Err(crate::UpdateError::Activation {
+                    step: "process-family retirement binding",
+                    effect: crate::ActivationEffect::ProtectedStateUnchanged,
+                    ..
+                })
+            ),
+            "a QF1 witness for another attempt or channel authorizes no write: {recovered:?}"
         );
+        assert_eq!(
+            std::fs::read(&journal_path).expect("journal after composition"),
+            journal_before
+        );
+        for (name, before) in pointer_names.into_iter().zip(&pointers_before) {
+            assert_eq!(
+                std::fs::read(trust.installation.update_root.join(name))
+                    .expect("pointer after composition"),
+                *before
+            );
+        }
+        return;
     }
+    let crate::WindowsRecoveryOutcome::AwaitingHealth(attempt) =
+        recovered.expect("the exact QF1 witness authorizes journal-bound recovery")
+    else {
+        panic!("a publish-pending journal resumes to a live awaiting-health attempt");
+    };
+    assert_eq!(attempt.attempt_id(), &attempt_id);
+    assert_eq!(attempt.lifecycle_channel_id(), &channel_id);
+    assert_eq!(attempt.candidate().version, "2.0.0");
+    let resolution = attempt
+        .roll_back(crate::ActivationFailureClass::ProcessCrash, &witnessed)
+        .expect("the same retirement witness rolls the resumed attempt back");
+    assert_eq!(
+        resolution.outcome(),
+        crate::WindowsActivationOutcome::RolledBack
+    );
+    assert_eq!(resolution.current(), &trust.installation.baseline);
+    assert!(!journal_path.exists(), "resolution removes the journal");
+    assert!(
+        !trust
+            .installation
+            .update_root
+            .join("versions")
+            .join("2.0.0")
+            .exists(),
+        "the failed candidate is retired before journal removal"
+    );
+    let reopened = load_windows_activation_write_snapshot(&trust, &verifier)
+        .expect("the resolved installation admits the ordinary writer");
+    assert_eq!(
+        reopened.version_floor(),
+        "2.0.0",
+        "rollback keeps the floor"
+    );
+    assert_eq!(reopened.current(), &trust.installation.baseline);
 }
 
 #[test]
@@ -1828,7 +1882,7 @@ fn higher_release(
     higher_release_version(verifier, observation, "2.0.0")
 }
 
-fn higher_release_version(
+pub(super) fn higher_release_version(
     verifier: &crate::UpdateVerifier,
     observation: &crate::ProvenanceObservation,
     version: &str,
@@ -1985,7 +2039,7 @@ fn copy_fixture_tree(
     }
 }
 
-fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineTrust {
+pub(super) fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineTrust {
     let install_path = root.join("KeldPerUserFixture");
     let mut trust = support::trust_for(&install_path);
     trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;

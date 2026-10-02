@@ -23,8 +23,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, GetDriveTypeW, GetFinalPathNameByHandleW,
-    GetVolumeInformationByHandleW, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE,
-    VOLUME_NAME_GUID, WRITE_DAC,
+    GetVolumeInformationByHandleW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_GUID, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -186,8 +186,75 @@ pub(crate) fn require_volume_root_handle(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Fixed mutable record slots that the activation transaction may replace.
+///
+/// Version directories, provenance, `.complete` markers and the activation lease are
+/// deliberately absent: they are absent-target publications or never replaced.
+const REPLACEABLE_RECORD_SLOTS: [&str; 5] = [
+    "activation-journal",
+    "version-floor",
+    "current",
+    "last-known-good",
+    "previous-known-good",
+];
+
 /// Publishes to an absent sibling using the retained parent's actual volume path.
 pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io::Result<()> {
+    let (source, destination) = sibling_paths(parent, source, destination)?;
+    // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
+    // this synchronous call and are distinct single-component siblings under the
+    // retained parent's observed volume-GUID path. The caller retains protected
+    // ancestry and exclusive bootstrap ownership. The sole fixed flag requests
+    // write-through; replacement, cross-volume copy and delayed work are absent.
+    let success = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if success == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Replaces one fixed activation record slot with a prepared same-parent sibling.
+///
+/// The destination must be one of the closed mutable record slots; every other leaf
+/// refuses before the system call. The caller holds the stable share-zero activation
+/// lease and has already flushed and read back the protected sibling.
+pub(crate) fn replace_record_slot(parent: &File, source: &str, slot: &str) -> io::Result<()> {
+    if !REPLACEABLE_RECORD_SLOTS.contains(&slot) {
+        return Err(unsupported(
+            "replacement is limited to the fixed activation record slots",
+        ));
+    }
+    let (source, destination) = sibling_paths(parent, source, slot)?;
+    // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
+    // this synchronous call and are distinct single-component siblings under the
+    // retained parent's observed volume-GUID path. The destination is one fixed
+    // record slot; the flags are exactly replace-existing plus write-through, so a
+    // directory destination fails and copy, cross-volume and delayed work are absent.
+    let success = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if success == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Builds checked NUL-terminated sibling paths under the retained parent's volume path.
+fn sibling_paths(
+    parent: &File,
+    source: &str,
+    destination: &str,
+) -> io::Result<(Vec<u16>, Vec<u16>)> {
     if source.eq_ignore_ascii_case(destination) {
         return Err(unsupported(
             "publication source and destination must differ",
@@ -210,24 +277,7 @@ pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io:
         units.push(0);
         Ok(units)
     };
-    let source = path(source)?;
-    let destination = path(destination)?;
-    // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
-    // this synchronous call and are distinct single-component siblings under the
-    // retained parent's observed volume-GUID path. The caller retains protected
-    // ancestry and exclusive bootstrap ownership. The sole fixed flag requests
-    // write-through; replacement, cross-volume copy and delayed work are absent.
-    let success = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if success == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    Ok((path(source)?, path(destination)?))
 }
 
 fn volume_guid_root(path: &[u16]) -> io::Result<[u16; VOLUME_GUID_ROOT_UNITS + 1]> {

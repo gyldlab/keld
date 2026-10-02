@@ -175,3 +175,286 @@ fn recovery_rejects_a_prior_floor_below_journaled_known_good_artifacts() {
         "a transaction cannot claim a historical floor below its selected rollback state"
     );
 }
+
+/// Owned protected slots for the pure trace model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Slots {
+    floor: String,
+    current: ArtifactIdentity,
+    last_known_good: ArtifactIdentity,
+    previous_known_good: Option<ArtifactIdentity>,
+    retiree_present: bool,
+}
+
+impl Slots {
+    fn view(&self) -> ProtectedSlots<'_> {
+        ProtectedSlots {
+            version_floor: &self.floor,
+            current: &self.current,
+            last_known_good: &self.last_known_good,
+            previous_known_good: self.previous_known_good.as_ref(),
+        }
+    }
+}
+
+fn prior_slots(journal: &ActivationJournal) -> Slots {
+    Slots {
+        floor: journal.prior_floor.clone(),
+        current: journal.rollback_target.clone(),
+        last_known_good: journal.prior_last_known_good.clone(),
+        previous_known_good: journal.prior_previous_known_good.clone(),
+        retiree_present: true,
+    }
+}
+
+/// Applies one step with the effect the approved spec assigns to it (§4 steps 3-8).
+/// This is the specification's write list, not the Windows executor under test.
+fn apply_spec_effect(journal: &mut ActivationJournal, slots: &mut Slots, step: ActivationStep) {
+    match step {
+        ActivationStep::AdvanceFloor => slots.floor = journal.candidate.version.clone(),
+        ActivationStep::SelectCandidate => slots.current = journal.candidate.clone(),
+        ActivationStep::EnterAwaitingHealth => journal.phase = ActivationPhase::AwaitingHealth,
+        ActivationStep::PreservePriorKnownGood => {
+            slots.previous_known_good = Some(journal.prior_last_known_good.clone());
+        }
+        ActivationStep::CommitCandidate => slots.last_known_good = journal.candidate.clone(),
+        ActivationStep::RestoreRollbackTarget => slots.current = journal.rollback_target.clone(),
+        ActivationStep::RetireVersion => slots.retiree_present = false,
+        ActivationStep::AwaitHealth | ActivationStep::RemoveJournal => {
+            panic!("{step:?} is a terminal decision, not a slot write")
+        }
+    }
+}
+
+/// Runs the step function from `slots` until a terminal decision, recording every step.
+fn trace(journal: &mut ActivationJournal, slots: &mut Slots) -> Vec<ActivationStep> {
+    let mut steps = Vec::new();
+    loop {
+        let step = next_activation_step(journal, &slots.view(), slots.retiree_present)
+            .unwrap_or_else(|refusal| panic!("on-trace state refused: {refusal:?} at {slots:?}"));
+        steps.push(step);
+        if matches!(
+            step,
+            ActivationStep::AwaitHealth | ActivationStep::RemoveJournal
+        ) {
+            return steps;
+        }
+        apply_spec_effect(journal, slots, step);
+        assert!(
+            steps.len() <= 8,
+            "step function did not terminate: {steps:?}"
+        );
+    }
+}
+
+#[test]
+fn every_persisted_cut_resumes_the_exact_next_spec_step_for_commit_and_rollback() {
+    use ActivationStep::{
+        AdvanceFloor, AwaitHealth, CommitCandidate, EnterAwaitingHealth, PreservePriorKnownGood,
+        RemoveJournal, RestoreRollbackTarget, RetireVersion, SelectCandidate,
+    };
+    let start = journal(ActivationPhase::PublishPending);
+    let mut forward = start.clone();
+    let mut slots = prior_slots(&forward);
+    let publish = trace(&mut forward, &mut slots);
+    assert_eq!(
+        publish,
+        [
+            AdvanceFloor,
+            SelectCandidate,
+            EnterAwaitingHealth,
+            AwaitHealth
+        ]
+    );
+
+    let mut committed = forward.clone();
+    committed.phase = ActivationPhase::HealthAccepted {
+        health_receipt_digest: [0x77; 32],
+    };
+    let mut commit_slots = slots.clone();
+    let commit = trace(&mut committed, &mut commit_slots);
+    assert_eq!(
+        commit,
+        [
+            PreservePriorKnownGood,
+            CommitCandidate,
+            RetireVersion,
+            RemoveJournal
+        ]
+    );
+    assert_eq!(commit_slots.current, start.candidate);
+    assert_eq!(commit_slots.last_known_good, start.candidate);
+    assert_eq!(
+        commit_slots.previous_known_good.as_ref(),
+        Some(&start.prior_last_known_good)
+    );
+    assert_eq!(
+        commit_slots.floor, start.candidate.version,
+        "commit keeps the advanced floor"
+    );
+
+    let mut rolled_back = forward;
+    rolled_back.phase = ActivationPhase::RollbackPending {
+        failure: ActivationFailureClass::HealthTimeout,
+    };
+    let mut rollback_slots = slots;
+    let rollback = trace(&mut rolled_back, &mut rollback_slots);
+    assert_eq!(
+        rollback,
+        [RestoreRollbackTarget, RetireVersion, RemoveJournal]
+    );
+    assert_eq!(rollback_slots.current, start.rollback_target);
+    assert_eq!(rollback_slots.last_known_good, start.prior_last_known_good);
+    assert_eq!(
+        rollback_slots.floor, start.candidate.version,
+        "rollback never lowers the trust floor"
+    );
+
+    // Re-entering at each intermediate persisted cut must resume the identical suffix:
+    // forward progress and recovery are one function, so a resumed owner cannot diverge.
+    for (phase, expected) in [
+        (ActivationPhase::PublishPending, &publish),
+        (
+            ActivationPhase::HealthAccepted {
+                health_receipt_digest: [0x77; 32],
+            },
+            &commit,
+        ),
+        (
+            ActivationPhase::RollbackPending {
+                failure: ActivationFailureClass::HealthTimeout,
+            },
+            &rollback,
+        ),
+    ] {
+        let mut journal = start.clone();
+        journal.phase = phase.clone();
+        let mut slots = prior_slots(&journal);
+        if !matches!(phase, ActivationPhase::PublishPending) {
+            slots.floor = journal.candidate.version.clone();
+            slots.current = journal.candidate.clone();
+        }
+        for cut in 0..expected.len() {
+            let mut resumed_journal = journal.clone();
+            let mut resumed_slots = slots.clone();
+            for step in &expected[..cut] {
+                apply_spec_effect(&mut resumed_journal, &mut resumed_slots, *step);
+            }
+            assert_eq!(
+                trace(&mut resumed_journal, &mut resumed_slots),
+                expected[cut..],
+                "{phase:?} cut {cut} must resume the uninterrupted suffix"
+            );
+        }
+    }
+}
+
+#[test]
+fn retirement_targets_only_the_unreferenced_version_after_its_pointer_steps() {
+    let mut accepted = journal(ActivationPhase::HealthAccepted {
+        health_receipt_digest: [0x77; 32],
+    });
+    let mut slots = prior_slots(&accepted);
+    slots.floor = accepted.candidate.version.clone();
+    slots.current = accepted.candidate.clone();
+    assert_eq!(
+        retirement_due(&accepted, &slots.view()),
+        None,
+        "the older version stays referenced until both known-good publications land"
+    );
+    slots.previous_known_good = Some(accepted.prior_last_known_good.clone());
+    assert_eq!(retirement_due(&accepted, &slots.view()), None);
+    slots.last_known_good = accepted.candidate.clone();
+    assert_eq!(
+        retirement_due(&accepted, &slots.view()),
+        accepted.prior_previous_known_good.as_ref(),
+        "commit retires exactly the superseded previous-known-good"
+    );
+
+    accepted.prior_previous_known_good = None;
+    assert_eq!(
+        retirement_due(&accepted, &slots.view()),
+        None,
+        "the first update has no superseded version to retire"
+    );
+    assert_eq!(
+        next_activation_step(&accepted, &slots.view(), true),
+        Ok(ActivationStep::RemoveJournal)
+    );
+
+    let rollback = journal(ActivationPhase::RollbackPending {
+        failure: ActivationFailureClass::CandidateLaunch,
+    });
+    let mut slots = prior_slots(&rollback);
+    slots.floor = rollback.candidate.version.clone();
+    slots.current = rollback.candidate.clone();
+    assert_eq!(
+        retirement_due(&rollback, &slots.view()),
+        None,
+        "a selected candidate is never retired"
+    );
+    slots.current = rollback.rollback_target.clone();
+    assert_eq!(
+        retirement_due(&rollback, &slots.view()),
+        Some(&rollback.candidate)
+    );
+    assert_eq!(
+        next_activation_step(&rollback, &slots.view(), false),
+        Ok(ActivationStep::RemoveJournal),
+        "an already-retired candidate resolves by removing the journal"
+    );
+    for phase in [
+        ActivationPhase::PublishPending,
+        ActivationPhase::AwaitingHealth,
+    ] {
+        let journal = journal(phase);
+        let mut slots = prior_slots(&journal);
+        slots.floor = journal.candidate.version.clone();
+        slots.current = journal.candidate.clone();
+        assert_eq!(retirement_due(&journal, &slots.view()), None);
+    }
+}
+
+#[test]
+fn off_trace_slots_refuse_in_every_phase_without_a_write_step() {
+    let publish = journal(ActivationPhase::PublishPending);
+    let mut above = prior_slots(&publish);
+    above.floor = "9.0.0".to_owned();
+    assert_eq!(
+        next_activation_step(&publish, &above.view(), true),
+        Err(RecoveryRefusal::FloorMismatch)
+    );
+
+    let awaiting = journal(ActivationPhase::AwaitingHealth);
+    let unselected = prior_slots(&awaiting);
+    assert_eq!(
+        next_activation_step(&awaiting, &unselected.view(), true),
+        Err(RecoveryRefusal::FloorMismatch),
+        "awaiting-health with the prior floor is not a persisted cut"
+    );
+
+    let accepted = journal(ActivationPhase::HealthAccepted {
+        health_receipt_digest: [0x77; 32],
+    });
+    let mut wrong_lkg = prior_slots(&accepted);
+    wrong_lkg.floor = accepted.candidate.version.clone();
+    wrong_lkg.current = accepted.candidate.clone();
+    wrong_lkg.last_known_good = accepted.candidate.clone();
+    assert_eq!(
+        next_activation_step(&accepted, &wrong_lkg.view(), true),
+        Err(RecoveryRefusal::KnownGoodMismatch),
+        "last-known-good cannot be committed before previous-known-good is preserved"
+    );
+
+    let rollback = journal(ActivationPhase::RollbackPending {
+        failure: ActivationFailureClass::ProcessCrash,
+    });
+    let mut unrelated = prior_slots(&rollback);
+    unrelated.floor = rollback.candidate.version.clone();
+    unrelated.current.content_blake3 = [0xee; 32];
+    assert_eq!(
+        next_activation_step(&rollback, &unrelated.view(), true),
+        Err(RecoveryRefusal::CurrentFloorMismatch),
+        "rollback never adopts an unrelated current artifact"
+    );
+}

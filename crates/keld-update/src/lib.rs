@@ -12,8 +12,10 @@
 //! fixed-NTFS staging handles and returns only an unpublished incomplete stage.
 //! On Windows, a separate one-shot SYSTEM baseline initializer publishes protected
 //! installer provenance last. Its read-only loader retains protected identity/floor
-//! handles; activation, current-image signer verification and health remain outside
-//! this slice.
+//! handles. Under the exclusive writer lease, one common journaled transaction
+//! activates a published version, binds an exact attempt health receipt, commits or
+//! rolls back, and resumes from every persisted cut; candidate launch, health
+//! observation and current-image signer verification remain host-owned.
 //! A [`ProvenanceObservation::Protected`] test value
 //! proves policy logic only; it is not real package-signature or ACL evidence. The full
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and
@@ -44,8 +46,8 @@ mod tests;
 pub use archive::{ArchiveEntry, ArchiveEntryKind, ValidatedArchive};
 pub use baseline::{BaselineVerifier, SelectedBaseline, VerifiedBaseline};
 pub use error::{
-    ArtifactDomain, ManifestIdentityField, ProvenanceField, ProvenanceUnavailable, UpdateError,
-    VersionPublicationOutcome,
+    ActivationEffect, ArtifactDomain, ManifestIdentityField, ProvenanceField,
+    ProvenanceUnavailable, UpdateError, VersionPublicationOutcome,
 };
 pub use full::VerifiedFull;
 #[cfg(feature = "fuzzing")]
@@ -57,13 +59,17 @@ pub use provenance::{
     InstallOwner, InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId,
     UpdateVerifier,
 };
+#[cfg(windows)]
+pub use records::ActivationFailureClass;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub use records::fuzz_activation_journal;
 #[cfg(windows)]
 pub use windows_baseline::{
-    LoadedWindowsBaseline, WindowsActivationWriteSnapshot, WindowsBaselineReceipt,
-    WindowsBaselineTrust, WindowsRecoveryInspection, initialize_windows_baseline,
+    ActivationHealthReceipt, LoadedWindowsBaseline, ProcessFamilyRetirement,
+    WindowsActivationAttempt, WindowsActivationOutcome, WindowsActivationResolution,
+    WindowsActivationWriteSnapshot, WindowsBaselineReceipt, WindowsBaselineTrust,
+    WindowsRecoveryInspection, WindowsRecoveryOutcome, initialize_windows_baseline,
     initialize_windows_machine_uac_baseline, initialize_windows_per_user_baseline,
     load_windows_activation_write_snapshot, load_windows_baseline,
     load_windows_recovery_inspection,
