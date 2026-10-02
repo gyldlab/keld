@@ -423,6 +423,32 @@ impl FsBroker {
         }
     }
 
+    /// Handles one already-admitted filesystem request through this broker.
+    ///
+    /// This is the single request-level adapter shared by the standalone FS
+    /// session and the shipping primary app-link router. Authorization remains
+    /// inside [`Self::read`] / [`Self::write`]; callers cannot supply a permit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`FsError`] as the selected read or write operation.
+    pub fn handle_request(
+        &self,
+        verified: &VerifiedManifest,
+        principal: Principal,
+        request: FsRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<FsResponse, FsError> {
+        match request {
+            FsRequest::Read { path } => self
+                .read(verified, principal, &path, cancelled)
+                .map(|bytes| FsResponse::Read { bytes }),
+            FsRequest::Write { path, bytes } => self
+                .write(verified, principal, &path, &bytes, cancelled)
+                .map(|()| FsResponse::Write),
+        }
+    }
+
     fn verify_snapshot(&self, verified: &VerifiedManifest) -> Result<(), FsError> {
         let presented = verified.verified_sha256();
         if self.prepared_digest != presented {
@@ -1405,14 +1431,7 @@ pub fn serve_fs_session<S: Read + Write>(
             Err(error) => return Err(error),
         };
         let request: FsRequest = decode(&payload)?;
-        let result = match request {
-            FsRequest::Read { path } => broker
-                .read(verified, principal, &path, cancelled)
-                .map(|bytes| FsResponse::Read { bytes }),
-            FsRequest::Write { path, bytes } => broker
-                .write(verified, principal, &path, &bytes, cancelled)
-                .map(|()| FsResponse::Write),
-        };
+        let result = broker.handle_request(verified, principal, request, cancelled);
         match result {
             Ok(response) => {
                 let bytes = encode(&response)?;

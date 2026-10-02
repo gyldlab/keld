@@ -15,6 +15,7 @@ profile-test-hooks = ["keld-wv/profile-test-hooks"]
 [dependencies]
 keld-ipc = { workspace = true }
 keld-guard = { workspace = true }
+keld-native = { workspace = true }
 keld-runtime = { workspace = true }
 keld-wv = { workspace = true }
 serde = { workspace = true }
