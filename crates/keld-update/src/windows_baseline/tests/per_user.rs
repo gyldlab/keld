@@ -34,6 +34,13 @@ fn fixture() -> (tempfile::TempDir, WindowsBaselineTrust, PathBuf) {
         trust.installation.install_root.starts_with(&local),
         "the fixture installation is beneath the owner's LocalAppData"
     );
+    let install = support::directory(&trust.installation.install_root);
+    assert_eq!(
+        trust.volume_guid,
+        crate::windows_fs::qualified_volume_root(&install)
+            .expect("retain the actual LocalAppData volume identity"),
+        "fixture trust must be bound to the volume containing LocalAppData"
+    );
     (temp, trust, source)
 }
 

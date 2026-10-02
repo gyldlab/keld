@@ -145,9 +145,14 @@ pub(super) fn trust_for(install: &Path) -> WindowsBaselineTrust {
     identity.install_root = install.to_path_buf();
     identity.update_root = install.join("updates");
     identity.baseline.content_blake3 = *blake3::hash(GOLDEN).as_bytes();
-    // Trusted test configuration observes its explicitly selected volume, never the
-    // untrusted on-disk provenance whose equality is being tested.
-    let volume = crate::windows_fs::qualified_volume_root(&directory(Path::new(r"C:\")))
+    // Trusted test configuration observes the fixture's selected volume, never the
+    // untrusted on-disk provenance whose equality is being tested. Some fixtures have
+    // not created the install leaf yet, so bind to its nearest existing ancestor.
+    let volume_anchor = install
+        .ancestors()
+        .find(|candidate| candidate.is_dir())
+        .expect("fixture has an existing install ancestor");
+    let volume = crate::windows_fs::qualified_volume_root(&directory(volume_anchor))
         .expect("native fixed NTFS fixture volume");
     WindowsBaselineTrust {
         installation: identity,
