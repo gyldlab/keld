@@ -29,6 +29,19 @@ expect_flags() {
     echo "ok: $label"
 }
 
+expect_flag_value() {
+    local label="$1"
+    local flag="$2"
+    local expected="$3"
+    local actual
+    actual="$(sed -n "s/^${flag}=//p" <<<"$4")"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "FAIL: $label (expected $flag=$expected, got $flag=$actual)" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
 expect_mermaid_flag() {
     local label="$1"
     local expected="$2"
@@ -139,6 +152,20 @@ docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
 expect_flags "docs-only change avoids Rust and GUI lanes" "$docs_only" "$docs_classification"
 expect_mermaid_flag "path-only Markdown classification fails safe without old/new content" true "$docs_classification"
 expect_empty_packages "docs-only change selects no package" "$docs_classification"
+
+crate_document_classification="$(result_for_paths crates/keld-compat/fixtures/lifecycle-corpus/report.md)"
+expect_flag_value "a Markdown fixture inside a crate runs its Rust tests" rust true "$crate_document_classification"
+expect_package_token "a Markdown fixture selects the crate that embeds it" keld-compat "$crate_document_classification"
+
+consumed_document_classification="$(result_for_paths docs/engineering/keld-error-codes.md)"
+expect_flag_value "a document a crate names in a string literal runs its Rust tests" rust true "$consumed_document_classification"
+expect_package_token "a consumed document selects the crate that reads it" keld-cli "$consumed_document_classification"
+
+cited_document_classification="$(result_for_paths docs/architecture/01-overview.md README.md)"
+expect_flag_value "a document only cited in Rust comments or URLs stays docs-only" rust false "$cited_document_classification"
+
+member_manifest_classification="$(result_for_paths crates/keld-update/Cargo.toml)"
+expect_flag_value "a member manifest runs the dependency-policy gate" deny true "$member_manifest_classification"
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
 expect_flags "public audit verifier and evidence stay in docs gate" "$docs_only" "$audit_docs_classification"

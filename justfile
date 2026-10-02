@@ -28,7 +28,7 @@ ci-route lane full:
     selected=$(tools/ci_changes.sh local | sed -n "s/^$1=//p")
     case "$selected" in
         true) just "$2" ;;
-        false) echo "$1 route: skipped; no $1 input changed against origin/main." ;;
+        false) echo "$1 route: skipped; no $1 input changed against ${KELD_CI_BASE_REF:-origin/main}." ;;
         *) echo "$1 route: invalid applicability '$selected'; refusing skipped-green result." >&2; exit 1 ;;
     esac
 

@@ -108,7 +108,7 @@ claim no enforcement; report unsupported/untrusted clients.
    status, handoff, and current-documentation receipt rules owned by `.agents/coordination.md`
    to every applicable OS or external-semantic criterion.
 5. **Verify**. `just ci` is the exact routine local gate: policy gates always run, and
-   the hosted router selects the Rust, TypeScript, deny and Mermaid lanes by input.
+   `tools/ci_changes.sh local` selects the Rust, TypeScript, deny and Mermaid lanes.
    `just ci-full` forces every lane.
    Also run the spec's test plan. Diagram changes include the visual/render report from
    `.agents/testing.md`; included-source changes run `just llms-test` and `just llms-check`

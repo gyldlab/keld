@@ -327,6 +327,19 @@ const ROUTED_LOCAL_LANES: [(&str, &str, &[&str]); 4] = [
     ("deny", "deny", &["deny"]),
 ];
 
+/// The exact `ci-route` body: ask the shared router once, dispatch a selected lane,
+/// report a skip, and refuse any other answer rather than returning skipped-green.
+const CI_ROUTE_COMMANDS: [&str; 8] = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "selected=$(tools/ci_changes.sh local | sed -n \"s/^$1=//p\")",
+    "case \"$selected\" in",
+    "true) just \"$2\" ;;",
+    "false) echo \"$1 route: skipped; no $1 input changed against ${KELD_CI_BASE_REF:-origin/main}.\" ;;",
+    "*) echo \"$1 route: invalid applicability '$selected'; refusing skipped-green result.\" >&2; exit 1 ;;",
+    "esac",
+];
+
 fn just_dependencies<'a>(justfile: &'a str, recipe: &str) -> Option<Vec<&'a str>> {
     let prefix = format!("{recipe}:");
     justfile
@@ -380,19 +393,11 @@ fn check_routed_local_gates(root: &Path) -> Result<(), String> {
         ));
     }
     let route = just_recipe_commands(&justfile, "ci-route lane full")
-        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `ci-route lane full:`."))?
-        .join("
-");
-    for input in ["tools/ci_changes.sh local", "just \"$2\"", "route: skipped"] {
-        if !route.contains(input) {
-            return Err(format!(
-                "CI-HYGIENE: `{JUSTFILE}` `ci-route:` must route `{input}` and fail closed on unknown applicability."
-            ));
-        }
-    }
-    if !route.contains("*)") || !route.contains("exit 1 ;;") {
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `ci-route lane full:`."))?;
+    if route.iter().map(String::as_str).ne(CI_ROUTE_COMMANDS.iter().copied()) {
         return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `ci-route:` must reject unknown applicability instead of returning a skipped-green result."
+            "CI-HYGIENE: `{JUSTFILE}` `ci-route lane full:` must run exactly the shared router, dispatch the selected lane, and fail closed on unknown applicability; got `{}`.",
+            route.join(" | ")
         ));
     }
     Ok(())
@@ -2769,8 +2774,8 @@ mod tests {
                 "    selected=$(tools/ci_changes.sh local | sed -n \"s/^$1=//p\")\n",
                 "    case \"$selected\" in\n",
                 "        true) just \"$2\" ;;\n",
-                "        false) echo \"$1 route: skipped; no $1 input changed.\" ;;\n",
-                "        *) exit 1 ;;\n",
+                "        false) echo \"$1 route: skipped; no $1 input changed against ${KELD_CI_BASE_REF:-origin/main}.\" ;;\n",
+                "        *) echo \"$1 route: invalid applicability '$selected'; refusing skipped-green result.\" >&2; exit 1 ;;\n",
                 "    esac\n",
                 "mermaid-ci: (ci-route \"mermaid\" \"mermaid-full\")\n",
                 "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
@@ -2831,6 +2836,12 @@ mod tests {
                 "force every routed lane",
             ),
             ("just \"$2\"", "true", "fail closed"),
+            ("true) just \"$2\" ;;", "true) echo just \"$2\" ;;", "fail closed"),
+            (
+                "    set -euo pipefail\n    selected",
+                "    set -euo pipefail\n    exit 0\n    selected",
+                "fail closed",
+            ),
         ] {
             let temp = complete_fixture();
             let justfile = read(temp.path(), JUSTFILE).expect("just fixture");
@@ -4327,7 +4338,7 @@ mod tests {
         let justfile = read(temp.path(), JUSTFILE).expect("just fixture");
         temp.write(
             JUSTFILE,
-            &justfile.replace("        *) exit 1 ;;", "        *) echo skipped ;;"),
+            &justfile.replace("refusing skipped-green result.\" >&2; exit 1 ;;", "skipped ;;"),
         );
         let error = check(temp.path()).expect_err("unknown Mermaid route cannot become green");
         assert!(error.contains("unknown applicability"), "{error}");

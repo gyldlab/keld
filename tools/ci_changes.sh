@@ -480,6 +480,70 @@ host_path_is_affected() {
     return 1
 }
 
+# One owner for every path that is a crate input, whether it lives in the crate
+# or is a document a crate's sources name.
+classify_crate_path() {
+    local changed_file="$1"
+    rust="$TRUE"
+    case "$changed_file" in
+        crates/*/tests/fixtures/*) resolve_crate_fixture_consumers "$changed_file" ;;
+    esac
+    local package_name
+    if ! package_name="$(package_for_path "$changed_file")"; then
+        mark_unknown
+        return
+    fi
+    add_changed_package_root "$package_name"
+    msrv="$TRUE"
+    if host_path_is_affected "$changed_file"; then
+        gui="$TRUE"
+    fi
+    # Ubuntu clippy/MSRV apt is for linking WebKitGTK, not for every
+    # reverse-dependent that happens to compile keld-core. keld-compat
+    # and keld-cli still get macOS/Windows clippy plus MSRV on macOS.
+    case "$package_name" in
+        keld-wv | keld-core | keld-host)
+            webkitgtk="$TRUE"
+            ;;
+    esac
+    # A workspace member manifest can add or change a dependency, so it needs
+    # the dependency-policy gate as much as the root manifest. Nested manifests
+    # (fuzz workspaces) are outside the policy graph `cargo deny` checks.
+    if [[ "$changed_file" == crates/*/Cargo.toml && "$changed_file" != crates/*/*/Cargo.toml ]]; then
+        deny="$TRUE"
+    fi
+}
+
+# A crate containing a Markdown-like file, or whose Rust sources name its
+# repository path in a string literal, consumes it. Lookup failure selects every lane.
+resolve_rust_document_consumers() {
+    local changed_file="$1"
+    local consumers
+    local consumer
+    local status=0
+    case "$changed_file" in
+        crates/*/AGENTS.md | crates/*/AGENTS.override.md) return ;;
+        crates/*)
+            classify_crate_path "$changed_file"
+            return
+            ;;
+    esac
+    # Only a string literal naming the path (repo-relative, or the tail of a
+    # relative include) consumes it; a comment that cites a document does not.
+    consumers="$(git grep -l -F -e "\"$changed_file\"" -e "/$changed_file\"" -- 'crates/*.rs' 2>/dev/null)" || status=$?
+    case "$status" in
+        0) ;;
+        1) return ;;
+        *)
+            mark_unknown
+            return
+            ;;
+    esac
+    while IFS= read -r consumer; do
+        [[ -n "$consumer" ]] && classify_crate_path "$consumer"
+    done <<<"$consumers"
+}
+
 classify_path() {
     local changed_file="$1"
 
@@ -496,10 +560,11 @@ classify_path() {
             hygiene="$TRUE"
             ;;
 
-        # Markdown-like content is documentation even if it lives beside a
-        # crate. It cannot alter the compiled host executable.
+        # Markdown-like content is documentation, but a crate can embed or read
+        # it (include_bytes!, include_str!, rustdoc, a repo-relative path).
         *.adoc | *.md | *.mdx | *.rst | *.txt)
             docs="$TRUE"
+            resolve_rust_document_consumers "$changed_file"
             ;;
 
         # The router, merge evaluator, and every workflow can change the
@@ -527,28 +592,7 @@ classify_path() {
             ;;
 
         crates/*)
-            rust="$TRUE"
-            case "$changed_file" in
-                crates/*/tests/fixtures/*) resolve_crate_fixture_consumers "$changed_file" ;;
-            esac
-            local package_name
-            if ! package_name="$(package_for_path "$changed_file")"; then
-                mark_unknown
-                return
-            fi
-            add_changed_package_root "$package_name"
-            msrv="$TRUE"
-            if host_path_is_affected "$changed_file"; then
-                gui="$TRUE"
-            fi
-            # Ubuntu clippy/MSRV apt is for linking WebKitGTK, not for every
-            # reverse-dependent that happens to compile keld-core. keld-compat
-            # and keld-cli still get macOS/Windows clippy plus MSRV on macOS.
-            case "$package_name" in
-                keld-wv | keld-core | keld-host)
-                    webkitgtk="$TRUE"
-                    ;;
-            esac
+            classify_crate_path "$changed_file"
             ;;
 
         # A TypeScript/JavaScript package owns the Bun test lane. Its Rust
