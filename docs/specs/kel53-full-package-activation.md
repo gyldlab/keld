@@ -780,8 +780,8 @@ explicit unjournaled-version repair, admitted when no journal exists and every r
 validates, retires it under the writer lease. The repair first verifies and pins every
 referenced version, removes stale `pending-*` record siblings, and admits for retirement
 only strict-SemVer entries whose completion record names that version in the
-installation's scope; any other unknown or damaged entry refuses the repair before any
-rename.
+installation's scope; any other unknown or damaged entry, including a non-directory under a
+generated name, refuses the repair before any rename and needs manual recovery.
 
 A `PublishPending` journal is resumable under the exclusive writer lease alone: no
 candidate is launched before `AwaitingHealth` is durable, and every live transaction

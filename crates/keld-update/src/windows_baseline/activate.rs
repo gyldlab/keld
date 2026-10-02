@@ -823,7 +823,9 @@ fn abandon_unjournaled(
     cause: &UpdateError,
 ) -> UpdateError {
     let cause = refusal_detail(cause);
-    match retire_unreferenced_versions(roots, referenced) {
+    let retired = admit_unreferenced_versions(roots, referenced)
+        .and_then(|admitted| retire_admitted_versions(roots, &admitted));
+    match retired {
         Ok(_) => UpdateError::activation("start", ActivationEffect::ProtectedStateUnchanged, cause),
         Err(retirement) => UpdateError::activation(
             "start",
@@ -836,19 +838,20 @@ fn abandon_unjournaled(
     }
 }
 
-/// Renames every complete version that no record references to a generated `retired-*`
-/// name and returns the count.
+/// Admits every complete version that no record references for retirement, renaming
+/// nothing, and returns their names.
 ///
-/// Referenced versions (compared case-insensitively, as NTFS resolves them) and generated
-/// diagnostics are skipped. Every other entry must be a strict-SemVer directory whose
-/// completion record names exactly that version within this installation's scope; all
-/// are validated before the first rename, so an unknown or damaged entry refuses with no
-/// rename. The caller holds the exclusive writer lease, keeps the referenced trees
-/// pinned, and has established that no activation journal exists.
-pub(super) fn retire_unreferenced_versions(
+/// Referenced versions (compared case-insensitively, as NTFS resolves them) are skipped.
+/// Generated `incomplete-*`/`retired-*` entries must be non-reparse directories and are
+/// otherwise left alone. Every other entry must be a protected directory whose completion
+/// record names exactly that version within this installation's scope. Any unknown or
+/// damaged entry refuses with its own diagnostic, which needs manual recovery. The caller
+/// holds the exclusive writer lease, keeps the referenced trees pinned, and has
+/// established that no activation journal exists.
+pub(super) fn admit_unreferenced_versions(
     roots: &Roots,
     referenced: &BTreeSet<String>,
-) -> Result<usize, UpdateError> {
+) -> Result<Vec<String>, UpdateError> {
     let mut retiring = Vec::new();
     for entry in roots
         .versions
@@ -863,18 +866,30 @@ pub(super) fn retire_unreferenced_versions(
         if referenced
             .iter()
             .any(|version| version.eq_ignore_ascii_case(&name))
-            || super::is_generated_leaf(&name, "incomplete")
+        {
+            continue;
+        }
+        if super::is_generated_leaf(&name, "incomplete")
             || super::is_generated_leaf(&name, "retired")
         {
+            version_present(roots, &name)?;
             continue;
         }
         super::load::validate_unjournaled_version(roots, &name)?;
         retiring.push(name);
     }
-    for name in &retiring {
+    Ok(retiring)
+}
+
+/// Renames each admitted version to a generated `retired-*` sibling; returns the count.
+pub(super) fn retire_admitted_versions(
+    roots: &Roots,
+    admitted: &[String],
+) -> Result<usize, UpdateError> {
+    for name in admitted {
         retire_version_directory(roots, name)?;
     }
-    Ok(retiring.len())
+    Ok(admitted.len())
 }
 
 /// The step and detail of a lower-level refusal, without its own code or guidance.

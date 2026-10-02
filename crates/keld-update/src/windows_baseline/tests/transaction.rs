@@ -631,31 +631,79 @@ fn the_unjournaled_repair_refuses_a_pending_journal() {
 
 #[test]
 fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename() {
-    for stray in ["9.9.9", "not-a-version"] {
+    for stray in [
+        "unprotected-empty",
+        "not-a-version",
+        "renamed-version",
+        "foreign-scope",
+        "generated-file",
+    ] {
         let fixture = tempfile::tempdir().expect("stray entry fixture");
         let trust = seed_per_user_baseline(fixture.path());
-        let (root, published) = publish(&trust, "2.0.0");
-        drop(root);
-        drop(published);
-        std::fs::create_dir(trust.installation.update_root.join("versions").join(stray))
-            .expect("an entry no writer published");
+        let versions = trust.installation.update_root.join("versions");
+        // Beside a valid unjournaled orphan, an unknown entry must stop the repair before
+        // its first rename; a damaged published tree is itself the only orphan.
+        let damaged_tree = matches!(stray, "renamed-version" | "foreign-scope");
+        if !damaged_tree {
+            let (root, published) = publish(&trust, "2.0.0");
+            drop(root);
+            drop(published);
+        }
+        match stray {
+            "unprotected-empty" => {
+                std::fs::create_dir(versions.join("9.9.9")).expect("an empty directory");
+            }
+            "not-a-version" => {
+                std::fs::create_dir(versions.join("not-a-version")).expect("a stray name");
+            }
+            "renamed-version" => {
+                // A genuine protected tree whose completion record names another version.
+                let (root, published) = publish(&trust, "3.0.0");
+                drop(root);
+                drop(published);
+                std::fs::rename(versions.join("3.0.0"), versions.join("9.9.9"))
+                    .expect("store a complete tree under another version name");
+            }
+            "foreign-scope" => {
+                let (root, published) = publish(&trust, "3.0.0");
+                drop(root);
+                let mut foreign = published;
+                foreign.app_id = "com.example.other".to_owned();
+                let content_size = std::fs::metadata(versions.join("3.0.0").join("content.tar"))
+                    .expect("published archive")
+                    .len();
+                std::fs::write(
+                    versions.join("3.0.0").join(".complete"),
+                    crate::records::encode_complete(&foreign, content_size)
+                        .expect("canonical foreign completion record"),
+                )
+                .expect("rewrite the protected completion record in place");
+            }
+            _ => {
+                std::fs::write(
+                    versions.join(format!("retired-{}", "d".repeat(64))),
+                    b"not a tree",
+                )
+                .expect("a file under a generated directory name");
+            }
+        }
         let before = observe(&trust);
         let error = crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust))
             .expect_err("an unknown or damaged entry refuses the whole repair");
         assert!(
-            matches!(
+            !matches!(
                 error,
                 UpdateError::Activation {
                     effect: ActivationEffect::UnjournaledVersionRetained,
                     ..
                 }
             ),
-            "{stray}: {error:?}"
+            "{stray}: a damaged entry is not a retryable rename failure: {error:?}"
         );
         assert_eq!(
             observe(&trust),
             before,
-            "{stray}: the valid unjournaled 2.0.0 is not retired either"
+            "{stray}: nothing is renamed, not even the valid unjournaled 2.0.0"
         );
     }
 }

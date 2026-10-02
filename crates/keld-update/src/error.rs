@@ -412,7 +412,7 @@ fn fmt_activation_error(
             "The attempt is resolved; only never-selectable leftovers remain, and a later transaction retries their deletion."
         }
         ActivationEffect::UnjournaledVersionRetained => {
-            "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease."
+            "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease. If that repair refuses an unknown or damaged entry, that entry needs manual recovery."
         }
     };
     write!(

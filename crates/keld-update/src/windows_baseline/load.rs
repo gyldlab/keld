@@ -235,7 +235,9 @@ pub fn load_windows_recovery_inspection(
 /// # Errors
 /// Refuses managed or privileged modes, a busy or missing lease, a pending journal (use
 /// journal-bound recovery), any provenance or record inconsistency, and any unknown or
-/// damaged version entry, each before any rename. A failed retirement reports
+/// damaged version entry (including a non-directory under a generated name), each before
+/// any rename and with its own diagnostic: such an entry needs manual recovery, because
+/// repeating the repair cannot fix it. Only a failed rename reports the retryable
 /// [`crate::ActivationEffect::UnjournaledVersionRetained`]. No path changes a record.
 pub fn repair_windows_unjournaled_versions(
     trust: &WindowsBaselineTrust,
@@ -262,8 +264,11 @@ pub fn repair_windows_unjournaled_versions(
     // anything moves, and its open handles keep any later rename away from it.
     let pins = pin_versions(&roots, &state.selected)?;
     super::activate::remove_stale_record_preparations(&roots)?;
+    // An unknown or damaged entry keeps its own diagnostic: repeating the repair cannot
+    // fix it, so it needs manual recovery. Only a failed rename is retryable.
+    let admitted = super::activate::admit_unreferenced_versions(&roots, &referenced)?;
     let retired =
-        super::activate::retire_unreferenced_versions(&roots, &referenced).map_err(|cause| {
+        super::activate::retire_admitted_versions(&roots, &admitted).map_err(|cause| {
             crate::UpdateError::activation(
                 "unjournaled version repair",
                 crate::ActivationEffect::UnjournaledVersionRetained,
