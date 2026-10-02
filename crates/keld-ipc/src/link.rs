@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use crate::receive::{
     AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_primary_app_header,
-    validate_received_header,
+    validate_primary_app_header_with_privileged_call, validate_received_header,
 };
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
@@ -401,6 +401,30 @@ pub fn read_primary_app_frame_interruptible<S: Read>(
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
     read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
         validate_primary_app_header(pending_echo_reply(), header)
+    })
+}
+
+/// Interruptible primary app-link reader with one host-selected privileged CALL channel.
+///
+/// The trusted channel is selected by the host before any frame bytes are inspected.
+/// A matching CALL is validated through `ReceivePolicy::privileged_call_receiver`
+/// before payload allocation; all other primary-session semantics remain unchanged.
+///
+/// # Errors
+///
+/// As `read_primary_app_frame_interruptible`.
+pub fn read_primary_app_frame_interruptible_with_privileged_call<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    pending_echo_reply: impl Fn() -> Option<CorrelationId>,
+    privileged_call_channel: ChannelId,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
+        validate_primary_app_header_with_privileged_call(
+            pending_echo_reply(),
+            Some(privileged_call_channel),
+            header,
+        )
     })
 }
 
