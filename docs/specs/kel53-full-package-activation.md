@@ -28,9 +28,13 @@ KEL-266 T4a amendment: delegated approval comment
 The independent design approval does not replace native qualification or final-diff
 security, unsafe and public-contract review.
 
-KEL-270 T4b amendment (proposed, owner acceptance pending). Four bounded changes to the
-common transaction, each narrowing a liveness or replay gap; none grants authority beyond
-the existing exclusive writer lease, and item 4 adds one public repair entry point:
+KEL-270 T4b amendment: owner approval comment
+`a0329498-a115-4bcb-a277-0f32a42d7a86` (all four points), approved content head
+`caf2c82b52b2c4a95d5fd0ce2003e611267439e2`, file SHA-256
+`4355824b8514acd51713ff920b5b4143759a9f3563209eab3df4a51707ddefed`. The owner approved it
+in the active maintainer session on 2026-10-02. Four bounded changes to the common
+transaction, each narrowing a liveness or replay gap; none grants authority beyond the
+existing exclusive writer lease, and item 4 adds one public repair entry point:
 1. Retire each unreferenced version under the journal before journal removal, and
    remove the journal by write-through rename, instead of removing the journal first
    and cleaning retention afterwards.
