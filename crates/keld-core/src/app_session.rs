@@ -31,10 +31,8 @@ use std::process::ExitStatus;
 use std::process::{Command, Stdio};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-#[cfg(target_os = "macos")]
-use std::sync::mpsc::SyncSender;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::{Arc, Condvar, Mutex, Weak};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -324,6 +322,46 @@ impl FsDispatchSession {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsInFlight {
     session: Arc<FsDispatchSession>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct FsWorkItem {
+    admitted: FsInFlight,
+    request: FsRequest,
+    attempt: u32,
+    correlation: CorrelationId,
+    cancellation: Arc<AtomicBool>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+enum FsWorkerCommand {
+    Work(FsWorkItem),
+    Stop,
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+struct FsWorkerTestGate {
+    taken: SyncSender<()>,
+    release: Mutex<Receiver<()>>,
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+impl FsWorkerTestGate {
+    fn wait_after_take(&self) -> Result<(), HostAppError> {
+        self.taken
+            .send(())
+            .map_err(|_| app_detail("filesystem worker test gate", "observer disconnected"))?;
+        self.release
+            .lock()
+            .map_err(|_| app_detail("filesystem worker test gate", "release lock poisoned"))?
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| {
+                app_detail(
+                    "filesystem worker test gate",
+                    format!("release did not arrive before the test kill switch: {error}"),
+                )
+            })
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -4464,6 +4502,7 @@ struct PrimaryRouterHandle {
     last_revoked_attempt: Arc<AtomicU32>,
     shutdown: SessionShutdownState,
     fs: Option<Weak<FsDispatchSession>>,
+    fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
 }
@@ -4808,6 +4847,14 @@ impl PrimaryRouterHandle {
         })
     }
 
+    fn quiesce_and_drain_fs(&self) -> Result<(), HostAppError> {
+        let Some(fs) = self.fs.as_ref().and_then(Weak::upgrade) else {
+            return Ok(());
+        };
+        fs.quiesce()?;
+        fs.drain()
+    }
+
     // Caller retains shutdown.transition through the write and any admission
     // command that must precede a terminal claim.
     fn write_event_guarded(&self, event: LifecycleEvent) -> Result<(), PrimaryGenerationFailure> {
@@ -4905,6 +4952,18 @@ impl PrimaryRouterHandle {
             reply,
         )
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
+        drop(current_guard);
+        self.quiesce_and_drain_fs()?;
+        let mut current_guard = self
+            .current
+            .lock()
+            .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
+        let active = current_guard.as_mut().ok_or_else(|| {
+            app_detail(
+                "lifecycle Quit link close",
+                "current primary generation disappeared after the reply",
+            )
+        })?;
         #[cfg(windows)]
         let peer_close = await_windows_quit_peer_close(reader);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -4923,6 +4982,7 @@ impl PrimaryRouterHandle {
             return Ok(());
         }
         self.guardian.prepare_accepted_shutdown()?;
+        self.quiesce_and_drain_fs()?;
         let mut current_guard = self
             .current
             .lock()
@@ -5094,6 +5154,64 @@ impl PrimaryRouterHandle {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct PrimaryRouter {
     handle: PrimaryRouterHandle,
+    fs_worker: Option<FsWorker>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct FsWorker {
+    commands: SyncSender<FsWorkerCommand>,
+    join: Option<JoinHandle<Result<(), HostAppError>>>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl FsWorker {
+    fn start(
+        handle: &mut PrimaryRouterHandle,
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
+            Arc<FsWorkerTestGate>,
+        >,
+    ) -> Result<Self, HostAppError> {
+        let (commands, receiver) = mpsc::sync_channel(1);
+        let current = Arc::clone(&handle.current);
+        let shutdown = handle.shutdown.clone();
+        let window_commands = handle.window_commands.clone();
+        let join = thread::Builder::new()
+            .name(String::from("keld-core-fs-worker"))
+            .spawn(move || {
+                let result = run_fs_worker(
+                    &receiver,
+                    current.as_ref(),
+                    &shutdown,
+                    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+                    test_gate.as_deref(),
+                );
+                if result.is_err() {
+                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                }
+                result
+            })
+            .map_err(|source| app_io("filesystem worker", &source))?;
+        handle.fs_worker_commands = Some(commands.clone());
+        Ok(Self {
+            commands,
+            join: Some(join),
+        })
+    }
+
+    fn stop_and_join(&mut self) -> Result<(), HostAppError> {
+        let stop = match self.commands.try_send(FsWorkerCommand::Stop) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(app_detail(
+                "filesystem worker shutdown",
+                "worker queue remained full after filesystem drain",
+            )),
+        };
+        let join = self.join.take().map_or(Ok(()), |join| {
+            join.join()
+                .map_err(|_| app_detail("filesystem worker", "thread panicked"))?
+        });
+        collapse_app_results([stop, join])
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -5116,6 +5234,18 @@ impl PrimaryRouter {
         shutdown: SessionShutdownState,
         fs: Option<Weak<FsDispatchSession>>,
     ) -> Result<Self, HostAppError> {
+        Self::start_with_fs_test_gate(stream, window_commands, guardian, shutdown, fs, None)
+    }
+
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    fn start_with_fs_test_gate(
+        stream: BootstrapStream,
+        window_commands: Sender<AppWindowCommand>,
+        guardian: PlatformPrimaryOwnerHandle,
+        shutdown: SessionShutdownState,
+        fs: Option<Weak<FsDispatchSession>>,
+        fs_worker_test_gate: Option<Arc<FsWorkerTestGate>>,
+    ) -> Result<Self, HostAppError> {
         let handle = PrimaryRouterHandle {
             current: Arc::new(Mutex::new(None)),
             readers: Arc::new(Mutex::new(HashMap::new())),
@@ -5133,11 +5263,17 @@ impl PrimaryRouter {
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown,
             fs,
+            fs_worker_commands: None,
             guardian,
             window_commands,
         };
-        handle.install_generation(1, stream)?;
-        Ok(Self { handle })
+        let router = Self::finish_start(
+            handle,
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            fs_worker_test_gate,
+        )?;
+        router.handle.install_generation(1, stream)?;
+        Ok(router)
     }
 
     fn start_bound(
@@ -5166,11 +5302,35 @@ impl PrimaryRouter {
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown,
             fs,
+            fs_worker_commands: None,
             guardian,
             window_commands,
         };
-        handle.install_generation(attempt, stream)?;
-        Ok(Self { handle })
+        let router = Self::finish_start(
+            handle,
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            None,
+        )?;
+        router.handle.install_generation(attempt, stream)?;
+        Ok(router)
+    }
+
+    fn finish_start(
+        mut handle: PrimaryRouterHandle,
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
+            Arc<FsWorkerTestGate>,
+        >,
+    ) -> Result<Self, HostAppError> {
+        let fs_worker = if handle.fs.is_some() {
+            Some(FsWorker::start(
+                &mut handle,
+                #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+                test_gate,
+            )?)
+        } else {
+            None
+        };
+        Ok(Self { handle, fs_worker })
     }
 
     fn handle(&self) -> PrimaryRouterHandle {
@@ -5217,8 +5377,75 @@ impl PrimaryRouter {
         if let Some(fs) = fs {
             results.push(fs.drain());
         }
+        if let Some(worker) = &mut self.fs_worker {
+            results.push(worker.stop_and_join());
+        }
         collapse_app_results(results)
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn prepare_fs_work(
+    handle: &PrimaryRouterHandle,
+    attempt: u32,
+    correlation: CorrelationId,
+    payload: &[u8],
+    cancellation: &Arc<AtomicBool>,
+) -> Result<FsWorkItem, HostAppError> {
+    let admitted = handle.begin_fs_call(attempt)?;
+    let request = decode(payload).map_err(|source| app_ipc("filesystem request", &source))?;
+    Ok(FsWorkItem {
+        admitted,
+        request,
+        attempt,
+        correlation,
+        cancellation: Arc::clone(cancellation),
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn run_fs_worker(
+    receiver: &Receiver<FsWorkerCommand>,
+    current: &Mutex<Option<ActivePrimaryGeneration>>,
+    shutdown: &SessionShutdownState,
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
+        &FsWorkerTestGate,
+    >,
+) -> Result<(), HostAppError> {
+    while let Ok(command) = receiver.recv() {
+        let FsWorkerCommand::Work(work) = command else {
+            return Ok(());
+        };
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+        if let Some(gate) = test_gate {
+            gate.wait_after_take()?;
+        }
+        let FsWorkItem {
+            admitted,
+            request,
+            attempt,
+            correlation,
+            cancellation,
+        } = work;
+        match admitted.handle(request, &cancellation) {
+            Ok(response) => {
+                let reply =
+                    encode(&response).map_err(|source| app_ipc("filesystem response", &source))?;
+                write_primary_reply(current, shutdown, attempt, FS_CHANNEL, correlation, &reply)?;
+            }
+            Err(error) => {
+                write_primary_call_error(
+                    current,
+                    shutdown,
+                    attempt,
+                    FS_CHANNEL,
+                    correlation,
+                    &CallError::from(&error),
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -5234,7 +5461,7 @@ fn read_primary_frames(
     reader: &mut BootstrapStream,
     handle: &PrimaryRouterHandle,
     attempt: u32,
-    reader_stop: &AtomicBool,
+    reader_stop: &Arc<AtomicBool>,
 ) -> Result<(), HostAppError> {
     loop {
         if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -5326,33 +5553,28 @@ fn read_primary_frames(
                 )?;
             }
             (FrameKind::Call, FS_CHANNEL) if handle.shutdown.is_running() => {
-                let request: FsRequest =
-                    decode(&payload).map_err(|source| app_ipc("filesystem request", &source))?;
-                let admitted = handle.begin_fs_call(attempt)?;
-                let result = admitted.handle(request, reader_stop);
-                drop(admitted);
-                match result {
-                    Ok(response) => {
-                        let reply = encode(&response)
-                            .map_err(|source| app_ipc("filesystem response", &source))?;
-                        write_primary_reply(
-                            &handle.current,
-                            &handle.shutdown,
-                            attempt,
-                            FS_CHANNEL,
-                            header.corr(),
-                            &reply,
-                        )?;
+                let work = prepare_fs_work(handle, attempt, header.corr(), &payload, reader_stop)?;
+                let commands = handle.fs_worker_commands.as_ref().ok_or_else(|| {
+                    app_detail(
+                        "filesystem worker submission",
+                        "guarded filesystem worker is unavailable",
+                    )
+                })?;
+                match commands.try_send(FsWorkerCommand::Work(work)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(rejected)) => {
+                        drop(rejected);
+                        return Err(app_detail(
+                            "filesystem worker submission",
+                            "bounded filesystem worker queue is full",
+                        ));
                     }
-                    Err(error) => {
-                        write_primary_call_error(
-                            &handle.current,
-                            &handle.shutdown,
-                            attempt,
-                            FS_CHANNEL,
-                            header.corr(),
-                            &CallError::from(&error),
-                        )?;
+                    Err(TrySendError::Disconnected(rejected)) => {
+                        drop(rejected);
+                        return Err(app_detail(
+                            "filesystem worker submission",
+                            "filesystem worker is disconnected",
+                        ));
                     }
                 }
             }
@@ -6450,6 +6672,201 @@ mod tests {
         assert!(!denied.exists(), "denied primary route created its target");
 
         router.shutdown().expect("guarded primary router shutdown");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn fs_worker_keeps_ping_and_quit_responsive_and_shutdown_waits_for_native_work() {
+        use std::os::unix::net::UnixStream;
+
+        use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
+        use sha2::{Digest as _, Sha256};
+
+        let temp = tempfile::tempdir().expect("FS worker gate root");
+        let allowed = temp.path().join("allowed");
+        fs::create_dir(&allowed).expect("FS worker allowed root");
+        let target = allowed.join("held.txt");
+        fs::write(&target, b"held worker bytes").expect("FS worker input");
+        let scope = allowed.display().to_string().replace('\\', "/");
+        let manifest_text = format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"]}}}}}}"#);
+        let manifest_path = temp.path().join(PERMISSIONS_FILE);
+        fs::write(&manifest_path, &manifest_text).expect("write FS worker manifest");
+        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        let verified = load_verified_manifest(
+            File::open(&manifest_path).expect("open FS worker manifest"),
+            manifest_path,
+            digest,
+        )
+        .expect("verify FS worker manifest");
+        let snapshot = GuardSnapshot::prepare(verified).expect("prepare FS worker broker");
+
+        let (taken_tx, taken_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        let gate = Arc::new(FsWorkerTestGate {
+            taken: taken_tx,
+            release: Mutex::new(release_rx),
+        });
+        let (server, mut client) = UnixStream::pair().expect("FS worker primary pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("FS worker client deadlines");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let router = PrimaryRouter::start_with_fs_test_gate(
+            server,
+            window_tx,
+            PlatformPrimaryOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+            Some(snapshot.fs_weak()),
+            Some(gate),
+        )
+        .expect("gated FS worker router");
+
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            FS_CHANNEL,
+            CorrelationId(60),
+            &encode(&FsRequest::Read {
+                path: target.display().to_string().replace('\\', "/"),
+            })
+            .expect("encode gated FS read"),
+        )
+        .expect("send gated FS read");
+        taken_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker took FS job");
+
+        write_frame(
+            &mut client,
+            FrameKind::Ping,
+            0,
+            keld_ipc::ChannelId(99),
+            CorrelationId(61),
+            &[],
+        )
+        .expect("send Ping while FS worker is held");
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(62),
+            &encode(&LifecycleRequest::Quit).expect("encode held-worker Quit"),
+        )
+        .expect("send Quit while FS worker is held");
+
+        let first = read_frame(&mut client);
+        if let Err(error) = first {
+            release_tx.send(()).expect("release blocked legacy FS path");
+            let _ = router.shutdown();
+            panic!("Ping was not answered while native FS work was held: {error}");
+        }
+        let (ping, ping_payload) = first.expect("checked Ping reply");
+        assert_eq!(ping.kind, FrameKind::Ping);
+        assert_eq!(ping.channel, keld_ipc::ChannelId(99));
+        assert_eq!(ping.corr, CorrelationId(61));
+        assert!(ping_payload.is_empty());
+
+        let prepare = guardian_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("FS worker shutdown attribution before Quit reply");
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare_reply) = prepare else {
+            panic!("FS worker Quit skipped shutdown attribution");
+        };
+        prepare_reply
+            .send(Ok(()))
+            .expect("acknowledge FS worker shutdown attribution");
+        let (quit, quit_payload) = read_frame(&mut client).expect("Quit reply while FS is held");
+        assert_eq!(quit.kind, FrameKind::Reply);
+        assert_eq!(quit.channel, LIFECYCLE_CHANNEL);
+        assert_eq!(quit.corr, CorrelationId(62));
+        assert_eq!(
+            decode::<LifecycleResponse>(&quit_payload).expect("decode held-worker Quit reply"),
+            LifecycleResponse::Quit
+        );
+        assert!(
+            matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "UI Quit occurred before held native FS work drained"
+        );
+        release_tx.send(()).expect("release FS worker");
+
+        let shutdown = guardian_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("FS worker guardian shutdown after drain");
+        let TestPrimaryOwnerCommand::Shutdown(shutdown_reply) = shutdown else {
+            panic!("FS worker Quit sent unexpected guardian command");
+        };
+        shutdown_reply
+            .send(Ok(()))
+            .expect("complete FS worker guardian shutdown");
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit after FS drain"),
+            AppWindowCommand::Quit
+        );
+        router
+            .shutdown()
+            .expect("completed FS worker router shutdown");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn stale_generation_precedes_malformed_fs_payload_classification() {
+        use std::os::unix::net::UnixStream;
+
+        use sha2::{Digest as _, Sha256};
+
+        let temp = tempfile::tempdir().expect("stale FS request root");
+        let manifest_text = "{}\n";
+        let manifest_path = temp.path().join(PERMISSIONS_FILE);
+        fs::write(&manifest_path, manifest_text).expect("write stale FS manifest");
+        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        let verified = load_verified_manifest(
+            File::open(&manifest_path).expect("open stale FS manifest"),
+            manifest_path,
+            digest,
+        )
+        .expect("verify stale FS manifest");
+        let snapshot = GuardSnapshot::prepare(verified).expect("prepare stale FS broker");
+        let (server, _client) = UnixStream::pair().expect("stale FS router pair");
+        let (window_tx, _window_rx) = mpsc::channel();
+        let (guardian_tx, _guardian_rx) = mpsc::channel();
+        let router = PrimaryRouter::start_with_fs(
+            server,
+            window_tx,
+            PlatformPrimaryOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+            Some(snapshot.fs_weak()),
+        )
+        .expect("stale FS router");
+
+        let error = must_err(
+            prepare_fs_work(
+                &router.handle(),
+                2,
+                CorrelationId(70),
+                &[0xff],
+                &Arc::new(AtomicBool::new(false)),
+            ),
+            "stale generation must fail before malformed payload decoding",
+        );
+        router.shutdown().expect("stale FS router shutdown");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("stale primary generation"),
+            "wrong stale-generation classification: {rendered}"
+        );
+        assert!(
+            !rendered.contains("KELD-IPC-003"),
+            "codec classification overtook stale generation: {rendered}"
+        );
     }
 
     #[test]
@@ -7590,6 +8007,7 @@ mod tests {
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown: SessionShutdownState::new(),
             fs: None,
+            fs_worker_commands: None,
             guardian: PlatformPrimaryOwnerHandle { command_tx },
             window_commands: window_tx,
         };
@@ -7987,6 +8405,7 @@ mod tests {
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown: SessionShutdownState::new(),
             fs: None,
+            fs_worker_commands: None,
             guardian: PlatformPrimaryOwnerHandle {
                 command_tx: guardian_tx,
             },
