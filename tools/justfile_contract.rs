@@ -34,11 +34,14 @@ fn expand<'a: 'b, 'b>(
     }
 }
 
-/// The dependency names after `recipe:`; `&&` only orders, so it is not a gate.
+/// The dependency names after `recipe:`. `&&` only orders, so it is not a gate, and
+/// a trailing `#` comment, which `just` ignores, names none.
 fn recipe_dependencies<'a>(justfile: &'a str, recipe: &str) -> Option<Vec<&'a str>> {
     let header = header_line(justfile, recipe)?;
+    let dependencies = &header[recipe.len() + 1..];
+    let uncommented = dependencies.split_once('#').map_or(dependencies, |(code, _)| code);
     Some(
-        header[recipe.len() + 1..]
+        uncommented
             .split_whitespace()
             .filter(|token| *token != "&&")
             .collect(),
@@ -108,6 +111,15 @@ loop: loop gate
     fn a_missing_recipe_is_none_and_a_cycle_stays_a_leaf() {
         assert_eq!(expanded_gates(JUSTFILE, "absent"), None);
         assert_eq!(expanded_gates(JUSTFILE, "loop"), Some(vec!["loop", "gate"]));
+    }
+
+    #[test]
+    fn a_trailing_comment_names_no_gate() {
+        assert_eq!(
+            expanded_gates("ci: fmt-check # audit-docs atomic-protocol
+", "ci"),
+            Some(vec!["fmt-check"])
+        );
     }
 
     #[test]

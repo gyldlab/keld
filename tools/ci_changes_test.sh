@@ -151,6 +151,11 @@ atomic_checker_classification="$(result_for_paths tools/atomic_protocol.rs)"
 expect_flags "atomic protocol checker runs only its hygiene contract" "$hygiene_only" "$atomic_checker_classification"
 expect_empty_packages "atomic protocol checker selects no package" "$atomic_checker_classification"
 
+justfile_contract_classification="$(result_for_paths tools/justfile_contract.rs)"
+expect_flags "shared justfile parser runs only hygiene" "$hygiene_only" "$justfile_contract_classification"
+expect_mermaid_flag "shared justfile parser re-checks the Mermaid gate contract" true "$justfile_contract_classification"
+expect_empty_packages "shared justfile parser selects no package" "$justfile_contract_classification"
+
 agent_context_classification="$(result_for_paths tools/agent_context.rs tools/markdown_contract.rs .agents/instruction-budget.tsv)"
 expect_flags "instruction budget inputs run only hygiene" "$hygiene_only" "$agent_context_classification"
 expect_no_package_selection "instruction budget inputs select no package/suite" "$agent_context_classification"
