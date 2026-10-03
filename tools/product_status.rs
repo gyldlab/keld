@@ -1,5 +1,7 @@
 //! Semantic validator and deterministic renderer for Keld product status.
 
+#[path = "justfile_contract.rs"]
+mod justfile_contract;
 #[path = "repo_path_contract.rs"]
 mod repo_path_contract;
 
@@ -1696,24 +1698,17 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         return Err("KELD-DOCS007: documentation map names ignored .claude/DEFINITION_OF_DONE.md as authority. Use tracked AGENTS/workflow contracts only.".to_owned());
     }
     let justfile = read_required(root, "justfile")?;
-    let ci_prerequisites = justfile
-        .lines()
-        .find_map(|line| line.strip_prefix("ci:"))
-        .map(str::split_whitespace)
-        .map(|values| values.collect::<Vec<_>>())
+    let ci_prerequisites = justfile_contract::expanded_gates(&justfile, "ci")
         .ok_or_else(|| "KELD-DOCS007: justfile is missing the root `ci:` recipe.".to_owned())?;
     let position = |name: &str| ci_prerequisites.iter().position(|value| *value == name);
-    let (Some(status_test), Some(status_check), Some(llms_test), Some(llms_check)) = (
+    let (Some(_), Some(_), Some(_), Some(_)) = (
         position("product-status-test"),
         position("product-status-check"),
         position("llms-test"),
         position("llms-check"),
     ) else {
-        return Err("KELD-DOCS007: justfile `ci` must include product-status-test, product-status-check, llms-test, and llms-check. Add the missing prerequisites in that order, then run `just product-status-test` and `just product-status-check`.".to_owned());
+        return Err("KELD-DOCS007: justfile `ci` must include product-status-test, product-status-check, llms-test, and llms-check. Add the missing prerequisites, then run `just product-status-test` and `just product-status-check`.".to_owned());
     };
-    if status_test > status_check || status_check > llms_test || llms_test > llms_check {
-        return Err("KELD-DOCS007: justfile `ci` must run product-status tests/check before llms tests/check.".to_owned());
-    }
     for (recipe, expected) in [
         ("product-status-test", JUST_STATUS_TEST_COMMANDS),
         ("product-status-check", JUST_STATUS_CHECK_COMMANDS),
@@ -1935,6 +1930,30 @@ mod tests {
             ),
         );
         temp
+    }
+
+    #[test]
+    fn status_gates_inside_a_parallel_group_count_for_ci() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        let grouped = temp.read("justfile").replacen(
+            "ci: product-status-test product-status-check llms-test llms-check\n",
+            "ci: status llms-test llms-check\n\n[parallel]\nstatus: product-status-test product-status-check\n",
+            1,
+        );
+        temp.write("justfile", &grouped);
+        check(temp.path()).expect("grouped status gates still count");
+
+        temp.write(
+            "justfile",
+            &grouped.replacen(
+                "status: product-status-test product-status-check",
+                "status: product-status-test",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("a gate missing from the group must fail");
+        assert!(error.contains("must include product-status-test"), "{error}");
     }
 
     fn git_fixture() -> (TempDir, String) {
