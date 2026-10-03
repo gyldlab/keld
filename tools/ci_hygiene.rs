@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod justfile_contract;
-use justfile_contract::expanded_gates;
+use justfile_contract::{declaration_words, dependency_gates, expanded_gates};
 
 const CODEOWNERS: &str = ".github/CODEOWNERS";
 const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
@@ -327,8 +327,8 @@ fn parallel_recipes(justfile: &str) -> Vec<&str> {
     let mut recipes = Vec::new();
     let mut parallel = false;
     for line in justfile.lines() {
-        if let Some(attributes) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
-            parallel |= attributes.split(',').any(|attribute| attribute.trim() == "parallel");
+        if line.starts_with('[') {
+            parallel |= declaration_words(line, true).contains(&"parallel");
             continue;
         }
         if parallel {
@@ -358,7 +358,7 @@ fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
         }
     }
     for group in groups {
-        let members = expanded_gates(&justfile, group).unwrap_or_default();
+        let members = dependency_gates(&justfile, group, true).unwrap_or_default();
         if let Some(gate) = members.iter().find(|member| SERIAL_RUST_GATES.contains(member)) {
             return Err(format!(
                 "CI-HYGIENE: `{JUSTFILE}` `[parallel]` recipe `{group}` reaches `{gate}`; Rust gates must run one at a time after every other gate."
@@ -2864,6 +2864,89 @@ mod tests {
             temp.write(JUSTFILE, &grouped.replacen(needle, replacement, 1));
             let error = check(temp.path()).expect_err("a weakened group must fail");
             assert!(error.contains(expected), "{needle}: {error}");
+        }
+    }
+
+    #[test]
+    fn decorated_parallel_attributes_cannot_hide_rust_gates() {
+        for attribute in [
+            "[parallel] # scheduler",
+            "[parallel]   ",
+            "[parallel]\t",
+            r#"[doc("literal # hash, parallel"), parallel] # scheduler"#,
+        ] {
+            for recipe in ["ci", "ci-full", "parallel-helper"] {
+                let temp = complete_fixture();
+                let original = read(temp.path(), JUSTFILE).expect("just fixture");
+                check_serial_rust_gates(temp.path()).expect("serial fixture is valid");
+                let mutated = if recipe == "parallel-helper" {
+                    format!("{original}\n{attribute}\nparallel-helper: test\n")
+                } else {
+                    original.replacen(
+                        &format!("{recipe}:"),
+                        &format!("{attribute}\n{recipe}:"),
+                        1,
+                    )
+                };
+                temp.write(JUSTFILE, &mutated);
+                let error = check_serial_rust_gates(temp.path())
+                    .expect_err("decorated parallel attribute must remain effective");
+                assert!(error.contains("one at a time"), "{error}");
+                check(temp.path()).expect_err("the root checker must invoke the serial guard");
+            }
+        }
+        let temp = complete_fixture();
+        let original = read(temp.path(), JUSTFILE).expect("just fixture");
+        temp.write(
+            JUSTFILE,
+            &original.replacen(
+                "ci:",
+                "[doc(\"literal # hash, parallel\"), private] # parallel\nci:",
+                1,
+            ),
+        );
+        check(temp.path()).expect("quoted and commented parallel words are not attributes");
+    }
+
+    #[test]
+    fn bodyful_dependencies_cannot_hide_transitive_parallel_rust_gates() {
+        for dependency in ["test", "middle"] {
+            let temp = complete_fixture();
+            let original = read(temp.path(), JUSTFILE).expect("just fixture");
+            let harmless = format!(
+                "{original}\n[parallel]\nparallel-helper: helper\n\nhelper: harmless\n    true\n\nharmless:\n    true\n\nmiddle: test\n    true\n"
+            );
+            temp.write(JUSTFILE, &harmless);
+            check_serial_rust_gates(temp.path()).expect("bodyful safe helper is valid");
+            check(temp.path()).expect("safe helper does not alter the gate inventory");
+            temp.write(
+                JUSTFILE,
+                &harmless.replace("helper: harmless", &format!("helper: {dependency}")),
+            );
+            let error = check_serial_rust_gates(temp.path())
+                .expect_err("the parallel dependency graph reaches a Rust gate");
+            assert!(error.contains("reaches `test`"), "{error}");
+            check(temp.path()).expect_err("the root checker must invoke the serial guard");
+        }
+    }
+
+    #[test]
+    fn rust_suffix_order_and_policy_before_rust_are_enforced() {
+        for replacement in [
+            "clippy fmt-check test doc deny",
+            "fmt-check clippy test doc deny audit-docs",
+        ] {
+            let temp = complete_fixture();
+            let original = read(temp.path(), JUSTFILE).expect("just fixture");
+            check_serial_rust_gates(temp.path()).expect("original suffix is valid");
+            temp.write(
+                JUSTFILE,
+                &original.replace("fmt-check clippy test doc deny", replacement),
+            );
+            let error = check_serial_rust_gates(temp.path())
+                .expect_err("the Rust gates must be the ordered serial suffix");
+            assert!(error.contains("must end with"), "{error}");
+            check(temp.path()).expect_err("the root checker must invoke the serial guard");
         }
     }
 
