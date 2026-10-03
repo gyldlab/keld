@@ -528,9 +528,11 @@ resolve_rust_document_consumers() {
             return
             ;;
     esac
-    # Only a string literal naming the path (repo-relative, or the tail of a
-    # relative include) consumes it; a comment that cites a document does not.
-    consumers="$(git grep -l -F -e "\"$changed_file\"" -e "/$changed_file\"" -- 'crates/*.rs' 2>/dev/null)" || status=$?
+    # Only a string literal naming the path consumes it: the repo-relative path
+    # in quotes, or the tail of a relative include (`../<path>"`). A comment or
+    # URL that cites a document does not. git grep narrows candidates without
+    # quote characters (native Windows git mangles them in argv); grep confirms.
+    consumers="$(git grep -l -F -e "$changed_file" -- 'crates/*.rs' 2>/dev/null)" || status=$?
     case "$status" in
         0) ;;
         1) return ;;
@@ -540,7 +542,10 @@ resolve_rust_document_consumers() {
             ;;
     esac
     while IFS= read -r consumer; do
-        [[ -n "$consumer" ]] && classify_crate_path "$consumer"
+        [[ -z "$consumer" ]] && continue
+        if grep -q -F -e "\"$changed_file\"" -e "../$changed_file\"" -- "$consumer"; then
+            classify_crate_path "$consumer"
+        fi
     done <<<"$consumers"
 }
 
