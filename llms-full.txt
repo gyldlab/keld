@@ -4291,9 +4291,11 @@ retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
 (learnings 2026-07-08).
 
-**Chose — local mirror of CI (`justfile`).** The `ci` recipe in the justfile is the
-single source of truth for the exact local gate inventory and order; prose MUST NOT copy
-that executable list. `just ci` runs the current inventory. Gitleaks stays GitHub-only
+**Chose — local mirror of CI (`justfile`).** The `ci` recipe in the justfile, with the
+gate groups it names, is the single source of truth for the exact local gate inventory and
+order; prose MUST NOT copy that executable list. `just ci` runs the current inventory: its
+independent policy gates run together as a `[parallel]` group, then the Rust gates run one
+at a time. Gitleaks stays GitHub-only
 (checksum-pinned OSS CLI in `.github/workflows/ci.yml`).
 
 **Chose — no Husky / no committed git-hook manager.** Tracked config has no

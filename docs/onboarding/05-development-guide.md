@@ -115,7 +115,7 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 | `just deny` | `cargo deny check` |
 | `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
 | `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
-| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |
+| `just ci` | Full local gate; the `justfile` `ci` recipe and the gate groups it names are the sole source of its inventory and order. |
 | `just ci-full` | `just ci` with full-corpus Mermaid validation and pinned rendering forced. |
 
 `just ci` is the local mirror of routed CI, minus the three-OS matrix and the manual Mermaid
@@ -431,7 +431,7 @@ already present.
 `cargo install just`, or use the raw command table in §3.3 — nothing in the repo depends
 on `just` being installed.
 
-**`justfile requires just 1.55.0 or later`.**
+**``unknown setting `minimum-version` `` or `justfile requires just 1.55.0 or later`.**
 Upgrade with `cargo install just --locked`. The `justfile` declares `set minimum-version`,
 which just added in 1.55.0; the `ci` gate groups use `[parallel]` (just 1.42.0+).
 

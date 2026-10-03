@@ -57,7 +57,7 @@ const INDEX_HEADING: &str = "## Task routing";
 const CURRENT_DOCUMENTATION_HEADING: &str = "## Current-documentation receipt";
 const CURRENT_DOCUMENTATION_ROUTE: &str = "Material decision depends on current external OS/platform command, SDK/API, runtime, or external-tool semantics";
 const CURRENT_DOCUMENTATION_LINK: &str = "[`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt)";
-const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |";
+const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe and the gate groups it names are the sole source of its inventory and order. |";
 const ENFORCEMENT_LINE_PREFIX: &str =
     "Enforcement: `just atomic-protocol` validates the canonical stages";
 const ATOMIC_RECIPE_COMMANDS: &[&str] = &[
