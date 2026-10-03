@@ -599,3 +599,30 @@ if ! grep -Fq "ci router: Rust checks selected no Ubuntu packages" <<<"$empty_me
     exit 1
 fi
 echo "ok: empty Ubuntu package selection fails closed"
+
+# A document is a Rust input only when Rust code names it in a string literal on
+# a non-comment line; a crate-local file is matched within its own crate only.
+mkdir -p "$temp_dir/crates/keld-runtime/fixtures" "$temp_dir/docs"
+cat >"$temp_dir/crates/keld-runtime/src/documents.rs" <<'RUST'
+// See "docs/cited.md" for background.
+/// Also "docs/cited.md" in a doc comment.
+const REGISTRY: &str = "docs/read.md";
+const REPORT: &[u8] = include_bytes!("../fixtures/report.md");
+RUST
+printf 'x
+' | tee "$temp_dir/docs/cited.md" "$temp_dir/docs/read.md"     "$temp_dir/crates/keld-runtime/fixtures/report.md" "$temp_dir/crates/keld-runtime/README.md" >/dev/null
+git -C "$temp_dir" add -A crates docs
+git -C "$temp_dir" commit -qm documents
+document_rust_flag() {
+    printf '%s\0' "$1" | (cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" "$router" classify) |
+        sed -n 's/^rust=//p'
+}
+for expectation in     "docs/cited.md false a path quoted only in Rust comments stays docs-only"     "docs/read.md true a path in a Rust string literal selects its crate"     "crates/keld-runtime/fixtures/report.md true a crate fixture its include names selects the crate"     "crates/keld-runtime/README.md false an unread crate README stays docs-only"; do
+    read -r document expected label <<<"$expectation"
+    actual="$(document_rust_flag "$document")"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "FAIL: $label (expected rust=$expected, got rust=$actual)" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+done

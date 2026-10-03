@@ -514,25 +514,32 @@ classify_crate_path() {
     fi
 }
 
-# A crate containing a Markdown-like file, or whose Rust sources name its
-# repository path in a string literal, consumes it. Lookup failure selects every lane.
+# A Markdown-like file is a Rust input only when Rust code names it in a string
+# literal outside a comment: the repo-relative path in quotes, or the tail of a
+# relative include (`../<path>"`). A file inside a crate is searched for within
+# that crate only, by its name (`/<name>"` or `"<name>"`), so an unread crate
+# README stays documentation. Lookup failure selects every lane.
 resolve_rust_document_consumers() {
     local changed_file="$1"
+    local scope='crates/*.rs'
+    local needle="$changed_file"
+    local -a patterns=("\"$changed_file\"" "../$changed_file\"")
     local consumers
     local consumer
     local status=0
     case "$changed_file" in
         crates/*/AGENTS.md | crates/*/AGENTS.override.md) return ;;
-        crates/*)
-            classify_crate_path "$changed_file"
-            return
+        crates/*/*)
+            local crate_dir="${changed_file#crates/}"
+            crate_dir="crates/${crate_dir%%/*}"
+            needle="${changed_file##*/}"
+            scope="$crate_dir/*.rs"
+            patterns=("\"$needle\"" "/$needle\"")
             ;;
     esac
-    # Only a string literal naming the path consumes it: the repo-relative path
-    # in quotes, or the tail of a relative include (`../<path>"`). A comment or
-    # URL that cites a document does not. git grep narrows candidates without
-    # quote characters (native Windows git mangles them in argv); grep confirms.
-    consumers="$(git grep -l -F -e "$changed_file" -- 'crates/*.rs' 2>/dev/null)" || status=$?
+    # git grep narrows candidates without quote characters (native Windows git
+    # mangles them in argv); grep confirms the literal on a non-comment line.
+    consumers="$(git grep -l -F -e "$needle" -- "$scope" 2>/dev/null)" || status=$?
     case "$status" in
         0) ;;
         1) return ;;
@@ -541,9 +548,17 @@ resolve_rust_document_consumers() {
             return
             ;;
     esac
+    local pattern
+    local -a grep_args=()
+    for pattern in "${patterns[@]}"; do
+        grep_args+=(-e "$pattern")
+    done
+    local named_lines
     while IFS= read -r consumer; do
         [[ -z "$consumer" ]] && continue
-        if grep -q -F -e "\"$changed_file\"" -e "../$changed_file\"" -- "$consumer"; then
+        # Capture first: `grep -q` closing a pipe early would trip pipefail.
+        named_lines="$(grep -h -F "${grep_args[@]}" -- "$consumer" || true)"
+        if [[ -n "$named_lines" ]] && grep -q -v -E '^[[:space:]]*(//|/\*|\*)' <<<"$named_lines"; then
             classify_crate_path "$consumer"
         fi
     done <<<"$consumers"
