@@ -1,5 +1,7 @@
 //! Semantic validator and deterministic renderer for Keld product status.
 
+#[path = "justfile_contract.rs"]
+mod justfile_contract;
 #[path = "repo_path_contract.rs"]
 mod repo_path_contract;
 
@@ -1696,11 +1698,7 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         return Err("KELD-DOCS007: documentation map names ignored .claude/DEFINITION_OF_DONE.md as authority. Use tracked AGENTS/workflow contracts only.".to_owned());
     }
     let justfile = read_required(root, "justfile")?;
-    let ci_prerequisites = justfile
-        .lines()
-        .find_map(|line| line.strip_prefix("ci:"))
-        .map(str::split_whitespace)
-        .map(|values| values.collect::<Vec<_>>())
+    let ci_prerequisites = justfile_contract::expanded_gates(&justfile, "ci")
         .ok_or_else(|| "KELD-DOCS007: justfile is missing the root `ci:` recipe.".to_owned())?;
     let position = |name: &str| ci_prerequisites.iter().position(|value| *value == name);
     let (Some(status_test), Some(status_check), Some(llms_test), Some(llms_check)) = (
@@ -1935,6 +1933,30 @@ mod tests {
             ),
         );
         temp
+    }
+
+    #[test]
+    fn status_gates_inside_a_parallel_group_count_for_ci() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        let grouped = temp.read("justfile").replacen(
+            "ci: product-status-test product-status-check llms-test llms-check\n",
+            "ci: status llms-test llms-check\n\n[parallel]\nstatus: product-status-test product-status-check\n",
+            1,
+        );
+        temp.write("justfile", &grouped);
+        check(temp.path()).expect("grouped status gates still count");
+
+        temp.write(
+            "justfile",
+            &grouped.replacen(
+                "status: product-status-test product-status-check",
+                "status: product-status-check product-status-test",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("grouped gates keep their order");
+        assert!(error.contains("before llms tests/check"), "{error}");
     }
 
     fn git_fixture() -> (TempDir, String) {

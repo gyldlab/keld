@@ -1,6 +1,11 @@
 # Keld task runner — exact local verification of applicable gates.
 # Mermaid follows the shared changed-input router; `just ci-full` forces its whole corpus.
 
+# `set minimum-version` exists from just 1.55.0. That release also postdates
+# `[parallel]` (1.42.0) and the 1.47.1 fix for parallel recipes that did not
+# wait on a shared running dependency (casey/just#3138).
+set minimum-version := "1.55.0"
+
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
 
@@ -12,11 +17,19 @@ hello:
     cargo run -p keld-host --bin keld-host -- --hello
 
 # Run every applicable CI gate locally (deny requires `cargo install cargo-deny --locked`).
+# The independent policy and TypeScript gates run together; the Rust gates then run
+# one at a time, because load-sensitive host tests must not share the machine.
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+ci: ci-policy fmt-check clippy test doc deny
 
 # Full assurance mode explicitly validates every tracked Mermaid block.
-ci-full: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+ci-full: ci-policy-full fmt-check clippy test doc deny
+
+[parallel]
+ci-policy: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript
+
+[parallel]
+ci-policy-full: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript
 
 mermaid-ci:
     #!/usr/bin/env bash

@@ -9,6 +9,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod justfile_contract;
+use justfile_contract::expanded_gates;
+
 const CODEOWNERS: &str = ".github/CODEOWNERS";
 const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
 const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
@@ -269,14 +272,9 @@ fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
 
 fn check_root_audit_contract(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
-    let ci_line = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
+    let ci_gates = expanded_gates(&justfile, "ci")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
-    if !ci_line
-        .split_whitespace()
-        .any(|token| token == "audit-docs")
-    {
+    if !ci_gates.contains(&"audit-docs") {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` root `ci:` must depend on `audit-docs`."
         ));
@@ -319,52 +317,35 @@ fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
 }
 
 fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
+    const MERMAID_GATES: [&str; 3] = ["mermaid-test", "mermaid-check", "mermaid-render-check"];
     let justfile = read(root, JUSTFILE)?;
-    let ci_line = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
+    let ci_gates = expanded_gates(&justfile, "ci")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
-    if !ci_line
-        .split_whitespace()
-        .any(|token| token == "mermaid-ci")
-        || ["mermaid-test", "mermaid-check", "mermaid-render-check"]
-            .iter()
-            .any(|gate| ci_line.split_whitespace().any(|token| token == *gate))
-    {
+    if !ci_gates.contains(&"mermaid-ci") || MERMAID_GATES.iter().any(|gate| ci_gates.contains(gate)) {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `mermaid-ci` target, not unconditional Mermaid targets."
         ));
     }
-    let routine_deps = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .skip(1)
-        .map(|token| if token == "mermaid-ci" { "mermaid-full" } else { token })
-        .collect::<Vec<_>>();
-    let full_deps = justfile
-        .lines()
-        .find(|line| line.starts_with("ci-full:"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .skip(1)
-        .collect::<Vec<_>>();
-    if !full_deps.contains(&"mermaid-full") || routine_deps != full_deps {
-        return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
-        ));
-    }
-    let full_line = justfile
-        .lines()
-        .find(|line| line.starts_with("mermaid-full:"))
+    let mermaid_full = expanded_gates(&justfile, "mermaid-full")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-full:`."))?;
-    if !["mermaid-test", "mermaid-check", "mermaid-render-check"]
-        .iter()
-        .all(|gate| full_line.split_whitespace().any(|token| token == *gate))
-    {
+    if !MERMAID_GATES.iter().all(|gate| mermaid_full.contains(gate)) {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `mermaid-full:` must retain parser tests, structural checks, and pinned rendering."
+        ));
+    }
+    let forced = ci_gates
+        .iter()
+        .flat_map(|gate| {
+            if *gate == "mermaid-ci" {
+                mermaid_full.clone()
+            } else {
+                vec![*gate]
+            }
+        })
+        .collect::<Vec<_>>();
+    if expanded_gates(&justfile, "ci-full").as_ref() != Some(&forced) {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
         ));
     }
     let routed = just_recipe_commands(&justfile, "mermaid-ci")
@@ -2788,6 +2769,35 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn gates_inside_parallel_groups_count_for_ci_and_ci_full() {
+        let temp = complete_fixture();
+        let grouped = read(temp.path(), JUSTFILE)
+            .expect("just fixture")
+            .replacen(
+                "ci: audit-docs mermaid-ci test\n",
+                "ci: policy test\n\n[parallel]\npolicy: audit-docs mermaid-ci\n",
+                1,
+            )
+            .replacen(
+                "ci-full: audit-docs mermaid-full test\n",
+                "ci-full: policy-full test\n\n[parallel]\npolicy-full: audit-docs mermaid-full\n",
+                1,
+            );
+        temp.write(JUSTFILE, &grouped);
+        check(temp.path()).expect("grouped gates still satisfy the local gate contract");
+
+        for (needle, replacement, expected) in [
+            ("policy: audit-docs mermaid-ci", "policy: mermaid-ci", "audit-docs"),
+            ("policy: audit-docs mermaid-ci", "policy: audit-docs mermaid-test", "routed `mermaid-ci`"),
+            ("policy-full: audit-docs mermaid-full", "policy-full: audit-docs", "force the full Mermaid path"),
+        ] {
+            temp.write(JUSTFILE, &grouped.replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("a weakened group must fail");
+            assert!(error.contains(expected), "{needle}: {error}");
+        }
     }
 
     #[test]
