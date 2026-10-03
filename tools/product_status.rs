@@ -1701,14 +1701,19 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
     let ci_prerequisites = justfile_contract::expanded_gates(&justfile, "ci")
         .ok_or_else(|| "KELD-DOCS007: justfile is missing the root `ci:` recipe.".to_owned())?;
     let position = |name: &str| ci_prerequisites.iter().position(|value| *value == name);
-    let (Some(_), Some(_), Some(_), Some(_)) = (
+    let (Some(status_test), Some(status_check), Some(llms_test), Some(llms_check)) = (
         position("product-status-test"),
         position("product-status-check"),
         position("llms-test"),
         position("llms-check"),
     ) else {
-        return Err("KELD-DOCS007: justfile `ci` must include product-status-test, product-status-check, llms-test, and llms-check. Add the missing prerequisites, then run `just product-status-test` and `just product-status-check`.".to_owned());
+        return Err("KELD-DOCS007: justfile `ci` must include product-status-test, product-status-check, llms-test, and llms-check. Add the missing prerequisites in that order, then run `just product-status-test` and `just product-status-check`.".to_owned());
     };
+    // Expansion preserves the declared inventory order even when a group runs
+    // concurrently. Scheduling does not waive this independent inventory contract.
+    if status_test > status_check || status_check > llms_test || llms_test > llms_check {
+        return Err("KELD-DOCS007: justfile `ci` must preserve the declared order: product-status-test, product-status-check, llms-test, llms-check. Reorder the prerequisites, including inside grouping recipes.".to_owned());
+    }
     for (recipe, expected) in [
         ("product-status-test", JUST_STATUS_TEST_COMMANDS),
         ("product-status-check", JUST_STATUS_CHECK_COMMANDS),
@@ -1954,6 +1959,33 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("a gate missing from the group must fail");
         assert!(error.contains("must include product-status-test"), "{error}");
+    }
+
+    #[test]
+    fn status_gate_declaration_order_is_preserved_in_flat_and_grouped_ci() {
+        for unordered in [
+            "product-status-check product-status-test llms-test llms-check",
+            "product-status-test llms-test product-status-check llms-check",
+            "product-status-test product-status-check llms-check llms-test",
+        ] {
+            for grouped in [false, true] {
+                let temp = fixture();
+                generate(temp.path()).expect("generate fixture");
+                check(temp.path()).expect("the original order is valid");
+                let replacement = if grouped {
+                    format!("ci: policy\n\n[parallel]\npolicy: {unordered}")
+                } else {
+                    format!("ci: {unordered}")
+                };
+                temp.replace(
+                    "justfile",
+                    "ci: product-status-test product-status-check llms-test llms-check",
+                    &replacement,
+                );
+                let error = check(temp.path()).expect_err("changed declared order must fail");
+                assert!(error.contains("declared order"), "{error}");
+            }
+        }
     }
 
     fn git_fixture() -> (TempDir, String) {
