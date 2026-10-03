@@ -9,8 +9,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod justfile_contract;
 mod markdown_contract;
 mod session_protocol;
+use justfile_contract::expanded_gates;
 use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
 
 const ROOT: &str = "AGENTS.md";
@@ -1003,14 +1005,14 @@ fn check_public_intake(root: &Path) -> Result<(), String> {
 
 fn check_justfile_and_development_guide(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
-    let Some(ci_line) = justfile.lines().find(|line| line.starts_with("ci:")) else {
+    let Some(ci_gates) = expanded_gates(&justfile, "ci") else {
         return Err(format!(
             "ATOMIC-PROTOCOL: `{JUSTFILE}` has no `ci:` recipe. Restore the sole local-gate inventory."
         ));
     };
-    if ci_line
-        .split_whitespace()
-        .filter(|word| *word == "atomic-protocol")
+    if ci_gates
+        .iter()
+        .filter(|gate| **gate == "atomic-protocol")
         .count()
         != 1
     {
@@ -1441,6 +1443,23 @@ mod tests {
         );
         let error = check(&temp.path).expect_err("renamed duplicate owner must fail");
         assert!(error.contains("second protocol owner"), "{error}");
+    }
+
+    #[test]
+    fn a_gate_inside_a_parallel_group_counts_for_ci() {
+        let temp = fixture();
+        let justfile = fs::read_to_string(temp.path.join(JUSTFILE)).expect("read justfile");
+        let grouped = justfile.replacen("ci: atomic-protocol fmt-check", "ci: policy fmt-check", 1)
+            + "\n[parallel]\npolicy: atomic-protocol\n";
+        temp.write(JUSTFILE, &grouped);
+        check(&temp.path).expect("a grouped atomic-protocol gate still counts");
+
+        temp.write(
+            JUSTFILE,
+            &grouped.replacen("policy: atomic-protocol", "policy: fmt-check", 1),
+        );
+        let error = check(&temp.path).expect_err("a group without the gate must fail");
+        assert!(error.contains("exactly once"), "{error}");
     }
 
     #[test]
