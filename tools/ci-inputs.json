@@ -62,7 +62,9 @@
         "rust-toolchain.toml",
         "rustfmt.toml",
         ".cargo/*",
-        ".config/nextest.toml"
+        ".config/nextest.toml",
+        "crates/*",
+        "crates/keld-compat/fixtures/lifecycle-corpus/report.md"
       ],
       "contract": "Rust external reads include the CLI recursive tools registry scan, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant.",
       "reader_set": "rust-readers"
@@ -74,11 +76,14 @@
         "local_typescript"
       ],
       "inputs": [
-        "crates/keld-ipc/src/*",
         "crates/keld-ipc/tests/fixtures/*",
         "crates/keld-cli/templates/*",
         "crates/*.ts",
-        "*receiver-semantics-v0.tsv"
+        "*receiver-semantics-v0.tsv",
+        "crates/keld-ipc/src/lib.rs",
+        "crates/keld-ipc/src/frame.rs",
+        "crates/keld-ipc/src/echo.rs",
+        "crates/keld-ipc/src/lifecycle.rs"
       ],
       "contract": "Bun reads IPC constants and CLI templates, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. Source-reader drift invalidates exclusions.",
       "reader_set": "bun-readers"
@@ -134,11 +139,28 @@
       "inputs": [
         "Cargo.toml",
         "Cargo.lock",
-        "crates/*",
         "packages/*",
         ".github/*",
         ".config/*",
-        ".cargo/*"
+        ".cargo/*",
+        "crates/*/Cargo.toml",
+        "crates/keld-cli/tests/error_registry.rs",
+        "crates/keld-cli/src/mcp/docs_search.rs",
+        "crates/keld-cli/tests/doctor_mcp.rs",
+        "crates/keld-cli/src/template.rs",
+        "crates/keld-compat/tests/lifecycle_corpus.rs",
+        "crates/keld-compat/tests/lifecycle_evidence_report.rs",
+        "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/windows_lpac_app_link.rs",
+        "crates/keld-runtime/tests/windows_primary_generation.rs",
+        "crates/keld-host/tests/no_flag/linux/support/project.rs",
+        "crates/keld-host/tests/no_flag/windows/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-update/src/windows_extraction/tests.rs",
+        "crates/keld-update/src/windows_baseline/tests/support.rs",
+        "tools/llms_docs.rs"
       ],
       "contract": "",
       "reader_set": "policy-readers"
@@ -189,11 +211,9 @@
         "local_product-status-test",
         "local_product-status-check"
       ],
-      "inputs": [
-        "*"
-      ],
-      "contract": "Checks dynamic evidence paths, Git history, Cargo/package membership and linked document consumers; no exclusion proof exists beyond an empty valid diff.",
-      "reader_set": "policy-readers"
+      "inputs": [],
+      "contract": "Fixture self-tests consume the checker and its direct modules only. The separate live checker always validates Git evidence/ancestry and current consumers.",
+      "reader_set": "status-test-readers"
     },
     {
       "owner": "Generated corpus",
@@ -278,13 +298,25 @@
   "reader_sets": {
     "rust-readers": {
       "patterns": [
-        "crates/*",
-        "tools/llms_docs.rs",
-        "Cargo.toml",
-        "Cargo.lock",
-        ".cargo/*"
+        "crates/keld-cli/tests/error_registry.rs",
+        "crates/keld-cli/src/mcp/docs_search.rs",
+        "crates/keld-cli/tests/doctor_mcp.rs",
+        "crates/keld-cli/src/template.rs",
+        "crates/keld-compat/tests/lifecycle_corpus.rs",
+        "crates/keld-compat/tests/lifecycle_evidence_report.rs",
+        "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/windows_lpac_app_link.rs",
+        "crates/keld-runtime/tests/windows_primary_generation.rs",
+        "crates/keld-host/tests/no_flag/linux/support/project.rs",
+        "crates/keld-host/tests/no_flag/windows/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/support/product.rs",
+        "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-update/src/windows_extraction/tests.rs",
+        "crates/keld-update/src/windows_baseline/tests/support.rs",
+        "tools/llms_docs.rs"
       ],
-      "sha256": "9ce55659ca28d5215d1eb9ddfdf4a8512949bf2944001fbfe2dde2d492670126"
+      "sha256": "c26c933315a7a03c5be368bfba574ecbc02d346a2ee4e0f0b0954f635c7dd319"
     },
     "bun-readers": {
       "patterns": [
@@ -301,7 +333,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "84807c18de038c226d20760075807f4044b987e0e4231d9d7039f5d3c247a6c9"
+      "sha256": "b41c883232fff380d493c83304b166c51d533d311245c52ce2e10c7328178b7f"
     },
     "audit-readers": {
       "patterns": [
@@ -312,19 +344,29 @@
     },
     "rustdoc-readers": {
       "patterns": [
-        "crates/*",
         "justfile",
         "Cargo.toml",
         "Cargo.lock",
+        "rust-toolchain.toml",
         ".cargo/*"
       ],
-      "sha256": "ac29f0732cd660a91fb093b96af0d0af5795a7172a37d29db5680992225a09ff"
+      "sha256": "b139a374407d5f223cba4b4df1afd8916095112a10166fe781000a1dd4e2b3ba"
     },
     "dependency-command": {
       "patterns": [
         "justfile"
       ],
       "sha256": "ee59d4075ecdec3047821a274aab81be8af943801da29e31346aff6977db608d"
+    },
+    "status-test-readers": {
+      "patterns": [
+        "tools/product_status.rs",
+        "tools/justfile_contract.rs",
+        "tools/repo_path_contract.rs",
+        "rust-toolchain.toml",
+        "justfile"
+      ],
+      "sha256": "bc8a352e6bf9fa28c5dbd69eadaad7698d6af3c5f14c6122a5ade3e22ecefdde"
     }
   },
   "live_inputs": {
@@ -332,5 +374,13 @@
     "audit-docs": "Publication ancestry, historical report bytes and Git object availability are read by docs/audits/verify.py; missing/replaced history can fail with identical tracked bytes.",
     "product-status-check": "The ledger names evidence commits whose object availability and ancestry are validated; that live Git state is not represented by changed source paths.",
     "deny": "cargo deny check consumes the mutable advisory database as well as the lockfile; a new advisory can change its result with identical tracked bytes."
+  },
+  "rust_source_census": {
+    "patterns": [
+      "crates/*"
+    ],
+    "membership_sha256": "2faaa976594b09b24bfdce7e64c03c46af437c94af9d1dbb23eed154fec11916",
+    "sha256": "aff28aa30df1eae53ce9b140043fbeb86cde086314c84f7706069f1cf75d687b",
+    "contract": "New source membership is unknown and selects all. Existing unbound Rust source content retains Rust-owned gates only, protecting newly introduced reads in existing files without rerunning unrelated Bun/policy programs."
   }
 }

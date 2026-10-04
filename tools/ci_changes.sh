@@ -110,6 +110,13 @@ apply_consumer_contract() {
     if grep -Fxq 'input_ts=true' <<<"$consumer_contract"; then
         ts="$TRUE"
     fi
+    if grep -Fxq 'input_rust_unbound=true' <<<"$consumer_contract"; then
+        rust="$TRUE"
+        gui="$TRUE"
+        msrv="$TRUE"
+        webkitgtk="$TRUE"
+        all_workspace_packages="$TRUE"
+    fi
     if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
         mermaid="$TRUE"
     fi

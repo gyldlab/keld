@@ -40,6 +40,10 @@ def tracked_snapshot(source: Path, destination: Path) -> None:
     census = ci_inputs.files(destination)
     for reader_set in contract["reader_sets"].values():
         reader_set["sha256"] = ci_inputs.fingerprint(destination, census, reader_set["patterns"])
+    rust_census = contract.get("rust_source_census")
+    if rust_census:
+        rust_census["sha256"] = ci_inputs.fingerprint(destination, census, rust_census["patterns"])
+        rust_census["membership_sha256"] = ci_inputs.membership_fingerprint(census, rust_census["patterns"])
     (destination / "tools/ci-inputs.json").write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
 
 
@@ -306,6 +310,37 @@ class RouterFailureBoundaryTests(unittest.TestCase):
 
 
 class ProductionConsumerTests(unittest.TestCase):
+    def test_real_rust_content_edit_and_added_reader_have_distinct_scope(self):
+        source = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix="keld-ci-rust-census-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            leaf = "crates/keld-ipc/src/codec.rs"
+            path = root / leaf
+            path.write_text(path.read_text(encoding="utf-8") + "\n// pure codec implementation edit\n", encoding="utf-8")
+            subprocess.run(["git", "add", leaf], cwd=root, check=True, capture_output=True)
+            result = ci_inputs.classify(root, [leaf])
+            self.assertFalse(result["input_all"])
+            for gate in ("fmt-check", "clippy", "test", "doc"):
+                self.assertTrue(result["local_" + gate], gate)
+            for gate in ("typescript", "llms-check", "llms-test", "doc-placeholders-check",
+                         "agent-context-test", "audit-docs-test", "product-status-test", "ci-router-test"):
+                self.assertFalse(result["local_" + gate], gate)
+            # Even an existing non-reader can gain IO. Its stale content fence
+            # protects a later comparison containing only the newly read input.
+            path.write_text(path.read_text(encoding="utf-8") +
+                            '\n#[cfg(test)] fn external_reader_probe() { let _ = std::fs::read_to_string("README.md"); }\n',
+                            encoding="utf-8")
+            later = ci_inputs.classify(root, ["README.md"])
+            self.assertTrue(later["input_rust_unbound"])
+            self.assertTrue(later["local_test"])
+            added = "crates/keld-ipc/src/new_external_reader.rs"
+            (root / added).write_text('pub fn read() { let _ = std::fs::read("README.md"); }\n', encoding="utf-8")
+            subprocess.run(["git", "add", added], cwd=root, check=True, capture_output=True)
+            unknown = ci_inputs.classify(root, [added])
+            self.assertTrue(unknown["input_all"])
+            self.assertTrue(all(unknown.values()), "new unbound membership must never omit a consumer")
+
     def test_bound_production_readers_and_real_cross_tree_inputs(self):
         source = Path(__file__).resolve().parent.parent
         live_contract = ci_inputs.load(source)
@@ -371,7 +406,7 @@ class ProductionConsumerTests(unittest.TestCase):
             for gate in ("fmt-check", "clippy", "test", "typescript"):
                 self.assertFalse(unrelated["local_" + gate], (path, gate))
         unrelated = ci_inputs.classify(root, ["README.md"], paths_only=True)
-        for gate in ("agent-context-test", "ci-router-test", "doc", "hooks-test"):
+        for gate in ("agent-context-test", "ci-router-test", "doc", "hooks-test", "product-status-test"):
             self.assertFalse(unrelated["local_" + gate], gate)
         duplicate = "docs/example/receiver-semantics-v0.tsv"
         path = root / duplicate
