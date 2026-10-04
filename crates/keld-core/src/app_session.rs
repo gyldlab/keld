@@ -73,8 +73,10 @@ use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
     LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
+#[cfg(all(test, target_os = "macos"))]
+use keld_native::fs::FsResponse;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use keld_native::fs::{FS_CHANNEL, FsBroker, FsError, FsPrepareError, FsRequest, FsResponse};
+use keld_native::fs::{FS_CHANNEL, FsBroker, FsPrepareError, FsRequest};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use keld_runtime::linux_strict::LinuxStrictProfile;
 #[cfg(target_os = "macos")]
@@ -254,6 +256,14 @@ impl GuardSnapshot {
 struct FsDispatchState {
     accepting: bool,
     in_flight: usize,
+    pending_call: Option<PendingFsCall>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PendingFsCall {
+    attempt: u32,
+    correlation: CorrelationId,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -261,6 +271,7 @@ struct FsDispatchSession {
     verified: VerifiedManifest,
     broker: FsBroker,
     state: Mutex<FsDispatchState>,
+    handler_transition: Mutex<()>,
     drained: Condvar,
 }
 
@@ -273,12 +284,29 @@ impl FsDispatchSession {
             state: Mutex::new(FsDispatchState {
                 accepting: true,
                 in_flight: 0,
+                pending_call: None,
             }),
+            handler_transition: Mutex::new(()),
             drained: Condvar::new(),
         }
     }
 
+    #[cfg(test)]
     fn admit(self: &Arc<Self>) -> Result<Option<FsInFlight>, HostAppError> {
+        self.admit_with_pending(None)
+    }
+
+    fn begin_call(
+        self: &Arc<Self>,
+        pending_call: PendingFsCall,
+    ) -> Result<Option<FsInFlight>, HostAppError> {
+        self.admit_with_pending(Some(pending_call))
+    }
+
+    fn admit_with_pending(
+        self: &Arc<Self>,
+        pending_call: Option<PendingFsCall>,
+    ) -> Result<Option<FsInFlight>, HostAppError> {
         let mut state = self
             .state
             .lock()
@@ -286,22 +314,82 @@ impl FsDispatchSession {
         if !state.accepting {
             return Ok(None);
         }
+        if pending_call.is_some() && state.pending_call.is_some() {
+            return Err(app_detail(
+                "filesystem admission",
+                "a privileged filesystem Call is already outstanding",
+            ));
+        }
         state.in_flight = state
             .in_flight
             .checked_add(1)
             .ok_or_else(|| app_detail("filesystem admission", "in-flight count overflow"))?;
+        if let Some(pending_call) = pending_call {
+            state.pending_call = Some(pending_call);
+        }
         Ok(Some(FsInFlight {
             session: Arc::clone(self),
+            pending_call,
         }))
     }
 
-    fn quiesce(&self) -> Result<(), HostAppError> {
+    fn has_pending_call_for(&self, attempt: u32) -> bool {
+        self.state.lock().map_or(true, |state| {
+            state
+                .pending_call
+                .is_some_and(|pending| pending.attempt == attempt)
+        })
+    }
+
+    fn retire_pending_call(&self, pending_call: PendingFsCall) -> Result<(), HostAppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("filesystem retirement", "in-flight lock poisoned"))?;
+        if state.pending_call == Some(pending_call) {
+            state.pending_call = None;
+        }
+        Ok(())
+    }
+
+    fn retire_pending_call_for_attempt(&self, attempt: u32) -> Result<(), HostAppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("filesystem retirement", "in-flight lock poisoned"))?;
+        if state
+            .pending_call
+            .is_some_and(|pending| pending.attempt == attempt)
+        {
+            state.pending_call = None;
+        }
+        Ok(())
+    }
+
+    fn close_admission(&self) -> Result<(), HostAppError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| app_detail("filesystem quiesce", "in-flight lock poisoned"))?;
         state.accepting = false;
         Ok(())
+    }
+
+    fn wait_for_handler_transition(&self) -> Result<(), HostAppError> {
+        let _transition = self.handler_transition.lock().map_err(|_| {
+            app_detail(
+                "filesystem quiesce",
+                "handler-entry transition lock poisoned",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn quiesce(&self) -> Result<(), HostAppError> {
+        self.close_admission()?;
+        // Returning after this acquisition publishes that every handler which
+        // won entry before admission closed has reached its terminal outcome.
+        self.wait_for_handler_transition()
     }
 
     fn drain(&self) -> Result<(), HostAppError> {
@@ -322,6 +410,7 @@ impl FsDispatchSession {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsInFlight {
     session: Arc<FsDispatchSession>,
+    pending_call: Option<PendingFsCall>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -366,13 +455,31 @@ impl FsWorkerTestGate {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl FsInFlight {
-    fn handle(&self, request: FsRequest, cancelled: &AtomicBool) -> Result<FsResponse, FsError> {
-        self.session.broker.handle_request(
-            &self.session.verified,
-            Principal::AppProcess,
-            request,
-            cancelled,
-        )
+    fn handle_with<T>(&self, handler: impl FnOnce() -> T) -> Result<Option<T>, HostAppError> {
+        let _transition = self.session.handler_transition.lock().map_err(|_| {
+            app_detail(
+                "filesystem handler entry",
+                "handler-entry transition lock poisoned",
+            )
+        })?;
+        let state = self
+            .session
+            .state
+            .lock()
+            .map_err(|_| app_detail("filesystem handler entry", "in-flight lock poisoned"))?;
+        if !state.accepting {
+            return Ok(None);
+        }
+        // Admission state is independent of the transition retained across
+        // native I/O, so readers can continue classifying and admitting work.
+        drop(state);
+        Ok(Some(handler()))
+    }
+
+    fn retire_pending_call(&self) -> Result<(), HostAppError> {
+        self.pending_call.map_or(Ok(()), |pending_call| {
+            self.session.retire_pending_call(pending_call)
+        })
     }
 }
 
@@ -386,6 +493,11 @@ impl Drop for FsInFlight {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.in_flight != 0 {
             state.in_flight -= 1;
+        }
+        if let Some(pending_call) = self.pending_call
+            && state.pending_call == Some(pending_call)
+        {
+            state.pending_call = None;
         }
         if state.in_flight == 0 {
             self.session.drained.notify_all();
@@ -4807,11 +4919,26 @@ impl PrimaryRouterHandle {
         active.reader_stop.store(true, Ordering::Release);
         collapse_app_results([
             self.fail_pending_echo_for_attempt(attempt, pending_detail),
+            self.fs
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .map_or(Ok(()), |fs| fs.retire_pending_call_for_attempt(attempt)),
             finish_link_shutdown(active.writer.shutdown_app_link(), link_phase),
         ])
     }
 
-    fn begin_fs_call(&self, attempt: u32) -> Result<FsInFlight, HostAppError> {
+    fn has_pending_fs_call(&self, attempt: u32) -> bool {
+        self.fs
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|fs| fs.has_pending_call_for(attempt))
+    }
+
+    fn begin_fs_call(
+        &self,
+        attempt: u32,
+        correlation: CorrelationId,
+    ) -> Result<FsInFlight, HostAppError> {
         let _transition = self.shutdown.transition_guard();
         if !self.shutdown.is_running() {
             return Err(app_detail(
@@ -4839,7 +4966,11 @@ impl PrimaryRouterHandle {
             )
         })?;
         drop(current);
-        fs.admit()?.ok_or_else(|| {
+        fs.begin_call(PendingFsCall {
+            attempt,
+            correlation,
+        })?
+        .ok_or_else(|| {
             app_detail(
                 "filesystem admission",
                 "guarded filesystem session is quiescing",
@@ -5199,156 +5330,15 @@ impl FsWorker {
     }
 
     fn stop_and_join(&mut self) -> Result<(), HostAppError> {
-        let stop = match self.commands.try_send(FsWorkerCommand::Stop) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(app_detail(
-                "filesystem worker shutdown",
-                "worker queue remained full after filesystem drain",
-            )),
-        };
-        let join = self.join.take().map_or(Ok(()), |join| {
-            join.join()
-                .map_err(|_| app_detail("filesystem worker", "thread panicked"))?
-        });
-        collapse_app_results([stop, join])
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-impl PrimaryRouter {
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-    fn start(
-        stream: BootstrapStream,
-        window_commands: Sender<AppWindowCommand>,
-        guardian: PlatformPrimaryOwnerHandle,
-        shutdown: SessionShutdownState,
-    ) -> Result<Self, HostAppError> {
-        Self::start_with_fs(stream, window_commands, guardian, shutdown, None)
-    }
-
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-    fn start_with_fs(
-        stream: BootstrapStream,
-        window_commands: Sender<AppWindowCommand>,
-        guardian: PlatformPrimaryOwnerHandle,
-        shutdown: SessionShutdownState,
-        fs: Option<Weak<FsDispatchSession>>,
-    ) -> Result<Self, HostAppError> {
-        Self::start_with_fs_test_gate(stream, window_commands, guardian, shutdown, fs, None)
-    }
-
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-    fn start_with_fs_test_gate(
-        stream: BootstrapStream,
-        window_commands: Sender<AppWindowCommand>,
-        guardian: PlatformPrimaryOwnerHandle,
-        shutdown: SessionShutdownState,
-        fs: Option<Weak<FsDispatchSession>>,
-        fs_worker_test_gate: Option<Arc<FsWorkerTestGate>>,
-    ) -> Result<Self, HostAppError> {
-        let handle = PrimaryRouterHandle {
-            current: Arc::new(Mutex::new(None)),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(target_os = "macos")]
-            pending_echo: Arc::new(Mutex::new(None)),
-            #[cfg(target_os = "macos")]
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(false)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(true)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown,
-            fs,
-            fs_worker_commands: None,
-            guardian,
-            window_commands,
-        };
-        let router = Self::finish_start(
-            handle,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-            fs_worker_test_gate,
-        )?;
-        router.handle.install_generation(1, stream)?;
-        Ok(router)
-    }
-
-    fn start_bound(
-        bound: BoundPrimaryGeneration,
-        window_commands: Sender<AppWindowCommand>,
-        guardian: PlatformPrimaryOwnerHandle,
-        shutdown: SessionShutdownState,
-        fs: Option<Weak<FsDispatchSession>>,
-    ) -> Result<Self, HostAppError> {
-        let attempt = bound.attempt();
-        let stream = bound.into_stream();
-        let handle = PrimaryRouterHandle {
-            current: Arc::new(Mutex::new(None)),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(target_os = "macos")]
-            pending_echo: Arc::new(Mutex::new(None)),
-            #[cfg(target_os = "macos")]
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(false)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(false)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown,
-            fs,
-            fs_worker_commands: None,
-            guardian,
-            window_commands,
-        };
-        let router = Self::finish_start(
-            handle,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-            None,
-        )?;
-        router.handle.install_generation(attempt, stream)?;
-        Ok(router)
-    }
-
-    fn finish_start(
-        mut handle: PrimaryRouterHandle,
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-            Arc<FsWorkerTestGate>,
-        >,
-    ) -> Result<Self, HostAppError> {
-        let fs_worker = if handle.fs.is_some() {
-            Some(FsWorker::start(
-                &mut handle,
-                #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-                test_gate,
-            )?)
-        } else {
-            None
-        };
-        Ok(Self { handle, fs_worker })
-    }
-
-    fn handle(&self) -> PrimaryRouterHandle {
-        self.handle.clone()
-    }
-
-    fn shutdown(mut self) -> Result<(), HostAppError> {
-        self.stop_and_join()
-    }
-
-    fn stop_and_join(&mut self) -> Result<(), HostAppError> {
         let fs = self.handle.fs.as_ref().and_then(Weak::upgrade);
-        let (fs_quiesce, pending) = {
+        let (fs_close, pending) = {
             // Failed Ready recovery, FS admission closure, and successor publication
-            // must observe one serialized teardown transition. Release it before
-            // joining readers or draining native work, which may wait independently.
+            // observe one serialized teardown transition. Publish cooperative
+            // cancellation before waiting for a handler that may be inside native I/O.
             let _transition = self.handle.shutdown.transition_guard();
-            let fs_quiesce = fs.as_ref().map_or(Ok(()), |session| session.quiesce());
+            let fs_close = fs
+                .as_ref()
+                .map_or(Ok(()), |session| session.close_admission());
             self.handle.shutdown.stop_reader();
             let mut current = match self.handle.current.lock() {
                 Ok(current) => current,
@@ -5360,8 +5350,14 @@ impl PrimaryRouter {
             if let Some(active) = current.take() {
                 let _ = active.writer.shutdown_app_link();
             }
-            (fs_quiesce, pending)
+            (fs_close, pending)
         };
+        // The transition above must be released before this wait: an already-entered
+        // native handler may retain its own entry transition until its terminal outcome.
+        let fs_wait = fs
+            .as_ref()
+            .map_or(Ok(()), |session| session.wait_for_handler_transition());
+        let fs_quiesce = collapse_app_results([fs_close, fs_wait]);
         let readers = match self.handle.readers.lock() {
             Ok(mut readers) => std::mem::take(&mut *readers),
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
@@ -5392,7 +5388,7 @@ fn prepare_fs_work(
     payload: &[u8],
     cancellation: &Arc<AtomicBool>,
 ) -> Result<FsWorkItem, HostAppError> {
-    let admitted = handle.begin_fs_call(attempt)?;
+    let admitted = handle.begin_fs_call(attempt, correlation)?;
     let request = decode(payload).map_err(|source| app_ipc("filesystem request", &source))?;
     Ok(FsWorkItem {
         admitted,
@@ -5416,10 +5412,6 @@ fn run_fs_worker(
         let FsWorkerCommand::Work(work) = command else {
             return Ok(());
         };
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-        if let Some(gate) = test_gate {
-            gate.wait_after_take()?;
-        }
         let FsWorkItem {
             admitted,
             request,
@@ -5427,13 +5419,35 @@ fn run_fs_worker(
             correlation,
             cancellation,
         } = work;
-        match admitted.handle(request, &cancellation) {
+        let outcome = admitted.handle_with(|| {
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            if let Some(gate) = test_gate {
+                gate.wait_after_take()?;
+            }
+            Ok::<_, HostAppError>(admitted.session.broker.handle_request(
+                &admitted.session.verified,
+                Principal::AppProcess,
+                request,
+                &cancellation,
+            ))
+        })?;
+        let Some(outcome) = outcome else {
+            continue;
+        };
+        match outcome? {
             Ok(response) => {
                 let reply =
                     encode(&response).map_err(|source| app_ipc("filesystem response", &source))?;
+                // Publish completion before the correlated terminal reply can
+                // become visible, so the peer's next sequential Call cannot
+                // race an uncleared outstanding marker.
+                admitted.retire_pending_call()?;
                 write_primary_reply(current, shutdown, attempt, FS_CHANNEL, correlation, &reply)?;
             }
             Err(error) => {
+                // The same state-before-notification order applies to terminal
+                // native errors; queue and link failures retire via Drop.
+                admitted.retire_pending_call()?;
                 write_primary_call_error(
                     current,
                     shutdown,
@@ -5477,6 +5491,7 @@ fn read_primary_frames(
                 reader_stop,
                 || handle.pending_echo_corr_for(attempt),
                 FS_CHANNEL,
+                || handle.has_pending_fs_call(attempt),
             )
         } else {
             read_primary_app_frame_interruptible(reader, reader_stop, || {
@@ -6816,6 +6831,129 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn second_fs_call_is_rejected_before_its_payload_while_first_is_outstanding() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+
+        use keld_ipc::frame::FrameHeader;
+        use keld_ipc::link::{AppLinkDeadlines as _, write_frame};
+        use sha2::{Digest as _, Sha256};
+
+        let temp = tempfile::tempdir().expect("second FS Call root");
+        let allowed = temp.path().join("allowed");
+        fs::create_dir(&allowed).expect("second FS Call allowed root");
+        let first_target = allowed.join("held.txt");
+        fs::write(&first_target, b"held worker bytes").expect("second FS Call input");
+        let second_target = allowed.join("must-not-write.txt");
+        let scope = allowed.display().to_string().replace('\\', "/");
+        let manifest_text =
+            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
+        let manifest_path = temp.path().join(PERMISSIONS_FILE);
+        fs::write(&manifest_path, &manifest_text).expect("write second FS Call manifest");
+        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        let verified = load_verified_manifest(
+            File::open(&manifest_path).expect("open second FS Call manifest"),
+            manifest_path,
+            digest,
+        )
+        .expect("verify second FS Call manifest");
+        let snapshot = GuardSnapshot::prepare(verified).expect("prepare second FS Call broker");
+
+        let (taken_tx, taken_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        let gate = Arc::new(FsWorkerTestGate {
+            taken: taken_tx,
+            release: Mutex::new(release_rx),
+        });
+        let (server, mut client) = UnixStream::pair().expect("second FS Call primary pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("second FS Call client deadlines");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, _guardian_rx) = mpsc::channel();
+        let router = PrimaryRouter::start_with_fs_test_gate(
+            server,
+            window_tx,
+            PlatformPrimaryOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+            Some(snapshot.fs_weak()),
+            Some(gate),
+        )
+        .expect("second FS Call router");
+
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            FS_CHANNEL,
+            CorrelationId(80),
+            &encode(&FsRequest::Read {
+                path: first_target.display().to_string().replace('\\', "/"),
+            })
+            .expect("encode held first FS Call"),
+        )
+        .expect("send held first FS Call");
+        taken_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker took first FS Call");
+        assert_eq!(
+            snapshot.fs.state.lock().expect("FS state").in_flight,
+            1,
+            "the held first FS Call is the only native admission"
+        );
+
+        let second_payload = encode(&FsRequest::Write {
+            path: second_target.display().to_string().replace('\\', "/"),
+            bytes: b"must not be read".to_vec(),
+        })
+        .expect("encode withheld second FS payload");
+        let second_len = u32::try_from(second_payload.len()).expect("second FS payload length");
+        client
+            .write_all(
+                &FrameHeader {
+                    kind: FrameKind::Call,
+                    flags: 0,
+                    channel: FS_CHANNEL,
+                    corr: CorrelationId(81),
+                    len: second_len,
+                }
+                .encode(),
+            )
+            .expect("send only second FS Call header");
+        client.flush().expect("flush second FS Call header");
+
+        let fatal = window_rx.recv_timeout(Duration::from_secs(1));
+        assert_eq!(
+            snapshot.fs.state.lock().expect("FS state").in_flight,
+            1,
+            "the withheld second payload reached native admission"
+        );
+        assert!(
+            matches!(taken_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "the worker observed a second FS handler entry"
+        );
+        assert!(
+            !second_target.exists(),
+            "the header-only second FS Call produced a filesystem effect"
+        );
+
+        release_tx.send(()).expect("release first FS worker");
+        let shutdown = router.shutdown();
+        assert_eq!(
+            fatal.expect("second FS Call must fail before its withheld payload is read"),
+            AppWindowCommand::Fatal
+        );
+        let error = shutdown.expect_err("second outstanding FS Call must fail the session");
+        assert!(
+            error.to_string().contains("KELD-IPC-005"),
+            "wrong second FS Call failure: {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn stale_generation_precedes_malformed_fs_payload_classification() {
         use std::os::unix::net::UnixStream;
 
@@ -7070,6 +7208,54 @@ mod tests {
             0,
             "drain returned before the admitted lease terminated"
         );
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn dequeued_fs_item_losing_quiesce_never_enters_handler() {
+        use sha2::{Digest as _, Sha256};
+
+        let temp = tempfile::tempdir().expect("paused FS entry root");
+        let manifest_text = "{}\n";
+        let manifest_path = temp.path().join(PERMISSIONS_FILE);
+        fs::write(&manifest_path, manifest_text).expect("write paused FS manifest");
+        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        let verified = load_verified_manifest(
+            File::open(&manifest_path).expect("open paused FS manifest"),
+            manifest_path,
+            digest,
+        )
+        .expect("verify paused FS manifest");
+        let snapshot = GuardSnapshot::prepare(verified).expect("prepare paused FS broker");
+        let admitted = snapshot
+            .fs
+            .admit()
+            .expect("paused FS admission")
+            .expect("session initially accepts");
+        let invoked = Arc::new(AtomicBool::new(false));
+        let invoked_in_worker = Arc::clone(&invoked);
+        let (dequeued_tx, dequeued_rx) = mpsc::sync_channel(1);
+        let (enter_tx, enter_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            dequeued_tx.send(()).expect("report dequeued FS item");
+            enter_rx.recv().expect("release paused handler entry");
+            admitted
+                .handle_with(|| invoked_in_worker.store(true, Ordering::Release))
+                .expect("attempt paused handler entry")
+                .is_none()
+        });
+
+        dequeued_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker dequeued admitted FS item");
+        snapshot.fs.quiesce().expect("publish FS quiescence");
+        enter_tx.send(()).expect("release handler-entry attempt");
+        assert!(worker.join().expect("paused FS worker joins"));
+        assert!(
+            !invoked.load(Ordering::Acquire),
+            "dequeued item invoked its handler after quiescence publication"
+        );
+        snapshot.fs.drain().expect("drain rejected FS item");
     }
 
     #[test]

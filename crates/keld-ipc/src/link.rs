@@ -408,7 +408,10 @@ pub fn read_primary_app_frame_interruptible<S: Read>(
 ///
 /// The trusted channel is selected by the host before any frame bytes are inspected.
 /// A matching CALL is validated through `ReceivePolicy::privileged_call_receiver`
-/// before payload allocation; all other primary-session semantics remain unchanged.
+/// before payload allocation. When `pending_privileged_call` reports outstanding
+/// trusted host state, another CALL on that channel is rejected as unexpected
+/// session state before its payload is allocated or read. All other primary-session
+/// semantics remain unchanged.
 ///
 /// # Errors
 ///
@@ -418,13 +421,23 @@ pub fn read_primary_app_frame_interruptible_with_privileged_call<S: Read>(
     stop: &AtomicBool,
     pending_echo_reply: impl Fn() -> Option<CorrelationId>,
     privileged_call_channel: ChannelId,
+    pending_privileged_call: impl Fn() -> bool,
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
     read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
-        validate_primary_app_header_with_privileged_call(
+        let validated = validate_primary_app_header_with_privileged_call(
             pending_echo_reply(),
             Some(privileged_call_channel),
             header,
-        )
+        )?;
+        if header.kind == FrameKind::Call
+            && header.channel == privileged_call_channel
+            && pending_privileged_call()
+        {
+            return Err(IpcError::Protocol {
+                detail: "privileged Call is already outstanding for this session",
+            });
+        }
+        Ok(validated)
     })
 }
 
@@ -1663,6 +1676,42 @@ mod validated_read_tests {
         assert_eq!(validated.kind(), FrameKind::Call);
         assert_eq!(validated.corr(), CorrelationId(7));
         assert_eq!(got, payload);
+    }
+
+    /// KEL-102/T3 permits one privileged CALL outstanding. The trusted
+    /// pending state must reject a second FS header before its payload is
+    /// consumed; queue saturation is too late to enforce this boundary.
+    #[test]
+    fn primary_privileged_reader_rejects_second_call_before_payload() {
+        let mut bytes = frame_bytes(FrameKind::Call, 0, 2, 7, &[]);
+        bytes.extend_from_slice(&frame_bytes(FrameKind::Call, 0, 2, 8, &[0xAA; 64]));
+        let mut cursor = std::io::Cursor::new(bytes);
+        let stop = AtomicBool::new(false);
+
+        read_primary_app_frame_interruptible_with_privileged_call(
+            &mut cursor,
+            &stop,
+            || None,
+            ChannelId(2),
+            || false,
+        )
+        .expect("first privileged CALL admits")
+        .expect("reader remains active");
+        let error = read_primary_app_frame_interruptible_with_privileged_call(
+            &mut cursor,
+            &stop,
+            || None,
+            ChannelId(2),
+            || true,
+        )
+        .expect_err("second outstanding privileged CALL must fail");
+
+        assert!(error.to_string().contains("KELD-IPC-005"), "{error}");
+        assert_eq!(
+            cursor.position(),
+            (HEADER_LEN * 2) as u64,
+            "second privileged payload must remain unread"
+        );
     }
 
     /// Syntax stays first: a bad header byte is `KELD-IPC-002`, not 005.
