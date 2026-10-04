@@ -512,6 +512,16 @@ fn open_machine_file(
         .share_mode(FILE_SHARE_READ)
         .follow(FollowSymlinks::No);
     let file = parent.open_with(leaf, &options)?;
+    admit_machine_file(parent, file, profile)
+}
+
+/// Admits an open protected record: a non-reparse regular file with one link, on its
+/// parent's volume, carrying the installation's exact protection profile.
+fn admit_machine_file(
+    parent: &Dir,
+    file: File,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<File> {
     ensure_regular(&file.metadata()?)?;
     if file.metadata()?.dev() != parent.dir_metadata()?.dev() {
         return Err(io::Error::other("record crosses parent volume"));
