@@ -7020,13 +7020,36 @@ mod tests {
             &handle,
             2,
             &error,
-            |attempt| restarted.push(attempt)
+            |attempt| {
+                assert!(matches!(
+                    handle.shutdown.transition.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                restarted.push(attempt);
+            }
         ));
         assert_eq!(
             restarted,
             [2],
             "the direct owner must request the failed bound attempt"
         );
+
+        // The restart-admitted-first order is the other linearization of the
+        // same transition used by teardown. Once teardown wins afterward, a
+        // late successor is closed without publishing current or a reader.
+        let mut router = PrimaryRouter {
+            handle: handle.clone(),
+        };
+        router
+            .stop_and_join()
+            .expect("teardown after admitted restart");
+        assert!(handle.shutdown.reader_stop.load(Ordering::Acquire));
+        let (late_server, _late_client) = primary_test_stream_pair();
+        handle
+            .install_generation(3, late_server)
+            .expect("late bound after admitted restart closes cleanly");
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        assert!(handle.readers.lock().expect("reader lock").is_empty());
     }
 
     #[test]
@@ -7065,6 +7088,69 @@ mod tests {
         handle
             .install_generation(3, late_server)
             .expect("late bind is harmless after teardown");
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        assert!(handle.readers.lock().expect("reader lock").is_empty());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn failed_ready_restart_overlapping_router_teardown_has_only_serial_outcomes() {
+        let (handle, _g1_client, _owner_rx) = initial_ready_router();
+        handle.window_ready.store(true, Ordering::Release);
+        handle.recovery_armed.store(true, Ordering::Release);
+        handle.last_revoked_attempt.store(1, Ordering::Release);
+        handle.retire_generation(1).expect("retire g1");
+        let (g2_server, g2_client) = primary_test_stream_pair();
+        drop(g2_client);
+        let failure = handle
+            .install_generation(2, g2_server)
+            .expect_err("closed g2 replay");
+        assert_eq!(failure.retired_after_failed_ready, Some(2));
+
+        // The owner and UI teardown race for the same transition. The lock
+        // makes this equivalent to one of two observable orders: either the
+        // supervisor restart is admitted first, or reader_stop wins first.
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let owner_start = std::sync::Arc::clone(&start);
+        let owner_handle = handle.clone();
+        let (restart_tx, restart_rx) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            owner_start.wait();
+            let mut restarted = Vec::new();
+            let admitted = restart_failed_bound_generation(&owner_handle, 2, &failure, |attempt| {
+                assert!(
+                    !owner_handle.shutdown.reader_stop.load(Ordering::Acquire),
+                    "restart callback ran after router stop publication"
+                );
+                restart_tx.send(attempt).expect("record restart request");
+                restarted.push(attempt);
+            });
+            (admitted, restarted)
+        });
+        let teardown_start = std::sync::Arc::clone(&start);
+        let mut router = PrimaryRouter {
+            handle: handle.clone(),
+        };
+        let teardown = thread::spawn(move || {
+            teardown_start.wait();
+            router.stop_and_join().expect("overlapping router teardown");
+        });
+        start.wait();
+
+        let (admitted, restarted) = owner.join().expect("owner decision joins");
+        teardown.join().expect("teardown worker joins");
+        let requests: Vec<u32> = restart_rx.try_iter().collect();
+        assert_eq!(requests, restarted);
+        assert!(requests.is_empty() || requests == [2], "{requests:?}");
+        assert_eq!(admitted, !requests.is_empty());
+        assert!(handle.shutdown.reader_stop.load(Ordering::Acquire));
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        assert!(handle.readers.lock().expect("reader lock").is_empty());
+
+        let (late_server, _late_client) = primary_test_stream_pair();
+        handle
+            .install_generation(3, late_server)
+            .expect("late bound closes after teardown");
         assert!(handle.current.lock().expect("generation lock").is_none());
         assert!(handle.readers.lock().expect("reader lock").is_empty());
     }
