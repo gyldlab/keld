@@ -6,6 +6,12 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 router="$repo_root/tools/ci_changes.sh"
 required="$repo_root/tools/ci_required.sh"
 
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/keld-ci-changes.XXXXXX")"
+cleanup() {
+    rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
 
@@ -17,7 +23,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages)=' <<<"$actual")"
+    actual="$(grep -Ev '^(local_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages)=)' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -108,6 +114,9 @@ runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=
 docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 docs_hygiene=$'rust=false\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
+docs_rust=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
+hygiene_rust=$'rust=true\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
+docs_hygiene_rust=$'rust=true\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
 host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 ipc_fixture_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=true\nwebkitgtk=true'
@@ -120,6 +129,25 @@ wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
 workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=false'
 all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
+
+# A developer checkout can contain unknown inputs. Prove the live fallback,
+# then run clean-path exclusion controls in a separate tracked-byte snapshot.
+# The unknown input is retained in place; it is never ignored or special-cased.
+if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    live_unknown="$("$router" local)"
+    expect_flags "live untracked inputs select every hosted lane" "$all_true" "$live_unknown"
+    if grep -Eq '^local_[^=]+=false$' <<<"$live_unknown"; then
+        echo "FAIL: an unknown local input omitted a local gate" >&2
+        exit 1
+    fi
+    echo "ok: live untracked inputs select every local gate"
+fi
+case "$(uname -s)" in
+    MINGW* | MSYS*) python_command=python ;;
+    *) python_command=python3 ;;
+esac
+"$python_command" -B "$repo_root/tools/test_ci_local.py" --tracked-snapshot "$temp_dir/bound"
+cd "$temp_dir/bound"
 
 empty_classification="$(printf '' | "$router" classify)"
 expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classification"
@@ -136,35 +164,37 @@ expect_package_token "runtime-only change clippy's host-owned session consumer" 
 expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli without GTK" keld-cli "$runtime_classification"
 
 docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
-expect_flags "docs-only change avoids Rust and GUI lanes" "$docs_only" "$docs_classification"
+expect_flags "docs corpus change includes its Rust embed consumers" "$docs_rust" "$docs_classification"
 expect_mermaid_flag "path-only Markdown classification fails safe without old/new content" true "$docs_classification"
-expect_empty_packages "docs-only change selects no package" "$docs_classification"
+expect_package_token "docs corpus selects the CLI consumer" keld-cli "$docs_classification"
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
-expect_flags "public audit verifier and evidence stay in docs gate" "$docs_only" "$audit_docs_classification"
-expect_empty_packages "public audit verifier selects no product package" "$audit_docs_classification"
+expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
 
 hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"
 
 atomic_checker_classification="$(result_for_paths tools/atomic_protocol.rs)"
-expect_flags "atomic protocol checker runs only its hygiene contract" "$hygiene_only" "$atomic_checker_classification"
-expect_empty_packages "atomic protocol checker selects no package" "$atomic_checker_classification"
+expect_flags "atomic checker also feeds the CLI error registry" "$hygiene_rust" "$atomic_checker_classification"
+expect_package_token "recursive tools scan selects its CLI reader" keld-cli "$atomic_checker_classification"
+
+justfile_contract_classification="$(result_for_paths tools/justfile_contract.rs)"
+expect_flags "shared parser feeds hygiene and Rust registry" "$hygiene_rust" "$justfile_contract_classification"
+expect_mermaid_flag "shared justfile parser re-checks the Mermaid gate contract" true "$justfile_contract_classification"
+expect_package_token "shared parser selects CLI registry" keld-cli "$justfile_contract_classification"
 
 agent_context_classification="$(result_for_paths tools/agent_context.rs tools/markdown_contract.rs .agents/instruction-budget.tsv)"
-expect_flags "instruction budget inputs run only hygiene" "$hygiene_only" "$agent_context_classification"
-expect_no_package_selection "instruction budget inputs select no package/suite" "$agent_context_classification"
+expect_flags "instruction checker feeds hygiene and registry" "$hygiene_rust" "$agent_context_classification"
 
 agent_instruction_classification="$(result_for_paths AGENTS.md crates/keld-wv/AGENTS.md .agents/index.md .agents/skills/instruction-review/SKILL.md .agents/new.txt docs/agents/workflow.md)"
-expect_flags "agent instruction Markdown runs docs and merge-blocking hygiene" "$docs_hygiene" "$agent_instruction_classification"
-expect_no_package_selection "agent instruction Markdown selects no package/suite" "$agent_instruction_classification"
+expect_flags "crate documentation can also feed Rust readers" "$docs_hygiene_rust" "$agent_instruction_classification"
 
 agent_assembly_classification="$(result_for_paths .codex/config.toml)"
 expect_flags "agent assembly config runs merge-blocking hygiene" "$hygiene_only" "$agent_assembly_classification"
 expect_no_package_selection "agent assembly config selects no package/suite" "$agent_assembly_classification"
 
 host_classification="$(result_for_paths crates/keld-ipc/src/lib.rs)"
-expect_flags "host dependency closure routes IPC change to GUI smoke and GTK for its selected test closure" "$host_dependency" "$host_classification"
+expect_flags "IPC source also feeds Bun constant assertions" "$ipc_fixture_flags" "$host_classification"
 expect_package_token "IPC change includes host consumer" keld-host "$host_classification"
 
 compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
@@ -195,8 +225,8 @@ expect_output_package_token "TypeScript fixture change selects the owning Bun su
 expect_package_token "TypeScript fixture change re-runs its Rust conformance consumer" keld-compat "$ts_fixture_classification"
 
 ts_docs_classification="$(result_for_paths packages/@keld/electron/README.md)"
-expect_flags "Markdown inside a TypeScript package stays in the docs lane" "$docs_only" "$ts_docs_classification"
-expect_empty_output "Markdown inside a TypeScript package selects no Bun suite" ts_packages "$ts_docs_classification"
+ts_docs_flags=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
+expect_flags "package input scope conservatively includes documentation readers" "$ts_docs_flags" "$ts_docs_classification"
 
 wv_classification="$(result_for_paths crates/keld-wv/src/lib.rs)"
 expect_flags "keld-wv change enables GUI smoke and Ubuntu WebKitGTK apt" "$wv_flags" "$wv_classification"
@@ -240,6 +270,10 @@ expect_flags "router test edit still exercises all jobs" "$workflow_all" "$route
 required_script_classification="$(result_for_paths tools/ci_required.sh)"
 expect_flags "required-result evaluator edit still exercises all jobs" "$workflow_all" "$required_script_classification"
 expect_mermaid_flag "router and required-result changes run the full Mermaid lane" true "$router_script_classification"
+for input in tools/ci_inputs.py tools/ci_local.py tools/test_ci_local.py tools/ci-inputs.json; do
+    helper_classification="$(result_for_paths "$input")"
+    expect_flags "router owner $input selects every job without duplicate GTK apt" "$workflow_all" "$helper_classification"
+done
 
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
 for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-runtime crates/keld-wv; do
@@ -255,19 +289,18 @@ if grep -Fxq "crates/keld-compat" <<<"$actual_host_dirs"; then
 fi
 echo "ok: cargo metadata derives current keld-host closure"
 
-temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/keld-ci-changes.XXXXXX")"
-cleanup() {
-    rm -rf "$temp_dir"
-}
-trap cleanup EXIT
-
+cd "$repo_root"
 git -C "$temp_dir" init -q
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
-mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin"
-printf 'fake-bin/\ntarget/\n' >"$temp_dir/.gitignore"
+mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin" "$temp_dir/tools"
+printf '%s\n' '{"schema":"keld.ci-inputs/v1","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
+mkdir -p "$temp_dir/packages/@fake/bootstrap/src"
+printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/package.json"
+printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
+printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-git -C "$temp_dir" add README.md .gitignore
+git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json packages
 git -C "$temp_dir" commit -qm base
 base_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 real_jq="$(command -v jq)"
@@ -406,6 +439,7 @@ printf 'export const noop = () => {};\n' >"$temp_dir/packages/@fake/untested/src
 git -C "$temp_dir" add packages
 git -C "$temp_dir" commit -qm untested
 untested_sha="$(git -C "$temp_dir" rev-parse HEAD)"
+mv "$temp_dir/packages/@fake/bootstrap/src/unit.test.ts" "$temp_dir/fake-bin/bootstrap-test"
 if no_suite_output="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$docs_sha" KELD_CI_HEAD_SHA="$untested_sha" "$router" github 2>&1)"; then
     echo "FAIL: a selected TypeScript lane with no Bun suite must fail before it emits a skipped-green success" >&2
     printf '%s\n' "$no_suite_output" >&2
@@ -417,11 +451,12 @@ if ! grep -Fq "ci router: the TypeScript lane is selected but no packages/ Bun s
     exit 1
 fi
 echo "ok: empty Bun suite selection fails closed"
+mv "$temp_dir/fake-bin/bootstrap-test" "$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
 
 # Pins the router's suite-discovery set against bun's own, per filename shape.
 #
 # Every fixture elsewhere in this file uses `unit.test.ts`, the single shape the
-# original pattern matched — so a wrong pattern stayed invisible. Measured on
+# original pattern matched - so a wrong pattern stayed invisible. Measured on
 # bun 1.4.0: of 21 planted filenames it runs 18, skipping only `plain.ts`,
 # `test.ts` and `tests.ts`. A shape bun runs that the router misses is a suite
 # silently dropped from a green lane; a shape bun skips that the router selects
@@ -470,7 +505,7 @@ discovery_shape_case() {
 shape_index=0
 # Generated from the same 4 separators x 8 extensions the router encodes, not
 # hand-listed. A hand-list covered 16 of the 32 patterns, and each of the other
-# 16 could be deleted individually with this suite still green — a pin that
+# 16 could be deleted individually with this suite still green - a pin that
 # reported coverage it did not have.
 for sep in .test. _test. .spec. _spec.; do
     for ext in ts tsx js jsx mts cts mjs cjs; do
@@ -531,7 +566,7 @@ local_plain_markdown="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_C
 expect_mermaid_flag "local clean/source-only state skips unchanged Mermaid blocks" false "$local_plain_markdown"
 printf '# Untracked prose only\n' >"$temp_dir/local.md"
 local_untracked_prose="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF="$ts_sha" "$router" local)"
-expect_mermaid_flag "local untracked prose without a diagram skips Mermaid" false "$local_untracked_prose"
+expect_mermaid_flag "untracked input has no established contract and fails closed" true "$local_untracked_prose"
 cat >"$temp_dir/local.md" <<'MERMAID'
 # Local diagram
 
@@ -546,6 +581,21 @@ local_untracked_diagram="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KEL
 expect_mermaid_flag "local untracked diagram selects Mermaid" true "$local_untracked_diagram"
 local_unknown_base="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF=missing-base "$router" local)"
 expect_mermaid_flag "local unknown base fails safe to full Mermaid" true "$local_unknown_base"
+
+mkdir -p "$temp_dir/failing-git"
+real_git="$(command -v git)"
+printf '%s\n' '#!/usr/bin/env bash' 'if [[ "$1" == diff ]]; then exit 31; fi' \
+    "exec \"$real_git\" \"\$@\"" >"$temp_dir/failing-git/git"
+chmod +x "$temp_dir/failing-git/git"
+if failed_diff="$(cd "$temp_dir" && PATH="$temp_dir/failing-git:$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF="$ts_sha" "$router" local 2>&1)"; then
+    echo "FAIL: successful untracked census hid a failed tracked diff" >&2
+    exit 1
+fi
+if grep -q '^rust=' <<<"$failed_diff"; then
+    echo "FAIL: failed Git comparison published a selection" >&2
+    exit 1
+fi
+echo "ok: tracked diff failure cannot publish a skipped-green plan"
 
 unknown_base_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA=0000000000000000000000000000000000000000 GITHUB_SHA="$docs_sha" "$router" github)"
 fake_all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
@@ -572,3 +622,12 @@ if ! grep -Fq "ci router: Rust checks selected no Ubuntu packages" <<<"$empty_me
     exit 1
 fi
 echo "ok: empty Ubuntu package selection fails closed"
+
+# These contracts need only Python and real Git, including on hosted runners
+# where Just is deliberately not installed. Local ci-router-test also exercises
+# the real Just executor separately.
+case "$(uname -s)" in
+    MINGW* | MSYS*) python_command=python ;;
+    *) python_command=python3 ;;
+esac
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests RouterFailureBoundaryTests

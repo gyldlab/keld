@@ -21,7 +21,7 @@ For the complete verification gate, also install:
 | Tool | Purpose |
 |---|---|
 | Python 3.9+ | Standard-library session verification; Windows workspace mutation requires final CPython 3.9.20+, 3.10.15+, 3.11.10+, 3.12.4+ or 3.13+ within Python 3; `python` on Windows, `python3` elsewhere |
-| `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
+| `just` | Runs the checked-in gate recipes; 1.55.0 or later (`cargo install just --locked`) |
 | `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
 | Docker-compatible engine | Runs the digest-pinned Mermaid renderer when changed Mermaid inputs select it in `just ci`, or for `just ci-full` |
@@ -115,11 +115,13 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 | `just deny` | `cargo deny check` |
 | `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
 | `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
-| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |
+| `just ci` | Full local gate; the `justfile` `ci` recipe and the gate groups it names are the sole source of its inventory and order. |
 | `just ci-full` | `just ci` with full-corpus Mermaid validation and pinned rendering forced. |
 
 `just ci` is the local mirror of routed CI, minus the three-OS matrix and the manual Mermaid
-visual-inspection/report step. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
+visual-inspection/report step. Its independent policy gates run in parallel. TypeScript
+then runs, followed by the Rust gates one at a time, so load-sensitive tests do not share
+the parallel policy load. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
 cross-platform code, CI usually agrees.
 
 ---
@@ -429,6 +431,10 @@ already present.
 **`command not found: just`.**
 `cargo install just`, or use the raw command table in §3.3 — nothing in the repo depends
 on `just` being installed.
+
+**``unknown setting `minimum-version` `` or `justfile requires just 1.55.0 or later`.**
+Upgrade with `cargo install just --locked`. The `justfile` declares `set minimum-version`,
+which just added in 1.55.0; the `ci` gate groups use `[parallel]` (just 1.42.0+).
 
 **`keld dev` says `KELD-CLI-032: environment checks failed`.**
 Read the check list it prints; it fails before spawning anything. The usual cause is

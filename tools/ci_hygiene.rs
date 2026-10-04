@@ -9,6 +9,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod justfile_contract;
+use justfile_contract::{declaration_words, dependency_gates, expanded_gates};
+
 const CODEOWNERS: &str = ".github/CODEOWNERS";
 const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
 const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
@@ -253,7 +256,10 @@ fn read(root: &Path, relative: &str) -> Result<String, String> {
 
 fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
     let header = format!("{recipe}:");
-    let start = text.lines().position(|line| line == header)? + 1;
+    let start = text.lines().position(|line| {
+        line.strip_prefix(&header)
+            .is_some_and(|tail| !tail.starts_with('='))
+    })? + 1;
     let mut commands = Vec::new();
     for line in text.lines().skip(start) {
         if !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
@@ -269,20 +275,22 @@ fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
 
 fn check_root_audit_contract(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
-    let ci_line = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
+    let ci_gates = expanded_gates(&justfile, "ci")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
-    if !ci_line
-        .split_whitespace()
-        .any(|token| token == "audit-docs")
-    {
+    if !ci_gates.contains(&"audit-docs") {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` root `ci:` must depend on `audit-docs`."
         ));
     }
-    let commands = just_recipe_commands(&justfile, "audit-docs")
+    let mut commands = just_recipe_commands(&justfile, "audit-docs")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the `audit-docs:` recipe."))?;
+    if ci_gates.contains(&"audit-docs-test") {
+        commands.extend(
+            just_recipe_commands(&justfile, "audit-docs-test").ok_or_else(|| {
+                format!("CI-HYGIENE: `{JUSTFILE}` is missing `audit-docs-test:`.")
+            })?,
+        );
+    }
     let expected = [
         "{{python_command}} -B docs/audits/verify.py",
         "{{python_command}} -B docs/audits/test_verify.py",
@@ -318,53 +326,116 @@ fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
+/// Gates that build, test or resolve the Rust workspace. `ci` runs them one at a time
+/// after every other gate, because the load-sensitive host tests must not share the
+/// machine with a concurrent gate.
+const SERIAL_RUST_GATES: [&str; 5] = ["fmt-check", "clippy", "test", "doc", "deny"];
+
+/// Recipes whose attribute lines include `parallel`, in declaration order. `just`
+/// rejects anything but further attributes between an attribute and its recipe.
+fn parallel_recipes(justfile: &str) -> Vec<&str> {
+    let mut recipes = Vec::new();
+    let mut parallel = false;
+    for line in justfile.lines() {
+        if line.starts_with('[') {
+            parallel |= declaration_words(line, true).contains(&"parallel");
+            continue;
+        }
+        if parallel {
+            if let Some(name) = line
+                .split([':', ' '])
+                .next()
+                .filter(|name| !name.is_empty())
+            {
+                recipes.push(name);
+            }
+        }
+        parallel = false;
+    }
+    recipes
+}
+
+fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
-    let ci_line = justfile
+    if justfile
         .lines()
-        .find(|line| line.starts_with("ci:"))
-        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
-    if !ci_line
-        .split_whitespace()
-        .any(|token| token == "mermaid-ci")
-        || ["mermaid-test", "mermaid-check", "mermaid-render-check"]
+        .any(|line| line.trim() == "{{python_command}} -B tools/ci_local.py ci-inventory")
+    {
+        for (recipe, expected) in [
+            ("ci", "{{python_command}} -B tools/ci_local.py ci-inventory"),
+            (
+                "ci-full",
+                "{{python_command}} -B tools/ci_local.py ci-full-inventory",
+            ),
+            ("ci-route", "tools/ci_changes.sh local"),
+        ] {
+            if just_recipe_commands(&justfile, recipe).as_deref() != Some(&[expected.to_owned()]) {
+                return Err(format!(
+                    "CI-HYGIENE: `{recipe}` must invoke its declared executor/shared router exactly."
+                ));
+            }
+        }
+    }
+    let groups = parallel_recipes(&justfile);
+    for recipe in ["ci", "ci-full"] {
+        let gates = expanded_gates(&justfile, recipe).ok_or_else(|| {
+            format!("CI-HYGIENE: `{JUSTFILE}` is missing the `{recipe}:` recipe.")
+        })?;
+        let once = SERIAL_RUST_GATES
             .iter()
-            .any(|gate| ci_line.split_whitespace().any(|token| token == *gate))
+            .all(|gate| gates.iter().filter(|candidate| *candidate == gate).count() == 1);
+        if groups.contains(&recipe) || !once || !gates.ends_with(&SERIAL_RUST_GATES) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `{recipe}:` must end with `{}`, each once, run one at a time after every other gate.",
+                SERIAL_RUST_GATES.join(" ")
+            ));
+        }
+    }
+    for group in groups {
+        let members = dependency_gates(&justfile, group, true).unwrap_or_default();
+        if let Some(gate) = members
+            .iter()
+            .find(|member| SERIAL_RUST_GATES.contains(member) || **member == "typescript")
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `[parallel]` recipe `{group}` reaches `{gate}`; TypeScript and Rust gates must run one at a time after the policy batch."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
+    const MERMAID_GATES: [&str; 3] = ["mermaid-test", "mermaid-check", "mermaid-render-check"];
+    let justfile = read(root, JUSTFILE)?;
+    let ci_gates = expanded_gates(&justfile, "ci")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
+    if !ci_gates.contains(&"mermaid-ci") || MERMAID_GATES.iter().any(|gate| ci_gates.contains(gate))
     {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `mermaid-ci` target, not unconditional Mermaid targets."
         ));
     }
-    let routine_deps = justfile
-        .lines()
-        .find(|line| line.starts_with("ci:"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .skip(1)
-        .map(|token| if token == "mermaid-ci" { "mermaid-full" } else { token })
-        .collect::<Vec<_>>();
-    let full_deps = justfile
-        .lines()
-        .find(|line| line.starts_with("ci-full:"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .skip(1)
-        .collect::<Vec<_>>();
-    if !full_deps.contains(&"mermaid-full") || routine_deps != full_deps {
-        return Err(format!(
-            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
-        ));
-    }
-    let full_line = justfile
-        .lines()
-        .find(|line| line.starts_with("mermaid-full:"))
+    let mermaid_full = expanded_gates(&justfile, "mermaid-full")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-full:`."))?;
-    if !["mermaid-test", "mermaid-check", "mermaid-render-check"]
-        .iter()
-        .all(|gate| full_line.split_whitespace().any(|token| token == *gate))
-    {
+    if !MERMAID_GATES.iter().all(|gate| mermaid_full.contains(gate)) {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `mermaid-full:` must retain parser tests, structural checks, and pinned rendering."
+        ));
+    }
+    let forced = ci_gates
+        .iter()
+        .flat_map(|gate| {
+            if *gate == "mermaid-ci" {
+                mermaid_full.clone()
+            } else {
+                vec![*gate]
+            }
+        })
+        .collect::<Vec<_>>();
+    if expanded_gates(&justfile, "ci-full").as_ref() != Some(&forced) {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
         ));
     }
     let routed = just_recipe_commands(&justfile, "mermaid-ci")
@@ -2382,6 +2453,7 @@ fn check(root: &Path) -> Result<(), String> {
     check_ci_profile_does_not_retry(root)?;
     check_root_audit_contract(root)?;
     check_root_test_display_contract(root)?;
+    check_serial_rust_gates(root)?;
     check_mermaid_local_gate(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
@@ -2749,11 +2821,11 @@ mod tests {
         temp.write(
             JUSTFILE,
             concat!(
-                "ci: audit-docs mermaid-ci test\n",
+                "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
                 "audit-docs:\n",
                 "    {{python_command}} -B docs/audits/verify.py\n",
                 "    {{python_command}} -B docs/audits/test_verify.py\n",
-                "ci-full: audit-docs mermaid-full test\n",
+                "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
                 "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
                 "mermaid-ci:\n",
                 "    #!/usr/bin/env bash\n",
@@ -2791,13 +2863,177 @@ mod tests {
     }
 
     #[test]
+    fn gates_inside_parallel_groups_count_for_ci_and_ci_full() {
+        let temp = complete_fixture();
+        let grouped = read(temp.path(), JUSTFILE)
+            .expect("just fixture")
+            .replacen(
+                "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
+                "ci: policy fmt-check clippy test doc deny\n\n[parallel]\npolicy: audit-docs mermaid-ci\n",
+                1,
+            )
+            .replacen(
+                "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
+                "ci-full: policy-full fmt-check clippy test doc deny\n\n[parallel]\npolicy-full: audit-docs mermaid-full\n",
+                1,
+            );
+        temp.write(JUSTFILE, &grouped);
+        check(temp.path()).expect("grouped gates still satisfy the local gate contract");
+
+        for (needle, replacement, expected) in [
+            (
+                "policy: audit-docs mermaid-ci",
+                "policy: mermaid-ci",
+                "audit-docs",
+            ),
+            (
+                "policy: audit-docs mermaid-ci",
+                "policy: audit-docs mermaid-test",
+                "routed `mermaid-ci`",
+            ),
+            (
+                "policy-full: audit-docs mermaid-full",
+                "policy-full: audit-docs",
+                "force the full Mermaid path",
+            ),
+            (
+                "policy-full: audit-docs mermaid-full",
+                "policy-full: mermaid-full",
+                "force the full Mermaid path",
+            ),
+            (
+                "policy: audit-docs mermaid-ci\n",
+                "policy: audit-docs mermaid-ci test\n",
+                "one at a time",
+            ),
+            (
+                "ci: policy fmt-check clippy test doc deny",
+                "ci: policy fmt-check clippy doc deny",
+                "one at a time",
+            ),
+            (
+                "ci: policy fmt-check clippy test doc deny\n",
+                "ci: policy rust deny\n\n[parallel]\nrust: fmt-check clippy test doc\n",
+                "one at a time",
+            ),
+            (
+                "ci: policy fmt-check clippy test doc deny\n",
+                "[parallel]\nci: policy fmt-check clippy test doc deny\n",
+                "one at a time",
+            ),
+            (
+                "policy: audit-docs mermaid-ci",
+                "policy: mermaid-ci # audit-docs",
+                "audit-docs",
+            ),
+        ] {
+            temp.write(JUSTFILE, &grouped.replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("a weakened group must fail");
+            assert!(error.contains(expected), "{needle}: {error}");
+        }
+    }
+
+    #[test]
+    fn decorated_parallel_attributes_cannot_hide_rust_gates() {
+        for attribute in [
+            "[parallel] # scheduler",
+            "[parallel]   ",
+            "[parallel]\t",
+            r#"[doc("literal # hash, parallel"), parallel] # scheduler"#,
+        ] {
+            for recipe in ["ci", "ci-full", "parallel-helper"] {
+                let temp = complete_fixture();
+                let original = read(temp.path(), JUSTFILE).expect("just fixture");
+                check_serial_rust_gates(temp.path()).expect("serial fixture is valid");
+                let mutated = if recipe == "parallel-helper" {
+                    format!("{original}\n{attribute}\nparallel-helper: test\n")
+                } else {
+                    original.replacen(&format!("{recipe}:"), &format!("{attribute}\n{recipe}:"), 1)
+                };
+                temp.write(JUSTFILE, &mutated);
+                let error = check_serial_rust_gates(temp.path())
+                    .expect_err("decorated parallel attribute must remain effective");
+                assert!(error.contains("one at a time"), "{error}");
+                check(temp.path()).expect_err("the root checker must invoke the serial guard");
+            }
+        }
+        let temp = complete_fixture();
+        let original = read(temp.path(), JUSTFILE).expect("just fixture");
+        temp.write(
+            JUSTFILE,
+            &original.replacen(
+                "ci:",
+                "[doc(\"literal # hash, parallel\"), private] # parallel\nci:",
+                1,
+            ),
+        );
+        check(temp.path()).expect("quoted and commented parallel words are not attributes");
+    }
+
+    #[test]
+    fn bodyful_dependencies_cannot_hide_transitive_parallel_rust_gates() {
+        for dependency in ["test", "middle"] {
+            let temp = complete_fixture();
+            let original = read(temp.path(), JUSTFILE).expect("just fixture");
+            let harmless = format!(
+                "{original}\n[parallel]\nparallel-helper: helper\n\nhelper: harmless\n    true\n\nharmless:\n    true\n\nmiddle: test\n    true\n"
+            );
+            temp.write(JUSTFILE, &harmless);
+            check_serial_rust_gates(temp.path()).expect("bodyful safe helper is valid");
+            check(temp.path()).expect("safe helper does not alter the gate inventory");
+            temp.write(
+                JUSTFILE,
+                &harmless.replace("helper: harmless", &format!("helper: {dependency}")),
+            );
+            let error = check_serial_rust_gates(temp.path())
+                .expect_err("the parallel dependency graph reaches a Rust gate");
+            assert!(error.contains("reaches `test`"), "{error}");
+            check(temp.path()).expect_err("the root checker must invoke the serial guard");
+        }
+    }
+
+    #[test]
+    fn typescript_cannot_run_inside_the_parallel_policy_batch() {
+        for dependency in ["typescript", "helper"] {
+            let temp = complete_fixture();
+            let original = read(temp.path(), JUSTFILE).expect("fixture");
+            temp.write(JUSTFILE, &format!(
+                "{original}\n[parallel]\npolicy-probe: {dependency}\n\nhelper: typescript\n    true\n\ntypescript:\n    true\n"
+            ));
+            let error =
+                check_serial_rust_gates(temp.path()).expect_err("compiler load must be isolated");
+            assert!(error.contains("reaches `typescript`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn rust_suffix_order_and_policy_before_rust_are_enforced() {
+        for replacement in [
+            "clippy fmt-check test doc deny",
+            "fmt-check clippy test doc deny audit-docs",
+        ] {
+            let temp = complete_fixture();
+            let original = read(temp.path(), JUSTFILE).expect("just fixture");
+            check_serial_rust_gates(temp.path()).expect("original suffix is valid");
+            temp.write(
+                JUSTFILE,
+                &original.replace("fmt-check clippy test doc deny", replacement),
+            );
+            let error = check_serial_rust_gates(temp.path())
+                .expect_err("the Rust gates must be the ordered serial suffix");
+            assert!(error.contains("must end with"), "{error}");
+            check(temp.path()).expect_err("the root checker must invoke the serial guard");
+        }
+    }
+
+    #[test]
     fn public_audit_gate_is_mandatory_locally_and_in_docs_ci() {
         let temp = complete_fixture();
         temp.write(
             JUSTFILE,
             &read(temp.path(), JUSTFILE).expect("just fixture").replacen(
-                "ci: audit-docs mermaid-ci test",
-                "ci: mermaid-ci test",
+                "ci: audit-docs mermaid-ci",
+                "ci: mermaid-ci",
                 1,
             ),
         );
