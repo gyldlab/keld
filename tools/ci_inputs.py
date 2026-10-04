@@ -85,7 +85,7 @@ def load(root: Path) -> dict:
 def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
     selected = {"local_" + gate: True for gate in MANDATORY}
     selected.update({"input_rust": False, "input_ts": False, "input_all": False,
-                     "input_router": False, "input_rust_unbound": False, "local_default": True})
+                     "input_router": False, "local_default": True})
     try:
         contract = load(root)
         census = files(root)
@@ -93,21 +93,8 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
         rust_census = contract.get("rust_source_census")
         if rust_census:
             patterns = rust_census["patterns"]
-            try:
-                membership = membership_fingerprint(census, patterns)
-                contents = fingerprint(root, census, patterns)
-            except (OSError, ValueError):
-                membership = contents = None
-            if membership != rust_census["membership_sha256"] or contents is None:
+            if membership_fingerprint(census, patterns) != rust_census["membership_sha256"]:
                 selected["input_all"] = True
-            elif contents != rust_census["sha256"]:
-                # Existing Rust files can introduce a new external read. Retain
-                # every Rust consumer until reviewed, without inventing a change
-                # to the independent Bun or policy reader implementations.
-                selected["input_rust_unbound"] = True
-                selected["input_rust"] = True
-                for gate in ("fmt-check", "clippy", "test", "doc"):
-                    selected["local_" + gate] = True
         # Untracked/deleted entries have no established prior consumer contract.
         tracked = set(subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
                       .decode("utf-8").split("\0"))

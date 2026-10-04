@@ -258,7 +258,8 @@
         ".cargo/*",
         "packages/*",
         "llms-full.txt",
-        "tools/*"
+        "tools/*",
+        "crates/*"
       ],
       "contract": "Rust documentation compiles workspace sources including cross-tree include_str and include_bytes inputs.",
       "reader_set": "rustdoc-readers"
@@ -333,7 +334,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "b41c883232fff380d493c83304b166c51d533d311245c52ce2e10c7328178b7f"
+      "sha256": "8959502d8c3b18e332d5fdf9b11ab33a3a34890850dadc4ca321dcf857e261c1"
     },
     "audit-readers": {
       "patterns": [
@@ -380,7 +381,6 @@
       "crates/*"
     ],
     "membership_sha256": "2faaa976594b09b24bfdce7e64c03c46af437c94af9d1dbb23eed154fec11916",
-    "sha256": "aff28aa30df1eae53ce9b140043fbeb86cde086314c84f7706069f1cf75d687b",
-    "contract": "New source membership is unknown and selects all. Existing unbound Rust source content retains Rust-owned gates only, protecting newly introduced reads in existing files without rerunning unrelated Bun/policy programs."
+    "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   }
 }

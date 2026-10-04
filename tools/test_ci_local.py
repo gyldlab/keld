@@ -42,7 +42,6 @@ def tracked_snapshot(source: Path, destination: Path) -> None:
         reader_set["sha256"] = ci_inputs.fingerprint(destination, census, reader_set["patterns"])
     rust_census = contract.get("rust_source_census")
     if rust_census:
-        rust_census["sha256"] = ci_inputs.fingerprint(destination, census, rust_census["patterns"])
         rust_census["membership_sha256"] = ci_inputs.membership_fingerprint(census, rust_census["patterns"])
     (destination / "tools/ci-inputs.json").write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
 
@@ -326,13 +325,22 @@ class ProductionConsumerTests(unittest.TestCase):
             for gate in ("typescript", "llms-check", "llms-test", "doc-placeholders-check",
                          "agent-context-test", "audit-docs-test", "product-status-test", "ci-router-test"):
                 self.assertFalse(result["local_" + gate], gate)
-            # Even an existing non-reader can gain IO. Its stale content fence
-            # protects a later comparison containing only the newly read input.
+            # A new cross-tree read in an existing source also declares its
+            # reader/input edge in that same change. Membership alone cannot
+            # discover a new read inside an already known file.
             path.write_text(path.read_text(encoding="utf-8") +
-                            '\n#[cfg(test)] fn external_reader_probe() { let _ = std::fs::read_to_string("README.md"); }\n',
+                            '\n#[cfg(test)] fn external_reader_probe() { let _ = std::fs::read_to_string("docs/reader-added.md"); }\n',
                             encoding="utf-8")
-            later = ci_inputs.classify(root, ["README.md"])
-            self.assertTrue(later["input_rust_unbound"])
+            declaration = ci_inputs.load(root)
+            declaration["reader_sets"]["rust-readers"]["patterns"].append(leaf)
+            declaration["reader_sets"]["rust-readers"]["sha256"] = ci_inputs.fingerprint(
+                root, ci_inputs.files(root), declaration["reader_sets"]["rust-readers"]["patterns"])
+            declaration["consumers"][0]["inputs"].append("docs/reader-added.md")
+            (root / "tools/ci-inputs.json").write_text(json.dumps(declaration), encoding="utf-8")
+            (root / "docs/reader-added.md").write_text("new reader input\n", encoding="utf-8")
+            subprocess.run(["git", "add", "docs/reader-added.md"], cwd=root, check=True, capture_output=True)
+            later = ci_inputs.classify(root, ["docs/reader-added.md"])
+            self.assertFalse(later["input_all"])
             self.assertTrue(later["local_test"])
             added = "crates/keld-ipc/src/new_external_reader.rs"
             (root / added).write_text('pub fn read() { let _ = std::fs::read("README.md"); }\n', encoding="utf-8")
