@@ -20,16 +20,30 @@ hello:
 # The independent policy and TypeScript gates run together; the Rust gates then run
 # one at a time, because load-sensitive host tests must not share the machine.
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: ci-policy fmt-check clippy test doc deny
+ci:
+    {{python_command}} -B tools/ci_local.py ci-inventory
+
+# Executable inventory; direct invocation runs every declared gate.
+[private]
+ci-inventory: ci-policy fmt-check clippy test doc deny
 
 # Full assurance mode explicitly validates every tracked Mermaid block.
-ci-full: ci-policy-full fmt-check clippy test doc deny
+ci-full:
+    {{python_command}} -B tools/ci_local.py ci-full-inventory
+
+[private]
+ci-full-inventory: ci-policy-full fmt-check clippy test doc deny
+
+# Reuse Just's configured platform shell when the Python executor asks for a plan.
+[private]
+ci-route:
+    tools/ci_changes.sh local
 
 [parallel]
-ci-policy: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript
+ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript
 
 [parallel]
-ci-policy-full: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript
+ci-policy-full: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript
 
 mermaid-ci:
     #!/usr/bin/env bash
@@ -112,8 +126,10 @@ agents-md:
     echo "agents-md ok"
 
 # Public audit registry: fail closed on historical/report/evidence drift.
-audit-docs:
+audit-docs: audit-docs-test
     {{python_command}} -B docs/audits/verify.py
+
+audit-docs-test:
     {{python_command}} -B docs/audits/test_verify.py
 
 # KEL-145: one canonical atomic problem-solving protocol plus narrow references.
@@ -125,15 +141,18 @@ atomic-protocol:
     target/atomic-protocol/atomic-protocol check .
 
 # KEL-147: instruction inventory, routing, and Codex automatic-chain budgets.
-agent-context:
+agent-context: agent-context-test
+    mkdir -p target/agent-context
+    rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
+    target/agent-context/agent-context check .
+    {{python_command}} -B tools/workspace.py check
+
+agent-context-test:
     mkdir -p target/agent-context
     rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test
     target/agent-context/agent-context-test
-    rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
-    target/agent-context/agent-context check .
     {{python_command}} -B tools/test_session_closeout.py
     {{python_command}} -B tools/test_session_closeout_hook.py
-    {{python_command}} -B tools/workspace.py check
     {{python_command}} -B tools/test_workspace.py
 
 # KEL-245: local-only allocation and execution; all roots derive from Git identity.
@@ -250,6 +269,7 @@ hygiene:
 # KEL-81: keep change-based CI routing falsifiable outside GitHub Actions too.
 ci-router-test:
     tools/ci_changes_test.sh
+    {{python_command}} -B tools/test_ci_local.py ExecutorTests
 
 # KEL-159: checkout hooks must never execute code from the incoming revision.
 hooks-test:

@@ -344,11 +344,25 @@ retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
 (learnings 2026-07-08).
 
-**Chose — local mirror of CI (`justfile`).** The `ci` recipe in the justfile, with the
-gate groups it names, is the single source of truth for the exact local gate inventory and
-order; prose MUST NOT copy that executable list. `just ci` runs the current inventory: its
-independent policy gates run together as a `[parallel]` group, then the Rust gates run one
-at a time. Gitleaks stays GitHub-only
+**Chose — local mirror of CI (`justfile`).** The `ci` entry names its executable
+`ci-inventory` in the justfile; that recipe and its groups own the local gate inventory
+and order. Prose does not copy the list. The executor reads Just's JSON inventory and
+uses the shared `tools/ci_changes.sh` router to select gates. Independent policy work
+runs together; the mandatory Rust verification floor runs serially afterward. Direct
+recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
+
+`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`.
+Each consumer binds its reader/helper source inventory and contents by digest. A new,
+removed or changed reader invalidates its exclusions until the input scope is reviewed
+and rebound; unknown, deleted, untracked or unavailable comparison inputs select all.
+This fallback intentionally costs more work. It avoids guessing dependencies from
+filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
+of IPC constants and CLI templates are included. Live workspace, audit-history,
+product-status and advisory checks still run with an empty Git diff; their expensive
+self-tests have separate input scopes. For example, an unrelated README edit omits
+workspace self-tests and Bun tests, while an IPC constant edit selects Bun tests.
+
+Gitleaks stays GitHub-only
 (checksum-pinned OSS CLI in `.github/workflows/ci.yml`).
 
 **Chose — no Husky / no committed git-hook manager.** Tracked config has no

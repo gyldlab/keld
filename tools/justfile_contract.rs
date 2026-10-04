@@ -40,12 +40,18 @@ fn expand<'a: 'b, 'b>(
     for dependency in dependencies {
         let group = (!expanding.contains(&dependency)
             && (include_body_dependencies || !recipe_has_body(justfile, dependency)))
-            .then(|| recipe_dependencies(justfile, dependency))
-            .flatten();
+        .then(|| recipe_dependencies(justfile, dependency))
+        .flatten();
         match group {
             Some(members) => {
                 expanding.push(dependency);
-                expand(justfile, members, expanding, gates, include_body_dependencies);
+                expand(
+                    justfile,
+                    members,
+                    expanding,
+                    gates,
+                    include_body_dependencies,
+                );
                 expanding.pop();
                 if include_body_dependencies {
                     gates.push(dependency);
@@ -61,6 +67,19 @@ fn expand<'a: 'b, 'b>(
 fn recipe_dependencies<'a>(justfile: &'a str, recipe: &str) -> Option<Vec<&'a str>> {
     let header = header_line(justfile, recipe)?;
     let dependencies = &header[recipe.len() + 1..];
+    if dependencies.trim().is_empty() && matches!(recipe, "ci" | "ci-full") {
+        let command = justfile
+            .lines()
+            .skip_while(|line| !std::ptr::eq(*line, header))
+            .skip(1)
+            .find(|line| !line.trim().is_empty())?
+            .trim();
+        let inventory = command.strip_prefix("{{python_command}} -B tools/ci_local.py ")?;
+        if inventory != format!("{recipe}-inventory") {
+            return None;
+        }
+        return recipe_dependencies(justfile, inventory);
+    }
     Some(
         declaration_words(dependencies, false)
             .into_iter()
@@ -186,8 +205,11 @@ loop: loop gate
     #[test]
     fn a_trailing_comment_names_no_gate() {
         assert_eq!(
-            expanded_gates("ci: fmt-check # audit-docs atomic-protocol
-", "ci"),
+            expanded_gates(
+                "ci: fmt-check # audit-docs atomic-protocol
+",
+                "ci"
+            ),
             Some(vec!["fmt-check"])
         );
     }
@@ -207,8 +229,14 @@ loop: loop gate
             declaration_words("[doc('a # hash'), parallel] \t # scheduler", true),
             vec!["doc('a # hash')", "parallel"]
         );
-        assert_eq!(declaration_words("gate # another-gate", false), vec!["gate"]);
-        assert_eq!(declaration_words("gate, other", false), vec!["gate,", "other"]);
+        assert_eq!(
+            declaration_words("gate # another-gate", false),
+            vec!["gate"]
+        );
+        assert_eq!(
+            declaration_words("gate, other", false),
+            vec!["gate,", "other"]
+        );
     }
 
     #[test]
@@ -227,6 +255,32 @@ loop: loop gate
         assert_eq!(
             dependency_gates(source, "cycle", true),
             Some(vec!["cycle", "helper"])
+        );
+    }
+
+    #[test]
+    fn routed_entry_uses_its_declared_inventory_without_a_second_gate_list() {
+        let source = "ci:\n    {{python_command}} -B tools/ci_local.py ci-inventory\n\nci-inventory: fmt-check clippy test\n\nfmt-check:\n    true\nclippy:\n    true\ntest:\n    true\n";
+        assert_eq!(
+            expanded_gates(source, "ci"),
+            Some(vec!["fmt-check", "clippy", "test"])
+        );
+        assert_eq!(
+            expanded_gates(
+                &source.replace("ci_local.py ci-inventory", "ci_local.py unreviewed"),
+                "ci"
+            ),
+            None
+        );
+        assert_eq!(
+            expanded_gates(
+                &source.replace(
+                    "tools/ci_local.py ci-inventory",
+                    "tools/unrelated.py ci-inventory"
+                ),
+                "ci"
+            ),
+            None
         );
     }
 }

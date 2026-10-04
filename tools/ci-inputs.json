@@ -1,0 +1,305 @@
+{
+  "schema": "keld.ci-inputs/v1",
+  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh)",
+  "known_inputs": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE*",
+    "NOTICE*",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    "deny.toml",
+    "justfile",
+    "llms.txt",
+    "llms-full.txt",
+    "crates/*",
+    "packages/*",
+    "docs/*",
+    "tools/*",
+    ".agents/*",
+    ".github/*",
+    ".codex/*",
+    ".config/*",
+    ".cargo/*",
+    ".githooks/*",
+    ".gitignore"
+  ],
+  "consumers": [
+    {
+      "owner": "Rust workspace external reads",
+      "outputs": [
+        "input_rust",
+        "input_registry"
+      ],
+      "inputs": [
+        "packages/*",
+        "tools/*.rs",
+        "tools/*.ts",
+        "docs/*",
+        "llms-full.txt"
+      ],
+      "contract": "Rust readers include the CLI error registry recursive tools scan, generated docs_search corpus, security docs assertion, and compat lifecycle report. Directory scopes include future members. Local Rust floor remains unconditional.",
+      "reader_set": "rust-readers"
+    },
+    {
+      "owner": "Bun package readers",
+      "outputs": [
+        "input_ts",
+        "local_typescript"
+      ],
+      "inputs": [
+        "crates/keld-ipc/src/*",
+        "crates/keld-ipc/tests/fixtures/*",
+        "crates/keld-cli/templates/*"
+      ],
+      "contract": "transport and echo-codegen read IPC source constants, the shared receiver corpus, and recursively walk CLI templates. Any changed/new package reader invalidates these exclusions.",
+      "reader_set": "bun-readers"
+    },
+    {
+      "owner": "Unsafe and instruction inventory",
+      "outputs": [
+        "local_agents-md"
+      ],
+      "inputs": [
+        "crates/*",
+        "AGENTS.md",
+        "*/AGENTS.md",
+        ".agents/*"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Atomic protocol",
+      "outputs": [
+        "local_atomic-protocol"
+      ],
+      "inputs": [
+        "AGENTS.md",
+        ".agents/*",
+        ".github/*",
+        "docs/agents/*",
+        "docs/onboarding/*",
+        "CONTRIBUTING.md"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Instruction and workspace self-tests",
+      "outputs": [
+        "local_agent-context-test"
+      ],
+      "inputs": [
+        ".codex/*",
+        ".agents/*",
+        "docs/agents/*"
+      ],
+      "contract": "The live agent-context and workspace checks remain unconditional because local task records are not Git diff inputs.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Router self-tests",
+      "outputs": [
+        "local_ci-router-test"
+      ],
+      "inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/*",
+        "packages/*",
+        ".github/*",
+        ".config/*",
+        ".cargo/*"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Checkout hook contract",
+      "outputs": [
+        "local_hooks-test"
+      ],
+      "inputs": [
+        "tools/hooks_test.sh"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Audit mutation suite",
+      "outputs": [
+        "local_audit-docs-test"
+      ],
+      "inputs": [
+        "README.md",
+        "docs/audits/*"
+      ],
+      "contract": "Copies README and the audit tree and reads historical publication anchors. Live verifier runs unconditionally for ancestry/history changes.",
+      "reader_set": "audit-readers"
+    },
+    {
+      "owner": "Placeholder scanner and self-tests",
+      "outputs": [
+        "local_doc-placeholders-test",
+        "local_doc-placeholders-check"
+      ],
+      "inputs": [
+        "docs/*",
+        ".agents/*",
+        "llms.txt",
+        "llms-full.txt",
+        "AGENTS.md",
+        "README.md"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Product status and self-tests",
+      "outputs": [
+        "local_product-status-test",
+        "local_product-status-check"
+      ],
+      "inputs": [
+        "*"
+      ],
+      "contract": "Checks dynamic evidence paths, Git history, Cargo/package membership and linked document consumers; no exclusion proof exists beyond an empty valid diff.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Generated corpus",
+      "outputs": [
+        "local_llms-test",
+        "local_llms-check"
+      ],
+      "inputs": [
+        "docs/*",
+        "llms.txt",
+        "llms-full.txt"
+      ],
+      "contract": "tools/llms_docs.rs is in the bound reader set: widening SOURCES invalidates this consumer before any exclusion is reused.",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Repository hygiene",
+      "outputs": [
+        "local_hygiene"
+      ],
+      "inputs": [
+        ".github/*",
+        ".gitignore",
+        ".config/*",
+        ".codex/*",
+        ".agents/*",
+        "AGENTS.md",
+        "*/AGENTS.md"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Rust documentation",
+      "outputs": [
+        "local_doc"
+      ],
+      "inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/*",
+        "packages/*",
+        "llms-full.txt",
+        "tools/*"
+      ],
+      "contract": "Rust documentation compiles workspace sources including cross-tree include_str and include_bytes inputs.",
+      "reader_set": "rustdoc-readers"
+    },
+    {
+      "owner": "Dependency policy",
+      "outputs": [
+        "local_deny"
+      ],
+      "inputs": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/*/Cargo.toml",
+        "deny.toml",
+        "rust-toolchain.toml",
+        ".cargo/*"
+      ],
+      "contract": "",
+      "reader_set": "dependency-command"
+    },
+    {
+      "owner": "Mermaid local wrapper",
+      "outputs": [
+        "input_mermaid"
+      ],
+      "inputs": [
+        "tools/mermaid*",
+        "tools/markdown_contract.rs",
+        "tools/repo_path_contract.rs",
+        "tools/justfile_contract.rs",
+        ".github/workflows/*"
+      ],
+      "contract": "",
+      "reader_set": "policy-readers"
+    }
+  ],
+  "reader_sets": {
+    "rust-readers": {
+      "patterns": [
+        "crates/*",
+        "tools/llms_docs.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/*"
+      ],
+      "sha256": "9ce55659ca28d5215d1eb9ddfdf4a8512949bf2944001fbfe2dde2d492670126"
+    },
+    "bun-readers": {
+      "patterns": [
+        "packages/*",
+        "justfile"
+      ],
+      "sha256": "e1c2bbad687b9b85e26f73dc6ae3712eca4ceb77825ea058611c146e5dcb73b6"
+    },
+    "policy-readers": {
+      "patterns": [
+        "justfile",
+        "tools/*",
+        "docs/audits/*.py",
+        ".githooks/*"
+      ],
+      "sha256": "a297ec3923d35037cfb0a601046218a8edf4e45eec8b57a5b38af1336803a35a"
+    },
+    "audit-readers": {
+      "patterns": [
+        "docs/audits/*.py",
+        "justfile"
+      ],
+      "sha256": "538691b6de12d521894bff8ea97cb0e00938f2c21abe4c0262f84393f668fde0"
+    },
+    "rustdoc-readers": {
+      "patterns": [
+        "crates/*",
+        "justfile",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/*"
+      ],
+      "sha256": "80aba135118ed6f4ef07ecef77058ba96e5d30646f52e80ecc4720a9327f7fcd"
+    },
+    "dependency-command": {
+      "patterns": [
+        "justfile"
+      ],
+      "sha256": "8e02c57c6a56eeba653c71e23e2362c1476a91b2365dfefdb15ad4afc53508a2"
+    }
+  }
+}

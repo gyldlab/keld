@@ -256,7 +256,10 @@ fn read(root: &Path, relative: &str) -> Result<String, String> {
 
 fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
     let header = format!("{recipe}:");
-    let start = text.lines().position(|line| line == header)? + 1;
+    let start = text.lines().position(|line| {
+        line.strip_prefix(&header)
+            .is_some_and(|tail| !tail.starts_with('='))
+    })? + 1;
     let mut commands = Vec::new();
     for line in text.lines().skip(start) {
         if !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
@@ -279,8 +282,15 @@ fn check_root_audit_contract(root: &Path) -> Result<(), String> {
             "CI-HYGIENE: `{JUSTFILE}` root `ci:` must depend on `audit-docs`."
         ));
     }
-    let commands = just_recipe_commands(&justfile, "audit-docs")
+    let mut commands = just_recipe_commands(&justfile, "audit-docs")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the `audit-docs:` recipe."))?;
+    if ci_gates.contains(&"audit-docs-test") {
+        commands.extend(
+            just_recipe_commands(&justfile, "audit-docs-test").ok_or_else(|| {
+                format!("CI-HYGIENE: `{JUSTFILE}` is missing `audit-docs-test:`.")
+            })?,
+        );
+    }
     let expected = [
         "{{python_command}} -B docs/audits/verify.py",
         "{{python_command}} -B docs/audits/test_verify.py",
@@ -332,7 +342,11 @@ fn parallel_recipes(justfile: &str) -> Vec<&str> {
             continue;
         }
         if parallel {
-            if let Some(name) = line.split([':', ' ']).next().filter(|name| !name.is_empty()) {
+            if let Some(name) = line
+                .split([':', ' '])
+                .next()
+                .filter(|name| !name.is_empty())
+            {
                 recipes.push(name);
             }
         }
@@ -343,10 +357,30 @@ fn parallel_recipes(justfile: &str) -> Vec<&str> {
 
 fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
+    if justfile
+        .lines()
+        .any(|line| line.trim() == "{{python_command}} -B tools/ci_local.py ci-inventory")
+    {
+        for (recipe, expected) in [
+            ("ci", "{{python_command}} -B tools/ci_local.py ci-inventory"),
+            (
+                "ci-full",
+                "{{python_command}} -B tools/ci_local.py ci-full-inventory",
+            ),
+            ("ci-route", "tools/ci_changes.sh local"),
+        ] {
+            if just_recipe_commands(&justfile, recipe).as_deref() != Some(&[expected.to_owned()]) {
+                return Err(format!(
+                    "CI-HYGIENE: `{recipe}` must invoke its declared executor/shared router exactly."
+                ));
+            }
+        }
+    }
     let groups = parallel_recipes(&justfile);
     for recipe in ["ci", "ci-full"] {
-        let gates = expanded_gates(&justfile, recipe)
-            .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the `{recipe}:` recipe."))?;
+        let gates = expanded_gates(&justfile, recipe).ok_or_else(|| {
+            format!("CI-HYGIENE: `{JUSTFILE}` is missing the `{recipe}:` recipe.")
+        })?;
         let once = SERIAL_RUST_GATES
             .iter()
             .all(|gate| gates.iter().filter(|candidate| *candidate == gate).count() == 1);
@@ -359,7 +393,10 @@ fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
     }
     for group in groups {
         let members = dependency_gates(&justfile, group, true).unwrap_or_default();
-        if let Some(gate) = members.iter().find(|member| SERIAL_RUST_GATES.contains(member)) {
+        if let Some(gate) = members
+            .iter()
+            .find(|member| SERIAL_RUST_GATES.contains(member))
+        {
             return Err(format!(
                 "CI-HYGIENE: `{JUSTFILE}` `[parallel]` recipe `{group}` reaches `{gate}`; Rust gates must run one at a time after every other gate."
             ));
@@ -373,7 +410,8 @@ fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
     let ci_gates = expanded_gates(&justfile, "ci")
         .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
-    if !ci_gates.contains(&"mermaid-ci") || MERMAID_GATES.iter().any(|gate| ci_gates.contains(gate)) {
+    if !ci_gates.contains(&"mermaid-ci") || MERMAID_GATES.iter().any(|gate| ci_gates.contains(gate))
+    {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `mermaid-ci` target, not unconditional Mermaid targets."
         ));
@@ -2843,12 +2881,36 @@ mod tests {
         check(temp.path()).expect("grouped gates still satisfy the local gate contract");
 
         for (needle, replacement, expected) in [
-            ("policy: audit-docs mermaid-ci", "policy: mermaid-ci", "audit-docs"),
-            ("policy: audit-docs mermaid-ci", "policy: audit-docs mermaid-test", "routed `mermaid-ci`"),
-            ("policy-full: audit-docs mermaid-full", "policy-full: audit-docs", "force the full Mermaid path"),
-            ("policy-full: audit-docs mermaid-full", "policy-full: mermaid-full", "force the full Mermaid path"),
-            ("policy: audit-docs mermaid-ci\n", "policy: audit-docs mermaid-ci test\n", "one at a time"),
-            ("ci: policy fmt-check clippy test doc deny", "ci: policy fmt-check clippy doc deny", "one at a time"),
+            (
+                "policy: audit-docs mermaid-ci",
+                "policy: mermaid-ci",
+                "audit-docs",
+            ),
+            (
+                "policy: audit-docs mermaid-ci",
+                "policy: audit-docs mermaid-test",
+                "routed `mermaid-ci`",
+            ),
+            (
+                "policy-full: audit-docs mermaid-full",
+                "policy-full: audit-docs",
+                "force the full Mermaid path",
+            ),
+            (
+                "policy-full: audit-docs mermaid-full",
+                "policy-full: mermaid-full",
+                "force the full Mermaid path",
+            ),
+            (
+                "policy: audit-docs mermaid-ci\n",
+                "policy: audit-docs mermaid-ci test\n",
+                "one at a time",
+            ),
+            (
+                "ci: policy fmt-check clippy test doc deny",
+                "ci: policy fmt-check clippy doc deny",
+                "one at a time",
+            ),
             (
                 "ci: policy fmt-check clippy test doc deny\n",
                 "ci: policy rust deny\n\n[parallel]\nrust: fmt-check clippy test doc\n",
@@ -2859,7 +2921,11 @@ mod tests {
                 "[parallel]\nci: policy fmt-check clippy test doc deny\n",
                 "one at a time",
             ),
-            ("policy: audit-docs mermaid-ci", "policy: mermaid-ci # audit-docs", "audit-docs"),
+            (
+                "policy: audit-docs mermaid-ci",
+                "policy: mermaid-ci # audit-docs",
+                "audit-docs",
+            ),
         ] {
             temp.write(JUSTFILE, &grouped.replacen(needle, replacement, 1));
             let error = check(temp.path()).expect_err("a weakened group must fail");
@@ -2882,11 +2948,7 @@ mod tests {
                 let mutated = if recipe == "parallel-helper" {
                     format!("{original}\n{attribute}\nparallel-helper: test\n")
                 } else {
-                    original.replacen(
-                        &format!("{recipe}:"),
-                        &format!("{attribute}\n{recipe}:"),
-                        1,
-                    )
+                    original.replacen(&format!("{recipe}:"), &format!("{attribute}\n{recipe}:"), 1)
                 };
                 temp.write(JUSTFILE, &mutated);
                 let error = check_serial_rust_gates(temp.path())
