@@ -119,8 +119,9 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 | `just ci-full` | `just ci` with full-corpus Mermaid validation and pinned rendering forced. |
 
 `just ci` is the local mirror of routed CI, minus the three-OS matrix and the manual Mermaid
-visual-inspection/report step. Its independent policy and TypeScript gates run in parallel;
-the Rust gates then run one at a time, so load-sensitive host tests keep the machine. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
+visual-inspection/report step. Its independent policy gates run in parallel. TypeScript
+then runs, followed by the Rust gates one at a time, so load-sensitive tests do not share
+the parallel policy load. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
 cross-platform code, CI usually agrees.
 
 ---
