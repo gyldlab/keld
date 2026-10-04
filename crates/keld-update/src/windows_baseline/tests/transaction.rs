@@ -254,8 +254,10 @@ fn record_replacement_requires_a_generated_sibling_and_a_file_destination() {
     assert!(!path.join(&pending).exists());
 }
 
+/// The admission refusals and removal are observable; binding admission and deletion to
+/// one handle is a construction property, because no deterministic swap fits between them.
 #[test]
-fn stale_record_preparations_are_admitted_and_deleted_through_one_handle() {
+fn stale_record_preparations_refuse_links_and_directories_and_remove_genuine_files() {
     let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
     for case in ["genuine", "linked", "directory"] {
         let fixture = tempfile::tempdir().expect("stale preparation fixture");

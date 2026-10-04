@@ -1,7 +1,7 @@
 //! Narrow Windows filesystem operations for protected extraction.
 
 #![deny(unsafe_op_in_unsafe_fn)]
-#![allow(unsafe_code)] // Exact volume, relative-directory and sibling-publication operations in AGENTS.md.
+#![allow(unsafe_code)] // Exact volume, relative-directory, never-follow deletion and sibling-publication operations in AGENTS.md.
 
 use std::fs::File;
 use std::io;
@@ -29,8 +29,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL,
-    SetFileInformationByHandle, SYNCHRONIZE, VOLUME_NAME_GUID, WRITE_DAC,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE,
+    SetFileInformationByHandle, VOLUME_NAME_GUID, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -518,6 +518,36 @@ pub(crate) enum EntryKind {
     Link,
 }
 
+/// Rights requested beside DELETE when an entry is opened for deletion. Each purpose
+/// asks only for what its caller reads, so deleting never needs read-data access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeletePurpose {
+    /// Delete only.
+    Remove,
+    /// Also read the descriptor, sharing only with readers while it is checked.
+    Admit,
+    /// Also list the directory's children.
+    List,
+}
+
+impl DeletePurpose {
+    const fn access(self) -> u32 {
+        let base = DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        match self {
+            Self::Remove => base,
+            Self::Admit => base | READ_CONTROL,
+            Self::List => base | FILE_LIST_DIRECTORY,
+        }
+    }
+
+    const fn share(self) -> u32 {
+        match self {
+            Self::Admit => FILE_SHARE_READ,
+            Self::Remove | Self::List => FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        }
+    }
+}
+
 /// One entry opened with DELETE access relative to a retained parent handle,
 /// never through a reparse point. Deleting it acts on this exact object.
 pub(crate) struct DeletableEntry {
@@ -544,7 +574,8 @@ impl DeletableEntry {
                 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
                 | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
         };
-        let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).map_err(io::Error::other)?;
+        let size =
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).map_err(io::Error::other)?;
         // SAFETY: `self.file` owns a live handle opened with DELETE access; the
         // disposition value is a fixed, initialized FILE_DISPOSITION_INFO_EX whose
         // exact size is passed with its information class for this synchronous call.
@@ -566,46 +597,66 @@ impl DeletableEntry {
 
 /// Opens `component` beneath the retained `parent` for deletion. The name is one
 /// validated component; the open never follows a reparse point and never creates.
-/// Returns `None` when the name is absent or its deletion is already pending.
-pub(crate) fn open_for_delete(parent: &File, component: &str) -> io::Result<Option<DeletableEntry>> {
+/// An absent name, or one whose deletion is already pending, is `NotFound`.
+pub(crate) fn open_for_delete(
+    parent: &File,
+    component: &str,
+    purpose: DeletePurpose,
+) -> io::Result<DeletableEntry> {
     let (name, _) = validated_relative_name(component)?;
-    open_units_for_delete(parent, name)
+    open_units_for_delete(parent, name, purpose)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "entry is absent or already being deleted",
+        )
+    })
 }
 
-/// Deletes the regular file `component` beneath `parent`; any other kind refuses.
+/// Deletes the regular file `component` beneath `parent`. A link, a directory or an
+/// absent name refuses.
 pub(crate) fn remove_file_relative(parent: &File, component: &str) -> io::Result<()> {
-    match open_for_delete(parent, component)? {
-        Some(entry) if entry.kind() == EntryKind::File => entry.delete(),
-        Some(_) => Err(io::Error::other("expected a regular file to delete")),
-        None => Ok(()),
+    let entry = open_for_delete(parent, component, DeletePurpose::Remove)?;
+    if entry.kind() != EntryKind::File {
+        return Err(io::Error::other("expected a regular file to delete"));
     }
+    entry.delete()
 }
 
-/// Deletes `component` beneath `parent` and, for a directory, everything beneath it.
+/// Deletes the directory `component` beneath `parent` and everything beneath it.
 ///
 /// Every entry is opened relative to its retained parent handle, children before
 /// their directory; a reparse point is deleted as itself and never traversed. Only
-/// the directories on the current path stay open. The first failure stops the walk
-/// and is returned with nothing retried.
-pub(crate) fn remove_entry_tree(parent: &File, component: &str) -> io::Result<()> {
-    let Some(root) = open_for_delete(parent, component)? else {
-        return Ok(());
-    };
+/// the directories on the current path stay open. A root that is absent or is not a
+/// directory refuses; a child that vanishes during the walk is skipped. The first
+/// failure stops the walk and is returned with nothing retried.
+pub(crate) fn remove_directory_tree(parent: &File, component: &str) -> io::Result<()> {
+    let root = open_for_delete(parent, component, DeletePurpose::List)?;
     if root.kind() != EntryKind::Directory {
-        return root.delete();
+        return Err(io::Error::other("expected a directory tree to delete"));
     }
-    let names = directory_children(root.file())?;
-    let mut path = vec![(root, names.into_iter())];
+    let children = directory_children(root.file())?;
+    let mut path = vec![(root, children.into_iter())];
     while let Some((directory, children)) = path.last_mut() {
         match children.next() {
-            Some(name) => match open_units_for_delete(directory.file(), name)? {
-                Some(child) if child.kind() == EntryKind::Directory => {
-                    let names = directory_children(child.file())?;
-                    path.push((child, names.into_iter()));
+            Some(child) => {
+                // The listing only chooses the rights requested; the kind that decides
+                // traversal is read again from the opened handle.
+                let purpose = if child.attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+                    && child.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+                {
+                    DeletePurpose::List
+                } else {
+                    DeletePurpose::Remove
+                };
+                match open_units_for_delete(directory.file(), child.name, purpose)? {
+                    Some(entry) if entry.kind() == EntryKind::Directory => {
+                        let children = directory_children(entry.file())?;
+                        path.push((entry, children.into_iter()));
+                    }
+                    Some(entry) => entry.delete()?,
+                    None => {}
                 }
-                Some(child) => child.delete()?,
-                None => {}
-            },
+            }
             None => {
                 if let Some((directory, _)) = path.pop() {
                     directory.delete()?;
@@ -616,7 +667,27 @@ pub(crate) fn remove_entry_tree(parent: &File, component: &str) -> io::Result<()
     Ok(())
 }
 
-fn open_units_for_delete(parent: &File, mut name: Vec<u16>) -> io::Result<Option<DeletableEntry>> {
+/// Lists the UTF-8 names inside a retained directory through its handle, omitting `.`,
+/// `..` and names that are not valid UTF-16.
+pub(crate) fn child_names(directory: &File) -> io::Result<Vec<String>> {
+    Ok(directory_children(directory)?
+        .into_iter()
+        .filter_map(|child| String::from_utf16(&child.name).ok())
+        .collect())
+}
+
+fn open_units_for_delete(
+    parent: &File,
+    mut name: Vec<u16>,
+    purpose: DeletePurpose,
+) -> io::Result<Option<DeletableEntry>> {
+    // An empty relative name would reopen the parent itself.
+    if name.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected one filesystem component",
+        ));
+    }
     let length = name
         .len()
         .checked_mul(size_of::<u16>())
@@ -627,11 +698,12 @@ fn open_units_for_delete(parent: &File, mut name: Vec<u16>) -> io::Result<Option
         MaximumLength: length,
         Buffer: name.as_mut_ptr(),
     };
+    // Names here are exact: generated by this writer or listed from the parent.
     let attributes = OBJECT_ATTRIBUTES {
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(io::Error::other)?,
         RootDirectory: parent.as_raw_handle().cast(),
         ObjectName: &raw mut unicode_name,
-        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        Attributes: OBJ_DONT_REPARSE,
         SecurityDescriptor: ptr::null_mut(),
         SecurityQualityOfService: ptr::null_mut(),
     };
@@ -642,21 +714,20 @@ fn open_units_for_delete(parent: &File, mut name: Vec<u16>) -> io::Result<Option
         Information: 0,
     };
     let mut handle = ptr::null_mut();
-    let access = DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
-    // SAFETY: `parent` retains the directory handle; the name buffer, UNICODE_STRING
-    // and attributes stay live and fixed for this synchronous call, and the length
-    // is a checked byte count. The output slots are writable. FILE_OPEN never
-    // creates; OBJ_DONT_REPARSE and FILE_OPEN_REPARSE_POINT open a link itself
-    // instead of its target; no handle inheritance or async I/O is requested.
+    // SAFETY: `parent` retains the directory handle; the non-empty name buffer,
+    // UNICODE_STRING and attributes stay live and fixed for this synchronous call,
+    // and the length is a checked byte count. The output slots are writable.
+    // FILE_OPEN never creates; OBJ_DONT_REPARSE and FILE_OPEN_REPARSE_POINT open a
+    // link itself instead of its target; no inheritance or async I/O is requested.
     let status = unsafe {
         NtCreateFile(
             &raw mut handle,
-            access,
+            purpose.access(),
             &raw const attributes,
             &raw mut completion,
             ptr::null(),
             0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            purpose.share(),
             FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
@@ -700,6 +771,7 @@ fn entry_kind(file: &File) -> io::Result<EntryKind> {
     if success == 0 {
         return Err(io::Error::last_os_error());
     }
+    // A reparse point is a link whether or not it also carries the directory bit.
     Ok(if tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         EntryKind::Link
     } else if tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
@@ -709,16 +781,25 @@ fn entry_kind(file: &File) -> io::Result<EntryKind> {
     })
 }
 
+/// One child listed from a directory handle: its exact name and listed attributes.
+#[derive(Debug, PartialEq, Eq)]
+struct DirectoryChild {
+    name: Vec<u16>,
+    attributes: u32,
+}
+
 /// Bytes requested per enumeration call; a multiple of eight keeps the buffer aligned.
 const DIRECTORY_BUFFER_WORDS: usize = 8 * 1024;
 
-/// Lists the names inside an open directory through its handle, omitting `.` and `..`.
-fn directory_children(directory: &File) -> io::Result<Vec<Vec<u16>>> {
+/// Lists the children of an open directory through its handle, omitting `.` and `..`.
+fn directory_children(directory: &File) -> io::Result<Vec<DirectoryChild>> {
     let mut buffer = vec![0_u64; DIRECTORY_BUFFER_WORDS];
     let size = u32::try_from(buffer.len() * size_of::<u64>()).map_err(io::Error::other)?;
-    let mut names = Vec::new();
+    let mut children = Vec::new();
     let mut class = FileIdBothDirectoryRestartInfo;
     loop {
+        // No byte from an earlier call can be read as part of this one.
+        buffer.fill(0);
         // SAFETY: `directory` owns a live handle opened with FILE_LIST_DIRECTORY;
         // `buffer` is a writable, eight-byte-aligned allocation of exactly `size`
         // bytes that outlives this synchronous call.
@@ -733,33 +814,46 @@ fn directory_children(directory: &File) -> io::Result<Vec<Vec<u16>>> {
         if success == 0 {
             let error = io::Error::last_os_error();
             if error.raw_os_error() == Some(ERROR_NO_MORE_FILES.cast_signed()) {
-                return Ok(names);
+                return Ok(children);
             }
             return Err(error);
         }
         let bytes: Vec<u8> = buffer.iter().flat_map(|word| word.to_ne_bytes()).collect();
-        names.extend(parse_directory_entries(&bytes)?);
+        children.extend(parse_directory_entries(&bytes)?);
         class = FileIdBothDirectoryInfo;
     }
 }
 
 /// Parses a filled `FILE_ID_BOTH_DIR_INFO` chain, checking every offset and length
-/// against the buffer. `.` and `..` are omitted; any other name must be one component.
-fn parse_directory_entries(bytes: &[u8]) -> io::Result<Vec<Vec<u16>>> {
+/// against the buffer and requiring each record to contain its own name before its
+/// successor. `.` and `..` are omitted; any other name must be one component.
+fn parse_directory_entries(bytes: &[u8]) -> io::Result<Vec<DirectoryChild>> {
     let malformed = || io::Error::other("malformed directory enumeration record");
     let read_u32 = |offset: usize| -> io::Result<u32> {
         let end = offset.checked_add(4).ok_or_else(malformed)?;
         let field = bytes.get(offset..end).ok_or_else(malformed)?;
-        Ok(u32::from_ne_bytes(field.try_into().map_err(|_| malformed())?))
+        Ok(u32::from_ne_bytes(
+            field.try_into().map_err(|_| malformed())?,
+        ))
     };
+    let field = |entry: usize, at: usize| entry.checked_add(at).ok_or_else(malformed);
     let name_offset = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-    let mut names = Vec::new();
+    let mut children = Vec::new();
     let mut entry = 0_usize;
     loop {
-        let next = read_u32(entry + std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, NextEntryOffset))?;
-        let name_bytes =
-            read_u32(entry + std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength))?;
-        let start = entry.checked_add(name_offset).ok_or_else(malformed)?;
+        let next = read_u32(field(
+            entry,
+            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, NextEntryOffset),
+        )?)?;
+        let attributes = read_u32(field(
+            entry,
+            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileAttributes),
+        )?)?;
+        let name_bytes = read_u32(field(
+            entry,
+            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength),
+        )?)?;
+        let start = field(entry, name_offset)?;
         let length = usize::try_from(name_bytes).map_err(|_| malformed())?;
         let end = start.checked_add(length).ok_or_else(malformed)?;
         let raw = bytes.get(start..end).ok_or_else(malformed)?;
@@ -778,13 +872,13 @@ fn parse_directory_entries(bytes: &[u8]) -> io::Result<Vec<Vec<u16>>> {
             {
                 return Err(io::Error::other("directory entry is not one component"));
             }
-            names.push(name);
+            children.push(DirectoryChild { name, attributes });
         }
         if next == 0 {
-            return Ok(names);
+            return Ok(children);
         }
         let step = usize::try_from(next).map_err(|_| malformed())?;
-        if step < name_offset {
+        if step < name_offset.checked_add(length).ok_or_else(malformed)? {
             return Err(malformed());
         }
         entry = entry.checked_add(step).ok_or_else(malformed)?;
@@ -820,12 +914,30 @@ fn unsupported(detail: &'static str) -> io::Error {
 #[allow(clippy::expect_used)] // Test setup and independent literal/OS assertions.
 mod tests {
     use super::{
-        EntryKind, create_directory_relative, create_file_relative_exclusive_with_profile,
-        duplicate_activation_lease_for_keeper, open_for_delete, parse_directory_entries,
-        publish_new, remove_entry_tree, remove_file_relative, require_volume_root_handle,
-        validate_volume_locator, volume_guid_root,
+        DeletePurpose, EntryKind, create_directory_relative,
+        create_file_relative_exclusive_with_profile, duplicate_activation_lease_for_keeper,
+        open_for_delete, parse_directory_entries, publish_new, remove_directory_tree,
+        remove_file_relative, require_volume_root_handle, validate_volume_locator,
+        volume_guid_root,
     };
-    use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
+    use std::fs::{File, OpenOptions};
+    use std::io::Write as _;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+    use std::ptr;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_INFO, FILE_ID_BOTH_DIR_INFO, FileDispositionInfo,
+        SetFileInformationByHandle,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::{FSCTL_DELETE_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
+    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
 
     fn retained_directory(path: &Path) -> File {
         OpenOptions::new()
@@ -889,7 +1001,10 @@ mod tests {
     #[test]
     fn directory_entry_parser_checks_every_offset_and_skips_dot_entries() {
         let names = parse_directory_entries(&chain(&[".", "..", "a", "b\u{e9}"]))
-            .expect("well-formed chain");
+            .expect("well-formed chain")
+            .into_iter()
+            .map(|child| child.name)
+            .collect::<Vec<_>>();
         assert_eq!(
             names,
             vec![
@@ -906,11 +1021,8 @@ mod tests {
         // Plant a record that would parse cleanly at that overlapping offset, so only
         // the successor-offset check can reject it.
         let overlap = 16_usize;
-        let mut overlapping = directory_record(
-            u32::try_from(overlap).expect("small offset"),
-            2,
-            &name,
-        );
+        let mut overlapping =
+            directory_record(u32::try_from(overlap).expect("small offset"), 2, &name);
         let name_offset = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
         let length_at = overlap + std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength);
         overlapping[length_at..length_at + 4].copy_from_slice(&2_u32.to_ne_bytes());
@@ -923,7 +1035,7 @@ mod tests {
         // A truncated record.
         assert!(parse_directory_entries(&directory_record(0, 2, &name)[..16]).is_err());
         // Separators or stream syntax are never one component.
-        for bad in ["a\\b", "a/b", "a:b"] {
+        for bad in ["a\\b", "a/b", "a:b", "a\u{0}b"] {
             assert!(parse_directory_entries(&chain(&[bad])).is_err(), "{bad}");
         }
     }
@@ -932,7 +1044,8 @@ mod tests {
     fn file_deletion_is_relative_exact_and_refuses_other_kinds() {
         let fixture = tempfile::tempdir().expect("fixture");
         let parent = retained_directory(fixture.path());
-        remove_file_relative(&parent, "absent").expect("an absent name is already removed");
+        let absent = remove_file_relative(&parent, "absent").expect_err("absent name");
+        assert_eq!(absent.kind(), std::io::ErrorKind::NotFound, "{absent}");
         let file = fixture.path().join("pending-file");
         std::fs::write(&file, b"record").expect("fixture file");
         let mut permissions = std::fs::metadata(&file).expect("metadata").permissions();
@@ -943,7 +1056,16 @@ mod tests {
         std::fs::create_dir(fixture.path().join("pending-dir")).expect("fixture directory");
         assert!(remove_file_relative(&parent, "pending-dir").is_err());
         assert!(fixture.path().join("pending-dir").is_dir());
-        assert!(remove_file_relative(&parent, "a/b").is_err(), "one component only");
+        assert!(
+            remove_file_relative(&parent, "a/b").is_err(),
+            "one component only"
+        );
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside directory");
+        junction(&fixture.path().join("pending-link"), &outside);
+        assert!(remove_file_relative(&parent, "pending-link").is_err());
+        assert!(std::fs::symlink_metadata(fixture.path().join("pending-link")).is_ok());
+        std::fs::remove_dir(fixture.path().join("pending-link")).expect("remove junction");
     }
 
     #[test]
@@ -957,7 +1079,9 @@ mod tests {
             std::fs::write(nested.join("payload"), b"payload").expect("nested file");
         }
         let readonly = tree.join("level-0").join("payload");
-        let mut permissions = std::fs::metadata(&readonly).expect("metadata").permissions();
+        let mut permissions = std::fs::metadata(&readonly)
+            .expect("metadata")
+            .permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(&readonly, permissions).expect("read-only fixture");
         // Long names push the listing past one 64 KiB enumeration buffer.
@@ -966,9 +1090,10 @@ mod tests {
                 .expect("wide directory entry");
         }
         let parent = retained_directory(fixture.path());
-        remove_entry_tree(&parent, "retired-tree").expect("remove tree through handles");
+        remove_directory_tree(&parent, "retired-tree").expect("remove tree through handles");
         assert!(!tree.exists());
-        remove_entry_tree(&parent, "retired-tree").expect("an absent tree is already removed");
+        let absent = remove_directory_tree(&parent, "retired-tree").expect_err("absent tree");
+        assert_eq!(absent.kind(), std::io::ErrorKind::NotFound, "{absent}");
     }
 
     #[test]
@@ -988,27 +1113,34 @@ mod tests {
             b"unchanged"
         );
         let parent = retained_directory(fixture.path());
-        let link = open_for_delete(&parent, "retired-link")
-            .expect("open link")
-            .expect("link present");
+        let link = open_for_delete(&parent, "retired-link", DeletePurpose::Remove)
+            .expect("open the link itself");
         assert_eq!(link.kind(), EntryKind::Link);
         drop(link);
-        remove_entry_tree(&parent, "retired-tree").expect("remove tree with links");
-        remove_entry_tree(&parent, "retired-link").expect("remove a link root");
+        remove_directory_tree(&parent, "retired-tree").expect("remove tree with links");
+        assert!(
+            remove_directory_tree(&parent, "retired-link").is_err(),
+            "a link root is not a directory tree"
+        );
         assert!(!tree.exists());
-        assert!(!fixture.path().join("retired-link").exists());
+        assert!(std::fs::symlink_metadata(fixture.path().join("retired-link")).is_ok());
         assert_eq!(
             std::fs::read(outside.join("sentinel")).expect("outside sentinel"),
             b"unchanged"
         );
         assert_eq!(
-            std::fs::read_dir(&outside).expect("outside listing").count(),
+            std::fs::read_dir(&outside)
+                .expect("outside listing")
+                .count(),
             1
         );
+        std::fs::remove_dir(fixture.path().join("retired-link")).expect("remove junction");
     }
 
+    /// Guards against regressions to stored or recomputed paths. The race between a
+    /// path resolution and its deletion is not reproducible deterministically.
     #[test]
-    fn tree_removal_uses_the_retained_parent_after_name_substitution() {
+    fn tree_removal_acts_on_the_retained_parent_not_a_stored_path() {
         let fixture = tempfile::tempdir().expect("fixture");
         let original = fixture.path().join("versions");
         let moved = fixture.path().join("moved");
@@ -1023,7 +1155,7 @@ mod tests {
         junction(&original, &impostor);
         // Positive control: the old spelling now resolves to the impostor.
         assert!(original.join("retired-tree").join("keep").is_file());
-        remove_entry_tree(&parent, "retired-tree").expect("remove through retained parent");
+        remove_directory_tree(&parent, "retired-tree").expect("remove through retained parent");
         assert!(!moved.join("retired-tree").exists());
         assert_eq!(
             std::fs::read(impostor.join("retired-tree").join("keep")).expect("impostor kept"),
@@ -1047,24 +1179,45 @@ mod tests {
         let error = remove_file_relative(&parent, "pending-held").expect_err("sharing conflict");
         assert_eq!(error.raw_os_error(), Some(32), "{error}");
         drop(holder);
-        assert!(path.is_file(), "a refused deletion leaves the entry in place");
+        assert!(
+            path.is_file(),
+            "a refused deletion leaves the entry in place"
+        );
         remove_file_relative(&parent, "pending-held").expect("delete after release");
         assert!(!path.exists());
     }
-    use std::fs::{File, OpenOptions};
-    use std::io::Write as _;
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use std::path::Path;
-    use std::ptr;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
-    };
-    use windows_sys::Win32::System::IO::DeviceIoControl;
-    use windows_sys::Win32::System::Ioctl::{FSCTL_DELETE_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
-    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+
+    #[test]
+    fn an_entry_already_pending_deletion_is_not_found() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let path = fixture.path().join("pending-doomed");
+        std::fs::write(&path, b"doomed").expect("fixture file");
+        let doomed = OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .expect("open with delete access");
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).expect("small structure");
+        // SAFETY: `doomed` owns a live handle with DELETE access; the initialized
+        // FILE_DISPOSITION_INFO and its exact size stay valid for this synchronous call.
+        let marked = unsafe {
+            SetFileInformationByHandle(
+                doomed.as_raw_handle().cast(),
+                FileDispositionInfo,
+                (&raw const disposition).cast(),
+                size,
+            )
+        };
+        assert_ne!(marked, 0, "{}", std::io::Error::last_os_error());
+        let parent = retained_directory(fixture.path());
+        let error = open_for_delete(&parent, "pending-doomed", DeletePurpose::Remove)
+            .err()
+            .expect("a delete-pending name refuses");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+        drop(doomed);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn guid_root_is_exact_and_excludes_the_directory_suffix() {

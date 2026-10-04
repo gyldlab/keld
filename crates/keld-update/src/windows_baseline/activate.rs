@@ -936,25 +936,20 @@ fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
 
 /// Deletes generated `retired-*` trees left by this or an earlier resolution.
 ///
-/// Every entry is deleted through handles opened relative to the retained `versions`
-/// handle, so no pathname is resolved again and a link inside a tree is never followed.
+/// Listing and deletion both go through the retained `versions` handle, so no pathname
+/// is resolved again and a link inside a tree is never followed. A `retired-*` entry
+/// that is not a directory refuses, as before.
 fn remove_retired_versions(roots: &Roots) -> Result<(), UpdateError> {
     let versions = roots
         .versions
         .try_clone()
         .map_err(|cause| leftover_error(cause.to_string()))?
         .into_std_file();
-    let entries = roots
-        .versions
-        .entries()
+    let names = crate::windows_fs::child_names(&versions)
         .map_err(|cause| leftover_error(cause.to_string()))?;
-    for entry in entries {
-        let entry = entry.map_err(|cause| leftover_error(cause.to_string()))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
+    for name in names {
         if super::is_generated_leaf(&name, "retired") {
-            crate::windows_fs::remove_entry_tree(&versions, &name)
+            crate::windows_fs::remove_directory_tree(&versions, &name)
                 .map_err(|cause| leftover_error(format!("{name}: {cause}")))?;
         }
     }
@@ -974,33 +969,24 @@ pub(super) fn remove_stale_record_preparations(roots: &Roots) -> Result<(), Upda
         .try_clone()
         .map_err(|cause| super::error("stale record census", cause))?
         .into_std_file();
-    let entries = roots
-        .update
-        .entries()
+    let names = crate::windows_fs::child_names(&update)
         .map_err(|cause| super::error("stale record census", cause))?;
-    for entry in entries {
-        let entry = entry.map_err(|cause| super::error("stale record census", cause))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
+    for name in names {
         if super::is_generated_leaf(&name, "pending") {
-            let Some(stale) = crate::windows_fs::open_for_delete(&update, &name)
-                .map_err(|cause| super::error("stale record admission", cause))?
-            else {
-                continue;
-            };
-            let handle = stale
-                .file()
-                .try_clone()
+            let stale = crate::windows_fs::open_for_delete(
+                &update,
+                &name,
+                crate::windows_fs::DeletePurpose::Admit,
+            )
+            .map_err(|cause| super::error("stale record admission", cause))?;
+            if stale.kind() != crate::windows_fs::EntryKind::File {
+                return Err(super::error(
+                    "stale record admission",
+                    "expected a regular file preparation",
+                ));
+            }
+            super::admit_machine_file(&roots.update, stale.file(), roots.profile())
                 .map_err(|cause| super::error("stale record admission", cause))?;
-            drop(
-                super::admit_machine_file(
-                    &roots.update,
-                    cap_std::fs::File::from_std(handle),
-                    roots.profile(),
-                )
-                .map_err(|cause| super::error("stale record admission", cause))?,
-            );
             stale
                 .delete()
                 .map_err(|cause| super::error("stale record removal", cause))?;
