@@ -80,7 +80,7 @@ def load(root: Path) -> dict:
 def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
     selected = {"local_" + gate: True for gate in MANDATORY}
     selected.update({"input_rust": False, "input_ts": False, "input_all": False,
-                     "local_default": True})
+                     "input_router": False, "local_default": True})
     try:
         contract = load(root)
         census = files(root)
@@ -88,7 +88,7 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
         # Untracked/deleted entries have no established prior consumer contract.
         tracked = set(subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
                       .decode("utf-8").split("\0"))
-        uncertain = comparison_unknown or "tools/ci-inputs.json" in changed or (not paths_only and (
+        uncertain = comparison_unknown or (not paths_only and (
             bool(ignored_reader_inputs(root)) or any(
                 path not in tracked or not (root / path).is_file() or (root / path).is_symlink()
                 for path in changed)))
@@ -117,6 +117,12 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
                 matches(path, consumer["inputs"] + reader_set["patterns"]) for path in changed)
             for output in outputs:
                 selected[output] = selected.get(output, False) or relevant
+        if "tools/ci-inputs.json" in changed:
+            # A known router-policy edit exercises every job while retaining
+            # the established single GUI-smoke owner of live Ubuntu GTK apt.
+            unknown = selected["input_all"]
+            selected = dict.fromkeys(selected, True)
+            selected["input_all"] = unknown
         if uncertain or selected["input_all"]:
             selected = dict.fromkeys(selected, True)
     except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:

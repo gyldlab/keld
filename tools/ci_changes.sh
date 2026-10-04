@@ -96,6 +96,8 @@ apply_consumer_contract() {
     consumer_contract="$("$python_command" -B "$source_root/tools/ci_inputs.py" "$(git rev-parse --show-toplevel)" "$@")"
     if grep -Fxq 'input_all=true' <<<"$consumer_contract"; then
         mark_unknown
+    elif grep -Fxq 'input_router=true' <<<"$consumer_contract"; then
+        mark_all
     fi
     if grep -Fxq 'input_ts=true' <<<"$consumer_contract"; then
         ts="$TRUE"
@@ -564,7 +566,8 @@ classify_path() {
         # repository's automation or required-check surface. Any edit here must
         # exercise every conditional lane, otherwise a workflow can introduce a
         # false-green check while skipping the contracts that would expose it.
-        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh)
+        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh | \
+        tools/ci_inputs.py | tools/ci_local.py | tools/test_ci_local.py | tools/ci-inputs.json)
             mark_all
             ;;
 

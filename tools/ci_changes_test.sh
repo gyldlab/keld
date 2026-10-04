@@ -245,6 +245,10 @@ expect_flags "router test edit still exercises all jobs" "$workflow_all" "$route
 required_script_classification="$(result_for_paths tools/ci_required.sh)"
 expect_flags "required-result evaluator edit still exercises all jobs" "$workflow_all" "$required_script_classification"
 expect_mermaid_flag "router and required-result changes run the full Mermaid lane" true "$router_script_classification"
+for input in tools/ci_inputs.py tools/ci_local.py tools/test_ci_local.py tools/ci-inputs.json; do
+    helper_classification="$(result_for_paths "$input")"
+    expect_flags "router owner $input selects every job without duplicate GTK apt" "$workflow_all" "$helper_classification"
+done
 
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
 for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-runtime crates/keld-wv; do

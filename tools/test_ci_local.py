@@ -88,6 +88,14 @@ class InputContractTests(unittest.TestCase):
         (self.root / "README.md").unlink()
         self.assertTrue(self.route()["input_all"])
 
+    def test_known_router_policy_change_keeps_the_workflow_fallback_distinct(self):
+        self.contract["consumers"][0]["contract"] = "reviewed scope update"
+        self.save_contract()
+        result = self.route()
+        self.assertTrue(result["input_router"])
+        self.assertTrue(result["local_probe"])
+        self.assertFalse(result["input_all"])
+
     def test_git_ignored_recursive_input_is_not_assumed_unrelated(self):
         self.write(".gitignore", "docs/generated/\n")
         self.git("add", ".gitignore")
