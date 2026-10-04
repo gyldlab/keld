@@ -127,10 +127,16 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
                 matches(path, consumer["inputs"] + reader_set["patterns"]) for path in changed)
             for output in outputs:
                 selected[output] = selected.get(output, False) or relevant
-        for package, inputs in contract.get("rust_package_inputs", {}).items():
+        package_inputs = contract.get("rust_package_inputs", {})
+        if not isinstance(package_inputs, dict):
+            raise ValueError("invalid Rust consumer package mapping")
+        for package, inputs in package_inputs.items():
             if (not isinstance(package, str) or not package.startswith("keld-")
                     or not package.isascii() or not package.replace("-", "").isalnum()):
                 raise ValueError("invalid Rust consumer package")
+            if (not isinstance(inputs, list) or not inputs
+                    or any(not isinstance(pattern, str) or not pattern for pattern in inputs)):
+                raise ValueError("invalid Rust consumer input patterns")
             relevant = any(matches(path, inputs) for path in changed)
             selected["input_package_" + package] = relevant
             if relevant:

@@ -102,6 +102,15 @@ class InputContractTests(unittest.TestCase):
         for gate in ("agent-context", "audit-docs", "product-status-check", "deny"):
             self.assertTrue(self.route()["local_" + gate])
 
+    def test_malformed_package_input_mapping_cannot_omit_its_reader(self):
+        for invalid in ([], None, "docs/input.md", {"keld-reader": "docs/input.md"},
+                        {"keld-reader": []}, {"keld-reader": [None]}, {"keld-reader": [""]}):
+            with self.subTest(mapping=invalid):
+                self.contract["rust_package_inputs"] = invalid
+                self.save_contract()
+                with self.assertRaises(ValueError):
+                    ci_inputs.classify(self.root, ["docs/input.md"], paths_only=True)
+
     def test_relevant_staged_unstaged_and_committed_changes_select(self):
         self.write("docs/input.md", "changed\n")
         self.assertTrue(self.route()["local_probe"])
@@ -334,6 +343,20 @@ class ProductionConsumerTests(unittest.TestCase):
             packages = set(selection["packages"].split())
             self.assertTrue({"keld-cli", "keld-host", "keld-runtime"} <= packages, selection)
             self.assertNotIn("keld-pack", packages, "external-reader edges must retain selectivity")
+            manifest = root / "Cargo.toml"
+            manifest.write_text(manifest.read_text(encoding="utf-8") + "\n# shared graph mutation\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-qam", "shared and owned edit"], cwd=root, check=True, capture_output=True)
+            environment["KELD_CI_HEAD_SHA"] = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            result = subprocess.run([shutil.which("bash"), "tools/ci_changes.sh", "github"],
+                                    cwd=root, env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            selection = dict(line.split("=", 1) for line in result.stdout.splitlines())
+            metadata = json.loads(subprocess.check_output(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=root))
+            self.assertEqual(set(selection["packages"].split()),
+                             {package["name"] for package in metadata["packages"]},
+                             "owned inputs must not narrow a shared workspace obligation")
 
     def test_real_rust_content_edit_and_added_reader_have_distinct_scope(self):
         source = Path(__file__).resolve().parent.parent

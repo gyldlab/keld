@@ -603,6 +603,7 @@ classify_path() {
         # dependency closure, or dependency-policy resolution.
         Cargo.toml | Cargo.lock | rust-toolchain.toml | rustfmt.toml)
             rust="$TRUE"
+            all_workspace_packages="$TRUE"
             gui="$TRUE"
             msrv="$TRUE"
             deny="$TRUE"
