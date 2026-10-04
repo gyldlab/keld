@@ -348,7 +348,9 @@ retry, because a retry reports a flaky test green and hides its first failure
 `ci-inventory` in the justfile; that recipe and its groups own the local gate inventory
 and order. Prose does not copy the list. The executor reads Just's JSON inventory and
 uses the shared `tools/ci_changes.sh` router to select gates. Independent policy work
-runs together; the mandatory Rust verification floor runs serially afterward. Direct
+runs together; selected TypeScript and Rust gates run serially afterward. TypeScript's
+composition test exceeded its fixed five-second deadline under the policy batch's
+load and passed in 0.687 seconds alone, so it has its own serial phase. Direct
 recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
 
 `tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`.
@@ -360,7 +362,10 @@ filename extensions or source-text mentions. Rust's cross-tree readers and Bun's
 of IPC constants and CLI templates are included. Live workspace, audit-history,
 product-status and advisory checks still run with an empty Git diff; their expensive
 self-tests have separate input scopes. For example, an unrelated README edit omits
-workspace self-tests and Bun tests, while an IPC constant edit selects Bun tests.
+workspace self-tests, Bun and Rust gates, while an IPC constant edit selects Bun and
+Rust gates. The agent verification floor still requires actual format, warning-denied
+workspace clippy and workspace tests before completion, even when a routing control
+omits them for an unrelated input.
 
 Gitleaks stays GitHub-only
 (checksum-pinned OSS CLI in `.github/workflows/ci.yml`).

@@ -14,8 +14,7 @@ import subprocess
 import sys
 
 SCHEMA = "keld.ci-inputs/v1"
-MANDATORY = {"fmt-check", "clippy", "test", "agent-context", "audit-docs",
-             "product-status-check", "deny"}
+MANDATORY = {"agent-context", "audit-docs", "product-status-check", "deny"}
 
 
 def matches(path: str, patterns: list[str]) -> bool:

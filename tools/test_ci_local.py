@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -95,7 +96,7 @@ class InputContractTests(unittest.TestCase):
         self.assertFalse(self.route()["local_probe"])
         self.write("README.md", "unrelated edit\n")
         self.assertFalse(self.route()["local_probe"])
-        for gate in ("fmt-check", "clippy", "test", "agent-context", "audit-docs"):
+        for gate in ("agent-context", "audit-docs", "product-status-check", "deny"):
             self.assertTrue(self.route()["local_" + gate])
 
     def test_relevant_staged_unstaged_and_committed_changes_select(self):
@@ -185,10 +186,12 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci_local.selection(self.route() + "\nlocal_probe=true", gates)
 
-    def test_mandatory_rust_gate_cannot_be_routed_away(self):
+    def test_unrelated_rust_gates_need_explicit_false_not_missing_output(self):
         for gate in ("fmt-check", "clippy", "test"):
-            with self.assertRaises(ValueError):
-                ci_local.selection(self.route(**{"local_" + gate: "false"}), ["fmt-check", "clippy", "test"])
+            selected = ci_local.selection(self.route(**{"local_" + gate: "false"}), ["fmt-check", "clippy", "test"])
+            self.assertFalse(selected[gate])
+            missing = "\n".join(line for line in self.route().splitlines() if not line.startswith("local_" + gate + "="))
+            self.assertTrue(ci_local.selection(missing, ["fmt-check", "clippy", "test"])[gate])
 
     def test_real_just_inventory_preserves_bodyful_prerequisites_and_order(self):
         with tempfile.TemporaryDirectory(prefix="keld-ci-inventory-") as temporary:
@@ -241,6 +244,19 @@ class ExecutorTests(unittest.TestCase):
             bodies = "".join(f"{gate}:\n    echo should-not-run\n" for gate in suffix.split())
             for header in (f"[parallel]\nci-inventory: {suffix}\n", "ci-inventory: fmt-check clippy doc deny\n"):
                 (root / "justfile").write_text(header + bodies, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    ci_local.validate_inventory(ci_local.inventory(root), "ci-inventory")
+
+    def test_typescript_cannot_share_parallel_policy_load_directly_or_through_a_body(self):
+        with tempfile.TemporaryDirectory(prefix="keld-ci-ts-schedule-") as temporary:
+            root = Path(temporary)
+            suffix = "fmt-check clippy test doc deny"
+            bodies = "".join(f"{gate}:\n    true\n" for gate in (*suffix.split(), "typescript"))
+            for prefix in (
+                f"ci-inventory: policy {suffix}\n[parallel]\npolicy: typescript\n",
+                f"ci-inventory: policy typescript {suffix}\n[parallel]\npolicy: helper\nhelper: typescript\n    true\n",
+            ):
+                (root / "justfile").write_text(prefix + bodies, encoding="utf-8")
                 with self.assertRaises(ValueError):
                     ci_local.validate_inventory(ci_local.inventory(root), "ci-inventory")
 
@@ -322,15 +338,16 @@ class ProductionConsumerTests(unittest.TestCase):
                 f"{name}: reader inventory changed; review its actual reads, update inputs, "
                 "then renew the digest. Routing remains conservative until that review.")
         examples = {
-            "crates/keld-ipc/src/lib.rs": ("input_ts",),
+            "crates/keld-ipc/src/lib.rs": ("input_ts", "local_fmt-check", "local_clippy", "local_test"),
             "crates/keld-ipc/src/frame.rs": ("input_ts",),
             "crates/keld-ipc/src/echo.rs": ("input_ts",),
             "crates/keld-ipc/src/lifecycle.rs": ("input_ts",),
             "crates/keld-cli/templates/hello/src/main-body.ts": ("input_ts", "input_rust"),
             "tools/atomic_protocol.rs": ("input_registry", "input_rust"),
-            "docs/architecture/03-security.md": ("input_rust", "local_llms-check"),
+            "docs/architecture/03-security.md": ("input_rust", "local_llms-check", "local_test"),
             "docs/engineering/keld-error-codes.md": ("input_rust", "local_llms-check"),
-            "crates/keld-compat/fixtures/lifecycle-corpus/report.md": ("input_rust",),
+            "crates/keld-compat/fixtures/lifecycle-corpus/report.md": ("input_rust", "local_test"),
+            "crates/keld-host/tests/fixtures/t1b_harness.ts": ("input_ts", "local_typescript"),
             "llms-full.txt": ("input_rust", "local_llms-check"),
             "docs/engineering/product-status.tsv": ("local_product-status-check",),
         }
@@ -340,9 +357,31 @@ class ProductionConsumerTests(unittest.TestCase):
             self.assertFalse(result["input_all"], f"{path}: positive example must not hide behind fallback")
             for output in outputs:
                 self.assertTrue(result[output], f"{path} must select {output}")
+        source_inventory = (root / "tools/llms_docs.rs").read_text(encoding="utf-8")
+        source_inventory = source_inventory.split("const SOURCES: &[Source] = &[", 1)[1].split("\n];", 1)[0]
+        corpus_sources = re.findall(r'path: "([^"]+)"', source_inventory)
+        self.assertTrue(corpus_sources, "the actual generator source inventory must be discovered")
+        for path in corpus_sources:
+            result = ci_inputs.classify(root, [path], paths_only=True)
+            self.assertFalse(result["input_all"], path)
+            for gate in ("fmt-check", "clippy", "test", "llms-check"):
+                self.assertTrue(result["local_" + gate], (path, gate))
+        for path in ("README.md", "docs/audits/README.md"):
+            unrelated = ci_inputs.classify(root, [path], paths_only=True)
+            for gate in ("fmt-check", "clippy", "test", "typescript"):
+                self.assertFalse(unrelated["local_" + gate], (path, gate))
         unrelated = ci_inputs.classify(root, ["README.md"], paths_only=True)
-        for gate in ("agent-context-test", "ci-router-test", "typescript", "doc", "hooks-test"):
+        for gate in ("agent-context-test", "ci-router-test", "doc", "hooks-test"):
             self.assertFalse(unrelated["local_" + gate], gate)
+        duplicate = "docs/example/receiver-semantics-v0.tsv"
+        path = root / duplicate
+        path.parent.mkdir(parents=True)
+        path.write_bytes((root / "crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv").read_bytes())
+        subprocess.run(["git", "add", duplicate], cwd=root, check=True, capture_output=True)
+        duplicated_corpus = ci_inputs.classify(root, [duplicate], paths_only=True)
+        self.assertFalse(duplicated_corpus["input_all"])
+        self.assertTrue(duplicated_corpus["input_ts"])
+        self.assertFalse(ci_inputs.classify(root, ["docs/engineering/product-status.tsv"], paths_only=True)["input_ts"])
 
 
 if __name__ == "__main__":

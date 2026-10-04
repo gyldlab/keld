@@ -17,17 +17,19 @@ def inventory(root: Path) -> dict:
         cwd=root, text=True, encoding="utf-8"))["recipes"]
 
 
-def leaves(recipes: dict, name: str, visiting=()) -> list[str]:
+def leaves(recipes: dict, name: str, visiting=(), *, through_bodies=False) -> list[str]:
     if name in visiting:
         raise ValueError(f"cyclic CI inventory: {name}")
     recipe = recipes[name]
     if recipe["parameters"] or any(item["arguments"] for item in recipe["dependencies"]):
         raise ValueError(f"parameterized CI inventory is unsupported: {name}")
-    if recipe["body"]:
+    if recipe["body"] and not through_bodies:
         return [name]
     result = []
     for dependency in recipe["dependencies"]:
-        result.extend(leaves(recipes, dependency["recipe"], (*visiting, name)))
+        result.extend(leaves(recipes, dependency["recipe"], (*visiting, name), through_bodies=through_bodies))
+    if recipe["body"]:
+        result.append(name)
     return result
 
 
@@ -48,9 +50,6 @@ def selection(output: str, gates: list[str]) -> dict[str, bool]:
         if value not in ("true", "false"):
             raise ValueError(f"missing or invalid applicability: {gate}")
         selected[gate] = value == "true"
-    for gate in ("fmt-check", "clippy", "test"):
-        if not selected.get(gate):
-            raise ValueError(f"mandatory Rust gate cannot be omitted: {gate}")
     return selected
 
 
@@ -70,8 +69,9 @@ def validate_inventory(recipes: dict, name: str) -> list[str]:
     if gates[-len(suffix):] != suffix:
         raise ValueError("the serial Rust suffix must follow every policy gate")
     for group, recipe in recipes.items():
-        if "parallel" in recipe["attributes"] and set(leaves(recipes, group)) & set(suffix):
-            raise ValueError(f"parallel recipe reaches a Rust gate: {group}")
+        if ("parallel" in recipe["attributes"]
+                and set(leaves(recipes, group, through_bodies=True)) & {"typescript", *suffix}):
+            raise ValueError(f"parallel recipe reaches a TypeScript or Rust gate: {group}")
     return gates
 
 

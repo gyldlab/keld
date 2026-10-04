@@ -169,7 +169,7 @@ expect_mermaid_flag "path-only Markdown classification fails safe without old/ne
 expect_package_token "docs corpus selects the CLI consumer" keld-cli "$docs_classification"
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
-expect_flags "documentation scope includes its conservative Rust consumer closure" "$docs_rust" "$audit_docs_classification"
+expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
 
 hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"

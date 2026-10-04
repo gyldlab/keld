@@ -395,10 +395,10 @@ fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
         let members = dependency_gates(&justfile, group, true).unwrap_or_default();
         if let Some(gate) = members
             .iter()
-            .find(|member| SERIAL_RUST_GATES.contains(member))
+            .find(|member| SERIAL_RUST_GATES.contains(member) || **member == "typescript")
         {
             return Err(format!(
-                "CI-HYGIENE: `{JUSTFILE}` `[parallel]` recipe `{group}` reaches `{gate}`; Rust gates must run one at a time after every other gate."
+                "CI-HYGIENE: `{JUSTFILE}` `[parallel]` recipe `{group}` reaches `{gate}`; TypeScript and Rust gates must run one at a time after the policy batch."
             ));
         }
     }
@@ -2989,6 +2989,20 @@ mod tests {
                 .expect_err("the parallel dependency graph reaches a Rust gate");
             assert!(error.contains("reaches `test`"), "{error}");
             check(temp.path()).expect_err("the root checker must invoke the serial guard");
+        }
+    }
+
+    #[test]
+    fn typescript_cannot_run_inside_the_parallel_policy_batch() {
+        for dependency in ["typescript", "helper"] {
+            let temp = complete_fixture();
+            let original = read(temp.path(), JUSTFILE).expect("fixture");
+            temp.write(JUSTFILE, &format!(
+                "{original}\n[parallel]\npolicy-probe: {dependency}\n\nhelper: typescript\n    true\n\ntypescript:\n    true\n"
+            ));
+            let error =
+                check_serial_rust_gates(temp.path()).expect_err("compiler load must be isolated");
+            assert!(error.contains("reaches `typescript`"), "{error}");
         }
     }
 

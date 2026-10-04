@@ -33,16 +33,38 @@
       "owner": "Rust workspace external reads",
       "outputs": [
         "input_rust",
-        "input_registry"
+        "input_registry",
+        "local_fmt-check",
+        "local_clippy",
+        "local_test"
       ],
       "inputs": [
         "packages/*",
         "tools/*.rs",
         "tools/*.ts",
-        "docs/*",
-        "llms-full.txt"
+        "llms-full.txt",
+        "docs/onboarding/README.md",
+        "docs/onboarding/04-wire-formats-and-contracts.md",
+        "docs/architecture/01-overview.md",
+        "docs/architecture/02-ipc.md",
+        "docs/architecture/03-security.md",
+        "docs/architecture/04-electron-compat.md",
+        "docs/architecture/05-webview-and-native.md",
+        "docs/architecture/06-runtime-and-tooling.md",
+        "docs/architecture/07-agent-experience.md",
+        "docs/engineering/product-status.md",
+        "docs/engineering/decisions.md",
+        "docs/engineering/keld-error-codes.md",
+        "docs/engineering/budget-scoreboard.md",
+        "docs/engineering/compat-scoreboard.md",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        ".cargo/*",
+        ".config/nextest.toml"
       ],
-      "contract": "Rust readers include the CLI error registry recursive tools scan, generated docs_search corpus, security docs assertion, and compat lifecycle report. Directory scopes include future members. Local Rust floor remains unconditional.",
+      "contract": "Rust external reads include the CLI recursive tools registry scan, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant.",
       "reader_set": "rust-readers"
     },
     {
@@ -54,9 +76,11 @@
       "inputs": [
         "crates/keld-ipc/src/*",
         "crates/keld-ipc/tests/fixtures/*",
-        "crates/keld-cli/templates/*"
+        "crates/keld-cli/templates/*",
+        "crates/*.ts",
+        "*receiver-semantics-v0.tsv"
       ],
-      "contract": "transport and echo-codegen read IPC source constants, the shared receiver corpus, and recursively walk CLI templates. Any changed/new package reader invalidates these exclusions.",
+      "contract": "Bun reads IPC constants and CLI templates, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. Source-reader drift invalidates exclusions.",
       "reader_set": "bun-readers"
     },
     {
@@ -267,23 +291,24 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "e1c2bbad687b9b85e26f73dc6ae3712eca4ceb77825ea058611c146e5dcb73b6"
+      "sha256": "4ea89dd4d200f256ec5e4ad110194f97b982682d01b45b663fcdffacf4803476"
     },
     "policy-readers": {
       "patterns": [
         "justfile",
         "tools/*",
         "docs/audits/*.py",
-        ".githooks/*"
+        ".githooks/*",
+        "rust-toolchain.toml"
       ],
-      "sha256": "32602f6e1aef5a994c3ce9f2978534762471d527236005cc63ad8b0470259547"
+      "sha256": "84807c18de038c226d20760075807f4044b987e0e4231d9d7039f5d3c247a6c9"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "538691b6de12d521894bff8ea97cb0e00938f2c21abe4c0262f84393f668fde0"
+      "sha256": "9bbb9f8a4c7c6a3cfcc9916dd5cab00a9a2031f6babd258a255b62fae1d9522e"
     },
     "rustdoc-readers": {
       "patterns": [
@@ -293,13 +318,19 @@
         "Cargo.lock",
         ".cargo/*"
       ],
-      "sha256": "80aba135118ed6f4ef07ecef77058ba96e5d30646f52e80ecc4720a9327f7fcd"
+      "sha256": "ac29f0732cd660a91fb093b96af0d0af5795a7172a37d29db5680992225a09ff"
     },
     "dependency-command": {
       "patterns": [
         "justfile"
       ],
-      "sha256": "8e02c57c6a56eeba653c71e23e2362c1476a91b2365dfefdb15ad4afc53508a2"
+      "sha256": "ee59d4075ecdec3047821a274aab81be8af943801da29e31346aff6977db608d"
     }
+  },
+  "live_inputs": {
+    "agent-context": "Ignored/local workspace task and resource records are read by tools/workspace.py check; malformed records can fail with identical tracked bytes.",
+    "audit-docs": "Publication ancestry, historical report bytes and Git object availability are read by docs/audits/verify.py; missing/replaced history can fail with identical tracked bytes.",
+    "product-status-check": "The ledger names evidence commits whose object availability and ancestry are validated; that live Git state is not represented by changed source paths.",
+    "deny": "cargo deny check consumes the mutable advisory database as well as the lockfile; a new advisory can change its result with identical tracked bytes."
   }
 }

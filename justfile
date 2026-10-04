@@ -17,22 +17,22 @@ hello:
     cargo run -p keld-host --bin keld-host -- --hello
 
 # Run every applicable CI gate locally (deny requires `cargo install cargo-deny --locked`).
-# The independent policy and TypeScript gates run together; the Rust gates then run
-# one at a time, because load-sensitive host tests must not share the machine.
+# Independent policy gates run together. TypeScript then Rust run one at a time:
+# measured compiler and host-test deadlines cannot share the policy batch's load.
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
 ci:
     {{python_command}} -B tools/ci_local.py ci-inventory
 
 # Executable inventory; direct invocation runs every declared gate.
 [private]
-ci-inventory: ci-policy fmt-check clippy test doc deny
+ci-inventory: ci-policy typescript fmt-check clippy test doc deny
 
 # Full assurance mode explicitly validates every tracked Mermaid block.
 ci-full:
     {{python_command}} -B tools/ci_local.py ci-full-inventory
 
 [private]
-ci-full-inventory: ci-policy-full fmt-check clippy test doc deny
+ci-full-inventory: ci-policy-full typescript fmt-check clippy test doc deny
 
 # Reuse Just's configured platform shell when the Python executor asks for a plan.
 [private]
@@ -40,10 +40,10 @@ ci-route:
     tools/ci_changes.sh local
 
 [parallel]
-ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript
+ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
 [parallel]
-ci-policy-full: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript
+ci-policy-full: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene
 
 mermaid-ci:
     #!/usr/bin/env bash
@@ -125,7 +125,7 @@ agents-md:
     if [[ "$fail" -ne 0 ]]; then exit 1; fi
     echo "agents-md ok"
 
-# Public audit registry: fail closed on historical/report/evidence drift.
+# Live Git publication history/ancestry is not a tracked-file diff input.
 audit-docs: audit-docs-test
     {{python_command}} -B docs/audits/verify.py
 
@@ -141,6 +141,7 @@ atomic-protocol:
     target/atomic-protocol/atomic-protocol check .
 
 # KEL-147: instruction inventory, routing, and Codex automatic-chain budgets.
+# Live ignored workspace/task records are checked even with an empty Git diff.
 agent-context: agent-context-test
     mkdir -p target/agent-context
     rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
@@ -199,7 +200,7 @@ product-status-test:
     rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
     target/product-status/product-status-test
 
-# CI gate: ledger semantics and every checked consumer must agree.
+# Live evidence-object availability and ancestry can change without a file diff.
 product-status-check:
     mkdir -p target/product-status
     rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status
@@ -303,6 +304,7 @@ test:
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
+# Live advisory updates can change the result without a file diff.
 # Supply-chain checks (requires `cargo install cargo-deny --locked`).
 deny:
     cargo deny check

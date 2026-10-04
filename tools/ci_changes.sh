@@ -27,6 +27,7 @@ all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
 consumer_contract=""
+local_force_all="$FALSE"
 declare -a changed_package_roots=()
 declare -a changed_ts_package_dirs=()
 
@@ -40,6 +41,7 @@ usage() {
 }
 
 mark_all() {
+    local_force_all="$TRUE"
     rust="$TRUE"
     docs="$TRUE"
     mermaid="$TRUE"
@@ -75,7 +77,11 @@ emit() {
     printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
     printf 'ts_packages=%s\n' "$ts_packages"
     if [[ -n "$consumer_contract" ]]; then
-        printf '%s\n' "$consumer_contract" | grep '^local_'
+        if [[ "$local_force_all" == "$TRUE" ]]; then
+            printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
+        else
+            printf '%s\n' "$consumer_contract" | grep '^local_'
+        fi
         local gate
         for gate in mermaid-ci mermaid-test mermaid-check mermaid-render-check; do
             printf 'local_%s=%s\n' "$gate" "$mermaid"
@@ -492,7 +498,11 @@ finalize_selection() {
     resolve_ts_package_consumers
     if grep -Fxq 'input_registry=true' <<<"$consumer_contract"; then
         local registry_owner
-        if registry_owner="$(package_for_path crates/keld-cli/tests/error_registry.rs)"; then
+        if [[ "$rust" == "$TRUE" && ${#changed_package_roots[@]} -eq 0 ]]; then
+            # Shared Rust/build-graph inputs already require the whole workspace.
+            # Adding one external reader must not narrow that fallback to CLI.
+            all_workspace_packages="$TRUE"
+        elif registry_owner="$(package_for_path crates/keld-cli/tests/error_registry.rs)"; then
             rust="$TRUE"
             add_changed_package_root "$registry_owner"
         else
