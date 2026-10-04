@@ -334,7 +334,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "8959502d8c3b18e332d5fdf9b11ab33a3a34890850dadc4ca321dcf857e261c1"
+      "sha256": "02224c774454556bbe630905454d45effdc9adc5c4df97ba79852d25f19cc101"
     },
     "audit-readers": {
       "patterns": [
@@ -382,5 +382,23 @@
     ],
     "membership_sha256": "2faaa976594b09b24bfdce7e64c03c46af437c94af9d1dbb23eed154fec11916",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
+  },
+  "rust_package_inputs": {
+    "keld-runtime": [
+      "crates/keld-cli/templates/*",
+      "packages/@keld/kipc/src/transport.ts"
+    ],
+    "keld-host": [
+      "crates/keld-cli/templates/*",
+      "packages/@keld/api/*",
+      "packages/@keld/kipc/src/transport.ts"
+    ],
+    "keld-compat": [
+      "packages/@keld/electron/*",
+      "crates/keld-compat/fixtures/lifecycle-corpus/*"
+    ],
+    "keld-update": [
+      "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
+    ]
   }
 }

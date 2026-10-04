@@ -127,6 +127,16 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
                 matches(path, consumer["inputs"] + reader_set["patterns"]) for path in changed)
             for output in outputs:
                 selected[output] = selected.get(output, False) or relevant
+        for package, inputs in contract.get("rust_package_inputs", {}).items():
+            if (not isinstance(package, str) or not package.startswith("keld-")
+                    or not package.isascii() or not package.replace("-", "").isalnum()):
+                raise ValueError("invalid Rust consumer package")
+            relevant = any(matches(path, inputs) for path in changed)
+            selected["input_package_" + package] = relevant
+            if relevant:
+                selected["input_rust"] = True
+                for gate in ("fmt-check", "clippy", "test", "doc"):
+                    selected["local_" + gate] = True
         if "tools/ci-inputs.json" in changed:
             # A known router-policy edit exercises every job while retaining
             # the established single GUI-smoke owner of live Ubuntu GTK apt.

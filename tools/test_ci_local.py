@@ -309,6 +309,32 @@ class RouterFailureBoundaryTests(unittest.TestCase):
 
 
 class ProductionConsumerTests(unittest.TestCase):
+    def test_actual_template_edit_selects_runtime_reader_in_hosted_packages(self):
+        source = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix="keld-ci-package-reader-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            for args in (("config", "user.name", "ci-contract-test"),
+                         ("config", "user.email", "ci-contract@example.invalid"),
+                         ("add", "."), ("commit", "-qm", "bound source")):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            path = root / "crates/keld-cli/templates/hello/src/kipc.ts"
+            path.write_text(path.read_text(encoding="utf-8") + "\n// adapter content mutation\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-qam", "adapter edit"], cwd=root, check=True, capture_output=True)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            environment = os.environ.copy()
+            environment.pop("GITHUB_OUTPUT", None)
+            environment.update(KELD_CI_EVENT_NAME="pull_request", KELD_CI_BASE_SHA=base,
+                               KELD_CI_HEAD_SHA=head)
+            result = subprocess.run([shutil.which("bash"), "tools/ci_changes.sh", "github"],
+                                    cwd=root, env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            selection = dict(line.split("=", 1) for line in result.stdout.splitlines())
+            packages = set(selection["packages"].split())
+            self.assertTrue({"keld-cli", "keld-host", "keld-runtime"} <= packages, selection)
+            self.assertNotIn("keld-pack", packages, "external-reader edges must retain selectivity")
+
     def test_real_rust_content_edit_and_added_reader_have_distinct_scope(self):
         source = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(prefix="keld-ci-rust-census-") as temporary:

@@ -102,6 +102,8 @@ apply_consumer_contract() {
     # github/local nest this assignment inside another command substitution,
     # where Bash clears errexit. An explicit exit owns this failure boundary.
     consumer_contract="$("$python_command" -B "$source_root/tools/ci_inputs.py" "$(git rev-parse --show-toplevel)" "$@")" || exit 1
+    # Native Windows Python writes CRLF; all shell consumers use LF records.
+    consumer_contract="${consumer_contract//$'\r'/}"
     if grep -Fxq 'input_all=true' <<<"$consumer_contract"; then
         mark_unknown
     elif grep -Fxq 'input_router=true' <<<"$consumer_contract"; then
@@ -509,6 +511,20 @@ finalize_selection() {
             mark_unknown
         fi
     fi
+    # Runtime file/include edges are not Cargo dependency edges. Add their
+    # declared consuming packages before expanding Cargo reverse dependents.
+    local consumer_key consumer_selected consumer_package
+    while IFS='=' read -r consumer_key consumer_selected; do
+        if [[ "$consumer_key" == input_package_* && "$consumer_selected" == "$TRUE" ]]; then
+            consumer_package="${consumer_key#input_package_}"
+            if ! all_workspace_package_names | grep -Fxq -- "$consumer_package"; then
+                mark_unknown
+                break
+            fi
+            rust="$TRUE"
+            add_changed_package_root "$consumer_package"
+        fi
+    done <<<"$consumer_contract"
     if grep -Fxq 'input_rust=true' <<<"$consumer_contract" && [[ "$rust" != "$TRUE" ]]; then
         rust="$TRUE"
         all_workspace_packages="$TRUE"
