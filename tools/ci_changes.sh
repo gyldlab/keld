@@ -26,6 +26,8 @@ ts_packages=""
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
+consumer_contract=""
+local_force_all="$FALSE"
 declare -a changed_package_roots=()
 declare -a changed_ts_package_dirs=()
 
@@ -39,6 +41,7 @@ usage() {
 }
 
 mark_all() {
+    local_force_all="$TRUE"
     rust="$TRUE"
     docs="$TRUE"
     mermaid="$TRUE"
@@ -73,6 +76,45 @@ emit() {
     printf 'nongtk_packages=%s\n' "$nongtk_packages"
     printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
     printf 'ts_packages=%s\n' "$ts_packages"
+    if [[ -n "$consumer_contract" ]]; then
+        if [[ "$local_force_all" == "$TRUE" ]]; then
+            printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
+        else
+            printf '%s\n' "$consumer_contract" | grep '^local_'
+        fi
+        local gate
+        for gate in mermaid-ci mermaid-test mermaid-check mermaid-render-check; do
+            printf 'local_%s=%s\n' "$gate" "$mermaid"
+        done
+    fi
+}
+
+# The same reviewed reader/input contract supplements both local and hosted
+# selections. A stale reader binding enables its consumers; malformed contracts
+# fail before any selection is published. No source-text inference is involved.
+apply_consumer_contract() {
+    local source_root python_command
+    source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+    case "$(uname -s)" in
+        MINGW* | MSYS*) python_command=python ;;
+        *) python_command=python3 ;;
+    esac
+    # github/local nest this assignment inside another command substitution,
+    # where Bash clears errexit. An explicit exit owns this failure boundary.
+    consumer_contract="$("$python_command" -B "$source_root/tools/ci_inputs.py" "$(git rev-parse --show-toplevel)" "$@")" || exit 1
+    # Native Windows Python writes CRLF; all shell consumers use LF records.
+    consumer_contract="${consumer_contract//$'\r'/}"
+    if grep -Fxq 'input_all=true' <<<"$consumer_contract"; then
+        mark_unknown
+    elif grep -Fxq 'input_router=true' <<<"$consumer_contract"; then
+        mark_all
+    fi
+    if grep -Fxq 'input_ts=true' <<<"$consumer_contract"; then
+        ts="$TRUE"
+    fi
+    if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
+        mermaid="$TRUE"
+    fi
 }
 
 load_workspace_metadata() {
@@ -456,6 +498,37 @@ finalize_ts_packages() {
 # broken workspace metadata read must report.
 finalize_selection() {
     resolve_ts_package_consumers
+    if grep -Fxq 'input_registry=true' <<<"$consumer_contract"; then
+        local registry_owner
+        if [[ "$rust" == "$TRUE" && ${#changed_package_roots[@]} -eq 0 ]]; then
+            # Shared Rust/build-graph inputs already require the whole workspace.
+            # Adding one external reader must not narrow that fallback to CLI.
+            all_workspace_packages="$TRUE"
+        elif registry_owner="$(package_for_path crates/keld-cli/tests/error_registry.rs)"; then
+            rust="$TRUE"
+            add_changed_package_root "$registry_owner"
+        else
+            mark_unknown
+        fi
+    fi
+    # Runtime file/include edges are not Cargo dependency edges. Add their
+    # declared consuming packages before expanding Cargo reverse dependents.
+    local consumer_key consumer_selected consumer_package
+    while IFS='=' read -r consumer_key consumer_selected; do
+        if [[ "$consumer_key" == input_package_* && "$consumer_selected" == "$TRUE" ]]; then
+            consumer_package="${consumer_key#input_package_}"
+            if ! all_workspace_package_names | grep -Fxq -- "$consumer_package"; then
+                mark_unknown
+                break
+            fi
+            rust="$TRUE"
+            add_changed_package_root "$consumer_package"
+        fi
+    done <<<"$consumer_contract"
+    if grep -Fxq 'input_rust=true' <<<"$consumer_contract" && [[ "$rust" != "$TRUE" ]]; then
+        rust="$TRUE"
+        all_workspace_packages="$TRUE"
+    fi
     finalize_rust_packages
     finalize_ts_packages
 }
@@ -483,6 +556,21 @@ host_path_is_affected() {
 classify_path() {
     local changed_file="$1"
 
+    # Crate-local reports/fixtures can be include_bytes!/include_str! inputs.
+    # Documentation routing below is additive, never an exemption from its owner.
+    case "$changed_file" in
+        crates/*.md | crates/*.txt | crates/*.adoc | crates/*.mdx | crates/*.rst)
+            local document_owner
+            if document_owner="$(package_for_path "$changed_file")"; then
+                rust="$TRUE"
+                add_changed_package_root "$document_owner"
+            else
+                mark_unknown
+                return
+            fi
+            ;;
+    esac
+
     if [[ "$changed_file" == *.md ]]; then
         markdown_changed="$TRUE"
     fi
@@ -506,7 +594,8 @@ classify_path() {
         # repository's automation or required-check surface. Any edit here must
         # exercise every conditional lane, otherwise a workflow can introduce a
         # false-green check while skipping the contracts that would expose it.
-        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh)
+        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh | \
+        tools/ci_inputs.py | tools/ci_local.py | tools/test_ci_local.py | tools/ci-inputs.json)
             mark_all
             ;;
 
@@ -514,6 +603,7 @@ classify_path() {
         # dependency closure, or dependency-policy resolution.
         Cargo.toml | Cargo.lock | rust-toolchain.toml | rustfmt.toml)
             rust="$TRUE"
+            all_workspace_packages="$TRUE"
             gui="$TRUE"
             msrv="$TRUE"
             deny="$TRUE"
@@ -583,9 +673,12 @@ classify_path() {
         # product build or graphical window.
         .github/CODEOWNERS | .github/PULL_REQUEST_TEMPLATE.md | .github/ISSUE_TEMPLATE/* | \
         .gitignore | justfile | .codex/* | .agents/instruction-budget.tsv | \
-        tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs)
+        tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs | \
+        tools/justfile_contract.rs)
             hygiene="$TRUE"
-            if [[ "$changed_file" == justfile || "$changed_file" == tools/ci_hygiene.rs ]]; then
+            # The shared justfile parser decides which recipes count as the Mermaid gate.
+            if [[ "$changed_file" == justfile || "$changed_file" == tools/ci_hygiene.rs || \
+                "$changed_file" == tools/justfile_contract.rs ]]; then
                 mermaid="$TRUE"
             fi
             ;;
@@ -646,9 +739,20 @@ classify_stream() {
     local head="${3:-}"
     host_dependency_dirs_cache="$(host_dependency_dirs)"
     local changed_file
+    local -a changed_files=()
     while IFS= read -r -d '' changed_file; do
+        changed_files+=("$changed_file")
         classify_path "$changed_file"
     done
+    local -a contract_options=()
+    if [[ "$mode" == paths ]]; then
+        contract_options+=(--paths-only)
+    fi
+    if [[ ${#changed_files[@]} -gt 0 ]]; then
+        apply_consumer_contract "${contract_options[@]}" < <(printf '%s\0' "${changed_files[@]}")
+    else
+        apply_consumer_contract "${contract_options[@]}" </dev/null
+    fi
     finalize_selection
     if [[ "$mode" == worktree && "$markdown_changed" != "$TRUE" ]]; then
         local root research_root research_top
@@ -694,6 +798,7 @@ classify_github_event() {
             ;;
         *)
             mark_unknown
+            apply_consumer_contract --unknown </dev/null
             finalize_selection
             publish "$(emit)"
             return
@@ -706,6 +811,7 @@ classify_github_event() {
         ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null || \
         ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
         mark_unknown
+        apply_consumer_contract --unknown </dev/null
         finalize_selection
         publish "$(emit)"
         return
@@ -723,12 +829,14 @@ classify_local_worktree() {
     if [[ -z "$head" ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null || \
         ! git merge-base --is-ancestor "$base" "$head" >/dev/null 2>&1; then
         mark_unknown
+        apply_consumer_contract --unknown </dev/null
         finalize_selection
         publish "$(emit)"
         return
     fi
     local result
-    result="$( { git diff --no-renames --name-only -z "$base" --; git ls-files --others --exclude-standard -z; } | classify_stream worktree "$base" "$head")"
+    # Do not let a successful untracked census hide a failed tracked diff.
+    result="$( { git diff --no-renames --name-only -z "$base" -- && git ls-files --others --exclude-standard -z; } | classify_stream worktree "$base" "$head")"
     publish "$result"
 }
 
