@@ -33,6 +33,13 @@ pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
 }
 
 pub(crate) fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
+    try_expect_renderer_beacon(beacon, context).unwrap_or_else(|error| panic!("{error}"));
+}
+
+pub(crate) fn try_expect_renderer_beacon(
+    beacon: RendererBeacon,
+    context: &str,
+) -> Result<(), String> {
     let RendererBeacon {
         observed,
         worker,
@@ -45,7 +52,6 @@ pub(crate) fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
         .unwrap_or_default();
     let initial_result = observed.recv_timeout(remaining);
     finish_renderer_beacon(&observed, worker, initial_result, context)
-        .unwrap_or_else(|error| panic!("{error}"));
 }
 
 pub(crate) fn finish_renderer_beacon(
