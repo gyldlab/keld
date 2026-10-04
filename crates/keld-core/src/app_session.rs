@@ -7872,13 +7872,17 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn dequeued_fs_item_losing_quiesce_never_enters_handler() {
-        use sha2::{Digest as _, Sha256};
-
         let temp = tempfile::tempdir().expect("paused FS entry root");
         let manifest_text = "{}\n";
         let manifest_path = temp.path().join(PERMISSIONS_FILE);
         fs::write(&manifest_path, manifest_text).expect("write paused FS manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        // SHA-256 of the exact static fixture bytes `{}\n`. Keep the Linux
+        // lifecycle regression independent of the macOS/Windows-only sha2 dependency.
+        let digest = [
+            0xca, 0x3d, 0x16, 0x3b, 0xab, 0x05, 0x53, 0x81, 0x82, 0x72, 0x26, 0x14, 0x05, 0x68,
+            0xf3, 0xbe, 0xf7, 0xea, 0xac, 0x18, 0x7c, 0xeb, 0xd7, 0x68, 0x78, 0xe0, 0xb6, 0x3e,
+            0x9e, 0x44, 0x23, 0x56,
+        ];
         let verified = load_verified_manifest(
             File::open(&manifest_path).expect("open paused FS manifest"),
             manifest_path,
