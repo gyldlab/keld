@@ -456,7 +456,7 @@ mv "$temp_dir/fake-bin/bootstrap-test" "$temp_dir/packages/@fake/bootstrap/src/u
 # Pins the router's suite-discovery set against bun's own, per filename shape.
 #
 # Every fixture elsewhere in this file uses `unit.test.ts`, the single shape the
-# original pattern matched â€” so a wrong pattern stayed invisible. Measured on
+# original pattern matched - so a wrong pattern stayed invisible. Measured on
 # bun 1.4.0: of 21 planted filenames it runs 18, skipping only `plain.ts`,
 # `test.ts` and `tests.ts`. A shape bun runs that the router misses is a suite
 # silently dropped from a green lane; a shape bun skips that the router selects
@@ -505,7 +505,7 @@ discovery_shape_case() {
 shape_index=0
 # Generated from the same 4 separators x 8 extensions the router encodes, not
 # hand-listed. A hand-list covered 16 of the 32 patterns, and each of the other
-# 16 could be deleted individually with this suite still green â€” a pin that
+# 16 could be deleted individually with this suite still green - a pin that
 # reported coverage it did not have.
 for sep in .test. _test. .spec. _spec.; do
     for ext in ts tsx js jsx mts cts mjs cjs; do
