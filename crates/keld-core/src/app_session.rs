@@ -3603,7 +3603,7 @@ impl GuardianOwner {
                                 if let Err(error) = router.apply_generation_update(update.into()) {
                                     guardian.deny_recovery();
                                     let _ = window_commands.send(AppWindowCommand::Fatal);
-                                    return Err(error);
+                                    return Err(error.into());
                                 }
                             }
                             if let Some(lease) = dev_lease.as_mut() {
@@ -3903,17 +3903,15 @@ impl DirectPrimaryOwner {
                         if let Err(error) =
                             router.apply_generation_update(PrimaryOwnerUpdate::Bound(bound))
                         {
-                            if router.window_ready.load(Ordering::Acquire)
-                                && router.is_current(attempt)
-                                && shutdown.is_running()
-                            {
+                            if restart_failed_bound_generation(router, attempt, &error, |attempt| {
                                 supervisor.restart_generation(attempt);
+                            }) {
                                 continue;
                             }
                             let _ = recovery.deny();
                             supervisor.shutdown();
                             let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error);
+                            return Err(error.into());
                         }
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
@@ -3957,7 +3955,9 @@ impl DirectPrimaryOwner {
                                 .arm()
                                 .then_some(())
                                 .ok_or_else(|| String::from("recovery was already denied"));
-                            let _ = reply.send(result);
+                            acknowledge_direct_recovery_arm(router.as_ref(), result, |result| {
+                                let _ = reply.send(result);
+                            });
                         }
                         Ok(DirectPrimaryOwnerCommand::DenyRecovery) => {
                             let _ = recovery.deny();
@@ -4049,6 +4049,52 @@ impl DirectPrimaryOwner {
                 .map_err(|_| app_detail("direct primary owner", "thread panicked"))?
         })
     }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn acknowledge_direct_recovery_arm(
+    router: Option<&PrimaryRouterHandle>,
+    result: Result<(), String>,
+    acknowledge: impl FnOnce(Result<(), String>),
+) {
+    if result.is_ok()
+        && let Some(router) = router
+    {
+        router.recovery_armed.store(true, Ordering::Release);
+    }
+    acknowledge(result);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn restart_failed_bound_generation(
+    router: &PrimaryRouterHandle,
+    attempt: u32,
+    failure: &PrimaryGenerationFailure,
+    restart: impl FnOnce(u32),
+) -> bool {
+    let _transition = router.shutdown.transition_guard();
+    if !router.window_ready.load(Ordering::Acquire)
+        || !router.recovery_armed.load(Ordering::Acquire)
+        || !router.shutdown.is_running()
+        || router.shutdown.reader_stop.load(Ordering::Acquire)
+        || attempt <= router.last_revoked_attempt.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let Ok(current) = router.current.lock() else {
+        return false;
+    };
+    let owned = current
+        .as_ref()
+        .is_some_and(|active| active.attempt == attempt)
+        || (failure.retired_after_failed_ready == Some(attempt) && current.is_none());
+    drop(current);
+    if owned {
+        // The runtime revalidates this attempt before stopping/restarting a
+        // child. A queued natural revocation/successor cannot grant it authority.
+        restart(attempt);
+    }
+    owned
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -4207,6 +4253,35 @@ fn receive_direct_owner_reply(
     }
 }
 
+// A failed lifecycle write retires its writer before the bound-generation owner
+// sees the error. Keep that exact attempt in the error, not in another lifecycle
+// flag, so recovery cannot mistake an absent current generation for authority.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Debug)]
+struct PrimaryGenerationFailure {
+    error: HostAppError,
+    #[cfg(any(target_os = "linux", windows))]
+    retired_after_failed_ready: Option<u32>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl From<HostAppError> for PrimaryGenerationFailure {
+    fn from(error: HostAppError) -> Self {
+        Self {
+            error,
+            #[cfg(any(target_os = "linux", windows))]
+            retired_after_failed_ready: None,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl From<PrimaryGenerationFailure> for HostAppError {
+    fn from(failure: PrimaryGenerationFailure) -> Self {
+        failure.error
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 enum PrimaryOwnerUpdate {
     Role(PrimaryRoleEvent),
@@ -4296,7 +4371,7 @@ impl PrimaryRouterHandle {
             }
             if let Err(error) = self.write_event_guarded(LifecycleEvent::Ready) {
                 self.guardian.deny_recovery();
-                return Err(error);
+                return Err(error.into());
             }
             // Publish Ready and enqueue its arm under the same transition as
             // accepted shutdown. A later tail cannot overtake this command.
@@ -4319,6 +4394,7 @@ impl PrimaryRouterHandle {
         let _transition = self.shutdown.transition_guard();
         self.last_window_closed.store(true, Ordering::Release);
         self.write_event_guarded(LifecycleEvent::LastWindowClosed)
+            .map_err(Into::into)
     }
 
     #[cfg(target_os = "macos")]
@@ -4555,7 +4631,7 @@ impl PrimaryRouterHandle {
 
     // Caller retains shutdown.transition through the write and any admission
     // command that must precede a terminal claim.
-    fn write_event_guarded(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
+    fn write_event_guarded(&self, event: LifecycleEvent) -> Result<(), PrimaryGenerationFailure> {
         let payload = encode(&event).map_err(|source| app_ipc("lifecycle event", &source))?;
         let mut current = self
             .current
@@ -4583,7 +4659,13 @@ impl PrimaryRouterHandle {
                 "application call retired after a failed lifecycle write",
                 "failed lifecycle event link close",
             );
-            return Err(append_app_cleanup(primary, [retirement]));
+            return Err(PrimaryGenerationFailure {
+                #[cfg(any(target_os = "linux", windows))]
+                retired_after_failed_ready: (retirement.is_ok()
+                    && matches!(event, LifecycleEvent::Ready))
+                .then_some(attempt),
+                error: append_app_cleanup(primary, [retirement]),
+            });
         }
         Ok(())
     }
@@ -4678,7 +4760,10 @@ impl PrimaryRouterHandle {
         collapse_app_results([pending, link, self.finish_tail("CLI lease loss")])
     }
 
-    fn apply_generation_update(&self, update: PrimaryOwnerUpdate) -> Result<(), HostAppError> {
+    fn apply_generation_update(
+        &self,
+        update: PrimaryOwnerUpdate,
+    ) -> Result<(), PrimaryGenerationFailure> {
         match update {
             PrimaryOwnerUpdate::Role(PrimaryRoleEvent::Revoked { attempt, .. }) => {
                 self.last_revoked_attempt
@@ -4687,9 +4772,10 @@ impl PrimaryRouterHandle {
                     return Err(app_detail(
                         "primary generation before Ready",
                         "Bun terminated before the initial window became ready",
-                    ));
+                    )
+                    .into());
                 }
-                self.retire_generation(attempt)
+                self.retire_generation(attempt).map_err(Into::into)
             }
             PrimaryOwnerUpdate::Role(_) => Ok(()),
             PrimaryOwnerUpdate::Bound(bound) => {
@@ -4708,7 +4794,7 @@ impl PrimaryRouterHandle {
         &self,
         attempt: u32,
         mut stream: BootstrapStream,
-    ) -> Result<(), HostAppError> {
+    ) -> Result<(), PrimaryGenerationFailure> {
         stream
             .set_app_link_read_deadline(Some(APP_LINK_READER_POLL))
             .map_err(|source| app_io("primary session reader deadline", &source))?;
@@ -4721,7 +4807,7 @@ impl PrimaryRouterHandle {
         let reader_stop;
         {
             let _transition = self.shutdown.transition_guard();
-            if !self.shutdown.is_running() {
+            if !self.shutdown.is_running() || self.shutdown.reader_stop.load(Ordering::Acquire) {
                 let _ = writer_stream.shutdown_app_link();
                 return Ok(());
             }
@@ -4732,7 +4818,8 @@ impl PrimaryRouterHandle {
                 return Err(app_detail(
                     "primary session generation",
                     "successor bound before the retired generation was revoked",
-                ));
+                )
+                .into());
             }
             reader_stop = self.shutdown.register_generation_reader();
             *current = Some(ActivePrimaryGeneration {
@@ -4902,8 +4989,12 @@ impl PrimaryRouter {
     }
 
     fn stop_and_join(&mut self) -> Result<(), HostAppError> {
-        self.handle.shutdown.stop_reader();
         let pending = {
+            // Failed Ready recovery and successor publication must observe
+            // teardown before acquiring any new generation. Release this
+            // transition before joining readers that may need the same lock.
+            let _transition = self.handle.shutdown.transition_guard();
+            self.handle.shutdown.stop_reader();
             let mut current = match self.handle.current.lock() {
                 Ok(current) => current,
                 Err(poisoned) => poisoned.into_inner(),
@@ -5622,22 +5713,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn quit_peer_close_wait_is_bounded_for_a_non_closing_client() {
-        let listener = Arc::new(keld_ipc::BootstrapListener::bind().expect("bind pipe"));
-        let link = listener.app_link();
-        let (endpoint, token) = keld_ipc::parse_app_link(&link).expect("parse pipe link");
-        let endpoint = endpoint.to_owned();
-        let acceptor = Arc::clone(&listener);
-        let worker = thread::spawn(move || acceptor.accept_authenticated());
-        let mut client = BootstrapStream::connect(&endpoint).expect("connect pipe client");
-        client
-            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
-            .expect("client deadlines");
-        keld_ipc::link::handshake_client(&mut client, &token).expect("client HELLO");
-        let mut server = worker
-            .join()
-            .expect("accept join")
-            .expect("accept result")
-            .expect("authenticated server stream");
+        let (mut server, client) = primary_test_stream_pair();
         server
             .set_app_link_read_deadline(Some(Duration::from_millis(10)))
             .expect("server poll deadline");
@@ -6498,7 +6574,7 @@ mod tests {
         guardian_thread.join().expect("Quit race guardian joins");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     use DirectPrimaryOwnerCommand as TestPrimaryOwnerCommand;
     #[cfg(target_os = "macos")]
     use GuardianOwnerCommand as TestPrimaryOwnerCommand;
@@ -6857,13 +6933,41 @@ mod tests {
         fresh_router.shutdown().expect("fresh router shutdown");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn primary_test_stream_pair() -> (BootstrapStream, BootstrapStream) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            std::os::unix::net::UnixStream::pair().expect("primary stream pair")
+        }
+        #[cfg(windows)]
+        {
+            let listener = Arc::new(keld_ipc::BootstrapListener::bind().expect("bind pipe"));
+            let link = listener.app_link();
+            let (endpoint, token) = keld_ipc::parse_app_link(&link).expect("parse pipe link");
+            let endpoint = endpoint.to_owned();
+            let acceptor = Arc::clone(&listener);
+            let worker = thread::spawn(move || acceptor.accept_authenticated());
+            let mut client = BootstrapStream::connect(&endpoint).expect("connect pipe client");
+            client
+                .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+                .expect("client deadlines");
+            keld_ipc::link::handshake_client(&mut client, &token).expect("client HELLO");
+            let server = worker
+                .join()
+                .expect("accept join")
+                .expect("accept result")
+                .expect("authenticated server stream");
+            (server, client)
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn initial_ready_router() -> (
         PrimaryRouterHandle,
-        std::os::unix::net::UnixStream,
+        BootstrapStream,
         Receiver<TestPrimaryOwnerCommand>,
     ) {
-        let (server, client) = std::os::unix::net::UnixStream::pair().expect("Ready stream pair");
+        let (server, client) = primary_test_stream_pair();
         let (command_tx, command_rx) = mpsc::channel();
         let (window_tx, _window_rx) = mpsc::channel();
         let handle = PrimaryRouterHandle {
@@ -6890,6 +6994,184 @@ mod tests {
             window_commands: window_tx,
         };
         (handle, client, command_rx)
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn failed_successor_ready_replay_requests_its_retired_attempt_restart() {
+        let (handle, _g1_client, _owner_rx) = initial_ready_router();
+        handle.window_ready.store(true, Ordering::Release);
+        handle.recovery_armed.store(true, Ordering::Release);
+        handle.last_revoked_attempt.store(1, Ordering::Release);
+        handle.retire_generation(1).expect("retire g1");
+        let (g2_server, g2_client) = primary_test_stream_pair();
+        drop(g2_client);
+        let error = handle
+            .install_generation(2, g2_server)
+            .expect_err("closed g2 replay");
+        assert!(
+            error.error.to_string().contains("lifecycle event"),
+            "{error:?}"
+        );
+        assert_eq!(error.retired_after_failed_ready, Some(2));
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        let mut restarted = Vec::new();
+        assert!(restart_failed_bound_generation(
+            &handle,
+            2,
+            &error,
+            |attempt| restarted.push(attempt)
+        ));
+        assert_eq!(
+            restarted,
+            [2],
+            "the direct owner must request the failed bound attempt"
+        );
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn failed_successor_ready_replay_cannot_restart_after_router_teardown() {
+        let (handle, _g1_client, _owner_rx) = initial_ready_router();
+        handle.window_ready.store(true, Ordering::Release);
+        handle.recovery_armed.store(true, Ordering::Release);
+        handle.last_revoked_attempt.store(1, Ordering::Release);
+        handle.retire_generation(1).expect("retire g1");
+        let (g2_server, g2_client) = primary_test_stream_pair();
+        drop(g2_client);
+        let failure = handle
+            .install_generation(2, g2_server)
+            .expect_err("closed g2 replay");
+        assert_eq!(failure.retired_after_failed_ready, Some(2));
+        let mut router = PrimaryRouter {
+            handle: handle.clone(),
+        };
+        router.stop_and_join().expect("router teardown");
+        assert!(
+            handle.shutdown.is_running(),
+            "UI failure need not claim accepted shutdown"
+        );
+        assert!(handle.shutdown.reader_stop.load(Ordering::Acquire));
+        let mut restarted = Vec::new();
+        assert!(!restart_failed_bound_generation(
+            &handle,
+            2,
+            &failure,
+            |attempt| restarted.push(attempt)
+        ));
+        assert!(restarted.is_empty());
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        let (late_server, _late_client) = primary_test_stream_pair();
+        handle
+            .install_generation(3, late_server)
+            .expect("late bind is harmless after teardown");
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        assert!(handle.readers.lock().expect("reader lock").is_empty());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
+        for case in [
+            "mismatch",
+            "stale",
+            "pre-ready",
+            "unarmed",
+            "shutdown",
+            "successor",
+            "ordinary",
+            "misordered",
+        ] {
+            let (handle, _client, _owner_rx) = initial_ready_router();
+            handle.window_ready.store(true, Ordering::Release);
+            handle.recovery_armed.store(true, Ordering::Release);
+            handle.last_revoked_attempt.store(1, Ordering::Release);
+            handle.retire_generation(1).expect("retire g1");
+            let mut failure = PrimaryGenerationFailure {
+                error: app_detail("lifecycle event", "forced failed replay"),
+                retired_after_failed_ready: Some(2),
+            };
+            match case {
+                "mismatch" => failure.retired_after_failed_ready = Some(1),
+                "stale" => handle.last_revoked_attempt.store(2, Ordering::Release),
+                "pre-ready" => handle.window_ready.store(false, Ordering::Release),
+                "unarmed" => handle.recovery_armed.store(false, Ordering::Release),
+                "shutdown" => assert!(handle.shutdown.claim_cli_lease_lost()),
+                "successor" | "misordered" => {
+                    let (writer, _peer) = primary_test_stream_pair();
+                    *handle.current.lock().expect("generation lock") =
+                        Some(ActivePrimaryGeneration {
+                            attempt: if case == "successor" { 3 } else { 1 },
+                            writer,
+                            reader_stop: Arc::new(AtomicBool::new(false)),
+                        });
+                    if case != "successor" {
+                        failure.retired_after_failed_ready = None;
+                    }
+                }
+                "ordinary" => failure.retired_after_failed_ready = None,
+                _ => unreachable!(),
+            }
+            let mut restarted = Vec::new();
+            assert!(
+                !restart_failed_bound_generation(&handle, 2, &failure, |attempt| restarted
+                    .push(attempt)),
+                "{case}"
+            );
+            assert!(restarted.is_empty(), "{case}: {restarted:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn failed_bound_keeps_the_existing_current_attempt_restart_path() {
+        let (handle, _client, _owner_rx) = initial_ready_router();
+        handle.window_ready.store(true, Ordering::Release);
+        handle.recovery_armed.store(true, Ordering::Release);
+        let failure = PrimaryGenerationFailure::from(app_detail(
+            "primary session reader",
+            "forced post-publication reader spawn failure",
+        ));
+        let mut restarted = Vec::new();
+        assert!(restart_failed_bound_generation(
+            &handle,
+            1,
+            &failure,
+            |attempt| restarted.push(attempt)
+        ));
+        assert_eq!(restarted, [1]);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn failed_close_write_cannot_mint_ready_replay_recovery() {
+        let (handle, client, _owner_rx) = initial_ready_router();
+        drop(client);
+        let error = handle
+            .write_event_guarded(LifecycleEvent::LastWindowClosed)
+            .expect_err("closed primary must fail Close");
+        assert!(
+            error.error.to_string().contains("lifecycle event"),
+            "{error:?}"
+        );
+        assert!(handle.current.lock().expect("generation lock").is_none());
+        assert_eq!(error.retired_after_failed_ready, None);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", windows))]
+    fn direct_recovery_arm_is_published_before_acknowledgement() {
+        for armed in [false, true] {
+            let (handle, _client, _owner_rx) = initial_ready_router();
+            let result = armed.then_some(()).ok_or_else(|| String::from("denied"));
+            let mut acknowledged = false;
+            acknowledge_direct_recovery_arm(Some(&handle), result, |result| {
+                assert_eq!(result.is_ok(), armed);
+                assert_eq!(handle.recovery_armed.load(Ordering::Acquire), armed);
+                acknowledged = true;
+            });
+            assert!(acknowledged);
+        }
     }
 
     #[test]
