@@ -1188,6 +1188,17 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_relative_name_never_reopens_the_parent() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let parent = retained_directory(fixture.path());
+        let error = super::open_units_for_delete(&parent, Vec::new(), DeletePurpose::Remove)
+            .err()
+            .expect("an empty name refuses");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(fixture.path().is_dir());
+    }
+
+    #[test]
     fn an_entry_already_pending_deletion_is_not_found() {
         let fixture = tempfile::tempdir().expect("fixture");
         let path = fixture.path().join("pending-doomed");

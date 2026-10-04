@@ -979,12 +979,6 @@ pub(super) fn remove_stale_record_preparations(roots: &Roots) -> Result<(), Upda
                 crate::windows_fs::DeletePurpose::Admit,
             )
             .map_err(|cause| super::error("stale record admission", cause))?;
-            if stale.kind() != crate::windows_fs::EntryKind::File {
-                return Err(super::error(
-                    "stale record admission",
-                    "expected a regular file preparation",
-                ));
-            }
             super::admit_machine_file(&roots.update, stale.file(), roots.profile())
                 .map_err(|cause| super::error("stale record admission", cause))?;
             stale
