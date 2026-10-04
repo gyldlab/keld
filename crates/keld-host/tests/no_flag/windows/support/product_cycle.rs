@@ -1,15 +1,15 @@
 //! Shared existing ordered product-cycle observer and returned evidence.
 
 use std::fs;
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read as _, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Child, Stdio};
 use std::time::Instant;
 
 use super::control::{accept_control_or_host_failure, parse_descendant_pid, read_control_line};
 use super::product::ProductFixture;
-use super::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
+use super::renderer::{spawn_renderer_beacon, try_expect_renderer_beacon};
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists, wait_child,
     wait_for_host_window,
@@ -73,7 +73,11 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon");
+    if let Err(beacon_error) =
+        try_expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon")
+    {
+        fail_renderer_beacon_cycle(&mut child, host_pid, bun_pid, &beacon_error);
+    }
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -97,4 +101,54 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         bun_pid,
         app_link,
     }
+}
+
+fn fail_renderer_beacon_cycle(
+    child: &mut Child,
+    host_pid: u32,
+    bun_pid: u32,
+    beacon_error: &str,
+) -> ! {
+    let host_status_before_cleanup = child
+        .try_wait()
+        .expect("observe host after beacon deadline");
+    let host_was_live = host_status_before_cleanup.is_none();
+    if host_was_live
+        && let Err(kill_error) = child.kill()
+        && child
+            .try_wait()
+            .expect("recheck host after failed emergency kill")
+            .is_none()
+    {
+        panic!(
+            "renderer beacon failed ({beacon_error}); host {host_pid} remained live after cleanup request: {kill_error}"
+        );
+    }
+    let cleanup_status = wait_child(child, Instant::now() + PRODUCT_DEADLINE);
+    let bun_alive_after_cleanup = process_exists(bun_pid);
+    let (stdout, stderr) = if bun_alive_after_cleanup {
+        (
+            String::from("not drained: Bun still owns the inherited output path"),
+            String::from("not drained: Bun still owns the inherited output path"),
+        )
+    } else {
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        child
+            .stdout
+            .take()
+            .expect("captured host stdout")
+            .read_to_string(&mut stdout)
+            .expect("read failed-cycle host stdout");
+        child
+            .stderr
+            .take()
+            .expect("captured host stderr")
+            .read_to_string(&mut stderr)
+            .expect("read failed-cycle host stderr");
+        (stdout, stderr)
+    };
+    panic!(
+        "renderer beacon failed ({beacon_error}); host_alive_before_cleanup={host_was_live}; host_status_before_cleanup={host_status_before_cleanup:?}; host_status_after_cleanup={cleanup_status}; bun_alive_after_cleanup={bun_alive_after_cleanup}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
