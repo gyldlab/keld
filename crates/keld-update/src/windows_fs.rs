@@ -902,8 +902,22 @@ mod tests {
         assert!(parse_directory_entries(&directory_record(0, 4096, &name)).is_err());
         // An odd byte length cannot be UTF-16.
         assert!(parse_directory_entries(&directory_record(0, 1, &name)).is_err());
-        // A successor offset inside the fixed header would loop or overlap.
-        assert!(parse_directory_entries(&directory_record(8, 2, &name)).is_err());
+        // A successor offset inside the fixed header overlaps the current record.
+        // Plant a record that would parse cleanly at that overlapping offset, so only
+        // the successor-offset check can reject it.
+        let overlap = 16_usize;
+        let mut overlapping = directory_record(
+            u32::try_from(overlap).expect("small offset"),
+            2,
+            &name,
+        );
+        let name_offset = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+        let length_at = overlap + std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength);
+        overlapping[length_at..length_at + 4].copy_from_slice(&2_u32.to_ne_bytes());
+        overlapping.resize(overlap + name_offset + 2, 0);
+        overlapping[overlap + name_offset..].copy_from_slice(&u16::from(b'b').to_ne_bytes());
+        let error = parse_directory_entries(&overlapping).expect_err("overlapping successor");
+        assert_eq!(error.to_string(), "malformed directory enumeration record");
         // A successor past the end of the buffer.
         assert!(parse_directory_entries(&directory_record(4096, 2, &name)).is_err());
         // A truncated record.
