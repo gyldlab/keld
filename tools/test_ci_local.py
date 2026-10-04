@@ -1,7 +1,9 @@
 """Real Git and reader-drift controls for selective local CI."""
 
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -124,12 +126,14 @@ class InputContractTests(unittest.TestCase):
         (self.root / "readers/check.py").unlink()
         self.assertTrue(self.route()["local_probe"])
 
-    def test_missing_or_malformed_contract_selects_every_consumer(self):
-        for text in ("invalid", '{}', '{"schema":"wrong","consumers":[]}'):
+    def test_missing_or_malformed_contract_fails_before_selection(self):
+        for text in ("invalid", '{}', '[]', 'null', '42', '{"schema":"wrong","consumers":[]}'):
             self.write("tools/ci-inputs.json", text)
-            self.assertTrue(self.route()["input_all"])
+            with self.assertRaises(ValueError):
+                self.route()
         (self.root / "tools/ci-inputs.json").unlink()
-        self.assertTrue(self.route()["input_all"])
+        with self.assertRaises(ValueError):
+            self.route()
 
 
 class ExecutorTests(unittest.TestCase):
@@ -209,6 +213,50 @@ class ExecutorTests(unittest.TestCase):
                 (root / "justfile").write_text(header + bodies, encoding="utf-8")
                 with self.assertRaises(ValueError):
                     ci_local.validate_inventory(ci_local.inventory(root), "ci-inventory")
+
+
+class RouterFailureBoundaryTests(unittest.TestCase):
+    def test_real_github_and_local_entrypoints_never_publish_after_helper_failure(self):
+        source = Path(__file__).resolve().parent
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "router tests require the same Bash used by CI")
+        for fault in ("helper-exit", "[]", "null", "42", "invalid"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(prefix="keld-ci-boundary-") as temporary:
+                root = Path(temporary)
+                repo = root / "repo"
+                (repo / "tools").mkdir(parents=True)
+                (repo / ".github").mkdir()
+                (root / "bin").mkdir()
+                for name in ("ci_changes.sh", "ci_inputs.py"):
+                    shutil.copyfile(source / name, repo / "tools" / name)
+                (repo / "tools/ci-inputs.json").write_text("{}" if fault == "helper-exit" else fault, encoding="utf-8")
+                if fault == "helper-exit":
+                    (repo / "tools/ci_inputs.py").write_text("raise SystemExit(37)\n", encoding="utf-8")
+                owners = repo / ".github/CODEOWNERS"
+                owners.write_text("* @before\n", encoding="utf-8")
+                cargo = root / "bin/cargo"
+                cargo.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' \'{"packages":[]}\'\n', encoding="utf-8")
+                cargo.chmod(0o755)
+                environment = os.environ.copy()
+                environment["PATH"] = str(root / "bin") + os.pathsep + environment["PATH"]
+                for args in (("init", "-q"), ("config", "user.name", "CI boundary"),
+                             ("config", "user.email", "boundary@example.invalid"), ("add", "."),
+                             ("commit", "-qm", "base")):
+                    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+                base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+                owners.write_text("* @after\n", encoding="utf-8")
+                subprocess.run(["git", "commit", "-qam", "CODEOWNERS only"], cwd=repo, check=True, capture_output=True)
+                head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+                environment.update(KELD_CI_EVENT_NAME="pull_request", KELD_CI_BASE_SHA=base,
+                                   KELD_CI_HEAD_SHA=head, KELD_CI_BASE_REF=base)
+                for mode in ("github", "local"):
+                    output = root / (mode + "-output")
+                    environment["GITHUB_OUTPUT"] = str(output)
+                    result = subprocess.run([bash, "tools/ci_changes.sh", mode], cwd=repo,
+                                            env=environment, capture_output=True, text=True, encoding="utf-8")
+                    self.assertNotEqual(result.returncode, 0, (fault, mode, result.stdout, result.stderr))
+                    self.assertEqual(result.stdout, "", (fault, mode))
+                    self.assertFalse(output.exists(), (fault, mode))
 
 
 class ProductionConsumerTests(unittest.TestCase):

@@ -84,8 +84,8 @@ emit() {
 }
 
 # The same reviewed reader/input contract supplements both local and hosted
-# selections. A stale reader binding enables its consumers; absent or malformed
-# contracts enable every lane. No source-text dependency inference is involved.
+# selections. A stale reader binding enables its consumers; malformed contracts
+# fail before any selection is published. No source-text inference is involved.
 apply_consumer_contract() {
     local source_root python_command
     source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -93,7 +93,9 @@ apply_consumer_contract() {
         MINGW* | MSYS*) python_command=python ;;
         *) python_command=python3 ;;
     esac
-    consumer_contract="$("$python_command" -B "$source_root/tools/ci_inputs.py" "$(git rev-parse --show-toplevel)" "$@")"
+    # github/local nest this assignment inside another command substitution,
+    # where Bash clears errexit. An explicit exit owns this failure boundary.
+    consumer_contract="$("$python_command" -B "$source_root/tools/ci_inputs.py" "$(git rev-parse --show-toplevel)" "$@")" || exit 1
     if grep -Fxq 'input_all=true' <<<"$consumer_contract"; then
         mark_unknown
     elif grep -Fxq 'input_router=true' <<<"$consumer_contract"; then

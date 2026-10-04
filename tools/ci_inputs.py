@@ -71,7 +71,7 @@ def fingerprint(root: Path, inventory: list[str], patterns: list[str]) -> str:
 
 def load(root: Path) -> dict:
     data = json.loads((root / "tools/ci-inputs.json").read_text(encoding="utf-8"))
-    if (data.get("schema") != SCHEMA or not isinstance(data.get("consumers"), list)
+    if (not isinstance(data, dict) or data.get("schema") != SCHEMA or not isinstance(data.get("consumers"), list)
             or not isinstance(data.get("reader_sets"), dict)):
         raise ValueError("invalid consumer input contract")
     return data
@@ -126,8 +126,7 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
         if uncertain or selected["input_all"]:
             selected = dict.fromkeys(selected, True)
     except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
-        print(f"ci router: input contract unavailable ({error}); selecting all consumers", file=sys.stderr)
-        selected = dict.fromkeys(selected, True)
+        raise ValueError(f"input contract unavailable: {error}") from error
     return selected
 
 
