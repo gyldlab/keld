@@ -668,7 +668,8 @@ pub(crate) fn remove_directory_tree(parent: &File, component: &str) -> io::Resul
 }
 
 /// Lists the UTF-8 names inside a retained directory through its handle, omitting `.`,
-/// `..` and names that are not valid UTF-16.
+/// `..` and names that are not valid UTF-16. The handle must be synchronous and carry
+/// list rights; otherwise the listing call fails and its error is returned.
 pub(crate) fn child_names(directory: &File) -> io::Result<Vec<String>> {
     Ok(directory_children(directory)?
         .into_iter()
@@ -792,6 +793,7 @@ struct DirectoryChild {
 const DIRECTORY_BUFFER_WORDS: usize = 8 * 1024;
 
 /// Lists the children of an open directory through its handle, omitting `.` and `..`.
+/// Without list rights on that handle the OS call fails and the error is returned.
 fn directory_children(directory: &File) -> io::Result<Vec<DirectoryChild>> {
     let mut buffer = vec![0_u64; DIRECTORY_BUFFER_WORDS];
     let size = u32::try_from(buffer.len() * size_of::<u64>()).map_err(io::Error::other)?;
@@ -800,9 +802,10 @@ fn directory_children(directory: &File) -> io::Result<Vec<DirectoryChild>> {
     loop {
         // No byte from an earlier call can be read as part of this one.
         buffer.fill(0);
-        // SAFETY: `directory` owns a live handle opened with FILE_LIST_DIRECTORY;
-        // `buffer` is a writable, eight-byte-aligned allocation of exactly `size`
-        // bytes that outlives this synchronous call.
+        // SAFETY: `directory` borrows a live synchronous handle; if it lacks list
+        // rights the call fails without writing. `buffer` is a writable,
+        // eight-byte-aligned allocation of exactly `size` bytes that outlives this
+        // synchronous call.
         let success = unsafe {
             GetFileInformationByHandleEx(
                 directory.as_raw_handle().cast(),
