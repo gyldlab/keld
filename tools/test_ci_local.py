@@ -5,11 +5,41 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 import ci_inputs
 import ci_local
+
+
+def tracked_snapshot(source: Path, destination: Path) -> None:
+    """Make a real Git fixture from tracked working bytes, without touching source.
+
+    Scopes/consumers are copied unchanged. Only the fixture's reader digests are
+    bound to its controlled census, so clean-input controls do not inherit an
+    unrelated unknown file from the developer's checkout. Live drift is tested
+    separately and must still select all its affected consumers.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=source)
+    for raw in tracked.split(b"\0"):
+        if not raw:
+            continue
+        relative = raw.decode("utf-8")
+        original = source / relative
+        if not original.exists() and not original.is_symlink():
+            continue
+        copied = destination / relative
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, copied, follow_symlinks=False)
+    for args in (("init", "-q"), ("config", "core.autocrlf", "false"), ("add", ".")):
+        subprocess.run(["git", *args], cwd=destination, check=True, capture_output=True)
+    contract = ci_inputs.load(destination)
+    census = ci_inputs.files(destination)
+    for reader_set in contract["reader_sets"].values():
+        reader_set["sha256"] = ci_inputs.fingerprint(destination, census, reader_set["patterns"])
+    (destination / "tools/ci-inputs.json").write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
 
 
 class InputContractTests(unittest.TestCase):
@@ -261,7 +291,25 @@ class RouterFailureBoundaryTests(unittest.TestCase):
 
 class ProductionConsumerTests(unittest.TestCase):
     def test_bound_production_readers_and_real_cross_tree_inputs(self):
-        root = Path(__file__).resolve().parent.parent
+        source = Path(__file__).resolve().parent.parent
+        live_contract = ci_inputs.load(source)
+        live_census = ci_inputs.files(source)
+        live_selection = ci_inputs.classify(source, [], paths_only=True)
+        for name, reader_set in live_contract["reader_sets"].items():
+            try:
+                current = ci_inputs.fingerprint(source, live_census, reader_set["patterns"])
+            except (OSError, ValueError):
+                current = None
+            if current != reader_set["sha256"]:
+                for consumer in live_contract["consumers"]:
+                    if consumer["reader_set"] == name:
+                        for output in consumer["outputs"]:
+                            self.assertTrue(live_selection[output],
+                                            f"unbound {name} must not omit {output}")
+        fixture = tempfile.TemporaryDirectory(prefix="keld-ci-production-")
+        self.addCleanup(fixture.cleanup)
+        root = Path(fixture.name)
+        tracked_snapshot(source, root)
         contract = ci_inputs.load(root)
         census = ci_inputs.files(root)
         outputs = [output for consumer in contract["consumers"] for output in consumer["outputs"]]
@@ -298,4 +346,7 @@ class ProductionConsumerTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--tracked-snapshot":
+        tracked_snapshot(Path(__file__).resolve().parent.parent, Path(sys.argv[2]))
+    else:
+        unittest.main()

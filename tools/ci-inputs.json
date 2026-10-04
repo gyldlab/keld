@@ -276,7 +276,7 @@
         "docs/audits/*.py",
         ".githooks/*"
       ],
-      "sha256": "98fa24424710ad4f4450f6d43d11373644d1bbe66ca3e003ad1c64c7cc49f62d"
+      "sha256": "32602f6e1aef5a994c3ce9f2978534762471d527236005cc63ad8b0470259547"
     },
     "audit-readers": {
       "patterns": [

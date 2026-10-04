@@ -6,6 +6,12 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 router="$repo_root/tools/ci_changes.sh"
 required="$repo_root/tools/ci_required.sh"
 
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/keld-ci-changes.XXXXXX")"
+cleanup() {
+    rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
 
@@ -123,6 +129,25 @@ wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
 workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=false'
 all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
+
+# A developer checkout can contain unknown inputs. Prove the live fallback,
+# then run clean-path exclusion controls in a separate tracked-byte snapshot.
+# The unknown input is retained in place; it is never ignored or special-cased.
+if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    live_unknown="$("$router" local)"
+    expect_flags "live untracked inputs select every hosted lane" "$all_true" "$live_unknown"
+    if grep -Eq '^local_[^=]+=false$' <<<"$live_unknown"; then
+        echo "FAIL: an unknown local input omitted a local gate" >&2
+        exit 1
+    fi
+    echo "ok: live untracked inputs select every local gate"
+fi
+case "$(uname -s)" in
+    MINGW* | MSYS*) python_command=python ;;
+    *) python_command=python3 ;;
+esac
+"$python_command" -B "$repo_root/tools/test_ci_local.py" --tracked-snapshot "$temp_dir/bound"
+cd "$temp_dir/bound"
 
 empty_classification="$(printf '' | "$router" classify)"
 expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classification"
@@ -264,12 +289,7 @@ if grep -Fxq "crates/keld-compat" <<<"$actual_host_dirs"; then
 fi
 echo "ok: cargo metadata derives current keld-host closure"
 
-temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/keld-ci-changes.XXXXXX")"
-cleanup() {
-    rm -rf "$temp_dir"
-}
-trap cleanup EXIT
-
+cd "$repo_root"
 git -C "$temp_dir" init -q
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
@@ -278,7 +298,7 @@ printf '%s\n' '{"schema":"keld.ci-inputs/v1","known_inputs":["*"],"reader_sets":
 mkdir -p "$temp_dir/packages/@fake/bootstrap/src"
 printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/package.json"
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
-printf 'fake-bin/\ntarget/\n' >"$temp_dir/.gitignore"
+printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
 git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json packages
 git -C "$temp_dir" commit -qm base
