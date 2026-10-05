@@ -8,6 +8,12 @@ applies to the prior bytes only. The multi-mode revision was approved by Linear 
 `e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`, binding PR #290 head
 `b78c89b061049647421dda69034c9f35079d9441` and the approved spec-content SHA-256
 `c00c670aa23a8f26a8705e0f2a64899c823d959a17dc4d20c41ce9bd4c1c2ec9`.
+Amendment A3 (installed-boot discovery and boot states): owner decisions recorded in the
+active maintainer session on 2026-10-05; exact-content approval of this revision is
+pending. A3 makes the current executable path a locator only, keeps exactly two admitted
+Windows boot states, and names one build-time producer of the expected app identity
+(§3 AC1–AC2, §4 "Internal selection shape", §6 T2b–T3). It adds no install mode, no
+production `unsafe`, and no record field.
 
 ## 1. Goal & non-goals
 
@@ -70,12 +76,18 @@ D4 note remains outside the frozen decision block so its approved digest does no
 2. Given no valid dev lease, when the Windows host considers installed mode, then it
    obtains the KEL-135 `ValidatedAppIdentity` from the current executable's
    single-primary Authenticode verification and asks the KEL-53 owner to validate
-   OS-protected direct-install provenance. KEL-53 currently has a Windows
-   machine-baseline initializer and read-only loader, but no mode-aware active
-   selection; installed boot remains unavailable until the selection predecessor and
-   this consumer are implemented and qualified. Missing, managed, corrupt, unprotected,
-   or mismatched provenance is a typed refusal; signature success alone never admits
-   installed mode and it never falls through to dev-stage or source-config boot.
+   OS-protected direct-install provenance. KEL-53's journal-free active selection has
+   landed; installed boot remains unavailable until the executable-located discovery
+   entrypoint (§4) and this consumer are implemented and qualified. Missing, managed,
+   corrupt, unprotected, or mismatched provenance is a typed refusal; signature success
+   alone never admits installed mode and it never falls through to dev-stage or
+   source-config boot. Windows admits exactly two boot states: a valid authenticated dev
+   lease selects `DevStage`; otherwise only authenticated installed provenance selects
+   the installed package; anything else fails closed. A staged layout launched without a
+   valid dev lease is not a dev-stage boot, and there is no third signed-dev-stage state.
+   Existing KEL-135 acceptance rows that launch a signed host from a lease-less dev stage
+   move in T3: rows testing dev semantics receive a real dev lease, and rows testing
+   installed identity or profile semantics move to installed fixtures.
 3. Given a Windows x64 direct package, when the trusted installer installs it, then it
    verifies the signed canonical full artifact, installs that exact artifact as the
    baseline version, protects the immutable version tree, seeds the version floor,
@@ -271,12 +283,14 @@ transaction writer. Existing Windows component/path and handle-opening primitive
 remain the path-resolution owner; their dev-only ACL assumptions must be extended in
 that owner for each installed mode.
 
-Current `origin/main` has signed manifest/full-artifact verification, canonical Windows
-archive preflight and producer, owner-private incomplete extraction, logical provenance
-admission, and the KEL-266 SYSTEM machine-baseline initializer plus read-only loader.
-It does not have per-user or mode-aware install provenance, active current/LKG
-selection, journal recovery, candidate health/commit/rollback, a boot-consumable opaque
-active selection, or live feed orchestration. KEL-53 must own these remaining pieces.
+As of amendment A3, KEL-53 has signed manifest/full-artifact verification, canonical
+Windows packaging, protected extraction, the KEL-266 machine-baseline initializer and
+loader, PerUserDirect and Machine-UAC baseline provenance, the common journaled
+transaction with crash recovery, and the journal-free `ActivePackageSelection`
+(`select_windows_active_package`) including the startup repair of an invalid `current`.
+It does not yet have the executable-located discovery entrypoint below, candidate-mode
+selection, the candidate health channel, Machine-UAC activation, or live feed
+orchestration. KEL-53 owns these remaining pieces.
 Its admitted result binds the KEL-135 publisher/app identity, explicit install mode and
 owner, direct install/update roots, update-signing identity, and initial baseline.
 KEL-53 exposes only the authenticated recorded publisher/app identity for `keld-core`
@@ -354,10 +368,10 @@ struct ValidatedBootSelection {
 }
 ```
 
-`ActivePackageSelection` is a required future opaque value owned by `keld-update`, not a
-type currently present in the workspace. It carries the protected recorded publisher/app
-identity, install root, exact active artifact/tree, and whether normal recovery or
-attempt-bound candidate admission selected it. Its proposed Rust contract is:
+`ActivePackageSelection` is the opaque value owned by `keld-update`; its journal-free
+form has landed. It carries the protected recorded publisher/app identity, install root,
+exact active artifact/tree, and whether normal recovery or attempt-bound candidate
+admission selected it. Its Rust contract is:
 
 ```rust
 pub struct DirectInstallationIdentity {
@@ -384,7 +398,14 @@ impl DirectInstallationIdentity {
 
 pub struct ActivePackageSelection { /* private fields; not Clone */ }
 
-pub fn select_active_package_for_current_process(
+/// Public build-time expectation: app id, channel, target and the expected update-signing
+/// key identity. Produced only by `keld-pack`/`keld build` inside the bytes covered by the
+/// executable's final signature; it never contains private key material.
+pub struct ExpectedAppIdentity { /* private fields */ }
+
+pub fn select_active_package_for_executable(
+    executable: &Path, // locator only: the canonical current executable
+    expected: &ExpectedAppIdentity,
 ) -> Result<ActivePackageSelection, UpdateError>;
 
 impl ActivePackageSelection {
@@ -397,18 +418,33 @@ impl ActivePackageSelection {
 pub enum ActiveLaunchKind { Normal, Candidate }
 ```
 
-Only the KEL-53 OS loader/state machine can mint it. The no-argument entrypoint reads no
-caller path, environment payload, or argv for authority; KEL-53 owns its protected-state
-and inherited-candidate-handle discovery. It validates provenance, current/LKG/floor, a
+Only the KEL-53 OS loader/state machine can mint it. **The executable path locates
+candidate provenance; authenticated provenance supplies authority.** From the canonical
+current executable KEL-53 derives only a candidate
+`<install-root>/<update-root>/versions/<version>/tree` location, then proves it: the
+protected provenance record found there must name roots that are the located roots by
+file identity (volume serial number and file index, never path text); its volume GUID
+must read back; every ancestor and record must carry the exact protection profile of the
+*recorded* install mode; and the selected tree's literal `keld-host.exe` must be the
+running executable by file identity. No install mode, owner SID, root, volume, baseline,
+current selection, protection profile or profile digest, and no trust decision, comes
+from path shape, `%ProgramFiles%`, registry, environment, cwd, argv or an ACL observation
+alone; the protected record stays authoritative for each. `ExpectedAppIdentity` carries
+only public expectations from one canonical build-time producer; runtime code never
+hand-writes them. KEL-53 refuses unless the record matches that expectation, and KEL-96
+independently requires the record's publisher scope and app id to equal the KEL-135
+Authenticode identity of the same executable. The entrypoint reads no environment
+payload or argv for authority, and candidate admission comes from protected attempt
+state (KEL-53 criterion 8). It validates provenance, current/LKG/floor, a
 journal phase (including process-family ownership/death and durable recovery when
 needed), and the candidate endpoint when present. If another live coordinator owns the
 journal, process state is unknown, or recovery is incomplete, KEL-53 returns no
 selection. KEL-96 compares the record's publisher/app fields with the KEL-135 verified
 identity, checks the effective access boundary, and verifies that `current_exe` is the
 exact host inside `tree_root`. It may consume but MUST NOT construct or clone the
-selection. `DirectInstallationIdentity` and its OS-protected record are also new KEL-53
-deliverables, not existing Rust items; the record's format stays OS-local. No code may
-construct installed mode from paths or test observations.
+selection. `DirectInstallationIdentity` and its OS-protected record are KEL-53
+deliverables; the record's format stays OS-local. No code may construct installed mode
+from paths or test observations.
 `ValidatedBootSelection` remains opaque and is the only selection accepted by
 `run_unprivileged` / `run_guarded`.
 
@@ -493,10 +529,17 @@ opaque outside their owner except for the documented read-only identity accessor
   updater state machine; connect only the per-user and explicit-UAC lease adapters after
   their own acceptance. Machine-seamless activation remains gated on KEL-270. This is a
   strict predecessor; KEL-254 does not copy KEL-53 recovery or pointer policy.
+- [ ] T2b — make `keld-pack`/`keld build` the one canonical producer of
+  `ExpectedAppIdentity` (app id, channel, target, expected update-signing key identity),
+  embedded in the bytes covered by the final executable signature; no runtime code or
+  test hand-writes these values. KEL-53 adds `select_active_package_for_executable`,
+  which locates provenance from the executable and proves it as §4 requires.
 - [ ] T3 — in the KEL-96 consumer issue, consume the landed KEL-53 active selection and
   one KEL-135 identity value to add opaque Windows installed-root boot. Verify the
   executable is the exact selected version-tree host, preserve current strict parser and
   resource-free ordering, and pass the same verified identity to profile selection.
+  Enforce the two Windows boot states of AC2 and move the lease-less signed dev-stage
+  KEL-135 rows to a real dev lease or to installed fixtures; no test keeps a third state.
 - [ ] T4 — on a real Windows x64 machine, install and launch signed initial, updated,
   rolled-back and candidate fixtures as a standard user; run independent provenance,
   pointer/journal, standard-user ACL, role-token, reparse, descriptor, resource and

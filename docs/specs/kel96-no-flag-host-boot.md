@@ -231,7 +231,9 @@ and the KEL-96 consumer lands its own native boot evidence. Per-user direct and
 machine-wide direct installs have separate access/authority acceptance cells;
 machine-seamless activation additionally remains behind KEL-270's lifecycle and
 authority proof gate. Managed/package-manager installs remain owned by their deployment
-mechanism. This note is applicability only: it does not change or reapprove any frozen
+mechanism. KEL-254 amendment A3 makes the executable path a locator only and keeps two
+Windows boot states: dev lease, or authenticated installed provenance, otherwise refuse.
+This note is applicability only: it does not change or reapprove any frozen
 KEL-96 decision row.
 
 ### 4.2 Boot format and ownership
@@ -494,7 +496,10 @@ new inherited-handle protocol. The CLI spawns the host with stdin as an owned
 pipe, retains only its writer, and sets `KELD_DEV_LEASE=stdin-v1` to classify
 that existing stream as liveness-only. The host owns only the reader and marks
 it non-inheritable before spawning Bun; Bun receives null stdin. Standalone
-no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin.
+no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin. On Windows,
+once KEL-254 T3 lands, a launch without a valid dev lease is admitted only as an
+authenticated installed package or refused (KEL-254 AC2); a lease-less staged layout is
+no longer a dev-stage boot there.
 
 CLI exit/crash closes the only writer and yields EOF. `CliLeaseLost` is a
 distinct shutdown cause: it quiesces new work and joins the common

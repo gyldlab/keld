@@ -69,6 +69,23 @@ pre-journal orphan window that T4b item 4 could only repair. It removes that win
    The explicit unjournaled-version repair stays for installations that already hold an
    orphan from the earlier order.
 
+KEL-270 T4d amendment (Machine-UAC activation decisions): owner decisions recorded in the
+active maintainer session on 2026-10-05; exact-content approval of this revision is
+pending. It optimizes for least privilege and the smallest privileged surface:
+1. Candidate launch uses the exact initiating-process token route; impersonation is only
+   for pinning the initiating user's staged source ("Windows direct-install modes").
+2. A dedicated minimal signed `keld-updater-helper.exe` is the elevated component; the
+   application host is never elevated (criterion 17).
+3. Reboot or loss of every owner during `AwaitingHealth` fails closed into a typed
+   recovery-required state with a supported recovery path (criterion 17).
+4. Candidate health uses an authenticated one-shot connect-back endpoint; the candidate
+   takes its attempt identity from protected state, not argv or environment (criterion 8).
+5. Any keeper is minimal and attempt-scoped; the helper itself prefers to own the attempt.
+6. The privilege-crossing bootstrap and health path uses its own versioned subprotocol,
+   reusing only low-level framing, nonce, deadline and peer-verification utilities.
+Each new production `unsafe` path still requires its owner's AGENTS.md update and
+independent unsafe, privilege/security and wire review before implementation (§6 T4d).
+
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
 `a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
@@ -162,13 +179,18 @@ publication order. Any source race or inability to pin stable bytes refuses befo
 publication. It never reopens an untrusted source by caller-provided path after pinning.
 
 **UAC launch qualification target, not yet proven:** evaluate an authenticated local
-IPC request from the exact initiating process; impersonate the last authenticated
-client message only at `SecurityImpersonation`; open and duplicate that thread token
-into a primary token with `DuplicateTokenEx(TokenPrimary)`; always check impersonation
-success and revert before protected updater operations. The candidate launch target is
-`CreateProcessWithTokenW` using that retained primary token, only when the elevated
-helper has the required `SeImpersonatePrivilege` and runs in the same interactive
-session as the captured initiating user. Verify the resulting host token, session,
+IPC request from the exact initiating process and pin that process object. Open that
+exact process's primary token and duplicate it as a primary token
+(`DuplicateTokenEx(TokenPrimary)`); never derive the launch token from a thread
+impersonation token or recreate it from identity strings. Validate TokenUser,
+`AuthenticationId`, session id, elevation type, integrity level and the process image,
+and retain the exact process and token capabilities until the candidate is created and
+verified. Impersonation, at `SecurityImpersonation` with checked success, is used only
+for the bounded resolution, opening and pinning of the initiating user's staged source,
+and is reverted before any protected updater operation. The candidate launch target is
+`CreateProcessWithTokenW` using that retained primary token, only after native proof
+that the elevated helper has the required `SeImpersonatePrivilege` and runs in the same
+interactive session as the captured initiating user. Verify the resulting host token, session,
 integrity/elevation, image, profile/environment and desktop before resources. A session
 mismatch, missing privilege, identification-only token, failed reversion, unavailable
 desktop/profile or failed token proof refuses before publication; if detected after
@@ -356,9 +378,16 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    remained alive for 30 monotonic seconds with no unexpected generation exit. A generic
    marker, prior receipt, different artifact, clean early exit, timeout, crash or lost
    channel cannot commit health.
-   Candidate boot receives an inherited authenticated endpoint for this live attempt and
-   enters read-only candidate mode: it verifies journal/current identity, does not
-   acquire the writer lock or run orphan recovery, and cannot self-commit health.
+   Candidate boot takes its installation, attempt and health-channel identity from the
+   authenticated candidate selection over protected attempt state, never from an
+   authoritative argv or environment value, and connects back to the attempt owner over
+   an authenticated one-shot endpoint whose name or locator conveys no authority. Before
+   accepting health the owner binds installation ID, attempt ID, health/lifecycle channel
+   ID, fresh nonces, the connected process object and PID, candidate image, TokenUser,
+   `AuthenticationId`, session, and the expected non-elevated integrity and elevation
+   state. The candidate enters read-only candidate mode: it verifies journal/current
+   identity, does not acquire the writer lock or run orphan recovery, and cannot
+   self-commit health.
 9. The previous last-known-good pointer and package remain unchanged until exact health
    is durably recorded. The owner then journals `health-accepted`, moves the prior
    last-known-good to `previous-known-good`, publishes `last-known-good` to
@@ -368,12 +397,12 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    journal. Neither path lowers the trust floor; bounded cleanup retains both
    known-good slots.
 10. If Windows requires a post-exit helper, the signed helper inherits only protected
-    update-root/lock handles, the host-process wait handle, the observer/server endpoint
-    and a sealed forward-once candidate endpoint for the already-minted health channel.
-    It reads the exact attempt from the protected journal, waits for that host to exit,
-    performs the journaled same-volume publish, passes only the sealed candidate endpoint
-    in the explicit inherited-handle list, closes its copy after spawn, launches only
-    the journaled executable, observes exact health, commits or rolls back, and exits.
+    update-root/lock handles, the host-process wait handle and the observer/server
+    endpoint for the already-minted health channel. It reads the exact attempt from the
+    protected journal, waits for that host to exit, performs the journaled same-volume
+    publish, launches only the journaled executable with no inherited candidate endpoint
+    (the candidate connects back per criterion 8), observes exact health, commits or
+    rolls back, and exits.
     Command line, environment, cwd, caller paths and feed bytes convey no authority. The
     journal binds the verified helper image and health-channel identities; replay,
     endpoint substitution/reuse, helper substitution, mixed artifact set or path
@@ -424,7 +453,14 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     valid owner group in its actual token (`SE_GROUP_OWNER`, not deny-only); otherwise
     installation fails without owner/ACL takeover or repair. It provisions the stable
     activation-lease file and protected ancestors with this profile. Each activation that needs protected mutation requests UAC for a
-    fixed signed updater helper; denial/cancellation causes zero protected writes. This
+    fixed signed updater helper; denial/cancellation causes zero protected writes. The
+    helper is a dedicated minimal `keld-updater-helper.exe`, never an elevated
+    `keld-host.exe`. Its Authenticode signer must equal the protected provenance
+    publisher scope, its exact image is covered by the verified selected artifact's
+    `contentBlake3`, and the journal records its image digest. It contains only
+    authenticated bootstrap, source pinning, protected activation, candidate launch,
+    health/rollback ownership and recovery handoff: no WebView, Bun or app runtime, feed or
+    network client, arbitrary filesystem API, shell execution or general broker. This
     UAC helper is the Machine-UAC authority adapter for the common verifier and
     transaction: it authenticates its bootstrap from the admitted host, obtains the
     lease, and independently revalidates the ordinary user's bounded cache input under
@@ -444,10 +480,22 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     already journaled attempt through inherited sealed handles and does not parse feeds
     or packages. The UAC helper owns the attempt while alive and launches the exact
     candidate under the initiating ordinary user's token/session (including
-    over-the-shoulder approval), retaining exact-health/commit/rollback rules. If it exits
-    or Windows restarts before resolution, recovery requires renewed UAC consent or
-    halts with the journal unresolved; it must not claim an unproved rollback. The app
-    and Bun roles never run elevated or as SYSTEM.
+    over-the-shoulder approval), retaining exact-health/commit/rollback rules. The helper
+    itself owns the attempt; a keeper is added only if the design proves it necessary, and
+    then it is minimal, bound to one installation and one attempt, holds only attenuated
+    exact handles, exposes no mutation, process or filesystem command, and exits when the
+    attempt is terminal. There is no persistent or ambient privileged broker. If the
+    helper exits, or Windows restarts or every owner is lost before resolution, and no
+    durable retirement or health witness exists, nothing is inferred: health and
+    process-family retirement are not assumed, nothing is committed or rolled back, and
+    journal and pointers are preserved. The next launch returns a typed
+    recovery-required state, and a supported recovery path (fresh UAC consent plus full
+    revalidation, bounded in its own task) resolves it without manual filesystem work.
+    The helper's bootstrap and health exchange use a separate versioned subprotocol with
+    its own magic, namespace and message types; it reuses only the low-level framing,
+    nonce, deadline and peer-process verification utilities, and the lifecycle purpose
+    tags keep their lifecycle and keeper meaning. The app and Bun roles never run
+    elevated or as SYSTEM.
 18. `MachineSeamlessDirect` is an explicit install-time opt-in. It preserves the same
     updater transaction and requires its coordinator to authenticate exact host,
     installation and fresh attempt; prevent replay; acquire installation-wide exclusive
@@ -1270,7 +1318,17 @@ Must not touch in Slice A:
   ancestor/state DACLs and canonical descriptors on published records; filtered-token
   denial-zero-write; authenticated helper bootstrap, exact candidate revalidation,
   initiating-user candidate launch and live-owner health/rollback;
-  after owner death/reboot recovery obtains fresh consent or safely halts.
+  after owner death/reboot recovery returns the typed recovery-required state.
+  Before implementation, each new production `unsafe` path gets its owner's exact
+  AGENTS.md rule; FFI wrappers stay minimal beneath safe typed wrappers with owned
+  handles and minimum access rights; no raw handle crosses a normal public API; every
+  error path closes handles and reverts impersonation. Failure-first and mutation tests
+  cover impersonation, token substitution, wrong session, wrong image, stale or replayed
+  attempts, and handle or provenance substitution. Independent unsafe,
+  privilege/security and wire reviews and real Windows UAC acceptance are required,
+  including the second ordinary Windows account and the alternate-administrator rows. If
+  same-session `CreateProcessWithTokenW` cannot be proved, `CreateProcessAsUserW` is
+  qualified separately and never used as a silent fallback.
 - [ ] T4e — machine-seamless product row remains gated: prove exact host/install/attempt
   auth, replay resistance, writer/read-pin handoff, family lifecycle, ordinary candidate,
   exact health and crash recovery before selecting or implementing any native mechanism.

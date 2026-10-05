@@ -504,8 +504,11 @@ installer token, then provisions a protected DACL that grants full control to
 Administrators and SYSTEM while ordinary BUILTIN Users/Keld roles receive only
 read/execute (`0x1200A9`). If Administrators cannot be assigned as owner, installation
 fails without owner/ACL takeover. Each protected activation invokes a fixed signed
-updater helper through UAC. Cancellation performs no protected write. The helper owns
-that live attempt through commit/rollback. The ordinary-user host may download and
+updater helper through UAC: a dedicated minimal `keld-updater-helper.exe` whose signer
+matches the protected publisher scope and whose image the verified artifact covers,
+never an elevated `keld-host.exe`. Cancellation performs no protected write. The helper
+owns that live attempt through commit/rollback; any keeper is minimal and bound to one
+attempt, and no persistent privileged broker exists. The ordinary-user host may download and
 prevalidate into its owner-private cache, but the cache is only untrusted input. After
 authenticating the admitted-host request and obtaining the lease, the helper independently
 revalidates bounded source bytes under retained read handles, then materializes a fresh
@@ -513,9 +516,12 @@ protected sibling through the shared extraction/copy/readback pipeline. Every de
 directory and file receives the exact Administrators/SYSTEM/Users DACL at creation,
 before payload writes; it never promotes a user-owned stage by rename or seals an
 ordinary-user-writable stage afterward. The helper starts the exact candidate as the
-initiating ordinary user, including when a different administrator approves UAC. If
-the elevated owner exits or Windows restarts before resolution, recovery requires new
-consent or remains halted with the attempt unresolved. The application and Bun roles
+initiating ordinary user, including when a different administrator approves UAC, from
+the exact initiating process's own primary token; impersonation only pins the user's
+staged source. If the elevated owner exits, Windows restarts or every owner is lost
+before resolution without a durable witness, nothing is inferred or written: the next
+launch returns a typed recovery-required state that a supported recovery path (fresh
+consent plus full revalidation) resolves. The application and Bun roles
 never run elevated or as SYSTEM. This ACL profile differs from KEL-266's SYSTEM-only
 machine-baseline profile; updates never take ownership or repair ACLs ad hoc. The
 profile label and descriptor predicates are owned by `keld-guard`; a persisted profile
@@ -1202,12 +1208,12 @@ evidence.
 
 If Windows locked-file behavior requires a post-exit helper, it is a signed minimal
 package component, not a second updater. The trusted host passes only protected
-update-root/lock handles, its process wait handle, the observer/server endpoint and a
-sealed forward-once candidate endpoint for the already minted attempt-health channel.
-The helper waits for that exact host to exit, reads attempt/artifact/path identity from
-the protected journal, performs the journaled same-volume publish, passes only the
-sealed candidate endpoint in the explicit inherited-handle list, closes its copy after
-spawn, launches only that journaled executable, observes exact health, commits or rolls
+update-root/lock handles, its process wait handle and the observer/server endpoint for
+the already minted attempt-health channel. The helper waits for that exact host to exit,
+reads attempt/artifact/path identity from the protected journal, performs the journaled
+same-volume publish, launches only that journaled executable with no inherited candidate
+endpoint (the candidate connects back over the authenticated one-shot endpoint, taking
+its attempt identity from protected state), observes exact health, commits or rolls
 back, and exits. It has no feed, network, manifest/package parser, shell, arbitrary-path
 or caller-provided command authority. The journal binds the helper image and
 health-channel identities. Replayed attempt, endpoint substitution/reuse, helper
