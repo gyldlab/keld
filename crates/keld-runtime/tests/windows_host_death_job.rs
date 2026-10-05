@@ -1458,7 +1458,7 @@ fn run_authenticated_attempt_coordinator_helper() {
         .expect("duplicate local handle to the same activation.lock object")
         .into();
     let mut attempt = WindowsProcessJob::create().expect("create coordinator attempt Job");
-    let member = spawn_helper("descendant");
+    let member = spawn_parked_descendant();
     let target_pid = member.id();
     attempt
         .assign_child(&member)
@@ -1978,7 +1978,7 @@ fn run_query_witness_receiver_helper() {
 #[allow(clippy::zombie_processes)] // The parent kills this fixture at the coordinator crash cut.
 fn run_lifecycle_coordinator_helper() {
     let mut attempt = WindowsProcessJob::create().expect("create unnamed attempt Job");
-    let target = spawn_helper("descendant");
+    let target = spawn_parked_descendant();
     attempt
         .assign_child(&target)
         .expect("assign exact parked member before keeper launch");
@@ -2046,7 +2046,7 @@ fn run_lifecycle_coordinator_helper() {
 #[allow(clippy::zombie_processes)] // The parent kills this fixture before remote-handle delivery.
 fn run_lifecycle_undelivered_coordinator_helper() {
     let mut attempt = WindowsProcessJob::create().expect("create unnamed attempt Job");
-    let target = spawn_helper("descendant");
+    let target = spawn_parked_descendant();
     attempt
         .assign_child(&target)
         .expect("assign exact parked member before keeper launch");
@@ -2208,10 +2208,8 @@ fn run_direct_helper() {
     println!("DIRECT {}", std::process::id());
     io::stdout().flush().expect("flush direct PID");
 
-    let mut descendant = spawn_helper("descendant");
-    let descendant_stdout = descendant.stdout.take().expect("descendant stdout pipe");
-    let mut lines = BufReader::new(descendant_stdout).lines();
-    println!("{}", next_prefixed_line(&mut lines, "DESCENDANT "));
+    let mut descendant = spawn_parked_descendant();
+    println!("DESCENDANT {}", descendant.id());
     io::stdout().flush().expect("flush descendant PID");
     let status = descendant.wait().expect("wait for descendant");
     assert!(status.success(), "descendant failed: {status}");
@@ -2246,6 +2244,24 @@ fn spawn_helper(role: &str) -> Child {
     command.spawn().unwrap_or_else(|error| {
         panic!("spawn {role} process fixture: {error}");
     })
+}
+
+/// Spawns the parked `descendant` fixture and consumes its final stdout record.
+///
+/// The returned `Child` holds the member's only stdout reader. Waiting for the
+/// `DESCENDANT` record means every write the member makes happens before that reader
+/// can close (by `drop` or coordinator death); a member still booting at that close
+/// would fail its write with `ERROR_NO_DATA` and exit on its own, not by retirement.
+fn spawn_parked_descendant() -> Child {
+    let mut descendant = spawn_helper("descendant");
+    let stdout = descendant.stdout.as_mut().expect("descendant stdout pipe");
+    let ready = next_prefixed_line(&mut BufReader::new(stdout).lines(), "DESCENDANT ");
+    assert_eq!(
+        parse_pid(&ready, "DESCENDANT"),
+        descendant.id(),
+        "the exact descendant must be parked before its reader can close"
+    );
+    descendant
 }
 
 fn spawn_host_attempt_gate() -> Child {
