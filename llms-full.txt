@@ -3488,9 +3488,11 @@ publish-pending -> awaiting-health -> health-accepted -> journal removed
                                  \-> rollback-pending -> journal removed
 ```
 
-Every phase retains the common attempt context. `rollback-pending` additionally
-binds its target/prior current but never drops the expected floor, both known-good slots,
-coordinator/helper image or optional health-channel identity.
+Every phase retains the one common attempt context, including the rollback target,
+expected floor, both known-good slots, coordinator/helper image and health-channel
+identity; `rollback-pending` adds only its closed failure class. KEL-53 T4d revises the
+record (wire-gated) with the initiating logon session that every phase carries; KEL-53
+§4 owns the record shape.
 
 Unknown journal versions, duplicate/missing fields, noncanonical values, replayed attempt
 ids, artifact/pointer mismatch and mixed component sets fail closed. Directory presence,

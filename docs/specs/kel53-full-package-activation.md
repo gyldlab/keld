@@ -640,41 +640,46 @@ struct ArtifactIdentity {
     content_blake3: [u8; 32],
 }
 
-struct ActivationAttempt {
+/// One durable record whose context every phase shares, including `RollbackPending`.
+/// Landed as `keld-update`'s `records::ActivationJournal`, schema
+/// `keld.activation-journal/v1`; the T4d fields below revise it to v2.
+struct ActivationJournal {
     attempt_id: [u8; 32],
     candidate: ArtifactIdentity,
-    coordinator_image_blake3: [u8; 32],
-    health_channel_id: [u8; 32],
-    lifecycle_channel_id: [u8; 32],
     rollback_target: ArtifactIdentity,
     prior_floor: StrictSemver,
     prior_last_known_good: ArtifactIdentity,
     prior_previous_known_good: Option<ArtifactIdentity>,
-    // T4d Machine-UAC journal schema revision (wire-gated): initiating logon session.
-    // initiating_logon_session: Luid,
-    // initiating_logon_time: WindowsFileTime, // nonzero; zero refuses launch
+    // The verified executable that owns protected publication and candidate launch:
+    // the host coordinator (`PerUserDirect`), `keld-updater-helper.exe`
+    // (`MachineUacDirect`) or a criterion-10 post-exit helper.
+    helper_image_blake3: [u8; 32],
+    health_channel_id: [u8; 32],
+    lifecycle_channel_id: [u8; 32],
+    // T4d schema revision `keld.activation-journal/v2` (wire-gated). Required in
+    // `MachineUacDirect` before launch; a v1 record has none.
+    initiating_logon: Option<InitiatingLogon>,
+    phase: ActivationPhase,
+}
+
+/// The initiating process token's logon session ("Machine-UAC owner-loss retirement").
+struct InitiatingLogon {
+    authentication_id: Luid, // `TokenStatistics.AuthenticationId`
+    logon_time: i64,         // `SECURITY_LOGON_SESSION_DATA.LogonTime`; zero refuses launch
 }
 
 enum ActivationPhase {
-    PublishPending(ActivationAttempt),
-    AwaitingHealth(ActivationAttempt),
-    HealthAccepted(ActivationAttempt, HealthReceiptDigest),
-    RollbackPending(RollbackAttempt),
-}
-
-struct RollbackAttempt {
-    attempt_id: [u8; 32],
-    target: ArtifactIdentity,
-    prior_current: ArtifactIdentity,
-    expected_floor: StrictSemver,
-    expected_last_known_good: ArtifactIdentity,
-    expected_previous_known_good: Option<ArtifactIdentity>,
-    coordinator_image_blake3: [u8; 32],
-    health_channel_id: Option<[u8; 32]>,
-    lifecycle_channel_id: [u8; 32],
-    cause: FailureClass,
+    PublishPending,
+    AwaitingHealth,
+    HealthAccepted { health_receipt_digest: [u8; 32] },
+    RollbackPending { failure: ActivationFailureClass },
 }
 ```
+
+There is one journal struct, not one per phase: `RollbackPending` adds only its closed
+failure class and keeps the whole shared context, including `initiating_logon`, so a
+rollback interrupted by owner loss is retired by the same logon-session proof as the
+attempt it rolls back.
 
 The journal is a strict versioned local record. Unknown versions, duplicate fields,
 noncanonical values and pointer/artifact mismatches fail closed. The host generates the
