@@ -549,8 +549,18 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     writer retains the exclusive lease while the candidate performs its authenticated
     bootstrap read; the candidate closes mutable-record pins and acknowledges bootstrap
     before application execution, retaining only immutable selected-tree pins and its
-    health endpoint through the 30-second window. Sharing conflict is a typed busy/refusal with no retry or
-    sleep. Missing, wrong-kind, wrong-volume or wrong-profile lock state fails closed.
+    owner connection through the 30-second window. A sharing conflict is a typed
+    busy/refusal (`WriterActive`) with no retry or sleep, with one bounded exception, the
+    pre-authentication claimant read (T4d): when the snapshot-lease open meets a sharing
+    conflict, startup may read the journal record once, without the lease, through the
+    same strict decoder, size bound and protection-profile check, opening it with read
+    and delete sharing so it never blocks the writer's record replacement. It uses the
+    read only to decide whether the process is a candidate claimant (§4 "Candidate
+    connect-back"), reads no other record, writes nothing, and trusts nothing it read
+    until the owner accepts the claim; the authenticated bootstrap read then rereads the
+    attempt and current. A torn, invalid or non-claimant read returns the ordinary
+    `WriterActive` refusal, so a conflict still selects no package for any other process.
+    Missing, wrong-kind, wrong-volume or wrong-profile lock state fails closed.
     On Windows machine-wide profiles, ordinary-user read access to this lease also lets
     a local native process hold a conflicting share-mode handle and deny update
     availability until that handle closes. This is an availability-only residual: the
@@ -807,11 +817,13 @@ existing object read/write with share mode zero, no reparse following or inherit
 Normal selection/recovery readers open read-only with `FILE_SHARE_READ` only and hold
 that shared lease only while reading one coherent set of mutable records. A sharing
 conflict is busy/refusal, without sleep or retry. The writer lease remains held through
-the active attempt and health window. The authenticated candidate-boot path is the only
-reader exception: while the coordinator keeps journal/current stable, it reads the exact
-attempt and current briefly, closes mutable-record handles and acknowledges bootstrap
-completion before app execution/health can permit record replacement. It retains only
-immutable selected-version/tree pins and its owner connection during the health window.
+the active attempt and health window. Criterion 20 owns the only two reader
+exceptions: the bounded pre-authentication claimant read, and the authenticated
+candidate-boot read, in which, while the coordinator keeps journal/current stable, the
+accepted candidate reads the exact attempt and current briefly, closes mutable-record
+handles and acknowledges bootstrap completion before app execution/health can permit
+record replacement. It retains only immutable selected-version/tree pins and its owner
+connection during the health window.
 Normal host selection closes mutable journal/pointer/floor pins after snapshot and keeps
 only the selected immutable artifact pins. Lock presence never decides whether the
 previous coordinator/candidate family is live; recovery still requires the independent
@@ -1102,7 +1114,8 @@ durable record that mints or re-mints the health-channel ID, so the owner is fix
 before anyone can derive the endpoint name.
 
 At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
-holding the running executable makes the process a candidate claimant. It derives the
+holding the running executable, found by criterion 20's bounded pre-authentication
+claimant read, makes the process a candidate claimant. It derives the
 owner's endpoint name and opens it with `SECURITY_SQOS_PRESENT |
 SECURITY_IDENTIFICATION`, so a server that is not the owner can at most identify the
 claimant, never impersonate it; named-pipe servers otherwise receive impersonation by
@@ -1564,7 +1577,9 @@ Must not touch in Slice A:
   selected launch API; a descendant breakaway attempt; nested KEL-96 host Jobs; and a
   family still terminating with pending I/O. Each row either proves both facts or halts
   fail-closed, and no family member runs or has pending I/O after a passed proof. T4d
-  also updates the `activate.rs` retirement-binding documentation to name this producer.
+  also updates the `activate.rs` retirement-binding documentation to name this producer,
+  and the `ActivationEffect::WriterActive` documentation
+  (`crates/keld-update/src/error.rs:38-41`) for criterion 20's claimant read.
   Before implementation, each new production `unsafe` path gets its owner's exact
   AGENTS.md rule; FFI wrappers stay minimal beneath safe typed wrappers with owned
   handles and minimum access rights; no raw handle crosses a normal public API; every
@@ -1600,7 +1615,7 @@ Must not touch in Slice A:
 | 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
 | 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
 | 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
-| 20 | real Windows stable `activation.lock` remains present across release/crash; multiple short read leases coexist and block the writer; exactly one share-zero writer is admitted after readers close; missing/wrong-profile lock refuses; a surviving child cannot be mistaken for a dead process family; candidate closes mutable-record pins and acknowledges bootstrap before app code/health, while immutable selected-tree pins remain held; writer replaces mutable records during candidate health without replacing/deleting pinned immutable trees |
+| 20 | real Windows stable `activation.lock` remains present across release/crash; multiple short read leases coexist and block the writer; exactly one share-zero writer is admitted after readers close; missing/wrong-profile lock refuses; a surviving child cannot be mistaken for a dead process family; candidate closes mutable-record pins and acknowledges bootstrap before app code/health, while immutable selected-tree pins remain held; writer replaces mutable records during candidate health without replacing/deleting pinned immutable trees; while the writer holds the lease, the pre-authentication claimant read opens only the journal, never blocks a concurrent journal replacement, returns `WriterActive` for a torn, invalid, non-`AwaitingHealth` or other-tree journal, and a non-candidate process still selects nothing |
 | 14 | deterministic fault injection followed by one successful attempt; delta code absent |
 | 15 | future base/patch/reconstructed-content mutations and same-attempt full fallback |
 

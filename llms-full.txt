@@ -3617,9 +3617,11 @@ from its presence. Writers open the existing file read/write with share mode zer
 Snapshot readers open it read-only with `FILE_SHARE_READ` only and hold that short
 lease while they read the complete mutable-record set. Sharing conflicts return a
 typed busy/refusal without retry or sleep. The writer holds its lease through candidate
-health. Authenticated candidate startup briefly reads the attempt and current while the
+health. A sharing conflict permits only KEL-53 criterion 20's bounded
+pre-authentication claimant read of the journal, which grants nothing. Authenticated
+candidate startup briefly reads the attempt and current while the
 writer holds them stable, closes mutable-record pins and acknowledges bootstrap before
-app execution, retaining immutable selected-tree pins and the health endpoint. Recovery
+app execution, retaining immutable selected-tree pins and its owner connection. Recovery
 separately requires proof that the prior process family exited. `bootstrap.lock`
 remains KEL-266's initializer marker.
 
