@@ -96,7 +96,9 @@ pending. It optimizes for least privilege and the smallest privileged surface:
 6. The privilege-crossing bootstrap and health path uses its own versioned subprotocol,
    reusing only low-level framing, nonce, deadline and peer-verification utilities.
 Each new production `unsafe` path still requires its owner's AGENTS.md update and
-independent unsafe, privilege/security and wire review before implementation (§6 T4d).
+independent unsafe, privilege/security and wire review before implementation; §5 names
+the new `crates/keld-updater-helper` crate and the owner of each path, and §8 records
+the gates (§6 T4d).
 
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
@@ -992,9 +994,8 @@ candidate during the health window, a deliberate crash-ownership change, and the
 clears the limit once `health-accepted` is durable. Job-name absence, PID enumeration
 and the death of Job-handle holders still prove nothing about the family, and the
 seamless keeper slice's rule below is unchanged. The helper reuses the existing Windows
-Job wrappers; the logon-session query is a new minimal wrapper in `keld-guard`, which
-already owns the KEL-270 T4d token FFI, added under an issue-scoped amendment of that
-crate's AGENTS.md `unsafe` rule before implementation.
+Job wrappers; the new FFI paths, including the `keld-guard` logon-session wrapper, and
+their owners are listed once in §5.
 The two logon-session fields are a journal schema revision under
 the wire review gate. Rejected alternatives: Job-handle-holder death as the family proof
 (it proves only that termination started); a separate PID and creation-time check for
@@ -1593,6 +1594,39 @@ Implement in:
   provenance and owner-specific protection profile;
 - a minimal signed helper for explicit-UAC activation and, if separately approved, for
   locked-file publication;
+- `crates/keld-updater-helper` (T4d): a new workspace binary crate that builds only
+  `keld-updater-helper.exe` with its activation and recovery-only roles. It composes
+  existing owners and holds no production `unsafe` (it denies `unsafe_code`): its
+  normal edges are `keld-update` (transaction, recovery, selection and self-anchor),
+  `keld-ipc` (the `keld-attempt` subprotocol and pipe server), `keld-runtime` (Job,
+  launch and process identity) and `keld-guard` (token and logon-session wrappers).
+  Nothing depends on it, and `keld-update` keeps only its dev edges to `keld-ipc` and
+  `keld-runtime`. Its build script passes `/DEPENDENTLOADFLAG:0x800` to the linker for
+  this binary only. Rejected alternatives: a binary target in `keld-update`, which would
+  make `keld-runtime` and `keld-ipc` normal `keld-update` dependencies and add the
+  `keld-update -> keld-runtime` edge rejected in §4; and a second binary in `keld-host`,
+  whose package graph includes the WebView and app runtime that criterion 17 excludes
+  from the elevated helper;
+- the new T4d production FFI, each path in its existing owner and only after an
+  issue-scoped amendment of that owner's AGENTS.md `unsafe` rule:
+  - `keld-runtime` (`windows_job.rs`): `CreateProcessWithTokenW` with
+    `CREATE_SUSPENDED`, the suspended `AssignProcessToJobObject` before the first
+    instruction, `ResumeThread`, `CompareObjectHandles`, clearing
+    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` through `SetInformationJobObject` after
+    `health-accepted` (a listed call with a new scope), `SetDefaultDllDirectories`, and
+    `ShellExecuteExW` with `runas` for the helper launch (new `windows-sys` feature
+    `Win32_UI_Shell`);
+  - `keld-guard` (beside its KEL-270 T4d admin-owner token FFI, whose rule is a closed
+    list): opening the exact initiating process's token for duplication,
+    `DuplicateTokenEx(TokenPrimary)`, and the logon-session wrapper
+    `LsaGetLogonSessionData` with `LsaFreeReturnBuffer` (new `windows-sys` feature
+    `Win32_Security_Authentication_Identity`);
+  - `keld-ipc` (`windows_named_pipe.rs`): the bounded `ImpersonateNamedPipeClient` and
+    `RevertToSelf` window in which the Windows path owner pins the initiating user's
+    staged source (listed calls with a new scope), `TokenStatistics` and
+    `TokenElevation` in the peer token facts, and the pipe server's initiating-SID DACL
+    with its Medium no-write-up label; the descriptor code uses
+    `Win32_Security_Authorization`, which the workspace pin already enables;
 - existing doctor/build diagnostics and native fixtures.
 
 Must not touch in Slice A:
@@ -1714,17 +1748,33 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
 
 ## 8. Review gates triggered
 
-- unsafe: none in this contract; conditional on each exact native/helper implementation;
+- unsafe: yes for T4d — the production FFI paths listed in §5 in `keld-runtime`,
+  `keld-guard` and `keld-ipc`, each behind its owner's issue-scoped AGENTS.md amendment
+  (an amendment of `keld-guard`'s closed list) and independent unsafe review of the
+  exact diff; the helper crate holds none. Elsewhere, conditional on each exact
+  native/helper implementation;
 - public API: yes — canonical package contents, update admission and unsupported-cell
-  diagnostics are author-facing contracts;
+  diagnostics are author-facing contracts. T4d adds the breaking
+  `ActivationEffect::MachineRecoveryRequired` variant (the enum is not
+  `#[non_exhaustive]`, `crates/keld-update/src/error.rs:21-42`) with its fix guidance,
+  the helper role entry points and the new safe wrappers that `keld-runtime`,
+  `keld-guard` and `keld-ipc` export to the helper crate;
 - permission model: yes — the install-mode protection profiles, UAC elevation and
-  hostile-role denial decide who can mutate executable state, though no app grant is added;
-- dependency addition: none;
+  hostile-role denial decide who can mutate executable state, though no app grant is
+  added. T4d adds the elevated helper principal, its recovery-only role and the
+  initiating-user-only connect-back DACL;
+- dependency addition: none in Slice A; yes for T4d — the new workspace member
+  `crates/keld-updater-helper` with internal edges only to `keld-update`, `keld-ipc`,
+  `keld-runtime` and `keld-guard`, and the `windows-sys` features `Win32_UI_Shell`
+  (`keld-runtime`) and `Win32_Security_Authentication_Identity` (`keld-guard`).
+  `Win32_Security_Authorization`, which the descriptor code uses, is already in the
+  workspace `windows-sys` pin and is not a new feature. No third-party crate is added;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
   and canonical package content are narrowed and require exact independent review; any
-  new host/coordinator authentication channel remains separately owned and gated. T4d's
-  journal schema revision for the initiating logon session and the helper subprotocol
-  are wire-gated.
+  new host/coordinator authentication channel remains separately owned and gated. T4d is
+  wire-gated: the journal schema revision `keld.activation-journal/v2`
+  (`initiating_logon`, `attempt_owner`), and the `keld-attempt-<64 hex>` subprotocol
+  namespace with its `AH1`, `AC1`, `AA1` and `AR1` records, recorded in Architecture 02.
 
 ## 9. Perf impact
 
