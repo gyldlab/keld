@@ -18,5 +18,10 @@ keld-guard = { workspace = true }
 blake3 = { workspace = true }
 zstd = { workspace = true }
 
+[target.'cfg(windows)'.dev-dependencies]
+# KEL-19 container spec §5: the AC10 anonymous-file and failed-read tests and the
+# real-host round trip. Already workspace-pinned and in Cargo.lock; no new crate.
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

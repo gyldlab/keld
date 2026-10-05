@@ -5825,6 +5825,48 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Expected-app-identity payload bytes or fields are not canonical
 - fix: Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the host; never hand-edit the embedded bytes.
 
+## KELD-PACK-006
+
+- crate: keld-pack
+- message: The host image is not an admissible Windows x64 PE32+ executable
+- fix: Use the unmodified prebuilt `keld-host.exe` of this Keld release; reinstall the signed package if an installed host is damaged.
+
+## KELD-PACK-007
+
+- crate: keld-pack
+- message: The host image carries no `.keldeai` expected-identity container
+- fix: Rebuild with `keld build` so `keld-pack` embeds the expected identity before signing.
+
+## KELD-PACK-008
+
+- crate: keld-pack
+- message: The host image already carries a `.keldeai` expected-identity container, or more than one
+- fix: Embed exactly once into the unmodified prebuilt host; never re-run embedding on its output.
+
+## KELD-PACK-009
+
+- crate: keld-pack
+- message: The host image is signed or has bytes after its last section
+- fix: Embed into the unsigned prebuilt host before signing; never embed into a signed image or after appending data.
+
+## KELD-PACK-010
+
+- crate: keld-pack
+- message: The host image has no header room for the expected-identity container
+- fix: Use a Keld-released prebuilt host; a host without header room is a Keld host-build defect to report.
+
+## KELD-PACK-011
+
+- crate: keld-pack
+- message: The expected-identity container is not canonical
+- fix: The host's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`.
+
+## KELD-PACK-012
+
+- crate: keld-pack
+- message: Reading the host's identity container from the verified executable failed
+- fix: Make sure the executable's volume is readable and relaunch, and reinstall the signed package if the failure persists.
+
 ---
 
 ## Source: `docs/engineering/budget-scoreboard.md`

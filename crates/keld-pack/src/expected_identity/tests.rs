@@ -192,6 +192,24 @@ fn control_and_non_utf8_bytes_refuse() {
 }
 
 #[test]
+fn derived_length_bounds_match_the_spec_values_and_the_encoder() {
+    // KEL-19 container spec §4 states the bounds as 68 and 400; the literals are the
+    // independent oracle for the derivation.
+    assert_eq!(MIN_PAYLOAD_BYTES, 68);
+    assert_eq!(MAX_PAYLOAD_BYTES, 400);
+    let shortest = ExpectedAppIdentityPayload::new("a", "c", "t", golden_key());
+    let Ok(shortest) = shortest else {
+        panic!("one-byte fields must be accepted: {shortest:?}");
+    };
+    assert_eq!(shortest.encode().len(), MIN_PAYLOAD_BYTES);
+    let longest = ExpectedAppIdentityPayload::decode(&raw(&[b'a'; 255], &[b'c'; 16], &[b't'; 64]));
+    let Ok(longest) = longest else {
+        panic!("fields at their bounds must be accepted: {longest:?}");
+    };
+    assert_eq!(longest.encode().len(), MAX_PAYLOAD_BYTES);
+}
+
+#[test]
 fn error_has_stable_code_and_fix_guidance() {
     let error = PackError::ExpectedIdentityInvalid {
         detail: "domain tag",
