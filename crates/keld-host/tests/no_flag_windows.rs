@@ -104,7 +104,7 @@ fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
 }
 
 #[test]
-#[ignore = "operator launches this controller under the second ordinary account"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); operator launches this controller under the second ordinary account"]
 fn kel135_second_user_storage_helper() {
     let request_path = env::var_os("KELD_KEL135_SECOND_USER_REQUEST")
         .expect("operator supplies the live request path");

@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 #[test]
-#[ignore = "requires a signed KEL-135 Windows host fixture"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires a signed KEL-135 Windows host fixture"]
 fn kel135_signed_host_profile_concurrency() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
         .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
@@ -91,7 +91,7 @@ fn kel135_signed_host_profile_concurrency() {
 }
 
 #[test]
-#[ignore = "requires a signed KEL-135 Windows host fixture"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires a signed KEL-135 Windows host fixture"]
 fn kel135_signed_host_running_crash_releases_profile() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
         .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");

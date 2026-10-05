@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::dev_stage_command;
 use crate::support::product::StageFixture;
 use crate::support::stage::acl_observation;
 
@@ -133,15 +134,58 @@ fn windows_host_validates_the_staged_descriptor_before_platform_session_start() 
     )
     .expect("replace descriptor with an invalid closed-schema document");
 
-    let output = Command::new(stage.host())
-        .current_dir(stage.root())
+    let output = dev_stage_command(stage.root(), stage.host())
         .output()
-        .expect("launch staged Windows host");
+        .expect("launch staged Windows host under a dev lease");
     assert!(!output.status.success(), "invalid boot became success");
     let stderr = String::from_utf8(output.stderr).expect("host stderr is UTF-8");
     assert!(stderr.contains("KELD-CORE-035"), "{stderr}");
     assert!(stderr.contains("unknown field"), "{stderr}");
     assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+}
+
+#[test]
+fn windows_lease_less_stage_is_refused_before_the_stage_validator() {
+    let fixture = StageFixture::new();
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage lease-less Windows host");
+    // A descriptor the DevStage validator refuses proves that validator is never consulted.
+    fs::write(
+        stage.root().join("keld.boot.json"),
+        br#"{"schema":1,"foreign":true}"#,
+    )
+    .expect("replace descriptor with one the stage validator refuses");
+
+    let output = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env_remove("KELD_DEV_LEASE")
+        .output()
+        .expect("launch lease-less staged Windows host");
+    assert!(!output.status.success(), "lease-less stage became success");
+    let stderr = String::from_utf8(output.stderr).expect("lease-less stderr UTF-8");
+    // The unsigned test host is verified on its own pinned image and refused there.
+    assert!(stderr.contains("KELD-WV-009"), "{stderr}");
+    assert!(stderr.contains("WinVerifyTrust rejected"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-035"), "{stderr}");
+    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
+
+    let output = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_DEV_LEASE", "stdin-v2")
+        .output()
+        .expect("launch staged Windows host with an unsupported lease");
+    assert!(!output.status.success(), "unsupported lease became success");
+    let stderr = String::from_utf8(output.stderr).expect("unsupported-lease stderr UTF-8");
+    assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
+    assert!(
+        stderr.contains("unsupported KELD_DEV_LEASE value"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-CORE-035"), "{stderr}");
+    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
 }
 
 #[test]
@@ -184,10 +228,9 @@ $acl.AddAccessRule($worldRule)
         String::from_utf8_lossy(&mutation.stderr)
     );
 
-    let output = Command::new(stage.host())
-        .current_dir(stage.root())
+    let output = dev_stage_command(stage.root(), stage.host())
         .output()
-        .expect("launch ACL-negative host");
+        .expect("launch ACL-negative host under a dev lease");
     assert!(!output.status.success(), "foreign stage ACE became success");
     let stderr = String::from_utf8(output.stderr).expect("ACL-negative stderr UTF-8");
     assert!(stderr.contains("KELD-CORE-036"), "{stderr}");
