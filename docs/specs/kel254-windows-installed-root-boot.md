@@ -452,12 +452,12 @@ impl ExpectedAppIdentity {
     pub fn decode(payload: &[u8]) -> Result<Self, UpdateError>;
     /// T3: extracts the single embedded payload through `keld-pack`'s container reader
     /// from the same open handle that KEL-135 verified, then decodes it.
-    pub fn from_signed_image(image: &File) -> Result<Self, UpdateError>;
+    pub fn from_signed_image(image: &std::fs::File) -> Result<Self, UpdateError>;
 }
 
 pub fn select_active_package_for_executable(
     locator: &Path,     // locator only: the canonical current executable path
-    executable: &File,  // the open handle KEL-135 verified; identity, not authority
+    executable: &std::fs::File, // the KEL-135-verified handle; identity, not authority
     expected: &ExpectedAppIdentity,
 ) -> Result<ActivePackageSelection, UpdateError>;
 
@@ -491,7 +491,9 @@ executable must be on the fixed local NTFS volume that the landed `qualified_vol
 admits, where that pair identifies a file until it is deleted
 ([BY_HANDLE_FILE_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information), `ms.date` 2018-12-05);
 any other file system refuses, including ReFS, whose 64-bit file ID is not guaranteed
-unique. The record's volume GUID must read back. The install root, the update root,
+unique. The record's volume GUID must read back and equal the volume GUIDs of the
+executable and of every located root, so that identity never rests on the 32-bit volume
+serial number alone. The install root, the update root,
 `versions`, every record and the selected tree must carry the exact protection profile of
 the *recorded* install mode, and every other ancestor must pass that mode's landed
 `open_roots` ancestor rule (volume anchor, then the per-mode intermediate check); and the
@@ -512,7 +514,9 @@ protected record stays authoritative for each.
 
 `ExpectedAppIdentity` carries only non-secret expectations from one canonical build-time
 producer; runtime code never hand-writes them. `keld-pack` owns their canonical,
-versioned encoding and decoder (T2b). The KEL-19 packaging work owns the writer that
+versioned encoding and decoder (T2b); `keld-update` validates the channel against its
+channel set and the key as an Ed25519 public key. The KEL-19 packaging work owns the
+writer that
 embeds that payload exactly once in `keld-host.exe` before the executable's final
 Authenticode signature, and fixes its container. At boot `keld-core` obtains the value
 with `ExpectedAppIdentity::from_signed_image` on the KEL-135-verified handle (T3); a
@@ -529,13 +533,17 @@ KEL-96 independently requires the record's publisher scope and app id to equal t
 KEL-135 Authenticode identity of the same executable. The entrypoint reads no
 environment payload or argv for authority. In T2b it is journal-free: like the landed
 `select_windows_active_package`, it refuses any pending journal with
-`JournalBoundRecoveryRequired`. Journal recovery, process-family ownership and candidate
+`JournalBoundRecoveryRequired`. It repairs an invalid `current` only when the located
+tree is the last-known-good tree, so a stale host never causes a write, and after any
+repair the selected version must equal the located one. Journal recovery,
+process-family ownership and candidate
 admission join it only with KEL-53's later recovery and candidate slices, under KEL-53's
 own discovery rules. If another live coordinator owns the journal, process state is
 unknown, or recovery is incomplete, KEL-53 returns no selection. KEL-96 compares the
 record's publisher/app fields with the KEL-135 verified
-identity, checks the effective access boundary, and verifies that `current_exe` is the
-exact host inside `tree_root`. It may consume but MUST NOT construct or clone the
+identity, checks the effective access boundary, and relies on the T2b handle identity
+(never `tree_root` path text) to prove that the running executable is the exact host
+inside the selected tree. It may consume but MUST NOT construct or clone the
 selection. `DirectInstallationIdentity` and its OS-protected record are KEL-53
 deliverables; the record's format stays OS-local. No code may construct installed mode
 from paths or test observations.
@@ -635,7 +643,8 @@ opaque outside their owner except for the documented read-only identity accessor
   with a literal golden vector); expose `ExpectedAppIdentity::decode`; and add the
   journal-free `select_active_package_for_executable` as a KEL-53 loader entrypoint,
   which locates provenance from the executable, proves it as §4 requires against the
-  verified executable handle, and refuses any pending journal. No runtime
+  verified executable handle, repairs an invalid `current` only when the located tree is
+  last-known-good, and refuses any pending journal. No runtime
   code hand-writes these values; tests use the canonical encoder or its single golden
   vector. The embedding writer and container belong to KEL-19, and the boot reader to
   T3.
@@ -643,8 +652,11 @@ opaque outside their owner except for the documented read-only identity accessor
   one KEL-135 identity value to add opaque Windows installed-root boot. Verify the
   executable is the exact selected version-tree host, preserve current strict parser and
   resource-free ordering, and pass the same verified identity to profile selection.
-  Obtain `ExpectedAppIdentity` with `from_signed_image` on the same handle KEL-135
-  verified, after KEL-19's approved container and writer exist. Enforce the two Windows
+  As KEL-53 loader work in this task, `keld-update` adds
+  `ExpectedAppIdentity::from_signed_image`, which delegates extraction to `keld-pack`'s
+  KEL-19 container reader; `keld-core` obtains `ExpectedAppIdentity` through it on the
+  same handle KEL-135 verified, after KEL-19's approved container and writer exist.
+  Enforce the two Windows
   boot states of AC2 and move the lease-less signed dev-stage KEL-135 rows to a real dev
   lease or to installed fixtures; no test keeps a third state.
 - [ ] T4 — on a real Windows x64 machine, install and launch signed initial, updated,

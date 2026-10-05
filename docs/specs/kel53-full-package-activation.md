@@ -621,7 +621,9 @@ packaging configuration; recovery recomputes it only after reading protected pro
 and matching every field to that configuration. On the KEL-254 executable-located path
 the host derives it only from provenance admitted under that path's anchor. Equal
 provenance yields a stable ID;
-relocation changes the ID. This digest is binding context, not a secret or peer
+relocation changes the ID only when the admitted canonical provenance bytes change (a
+reinstall), because the executable-located selector refuses a record whose roots differ
+from the located roots. This digest is binding context, not a secret or peer
 authentication. A future provenance schema MUST preserve an explicitly defined v2
 projection or introduce a separately versioned lifecycle-ID derivation.
 
