@@ -466,7 +466,8 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   requires `current` to equal last-known-good or previous-known-good within the floor,
   admits only referenced versions, gives each the baseline loader's metadata admission
   plus its signed no-migration package policy, refuses a pending journal as
-  journal-bound and a held writer lease as `WriterActive`, and keeps the selected version,
+  journal-bound and a lease sharing conflict (normally the held writer lease) as
+  `WriterActive`, and keeps the selected version,
   its tree and the protected ancestry pinned. It carries the protected installation
   identity and publisher scope for the host's comparison with the verified image. Live
   feed orchestration, host candidate launch, the private health channel and its 30-second

@@ -94,8 +94,9 @@ pub fn load_windows_baseline(
 /// # Errors
 /// A pending activation journal refuses with
 /// [`crate::ActivationEffect::JournalBoundRecoveryRequired`]: only journal-bound recovery
-/// under the writer lease may continue it, so no tree is selected. A writer holding the
-/// installation's exclusive lease refuses with [`crate::ActivationEffect::WriterActive`].
+/// under the writer lease may continue it, so no tree is selected. A sharing conflict on
+/// the lease, normally the updater's exclusive writer lease, refuses with
+/// [`crate::ActivationEffect::WriterActive`] without retrying.
 /// Managed ownership, a missing or damaged lease, unknown or malformed state, provenance
 /// or pointer relationships that do not hold, an absent or changed package policy, and any
 /// unreferenced, missing or substituted version each refuse. The selection never guesses
@@ -114,7 +115,7 @@ pub fn select_windows_active_package(
                 UpdateError::activation(
                     "active package selection",
                     crate::ActivationEffect::WriterActive,
-                    "the installation's exclusive writer lease is held",
+                    "a conflicting handle, normally the exclusive writer lease, holds activation.lock",
                 )
             } else {
                 error("active selection lease", cause)

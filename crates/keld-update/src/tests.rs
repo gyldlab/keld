@@ -899,7 +899,7 @@ fn activation_errors_name_what_remains_and_the_only_safe_next_action() {
         ),
         (
             crate::ActivationEffect::WriterActive,
-            "holds the installation's exclusive writer lease",
+            "normally the updater's exclusive writer lease, holds the installation's activation lock",
         ),
     ];
     for (effect, guidance) in expectations {
