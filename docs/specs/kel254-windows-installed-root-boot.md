@@ -421,6 +421,11 @@ pub struct ActivePackageSelection { /* private fields; not Clone */ }
 /// material.
 pub struct ExpectedAppIdentity { /* private fields */ }
 
+impl ExpectedAppIdentity {
+    /// Decodes the embedded build identity through `keld-pack`'s canonical decoder.
+    pub fn decode(embedded: &[u8]) -> Result<Self, UpdateError>;
+}
+
 pub fn select_active_package_for_executable(
     executable: &Path, // locator only: the canonical current executable
     expected: &ExpectedAppIdentity,
@@ -438,9 +443,16 @@ pub enum ActiveLaunchKind { Normal, Candidate }
 
 Only the KEL-53 OS loader/state machine can mint it. **The executable path locates
 candidate provenance; authenticated provenance supplies authority.** From the canonical
-current executable KEL-53 derives only a candidate
-`<install-root>/<update-root>/versions/<version>/tree` location, then proves it: the
-protected provenance record found there must name roots that are the located roots by
+current executable KEL-53 derives candidate locations by one fixed rule, then proves
+them. The executable's file name must be literally `keld-host.exe`; its parent is the
+candidate tree and must be named `tree`; the tree's parent is the version directory and
+must have a strict-SemVer name; that directory's parent must be named `versions`; the
+parent of `versions` is the candidate update root, and the update root's parent is the
+candidate install root. The protected record is the install root's literal
+`install-provenance` entry, and the install root must contain exactly that record and
+the update-root directory, as the landed loader already requires. Any other shape
+refuses before resources. The protected provenance record must name roots that are the
+located roots by
 file identity (volume serial number and file index, never path text); its volume GUID
 must read back; every ancestor and record must carry the exact protection profile of the
 *recorded* install mode; and the selected tree's literal `keld-host.exe` must be the
@@ -448,8 +460,13 @@ running executable by file identity. No install mode, owner SID, root, volume, b
 current selection, protection profile or profile digest, and no trust decision, comes
 from path shape, `%ProgramFiles%`, registry, environment, cwd, argv or an ACL observation
 alone; the protected record stays authoritative for each. `ExpectedAppIdentity` carries
-only public expectations from one canonical build-time producer; runtime code never
-hand-writes them. KEL-53 refuses unless the record matches that expectation, and KEL-96
+only non-secret expectations from one canonical build-time producer; runtime code never
+hand-writes them. `keld-pack` embeds their canonical encoding exactly once in
+`keld-host.exe` before the executable's final Authenticode signature, and T2b fixes the
+container. At boot `keld-core` reads those bytes from the running executable only after
+KEL-135 has verified that executable's signature, and constructs the value with
+`ExpectedAppIdentity::decode`; a missing, duplicated or malformed encoding refuses before
+resources. KEL-53 refuses unless the record matches that expectation, and KEL-96
 independently requires the record's publisher scope and app id to equal the KEL-135
 Authenticode identity of the same executable. The entrypoint reads no environment
 payload or argv for authority, and candidate admission comes from protected attempt
