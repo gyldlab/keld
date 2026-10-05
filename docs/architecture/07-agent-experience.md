@@ -155,8 +155,9 @@ covered:
 7. **Supply chain**: 24 h `min-release-age` default on template deps; ed25519-signed
    update manifests whose BLAKE3 digests authenticate each full artifact (KEL-53;
    spec 03 §4–5); shipped Windows host binaries carry the app publisher's Authenticode
-   signature, and Keld's Windows packaging input is unsigned and digest-verified
-   (spec 01 §2 principle 5).
+   signature. Target behaviour on Windows (KEL-19 T3, blocked on an authenticated Keld
+   release channel): Keld's packaging-input host is distributed unsigned and
+   digest-verified (spec 01 §2 principle 5).
 
 ## 7. CLI contract for agents
 

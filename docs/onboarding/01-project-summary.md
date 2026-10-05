@@ -122,9 +122,10 @@ flowchart TB
 ```
 
 - **keld-host** owns every OS resource. App developers never compile it — they download a
-  signed prebuilt binary. On Windows the packaging-input host is distributed unsigned:
-  `keld build` verifies its digest from an authenticated Keld release channel and embeds
-  the app identity, then the app publisher applies the only signature
+  prebuilt binary, and the host in a shipped app is signed. Target behaviour on Windows
+  (KEL-19 T3, blocked on an authenticated Keld release channel): the packaging-input
+  host is distributed unsigned, and `keld build` verifies its digest from that channel
+  and embeds the app identity before the app publisher applies the only signature
   (`docs/specs/kel254-expected-identity-container.md`). "No Rust toolchain for app
   developers" is principle #5.
 - **The app process** is the developer's own code with the full npm world but **zero

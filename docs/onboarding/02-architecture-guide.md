@@ -137,11 +137,12 @@ the earlier one wins. What each means when you are actually writing code:
 4. **Hot paths are state machines.** Platform event loops with readiness-driven callbacks; no
    Tokio in the message path. Async Rust is allowed only in cold tooling (CLI, packager,
    updater). In practice: if you find yourself writing `async fn` in `keld-ipc`, stop.
-5. **No Rust toolchain for app developers.** Prebuilt signed host + npm distribution. Rust is
-   the plugin path, never the entry fee. On Windows the packaging-input host is
-   distributed unsigned: `keld build` verifies its digest from an authenticated Keld
-   release channel and embeds the app identity, then the app publisher applies the only
-   signature (`docs/specs/kel254-expected-identity-container.md`).
+5. **No Rust toolchain for app developers.** Prebuilt host + npm distribution; the host in
+   a shipped app is signed. Rust is the plugin path, never the entry fee. Target
+   behaviour on Windows (KEL-19 T3, blocked on an authenticated Keld release channel):
+   the packaging-input host is distributed unsigned, and `keld build` verifies its
+   digest from that channel and embeds the app identity before the app publisher
+   applies the only signature (`docs/specs/kel254-expected-identity-container.md`).
 6. **Per-platform engine policy, not ideology.** System webviews where they are good
    (Windows, macOS), pinned engine where they are not (Linux, opt-in). See §6.
 7. **Measured, budgeted, regression-gated.** Perf budgets are in
@@ -465,8 +466,9 @@ injection, per-principal `keld://` fetch isolation, `channels: []` for remote co
 allowlists, devtools off in release); and supply-chain measures (24 h `min-release-age` on
 template deps, ed25519-signed update manifests whose BLAKE3 digests authenticate each full
 artifact (KEL-53), shipped Windows host binaries that carry the app publisher's Authenticode
-signature while Keld's Windows packaging input is unsigned and digest-verified (Architecture 01
-principle 5), `keld.lock` pinning host/Bun/polyfill versions).
+signature (target behaviour on Windows, KEL-19 T3, blocked on an authenticated Keld release
+channel: Keld's packaging-input host is distributed unsigned and digest-verified, per
+Architecture 01 principle 5), `keld.lock` pinning host/Bun/polyfill versions).
 
 [`03` §6](../architecture/03-security.md) is titled "the honesty ledger" and is worth reading in
 full — it states plainly what Keld does *not* promise: the sandbox protects the user from
