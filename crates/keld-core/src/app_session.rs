@@ -5270,15 +5270,39 @@ impl PrimaryRouterHandle {
         reply: &[u8],
         #[cfg(windows)] reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
+        {
+            let transition = self.shutdown.transition_guard();
+            let current_guard = self.current.lock().map_err(|_| {
+                app_detail("primary session generation", "generation lock poisoned")
+            })?;
+            if current_guard.as_ref().is_none_or(|active| active.attempt != attempt) {
+                return Ok(());
+            }
+            if !self.shutdown.is_running() {
+                drop(current_guard);
+                drop(transition);
+                return if self.shutdown.cause() == SESSION_CLI_LEASE_LOST {
+                    self.cli_lease_lost()
+                } else {
+                    Ok(())
+                };
+            }
+        }
+
+        // This reader is paused in Quit, so no later FS Call can enter. Keep
+        // the session live until every already-admitted FS call has written its
+        // terminal Reply/Err and released its lease; clients close immediately
+        // after the correlated Quit Reply.
+        if let Some(fs) = self.fs.as_ref().and_then(Weak::upgrade) {
+            fs.drain()?;
+        }
+
         let transition = self.shutdown.transition_guard();
         let current_guard = self
             .current
             .lock()
             .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
-        if current_guard
-            .as_ref()
-            .is_none_or(|active| active.attempt != attempt)
-        {
+        if current_guard.as_ref().is_none_or(|active| active.attempt != attempt) {
             return Ok(());
         }
         if !self.shutdown.claim_guarded(SESSION_LIFECYCLE_QUIT) {
