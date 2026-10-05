@@ -1176,8 +1176,12 @@ observation.
    candidate must already be published. If current already equals
    the candidate, the floor must equal that exact candidate and recovery enters
    `awaiting-health` without republishing. Any third pointer/floor value, including
-   a floor above the candidate, halts. The journal is never cleared before health or
-   rollback.
+   a floor above the candidate, halts. Outside the abandon intent below, the journal is
+   never cleared before health or rollback. In `MachineUacDirect` the recovery-only role
+   instead applies KEL-53's abandon intent (owner decision D1 refined): it never
+   advances the floor, never selects the candidate as `current`, never enters
+   `awaiting-health`, and it removes
+   the journal as abandoned while the phase is still `publish-pending`.
 2. `awaiting-health` rolls back only after the process-family proof above; recovery
    never accepts an old receipt.
 3. `health-accepted` completes both known-good publications, the superseded

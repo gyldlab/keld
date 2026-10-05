@@ -26,9 +26,10 @@ launch-refusal and owner-loss sentences) and AC16, the active-selection atom, th
 active-resolver sentence, the helper sentence after §4's executable-located rule and the
 §7 rows for criteria 4 and 5 point to KEL-53's T4d amendment (the bootstrap, candidate
 connect-back, the Machine-UAC recovery-required state, the helper self-anchor and
-owner-loss retirement). Two of these edits lie inside A3's approved §4: the
-active-resolver sentence in the reuse decision, and the helper sentence after the
-executable-located rule. The second changes landed code, not only text: the landed
+owner-loss retirement). Three of these edits lie inside A3's approved §4: the
+active-selection atom row, the active-resolver sentence in the reuse decision, and the
+helper sentence after the executable-located rule. The third changes landed code, not
+only text: the landed
 locator has a fixed `HOST` constant (`crates/keld-update/src/windows_baseline/locate.rs:21`),
 which KEL-53 T4d slice S9 replaces with a closed choice of the two image names, a
 public-API change of the executable-located entry point under KEL-53's public-API gate,
@@ -236,8 +237,10 @@ D4 note remains outside the frozen decision block so its approved digest does no
     mutation authority from argv/environment/cwd, limits writes to that installation's
     package and update roots, and launches the candidate using the exact initiating user's
     ordinary token and logon session, even when UAC used alternate administrator
-    credentials. If that token cannot be securely reused, it launches nothing and rolls
-    the attempt back under the same lease (KEL-53 "Machine-UAC bootstrap"). Forged, stale, replayed, wrong-host, cross-install,
+    credentials. If that token cannot be securely reused, it refuses before any
+    protected write; a failure found only in the created suspended process terminates it
+    and rolls the attempt back under the same lease (KEL-53 "Machine-UAC bootstrap" items
+    4 and 6). Forged, stale, replayed, wrong-host, cross-install,
     replaced-source and wrong-session requests refuse before mutation. Owner loss follows
     KEL-53 "Machine-UAC recovery-required state and recovery-only role".
     `MachineSeamlessDirect` may mutate only through a Windows-native authority

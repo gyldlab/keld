@@ -107,7 +107,9 @@ paragraph:
   intent"):** the recovery-only role never launches and resolves such an attempt with an
   abandon intent inside the one `next_activation_step` state machine, so every
   intermediate state stays `PublishPending` ("Machine-UAC recovery-required state and
-  recovery-only role"). Rationale: the landed step order advances the floor before
+  recovery-only role"). It needs five abandon-intent-scoped step-mapping changes and a
+  `retirement_due` change, all listed in §5, and leaves the ordinary intent unchanged.
+  Rationale: the landed step order advances the floor before
   `AwaitingHealth` (`AdvanceFloor`, `SelectCandidate`, `EnterAwaitingHealth`:
   `windows_baseline/activate.rs:609-629`, `activation.rs:280-297`), so the first D1
   route through `resume_unlaunched` and `roll_back` always consumed the signed version,
@@ -259,7 +261,9 @@ open of the verified host process instead.
    the helper accepts its single argument only in the exact local shape
    `\\.\pipe\keld-attempt-<64 lowercase hex>`, through an `is_attempt_endpoint`
    predicate beside the landed exact-shape predicates in `keld-ipc`
-   (`bootstrap.rs:2147-2170`); a UNC or remote path, another namespace, uppercase hex, a
+   (`bootstrap.rs:2147-2170`); the only other value it accepts is the exact fixed
+   recovery-role selector of "Helper launch and self-anchor", which starts the recovery
+   role and no bootstrap. A UNC or remote path, another namespace, uppercase hex, a
    wrong length or any extra argument refuses before any open or write. It opens the
    endpoint with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so the host can at
    most identify the elevated helper and never impersonate it. Before it sends
@@ -309,8 +313,9 @@ open of the verified host process instead.
    not the token's
    ([CreateProcessWithTokenW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw),
    `ms.date` 2018-12-05). Every launch-readiness proof that needs no created process (the
-   token facts, the session, `SeImpersonatePrivilege`, failed reversion, and desktop and
-   profile availability) runs before the mint-then-journal seam writes `PublishPending`,
+   token facts, the session, `SeImpersonatePrivilege`, failed reversion, a zero logon
+   time of the initiating session, and desktop and profile availability) runs before the
+   mint-then-journal seam writes `PublishPending`,
    so its refusal is `ProtectedStateUnchanged`. Only process creation and the
    verification of the suspended process (its token, session, integrity and elevation,
    image, profile, environment and desktop, before it is resumed) come after
@@ -994,21 +999,28 @@ exactly one of the following:
 2. With a `publish-pending` journal, which the lease alone proves unlaunched, it uses
    the abandon intent of owner decision D1 (refined): one intent argument of the single
    `next_activation_step` state machine (`activation.rs`), not a second state machine.
-   The journal stays `PublishPending` through every step, so a crash at any step leaves
-   a state that the next run resumes on the lease alone, without the logon-session proof.
-   - If the floor is still at its prior value, it retires a published candidate (the
-     landed retire path of `ensure_candidate_pinned`, `windows_baseline/activate.rs:801-830`,
-     without republishing a stage) and then removes the journal as `Abandoned` (the
-     landed rule for a candidate that is neither published nor staged,
-     `activation.rs:200-206`; a completed stage stays a never-selectable `incomplete-*`
-     diagnostic). The floor never moved, so the same signed version stays retryable
-     (criterion 14 and amendment F1).
-   - If the floor is already at the candidate, it first restores `current` to the
-     rollback target if `current` names the candidate, then retires a published
-     candidate, then removes the journal. The version is consumed, as it would be on any
-     route. This needs one landed-code change: under the abandon intent, an unpublished
-     candidate at the candidate floor resolves as `AbandonAttempt` instead of the
-     `CandidateUnpublished` refusal of `activation.rs:207-213`.
+   Like every resumed owner it first re-mints the channel identities in a durable
+   `PublishPending` record (creating no endpoint, because it launches nothing). The
+   journal stays `PublishPending` through every step, so a crash at any step leaves a
+   state that the next run resumes on the lease alone, without the logon-session proof.
+   Under the abandon intent only, these landed mappings change (§5 lists them once):
+   at the prior floor a published candidate retires (`RetireVersion` instead of
+   `AdvanceFloor`, `activation.rs:203`) and a staged candidate is abandoned
+   (`AbandonAttempt` instead of `PublishCandidate`, `:204`); at the candidate floor a
+   published candidate retires (`RetireVersion` instead of `SelectCandidate`, `:210`)
+   and an unpublished one is abandoned (`AbandonAttempt` instead of the
+   `CandidateUnpublished` refusal, `:211-212`); `current` at the candidate restores the
+   rollback target (`RestoreRollbackTarget` instead of `EnterAwaitingHealth`, `:215`);
+   and `retirement_due`, which returns nothing for `PublishPending` today
+   (`activation.rs:137-152`), names the candidate for `PublishPending` only under the
+   abandon intent and only when no pointer names it.
+   - If the floor is still at its prior value, it retires a published candidate and then
+     removes the journal as `Abandoned`; a completed stage stays a never-selectable
+     `incomplete-*` diagnostic. The floor never moved, so the same signed version stays
+     retryable (criterion 14 and amendment F1).
+   - If the floor is already at the candidate, it restores `current` to the rollback
+     target if `current` names the candidate, retires a published candidate, then
+     removes the journal. The version is consumed, as it would be on any route.
 3. Without a journal, it owns the machine-mode repair of an invalid `current`: through
    the shared repair, it republishes last-known-good and reads it back, only when its own
    located version is last-known-good (the KEL-254 T2b located-version gate).
@@ -1100,7 +1112,7 @@ owner was lost resolves only when two independent facts hold. An unlaunched
    `ms.date` 2025-12-30), so closing the last handle of a kill-on-close Job only starts
    the family's termination. The journal records the initiating user's logon session
    (`AuthenticationId` and its logon time) durably before launch; a zero logon time
-   refuses launch. Every family process must run with a primary token that references
+   refuses before `PublishPending` ("Machine-UAC bootstrap" item 6). Every family process must run with a primary token that references
    that session (the census below). Microsoft documents, for the authentication-package
    callback, that a logon session terminates when the last token referencing it is
    deleted
@@ -1848,15 +1860,22 @@ Implement in:
 - dependencies outside this spec: KEL-19's payload writer and container, which embed
   `ExpectedAppIdentity` in both `keld-host.exe` and `keld-updater-helper.exe`, and
   KEL-254 T3 Part B's `ExpectedAppIdentity::from_signed_image`;
-- two landed-code changes in `keld-update` (safe code; owner KEL-53): the
-  executable-located locator replaces its fixed `HOST` constant
-  (`windows_baseline/locate.rs:21`) with the closed choice of `keld-host.exe` or
-  `keld-updater-helper.exe` ("Helper launch and self-anchor"), which changes the public
-  entry point's signature (slice S9); and `next_activation_step` (`activation.rs`) gains
-  the abandon intent of owner decision D1 (refined), including the change that resolves
-  an unpublished candidate at the candidate floor as `AbandonAttempt` under that intent
-  instead of the `CandidateUnpublished` refusal (`activation.rs:207-213`), behind a new
-  public recovery-role entry point (slice S10);
+- landed-code changes in `keld-update` (safe code; owner KEL-53):
+  - the executable-located locator replaces its fixed `HOST` constant
+    (`windows_baseline/locate.rs:21`) with the closed choice of `keld-host.exe` or
+    `keld-updater-helper.exe` ("Helper launch and self-anchor"), which changes the
+    public entry point's signature (slice S9);
+  - `next_activation_step` (`activation.rs`) gains the abandon intent of owner decision
+    D1 (refined), behind a new public recovery-role entry point (slice S10). Under that
+    intent only: `activation.rs:203` maps a published candidate at the prior floor to
+    `RetireVersion` (not `AdvanceFloor`); `:204` maps a staged one to `AbandonAttempt`
+    (not `PublishCandidate`); `:210` maps a published candidate at the candidate floor
+    to `RetireVersion` (not `SelectCandidate`); `:211-212` map an unpublished one to
+    `AbandonAttempt` (not the `CandidateUnpublished` refusal); `:215` maps
+    `ResumeCandidateHealth` to `RestoreRollbackTarget` (not `EnterAwaitingHealth`); and
+    `retirement_due` (`:137-152`) names the candidate for `PublishPending` only under
+    the abandon intent and only when no pointer names it. Every mapping is unchanged
+    under the ordinary intent;
 - the new T4d production FFI. Each call below lives in the named file of its existing
   owner, only after an issue-scoped amendment of that owner's AGENTS.md `unsafe` rule;
   calls that the owner already lists gain only the stated new scope:
@@ -2018,8 +2037,9 @@ Must not touch in Slice A:
     (`keld-runtime`), wire (canonical package content), public API (the locator's image
     choice). Evidence: the helper launch, argument-shape, planted-DLL and edge-set rows.
   - S10, the recovery-only role under D1 (refined): the abandon intent in
-    `next_activation_step` with the `activation.rs:207-213` change and its public
-    recovery-role entry point (`keld-update`), the role in `keld-updater-helper`, and
+    `next_activation_step` with the five step-mapping changes and the `retirement_due`
+    change listed in §5, and its public recovery-role entry point (`keld-update`), the
+    role in `keld-updater-helper`, and
     Machine-UAC admission in `load_windows_recovery_inspection`. Gates: public API,
     permission model. Evidence: the `publish-pending` owner-loss, abandon-intent
     crash-cut and recovery-required rows.
@@ -2070,7 +2090,7 @@ Must not touch in Slice A:
 | 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL and its own user SID as owner before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS and, before sending, verifies that the host process image is its installation's selected `keld-host.exe`, the session, and a descriptor owned by that host's user SID; it takes the initiating token only from that host process object and refuses an elevated or non-Medium initiating token before any protected write; a forged rendezvous argument, a squatting server that is not that `keld-host.exe` (same-user code is outside the boundary and is not claimed), a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted with the initiating token unchanged once S1 shows the open works, and otherwise refuses with a typed `ProtectedStateUnchanged` before any protected write; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
 | 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
 | 17 (owner loss in `publish-pending`) | the owner is killed after the `publish-pending` journal is durable and before launch, at each persisted step (before publication, after publication, after the floor, after `current`): no candidate family exists and no logon-session proof is needed; in `MachineUacDirect` an ordinary launch returns `MachineRecoveryRequired` with `RecoverNow` once S10 is enabled, and the recovery role resolves the attempt with the abandon intent of D1 (refined): with the floor at its prior value the published candidate is retired, the journal is removed as `Abandoned`, the floor never moves and the same signed version is retryable; with the floor at the candidate, `current` is restored and the candidate retired before journal removal, and the version is consumed; in `PerUserDirect` the landed lease-only resume is unchanged |
-| 17 (abandon-intent crash cuts) | the recovery role is killed at every step of the abandon intent: after the candidate's retirement and before journal removal, during journal removal (a `pending-*` leftover), and, at the candidate floor, after `current` is restored and after the retirement; at each cut the journal is still `PublishPending` (or already removed), the next run resumes it on the writer lease alone with `RecoverNow` guidance, never needs the logon-session proof, and never writes `AwaitingHealth` or `RollbackPending`; the unpublished-candidate-at-candidate-floor case resolves as `AbandonAttempt` only under the abandon intent and still refuses with `CandidateUnpublished` under the ordinary intent |
+| 17 (abandon-intent crash cuts) | the recovery role is killed at every step of the abandon intent: after its re-mint record, after the candidate's retirement and before journal removal, and, at the candidate floor, after `current` is restored and after the retirement; at each of these cuts the journal is still `PublishPending`, the next ordinary launch returns `MachineRecoveryRequired` with `RecoverNow`, and the next recovery-role run resumes it on the writer lease alone, re-mints again, never needs the logon-session proof and never writes `AwaitingHealth` or `RollbackPending`. A cut after the journal's write-through rename to its `pending-*` leaf leaves no journal: the next ordinary launch selects the rollback target normally, and the next writer removes the `pending-*` leftover. Under the ordinary intent every step mapping and `retirement_due` result is unchanged, including the `CandidateUnpublished` refusal at the candidate floor |
 | 17 (owner-loss retirement) | helper terminated and crashed mid-health; helper crash after `health-accepted` both before the limit is cleared (the application ends) and after it (the healthy application keeps running); a `rollback-pending` crash; a live owner still holding the lease; sign-out, a real full restart and a Fast Startup shutdown mid-health, each binary: afterwards the session query returns no such logon session or a session with a different logon time, otherwise the row fails and recovery halts; logon-session LUID reuse with a different logon time (seam-injected); a denied or unknown session-query status (seam-injected), with the single accepted "no such logon session" status confirmed on real Windows; a reference to a token of that session kept alive after sign-out, such as a duplicated token handle in an unrelated process, which keeps recovery halted until it closes; the census at Ready, at health acceptance and before the limit clear, through the acceptance-only Job process-list seam and per-process `TokenStatistics`; the static scan of the host and WebView crates; negative controls showing that no admitted family member starts a candidate-tree image or family-supplied code outside the attempt Job or under another logon session, and that sandboxed roles cannot (netonly `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task registered to a candidate-tree image as falsifiers); Job membership before the first instruction under `CreateProcessWithTokenW` with `CREATE_SUSPENDED`; a descendant breakaway attempt; nested KEL-96 host Jobs; and a family still terminating with pending I/O (the `pending_io_family` fixture: the census seam holds a not-yet-exited Job member; seam-injected). Each row either proves both facts or halts fail-closed, and no family member runs or has pending I/O after a passed proof |
 | 17 (helper crash after `health-accepted`) | after the limit is cleared and with the application still running, a helper crash leaves `health-accepted` durable: the next ordinary launch, including a second launch of the application, refuses with `MachineRecoveryRequired` and `RestartFirst` guidance (`RecoveryDisabled` before S12); nothing is written; the recovery role halts while the initiating session is live and finishes the commit only after the session query proves that it ended |
 | 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an `UpdateError::Baseline` refusal or merely no selection) and writes nothing; each `MachineRecoveryGuidance` variant's fix-guidance text matches its pinned bytes; the same states in `PerUserDirect` keep their landed recovery and repair; `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline` refusal; while S10's rows have not passed, the helper refuses the recovery role and the guidance is `RecoveryDisabled`; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
@@ -2107,8 +2127,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `load_windows_activation_write_snapshot` and `load_windows_recovery_inspection`,
   which today admit only `PerUserDirect` (`windows_baseline/load.rs:353`, `:382-385`),
   through the existing `require_windows_machine_uac_owner_token` predicate rather than a
-  second one; the recovery-role entry point for the D1 (refined) abandon intent and the
-  `activation.rs:207-213` change behind it; the executable-located entry point's closed
+  second one; the recovery-role entry point for the D1 (refined) abandon intent, with the
+  abandon-intent step mappings and `retirement_due` change behind it (§5); the
+  executable-located entry point's closed
   image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:21`);
   the helper role entry points; the `keld-guard` Authenticode owner moved
   under D4; the `keld-ipc` `attempt` module; and the new safe wrappers that
