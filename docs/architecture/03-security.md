@@ -8,8 +8,9 @@ enforcement, no per-window separation. Keld's job: Tauri's rigor with zero-confi
 ## 1. Principals and trust
 
 The three core principal classes are host, app-process role, and webview. Optional
-native-addon workers, reviewed native plugins and the signed update relaunch helper have
-their own policy; they do not inherit identity or grants from a core class.
+native-addon workers, reviewed native plugins, the signed update relaunch helper and the
+Machine-UAC updater helper have their own policy; they do not inherit identity or grants
+from a core class.
 
 | Principal | Trust | Authority |
 |---|---|---|
@@ -19,6 +20,7 @@ their own policy; they do not inherit identity or grants from a core class.
 | native-addon worker (optional compat process) | untrusted native code | OS-sandboxed bounded profile; broker only, never host authority |
 | native plugin (optional Rust, in-host) | trusted TCB code | manifest constrains registered channels; in-process code is not syscall-confined |
 | update relaunch helper (optional signed process) | trusted narrow mechanism | verified staged artifact + exact install target only |
+| Machine-UAC updater helper (`keld-updater-helper.exe`; `MachineUacDirect` only; target, not implemented) | trusted narrow elevated mechanism, started per attempt through explicit UAC | one installation's package/update roots through the common KEL-53 transaction, initiating-user candidate launch, and the recovery-only role; no app runtime, feed parser or persistent broker (KEL-53 criterion 17) |
 
 Every dispatched kipc frame is associated with sender identity that the host minted;
 peers never self-identify. The destination supervisor binds a principal to the accepted
@@ -304,10 +306,9 @@ semantic-version trust floor separate from `current`, an exact attempt journal a
 `last-known-good`; candidate health cannot advance LKG unless its private receipt
 matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed,
 dedicated, minimal signed `keld-updater-helper.exe` invoked through explicit UAC, never
-an elevated application host; it authenticates its bootstrap from the admitted host over
-its own versioned subprotocol, obtains the write lease, and then reuses the common
-verifier to revalidate the user's cache input under retained read handles before
-publishing the journal or making any protected write.
+an elevated application host. It authenticates its bootstrap from the admitted host,
+obtains the write lease and revalidates the user's cache input before any protected
+write; KEL-53 criterion 17 and its single-writer transition own the exact order.
 Any optional post-exit locked-file helper is a separate, narrower
 component that consumes only an already-protected journal and inherited protected
 update-root/lock handles; it inherits no endpoint and has no

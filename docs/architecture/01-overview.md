@@ -13,8 +13,10 @@ only; Linear continues to own execution state.
 Three principal classes, with host-minted instances inside each class:
 1. **keld-host** (Rust): the authority root for every framework-controlled privileged
    resource—windows, webviews, native APIs, keys and update policy. It is the only
-   long-lived general privileged process. A reviewed native plugin or minimal signed
-   update relaunch helper receives only its declared narrow authority. The host is
+   long-lived general privileged process. A reviewed native plugin, a minimal signed
+   update relaunch helper, or the per-attempt elevated Machine-UAC updater helper
+   (`keld-updater-helper.exe`, target) receives only its declared narrow authority and
+   never runs the application or Bun. The host is
    prebuilt per platform; app developers never compile it.
 2. **App-process family** (destination: supervised Bun children): the developer's primary "main
    process" plus named compatibility roles when an app needs independent extension,

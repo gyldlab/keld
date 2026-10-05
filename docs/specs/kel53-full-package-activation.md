@@ -163,7 +163,7 @@ updater state machines or move journal/pointer policy into the authority adapter
 | Mode | Install and update authority | Required boundary |
 |---|---|---|
 | `PerUserDirect` (default) | Install beneath the installing user's application location. Verify, stage and activate under that user's ordinary authority with no UAC. | The same-user owner can mutate its own files; Keld does not claim protection from arbitrary native malware under that account. Supervised app roles remain unable to mutate updater state where the admitted profile supports distinct OS principals. |
-| `MachineUacDirect` | Install beneath a protected machine root. Download and verify into a separate user-owned staging area; when protected activation is required, request UAC and use the signed/elevated updater for the exact attempt. | The application host and Bun roles remain non-elevated/non-SYSTEM. Before elevation, bind the request to the initiating user's SID, logon-session identity and caller process. It may carry only KEL-53's bounded source lookup locator beneath that authenticated user's owner-private staging root; the locator conveys no authority and cannot select an install root or write destination. The elevated component's Authenticode signer and exact image digest must match the protected helper identity. It resolves the locator through the Windows path owner, opens and pins the exact read-only source handles, denies concurrent write/delete where the platform permits, and independently verifies the signed manifest/artifact from those handles. It then creates the protected journal/attempt, copies verified bytes into a protected sibling stage and verifies/read-backs the copy before publication. It accepts no mutation authority from argv, environment, cwd, or arbitrary caller paths and mutates only this installation's package/update roots through common KEL-53 code. Candidate launch must use the exact initiating user's ordinary token and logon session, even if UAC used alternate administrator credentials; if that token cannot be securely reused, it refuses launch and preserves journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install, replaced-source or wrong-session requests refuse before protected mutation. If the elevated owner dies, recovery is journal-bound and fail-closed; retry may require another explicit UAC grant. |
+| `MachineUacDirect` | Install beneath a protected machine root. Download and verify into a separate user-owned staging area; when protected activation is required, request UAC and use the signed/elevated updater for the exact attempt. | The application host and Bun roles remain non-elevated/non-SYSTEM. Before elevation, bind the request to the initiating user's SID, logon-session identity and caller process. It may carry only KEL-53's bounded source lookup locator beneath that authenticated user's owner-private staging root; the locator conveys no authority and cannot select an install root or write destination. The elevated component's Authenticode signer and exact image digest must match the protected helper identity. It resolves the locator through the Windows path owner, opens and pins the exact read-only source handles, denies concurrent write/delete where the platform permits, and independently verifies the signed manifest/artifact from those handles. It then follows the common single-writer transition (§4): it copies verified bytes into a protected sibling stage and verifies/read-backs the copy before the journal and publication. It accepts no mutation authority from argv, environment, cwd, or arbitrary caller paths and mutates only this installation's package/update roots through common KEL-53 code. Candidate launch must use the exact initiating user's ordinary token and logon session, even if UAC used alternate administrator credentials; if that token cannot be securely reused, it refuses launch and preserves journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install, replaced-source or wrong-session requests refuse before protected mutation. Owner loss is governed by §4 "Machine-UAC recovery-required state and recovery-only role". |
 | `MachineSeamlessDirect` | Install beneath a protected machine root; later activation obtains a narrow privileged write lease without repeated UAC. | Opt-in only. The mechanism is not selected by this requirement. It remains unavailable until the KEL-270 proof gate below passes and an exact-reviewed Windows-native authority is selected. Host/Bun remain ordinary-user processes. |
 | `ManagedOwner` | MSIX, App Installer, Store, enterprise deployment and package-manager owners perform their own update. | Keld MUST refuse direct activation and MUST NOT register a competing writer or selector. |
 
@@ -244,8 +244,8 @@ elevated-owner-opened read-only source handles,
 source-file substitution/reparse/write races, independent signature/artifact
 revalidation, replay and cross-install refusal, protected copy/readback, mutation
 confinement, exact initiating-user candidate token, wrong-session refusal, process-family lifecycle,
-helper/coordinator death at every persisted boundary, and journal-bound recovery with
-renewed consent where required. A positive control proves the exact authorized operation
+helper/coordinator death at every persisted boundary, and the typed recovery-required
+state with its recovery-only resolution. A positive control proves the exact authorized operation
 can complete. Per-user tests assert same-user no-UAC activation and its stated threat
 exclusion. Machine-UAC
 tests assert explicit elevation only at protected activation and prove the application
@@ -500,7 +500,8 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     over-the-shoulder approval), retaining exact-health/commit/rollback rules. The helper
     itself owns the attempt; a keeper is added only if the design proves it necessary, and
     then it is minimal, bound to one installation and one attempt, holds only attenuated
-    exact handles, exposes no mutation, process or filesystem command, and exits when the
+    exact handles and never a handle to the attempt Job, which only the launching
+    component holds, exposes no mutation, process or filesystem command, and exits when the
     attempt is terminal. There is no persistent or ambient privileged broker. If the
     helper exits, or Windows restarts or every owner is lost before resolution, an
     ordinary process never recovers: it returns the typed
@@ -1802,8 +1803,8 @@ not requests to revisit that decision:
   role write denial; the owning user's authority remains outside the threat claim.
 - T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,
   over-the-shoulder user-token launch, and exact health/rollback under the live elevated
-  owner. Reboot/owner death requires fresh consent plus the qualified owner-loss
-  retirement proof, or a safe halt.
+  owner. Reboot and owner death follow §4 "Machine-UAC recovery-required state and
+  recovery-only role".
 - T4d owner decision (pending with this amendment's approval): because the recovery-only
   role launches nothing, it resolves an unlaunched `publish-pending` attempt by rolling
   it back, which consumes that signed version until a newer release ships. The

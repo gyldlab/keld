@@ -960,7 +960,8 @@ uses a separately provisioned Administrators/SYSTEM DACL and a signed UAC helper
 update may repair descriptors or take ownership. The Machine-UAC helper is the authority
 adapter for the common transaction: it authenticates its bootstrap from the admitted
 host, obtains the write lease, and then reuses the shared verifier on the exact staged
-candidate under retained read handles before creating the protected journal.
+candidate under retained read handles before creating the protected journal; KEL-53
+criterion 17 and its single-writer transition own the exact order.
 UAC consent alone and caller-supplied
 paths/argv/environment are not attempt authorization. The optional post-exit helper
 described below remains a separate inherited-handle-only component for an already

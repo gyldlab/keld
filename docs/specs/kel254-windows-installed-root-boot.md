@@ -21,9 +21,10 @@ install mode, no
 production `unsafe`, and no provenance-record field. It changes Windows only: macOS and
 Linux keep their current standalone and lease-less boot behavior and tests (see AC2).
 The KEL-270 T4d Machine-UAC activation amendment is a separate spec change.
-KEL-270 T4d cross-references (2026-10-05): AC4, AC5 and AC16, the active-selection
-atom, the helper sentence after §4's executable-located rule and the §7 rows for
-criteria 4 and 5 point to KEL-53's T4d amendment (candidate connect-back, the
+KEL-270 T4d cross-references (2026-10-05): AC4, AC5, AC14 and AC16, the
+active-selection atom, the §4 active-resolver sentence, the helper sentence after §4's
+executable-located rule and the §7 rows for criteria 4 and 5 point to KEL-53's T4d
+amendment (candidate connect-back, the
 Machine-UAC recovery-required state, the helper self-anchor and owner-loss retirement). These
 sentences carry no approval from A3 or from the earlier revisions; their exact-content
 approval is pending with the KEL-53 T4d amendment.
@@ -223,16 +224,17 @@ D4 note remains outside the frozen decision block so its approved digest does no
     read-only source handles itself, denies concurrent write/delete where the platform
     permits, and independently revalidates the signed manifest/artifact from those
     handles. It verifies its Authenticode signer and image digest against the protected
-    helper identity, creates the protected journal/attempt, copies to a protected
-    sibling stage and verifies/read-backs the copy before publication. It accepts no
+    helper identity, then follows KEL-53's common single-writer transition: it copies to
+    a protected sibling stage and verifies/read-backs the copy before the journal and
+    publication. It accepts no
     mutation authority from argv/environment/cwd, limits writes to that installation's
     package and update roots, and launches the candidate using the exact initiating user's
     ordinary token and logon session, even when UAC used alternate administrator
     credentials. If that token cannot be securely reused, it refuses launch and leaves
     journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install,
-    replaced-source and wrong-session requests refuse before mutation. If the elevated
-    owner dies, recovery is journal-bound and fail-closed; retry may require a new UAC
-    grant. `MachineSeamlessDirect` may mutate only through a Windows-native authority
+    replaced-source and wrong-session requests refuse before mutation. Owner loss follows
+    KEL-53 "Machine-UAC recovery-required state and recovery-only role".
+    `MachineSeamlessDirect` may mutate only through a Windows-native authority
     selected by a separately approved architecture/spec amendment after KEL-270's
     lifecycle evidence and all remaining named proof gates pass. Until that
     gate passes, it refuses activation before package mutation. In all cells the shared KEL-53
@@ -337,7 +339,7 @@ to compare with KEL-135; `keld-update` does not depend on `keld-core`. Its activ
 selection identifies exactly one current artifact/tree. The baseline is only the
 install-time floor; it MUST NOT stand in for the active artifact after update or
 rollback. The active resolver validates no-journal recovery state or the exact
-candidate journal/endpoint before lending the selected version tree to KEL-96. A
+candidate journal and live-owner acceptance (KEL-53 "Candidate connect-back") before lending the selected version tree to KEL-96. A
 synthetic protected-observation enum is state-machine test evidence only, never proof of
 OS record protection, current-pointer authority, installer bytes, or role-token denial.
 
