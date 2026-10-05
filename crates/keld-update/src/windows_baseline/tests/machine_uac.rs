@@ -45,7 +45,8 @@ fn machine_uac_authority_failure_precedes_all_filesystem_admission() {
     );
 }
 
-fn operator_root() -> PathBuf {
+/// The operator's unique direct `C:` child for UAC acceptance, whether or not it exists.
+pub(super) fn operator_root_path() -> PathBuf {
     let root = PathBuf::from(
         std::env::var_os(MACHINE_UAC_ROOT_ENV)
             .expect("operator supplies a unique direct C: child for UAC acceptance"),
@@ -53,6 +54,12 @@ fn operator_root() -> PathBuf {
     assert_eq!(root.parent(), Some(Path::new(r"C:\")));
     let leaf = root.file_name().and_then(|value| value.to_str()).unwrap();
     assert!(leaf.starts_with("KeldKel270Uac-") && leaf.len() > 16);
+    root
+}
+
+/// [`operator_root_path`] for a seeding selector, which never reuses a fixture.
+pub(super) fn operator_root() -> PathBuf {
+    let root = operator_root_path();
     assert!(
         !root.exists(),
         "never reuse or repair an existing UAC fixture"
