@@ -60,6 +60,8 @@ pub(crate) enum RecoveryRefusal {
     KnownGoodMismatch,
     /// The candidate is not a higher strict-SemVer release than the prior floor.
     InvalidJournalContext,
+    /// The floor already names the candidate, but no published candidate version exists.
+    CandidateUnpublished,
 }
 
 /// Classifies a crash-cut snapshot without guessing or repairing unrelated state.
@@ -100,6 +102,10 @@ pub(crate) struct ProtectedSlots<'a> {
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ActivationStep {
+    /// Rename the candidate's complete stage to its version name and verify it.
+    PublishCandidate,
+    /// Remove the journal of an attempt whose candidate stage is gone; nothing changed.
+    AbandonAttempt,
     /// Replace the trust floor with the candidate version.
     AdvanceFloor,
     /// Replace `current` with the candidate.
@@ -146,10 +152,25 @@ pub(crate) fn retirement_due<'journal>(
     }
 }
 
+/// Where the journal's candidate is, as observed under the writer lease.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CandidateLocation {
+    /// A complete version directory carries the candidate's version name.
+    Published,
+    /// Only a complete `incomplete-*` stage whose completion record names the exact
+    /// candidate exists; the attempt's journal predates the version rename.
+    Staged,
+    /// Neither exists.
+    Absent,
+}
+
 /// Selects the exact next step for a validated journal and its protected slots.
 ///
-/// `retiree_present` reports whether the [`retirement_due`] version directory still
-/// exists. This function is pure: the caller must already hold the installation-wide
+/// `candidate` locates the journal's candidate; it decides only a `PublishPending`
+/// attempt whose floor is still prior, which publishes a staged candidate first and
+/// abandons an attempt whose stage is gone. `retiree_present` reports whether the
+/// [`retirement_due`] version directory still exists. This function is pure: the caller must already hold the installation-wide
 /// writer lease and, for recovery, authenticated process-family retirement evidence.
 ///
 /// # Errors
@@ -158,6 +179,7 @@ pub(crate) fn retirement_due<'journal>(
 pub(crate) fn next_activation_step(
     journal: &ActivationJournal,
     slots: &ProtectedSlots<'_>,
+    candidate: CandidateLocation,
     retiree_present: bool,
 ) -> Result<ActivationStep, RecoveryRefusal> {
     let retire_or_remove = || {
@@ -177,10 +199,19 @@ pub(crate) fn next_activation_step(
         RecoveryDecision::Refuse(reason) => Err(reason),
         RecoveryDecision::ResumePublishPending {
             advance_floor: true,
-        } => Ok(ActivationStep::AdvanceFloor),
+        } => Ok(match candidate {
+            CandidateLocation::Published => ActivationStep::AdvanceFloor,
+            CandidateLocation::Staged => ActivationStep::PublishCandidate,
+            CandidateLocation::Absent => ActivationStep::AbandonAttempt,
+        }),
         RecoveryDecision::ResumePublishPending {
             advance_floor: false,
-        } => Ok(ActivationStep::SelectCandidate),
+        } => match candidate {
+            CandidateLocation::Published => Ok(ActivationStep::SelectCandidate),
+            CandidateLocation::Staged | CandidateLocation::Absent => {
+                Err(RecoveryRefusal::CandidateUnpublished)
+            }
+        },
         RecoveryDecision::ResumeCandidateHealth => Ok(ActivationStep::EnterAwaitingHealth),
         RecoveryDecision::Rollback { .. } => Ok(ActivationStep::AwaitHealth),
         RecoveryDecision::FinishCommit => {

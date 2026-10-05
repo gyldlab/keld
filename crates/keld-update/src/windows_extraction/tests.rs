@@ -151,7 +151,7 @@ fn owner_private_stage_cannot_publish_a_version_without_the_writer_lease() {
         .expect("verified incomplete stage");
     let stage_name = stage.name().to_owned();
     let error = stage
-        .publish_version()
+        .complete()
         .expect_err("owner-private staging is not the activation writer");
     assert_eq!(error.code(), "KELD-UPDATE-015");
     assert!(matches!(

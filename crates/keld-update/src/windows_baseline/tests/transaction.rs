@@ -28,18 +28,19 @@ fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
     .expect("trusted per-user verifier")
 }
 
-/// Extracts, publishes and starts activation of `version` under one writer lease.
+/// Extracts and completes `version`, then journals, publishes and selects it under one
+/// writer lease.
 fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActivationAttempt {
-    let (root, published) = publish(trust, version);
-    root.begin_activation(&published, COORDINATOR)
-        .expect("journal and select the published candidate")
+    let (root, stage) = complete(trust, version);
+    root.begin_activation(stage, COORDINATOR)
+        .expect("journal, publish and select the completed candidate")
 }
 
-/// Publishes one complete immutable version and keeps the writer lease in its root.
-fn publish(
+/// Completes one stage under its `incomplete-*` name and keeps the writer lease in its root.
+fn complete(
     trust: &WindowsBaselineTrust,
     version: &str,
-) -> (crate::WindowsExtractionRoot, crate::ArtifactIdentity) {
+) -> (crate::WindowsExtractionRoot, crate::CompletedWindowsStage) {
     let verifier = verifier(trust);
     let snapshot = load_windows_activation_write_snapshot(trust, &verifier)
         .expect("acquire the exclusive per-user writer lease");
@@ -61,12 +62,23 @@ fn publish(
     let mut root = snapshot
         .open_extraction_root()
         .expect("writer snapshot opens its staging root");
-    let published = root
+    let stage = root
         .extract(&candidate, &source)
         .expect("extract the authenticated candidate")
-        .publish_version()
-        .expect("publish the complete immutable version");
-    (root, published)
+        .complete()
+        .expect("complete the stage without renaming it");
+    (root, stage)
+}
+
+/// Reproduces the pre-journal orphan the earlier publication order could leave: a
+/// complete version that no record or journal references.
+fn legacy_orphan(trust: &WindowsBaselineTrust, version: &str) -> crate::ArtifactIdentity {
+    let (root, stage) = complete(trust, version);
+    drop(root);
+    let versions = trust.installation.update_root.join("versions");
+    std::fs::rename(versions.join(stage.name()), versions.join(version))
+        .expect("rename the stage as the earlier order did before its journal");
+    stage.identity().clone()
 }
 
 fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
@@ -518,26 +530,19 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
 }
 
 #[test]
-fn a_refusal_before_the_journal_retires_only_the_published_candidate() {
+fn a_refusal_before_the_journal_leaves_only_the_completed_stage() {
     let fixture = tempfile::tempdir().expect("pre-journal refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
-    let diagnostic = trust
-        .installation
-        .update_root
-        .join("versions")
-        .join(format!("incomplete-{}", "b".repeat(64)));
+    let versions = trust.installation.update_root.join("versions");
+    let diagnostic = versions.join(format!("incomplete-{}", "b".repeat(64)));
     std::fs::create_dir(&diagnostic).expect("a live diagnostic stage beside the versions");
-    let earlier_retired = trust
-        .installation
-        .update_root
-        .join("versions")
-        .join(format!("retired-{}", "c".repeat(64)));
+    let earlier_retired = versions.join(format!("retired-{}", "c".repeat(64)));
     std::fs::create_dir(&earlier_retired).expect("an earlier retired tree");
 
-    let (root, published) = publish(&trust, "3.0.0");
+    let (root, stage) = complete(&trust, "3.0.0");
     assert_refusal(
-        root.begin_activation(&published, [0; 32]),
+        root.begin_activation(stage, [0; 32]),
         "start",
         ActivationEffect::ProtectedStateUnchanged,
     );
@@ -550,51 +555,46 @@ fn a_refusal_before_the_journal_retires_only_the_published_candidate() {
     assert_eq!(
         refused.versions,
         names(&["1.0.0", "2.0.0", "incomplete-*", "retired-*"]),
-        "only the refused candidate is retired; known-good and diagnostic entries stay"
+        "a refused start never renames its stage to a version"
+    );
+    drop(
+        load_windows_activation_write_snapshot(&trust, &verifier(&trust))
+            .expect("a completed stage is a tolerated leftover, not an orphan"),
     );
 
-    let (root, published) = publish(&trust, "3.0.0");
-    let mut unrelated = published;
-    unrelated.content_blake3[0] ^= 1;
+    // A stage that vanished before the journal also refuses with nothing written.
+    let (root, stage) = complete(&trust, "3.0.0");
+    std::fs::remove_dir_all(versions.join(stage.name())).expect("remove the completed stage");
     assert_refusal(
-        root.begin_activation(&unrelated, COORDINATOR),
+        root.begin_activation(stage, COORDINATOR),
         "start",
         ActivationEffect::ProtectedStateUnchanged,
     );
-    assert_eq!(
-        observe(&trust).versions,
-        names(&["1.0.0", "2.0.0", "incomplete-*", "retired-*"]),
-        "an identity that does not match the published version never becomes runnable"
-    );
-
+    assert_eq!(observe(&trust).journal, None);
     assert!(
         earlier_retired.is_dir() && diagnostic.is_dir(),
         "generated entries are neither renamed nor deleted by a refused start"
     );
-    std::fs::remove_dir(&diagnostic).expect("remove the diagnostic fixture");
+
+    // The next resolution removes every generated leftover through retained handles.
     commit(&trust, "3.0.0");
     assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
 }
 
 #[test]
-fn an_unretirable_refused_candidate_halts_until_the_explicit_repair() {
-    let fixture = tempfile::tempdir().expect("retained candidate fixture");
+fn a_legacy_orphan_halts_until_the_explicit_repair() {
+    let fixture = tempfile::tempdir().expect("legacy orphan fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = verifier(&trust);
-    let (root, published) = publish(&trust, "2.0.0");
+    drop(legacy_orphan(&trust, "2.0.0"));
     let candidate_tree = trust
         .installation
         .update_root
         .join("versions")
         .join("2.0.0")
         .join("tree");
-    let holder = std::fs::File::open(nested_file(&candidate_tree))
-        .expect("hold a file inside the refused candidate");
-    assert_refusal(
-        root.begin_activation(&published, [0; 32]),
-        "start",
-        ActivationEffect::UnjournaledVersionRetained,
-    );
+    let holder =
+        std::fs::File::open(nested_file(&candidate_tree)).expect("hold a file inside the orphan");
     let error = load_windows_activation_write_snapshot(&trust, &verifier)
         .expect_err("an unjournaled complete version halts every ordinary writer");
     assert!(
@@ -630,6 +630,47 @@ fn an_unretirable_refused_candidate_halts_until_the_explicit_repair() {
 }
 
 #[test]
+fn a_published_candidate_that_fails_verification_is_retired_and_abandoned() {
+    let fixture = tempfile::tempdir().expect("unverifiable candidate fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let (root, stage) = complete(&trust, "2.0.0");
+    let archive = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(stage.name())
+        .join("content.tar");
+    let mut bytes = std::fs::read(&archive).expect("staged archive");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(&archive, bytes).expect("corrupt the completed stage after completion");
+    match root.begin_activation(stage, COORDINATOR) {
+        Err(UpdateError::Activation { step, effect, .. }) => {
+            assert_eq!(step, "candidate verification");
+            assert_eq!(effect, ActivationEffect::ProtectedStateUnchanged);
+        }
+        other => panic!("an unverifiable candidate must be abandoned: {other:?}"),
+    }
+    let abandoned = observe(&trust);
+    assert_eq!(
+        abandoned.journal, None,
+        "the abandoned attempt removes its journal"
+    );
+    assert_eq!(
+        (
+            abandoned.floor.as_str(),
+            abandoned.current.as_str(),
+            abandoned.last_known_good.as_str()
+        ),
+        ("1.0.0", "1.0.0", "1.0.0"),
+        "the floor never names a candidate that failed verification"
+    );
+    assert_eq!(abandoned.versions, names(&["1.0.0"]));
+    commit(&trust, "2.0.0");
+    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
+}
+
+#[test]
 fn the_unjournaled_repair_refuses_a_pending_journal() {
     let fixture = tempfile::tempdir().expect("repair refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
@@ -651,7 +692,10 @@ fn the_unjournaled_repair_refuses_a_pending_journal() {
         before.journal.as_ref().map(|journal| &journal.phase),
         Some(&ActivationPhase::PublishPending)
     );
-    assert!(before.versions.contains("2.0.0"));
+    assert!(
+        before.versions.contains("incomplete-*") && !before.versions.contains("2.0.0"),
+        "the journal precedes the rename, so the candidate is still its stage: {before:?}"
+    );
     let error = crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust))
         .expect_err("a journaled attempt belongs to journal-bound recovery");
     assert!(
@@ -688,9 +732,7 @@ fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename()
         // its first rename; a damaged published tree is itself the only orphan.
         let damaged_tree = matches!(stray, "renamed-version" | "foreign-scope");
         if !damaged_tree {
-            let (root, published) = publish(&trust, "2.0.0");
-            drop(root);
-            drop(published);
+            drop(legacy_orphan(&trust, "2.0.0"));
         }
         match stray {
             "unprotected-empty" => {
@@ -701,16 +743,12 @@ fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename()
             }
             "renamed-version" => {
                 // A genuine protected tree whose completion record names another version.
-                let (root, published) = publish(&trust, "3.0.0");
-                drop(root);
-                drop(published);
+                drop(legacy_orphan(&trust, "3.0.0"));
                 std::fs::rename(versions.join("3.0.0"), versions.join("9.9.9"))
                     .expect("store a complete tree under another version name");
             }
             "foreign-scope" => {
-                let (root, published) = publish(&trust, "3.0.0");
-                drop(root);
-                let mut foreign = published;
+                let mut foreign = legacy_orphan(&trust, "3.0.0");
                 foreign.app_id = "com.example.other".to_owned();
                 let content_size = std::fs::metadata(versions.join("3.0.0").join("content.tar"))
                     .expect("published archive")
@@ -799,9 +837,12 @@ fn an_unlaunched_attempt_resumes_under_the_lease_with_fresh_channels() {
 
     let inspection = load_windows_recovery_inspection(&trust, &verifier(&trust))
         .expect("inspect the unlaunched attempt");
-    let attempt = inspection
+    let WindowsRecoveryOutcome::AwaitingHealth(attempt) = inspection
         .resume_unlaunched(COORDINATOR)
-        .expect("a never-launched attempt resumes under the writer lease alone");
+        .expect("a never-launched attempt resumes under the writer lease alone")
+    else {
+        panic!("a staged candidate resumes to its health decision");
+    };
     assert_eq!(attempt.attempt_id(), &lost.attempt_id);
     assert_ne!(attempt.health_channel_id(), &lost.health_channel_id);
     assert_ne!(attempt.lifecycle_channel_id(), &lost.lifecycle_channel_id);
@@ -977,8 +1018,9 @@ fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcom
 /// Expected recovery after one persisted cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterCut {
-    /// No journal references the published candidate; startup halts on the orphan.
-    OrphanHalts,
+    /// No journal exists; only the completed stage remains, which the next writer
+    /// tolerates and the next resolution removes.
+    StageOnly,
     /// Publish-pending resumes to a live attempt, which then commits on exact health.
     ResumesThenCommits,
     /// Health was never accepted; recovery rolls back.
@@ -1004,8 +1046,10 @@ struct Scenario {
 }
 
 const COMMIT_PATH: &[(&str, AfterCut)] = &[
-    ("prepared:publish-pending", AfterCut::OrphanHalts),
+    ("prepared:publish-pending", AfterCut::StageOnly),
     ("publish-pending", AfterCut::ResumesThenCommits),
+    ("prepared:candidate-published", AfterCut::ResumesThenCommits),
+    ("candidate-published", AfterCut::ResumesThenCommits),
     ("prepared:floor-advanced", AfterCut::ResumesThenCommits),
     ("floor-advanced", AfterCut::ResumesThenCommits),
     ("prepared:candidate-selected", AfterCut::ResumesThenCommits),
@@ -1049,7 +1093,17 @@ const RECOVERY_RESUME_PATH: &[(&str, AfterCut)] = &[
     ("awaiting-health", AfterCut::RollsBack),
 ];
 
-const SCENARIOS: [Scenario; 6] = [
+/// A recovering owner after the lost owner journaled but never renamed its stage.
+const RECOVERY_PUBLISH_PATH: &[(&str, AfterCut)] = &[
+    ("prepared:channels-reminted", AfterCut::ResumesThenCommits),
+    ("channels-reminted", AfterCut::ResumesThenCommits),
+    ("prepared:candidate-published", AfterCut::ResumesThenCommits),
+    ("candidate-published", AfterCut::ResumesThenCommits),
+    ("floor-advanced", AfterCut::ResumesThenCommits),
+    ("awaiting-health", AfterCut::RollsBack),
+];
+
+const SCENARIOS: [Scenario; 7] = [
     Scenario {
         case: "commit",
         prior_commit: true,
@@ -1086,7 +1140,69 @@ const SCENARIOS: [Scenario; 6] = [
         first_crash: Some("floor-advanced"),
         cuts: RECOVERY_RESUME_PATH,
     },
+    Scenario {
+        case: "recover",
+        prior_commit: true,
+        first_crash: Some("publish-pending"),
+        cuts: RECOVERY_PUBLISH_PATH,
+    },
 ];
+
+#[test]
+fn a_journaled_attempt_whose_stage_is_gone_is_abandoned_on_recovery() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("abandoned attempt fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let before = observe(&trust);
+    let stdout = support::child(
+        CRASH_HELPER,
+        fixture.path(),
+        "commit",
+        "publish-pending",
+        CRASH_EXIT,
+    );
+    assert!(
+        stdout.contains("KELD_ACTIVATION_CUT=publish-pending"),
+        "{stdout}"
+    );
+    let lost = observe(&trust);
+    assert_eq!(
+        lost.journal.as_ref().map(|journal| &journal.phase),
+        Some(&ActivationPhase::PublishPending)
+    );
+    assert!(
+        !lost.versions.contains("3.0.0"),
+        "the journal precedes the rename"
+    );
+    let versions = trust.installation.update_root.join("versions");
+    for entry in std::fs::read_dir(&versions).expect("version census") {
+        let path = entry.expect("version entry").path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("incomplete-"))
+        {
+            std::fs::remove_dir_all(&path).expect("lose the completed stage");
+        }
+    }
+    assert_eq!(
+        recover_exact(&trust).expect("an attempt without its stage is abandoned"),
+        WindowsActivationOutcome::Abandoned
+    );
+    let abandoned = observe(&trust);
+    assert_eq!(abandoned.journal, None);
+    assert_eq!(
+        (
+            &abandoned.floor,
+            &abandoned.current,
+            &abandoned.last_known_good
+        ),
+        (&before.floor, &before.current, &before.last_known_good),
+        "abandoning changes no protected record"
+    );
+    commit(&trust, "3.0.0");
+    assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
+}
 
 #[test]
 fn every_persisted_activation_cut_resumes_commits_rolls_back_or_halts() {
@@ -1127,8 +1243,8 @@ fn run_crash_cut(scenario: Scenario, cut: &str, after: AfterCut) {
     let committed_versions = [prior, candidate];
     let rolled_back_versions: Vec<&str> = prior_previous.into_iter().chain([prior]).collect();
     match after {
-        AfterCut::OrphanHalts => {
-            assert_orphan_halts_then_repairs(&trust, &before, &at_cut, &label, (prior, candidate));
+        AfterCut::StageOnly => {
+            assert_stage_only_then_commit(&trust, &before, &at_cut, &label, (prior, candidate));
         }
         AfterCut::AlreadyCommitted | AfterCut::AlreadyRolledBack => {
             let committed = after == AfterCut::AlreadyCommitted;
@@ -1242,9 +1358,9 @@ fn assert_remint_boundary(
     }
 }
 
-/// A crash between publication and the journal leaves an orphan: the ordinary loader
-/// halts and selects nothing, and only the explicit repair retires it.
-fn assert_orphan_halts_then_repairs(
+/// A crash before the journal is durable leaves only the completed stage: the ordinary
+/// writer is admitted, nothing was selected, and the next resolution removes the stage.
+fn assert_stage_only_then_commit(
     trust: &WindowsBaselineTrust,
     before: &Observed,
     at_cut: &Observed,
@@ -1257,17 +1373,13 @@ fn assert_orphan_halts_then_repairs(
         (&before.floor, &before.current, &before.last_known_good),
         "{label}: nothing was selected before the journal"
     );
-    let error = load_windows_activation_write_snapshot(trust, &verifier(trust))
-        .expect_err("an unjournaled complete version halts startup");
     assert!(
-        error.to_string().contains("unreferenced version entry"),
-        "{label}: {error}"
+        at_cut.versions.contains("incomplete-*") && !at_cut.versions.contains(candidate),
+        "{label}: the candidate stays a stage until its journal exists: {at_cut:?}"
     );
-    assert_eq!(
-        crate::repair_windows_unjournaled_versions(trust, &verifier(trust))
-            .unwrap_or_else(|error| panic!("{label}: {error}")),
-        1,
-        "{label}: the explicit repair retires the crash orphan"
+    drop(
+        load_windows_activation_write_snapshot(trust, &verifier(trust))
+            .unwrap_or_else(|error| panic!("{label}: a stage never halts a writer: {error}")),
     );
     commit(trust, candidate);
     assert_resolved(
