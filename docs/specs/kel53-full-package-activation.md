@@ -76,12 +76,14 @@ pending. It optimizes for least privilege and the smallest privileged surface:
    for pinning the initiating user's staged source ("Windows direct-install modes").
 2. A dedicated minimal signed `keld-updater-helper.exe` is the elevated component; the
    application host is never elevated (criterion 17).
-3. Reboot or loss of every owner during `AwaitingHealth` fails closed into a typed
-   recovery-required state with a supported helper recovery path that needs no ordinary
-   host boot (criterion 17). Its retirement evidence is the helper-owned kill-on-close
-   attempt Job plus an exact owner-death proof ("Machine-UAC owner-death retirement",
-   chosen in the PR #374 review over a permanent typed halt or pointer-only rollback);
-   until T4d qualifies it, that case halts.
+3. Reboot or loss of every owner during any attempt fails closed into a typed
+   recovery-required state (an unlaunched `publish-pending` attempt then resolves under
+   the writer lease alone) with a supported helper recovery path that needs no ordinary
+   host boot (criterion 17). Its retirement evidence is the existing writer-lease rule
+   plus termination of the initiating user's logon session; the kill-on-close attempt
+   Job only ends the candidate promptly ("Machine-UAC owner-loss retirement"; the owner
+   delegated this mechanism in the PR #374 review). Until T4d qualifies it, that case
+   halts.
 4. Candidate health in every direct mode uses an authenticated one-shot connect-back
    endpoint, replacing the inherited candidate endpoint; the candidate takes its attempt
    identity from protected state, not argv or environment (criterion 8).
@@ -386,7 +388,11 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    Candidate boot takes its installation, attempt and health-channel identity from the
    authenticated candidate selection over protected attempt state, never from an
    authoritative argv or environment value, and connects back to the attempt owner over
-   an authenticated one-shot endpoint whose name or locator conveys no authority. Before
+   an authenticated one-shot endpoint whose name or locator conveys no authority. Owner
+   and candidate derive that locator with one KEL-53 function of the provenance-derived
+   installation ID and the journaled attempt and health-channel IDs; there is no second
+   lookup path,
+   and the keeper's rendezvous locator is never a health endpoint. Before
    accepting health the owner binds installation ID, attempt ID, health/lifecycle channel
    ID, fresh nonces, the connected process object and PID, candidate image, TokenUser,
    `AuthenticationId`, session, and the expected non-elevated integrity and elevation
@@ -503,10 +509,11 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     protected provenance of that installation, takes the exclusive writer lease,
     rereads and fully revalidates provenance, floor, records, journal and both version
     trees, and resolves only through the KEL-53 phase rules, including their
-    process-family proof; for `AwaitingHealth` after owner loss that proof is the
-    Machine-UAC owner-death retirement evidence; after a reboot its holder check passes
-    because no recorded holder survives. It accepts no candidate, source, path or feed input and
-    launches no application. A declined prompt, failed revalidation or unproven process
+    process-family proof; for a launched attempt after owner loss that proof is the
+    Machine-UAC owner-loss retirement evidence, which a full restart always provides,
+    and without it the fix guidance tells the user to restart Windows first. It accepts
+    no candidate, source, path or feed input and launches no application. A declined
+    prompt, failed revalidation or unproven process
     family writes nothing and leaves the typed state in place; no manual filesystem work
     is required.
     The helper's bootstrap and health exchange use a separate versioned subprotocol with
@@ -593,7 +600,8 @@ version and report the missing predecessor or owning update mechanism.
 
 **Target boundary:** `keld-update` remains the common transaction and recovery owner;
 the admitted host remains the only attempt/health identity minter. The host creates the
-attempt health channel and the candidate receives only its attempt-bound endpoint. The
+attempt health channel and the candidate only connects back to its attempt-bound
+endpoint (criterion 8). The
 mode-specific adapter obtains the one temporary write lease for that attempt: the
 ordinary user-owned updater for `PerUserDirect`, an explicitly elevated signed helper
 for `MachineUacDirect`, or a still-unselected narrow coordinator for
@@ -637,6 +645,9 @@ struct ActivationAttempt {
     prior_floor: StrictSemver,
     prior_last_known_good: ArtifactIdentity,
     prior_previous_known_good: Option<ArtifactIdentity>,
+    // T4d Machine-UAC journal schema revision (wire-gated): initiating logon session.
+    // initiating_logon_session: Luid,
+    // initiating_logon_time: WindowsFileTime, // nonzero; zero refuses launch
 }
 
 enum ActivationPhase {
@@ -801,40 +812,81 @@ durable retirement evidence. Without either, it halts and preserves the journal 
 all pointers. A supported user-mode boot-epoch proof has not been established.
 Source: [Windows object life cycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/life-cycle-of-an-object).
 
-**Machine-UAC owner-death retirement (owner decision in the PR #374 review, 2026-10-05;
-qualified in T4d).** For `MachineUacDirect`, durable retirement evidence after owner loss
-is construction plus exact owner death, not a boot epoch. The elevated helper creates the
-attempt's unnamed Job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and without
-`JOB_OBJECT_LIMIT_BREAKAWAY_OK` or `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`, holds its only
-handle (never inherited, duplicated or passed to the candidate), and makes the candidate
-a member before its first instruction runs, so every descendant, including nested Jobs,
-belongs to it. The journal records that construction and the PID, creation time and
-image digest of every Job-handle holder; a keeper, if one is ever added, is another
-recorded holder. The helper reuses the existing Windows Job and process-identity
-primitives and their owners rather than adding parallel ones, and KEL-53 consumes the
-result. Windows terminates every process in such a Job when its last handle
-closes (KEL-78 primary source W5), and terminating a process for any reason, including
-a crash, logoff or system shutdown, closes all of its kernel-object handles and signals
-its process object
-([Terminating a Process](https://learn.microsoft.com/en-us/windows/win32/procthread/terminating-a-process),
-`ms.date` 2025-07-14). Recovery therefore treats the family as retired only after
-proving that each recorded holder is no longer running: no process has its PID, the
-process with that PID has a different creation time, or the exact process object is
-signaled. Access denial or any other unknown result halts. This is neither PID
-enumeration nor Job-name absence, and a reboot is not itself evidence; they still prove
-nothing, and the seamless keeper slice's rule below is unchanged. Termination is
-asynchronous, because a thread waiting on a kernel object is not terminated until the
-wait completes: if a retirement step fails because a terminating process still holds a
-candidate file, recovery halts with `rollback-pending` preserved, and a later recovery
-finishes it. After `health-accepted` is durable and before it exits, the helper clears
-the kill-on-close limit so the healthy application survives; a helper crash before that
-ends the application, and `health-accepted` recovery still completes the commit. Helper
-death therefore ends the candidate during the health window, a deliberate
-crash-ownership change. The added holder fields are a journal schema revision under the
-wire review gate. Rejected alternatives: a permanent typed halt after reboot, which
-leaves no supported way out, and pointer-only rollback without retirement proof, which
-can run two versions against one application data set. Until the T4d rows pass, this
-evidence is not admitted and the case halts in the typed recovery-required state.
+**Machine-UAC owner-loss retirement (PR #374 review, 2026-10-05: the owner chose a
+durable proof over a permanent typed halt or pointer-only rollback and delegated the
+mechanism; exact-content approval pending; qualified in T4d).** For `MachineUacDirect`,
+a launched attempt (`awaiting-health`, `health-accepted` or `rollback-pending`) whose
+owner was lost resolves only when two independent facts hold. An unlaunched
+`publish-pending` attempt keeps the lease-only rule below.
+
+1. *No owner can still write.* The recovery-only helper holds the exclusive writer
+   lease. Every live transaction owner (the UAC helper, a criterion-10 post-exit helper
+   or a keeper) retains the share-zero lease, and a terminated process's handles are
+   closed
+   ([Terminating a Process](https://learn.microsoft.com/en-us/windows/win32/procthread/terminating-a-process),
+   `ms.date` 2025-07-14), so acquiring the lease excludes them (the `publish-pending`
+   rule below). No PID, Job-name or process-absence observation is used.
+2. *The candidate family has exited.* Process termination is asynchronous and waits for
+   pending I/O
+   ([TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess),
+   `ms.date` 2025-12-30), so closing the last handle of a kill-on-close Job only starts
+   the family's termination. The journal records the initiating user's logon session
+   (`AuthenticationId` and its logon time) durably before launch; a zero logon time
+   refuses launch. Every family process runs with a primary token that references that
+   session (the exact initiating-process token route in "Windows direct-install
+   modes"), and a logon session terminates when the last token referencing it is
+   deleted
+   ([LSA_AP_LOGON_TERMINATED](https://learn.microsoft.com/en-us/windows/win32/api/ntsecpkg/nc-ntsecpkg-lsa_ap_logon_terminated),
+   `ms.date` 2018-12-05;
+   [SeRegisterLogonSessionTerminatedRoutine](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-seregisterlogonsessionterminatedroutine),
+   `ms.date` 2018-04-16). Recovery runs as an administrator, which may read any logon
+   session
+   ([LsaGetLogonSessionData](https://learn.microsoft.com/en-us/windows/win32/api/ntsecapi/nf-ntsecapi-lsagetlogonsessiondata),
+   `ms.date` 2018-12-05). It treats the family as exited only when that query reports
+   that no such logon session exists (`STATUS_NO_SUCH_LOGON_SESSION`, the one accepted
+   status; the name is inferred and T4d confirms it on real Windows), or when the
+   session now holding that ID has a different logon time,
+   because a locally unique ID is unique only until restart
+   ([AllocateLocallyUniqueId](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-allocatelocallyuniqueid),
+   `ms.date` 2018-12-05). A live session, access denial or any other status halts.
+
+Fact 2 holds only if every process that runs an image from the candidate version tree,
+or runs code or a command that the family supplies (for example a COM server or a
+scheduled task registered to a candidate-tree image), runs inside the attempt Job under
+the initiating logon session. System brokers that load no candidate image are out of
+scope. The OS sandbox enforces this for LPAC roles and renderers; for the host and the
+WebView2 browser process, which run with the user's ordinary token, it is an audited
+code contract. T4d must show it for every admitted family member, or the proof is not
+admitted. A reboot is not itself
+evidence; the session query after it is. A full restart always ends the session, since
+logon sessions and their IDs do not survive it. Sign-out and Fast Startup shutdown
+normally end it too, but any remaining reference to a token of that session, such as
+one a service holds, keeps it alive, and recovery then halts. A helper crash without a
+restart therefore leaves the typed recovery-required state, whose fix guidance tells
+the user to restart Windows and then run recovery. The same proof covers
+`health-accepted`, where the healthy application legitimately outlives the helper,
+because the landed `recovery_decision` requires family exit for every phase.
+
+Kill-on-close is kept only for prompt termination. The component that launches the
+candidate (the UAC helper, or the criterion-10 post-exit helper when one is used) alone
+holds the attempt's unnamed `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job, without
+`JOB_OBJECT_LIMIT_BREAKAWAY_OK` or `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`, and makes the
+candidate a member before its first instruction runs. Helper death therefore ends the
+candidate during the health window, a deliberate crash-ownership change, and the helper
+clears the limit once `health-accepted` is durable. Job-name absence, PID enumeration
+and the death of Job-handle holders still prove nothing about the family, and the
+seamless keeper slice's rule below is unchanged. The helper reuses the existing Windows
+Job wrappers; the logon-session query is a new minimal wrapper in `keld-guard`, which
+already owns the KEL-270 T4d token FFI, added under an issue-scoped amendment of that
+crate's AGENTS.md `unsafe` rule before implementation.
+The two logon-session fields are a journal schema revision under
+the wire review gate. Rejected alternatives: Job-handle-holder death as the family proof
+(it proves only that termination started); a separate PID and creation-time check for
+the coordinator (the lease already excludes every live owner); a keeper that retains the
+Job handle (it defeats kill-on-close and enlarges the privileged surface only to avoid a
+restart); a permanent typed halt; and pointer-only rollback without retirement proof.
+Until the T4d rows pass, neither fact is admitted and the case halts in the typed
+recovery-required state.
 
 **Bounded per-attempt lifecycle keeper (proof slice; no production activation writes).**
 The first Windows implementation slice MUST use the exact unnamed attempt Job object
@@ -866,7 +918,8 @@ exact Job-family zero, and fake endpoint. The lifecycle code must not be connect
 production pointer/floor/activation/commit writes until these controls pass. Reboot,
 hibernate and all-owners-lost recovery remain unsupported unless a documented Windows
 mechanism proves durable retirement; otherwise ambiguous recovery halts with evidence
-preserved.
+preserved. (Machine-UAC owner loss uses its own two-fact rule above; this slice's rule
+is unchanged.)
 
 The single-writer transition is:
 
@@ -937,8 +990,10 @@ resumed owner durably re-mints the attempt's health and lifecycle channel identi
 before continuing, so no health receipt or retirement witness from a lost owner binds
 to the resumed run. Launched phases still require an exact process-family retirement
 binding. That binding is an exact installation/attempt/lifecycle-channel value that the
-host composes from the QF1 retirement witness or its own retained Job-zero observation;
-`keld-update` cannot authenticate its producer. A sealed witness type was rejected
+host composes from the QF1 retirement witness or its own retained Job-zero observation,
+or that the Machine-UAC recovery-only helper composes from the owner-loss retirement
+facts above once T4d qualifies them; `keld-update` cannot authenticate its producer.
+A sealed witness type was rejected
 because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
 graph.
 
@@ -983,8 +1038,8 @@ recorded context. Corrupt or mixed state halts without deleting evidence.
 The launched candidate inherits no attempt endpoint and takes no authority from argv or
 environment (criterion 8). At startup, a pending `AwaitingHealth` journal whose
 candidate is the exact version tree holding the running executable makes the process a
-candidate claimant: it locates the attempt owner's one-shot endpoint from the journaled
-attempt and channel identities, authenticates that owner against the journaled
+candidate claimant: it derives the attempt owner's one-shot endpoint with criterion 8's
+single locator function, authenticates that owner against the journaled
 coordinator or helper identity before sending anything, and presents itself. Only the
 owner's acceptance of the exact process it launched, bound as criterion 8 lists, selects
 candidate boot mode before ordinary updater startup: validate exact
@@ -1381,15 +1436,25 @@ Must not touch in Slice A:
   after owner death/reboot recovery returns the typed recovery-required state, and the
   helper's recovery-only role resolves it from a fresh UAC prompt without ordinary host
   boot, writing nothing when revalidation or the process-family proof fails.
-  Machine-UAC owner-death retirement rows: helper terminated and crashed mid-health,
-  helper crash after `health-accepted` before the limit is cleared, real logoff and
-  reboot mid-health, PID reuse with a different creation time, a denied or unknown
-  holder query, a duplicated Job handle held by another process (a negative control: the
-  family survives, so tests must prove the helper never creates such a duplicate),
-  candidate membership before its first instruction under the selected launch API, a
-  descendant breakaway attempt, nested KEL-96 host Jobs, and a still-terminating family
-  that blocks retirement; each either proves retirement or halts fail-closed, and no
-  family member runs after a passed proof.
+  Machine-UAC owner-loss retirement rows: helper terminated and crashed mid-health;
+  helper crash after `health-accepted` both before the limit is cleared (the application
+  ends) and after it (the healthy application keeps running); a `rollback-pending`
+  crash; a live owner still holding the lease; sign-out, a real full restart and Fast
+  Startup shutdown mid-health; logon-session ID reuse with a different logon time; a
+  denied or unknown session query, with the single accepted "no such logon session"
+  status confirmed; a reference to a token of that session kept alive after sign-out
+  (for example a duplicated token handle in an unrelated process), which keeps recovery
+  halted until it closes; every family token (host, WebView2 and LPAC role) referencing
+  the initiating logon session; negative controls showing that no admitted family member
+  starts a candidate-tree image or family-supplied code outside the attempt Job or under
+  another logon session, and that sandboxed roles cannot (netonly
+  `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task
+  registered to a candidate-tree image as falsifiers); candidate Job membership
+  before its first instruction under the
+  selected launch API; a descendant breakaway attempt; nested KEL-96 host Jobs; and a
+  family still terminating with pending I/O. Each row either proves both facts or halts
+  fail-closed, and no family member runs or has pending I/O after a passed proof. T4d
+  also updates the `activate.rs` retirement-binding documentation to name this producer.
   Before implementation, each new production `unsafe` path gets its owner's exact
   AGENTS.md rule; FFI wrappers stay minimal beneath safe typed wrappers with owned
   handles and minimum access rights; no raw handle crosses a normal public API; every
@@ -1441,7 +1506,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
 - dependency addition: none;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
   and canonical package content are narrowed and require exact independent review; any
-  new host/coordinator authentication channel remains separately owned and gated.
+  new host/coordinator authentication channel remains separately owned and gated. T4d's
+  journal schema revision for the initiating logon session and the helper subprotocol
+  are wire-gated.
 
 ## 9. Perf impact
 
@@ -1463,7 +1530,7 @@ not requests to revisit that decision:
   role write denial; the owning user's authority remains outside the threat claim.
 - T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,
   over-the-shoulder user-token launch, and exact health/rollback under the live elevated
-  owner. Reboot/owner death requires fresh consent plus the qualified owner-death
+  owner. Reboot/owner death requires fresh consent plus the qualified owner-loss
   retirement proof, or a safe halt.
 - T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
   falsifier before any privileged seamless mechanism is selected. The task probe is only

@@ -12,7 +12,8 @@ Amendment A3 (installed-boot discovery and boot states): owner decisions recorde
 active maintainer session on 2026-10-05; exact-content approval of this revision is
 pending. A3 makes the current executable path a locator only, keeps exactly two admitted
 Windows boot states, and names one build-time producer of the expected app identity
-(§3 AC1–AC2, §4 "Internal selection shape", §6 T2b–T3). It adds no install mode, no
+(§3 AC1–AC2, §4 "Selection shape (workspace export)", §6 T2b–T3).
+It adds no install mode, no
 production `unsafe`, and no record field. It changes Windows only: macOS and Linux keep
 their current standalone and lease-less boot behavior and tests (see AC2).
 
@@ -350,9 +351,14 @@ machine-seamless updates remain refused until the KEL-270 proof gate and authori
 selection pass. Managed installs continue through their package owner and are not
 admitted to Keld's direct updater.
 
-### Internal selection shape
+### Selection shape (workspace export)
 
-These are internal opaque values, not a public API or wire format. The sketch records
+These are opaque Rust values that `keld-update` exports for `keld-core`, their only Rust
+consumer; they are not a wire format, and their export is reviewed under the public-API
+gate below. `ExpectedAppIdentity` wraps the canonical build identity whose encoding
+`keld-pack` owns through the existing `keld-update -> keld-pack` edge. `keld-pack`
+produces those bytes and never imports `keld-update`; `keld build` invokes it, and that
+`keld-cli -> keld-pack` edge belongs to the KEL-19 packaging work. The sketch records
 ownership only; each Windows adapter continues to return the crate's typed error type.
 
 ```rust
@@ -409,9 +415,10 @@ impl DirectInstallationIdentity {
 
 pub struct ActivePackageSelection { /* private fields; not Clone */ }
 
-/// Public build-time expectation: app id, channel, target and the expected update-signing
-/// key identity. Produced only by `keld-pack`/`keld build` inside the bytes covered by the
-/// executable's final signature; it never contains private key material.
+/// Non-secret build-time expectation: app id, channel, target and the expected
+/// update-signing key identity. Produced only by `keld-pack`/`keld build` inside the
+/// bytes covered by the executable's final signature; it never contains private key
+/// material.
 pub struct ExpectedAppIdentity { /* private fields */ }
 
 pub fn select_active_package_for_executable(
@@ -582,8 +589,9 @@ CI or a synthetic `Protected` value.
   until an issue-scoped owner-instruction amendment is approved and the exact unsafe
   diff receives independent review;
 - public API: yes, if the KEL-53 provenance identity fields are added to its exported
-  Rust type; yes unconditionally for the proposed exported `ActivePackageSelection` and
-  `ActiveLaunchKind` contract. Independent exact-diff API review is required;
+  Rust type; yes unconditionally for the proposed exported `ActivePackageSelection`,
+  `ActiveLaunchKind`, `ExpectedAppIdentity` and `select_active_package_for_executable`
+  contract. Independent exact-diff API review is required;
 - permission model: yes — the boot admission boundary depends on effective filesystem
   rights and protected provenance;
 - dependency addition: yes — one internal workspace edge `keld-core -> keld-update`,
