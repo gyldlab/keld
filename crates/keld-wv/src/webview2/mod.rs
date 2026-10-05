@@ -183,7 +183,6 @@ pub fn runtime_version() -> Result<String, WvError> {
     })
 }
 
-const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 const PROFILE_RELEASE_DEADLINE: Duration = Duration::from_secs(15);
 const PROFILE_MARKER: &str = "profile.owner.v1";
 const PROFILE_LEASE: &str = "profile.lock";
@@ -2519,7 +2518,7 @@ impl WebView2Engine {
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_ready = Arc::clone(&self.navigation_ready);
         let navigation_failed = Arc::clone(&self.navigation_failed);
-        let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
+        let navigation_deadline = Instant::now() + crate::INITIAL_NAVIGATION_DEADLINE;
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
         let mut views = std::mem::take(&mut self.views);
         let expected_browser_pid = Arc::clone(&self.expected_browser_pid);

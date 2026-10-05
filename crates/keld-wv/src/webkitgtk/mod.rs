@@ -41,7 +41,6 @@ use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
 
-const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 const GPU_SAFE_MODE_ENV: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 const SELF_EXE: &str = "/proc/self/exe";
 
@@ -427,7 +426,7 @@ impl WebKitGtkEngine {
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_ready = Arc::clone(&self.navigation_ready);
-        let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
+        let navigation_deadline = Instant::now() + crate::INITIAL_NAVIGATION_DEADLINE;
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
         let mut views = std::mem::take(&mut self.views);
         let code = event_loop.run_return(move |event, _, control_flow| {
