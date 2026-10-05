@@ -17,9 +17,7 @@ mod producer;
 #[cfg(test)]
 mod tests;
 
-pub use expected_identity::{
-    EXPECTED_APP_IDENTITY_DOMAIN, EXPECTED_APP_IDENTITY_KEY_BYTES, ExpectedAppIdentityPayload,
-};
+pub use expected_identity::{EXPECTED_APP_IDENTITY_KEY_BYTES, ExpectedAppIdentityPayload};
 
 /// Exact relative path of the content-authenticated Slice-A update policy.
 pub const UPDATE_POLICY_PATH: &str = ".keld/update-policy.v1";
@@ -244,7 +242,7 @@ impl fmt::Display for PackError {
             Self::InvalidMetadata { detail } => write!(f, "KELD-PACK-002: invalid Windows v0 package input ({detail}). Supply a complete file/directory tree with canonical Windows names and leave update-policy.v1 to the producer; no output was written."),
             Self::SourceSizeMismatch { name, expected, observed } => write!(f, "KELD-PACK-003: package source `{name}` declared {expected} bytes but supplied {observed}. Discard partial output and rebuild from sources with correct lengths."),
             Self::Processing { stage, source } => write!(f, "KELD-PACK-004: package {stage} failed ({source}). Discard partial output, repair the source or sink, and rebuild the package."),
-            Self::ExpectedIdentityInvalid { detail } => write!(f, "KELD-PACK-005: expected-app-identity payload is not canonical ({detail}). Rebuild the host so keld-pack embeds the payload from the app's packaging configuration; never hand-edit these bytes."),
+            Self::ExpectedIdentityInvalid { detail } => write!(f, "KELD-PACK-005: expected-app-identity payload is not canonical ({detail}). Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the host; never hand-edit the embedded bytes."),
         }
     }
 }

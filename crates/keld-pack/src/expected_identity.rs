@@ -11,8 +11,9 @@
 
 use crate::PackError;
 
-/// Versioned domain tag that opens every payload.
-pub const EXPECTED_APP_IDENTITY_DOMAIN: &[u8] = b"keld.expected-app-identity/v1\0";
+/// Versioned domain tag that opens every payload; crate-private so no second parser or
+/// writer can exist outside keld-pack.
+pub(crate) const EXPECTED_APP_IDENTITY_DOMAIN: &[u8] = b"keld.expected-app-identity/v1\0";
 /// Exact length of the expected update-signing Ed25519 public key.
 pub const EXPECTED_APP_IDENTITY_KEY_BYTES: usize = 32;
 

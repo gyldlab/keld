@@ -201,4 +201,5 @@ fn error_has_stable_code_and_fix_guidance() {
     assert!(text.starts_with("KELD-PACK-005: "), "{text}");
     assert!(text.contains("(domain tag)"), "{text}");
     assert!(text.contains("never hand-edit"), "{text}");
+    assert!(text.contains("packaging configuration"), "{text}");
 }
