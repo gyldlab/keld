@@ -75,14 +75,13 @@ pass. See KEL-53 for the record and failure contract.
 **Windows activation-attempt subprotocol (KEL-53 T4d; target, not implemented):** the
 candidate connect-back and the Machine-UAC helper bootstrap use a third one-peer
 protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>` namespace,
-disjoint from app-link and lifecycle pipes; clients reject the other namespaces before
-connect. Its server creates every endpoint as the only instance, rejecting remote
-clients, with a protected DACL that admits only the initiating user and a Medium
-no-write-up label; clients open with identification-level quality of service and verify
-the server process before sending. It has its own magic values and message types and
-reuses only the low-level framing, nonce, deadline and peer-verification utilities; the
-lifecycle purpose tags keep their meaning. KEL-53 §4 "Candidate connect-back" owns the
-record and failure contract, which is wire-gated.
+disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
+separate-version protocol, its clients reject the other `keld-*` namespaces before
+connecting. It has its own magic values and message types and reuses only the low-level
+framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every other
+rule, which is wire-gated: "Candidate connect-back" owns the endpoints, each side's
+quality of service and impersonation, the records and their failures, and "Machine-UAC
+bootstrap" owns the bootstrap roles.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then

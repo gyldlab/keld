@@ -21,11 +21,12 @@ install mode, no
 production `unsafe`, and no provenance-record field. It changes Windows only: macOS and
 Linux keep their current standalone and lease-less boot behavior and tests (see AC2).
 The KEL-270 T4d Machine-UAC activation amendment is a separate spec change.
-KEL-270 T4d cross-references (2026-10-05): AC4, AC5, AC14 and AC16, the
-active-selection atom, the §4 active-resolver sentence, the helper sentence after §4's
-executable-located rule and the §7 rows for criteria 4 and 5 point to KEL-53's T4d
-amendment (candidate connect-back, the
-Machine-UAC recovery-required state, the helper self-anchor and owner-loss retirement). These
+KEL-270 T4d cross-references (2026-10-05): AC4, AC5, AC14 (its helper-sequence,
+launch-refusal and owner-loss sentences) and AC16, the active-selection atom, the §4
+active-resolver sentence, the helper sentence after §4's executable-located rule and the
+§7 rows for criteria 4 and 5 point to KEL-53's T4d amendment (the bootstrap, candidate
+connect-back, the Machine-UAC recovery-required state, the helper self-anchor and
+owner-loss retirement). These
 sentences carry no approval from A3 or from the earlier revisions; their exact-content
 approval is pending with the KEL-53 T4d amendment.
 
@@ -139,8 +140,8 @@ D4 note remains outside the frozen decision block so its approved digest does no
    halts. Only `PerUserDirect` has the landed repair. In `MachineUacDirect` only the
    helper's recovery-only role performs it, and an ordinary process returns KEL-53's
    typed `MachineRecoveryRequired` instead (KEL-53 "Machine-UAC recovery-required state
-   and recovery-only role"); `MachineSeamlessDirect` keeps refusing with typed guidance
-   until its authority is selected. Missing/invalid LKG, invalid
+   and recovery-only role"); `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline`
+   refusal until its authority is selected. Missing/invalid LKG, invalid
    floor, mixed identity, unauthorized/orphan pointer, or failed recovery halts before
    app resources. It never guesses the newest directory or silently substitutes the
    install baseline. Given a persisted valid journal and no live attempt owner that
@@ -230,8 +231,8 @@ D4 note remains outside the frozen decision block so its approved digest does no
     mutation authority from argv/environment/cwd, limits writes to that installation's
     package and update roots, and launches the candidate using the exact initiating user's
     ordinary token and logon session, even when UAC used alternate administrator
-    credentials. If that token cannot be securely reused, it refuses launch and leaves
-    journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install,
+    credentials. If that token cannot be securely reused, it launches nothing and rolls
+    the attempt back under the same lease (KEL-53 "Machine-UAC bootstrap"). Forged, stale, replayed, wrong-host, cross-install,
     replaced-source and wrong-session requests refuse before mutation. Owner loss follows
     KEL-53 "Machine-UAC recovery-required state and recovery-only role".
     `MachineSeamlessDirect` may mutate only through a Windows-native authority
@@ -251,8 +252,9 @@ D4 note remains outside the frozen decision block so its approved digest does no
     only its updater component elevated; the app host and Bun remain ordinary-user.
 16. Given independent negative controls for absent/unprotected provenance, wrong
     publisher/app/root/baseline/current artifact, invalid floor/LKG/journal, stale
-    or refused candidate claim, a pre-created or squatted owner endpoint (KEL-53
-    "Candidate connect-back"), orphan/incomplete tree, writable root or ancestor,
+    or refused candidate claim, an owner endpoint whose name already exists or that a
+    squatter holds after owner death (KEL-53 "Candidate connect-back"),
+    orphan/incomplete tree, writable root or ancestor,
     standard-user write/delete/WRITE_DAC, hostile role/webview write, role-specific ACE
     mutation, reparse ancestor, malformed/tampered boot descriptor, missing/escaping
     entry or renderer, and malformed permissions descriptor, when each is attempted,
@@ -260,7 +262,8 @@ D4 note remains outside the frozen decision block so its approved digest does no
     the exact reason plus OS/package evidence. The distinct no-journal control with
     an absent or undecodable `current` and valid LKG must durably recover to that LKG
     and may then boot (in `MachineUacDirect` only through the helper's recovery-only
-    role, the ordinary process returning `MachineRecoveryRequired`);
+    role, the ordinary process returning `MachineRecoveryRequired`; `MachineSeamlessDirect`
+    keeps its landed `UpdateError::Baseline` refusal);
     invalid current plus invalid LKG must refuse. Controls that require administrator
     mutation are outside the promise and MUST be labelled as such rather than reported
     as standard-user or role-principal protection evidence.
@@ -548,8 +551,7 @@ within the documented same-user exclusion and grants nothing a genuine per-user 
 does not. KEL-53 refuses unless the record matches that expectation, and
 KEL-96 independently requires the record's publisher scope and app id to equal the
 KEL-135 Authenticode identity of the same executable. The entrypoint reads no
-environment payload or argv for authority, and candidate admission, when it joins,
-comes from protected attempt state (KEL-53 criterion 8). In T2b it is journal-free: like the landed
+environment payload or argv for authority. In T2b it is journal-free: like the landed
 `select_windows_active_package`, it refuses any pending journal with
 `JournalBoundRecoveryRequired`. It repairs an invalid `current` only when the located
 tree is the last-known-good tree, so a stale host never causes a write, and after any
@@ -694,8 +696,8 @@ opaque outside their owner except for the documented read-only identity accessor
 | 2, 17 (T2b) | The executable-located selector refuses a case-variant `keld-host.exe`, `tree` or `versions`, a non-SemVer version directory, an extra install-root entry, record roots that differ by file identity, a volume-GUID mismatch, a root or executable on a non-NTFS volume, an executable handle that is not the tree's host although its locator path is, a pending journal and an `ExpectedAppIdentity` field mismatch, each before any write; the `keld-pack` golden vector decodes, and every truncation, trailing byte, wrong domain and oversize field refuses. |
 | 2 (T3) | A missing, duplicated or malformed embedded payload refuses before resources, and the payload and executable identity come from the KEL-135-verified handle. |
 | 2–3, 11, 17–18 | State tests reject absent/managed/unprotected/corrupt/mismatched provenance; real installer crash cuts before/after final commit prove that wrong package digest, missing file, wrong mode/owner, failed mode-specific ACL readback or record replay leaves no admission. |
-| 4, 6, 15–16 | Independently permute initial baseline, current, LKG, previous-LKG, floor, complete marker, current tree, and wrong app id; valid current must equal an allowed known-good artifact. An absent or undecodable current with valid LKG durably republishes/read-backs LKG, then boots that version (`PerUserDirect` now; in `MachineUacDirect` an ordinary process returns the typed `MachineRecoveryRequired` result, not merely no selection, and only the helper's recovery-only role repairs), and a decoded non-known-good current halts; invalid LKG, orphan/incomplete/mixed versions halt. Inject crashes at each KEL-53 journal phase with and without a live attempt owner: recovery must prove the process family/lease, finish the exact phase or return no selection, and never let KEL-96 boot a stale tree. A `MachineUacDirect` ordinary process that finds a pending journal with no live owner returns the typed `MachineRecoveryRequired`, and one that a live owner does not accept as its candidate receives the typed `WriterActive`; neither result is merely an untyped "no selection". Valid updated and explicit rollback versions boot. |
-| 5, 15–16 | Candidate tests substitute owner endpoint (including a pre-created or squatted name before launch and after owner death), owner identity, launched process, attempt id, journal phase, current artifact and executable path independently; only the exact live attempt selects candidate mode, without lock/recovery/self-commit. |
+| 4, 6, 15–16 | Independently permute initial baseline, current, LKG, previous-LKG, floor, complete marker, current tree, and wrong app id; valid current must equal an allowed known-good artifact. An absent or undecodable current with valid LKG durably republishes/read-backs LKG, then boots that version (`PerUserDirect` now; in `MachineUacDirect` an ordinary process returns the typed `MachineRecoveryRequired` result, not merely no selection, and only the helper's recovery-only role repairs; `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline` refusal), and a decoded non-known-good current halts; invalid LKG, orphan/incomplete/mixed versions halt. Inject crashes at each KEL-53 journal phase with and without a live attempt owner: recovery must prove the process family/lease, finish the exact phase or return no selection, and never let KEL-96 boot a stale tree. A `MachineUacDirect` ordinary process that finds a pending journal with no live owner returns the typed `MachineRecoveryRequired`, and one that a live owner does not accept as its candidate receives the typed `WriterActive`; neither result is merely an untyped "no selection". Valid updated and explicit rollback versions boot. |
+| 5, 15–16 | Candidate tests substitute owner endpoint (including a name that already exists at creation, seam-injected, and a squatter after owner death), owner identity, launched process, attempt id, journal phase, current artifact and executable path independently; only the exact live attempt selects candidate mode, without lock/recovery/self-commit. |
 | 6–10, 16 | Native Windows component/reparse/path tests plus strict descriptor mutations; under each admitted token, attempt descriptor/entry/renderer replacement and prove the protected namespace denies it; malformed bytes and escaping/missing targets fail pre-resource; KEL-102 proves one exact manifest read. |
 | 7–8, 16–18 | Per-user owner, ordinary machine user, explicit-UAC activator and each admitted hostile role/webview token exercise distinct access cells. Machine standard-user probes attempt create/write/delete/rename/WRITE_DAC/WRITE_OWNER at roots, versions, provenance, journal, pointers and update state. Per-user tests verify owner write access while hostile roles cannot mutate updater state; they explicitly do not claim defense from same-user native malware. Mutate owner, inherited/explicit ACE, role ACE and reparse ancestor; every forbidden grant is detected before boot. |
 | 12, 15 | Signed Windows fixture for two distinct app identities; capture WebView2-reported UDFs and prove each is the exact LocalAppData profile path and they differ. |

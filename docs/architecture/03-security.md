@@ -310,7 +310,8 @@ an elevated application host. It authenticates its bootstrap from the admitted h
 obtains the write lease and revalidates the user's cache input before any protected
 write; KEL-53 criterion 17 and its single-writer transition own the exact order.
 Any optional post-exit locked-file helper is a separate, narrower
-component that consumes only an already-protected journal and inherited protected
+component, not used in `MachineUacDirect`, that consumes only an already-protected journal,
+its host-process wait handle and inherited protected
 update-root/lock handles; it inherits no endpoint and has no
 feed or package parser. The machine-seamless privileged trigger remains unselected until
 its authentication and lifecycle contract passes. In the admitted profile,

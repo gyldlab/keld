@@ -1028,7 +1028,7 @@ Three principal classes, with host-minted instances inside each class:
    long-lived general privileged process. A reviewed native plugin, a minimal signed
    update relaunch helper, or the per-attempt elevated Machine-UAC updater helper
    (`keld-updater-helper.exe`, target) receives only its declared narrow authority and
-   never runs the application or Bun. The host is
+   never runs the application or Bun with its own token. The host is
    prebuilt per platform; app developers never compile it.
 2. **App-process family** (destination: supervised Bun children): the developer's primary "main
    process" plus named compatibility roles when an app needs independent extension,
@@ -1343,14 +1343,13 @@ pass. See KEL-53 for the record and failure contract.
 **Windows activation-attempt subprotocol (KEL-53 T4d; target, not implemented):** the
 candidate connect-back and the Machine-UAC helper bootstrap use a third one-peer
 protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>` namespace,
-disjoint from app-link and lifecycle pipes; clients reject the other namespaces before
-connect. Its server creates every endpoint as the only instance, rejecting remote
-clients, with a protected DACL that admits only the initiating user and a Medium
-no-write-up label; clients open with identification-level quality of service and verify
-the server process before sending. It has its own magic values and message types and
-reuses only the low-level framing, nonce, deadline and peer-verification utilities; the
-lifecycle purpose tags keep their meaning. KEL-53 §4 "Candidate connect-back" owns the
-record and failure contract, which is wire-gated.
+disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
+separate-version protocol, its clients reject the other `keld-*` namespaces before
+connecting. It has its own magic values and message types and reuses only the low-level
+framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every other
+rule, which is wire-gated: "Candidate connect-back" owns the endpoints, each side's
+quality of service and impersonation, the records and their failures, and "Machine-UAC
+bootstrap" owns the bootstrap roles.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -1972,7 +1971,8 @@ an elevated application host. It authenticates its bootstrap from the admitted h
 obtains the write lease and revalidates the user's cache input before any protected
 write; KEL-53 criterion 17 and its single-writer transition own the exact order.
 Any optional post-exit locked-file helper is a separate, narrower
-component that consumes only an already-protected journal and inherited protected
+component, not used in `MachineUacDirect`, that consumes only an already-protected journal,
+its host-process wait handle and inherited protected
 update-root/lock handles; it inherits no endpoint and has no
 feed or package parser. The machine-seamless privileged trigger remains unselected until
 its authentication and lifecycle contract passes. In the admitted profile,
@@ -3020,9 +3020,9 @@ protected sibling through the shared extraction/copy/readback pipeline. Every de
 directory and file receives the exact Administrators/SYSTEM/Users DACL at creation,
 before payload writes; it never promotes a user-owned stage by rename or seals an
 ordinary-user-writable stage afterward. The helper starts the exact candidate as the
-initiating ordinary user, including when a different administrator approves UAC, from
-the exact initiating process's own primary token; impersonation only pins the user's
-staged source. If the elevated owner exits, Windows restarts or every owner is lost
+initiating ordinary user, including when a different administrator approves UAC, with
+the primary token it takes from the verified host process object; KEL-53 "Machine-UAC
+bootstrap" owns that hand-off. If the elevated owner exits, Windows restarts or every owner is lost
 before resolution, the next ordinary launch infers and writes nothing: it returns the
 typed `MachineRecoveryRequired` state before admission, and only the helper's
 recovery-only role, behind fresh UAC consent and without an ordinary host boot, may
@@ -3067,11 +3067,10 @@ initializer marker. A writer opens the existing lease read/write with share mode
 normal selection readers open it read-only with `FILE_SHARE_READ` only and retain that
 short lease for one coherent mutable-record snapshot. A sharing conflict returns busy
 or refusal without sleep, retry or PID takeover. The writer keeps the exclusive lease
-through the attempt and health window. The authenticated candidate boot is the one
-exception: the writer keeps journal/current stable while the exact candidate performs
-bounded bootstrap reads, closes mutable-record pins and acknowledges completion before
-app execution; it retains only immutable selected-tree pins and the health endpoint.
-Lease ownership never replaces OS-backed process-family death proof.
+through the attempt and health window. KEL-53 criterion 20 owns the single reader
+exception, the accepted candidate's authenticated boot read, and the typed refusal of
+every other conflict. Lease ownership never replaces OS-backed process-family death
+proof.
 
 The approved Windows lifecycle proof slice uses one bounded keeper per exact unnamed
 attempt Job. Its reduced handle is limited to query and termination; the keeper is not
@@ -3464,7 +3463,8 @@ host, obtains the write lease, and then reuses the shared verifier on the exact 
 candidate under retained read handles before creating the protected journal; KEL-53
 criterion 17 and its single-writer transition own the exact order.
 UAC consent alone and caller-supplied
-paths/argv/environment are not attempt authorization. The optional post-exit helper
+paths/argv/environment are not attempt authorization. The optional post-exit helper,
+which is not used in `MachineUacDirect`,
 described below remains a separate inherited-handle-only component for an already
 journaled attempt; it has no manifest/package parser. Per-user bootstrap uses the same
 signature, baseline and local-record validators while installing under the owning
@@ -3492,21 +3492,17 @@ synchronized. An incomplete directory is never current, last-known-good, a delta
 a recovery source.
 
 A versioned local activation journal replaces a version-only
-`publish-intent`. It carries one fresh host-generated 32-byte attempt id, exact
-candidate `(app id, channel, target, version, contentBlake3)`, validated rollback
-target, exact prior floor, prior last-known-good, prior previous-known-good, the verified activation-
-coordinator/helper image digest, a fresh health-channel identity, and exactly one phase:
+`publish-intent`. Its exact fields, their canonical encoding and the identities that
+`keld-update` mints inside the lease-holding attempt owner are owned by KEL-53 §4
+("Internal state and transition contract"); it has exactly one phase:
 
 ```text
 publish-pending -> awaiting-health -> health-accepted -> journal removed
                                  \-> rollback-pending -> journal removed
 ```
 
-Every phase retains the one common attempt context, including the rollback target,
-expected floor, both known-good slots, coordinator/helper image and health-channel
-identity; `rollback-pending` adds only its closed failure class. KEL-53 T4d revises the
-record (wire-gated) with the initiating logon session that every phase carries; KEL-53
-§4 owns the record shape.
+Every phase retains the one common attempt context, and `rollback-pending` adds only its
+closed failure class; KEL-53 §4 owns that context, including T4d's wire-gated v2 fields.
 
 Unknown journal versions, duplicate/missing fields, noncanonical values, replayed attempt
 ids, artifact/pointer mismatch and mixed component sets fail closed. Directory presence,
@@ -3619,11 +3615,8 @@ from its presence. Writers open the existing file read/write with share mode zer
 Snapshot readers open it read-only with `FILE_SHARE_READ` only and hold that short
 lease while they read the complete mutable-record set. Sharing conflicts return a
 typed busy/refusal without retry or sleep. The writer holds its lease through candidate
-health. A sharing conflict permits only KEL-53 criterion 20's bounded
-pre-authentication claimant read of the journal, which grants nothing. Authenticated
-candidate startup briefly reads the attempt and current while the
-writer holds them stable, closes mutable-record pins and acknowledges bootstrap before
-app execution, retaining immutable selected-tree pins and its owner connection. Recovery
+health. KEL-53 criterion 20 owns the single reader exception, the accepted candidate's
+authenticated boot read, and the typed `WriterActive` refusal of every other conflict. Recovery
 separately requires proof that the prior process family exited. `bootstrap.lock`
 remains KEL-266's initializer marker.
 
@@ -3641,30 +3634,23 @@ adapter, which refuses every leaf outside journal/floor/current/last-known-good/
 previous-known-good before the system call. Its exact diff requires independent
 unsafe/security review.
 
-**Health identity.** A candidate receives a private host-owned channel minted for the
-journaled attempt. Its receipt repeats the attempt id and full artifact identity. The
-host must prove it booted from that exact version, reached application `Ready`,
+**Health identity.** A candidate reports over a private channel whose identity
+`keld-update` mints inside the lease-holding attempt owner for the journaled attempt.
+Its receipt repeats the attempt id and full artifact identity. The candidate host must
+prove it booted from that exact version, reached application `Ready`,
 and remained alive for 30 monotonic seconds with no unexpected application-generation
 exit. A prior receipt, generic file marker, wrong artifact, clean early exit, lost
 channel, timeout, crash or crash-loop result cannot commit health. The 30-second window
 reuses KEL-70's default crash-window duration but treats any unexpected generation exit
 as failure; it delays commit/LKG replacement, not initial candidate launch.
 
-The candidate inherits no endpoint and takes no authority from argv or environment.
-At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
-holding the running executable makes it a claimant: it connects back to the one-shot
-endpoint that the component that launched it created as the only instance, admitting
-only the initiating user, and verifies that server against the journaled owner before
-sending anything. The owner accepts only the exact
-process it launched and still retains, bound by kernel object identity, creation time
-and the initiating token facts. KEL-53 §4 "Candidate connect-back" owns the endpoint,
-claim and acceptance rules. Only that acceptance selects authenticated candidate-boot
-mode before ordinary updater startup. Candidate mode verifies the exact
-attempt/current/artifact, does not acquire the writer lock or invoke orphan recovery,
-starts the application and reports boot/Ready/health over that connection. It cannot
-write the journal or commit itself. A refused claim consumes nothing, and the refused
-process, including any other process started from the candidate tree while the owner
-lives, receives no selection. The candidate runs under the initiating ordinary user's token/session in every
+The candidate inherits no endpoint and takes no authority from argv or environment; it
+connects back to its attempt owner, and only that owner's acceptance selects
+authenticated candidate-boot mode before ordinary updater startup. KEL-53 §4 "Candidate
+connect-back" owns the endpoint, claim, acceptance and refusal rules. Candidate mode
+verifies the exact attempt/current/artifact, does not acquire the writer lock or invoke
+orphan recovery, starts the application and reports boot/Ready/health over that
+connection. It cannot write the journal or commit itself. The candidate runs under the initiating ordinary user's token/session in every
 direct mode; an elevated helper or SYSTEM coordinator must not run the application or a
 Bun role with its own token. UAC approval authority and the initiating-user candidate
 identity are separate facts, including over-the-shoulder consent. With no live owner,
@@ -3744,7 +3730,8 @@ evidence.
   ([Apple `fcntl(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)).
 
 If Windows locked-file behavior requires a post-exit helper, it is a signed minimal
-package component, not a second updater. The trusted host passes only protected
+package component, not a second updater, and is not used in `MachineUacDirect` (KEL-53
+criterion 10). The trusted host passes only protected
 update-root/lock handles and its process wait handle; no endpoint is inherited. The
 helper waits for that exact host to exit, reads attempt/artifact/path identity from the
 protected journal, continues the attempt as a resumed owner that re-mints its channel

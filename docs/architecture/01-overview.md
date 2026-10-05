@@ -16,7 +16,7 @@ Three principal classes, with host-minted instances inside each class:
    long-lived general privileged process. A reviewed native plugin, a minimal signed
    update relaunch helper, or the per-attempt elevated Machine-UAC updater helper
    (`keld-updater-helper.exe`, target) receives only its declared narrow authority and
-   never runs the application or Bun. The host is
+   never runs the application or Bun with its own token. The host is
    prebuilt per platform; app developers never compile it.
 2. **App-process family** (destination: supervised Bun children): the developer's primary "main
    process" plus named compatibility roles when an app needs independent extension,
