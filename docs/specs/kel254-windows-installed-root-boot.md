@@ -10,8 +10,10 @@ applies to the prior bytes only. The multi-mode revision was approved by Linear 
 `c00c670aa23a8f26a8705e0f2a64899c823d959a17dc4d20c41ce9bd4c1c2ec9`.
 Amendment A3 (installed-boot discovery, Windows boot states and the expected app
 identity): owner decisions recorded in the active maintainer session on 2026-10-05;
-exact-content approval of this revision is pending, and the approvals above bind only the
-earlier revisions. A3 makes the current executable path a locator only, keeps exactly two
+exact content approved by Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec`, binding PR #374 head
+`b284d39ab2a479898b4bb53a6ae7d36e80ee3037` and the approved spec-content SHA-256
+`a64a6ef8b77b5372bdfabb8b04860e964d80ef51207e72de0f75ae8e7b38b25d`; the approvals above
+bind only the earlier revisions. A3 makes the current executable path a locator only, keeps exactly two
 admitted Windows boot states, and names one build-time owner of the expected app
 identity (§3 AC1–AC4 and AC16, §4 "Selection shape", §6 T2b–T3, with matching KEL-53
 §4/T4a sentences, Architecture 03/06 and the KEL-96 applicability notes). It adds no
@@ -70,8 +72,8 @@ Non-goals:
   exact bytes.
 
 This successor does not change the four-unique architecture or add a trust principal.
-The pre-A3 revision and its install-mode contract are approved; A3 approval is pending
-(header). The implementation
+The pre-A3 revision and its install-mode contract are approved; A3 is approved by
+Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec` (header). The implementation
 PR MUST keep architecture 03/06 and the KEL-96 D4 applicability note synchronized; the
 D4 note remains outside the frozen decision block so its approved digest does not change.
 
@@ -723,7 +725,7 @@ boot files it consumes.
 
 No unresolved product choice remains for the three direct modes or managed-owner
 delegation. The pre-A3 content was approved by Linear comment
-`e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`; A3 approval is pending (header). The UAC and
+`e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`; A3 is approved by Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec` (header). The UAC and
 per-mode native acceptance cells
 remain implementation gates and are not claimed passed here.
 

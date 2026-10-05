@@ -71,7 +71,8 @@ pre-journal orphan window that T4b item 4 could only repair. It removes that win
 
 KEL-254 A3 cross-reference (2026-10-05): the §4 lifecycle installation-ID sentence and
 the trust-anchor sentence name the KEL-254 executable-located anchor, and KEL-254 T2b
-adds a KEL-53 loader entrypoint; exact-content approval is pending with KEL-254 A3.
+adds a KEL-53 loader entrypoint; exact content approved with KEL-254 A3 by
+Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec` (PR #374 head `b284d39ab2a479898b4bb53a6ae7d36e80ee3037`).
 
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
