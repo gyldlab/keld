@@ -22,8 +22,9 @@ production `unsafe`, and no provenance-record field. It changes Windows only: ma
 Linux keep their current standalone and lease-less boot behavior and tests (see AC2).
 The KEL-270 T4d Machine-UAC activation amendment is a separate spec change.
 KEL-270 T4d cross-references (2026-10-05): AC4, AC5 and AC16, the active-selection
-atom and the §7 rows for criteria 4 and 5 point to KEL-53's T4d amendment (candidate
-connect-back, the Machine-UAC recovery-required state and owner-loss retirement). These
+atom, the helper sentence after §4's executable-located rule and the §7 rows for
+criteria 4 and 5 point to KEL-53's T4d amendment (candidate connect-back, the
+Machine-UAC recovery-required state, the helper self-anchor and owner-loss retirement). These
 sentences carry no approval from A3 or from the earlier revisions; their exact-content
 approval is pending with the KEL-53 T4d amendment.
 
@@ -521,7 +522,10 @@ baseline,
 current selection,
 protection profile or profile digest, and no trust decision, comes from path shape,
 `%ProgramFiles%`, registry, environment, cwd, argv or an ACL observation alone; the
-protected record stays authoritative for each.
+protected record stays authoritative for each. KEL-53 T4d reuses this rule for
+`keld-updater-helper.exe` in the same version tree, with the helper's own embedded
+`ExpectedAppIdentity`; the locator takes a closed choice of the two image names (KEL-53
+"Helper launch and self-anchor").
 
 `ExpectedAppIdentity` carries only non-secret expectations from one canonical build-time
 producer; runtime code never hand-writes them. `keld-pack` owns their canonical,

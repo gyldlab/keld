@@ -849,7 +849,8 @@ keeps its current refusal until KEL-270 selects its authority.
 The effect's fix guidance names the recovery-only role, and the host's pre-admission
 failure path offers it; neither needs an active selection or an ordinary host boot, and
 an administrator can start the role directly. The role is the installed
-`keld-updater-helper.exe` behind a fresh UAC prompt. It reloads the protected
+`keld-updater-helper.exe` behind a fresh UAC prompt, launched and self-anchored as
+"Helper launch and self-anchor" below requires. It reloads the protected
 provenance of its installation, takes the exclusive writer lease, rereads and fully
 revalidates provenance, floor, records, journal and both version trees, and then does
 exactly one of the following:
@@ -875,6 +876,44 @@ leaves the typed state in place; no manual filesystem work is required.
 *Interim.* Until the T4d rows pass, the recovery role is disabled: the helper refuses
 it, and the fix guidance of `MachineRecoveryRequired` says that no supported resolution
 exists other than administrator action, with journal, pointers and versions preserved.
+
+**Helper launch and self-anchor (criterion 17; T4d).** The host never launches the
+helper from a path it was given or searched for. It derives the path only from
+provenance admitted under the KEL-254 executable-located anchor and from the protected
+records: for the activation role, its own selected version tree; for the recovery role,
+the journal's rollback-target tree, else its candidate tree, whose
+`keld-updater-helper.exe` has the journaled `helper_image_blake3`, or, with no journal,
+the last-known-good tree. It opens that file beneath the pinned tree without following
+reparse points, under KEL-254's file-identity and protection-profile checks, and offers
+nothing when provenance is not authenticated. It starts that exact path with
+`ShellExecuteExW` and the `runas` verb, for which UAC asks for consent or administrator
+credentials
+([SHELLEXECUTEINFOW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow),
+`ms.date` 2018-12-05), passing only a fixed role argument that conveys no authority; an
+administrator may start the same file directly. The helper calls
+`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` before it loads any library and
+is linked with `/DEPENDENTLOADFLAG:0x800`, so its static imports also resolve only from
+System32
+([SetDefaultDllDirectories](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-setdefaultdlldirectories),
+`ms.date` 2018-12-05;
+[/DEPENDENTLOADFLAG](https://learn.microsoft.com/en-us/cpp/build/reference/dependentloadflag),
+`ms.date` 2020-01-22): an elevated process must not search the current directory or any
+other location an ordinary user can write.
+
+The host's derivation decides which file runs; the helper's self-anchor covers in-tree
+tampering. The helper locates its installation from its own image by KEL-254 §4's
+executable-located rule, with its literal file name `keld-updater-helper.exe` in place
+of `keld-host.exe`; the one locator function takes a closed choice of these two images,
+never a free-form name. Like the host, the helper carries its own `ExpectedAppIdentity`
+payload, which KEL-19's writer embeds before the helper's final Authenticode signature,
+and reads it with `ExpectedAppIdentity::from_signed_image` on its own KEL-135-verified
+handle. That expectation, the located roots' file identities and the recorded mode's
+protection profile anchor the record, so the record never anchors itself. Before it
+takes the lease or writes, the helper refuses every role unless the recorded mode is
+`MachineUacDirect`, its Authenticode signer equals the record's publisher scope, and
+its own image is the expected one: with a journal, its digest equals
+`helper_image_blake3`; without one, its located version is last-known-good for the
+recovery role and the selected current version for the activation role.
 
 **Machine-UAC owner-loss retirement (PR #374 review, 2026-10-05: the owner chose a
 durable proof over a permanent typed halt or pointer-only rollback and delegated the
@@ -1643,6 +1682,7 @@ Must not touch in Slice A:
 | 8 (claimant binding) | only the exact launched and retained process is accepted; a second instance started from the candidate tree that connects first, and a copy of the candidate image that a hostile role starts during `AwaitingHealth`, are each refused by `CompareObjectHandles`, disconnected and given no selection, after which the same pipe instance accepts the real candidate; a peer whose process ID equals the launched one but whose process object differs, a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, session, integrity or elevation each refuse; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner |
 | 8 (endpoint squatting) | a name that another process of the same user pre-creates before the owner makes the owner's first-instance creation fail, so it launches nothing and rolls back with `CandidateLaunch`; a second creation of a live owner's name fails; a squatter that creates the name after owner death, including one whose process ID equals the journaled owner's, is refused by the claimant on process ID, creation time, image digest, session or descriptor before the claimant sends anything; a squatting server receives only an identification-level token and cannot impersonate the claimant; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label and remote-client admission; Low-integrity and AppContainer clients cannot open the endpoint for write; a v1 journal without owner fields admits no claim |
 | 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an untyped refusal or merely no selection) and writes nothing; the same states in `PerUserDirect` keep their landed recovery and repair; while the T4d rows have not passed, the helper refuses the recovery role and the guidance names administrator action as the only resolution; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
+| 17 (helper launch and self-anchor) | the host derives the helper path only from admitted provenance and records, and offers nothing without authenticated provenance; a `keld-updater-helper.exe` placed beside the host outside the tree, on `PATH` or in the current directory is never launched; a DLL planted in the current directory or in a user-writable `PATH` entry is not loaded by the elevated helper; the helper refuses every role before the lease and any write when the recorded mode is `PerUserDirect`, `MachineSeamlessDirect` or managed, when it runs from a copy outside a protected version tree (including a forged tree layout in a user-writable directory), when its signer differs from the publisher scope, when its embedded payload is missing, duplicated or mismatched, or when its image digest is not the journaled one |
 | 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
 | 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
 | 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
