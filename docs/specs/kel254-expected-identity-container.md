@@ -39,6 +39,12 @@ Non-goals:
   or signing-tool selection; those stay with the `keld build` signing step (Architecture
   06 §3);
 - no installer, update-feed, `produce_windows_v0` or KEL-53 record change;
+- no embedding into `keld-updater-helper.exe`: this spec covers `keld-host.exe` only.
+  The KEL-270 T4d draft also expects KEL-19's writer to embed the helper's own
+  `ExpectedAppIdentity` before the helper's final signature (branch
+  `agent/kel-270-t4d-uac-spec-v2`, committed head `8562776`,
+  `kel53-full-package-activation.md` lines 918–920); that needs a later amendment to
+  this spec when T4d slice S9 lands;
 - no macOS or Linux container: neither platform has an installed-root successor (A3 AC2);
 - no fallback carrier: a host without the container is refused, never read from a
   sidecar, resource, environment value or path;
@@ -46,7 +52,7 @@ Non-goals:
   packaging-input host (owner decision 1);
 - no definition of the Keld release channel or of how it authenticates the
   packaging-input digest; this spec requires only that `keld build` takes the digest from
-  that authenticated channel (T3 prerequisite, unowned: §10 item 1);
+  that authenticated channel (T3 prerequisite, unowned: §10 "T3 entry gate");
 - no production `unsafe`, loader API, resource-update API or third-party dependency;
 - no claim that the container grants authority: A3 admission remains the conjunction of
   the expectation, the located roots' file identities, the recorded mode's protection
@@ -95,7 +101,8 @@ Architecture 01 §3.
    ranges listed in §4 "Writer contract" (byte-diff oracle).
 2. **Loadability.** Given the writer's output from the real unsigned release
    `keld-host.exe`, when it is launched on Windows with no dev lease, then the process
-   starts and exits with the existing KEL-135 `KELD-WV-009` refusal before any listener,
+   starts and exits with the existing KEL-135 identity refusal (`KELD-WV-009` at base
+   `7e1853f`) before any listener,
    child or window. A loader rejection of the image fails this row.
 3. **Exactly once.** Given the writer's own output, or any image that already has a
    section named `.keldeai`, when the writer runs, then it returns `KELD-PACK-008` and
@@ -150,11 +157,12 @@ Architecture 01 §3.
     authentication, when `keld build` runs, then it refuses with a typed `KELD-CLI` error
     (the next free number when T3 lands) before embedding, and writes no host output.
 13. **Signature carrier check.** Given a signed host on a Windows build host, when step 7
-    of §4 runs, then it obtains the identity through KEL-135's existing verifier (the
-    same `WinVerifyTrust` policy, exactly one primary and no secondary signature, and
-    the `keld.app-id/v1:` program name) and refuses, with that verifier's
-    `KELD-WV-009`, a host that fails it or whose decoded app id differs from the
-    configured one. Given a non-Windows build host, or a publisher who signs outside
+    of §4 runs, then it obtains the identity through the single KEL-135 Windows
+    Authenticode verifier owner, which KEL-270 owner decision D4 places in `keld-guard`
+    (the same `WinVerifyTrust` policy, exactly one primary and no secondary signature,
+    and the `keld.app-id/v1:` program name), and refuses, with that owner's typed
+    refusal, a host that fails it or whose decoded app id differs from the configured
+    one. Given a non-Windows build host, or a publisher who signs outside
     `keld build` and does not return the signed host to step 7, then the build output
     states that the carrier check did not run, and a divergence is detected only at
     boot, where A3's equality chain fails closed (atom 10).
@@ -464,8 +472,11 @@ pub fn read_host_identity_bytes(image: &[u8])
 Both functions share one private parser over a crate-private positioned-read trait with
 two implementations: byte slices on every target and `File` on Windows only.
 `read_host_identity` is `cfg(windows)` because no non-Windows caller needs a handle read:
-`from_signed_image` is Windows boot code (so it is `cfg(windows)` as well), and the
-cross-host `keld build` check and the fuzz target use the bytes form. The `File`
+its only caller, `from_signed_image`, serves Windows boot, and the cross-host
+`keld build` check and the fuzz target use the bytes form. A3 approved
+`from_signed_image`'s public shape, so this spec does not decide its `cfg`: A3 T3 Part
+B may make it `cfg(windows)`, or give its non-Windows build a body that does not call
+`read_host_identity`. The `File`
 implementation uses `std::os::windows::fs::FileExt::seek_read`, whose offset "is
 relative to the start of the file and thus independent from the current cursor";
 because "it is not an error to return with a short read", the reader loops until the
@@ -564,7 +575,8 @@ Order for the Windows x64 direct cell:
    aligned, because `FileAlignment` is at least 512) and ends at end of file; and every
    byte before it equals the step 5 output except the 4-byte `CheckSum` and the 8-byte
    Certificate Table entry, so the signer changed nothing else. On a Windows build host,
-   step 7 also runs KEL-135's existing verifier on the signed host (AC13): exactly one
+   step 7 also runs the single KEL-135 Windows Authenticode verifier owner in
+   `keld-guard` (KEL-270 D4) on the signed host (AC13): exactly one
    primary and no secondary signature, and a `keld.app-id/v1:` program name whose app id
    equals the configured one. Step 7 runs only when `keld build` holds the signed host:
    after its own signer step, or when a publisher who signed elsewhere returns the
@@ -591,10 +603,16 @@ On Windows the edge brings `keld-pack`'s existing target-specific dependencies
 (`keld-guard`, already a CLI dependency, and the workspace-pinned `blake3` and `zstd`)
 into the CLI build; no new third-party crate enters `Cargo.lock`. A3 T3 Part B does not
 need this edge: its tests build fixtures by calling the writer directly. Step 7's
-carrier check reuses KEL-135 through the existing `keld-cli -> keld-core` edge: T3 adds
-one thin public `keld-core` entry point over the existing private verifier
-(`verified_windows_identity_from_image` and its trust-image open), with no second
-Authenticode parser, no policy change and no new `unsafe`.
+carrier check calls the single KEL-135 Windows Authenticode verifier owner. Owner
+decision D4 (2026-10-05, Linear KEL-270 comment
+`810f90c3-7ae0-411b-8164-f951f2246235`) moves that verifier from `keld-core` into
+`keld-guard` (`src/windows_authenticode.rs` in the in-progress KEL-270 T4d v2 draft,
+whose slice S8 performs the move): `keld-core` and the T4d updater helper both call
+it, and copying it is forbidden. `keld-cli` already depends on `keld-guard`, so the
+check adds no edge. It MUST NOT add a public `keld-core` entry point for this purpose:
+that would be a second public owner of one rule. The D4 move is therefore a T3
+prerequisite (§6), and the check adds no second Authenticode parser, no policy change
+and no new `unsafe`.
 
 ### Identity overlap with KEL-135
 
@@ -621,8 +639,8 @@ was delegated to this spec ("fixes its container") and is gated here.
 
 Platform notes: Windows x64 only. The writer refuses any machine other than AMD64.
 macOS and Linux have no container; the writer and `read_host_identity_bytes` still
-compile and run their pure tests on every CI host, while `read_host_identity` and
-`from_signed_image` are Windows-only.
+compile and run their pure tests on every CI host, while `read_host_identity` is
+Windows-only (`from_signed_image`'s `cfg` is A3 T3 Part B's choice).
 
 Runtime seam: none at build time. At boot the seam is A3's: inside the host process,
 before resources, `keld-core` passes the KEL-135-verified handle to
@@ -640,15 +658,20 @@ Implement in:
 - `crates/keld-pack/Cargo.toml`: a `tempfile = { workspace = true }` dev-dependency
   for the Windows-only AC10 anonymous-file test (already workspace-pinned and in
   `Cargo.lock`) (T1);
-- `crates/keld-pack/tests/real_host.rs`: an `#[ignore]` integration test that reads
-  the release host path from `KELD_PACK_REAL_HOST` and fails, never skips, when the
-  variable is absent (T1);
-- `.github/workflows/ci.yml`: one Windows-only step in the `check` job, run when
-  `keld-pack` or `keld-host` changes, that builds `cargo build --release -p keld-host`
-  and runs `cargo test -p keld-pack --test real_host -- --ignored --exact` with
-  `KELD_PACK_REAL_HOST` set to `target/release/keld-host.exe`, following the existing
-  `--ignored --exact` pattern of that file. No `keld-pack -> keld-host` edge is added
+- `crates/keld-pack/tests/real_host.rs`: a `#![cfg(windows)]` integration test file
+  whose one `#[ignore]` test, `real_release_host_round_trip`, reads the release host
+  path from `KELD_PACK_REAL_HOST` and fails, never skips, when the variable is absent
   (T1);
+- `.github/workflows/ci.yml`: one Windows-only step in the `check` job, run when
+  `keld-pack` or `keld-host` changes, with `shell: bash` and `set -euo pipefail` as its
+  first line, so a failed `cargo build` fails the step instead of being hidden. It runs
+  `cargo build --release -p keld-host`, then
+  `cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact`
+  with `KELD_PACK_REAL_HOST` set to `target/release/keld-host.exe`, naming the exact
+  test as the KEL-167 step in that file does. The release build adds time to the
+  Windows `check` job, whose `timeout-minutes` is 45; T1 records the step's duration on
+  its first CI run and, if the job nears that limit, moves the step to its own job
+  rather than raising the timeout. No `keld-pack -> keld-host` edge is added (T1);
 - `crates/keld-update/fuzz` (one new `host_identity` target over
   `read_host_identity_bytes`, with a path dependency on `keld-pack`; no new pin) (T1);
 - `docs/engineering/keld-error-codes.md`: `KELD-PACK-006` to `KELD-PACK-012` in T1,
@@ -656,9 +679,9 @@ Implement in:
   check, AC12 digest) in T3;
 - the Windows signed-fixture acceptance under the existing KEL-135 operator path (T2);
 - `crates/keld-cli/Cargo.toml` (the edge) and the `keld build` Windows host step,
-  including the packaging-input digest check, in `crates/keld-cli`; one thin public
-  `keld-core` entry point over the existing KEL-135 verifier for the AC13 check; and
-  the Architecture 01 §3 `keld-cli` row (T3);
+  including the packaging-input digest check and the AC13 call to the D4 `keld-guard`
+  verifier owner (no new `keld-core` entry point), in `crates/keld-cli`; and the
+  Architecture 01 §3 `keld-cli` row (T3);
 - `docs/architecture/01-overview.md` §2 principle 5, `docs/architecture/07-agent-experience.md`
   §6 item 7 and the matching `docs/onboarding/01-project-summary.md` and
   `docs/onboarding/02-architecture-guide.md` lines (this spec's PR; owner decision 1).
@@ -667,7 +690,8 @@ Must not touch:
 
 - `crates/keld-pack/src/expected_identity.rs` encoding, domain tag and bounds;
 - KEL-135 signature verification logic and policy, carrier grammar, publisher scope or
-  profile hashing (T3 only exposes the existing verifier through one entry point);
+  profile hashing; the verifier's move into `keld-guard` belongs to KEL-270 D4 (T4d
+  S8), and this spec adds no `keld-core` public entry point for it;
 - `crates/keld-host` source (no reserved slot, no `link_section`);
 - KEL-53 records, feed schema, `produce_windows_v0` and installer code;
 - `keld-guard` policy, generated permissions and KIPC;
@@ -692,12 +716,16 @@ Must not touch:
 - [ ] T3 — with the first `keld build` step that prepares a Windows host: the
   `keld-cli -> keld-pack` edge, the eight-step order of §4 (digest verification, embed,
   publisher signature, post-sign check), AC11 and AC12 with their two new `KELD-CLI`
-  codes and registry entries, AC13 with its thin `keld-core` entry point, and the Architecture
-  01 §3 row update. Prerequisite: a Keld release channel that publishes the unsigned
-  packaging-input host and authenticates its SHA-256. None exists at base `7e1853f`
-  (the only workflow building `keld-host` is CI, and no `@keld/cli` package exists), so
-  T3 MUST NOT land until that channel and its authentication are specified and
-  reviewed; T1, T2 and A3 T3 Part B do not depend on it. Owner: unassigned. No Linear
+  codes and registry entries, AC13 through the D4 `keld-guard` verifier owner, and the
+  Architecture 01 §3 row update. Prerequisites: (a) the KEL-270 D4 move of the KEL-135
+  Windows Authenticode verifier into `keld-guard` (T4d slice S8) has landed, because
+  AC13 calls only that owner and a public `keld-core` entry point is forbidden; (b) a
+  Keld release channel that publishes the unsigned packaging-input host and
+  authenticates its SHA-256. Neither exists at base `7e1853f` (the verifier is still in
+  `keld-core`, the only workflow building `keld-host` is CI, and no `@keld/cli` package
+  exists), so T3 MUST NOT land until both are in place, the channel and its
+  authentication specified and reviewed; T1, T2 and A3 T3 Part B depend on neither.
+  For the release channel (b): Owner: unassigned. No Linear
   issue currently owns the authenticated Keld release channel (digest publication and
   its authentication). First action: the repository owner assigns it to an existing
   issue (the owner prefers reusing existing, even closed, issues) or creates one.
@@ -706,8 +734,8 @@ Must not touch:
 
 | Criteria | Proof and falsifier |
 |---|---|
-| 1 | Synthetic PE32+ fixtures built in test code (no committed binary): one with two sections, one that adds an uninitialized-data section with both raw fields zero; embed, read back, compare payload; byte-diff the output against the input and fail on any change outside the six listed ranges. On Windows CI, the §5 `ci.yml` step builds the release `keld-host.exe` and runs the `#[ignore]` `real_host` test on it through `KELD_PACK_REAL_HOST`; the test fails, never skips, when the variable is absent. |
-| 2 | Windows: launch the embedded unsigned release host lease-less; require exit with `KELD-WV-009` and zero listener, child and window attempts; a `CreateProcess` failure fails the row. |
+| 1 | Synthetic PE32+ fixtures built in test code (no committed binary): one with two sections, one that adds an uninitialized-data section with both raw fields zero; embed, read back, compare payload; byte-diff the output against the input and fail on any change outside the six listed ranges. On Windows CI, the §5 `ci.yml` step builds the release `keld-host.exe` and runs the `#[ignore]` `real_release_host_round_trip` test on it through `KELD_PACK_REAL_HOST`; the test fails, never skips, when the variable is absent, and a failed release build fails the step. |
+| 2 | Windows: launch the embedded unsigned release host lease-less; require exit with the KEL-135 identity refusal (`KELD-WV-009` at base `7e1853f`) and zero listener, child and window attempts; a `CreateProcess` failure fails the row. |
 | 3 | Embed twice; also embed into a fixture with a pre-existing `.keldeai` section; both `KELD-PACK-008`, no output. |
 | 4 | Fixture with a non-zero Certificate Table entry; fixture with one trailing byte; fixture with trailing data and a zero entry; each `KELD-PACK-009`. |
 | 5 | Fixtures with 96 sections, 39 bytes of slack, one non-zero slack byte, and a non-zero bound-import directory; each `KELD-PACK-010`. |
@@ -718,7 +746,7 @@ Must not touch:
 | 10 | Windows: `read_host_identity` succeeds on an anonymous `tempfile::tempfile()` file (no path) after its cursor is moved to end of file, and an injected read failure gives `KELD-PACK-012`; on every OS, a source scan of `keld-pack` finds no `unsafe`, `LoadLibrary`, `FindResource` or `UpdateResource`. |
 | 11 | `keld build` integration test (T3): signed input refuses with `KELD-PACK-009`; the step log shows digest verification, then embed, then signature; the post-sign check rejects with its `KELD-CLI` code, independently, an unsigned host, a fixture with bytes between the container and the certificate table and a fixture whose signer changed one byte before the certificate table outside the `CheckSum` and Certificate Table entry. |
 | 12 | `keld build` integration test (T3): a packaging input with one flipped byte, a digest for another target or Keld version, a missing digest and a digest that fails channel authentication each refuse with the new `KELD-CLI` code before the writer runs; a writer-call counter stays zero and no host output exists. |
-| 13 | Windows `keld build` test (T3) with operator-signed fixtures that pass the step 7 byte checks: a host signed with a different `keld.app-id/v1:` app id, a host with a secondary signature and a host signed by a certificate the build host does not trust each refuse in step 7 with `KELD-WV-009`; the matching single-signature host passes. On a non-Windows host, and on a Windows run whose signed host is never returned to step 7, the build output states that the carrier check did not run. |
+| 13 | Windows `keld build` test (T3) with operator-signed fixtures that pass the step 7 byte checks: a host signed with a different `keld.app-id/v1:` app id, a host with a secondary signature and a host signed by a certificate the build host does not trust each refuse in step 7 with the D4 `keld-guard` verifier owner's typed refusal; the matching single-signature host passes; and a source check finds no `keld-core` public entry point added for step 7. On a non-Windows host, and on a Windows run whose signed host is never returned to step 7, the build output states that the carrier check did not run. |
 
 Anti-flake: every writer and reader test is pure or uses one temporary file; no timing,
 ports or sleeps. AC2 and AC8 are Windows-only real-OS rows and are not inferred from the
@@ -730,8 +758,9 @@ synthetic fixture or from CI on other hosts.
   reads. Options A and D, which would need `unsafe`, are rejected.
 - public API: yes — `embed_host_identity`, the Windows-only `read_host_identity`,
   `read_host_identity_bytes`, seven `PackError` variants, `KELD-UPDATE-019`'s variant
-  (`from_signed_image` itself is already in A3's public-API list), and in T3 the thin
-  `keld-core` entry point over KEL-135's verifier. Independent exact-diff API review.
+  (`from_signed_image` itself is already in A3's public-API list). AC13 calls the D4
+  `keld-guard` verifier owner, whose public surface KEL-270 T4d S8 owns and reviews;
+  this spec adds no `keld-core` public entry point. Independent exact-diff API review.
 - permission model: none — no capability, manifest, guard or grant change; the
   expectation confers no authority (A3 conjunction).
 - dependency addition: yes — the internal workspace edge `keld-cli -> keld-pack` (T3);
@@ -751,20 +780,21 @@ host once.
 
 ## 10. Open questions
 
-1. **Owner of the authenticated Keld release channel (blocks T3 only).** Owner:
-   unassigned. No Linear issue currently owns the authenticated Keld release channel
-   (digest publication and its authentication). First action: the repository owner
-   assigns it to an existing issue (the owner prefers reusing existing, even closed,
-   issues) or creates one. Atom 12 is the only control that binds the unsigned
-   packaging input to a Keld release, so T3 MUST NOT land until this owner exists and
-   the channel is specified and reviewed. A Linear search on 2026-10-05 found only
-   macOS-scoped neighbours: KEL-141 (prebuilt CLI and host distribution, Backlog) and
-   KEL-103 (signed macOS prebuilt host spec). T1, T2 and A3 T3 Part B do not depend on
-   it.
+None for T0: no product question remains. The packaging-input host form and the app-id
+dual carrier were decided by the owner on 2026-10-05 (§4 "Owner decisions
+(2026-10-05)"), and format and API review of the v1 container are review gates (§8).
 
-No product question remains: the packaging-input host form and the app-id dual carrier
-were decided by the owner on 2026-10-05 (§4 "Owner decisions (2026-10-05)"), and format
-and API review of the v1 container are review gates (§8).
+T3 entry gate (blocks T3 only; T1, T2 and A3 T3 Part B do not depend on it): the
+authenticated Keld release channel, owner unassigned. No Linear issue currently owns the
+authenticated Keld release channel (digest publication and its authentication). First
+action: the repository owner assigns it to an existing issue (the owner prefers reusing
+existing, even closed, issues) or creates one. Atom 12 is the only control that binds
+the unsigned packaging input to a Keld release, so T3 MUST NOT land until this owner
+exists and the channel is specified and reviewed. A Linear search on 2026-10-05 found
+only macOS-scoped neighbours: KEL-141 (prebuilt CLI and host distribution, Backlog) and
+KEL-103 (signed macOS prebuilt host spec). T3's other entry gate, the KEL-270 D4 move
+of the KEL-135 verifier into `keld-guard` (T4d S8), has an owner (KEL-270) and is listed
+in §6.
 
 ## Appendix A. Current-documentation receipt
 
