@@ -37,6 +37,7 @@ pub use initialize::{
 pub use load::{
     load_windows_activation_write_snapshot, load_windows_baseline,
     load_windows_recovery_inspection, repair_windows_unjournaled_versions,
+    select_windows_active_package,
 };
 
 /// Trusted deployment/host inputs, independent of the record being authenticated.
@@ -147,6 +148,36 @@ impl LoadedWindowsBaseline {
 
     pub(crate) fn retained_versions(&self) -> io::Result<Dir> {
         self.roots.versions.try_clone()
+    }
+}
+
+/// The exact immutable package tree KEL-53 selects for an ordinary startup.
+///
+/// It names one committed artifact from a journal-free, coherent snapshot of the protected
+/// records: `current`, which equals last-known-good or previous-known-good. Its version and
+/// tree directories stay open for the owner's lifetime, so the updater cannot retire that
+/// version while the application runs from it. It holds no mutable-record handle and no
+/// activation lease, grants no updater authority, and does not authenticate the host
+/// executable or boot files; those remain with their own owners (KEL-254, KEL-96).
+#[derive(Debug)]
+pub struct ActivePackageSelection {
+    artifact: ArtifactIdentity,
+    tree_path: std::path::PathBuf,
+    _version: Dir,
+    _tree: Dir,
+}
+
+impl ActivePackageSelection {
+    /// The selected committed artifact.
+    #[must_use]
+    pub const fn artifact(&self) -> &ArtifactIdentity {
+        &self.artifact
+    }
+
+    /// The canonical immutable tree: `<update-root>/versions/<version>/tree`.
+    #[must_use]
+    pub fn tree_path(&self) -> &std::path::Path {
+        &self.tree_path
     }
 }
 

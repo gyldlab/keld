@@ -67,13 +67,14 @@ pub use records::ActivationFailureClass;
 pub use records::fuzz_activation_journal;
 #[cfg(windows)]
 pub use windows_baseline::{
-    ActivationHealthReceipt, LoadedWindowsBaseline, ProcessFamilyRetirement,
-    WindowsActivationAttempt, WindowsActivationOutcome, WindowsActivationResolution,
-    WindowsActivationWriteSnapshot, WindowsBaselineReceipt, WindowsBaselineTrust,
-    WindowsRecoveryInspection, WindowsRecoveryOutcome, initialize_windows_baseline,
-    initialize_windows_machine_uac_baseline, initialize_windows_per_user_baseline,
-    load_windows_activation_write_snapshot, load_windows_baseline,
-    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
+    ActivationHealthReceipt, ActivePackageSelection, LoadedWindowsBaseline,
+    ProcessFamilyRetirement, WindowsActivationAttempt, WindowsActivationOutcome,
+    WindowsActivationResolution, WindowsActivationWriteSnapshot, WindowsBaselineReceipt,
+    WindowsBaselineTrust, WindowsRecoveryInspection, WindowsRecoveryOutcome,
+    initialize_windows_baseline, initialize_windows_machine_uac_baseline,
+    initialize_windows_per_user_baseline, load_windows_activation_write_snapshot,
+    load_windows_baseline, load_windows_recovery_inspection, repair_windows_unjournaled_versions,
+    select_windows_active_package,
 };
 #[cfg(windows)]
 pub use windows_extraction::{CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot};
