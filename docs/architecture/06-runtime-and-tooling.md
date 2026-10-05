@@ -1152,7 +1152,9 @@ as failure; it delays commit/LKG replacement, not initial candidate launch.
 The candidate inherits no endpoint and takes no authority from argv or environment.
 At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
 holding the running executable makes it a claimant: it connects back to the one-shot
-endpoint of the component that launched it, and that owner accepts only the exact
+endpoint that the component that launched it created as the only instance, admitting
+only the initiating user, and verifies that server against the journaled owner before
+sending anything. The owner accepts only the exact
 process it launched and still retains, bound by kernel object identity, creation time
 and the initiating token facts. KEL-53 §4 "Candidate connect-back" owns the endpoint,
 claim and acceptance rules. Only that acceptance selects authenticated candidate-boot

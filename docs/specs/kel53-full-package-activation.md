@@ -202,7 +202,11 @@ for the bounded resolution, opening and pinning of the initiating user's staged 
 and is reverted before any protected updater operation. The candidate launch target is
 `CreateProcessWithTokenW` using that retained primary token, only after native proof
 that the elevated helper has the required `SeImpersonatePrivilege` and runs in the same
-interactive session as the captured initiating user. Verify the resulting host token, session,
+interactive session as the captured initiating user. The bootstrap endpoint lies in the
+same `keld-attempt` namespace under the creation rules of "Candidate connect-back"; how
+the helper learns, before authentication, the initiating user SID that its DACL admits,
+and how the host verifies that server against the process handle that `ShellExecuteExW`
+returns, are part of this qualification target. Verify the resulting host token, session,
 integrity/elevation, image, profile/environment and desktop before resources. A session
 mismatch, missing privilege, identification-only token, failed reversion, unavailable
 desktop/profile or failed token proof refuses before publication; if detected after
@@ -653,7 +657,17 @@ struct ActivationJournal {
     // T4d schema revision `keld.activation-journal/v2` (wire-gated). Required in
     // `MachineUacDirect` before launch; a v1 record has none.
     initiating_logon: Option<InitiatingLogon>,
+    // T4d v2: the connect-back endpoint owner, written with every (re-)mint of
+    // `health_channel_id`; required before launch in every direct mode. A v1 record
+    // has none and therefore never admits a candidate claim.
+    attempt_owner: Option<AttemptOwner>,
     phase: ActivationPhase,
+}
+
+/// The process that creates the connect-back endpoint and launches the candidate.
+struct AttemptOwner {
+    owner_process_id: u32,
+    owner_creation_time: u64, // `GetProcessTimes` creation FILETIME; zero refuses launch
 }
 
 /// The initiating process token's logon session ("Machine-UAC owner-loss retirement").
@@ -1051,12 +1065,63 @@ helper. It listens on a one-shot endpoint whose name one KEL-53 locator function
 derives from the provenance-derived installation ID and the journaled attempt and
 health-channel IDs; the owner and every claimant use that function and no second lookup
 path. The name conveys no authority, and the keeper's rendezvous locator is never a
-health endpoint.
+health endpoint. The name lies in the dedicated `\\.\pipe\keld-attempt-<64 lowercase
+hex>` namespace (Architecture 02). Its subprotocol has its own magic values: the
+claimant's `KELD-AH1` claim (installation, attempt and health-channel IDs, client nonce
+and client process ID), the owner's `KELD-AC1` challenge (adding the server nonce and
+server process ID), the claimant's `KELD-AA1` acknowledgement of that whole transcript,
+and the owner's `KELD-AR1` acceptance receipt, which it sends only after consuming its
+one-shot. The records follow the lifecycle records' fixed-size, little-endian style;
+the T4d wire review fixes their byte layouts before code.
+
+The owner creates the endpoint itself before it launches the candidate, through the
+landed `keld-ipc` named-pipe server. That server already creates its pipe as the only
+instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`, at most one instance), with
+`PIPE_REJECT_REMOTE_CLIENTS`, a non-inheritable handle and a protected DACL that it reads
+back. For this endpoint the single ACE grants the initiating user SID, not the owner's
+own TokenUser, only the individual read and write pipe rights: never
+`FILE_CREATE_PIPE_INSTANCE`, which `FILE_GENERIC_WRITE` would include, and never
+`WRITE_DAC` or `WRITE_OWNER`. The descriptor also carries an explicit Medium mandatory
+label with `SYSTEM_MANDATORY_LABEL_NO_WRITE_UP`: objects an elevated helper creates
+otherwise receive its High level, which would deny the Medium candidate write access,
+while the explicit label still denies Low-integrity and AppContainer writers. With
+first-instance creation any later creator of the same name fails, and creating an
+instance needs `FILE_CREATE_PIPE_INSTANCE` access, which no ACE grants
+([CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew),
+`ms.date` 2022-08-05;
+[Named Pipe Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights),
+`ms.date` 2018-05-31;
+[Mandatory Integrity Control](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control),
+`ms.date` 2025-07-08). If the name already exists, or creation or descriptor readback
+fails, the owner launches nothing: it rolls the attempt back with `CandidateLaunch`
+under the same lease (criterion 9), composing the retirement binding from its own
+retained Job-zero observation because nothing was launched. A squatter can therefore
+cost one attempt, but it never receives a claim or causes any other protected write.
+The journal records the owner's `owner_process_id` and `owner_creation_time` in the same
+durable record that mints or re-mints the health-channel ID, so the owner is fixed
+before anyone can derive the endpoint name.
 
 At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
 holding the running executable makes the process a candidate claimant. It derives the
-owner's endpoint name, authenticates that owner against the journaled coordinator or
-helper identity before sending anything, and presents a fixed-size claim.
+owner's endpoint name and opens it with `SECURITY_SQOS_PRESENT |
+SECURITY_IDENTIFICATION`, so a server that is not the owner can at most identify the
+claimant, never impersonate it; named-pipe servers otherwise receive impersonation by
+default
+([CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+`ms.date` 2022-08-16;
+[Impersonation Levels](https://learn.microsoft.com/en-us/windows/win32/secauthz/impersonation-levels),
+`ms.date` 2018-05-31). Before it sends anything, it verifies the server against the
+journal: `GetNamedPipeServerProcessId` equals `owner_process_id`; that process, opened
+with `PROCESS_QUERY_LIMITED_INFORMATION`, has the creation time `owner_creation_time`
+and runs the image, reopened from the path that `QueryFullProcessImageNameW` reports
+without following reparse points, whose BLAKE3 equals `helper_image_blake3`;
+`GetNamedPipeServerSessionId` equals the claimant's own session; and the pipe's
+descriptor is exactly the protected form above for the claimant's own TokenUser.
+Whether a Medium-integrity process of the initiating user may open an elevated owner,
+including one approved with alternate administrator credentials, with
+`PROCESS_QUERY_LIMITED_INFORMATION` is a T4d qualification target; until it passes,
+that check refuses rather than being skipped. Any mismatch closes the client handle,
+and the claimant selects nothing. Otherwise it sends its fixed-size claim.
 
 The owner accepts a claimant only when the connected peer is the one process it
 launched and still retains. Before it reads more than the fixed-size claim, it takes the
@@ -1072,9 +1137,9 @@ process ID and creation time (`GetProcessTimes`) equal those the owner recorded 
 launch. The owner then impersonates the claim's writer only to query its token, and
 requires the initiating TokenUser, the initiating `AuthenticationId` (`TokenStatistics`),
 the initiating session, Medium integrity and a non-elevated token. It reverts before
-anything else, and a failed `RevertToSelf` terminates the owner. The claim and a
-challenge and acknowledgement over fresh client and server nonces bind the installation,
-attempt and health-channel IDs and both process IDs.
+anything else, and a failed `RevertToSelf` terminates the owner. The `AH1`, `AC1` and
+`AA1` exchange binds the installation, attempt and health-channel IDs, both fresh nonces
+and both process IDs.
 
 Any mismatch refuses that claimant. The owner disconnects it with `DisconnectNamedPipe`
 and re-arms the same pipe instance for the next client, which is the landed `keld-ipc`
@@ -1531,6 +1596,7 @@ Must not touch in Slice A:
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
 | 8 (claimant binding) | only the exact launched and retained process is accepted; a second instance started from the candidate tree that connects first, and a copy of the candidate image that a hostile role starts during `AwaitingHealth`, are each refused by `CompareObjectHandles`, disconnected and given no selection, after which the same pipe instance accepts the real candidate; a peer whose process ID equals the launched one but whose process object differs, a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, session, integrity or elevation each refuse; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner |
+| 8 (endpoint squatting) | a name that another process of the same user pre-creates before the owner makes the owner's first-instance creation fail, so it launches nothing and rolls back with `CandidateLaunch`; a second creation of a live owner's name fails; a squatter that creates the name after owner death, including one whose process ID equals the journaled owner's, is refused by the claimant on process ID, creation time, image digest, session or descriptor before the claimant sends anything; a squatting server receives only an identification-level token and cannot impersonate the claimant; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label and remote-client admission; Low-integrity and AppContainer clients cannot open the endpoint for write; a v1 journal without owner fields admits no claim |
 | 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
 | 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
 | 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
