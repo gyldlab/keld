@@ -178,8 +178,28 @@ fn ac9_structure_rules_reach_the_container_first_with_006() {
     put_u32(&mut size_of_image, at, 0x5000);
     let mut truncated = canonical();
     truncated.pop();
+    // Only the container's raw data lies in the header area (before SizeOfHeaders 0x400).
+    let inside_headers = build(&Spec {
+        headers: 0x400,
+        sections: vec![
+            Section {
+                raw_pointer: 0x400,
+                ..text()
+            },
+            Section {
+                raw_pointer: 0x600,
+                ..data()
+            },
+            container_section(*b".keldeai", 0x3000, 0x200),
+        ],
+        ..two_section_spec()
+    });
     for (image, detail) in [
         (misaligned, "section raw data is not FileAlignment-aligned"),
+        (
+            inside_headers,
+            "section raw data starts before SizeOfHeaders",
+        ),
         (overlapping, "section raw ranges overlap"),
         (
             address,
