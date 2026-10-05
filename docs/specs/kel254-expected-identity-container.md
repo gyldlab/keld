@@ -4,6 +4,10 @@ Linear: KEL-19 (packaging work: container and writer) · related KEL-254 amendme
 Approval: pending. This is an approval draft. Implementation MUST NOT start until an
 owner-approval receipt (a Linear comment that binds the PR head and this file's exact
 SHA-256) is recorded in this header.
+Owner decisions: the two product questions of the first draft (the packaging-input host
+form and the app-id dual carrier) were decided by the owner on 2026-10-05 and are
+recorded in §4 "Owner decisions (2026-10-05)". They are not the exact-content approval
+above.
 
 KEL-254 amendment A3 (`docs/specs/kel254-windows-installed-root-boot.md` §4 "Selection
 shape", §5, §6 T2b–T3 and §8) assigns three items to "the KEL-19 packaging work": the
@@ -38,7 +42,11 @@ Non-goals:
 - no macOS or Linux container: neither platform has an installed-root successor (A3 AC2);
 - no fallback carrier: a host without the container is refused, never read from a
   sidecar, resource, environment value or path;
-- no stripping, re-signing or repair of an already signed image;
+- no stripping, re-signing or repair of an already signed image, and no Keld-signed
+  packaging-input host (owner decision 1);
+- no definition of the Keld release channel or of how it authenticates the
+  packaging-input digest; this spec requires only that `keld build` takes the digest from
+  that authenticated channel (T3 prerequisite);
 - no production `unsafe`, loader API, resource-update API or third-party dependency;
 - no claim that the container grants authority: A3 admission remains the conjunction of
   the expectation, the located roots' file identities, the recorded mode's protection
@@ -51,7 +59,8 @@ Non-goals:
   §5 (`keld-pack` owns the encoding, decoder and, with KEL-19, the container reader),
   §6 T2b–T3, §7 row "2 (T3)", §8 (public API, dependency and wire gates).
 - `docs/architecture/01-overview.md` §1 (host prebuilt per platform), §2 principle 5
-  (prebuilt signed host, no Rust toolchain for app developers), §3 (crate roles and
+  (prebuilt host, no Rust toolchain for app developers; amended by this PR for the
+  unsigned Windows packaging input), §3 (crate roles and
   dependency directions; `keld-pack` owns installer assembly and signing).
 - `docs/architecture/06-runtime-and-tooling.md` §2 (`keld build` contract), §3
   (`keld-pack`, cross-host assembly target, signer tools), §4 client verification step 1
@@ -64,8 +73,13 @@ Non-goals:
 - `crates/keld-cli/src/verb.rs`: `keld build` is a reserved verb (`KELD-CLI-045`) whose
   tracking issue is KEL-19.
 
-Deviation from architecture: none. When T3 adds the `keld-cli -> keld-pack` edge, the
-same PR updates the `keld-cli` "Depends on" cell of Architecture 01 §3.
+Deviation from architecture: one, corrected in the same PR. Architecture 01 §2
+principle 5 read "Prebuilt signed host + npm distribution", which owner decision 1 makes
+wrong for the Windows packaging input; this PR amends that principle to state that the
+input is distributed unsigned and signed by the app publisher after `keld build` embeds
+the identity. No approval digest or frozen block covers that line. When T3 adds the
+`keld-cli -> keld-pack` edge, the same PR updates the `keld-cli` "Depends on" cell of
+Architecture 01 §3.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -114,11 +128,19 @@ same PR updates the `keld-cli` "Depends on" cell of Architecture 01 §3.
     calls no loader or resource API. `keld-pack` contains no `unsafe` and no
     `LoadLibrary`, `FindResource` or `UpdateResource` reference.
 11. **Build order.** Given the first `keld build` step that prepares a Windows host
-    (T3), when it runs, then it embeds before it signs, refuses a signed input with
+    (T3), when it runs, then it verifies the packaging-input digest (AC12) before it
+    embeds, embeds before the final signature, refuses a signed input with
     `KELD-PACK-009`, derives the payload app id and the KEL-135 program-name app id from
-    one configuration value, and after signing checks that the reader returns the same
-    payload and that the attribute certificate table starts at the container's raw end
-    and ends at end of file.
+    one configuration value, and after the app publisher's signature checks that the
+    reader returns the same payload, that the attribute certificate table starts at the
+    container's raw end and ends at end of file, and that every byte before it equals
+    the embedded output except the 4-byte `CheckSum` and the 8-byte Certificate Table
+    entry.
+12. **Packaging-input digest.** Given a packaging-input host whose SHA-256 differs from
+    the digest that the authenticated Keld release channel publishes for that Keld
+    version and target, or a digest that is missing or fails that channel's
+    authentication, when `keld build` runs, then it refuses with a typed `KELD-CLI` error
+    (the next free number when T3 lands) before embedding, and writes no host output.
 
 ## 4. Design
 
@@ -135,9 +157,9 @@ same PR updates the `keld-cli` "Depends on" cell of Architecture 01 §3.
 | 7. Reader bounds and trust / reader | handle + handle length → payload or typed refusal | an unchecked field causes an out-of-range read, panic, unbounded allocation, or reliance on an unhashed byte | AC6 and AC9 per-field mutations; fuzz target (§7) |
 | 8. Handle binding / A3 T3 (KEL-96 consumer) with KEL-135 | the KEL-135-verified, write- and delete-share-denied handle → reader input | reading another object (a path reopen or the loader-mapped module) | reader signature takes `&File` only (AC10); A3 T3 rows; not owned here |
 | 9. Payload semantics / `keld-pack` codec (unchanged) + `keld-update` | container bytes → `ExpectedAppIdentity` | non-canonical bytes, unsupported channel or invalid key admitted | existing T2b golden vector and refusals; AC9 `KELD-PACK-005` row |
-| 10. App-id dual carrier / owner decision (§10 Q2) | KEL-135 program name and payload app id → equal values or refusal | the two carriers diverge silently | A3 equality chain at boot (record = expectation, record = KEL-135); AC11 single-source build |
-| 11. Build ordering / `keld-cli` (`keld build`, T3) | configuration + prebuilt host → payload, embed, sign, package | sign before embed, or a PE edit between embed and sign | AC11 |
-| 12. Packaging-input host provenance / KEL-19 release (§10 Q1) | Keld release → authentic unsigned packaging-input host | a tampered input host is embedded and then signed by the app publisher | unknown until Q1 is decided |
+| 10. App-id dual carrier / `keld build` single source + A3 equality chain (owner decision 2) | one configured app id → KEL-135 program name and payload app id, equal by construction, or refusal | the two carriers diverge silently | A3 equality chain at boot (record = expectation, record = KEL-135); AC11 single-source build |
+| 11. Build ordering / `keld-cli` (`keld build`, T3) | configuration + digest-verified prebuilt host → payload, embed, publisher signature, post-sign check, package | sign before embed, or a PE edit between embed and sign | AC11 |
+| 12. Packaging-input host provenance / Keld release channel (publishes the unsigned host and its authenticated digest) + `keld build` (verifies it) (owner decision 1) | unsigned packaging-input host bytes + authenticated release digest → admitted input or refusal | a tampered or substituted input host is embedded and then signed by the app publisher | AC12 digest-mismatch, missing-digest and unauthenticated-digest refusals before embedding; the channel itself is a T3 prerequisite (§6) |
 
 Independence edges. Atom 1 holds for any bytes inside a section's raw data, whatever the
 writer does; atom 3 (loadability) is a separate property and is proven by a real launch,
@@ -147,12 +169,16 @@ hashed by `WinVerifyTrust` on the same handle and the handle's sharing prevented
 between verification and read. Atom 10 does not depend on the container: A3 already
 requires the KEL-53 record to equal both the expectation and the KEL-135 identity, so a
 divergent pair refuses at boot even if the build check (AC11) were missing. Atom 12 is
-upstream of every other atom and is not closed by them.
+upstream of every other atom and no other atom closes it: the publisher's signature
+authenticates whatever host was embedded, so only the AC12 digest check binds that input
+to the Keld release.
 
 Security decomposition. *Identity:* `keld build` mints the expectation from the
 developer's configuration; KEL-135 mints publisher scope and app id from the signature;
-no new principal exists. *Authentication:* the single primary Authenticode signature,
-whose image hash covers the container (atom 1). *Authorization:* none; the expectation
+no new principal exists. *Authentication:* before embedding, the unsigned
+packaging-input host by its SHA-256 against the authenticated Keld release digest (atom
+12); after signing, the single primary Authenticode signature, whose image hash covers
+the container (atom 1). *Authorization:* none; the expectation
 is compared, never obeyed (A3 conjunction). *OS containment:* not applicable at build
 time; at boot, A3 T3 opens the image without write or delete sharing. *Lifecycle and
 revocation:* certificate revocation follows the KEL-135 `WinVerifyTrust` policy
@@ -170,6 +196,26 @@ because each either takes a path, reads a different object or needs production
 `unsafe` (rejected alternatives below). Compatibility fallback: not required; no
 installed Windows boot exists yet (A3 T3 Part B is unlanded), so no shipped host lacks
 the container.
+
+### Owner decisions (2026-10-05)
+
+The owner decided both product questions of the first draft on 2026-10-05.
+
+1. **Packaging-input host: unsigned, digest-verified.** Keld ships the prebuilt
+   `keld-host.exe` packaging input unsigned. `keld build` verifies its SHA-256 against
+   the digest published by an authenticated Keld release channel, then embeds the
+   payload, and the app publisher then applies the final Authenticode signature. Rejected
+   alternatives: (a) a Keld-signed packaging input plus a strip step that must reproduce
+   the exact pre-signing bytes, which adds PE surgery and a second signature path; (b)
+   shipping both an unsigned packaging input and a Keld-signed host. Consequences: the
+   writer stays strip-free and refuses any signed input (AC4); `keld build` gains the
+   AC12 digest check; Architecture 01 §2 principle 5 is amended in this PR (§2).
+2. **App id carried twice: keep both carriers.** The KEL-135 signed description
+   (`keld.app-id/v1:` plus the app id) and the `ExpectedAppIdentity` payload both stay.
+   `keld build` writes both from one configured app id (AC11), and A3's equality chain
+   (record = expectation, record = KEL-135 identity) refuses a mismatch at boot. Rejected
+   alternative: amending A3 and KEL-135 so that one carrier holds every field (option E
+   below). Neither approved spec is reopened.
 
 ### Authenticode coverage (atom 1 evidence)
 
@@ -268,7 +314,8 @@ Rejected alternatives and why:
   spec does not take that path.
 - **E** would make KEL-135's approved carrier grammar (exactly the app id) carry updater
   policy, requires a second, text encoding of the payload, and contradicts A3's
-  approved shape (embed before signing; read through `keld-pack`). See §10 Q2.
+  approved shape (embed before signing; read through `keld-pack`). Owner decision 2
+  rejects it.
 - **F** is not covered: A3's non-goals already exclude any claim that Authenticode on
   `keld-host.exe` authenticates neighboring files, and KEL-135 forbids sidecar carriers.
 
@@ -444,34 +491,45 @@ surface through `KELD-UPDATE-019`; payload refusals keep the landed `KELD-PACK-0
 Order for the Windows x64 direct cell:
 
 1. **Link (Keld release, not per app).** Keld links `keld-host.exe` once per release
-   and target and publishes it unsigned as the packaging input, with an authenticated
-   digest (§10 Q1). App developers never compile it.
-2. **App bundle and boot files.** Unchanged (the app's bundler and the KEL-96
+   and target and publishes it unsigned as the packaging input, together with its SHA-256
+   on an authenticated Keld release channel (owner decision 1). App developers never
+   compile it.
+2. **Verify the packaging input.** `keld build` computes the SHA-256 of the unsigned
+   host it was given and requires it to equal the digest that the authenticated channel
+   publishes for that Keld version and target. A mismatch, a missing digest or a failed
+   channel authentication refuses before any later step (AC12). The digest is never
+   taken from the same unauthenticated location as the host bytes.
+3. **App bundle and boot files.** Unchanged (the app's bundler and the KEL-96
    `keld.boot.json`).
-3. **Payload.** `ExpectedAppIdentityPayload::new(app_id, channel, "windows-x64",
+4. **Payload.** `ExpectedAppIdentityPayload::new(app_id, channel, "windows-x64",
    update_public_key)`, where `app_id` is the single app-id configuration value also used
-   for the KEL-135 description and `update_public_key` is the public half of the
-   release's feed-signing key; no private key material is read into the payload.
-4. **Embed.** `embed_host_identity`. This is the last modification of the host before
-   signing; any future PE edit (for example icons or version resources) must come before
-   it, and none exists today.
-5. **Sign.** Exactly one Authenticode signature with program name
-   `keld.app-id/v1:` followed by the same app id, and no secondary signature (KEL-135).
-6. **Post-sign check.** `read_host_identity_bytes` returns the step 3 payload; the
-   Certificate Table entry is non-zero; the certificate table starts at the container's
-   raw end (already 8-byte aligned, because `FileAlignment` is at least 512) and ends at
-   end of file, so nothing but the attribute certificate table was added after embedding.
-7. **Package.** Assemble the tree with the signed host, then `produce_windows_v0`, feed
+   for the KEL-135 description (owner decision 2) and `update_public_key` is the public
+   half of the release's feed-signing key; no private key material is read into the
+   payload.
+5. **Embed.** `embed_host_identity` on the verified bytes of step 2. This is the last
+   modification of the host before signing; any future PE edit (for example icons or
+   version resources) must come before it, and none exists today.
+6. **Publisher signature.** The app publisher applies the final and only Authenticode
+   signature, with program name `keld.app-id/v1:` followed by the same app id and no
+   secondary signature (KEL-135), through the `keld build` signer step or the
+   publisher's own signing infrastructure. Keld never signs the packaging input.
+7. **Post-sign check.** On the signed host, before packaging:
+   `read_host_identity_bytes` returns the step 4 payload; the Certificate Table entry is
+   non-zero; the certificate table starts at the container's raw end (already 8-byte
+   aligned, because `FileAlignment` is at least 512) and ends at end of file; and every
+   byte before it equals the step 5 output except the 4-byte `CheckSum` and the 8-byte
+   Certificate Table entry, so the signer changed nothing else.
+8. **Package.** Assemble the tree with the signed host, then `produce_windows_v0`, feed
    signing (KEL-53) and installer (KEL-53 and KEL-19).
 
-Cross-host: steps 3, 4 and 6 are pure and host-independent, and AC7 proves the writer's
-output identical on Linux, macOS and Windows. Step 5 depends on the signer cell
+Cross-host: steps 2, 4, 5 and 7 are pure and host-independent, and AC7 proves the
+writer's output identical on Linux, macOS and Windows. Step 6 depends on the signer cell
 (Architecture 06 §3 names signtool and an osslsigncode fallback); each signer qualifies
-independently and is out of scope. Step 7 currently requires a Windows host
+independently and is out of scope. Step 8 currently requires a Windows host
 (`produce_windows_v0` returns `KELD-PACK-001` elsewhere). End-to-end Windows packaging
 therefore still needs a Windows build host today; the writer adds no new host limit.
 
-Edge: T3 adds `keld-cli -> keld-pack` together with the first real caller of step 4,
+Edge: T3 adds `keld-cli -> keld-pack` together with the first real caller of step 5,
 and not before. `keld-pack` never depends on `keld-cli`, `keld-core` or `keld-update`.
 On Windows the edge brings `keld-pack`'s existing target-specific dependencies
 (`keld-guard`, already a CLI dependency, and the workspace-pinned `blake3` and `zstd`)
@@ -489,8 +547,8 @@ principal, so the container is not a second trust root. They overlap only in the
 id. Neither makes the other redundant: KEL-135's carrier holds the app id only and,
 with the signer's publisher scope, feeds profile identity, while the container also holds the channel,
 target and update key that A3 compares with the KEL-53 record. A3 already requires the
-record to equal both, so divergence refuses at boot; AC11 removes it at build. Whether
-to keep both carriers is recorded as §10 Q2.
+record to equal both, so divergence refuses at boot; AC11 removes it at build. The owner
+decided to keep both carriers (owner decision 2).
 
 ### Template items
 
@@ -523,8 +581,10 @@ Implement in:
 - `docs/engineering/keld-error-codes.md`: `KELD-PACK-006` to `KELD-PACK-011` in T1,
   `KELD-UPDATE-019` in A3 T3 Part B;
 - the Windows signed-fixture acceptance under the existing KEL-135 operator path (T2);
-- `crates/keld-cli/Cargo.toml` (the edge) and the `keld build` Windows host step in
-  `crates/keld-cli`, plus the Architecture 01 §3 `keld-cli` row (T3).
+- `crates/keld-cli/Cargo.toml` (the edge) and the `keld build` Windows host step,
+  including the packaging-input digest check, in `crates/keld-cli`, plus the
+  Architecture 01 §3 `keld-cli` row (T3);
+- `docs/architecture/01-overview.md` §2 principle 5 (this spec's PR; owner decision 1).
 
 Must not touch:
 
@@ -551,8 +611,14 @@ Must not touch:
   `WinVerifyTrust` status. A3 T3 Part B MUST NOT claim installed-boot acceptance before
   T2 passes.
 - [ ] T3 — with the first `keld build` step that prepares a Windows host: the
-  `keld-cli -> keld-pack` edge, the step order of §4, AC11, and the Architecture 01 §3
-  row update. It depends on §10 Q1.
+  `keld-cli -> keld-pack` edge, the eight-step order of §4 (digest verification, embed,
+  publisher signature, post-sign check), AC11 and AC12 with the new `KELD-CLI` code and
+  its registry entry, and the Architecture 01 §3 row update. Prerequisite: a Keld release
+  channel that publishes the unsigned packaging-input host and authenticates its
+  SHA-256. None exists at base `7e1853f` (the only workflow building `keld-host` is CI,
+  and no `@keld/cli` package exists), so T3 MUST NOT land until that channel and its
+  authentication are specified and reviewed; T1, T2 and A3 T3 Part B do not depend on
+  it.
 
 ## 7. Test plan
 
@@ -568,7 +634,8 @@ Must not touch:
 | 8 | Windows, real signature: intact image returns zero and decodes; flip one payload byte, one padding byte, and the low byte of the container's `VirtualSize`, each from a fresh copy, each non-zero; flip one `CheckSum` byte, zero. Record each exact status. |
 | 9 | Missing, duplicate, and each non-canonical field of §4 reader step 3 (characteristics, L below 68 and above 400, `SizeOfRawData`, misaligned pointer, overlap with headers or another section, not last in table, file or address order, wrong `SizeOfImage`, overlap with the certificate table, non-zero padding); a canonical container holding a truncated payload gives `KELD-PACK-005`. |
 | 10 | `read_host_identity` succeeds on an anonymous temporary `File` (no path); a source scan of `keld-pack` finds no `unsafe`, `LoadLibrary`, `FindResource` or `UpdateResource`. |
-| 11 | `keld build` integration test (T3): signed input refuses with `KELD-PACK-009`; the step log shows embed before sign; the post-sign check rejects a fixture with bytes between the container and the certificate table. |
+| 11 | `keld build` integration test (T3): signed input refuses with `KELD-PACK-009`; the step log shows digest verification, then embed, then signature; the post-sign check rejects, independently, a fixture with bytes between the container and the certificate table and a fixture whose signer changed one byte before the certificate table outside the `CheckSum` and Certificate Table entry. |
+| 12 | `keld build` integration test (T3): a packaging input with one flipped byte, a digest for another target or Keld version, a missing digest and a digest that fails channel authentication each refuse with the new `KELD-CLI` code before the writer runs; a writer-call counter stays zero and no host output exists. |
 
 Anti-flake: every writer and reader test is pure or uses one temporary file; no timing,
 ports or sleeps. AC2 and AC8 are Windows-only real-OS rows and are not inferred from the
@@ -599,24 +666,10 @@ host once.
 
 ## 10. Open questions
 
-1. **Packaging-input host distribution.** Architecture 01 §2 principle 5 says "Prebuilt
-   signed host", but the writer admits only an unsigned host, because embedding after
-   signing is outside coverage and a signature strip would have to restore exact
-   pre-signing bytes. Options: (a) publish the packaging-input host unsigned and have
-   `keld build` check its SHA-256 against a value carried by an authenticated Keld
-   release channel (recommended; smallest change; the writer stays strip-free); (b) ship
-   it Keld-signed and add a strip step that must reproduce the published pre-signing
-   bytes (more PE surgery, and a second signature path); (c) both, with the unsigned
-   input for packaging and the signed host for `keld dev`. Consequence: blocks T3 and the
-   first shipped `keld build`; does not block T1, T2 or A3 T3 Part B. Owner: GYLDLAB.
-2. **App-id dual carrier.** Keep both carriers, equal by construction at build (AC11)
-   and by A3's equality chain at boot (recommended; no approved contract changes), or
-   amend A3 and KEL-135 so that one carrier holds all fields (option E; not
-   recommended). Consequence: the recommendation needs no further work; the alternative
-   reopens two approved specs. Owner: GYLDLAB.
-
-Format and API review of the v1 container are review gates (§8), not open product
-choices.
+None. The packaging-input host form and the app-id dual carrier were decided by the
+owner on 2026-10-05 (§4 "Owner decisions (2026-10-05)"). Format and API review of the v1
+container are review gates (§8), and the Keld release channel for the packaging-input
+digest is a named T3 prerequisite (§6), not an open product choice of this spec.
 
 ## Appendix A. Current-documentation receipt
 
