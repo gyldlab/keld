@@ -9,7 +9,7 @@ use std::env;
 use std::net::TcpListener;
 
 #[test]
-#[ignore = "requires signed KEL-135 host and package-purge fixtures"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires signed KEL-135 host and package-purge fixtures"]
 fn kel135_signed_host_purge_removes_same_origin_state() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
         .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
@@ -53,7 +53,7 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
 }
 
 #[test]
-#[ignore = "requires signed KEL-135 host and package-purge fixtures"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires signed KEL-135 host and package-purge fixtures"]
 fn kel135_signed_host_recovers_an_interrupted_purge() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
         .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");

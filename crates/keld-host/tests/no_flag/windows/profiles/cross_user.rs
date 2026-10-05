@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore = "requires an operator-authenticated second ordinary user and shared signed fixtures"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires an operator-authenticated second ordinary user and shared signed fixtures"]
 fn kel135_signed_host_cross_user_storage_isolation() {
     let host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1").expect("signed A/P1 host");
     let identity =

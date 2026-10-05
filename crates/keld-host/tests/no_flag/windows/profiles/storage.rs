@@ -9,7 +9,7 @@ use std::env;
 use std::net::TcpListener;
 
 #[test]
-#[ignore = "requires signed KEL-135 host fixtures and WebView2 state acceptance"]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires signed KEL-135 host fixtures and WebView2 state acceptance"]
 fn kel135_signed_host_profile_state_isolation() {
     let primary_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
         .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed host");

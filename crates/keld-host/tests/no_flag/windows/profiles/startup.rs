@@ -15,6 +15,30 @@ use std::{env, fs};
 
 #[test]
 #[ignore = "requires a signed KEL-135 Windows host fixture"]
+fn kel135_signed_lease_less_stage_is_refused_before_resources() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
+        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let fixture = ProductFixture::new();
+    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage the signed KEL-135 host");
+    let output = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env_remove("KELD_DEV_LEASE")
+        .output()
+        .expect("launch signed host without KELD_DEV_LEASE");
+    assert!(!output.status.success(), "a lease-less signed stage booted");
+    let stderr = String::from_utf8(output.stderr).expect("signed refusal stderr UTF-8");
+    // Verification passed on the pinned image; only installed provenance may admit it.
+    assert!(stderr.contains("KELD-CORE-034"), "{stderr}");
+    assert!(
+        stderr.contains("authenticated installed package"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
+}
+
+#[test]
+#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires a signed KEL-135 Windows host fixture"]
 fn kel135_signed_host_persistent_profile_startup() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
         .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
