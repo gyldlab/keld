@@ -1,5 +1,5 @@
 //! Writer contract: AC1 round trip and byte-diff oracle, AC3 exactly once, AC4 embed
-//! before signing, AC5 room, AC7 determinism (container spec §3, §7).
+//! before signing, AC5 room, AC7 determinism and golden digest (container spec §3, §7).
 
 use super::fixture::{
     BOUND_IMPORT, CERTIFICATE_TABLE, CHECKSUM, NT, NUMBER_OF_SECTIONS, OPTIONAL,
@@ -332,4 +332,18 @@ fn ac7_the_writer_is_deterministic_and_leaves_its_input_unchanged() {
         assert_eq!(first, second);
         assert_eq!(input, before);
     }
+}
+
+/// SHA-256 of the writer's output for the two-section fixture and the golden payload,
+/// computed with coreutils `sha256sum` (independent of the `sha2` crate below). Every CI
+/// OS must reproduce it.
+const TWO_SECTION_OUTPUT_SHA256: &str =
+    "fe96b9c4a5873499dd5ad7ebccaae64c05e062adb034cac8ce1f0d5f24392bfe";
+
+#[test]
+fn ac7_the_synthetic_output_matches_the_checked_in_golden_digest() {
+    use sha2::{Digest, Sha256};
+    let output = embed(&two_sections());
+    let digest = format!("{:x}", Sha256::digest(&output));
+    assert_eq!(digest, TWO_SECTION_OUTPUT_SHA256);
 }
