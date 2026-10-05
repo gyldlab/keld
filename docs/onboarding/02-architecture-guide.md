@@ -138,7 +138,10 @@ the earlier one wins. What each means when you are actually writing code:
    Tokio in the message path. Async Rust is allowed only in cold tooling (CLI, packager,
    updater). In practice: if you find yourself writing `async fn` in `keld-ipc`, stop.
 5. **No Rust toolchain for app developers.** Prebuilt signed host + npm distribution. Rust is
-   the plugin path, never the entry fee.
+   the plugin path, never the entry fee. On Windows the packaging-input host is
+   distributed unsigned: `keld build` verifies its digest from an authenticated Keld
+   release channel and embeds the app identity, then the app publisher applies the only
+   signature (`docs/specs/kel254-expected-identity-container.md`).
 6. **Per-platform engine policy, not ideology.** System webviews where they are good
    (Windows, macOS), pinned engine where they are not (Linux, opt-in). See §6.
 7. **Measured, budgeted, regression-gated.** Perf budgets are in
