@@ -236,7 +236,7 @@ fn select_committed_package(
 /// admission and package policy before one prepared record replaces `current` through the
 /// shared write-through publication and is read back. A crash leaves either the invalid
 /// record, repaired again at the next start, or the valid one.
-fn repair_invalid_current(
+pub(super) fn repair_invalid_current(
     trust: &WindowsBaselineTrust,
     invalid: &UpdateError,
 ) -> Result<(), UpdateError> {
