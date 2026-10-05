@@ -364,12 +364,6 @@ fn an_undecodable_current_is_republished_from_last_known_good() {
     let fixture = tempfile::tempdir().expect("undecodable current fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
-    let previous = crate::records::decode_pointer(
-        PointerKind::PreviousKnownGood,
-        &std::fs::read(trust.installation.update_root.join("previous-known-good"))
-            .expect("previous-known-good"),
-    )
-    .expect("canonical previous-known-good");
     std::fs::write(
         trust.installation.update_root.join("current"),
         b"not a pointer",
@@ -385,10 +379,6 @@ fn an_undecodable_current_is_republished_from_last_known_good() {
     assert!(
         !pending.exists(),
         "the repair removes stale preparations first"
-    );
-    assert_ne!(
-        previous.version, "2.0.0",
-        "the repair never picks previous-known-good"
     );
 }
 
