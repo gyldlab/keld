@@ -1950,10 +1950,13 @@ hostile Keld roles remain denied write access. Legacy same-user role mode refuse
 update. The host keeps the
 semantic-version trust floor separate from `current`, an exact attempt journal and
 `last-known-good`; candidate health cannot advance LKG unless its private receipt
-matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed
-signed helper invoked through explicit UAC; it authenticates its bootstrap from the
-admitted host and reuses the common verifier before obtaining the write lease or
-publishing the journal. Any optional post-exit locked-file helper is a separate, narrower
+matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed,
+dedicated, minimal signed `keld-updater-helper.exe` invoked through explicit UAC, never
+an elevated application host; it authenticates its bootstrap from the admitted host over
+its own versioned subprotocol, obtains the write lease, and then reuses the common
+verifier to revalidate the user's cache input under retained read handles before
+publishing the journal or making any protected write.
+Any optional post-exit locked-file helper is a separate, narrower
 component that consumes only an already-protected journal and sealed handles; it has no
 feed or package parser. The machine-seamless privileged trigger remains unselected until
 its authentication and lifecycle contract passes. In the admitted profile,
@@ -2989,8 +2992,11 @@ installer token, then provisions a protected DACL that grants full control to
 Administrators and SYSTEM while ordinary BUILTIN Users/Keld roles receive only
 read/execute (`0x1200A9`). If Administrators cannot be assigned as owner, installation
 fails without owner/ACL takeover. Each protected activation invokes a fixed signed
-updater helper through UAC. Cancellation performs no protected write. The helper owns
-that live attempt through commit/rollback. The ordinary-user host may download and
+updater helper through UAC: a dedicated minimal `keld-updater-helper.exe` whose signer
+matches the protected publisher scope and whose image the verified artifact covers,
+never an elevated `keld-host.exe`. Cancellation performs no protected write. The helper
+owns that live attempt through commit/rollback; any keeper is minimal and bound to one
+attempt, and no persistent privileged broker exists. The ordinary-user host may download and
 prevalidate into its owner-private cache, but the cache is only untrusted input. After
 authenticating the admitted-host request and obtaining the lease, the helper independently
 revalidates bounded source bytes under retained read handles, then materializes a fresh
@@ -2998,9 +3004,23 @@ protected sibling through the shared extraction/copy/readback pipeline. Every de
 directory and file receives the exact Administrators/SYSTEM/Users DACL at creation,
 before payload writes; it never promotes a user-owned stage by rename or seals an
 ordinary-user-writable stage afterward. The helper starts the exact candidate as the
-initiating ordinary user, including when a different administrator approves UAC. If
-the elevated owner exits or Windows restarts before resolution, recovery requires new
-consent or remains halted with the attempt unresolved. The application and Bun roles
+initiating ordinary user, including when a different administrator approves UAC, from
+the exact initiating process's own primary token; impersonation only pins the user's
+staged source. If the elevated owner exits, Windows restarts or every owner is lost
+before resolution, the next ordinary launch infers and writes nothing: it returns a
+typed recovery-required state before admission. Its supported recovery
+path needs no ordinary host boot: the journaled `keld-updater-helper.exe` image, from a
+protected version tree and behind fresh UAC consent, runs a recovery-only role that
+takes the writer lease, fully revalidates and resolves only through the KEL-53 phase
+rules, or writes nothing. For a launched attempt after owner loss its retirement
+evidence is two facts: the recovery helper holds the share-zero writer lease that every
+live owner retains, and the initiating user's logon session has ended, since a logon
+session terminates when the last token referencing it is deleted. A full restart always
+provides the second, and sign-out or Fast Startup shutdown normally does; otherwise the
+fix guidance says to restart Windows first. The helper's kill-on-close Job only ends the
+candidate promptly; Job-handle-holder death, Job-name absence, PID enumeration and a
+reboot itself prove nothing about the family. Until KEL-53 T4d qualifies this evidence,
+that case halts. The application and Bun roles
 never run elevated or as SYSTEM. This ACL profile differs from KEL-266's SYSTEM-only
 machine-baseline profile; updates never take ownership or repair ACLs ad hoc. The
 profile label and descriptor predicates are owned by `keld-guard`; a persisted profile
@@ -3427,8 +3447,9 @@ profile. It is not the default per-user installer or the Machine-UAC writer. The
 uses a separately provisioned Administrators/SYSTEM DACL and a signed UAC helper; no
 update may repair descriptors or take ownership. The Machine-UAC helper is the authority
 adapter for the common transaction: it authenticates its bootstrap from the admitted
-host, reuses the shared verifier on the exact staged candidate, and obtains the write
-lease before creating the protected journal. UAC consent alone and caller-supplied
+host, obtains the write lease, and then reuses the shared verifier on the exact staged
+candidate under retained read handles before creating the protected journal.
+UAC consent alone and caller-supplied
 paths/argv/environment are not attempt authorization. The optional post-exit helper
 described below remains a separate inherited-handle-only component for an already
 journaled attempt; it has no manifest/package parser. Per-user bootstrap uses the same
@@ -3556,8 +3577,10 @@ resumed owner durably re-mints the attempt's health and lifecycle channel identi
 before continuing, so no health receipt or retirement witness from a lost owner binds
 to the resumed run. Launched phases still require an exact process-family retirement
 binding. That binding is an exact installation/attempt/lifecycle-channel value that the
-host composes from the QF1 retirement witness or its own retained Job-zero observation;
-`keld-update` cannot authenticate its producer. A sealed witness type was rejected
+host composes from the QF1 retirement witness or its own retained Job-zero observation,
+or that the Machine-UAC recovery-only helper composes from KEL-53's owner-loss
+retirement facts once T4d qualifies them; `keld-update` cannot authenticate its
+producer. A sealed witness type was rejected
 because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
 graph.
 
@@ -3609,17 +3632,26 @@ channel, timeout, crash or crash-loop result cannot commit health. The 30-second
 reuses KEL-70's default crash-window duration but treats any unexpected generation exit
 as failure; it delays commit/LKG replacement, not initial candidate launch.
 
-The coordinator passes the channel's client endpoint through the platform's protected
-inherited-handle mechanism. Its presence selects authenticated candidate-boot mode
-before ordinary updater startup. Candidate mode verifies the exact
-attempt/current/artifact, does not acquire the writer lock or invoke orphan recovery,
-starts the application and reports boot/Ready/health over that channel. It cannot write
-the journal or commit itself. A missing/replayed/mismatched endpoint fails before app
-code. The candidate runs under the initiating ordinary user's token/session in every
+The candidate inherits no endpoint and takes no authority from argv or environment.
+At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
+holding the running executable makes it a claimant: it derives the owner's one-shot
+endpoint with KEL-53's single locator function of the provenance-derived installation
+ID and the journaled attempt and health-channel IDs (the same function the owner listens
+with; the keeper
+rendezvous is never a health endpoint), authenticates the owner
+against the journaled coordinator or helper identity, and presents itself. The owner
+binds installation, attempt and channel IDs, fresh nonces, the exact process object and
+PID it launched, image, TokenUser, `AuthenticationId`, session, integrity and elevation.
+Only that acceptance selects authenticated candidate-boot mode before ordinary updater
+startup. Candidate mode verifies the exact attempt/current/artifact, does not acquire
+the writer lock or invoke orphan recovery, starts the application and reports
+boot/Ready/health over that connection. It cannot write the journal or commit itself. A
+refused, replayed, substituted or mismatched claim fails before app code, and any other
+process started from the candidate while the owner lives receives no selection. The candidate runs under the initiating ordinary user's token/session in every
 direct mode; an elevated helper or SYSTEM coordinator must not run the application or a
 Bun role with its own token. UAC approval authority and the initiating-user candidate
-identity are separate facts, including over-the-shoulder consent. A normal startup has
-no endpoint and follows the recovery path below.
+identity are separate facts, including over-the-shoulder consent. With no live owner,
+startup follows the recovery path below.
 
 **Startup recovery.** With no journal, validate the protected provenance, floor,
 `current`, both known-good slots, policy and complete markers. If current is
@@ -3634,7 +3666,9 @@ the platform process-family owner must prove the recorded coordinator and candid
 have exited; an unknown/live process state halts rather than starting a second
 candidate. The one exception is an unlaunched `publish-pending` attempt, which the lease
 alone proves has no live owner or candidate family. Windows places the candidate in the helper/host's kill-on-close Job and
-waits for its zero-active-process observation before recovery proceeds.
+waits for its zero-active-process observation before recovery proceeds; after
+Machine-UAC owner loss, the qualified owner-loss retirement proof above replaces that
+observation.
 
 1. For `publish-pending`, validate the floor and `current` against the exact
    journaled values. If current still equals the rollback target, the floor must equal
@@ -3694,12 +3728,12 @@ evidence.
 
 If Windows locked-file behavior requires a post-exit helper, it is a signed minimal
 package component, not a second updater. The trusted host passes only protected
-update-root/lock handles, its process wait handle, the observer/server endpoint and a
-sealed forward-once candidate endpoint for the already minted attempt-health channel.
-The helper waits for that exact host to exit, reads attempt/artifact/path identity from
-the protected journal, performs the journaled same-volume publish, passes only the
-sealed candidate endpoint in the explicit inherited-handle list, closes its copy after
-spawn, launches only that journaled executable, observes exact health, commits or rolls
+update-root/lock handles, its process wait handle and the observer/server endpoint for
+the already minted attempt-health channel. The helper waits for that exact host to exit,
+reads attempt/artifact/path identity from the protected journal, performs the journaled
+same-volume publish, launches only that journaled executable with no inherited candidate
+endpoint (the candidate connects back over the authenticated one-shot endpoint, taking
+its attempt identity from protected state), observes exact health, commits or rolls
 back, and exits. It has no feed, network, manifest/package parser, shell, arbitrary-path
 or caller-provided command authority. The journal binds the helper image and
 health-channel identities. Replayed attempt, endpoint substitution/reuse, helper

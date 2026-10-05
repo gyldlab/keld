@@ -302,10 +302,13 @@ hostile Keld roles remain denied write access. Legacy same-user role mode refuse
 update. The host keeps the
 semantic-version trust floor separate from `current`, an exact attempt journal and
 `last-known-good`; candidate health cannot advance LKG unless its private receipt
-matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed
-signed helper invoked through explicit UAC; it authenticates its bootstrap from the
-admitted host and reuses the common verifier before obtaining the write lease or
-publishing the journal. Any optional post-exit locked-file helper is a separate, narrower
+matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed,
+dedicated, minimal signed `keld-updater-helper.exe` invoked through explicit UAC, never
+an elevated application host; it authenticates its bootstrap from the admitted host over
+its own versioned subprotocol, obtains the write lease, and then reuses the common
+verifier to revalidate the user's cache input under retained read handles before
+publishing the journal or making any protected write.
+Any optional post-exit locked-file helper is a separate, narrower
 component that consumes only an already-protected journal and sealed handles; it has no
 feed or package parser. The machine-seamless privileged trigger remains unselected until
 its authentication and lifecycle contract passes. In the admitted profile,
