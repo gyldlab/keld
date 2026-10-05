@@ -25,7 +25,7 @@ use crate::windows_fs::RecordSlot;
 use crate::{ActivationEffect, ArtifactIdentity, UpdateError};
 
 const JOURNAL: &str = "activation-journal";
-/// The longest uninterrupted run is four steps; a larger count is a state-machine fault.
+/// The longest uninterrupted run is five steps; a larger count is a state-machine fault.
 const MAX_STEPS_PER_RUN: usize = 8;
 
 /// Attempt-bound health result delivered over the attempt's private health channel.
@@ -97,9 +97,10 @@ pub enum WindowsActivationOutcome {
     /// The attempt failed; `current` is the journaled rollback target and the floor stays.
     RolledBack,
     /// The attempt never selected its candidate because no stage recording the exact
-    /// candidate and no published candidate version was present. Floor, pointers and known-good slots are unchanged. A
-    /// published candidate that fails verification is also abandoned, but is reported
-    /// as an [`UpdateError::Activation`] refusal at step `candidate verification`.
+    /// candidate and no published candidate version was present. Floor, pointers and
+    /// known-good slots are unchanged. An attempt whose every copy fails verification is
+    /// also abandoned, but is reported as an [`UpdateError::Activation`] refusal at step
+    /// `candidate verification`.
     Abandoned,
 }
 
@@ -310,7 +311,7 @@ impl WindowsActivationWriteSnapshot {
                 ));
             }
             // The stage's completion record must name exactly this candidate.
-            if &super::load::completed_stage_identity(&roots, &stage)? != candidate {
+            if super::load::completed_stage_identity(&roots, &stage)?.as_ref() != Some(candidate) {
                 return Err(UpdateError::activation(
                     "candidate stage",
                     ActivationEffect::ProtectedStateUnchanged,
@@ -432,9 +433,10 @@ impl WindowsRecoveryInspection {
     /// # Errors
     /// Refuses every other phase: a launched attempt needs
     /// [`Self::recover`] with an exact process-family retirement binding. A coordinator
-    /// digest that differs from the journal also refuses before any write. A published
-    /// candidate that fails verification is retired, its journal removed, and the
-    /// refusal names step `candidate verification`.
+    /// digest that differs from the journal also refuses before any write. When every
+    /// exact copy fails verification, each is retired, the journal is removed, and the
+    /// refusal names step `candidate verification`. A fault reading a stage or an
+    /// unrelated census fault keeps the journal.
     pub fn resume_unlaunched(
         self,
         coordinator_image_blake3: [u8; 32],
@@ -769,8 +771,13 @@ impl Transaction {
         Ok(())
     }
 
-    /// Fully re-verifies and pins the published candidate. A candidate that fails is
-    /// retired under the journal and the attempt is abandoned with nothing selected.
+    /// Fully re-verifies and pins the published candidate.
+    ///
+    /// A census fault concerns other entries, so it keeps the journal and retires
+    /// nothing. A copy whose own content fails verification is retired under the journal
+    /// and the next stage recording the exact candidate is published and verified in its
+    /// place; each pass renames one stage away, so the loop ends. With no copy left, the
+    /// attempt is abandoned with nothing selected.
     fn ensure_candidate_pinned(&mut self) -> Result<(), UpdateError> {
         let candidate = self.journal.candidate.clone();
         if self.pins.contains_key(&candidate.version) {
@@ -781,28 +788,46 @@ impl Transaction {
             .chain(self.previous_known_good.iter())
             .cloned()
             .collect();
-        match super::load::pin_published_version(&self.roots, &referenced, &candidate) {
-            Ok(pins) => {
-                self.pins.insert(candidate.version.clone(), pins);
-                Ok(())
-            }
-            Err(cause) => {
-                self.retire(&candidate)?;
-                let resolution = self.remove_journal_as(WindowsActivationOutcome::Abandoned)?;
-                let effect = if resolution.cleanup.is_some() {
-                    ActivationEffect::ResolvedWithLeftovers
-                } else {
-                    ActivationEffect::ProtectedStateUnchanged
-                };
-                Err(UpdateError::activation(
-                    "candidate verification",
-                    effect,
+        loop {
+            super::load::validate_publication_census(&self.roots, &referenced, &candidate)
+                .map_err(|cause| self.refault(&cause))?;
+            let cause = match super::load::verify_published_version(&self.roots, &candidate) {
+                Ok(pins) => {
+                    self.pins.insert(candidate.version.clone(), pins);
+                    return Ok(());
+                }
+                Err(cause) => cause,
+            };
+            self.retire(&candidate).map_err(|retirement| {
+                let (step, detail) = retirement.step_and_detail();
+                self.fault(
+                    step,
                     format!(
-                        "the published candidate failed verification and was retired: {}",
+                        "{detail}; the candidate had failed verification: {}",
                         refusal_detail(&cause)
                     ),
-                ))
+                )
+            })?;
+            self.stage = super::load::find_candidate_stage(&self.roots, &candidate)
+                .map_err(|stage_fault| self.refault(&stage_fault))?;
+            if self.stage.is_some() {
+                self.publish_candidate()?;
+                continue;
             }
+            let resolution = self.remove_journal_as(WindowsActivationOutcome::Abandoned)?;
+            let effect = if resolution.cleanup.is_some() {
+                ActivationEffect::ResolvedWithLeftovers
+            } else {
+                ActivationEffect::ProtectedStateUnchanged
+            };
+            return Err(UpdateError::activation(
+                "candidate verification",
+                effect,
+                format!(
+                    "the published candidate failed verification and was retired: {}",
+                    refusal_detail(&cause)
+                ),
+            ));
         }
     }
 
@@ -1054,15 +1079,7 @@ fn completed_stage(roots: &Roots, name: &str) -> std::io::Result<bool> {
     if crate::windows_extraction::ensure_directory(&metadata).is_err() {
         return Ok(false);
     }
-    match roots
-        .versions
-        .open_dir_nofollow(name)?
-        .symlink_metadata(".complete")
-    {
-        Ok(_) => Ok(true),
-        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(cause) => Err(cause),
-    }
+    super::load::completion_present(&roots.versions.open_dir_nofollow(name)?)
 }
 
 /// Removes flushed record siblings left by a crash before their publication rename.

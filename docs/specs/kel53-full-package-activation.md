@@ -56,8 +56,10 @@ pre-journal orphan window that T4b item 4 could only repair. It removes that win
    journaled step. A crash before the journal is durable leaves only a stage, which the
    census already tolerates and the next resolution removes.
 2. The trust floor advances only after the published candidate is fully re-verified and
-   pinned. A published candidate that fails verification is retired under the journal
-   and the attempt is abandoned with no record changed.
+   pinned. A published copy whose own content fails verification is retired under the
+   journal and the next stage recording the exact candidate is tried; with none left the
+   attempt is abandoned with no record changed. A census fault about other entries, or
+   a fault reading a stage, keeps the journal for journal-bound recovery.
 3. A `PublishPending` journal whose candidate is neither published nor staged, with the
    floor still at the recorded prior floor, is abandoned: the journal is removed and no
    record changes. The journal schema is unchanged; recovery finds the stage by its
@@ -812,9 +814,12 @@ writer-lease holder completes a stage (the initializer does so only in an empty
 be a live or failed extraction by a root without the lease, stays as a diagnostic. Recovery identifies the stage by its
 completion record, which must name the exact journaled candidate; a pending attempt
 whose candidate is neither published nor staged at the recorded prior floor is
-abandoned with no record changed. A published candidate that fails its full
-re-verification is retired under the journal and the attempt abandoned before the floor
-moves, so the same signed version may be retried. An installation that already holds an
+abandoned with no record changed. Only a missing completion record or one naming
+another artifact excludes a stage; any fault reading a stage halts recovery with the
+journal intact. A published copy that fails its full re-verification is retired under
+the journal and the next exact stage is tried; with none left the attempt is abandoned
+before the floor moves, so the same signed version may be retried. A census fault about
+other entries retires nothing and keeps the journal. An installation that already holds an
 orphan complete version from the earlier publication order still halts the ordinary
 loader; only the explicit unjournaled-version repair, admitted when no journal exists
 and every record validates, retires it under the writer lease. The repair first verifies and pins every

@@ -1030,9 +1030,12 @@ writer-lease holder completes a stage (the initializer does so only in an empty
 be a live or failed extraction by a root without the lease, stays as a diagnostic. Recovery identifies the stage by its
 completion record, which must name the exact journaled candidate; a pending attempt
 whose candidate is neither published nor staged at the recorded prior floor is
-abandoned with no record changed. A published candidate that fails its full
-re-verification is retired under the journal and the attempt abandoned before the floor
-moves, so the same signed version may be retried. An installation that already holds an
+abandoned with no record changed. Only a missing completion record or one naming
+another artifact excludes a stage; any fault reading a stage halts recovery with the
+journal intact. A published copy that fails its full re-verification is retired under
+the journal and the next exact stage is tried; with none left the attempt is abandoned
+before the floor moves, so the same signed version may be retried. A census fault about
+other entries retires nothing and keeps the journal. An installation that already holds an
 orphan complete version from the earlier publication order still halts the ordinary
 loader; only the explicit unjournaled-version repair, admitted when no journal exists
 and every record validates, retires it under the writer lease. The repair first verifies and pins every

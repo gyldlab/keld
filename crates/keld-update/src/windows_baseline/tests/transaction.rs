@@ -790,14 +790,8 @@ fn a_changed_versions_descriptor_refuses_the_candidate_rename_and_keeps_the_jour
     let fixture = tempfile::tempdir().expect("versions descriptor fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
-    let stdout = support::child(
-        TAMPER_HELPER,
-        fixture.path(),
-        "tamper",
-        "publish-pending",
-        0,
-    );
-    assert!(stdout.contains("KELD_VERSIONS_TAMPERED"), "{stdout}");
+    let stdout = support::child(TAMPER_HELPER, fixture.path(), "descriptor", "none", 0);
+    assert!(stdout.contains("KELD_TAMPERED"), "{stdout}");
     assert!(
         stdout.contains("KELD_TAMPER_REFUSAL=versions profile|JournalBoundRecoveryRequired"),
         "the rename re-checks the parent descriptor under the journal: {stdout}"
@@ -812,25 +806,36 @@ fn a_changed_versions_descriptor_refuses_the_candidate_rename_and_keeps_the_jour
     assert!(after.versions.contains("incomplete-*"), "{after:?}");
 }
 
-/// Adds a readable ACE to `versions` once the `publish-pending` journal is durable, so
-/// the parent no longer has its exact descriptor when the candidate rename runs.
-fn tamper_versions_after_publish_pending(durable: bool, label: &'static str) {
-    if !(durable && label == "publish-pending") {
+/// Changes the installation in the middle of a live attempt, as selected by the case:
+/// `descriptor` adds a readable ACE to `versions` once the `publish-pending` journal is
+/// durable, and `foreign-entry` creates an unrelated version directory once the
+/// candidate is published.
+fn tamper_during_activation(durable: bool, label: &'static str) {
+    if !durable {
         return;
     }
+    let case = std::env::var(support::CASE_ENV).expect("tamper case");
     let root = std::path::PathBuf::from(std::env::var_os(ROOT_ENV).expect("fixture root"));
     let versions = support::trust_for(&root.join("KeldPerUserFixture"))
         .installation
         .update_root
         .join("versions");
-    let status = std::process::Command::new("icacls")
-        .arg(&versions)
-        .args(["/grant", "*S-1-1-0:(R)"])
-        .stdout(std::process::Stdio::null())
-        .status()
-        .expect("run icacls");
-    assert!(status.success(), "icacls changed the versions descriptor");
-    println!("KELD_VERSIONS_TAMPERED");
+    match (case.as_str(), label) {
+        ("descriptor", "publish-pending") => {
+            let status = std::process::Command::new("icacls")
+                .arg(&versions)
+                .args(["/grant", "*S-1-1-0:(R)"])
+                .stdout(std::process::Stdio::null())
+                .status()
+                .expect("run icacls");
+            assert!(status.success(), "icacls changed the versions descriptor");
+        }
+        ("foreign-entry", "candidate-published") => {
+            std::fs::create_dir(versions.join("9.9.9")).expect("an unrelated version entry");
+        }
+        _ => return,
+    }
+    println!("KELD_TAMPERED");
 }
 
 #[test]
@@ -841,7 +846,7 @@ fn windows_versions_tamper_helper() {
     let mut trust = support::trust_for(&root.join("KeldPerUserFixture"));
     trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
     crate::windows_baseline::CRASH_CUT_HOOK
-        .set(tamper_versions_after_publish_pending)
+        .set(tamper_during_activation)
         .expect("install the tamper hook once");
     let (stage_root, stage) = complete(&trust, "3.0.0");
     match stage_root.begin_activation(stage, COORDINATOR) {
@@ -851,6 +856,83 @@ fn windows_versions_tamper_helper() {
         Err(other) => println!("KELD_TAMPER_OTHER={other}"),
         Ok(_) => println!("KELD_TAMPER_ACCEPTED"),
     }
+}
+
+#[test]
+fn an_unrelated_census_fault_keeps_the_journal_and_the_published_candidate() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("census fault fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let stdout = support::child(TAMPER_HELPER, fixture.path(), "foreign-entry", "none", 0);
+    assert!(stdout.contains("KELD_TAMPERED"), "{stdout}");
+    assert!(
+        stdout.contains("KELD_TAMPER_REFUSAL=activation versions|JournalBoundRecoveryRequired"),
+        "a census fault is not the candidate's and retires nothing: {stdout}"
+    );
+    let after = observe(&trust);
+    assert_eq!(
+        after.journal.as_ref().map(|journal| &journal.phase),
+        Some(&ActivationPhase::PublishPending)
+    );
+    assert!(
+        after.versions.contains("3.0.0") && !after.versions.contains("retired-*"),
+        "the published candidate stays for journal-bound recovery: {after:?}"
+    );
+    assert_eq!(after.floor, "2.0.0");
+}
+
+#[test]
+fn recovery_halts_when_a_stage_cannot_be_read_instead_of_abandoning() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("unreadable stage fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    crash_after_publish_pending(fixture.path(), &trust);
+    let stages = incomplete_stages(&trust);
+    assert_eq!(stages.len(), 1, "{stages:?}");
+    let marker = stages[0].join(".complete");
+    std::fs::remove_file(&marker).expect("remove the completion record");
+    std::fs::create_dir(&marker).expect("a directory where the record must be");
+    let lost = observe(&trust);
+
+    assert!(
+        recover_exact(&trust).is_err(),
+        "a stage that cannot be read is a fault, never an absent candidate"
+    );
+    let halted = observe(&trust);
+    assert_eq!(
+        halted.journal, lost.journal,
+        "the journal stays authoritative"
+    );
+    assert_eq!(halted.versions, lost.versions);
+}
+
+#[test]
+fn recovery_replaces_a_damaged_copy_with_the_next_exact_stage() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("damaged duplicate fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let (root, earlier) = complete(&trust, "3.0.0");
+    drop(root);
+    drop(earlier);
+    crash_after_publish_pending(fixture.path(), &trust);
+    let stages = incomplete_stages(&trust);
+    assert_eq!(stages.len(), 2, "{stages:?}");
+    // The lowest-named copy is chosen first; damage its retained archive only.
+    let archive = stages[0].join("content.tar");
+    let mut bytes = std::fs::read(&archive).expect("staged archive");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(&archive, bytes).expect("damage the first exact copy");
+
+    assert_eq!(
+        recover_exact(&trust).expect("the sound copy completes the attempt"),
+        WindowsActivationOutcome::Committed
+    );
+    assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
+    assert!(incomplete_stages(&trust).is_empty());
 }
 
 #[test]

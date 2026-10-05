@@ -549,9 +549,10 @@ impl WindowsExtractionRoot {
     /// unreferenced version, or a failed durable step. Every refusal is
     /// [`UpdateError::Activation`]; its [`crate::ActivationEffect`] states what remains.
     /// A refusal before the journal exists leaves only the stage, which is a tolerated
-    /// leftover, never an unreferenced version. A candidate that fails verification
-    /// after its rename is retired under the journal, the journal is removed, and the
-    /// refusal names step `candidate verification` with
+    /// leftover, never an unreferenced version. A copy that fails verification after its
+    /// rename is retired under the journal and the next stage recording the exact
+    /// candidate is tried. With none left the journal is removed, and the refusal names
+    /// step `candidate verification` with
     /// [`crate::ActivationEffect::ProtectedStateUnchanged`] (or
     /// [`crate::ActivationEffect::ResolvedWithLeftovers`] if cleanup is incomplete).
     pub fn begin_activation(

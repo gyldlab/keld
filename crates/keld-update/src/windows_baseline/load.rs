@@ -641,29 +641,44 @@ fn locate_unpublished_candidate(
     }
 }
 
+/// Whether `stage` holds a completion record. Only a definite absence is `false`; every
+/// other failure is returned, never read as absence.
+pub(super) fn completion_present(stage: &Dir) -> std::io::Result<bool> {
+    match stage.symlink_metadata(".complete") {
+        Ok(_) => Ok(true),
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(cause) => Err(cause),
+    }
+}
+
 /// Reads the completion identity of one generated `incomplete-*` stage after admitting
 /// the stage directory and its completion record against the installation profile.
+///
+/// `None` means the stage has no completion record. Every other failure, including a
+/// stage or record that does not admit, is a fault.
 pub(super) fn completed_stage_identity(
     roots: &Roots,
     stage: &str,
-) -> Result<crate::ArtifactIdentity, UpdateError> {
+) -> Result<Option<crate::ArtifactIdentity>, UpdateError> {
     if !super::is_generated_leaf(stage, "incomplete") {
         return Err(error("candidate stage", "not a generated stage name"));
     }
     let directory = open_directory(&roots.versions, stage, roots.profile())?;
+    if !completion_present(&directory).map_err(|cause| error("stage completion", cause))? {
+        return Ok(None);
+    }
     let (_, bytes) = read_record(&directory, ".complete", roots.profile())?;
-    Ok(records::decode_complete(&bytes)?.artifact)
+    Ok(Some(records::decode_complete(&bytes)?.artifact))
 }
 
 /// Finds the lowest-named completed stage whose completion record names exactly
 /// `candidate`.
 ///
-/// Stages without a completion record, or whose record or profile does not admit, are
-/// tolerated leftovers and are skipped: none can be published by this search, and an
-/// attempt with no admitted stage is abandoned without selecting anything. A transient
-/// read failure is skipped the same way; its only cost is a fresh download of the same
-/// signed release, never a selection or a halt. Every copy is fully re-verified after
-/// its rename, so the choice among exact matches is free.
+/// Only two answers skip a stage: it has no completion record, or its record names
+/// another artifact. Any fault reading a stage is returned, so recovery halts with the
+/// journal intact instead of mistaking an unreadable stage for an absent one. Every copy
+/// is fully re-verified after its rename, and a copy that fails is retired before the
+/// next exact copy is tried, so the order among exact matches never decides the outcome.
 pub(super) fn find_candidate_stage(
     roots: &Roots,
     candidate: &crate::ArtifactIdentity,
@@ -682,23 +697,33 @@ pub(super) fn find_candidate_stage(
         }
     }
     stages.sort();
-    Ok(stages.into_iter().find(|stage| {
-        completed_stage_identity(roots, stage).is_ok_and(|identity| &identity == candidate)
-    }))
+    for stage in stages {
+        if completed_stage_identity(roots, &stage)?.as_ref() == Some(candidate) {
+            return Ok(Some(stage));
+        }
+    }
+    Ok(None)
 }
 
-/// Pins one version published under the held writer lease.
-///
-/// The census admits only the already-pinned selections, this candidate and generated
-/// diagnostics; the candidate's completion record, archive and tree are fully re-verified.
-pub(super) fn pin_published_version(
+/// Validates the version census around a published candidate: only the already-pinned
+/// selections, this candidate and generated diagnostics may exist. A failure here is
+/// about other entries, never about the candidate's own content.
+pub(super) fn validate_publication_census(
     roots: &Roots,
     pinned: &[crate::ArtifactIdentity],
     candidate: &crate::ArtifactIdentity,
-) -> Result<VersionPins, UpdateError> {
+) -> Result<(), UpdateError> {
     let mut selected = pinned.to_vec();
     selected.push(candidate.clone());
-    validate_activation_version_census(roots, &selected, None)?;
+    validate_activation_version_census(roots, &selected, None)
+}
+
+/// Fully re-verifies and pins one version published under the held writer lease: its
+/// completion record, archive and tree.
+pub(super) fn verify_published_version(
+    roots: &Roots,
+    candidate: &crate::ArtifactIdentity,
+) -> Result<VersionPins, UpdateError> {
     validate_version_contents(roots, read_version_completion(roots, candidate)?)
 }
 
