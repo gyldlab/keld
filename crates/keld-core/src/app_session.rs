@@ -5275,7 +5275,10 @@ impl PrimaryRouterHandle {
             let current_guard = self.current.lock().map_err(|_| {
                 app_detail("primary session generation", "generation lock poisoned")
             })?;
-            if current_guard.as_ref().is_none_or(|active| active.attempt != attempt) {
+            if current_guard
+                .as_ref()
+                .is_none_or(|active| active.attempt != attempt)
+            {
                 return Ok(());
             }
             if !self.shutdown.is_running() {
@@ -5302,7 +5305,10 @@ impl PrimaryRouterHandle {
             .current
             .lock()
             .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
-        if current_guard.as_ref().is_none_or(|active| active.attempt != attempt) {
+        if current_guard
+            .as_ref()
+            .is_none_or(|active| active.attempt != attempt)
+        {
             return Ok(());
         }
         if !self.shutdown.claim_guarded(SESSION_LIFECYCLE_QUIT) {
@@ -7396,7 +7402,9 @@ mod tests {
         let router = PrimaryRouter::start_with_fs_test_gate(
             server,
             window_tx,
-            PlatformPrimaryOwnerHandle { command_tx: guardian_tx },
+            PlatformPrimaryOwnerHandle {
+                command_tx: guardian_tx,
+            },
             SessionShutdownState::new(),
             Some(snapshot.fs_weak()),
             Some(gate),
