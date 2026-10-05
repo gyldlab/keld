@@ -1,9 +1,10 @@
 # Spec: ExpectedAppIdentity Windows host container and writer
-Status: draft
+Status: approved
 Linear: KEL-19 (packaging work: container and writer) · related KEL-254 amendment A3 and KEL-96 T3 Part B · Owner: GYLDLAB · Updated: 2026-10-05
-Approval: pending. This is an approval draft. Implementation MUST NOT start until an
-owner-approval receipt (a Linear comment that binds the PR head and this file's exact
-SHA-256) is recorded in this header.
+Approval: exact content approved by Linear KEL-19 owner approval comment
+`9ac5ecb2-7bd1-4805-80d4-460fd89e553b` (2026-10-06), binding PR #382 head
+`213834b1a6dc1a51fccc7a9ac05ac07b7ce1d247` and the approved spec-content SHA-256
+`2293ad68968337056efda4981b13120060673448ab57d087cc2a8c3a9c6ccbdf`.
 Owner decisions: the two product questions of the first draft (the packaging-input host
 form and the app-id dual carrier) were decided by the owner on 2026-10-05 and recorded
 by Linear KEL-19 comment `eebf7987-6c56-4fd5-9ad3-4d7096d055a6`; §4 "Owner decisions
