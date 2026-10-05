@@ -3,6 +3,7 @@
 mod alias;
 mod capture;
 mod locate;
+mod locate_operator;
 mod machine_staging;
 mod machine_uac;
 mod per_user;

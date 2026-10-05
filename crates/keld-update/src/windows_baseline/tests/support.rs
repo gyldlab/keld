@@ -30,6 +30,7 @@ pub(super) const ROOT_ENV: &str = "KELD_KEL266_NATIVE_ROOT";
 pub(super) const MACHINE_UAC_ROOT_ENV: &str = "KELD_KEL270_MACHINE_UAC_ROOT";
 pub(super) const CASE_ENV: &str = "KELD_KEL266_NATIVE_CASE";
 pub(super) const CUT_ENV: &str = "KELD_KEL266_NATIVE_CUT";
+pub(super) const NON_NTFS_ROOT_ENV: &str = "KELD_KEL254_NON_NTFS_ROOT";
 pub(super) const GOLDEN: &[u8] =
     include_bytes!("../../../../keld-pack/tests/fixtures/windows-v0-content.tar");
 
@@ -169,6 +170,11 @@ pub(super) fn trust_for_with(install: &Path, content: &[u8]) -> WindowsBaselineT
 }
 
 pub(super) fn provision(root: &Path, label: &str) -> WindowsBaselineTrust {
+    provision_with(root, label, GOLDEN)
+}
+
+/// [`provision`] for a baseline whose canonical package content is `content`.
+pub(super) fn provision_with(root: &Path, label: &str, content: &[u8]) -> WindowsBaselineTrust {
     let parent = directory(root);
     let profile = keld_guard::WindowsInstallProtectionProfile::MachineSystem;
     let install =
@@ -180,7 +186,7 @@ pub(super) fn provision(root: &Path, label: &str) -> WindowsBaselineTrust {
     let _versions =
         crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
             .expect("machine-profile versions");
-    trust_for(&root.join(label))
+    trust_for_with(&root.join(label), content)
 }
 
 pub(super) fn provision_machine_uac(root: &Path, label: &str) -> WindowsBaselineTrust {
@@ -204,6 +210,16 @@ pub(super) fn provision_machine_uac_as_administrator(
     root: &Path,
     label: &str,
 ) -> WindowsBaselineTrust {
+    provision_machine_uac_as_administrator_with(root, label, GOLDEN)
+}
+
+/// [`provision_machine_uac_as_administrator`] for a baseline whose canonical package
+/// content is `content`.
+pub(super) fn provision_machine_uac_as_administrator_with(
+    root: &Path,
+    label: &str,
+    content: &[u8],
+) -> WindowsBaselineTrust {
     keld_guard::require_windows_non_system_token()
         .expect("explicit-UAC installer must not be SYSTEM");
     keld_guard::require_windows_machine_uac_owner_token()
@@ -218,7 +234,7 @@ pub(super) fn provision_machine_uac_as_administrator(
             .expect("create exact Administrators-owned update root");
     crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
         .expect("create exact Administrators-owned versions root");
-    let mut trust = trust_for(&root.join(label));
+    let mut trust = trust_for_with(&root.join(label), content);
     trust.installation.install_mode = crate::DirectInstallMode::MachineUacDirect;
     trust
 }
