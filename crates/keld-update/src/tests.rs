@@ -897,6 +897,10 @@ fn activation_errors_name_what_remains_and_the_only_safe_next_action() {
             crate::ActivationEffect::UnjournaledVersionRetained,
             "later writers halt until the explicit unjournaled-version repair",
         ),
+        (
+            crate::ActivationEffect::WriterActive,
+            "holds the installation's exclusive writer lease",
+        ),
     ];
     for (effect, guidance) in expectations {
         let error = UpdateError::Activation {

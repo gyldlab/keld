@@ -154,20 +154,38 @@ impl LoadedWindowsBaseline {
 /// The exact immutable package tree KEL-53 selects for an ordinary startup.
 ///
 /// It names one committed artifact from a journal-free, coherent snapshot of the protected
-/// records: `current`, which equals last-known-good or previous-known-good. Its version and
-/// tree directories stay open for the owner's lifetime, so the updater cannot retire that
-/// version while the application runs from it. It holds no mutable-record handle and no
-/// activation lease, grants no updater authority, and does not authenticate the host
-/// executable or boot files; those remain with their own owners (KEL-254, KEL-96).
+/// records: `current`, which equals last-known-good or previous-known-good. The selected
+/// version and tree, and every protected ancestor through the install and update roots,
+/// stay open for the owner's lifetime, so neither the version nor a path above it can be
+/// renamed or retired while the application runs from it. It holds no mutable-record
+/// handle and no activation lease, grants no updater authority, and does not authenticate
+/// the host executable or boot files; those remain with their own owners (KEL-254,
+/// KEL-96), which compare [`Self::install_identity`] and [`Self::publisher_scope`] with
+/// the verified image identity.
 #[derive(Debug)]
 pub struct ActivePackageSelection {
+    identity: DirectInstallationIdentity,
+    publisher_scope: [u8; 32],
     artifact: ArtifactIdentity,
-    tree_path: std::path::PathBuf,
+    tree_root: std::path::PathBuf,
+    _roots: Roots,
     _version: Dir,
     _tree: Dir,
 }
 
 impl ActivePackageSelection {
+    /// The installation identity recorded in protected provenance.
+    #[must_use]
+    pub const fn install_identity(&self) -> &DirectInstallationIdentity {
+        &self.identity
+    }
+
+    /// The installer-recorded publisher digest; boot must independently verify its signer.
+    #[must_use]
+    pub const fn publisher_scope(&self) -> &[u8; 32] {
+        &self.publisher_scope
+    }
+
     /// The selected committed artifact.
     #[must_use]
     pub const fn artifact(&self) -> &ArtifactIdentity {
@@ -176,8 +194,8 @@ impl ActivePackageSelection {
 
     /// The canonical immutable tree: `<update-root>/versions/<version>/tree`.
     #[must_use]
-    pub fn tree_path(&self) -> &std::path::Path {
-        &self.tree_path
+    pub fn tree_root(&self) -> &std::path::Path {
+        &self.tree_root
     }
 }
 

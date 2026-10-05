@@ -39,7 +39,7 @@ fn selected_version(trust: &WindowsBaselineTrust) -> String {
     let selection = select_windows_active_package(trust).expect("a committed state selects");
     let version = selection.artifact().version.clone();
     assert_eq!(
-        selection.tree_path(),
+        selection.tree_root(),
         trust
             .installation
             .update_root
@@ -48,7 +48,13 @@ fn selected_version(trust: &WindowsBaselineTrust) -> String {
             .join("tree"),
         "the selection names exactly the canonical immutable tree"
     );
-    assert!(selection.tree_path().is_dir());
+    assert!(selection.tree_root().is_dir());
+    assert_eq!(
+        selection.install_identity(),
+        &trust.installation,
+        "the selection carries the protected installation identity"
+    );
+    assert_eq!(selection.publisher_scope(), &trust.publisher_scope);
     version
 }
 
@@ -225,11 +231,12 @@ fn a_writer_holding_the_lease_blocks_selection() {
     let writer =
         load_windows_activation_write_snapshot(&trust, &super::transaction::verifier(&trust))
             .expect("hold the exclusive writer lease");
-    let error = assert_refuses(&trust, "a held writer lease refuses selection");
-    assert!(
-        error.to_string().contains("active selection lease"),
-        "{error}"
-    );
+    match assert_refuses(&trust, "a held writer lease refuses selection") {
+        UpdateError::Activation { effect, .. } => {
+            assert_eq!(effect, ActivationEffect::WriterActive);
+        }
+        other => panic!("a busy lease must refuse as a typed writer-active effect: {other:?}"),
+    }
     drop(writer);
     assert_eq!(selected_version(&trust), "1.0.0");
 }
@@ -249,4 +256,81 @@ fn a_held_selection_pins_its_version_against_retirement() {
     drop(selection);
     std::fs::rename(versions.join("2.0.0"), &retired)
         .expect("the version is movable once the selection is released");
+}
+
+#[test]
+fn a_held_selection_pins_its_protected_ancestry() {
+    let fixture = tempfile::tempdir().expect("ancestry pin fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let update_root = &trust.installation.update_root;
+    let moved = update_root.with_file_name("moved-update-root");
+    let selection = select_windows_active_package(&trust).expect("select the baseline");
+    assert!(
+        std::fs::rename(update_root, &moved).is_err(),
+        "the update root above a running selection cannot be renamed"
+    );
+    drop(selection);
+    std::fs::rename(update_root, &moved)
+        .expect("the update root is movable once the selection is released");
+}
+
+#[test]
+fn concurrent_snapshot_readers_share_the_lease() {
+    let fixture = tempfile::tempdir().expect("shared reader fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    // The baseline loader keeps its shared snapshot lease for its whole lifetime.
+    let reader = crate::windows_baseline::load_windows_baseline(&trust)
+        .expect("hold a shared snapshot lease");
+    assert_eq!(
+        selected_version(&trust),
+        "1.0.0",
+        "a second snapshot reader is admitted beside the first"
+    );
+    drop(reader);
+}
+
+#[test]
+fn an_absent_or_changed_package_policy_refuses() {
+    let fixture = tempfile::tempdir().expect("package policy fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let policy = |version: &str| {
+        trust
+            .installation
+            .update_root
+            .join("versions")
+            .join(version)
+            .join("tree")
+            .join(keld_pack::UPDATE_POLICY_PATH)
+    };
+    let original = std::fs::read(policy("2.0.0")).expect("selected policy bytes");
+    assert_eq!(original, keld_pack::NO_MIGRATION_POLICY);
+    std::fs::write(
+        policy("2.0.0"),
+        b"{\"schema\":1,\"dataMigration\":\"copy\"}\n",
+    )
+    .expect("change the selected tree's policy");
+    let error = assert_refuses(&trust, "a changed policy refuses before launch");
+    assert!(error.to_string().contains("package policy"), "{error}");
+    std::fs::write(policy("2.0.0"), &original).expect("restore the selected policy");
+    assert_eq!(selected_version(&trust), "2.0.0");
+
+    std::fs::remove_file(policy("1.0.0")).expect("drop the previous-known-good policy");
+    assert_refuses(&trust, "an absent policy in a known-good slot refuses");
+}
+
+#[test]
+fn generated_leftovers_never_change_the_selection() {
+    let fixture = tempfile::tempdir().expect("generated leftovers fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let update = &trust.installation.update_root;
+    let versions = update.join("versions");
+    std::fs::create_dir(versions.join(format!("incomplete-{}", "e".repeat(64))))
+        .expect("an incomplete diagnostic stage");
+    std::fs::create_dir(versions.join(format!("retired-{}", "f".repeat(64))))
+        .expect("a retired tree awaiting deletion");
+    std::fs::write(update.join(format!("pending-{}", "a".repeat(64))), b"stale")
+        .expect("a stale record preparation");
+    assert_eq!(selected_version(&trust), "2.0.0");
 }
