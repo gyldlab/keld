@@ -8,6 +8,7 @@ mod per_user;
 mod qualification;
 mod reader;
 mod role;
+mod selection;
 mod substitutions;
 mod support;
 mod transaction;

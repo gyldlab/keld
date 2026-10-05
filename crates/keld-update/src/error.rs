@@ -35,6 +35,10 @@ pub enum ActivationEffect {
     /// be retired; every later writer halts until the explicit unjournaled-version repair
     /// retires it under the writer lease.
     UnjournaledVersionRetained,
+    /// A conflicting handle holds the installation's `activation.lock`, normally the
+    /// updater's exclusive writer lease, so this call read and wrote nothing. Startup
+    /// selects no package while that conflict lasts.
+    WriterActive,
 }
 
 impl ProvenanceUnavailable {
@@ -415,6 +419,9 @@ fn fmt_activation_error(
         }
         ActivationEffect::UnjournaledVersionRetained => {
             "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease. If that repair refuses an unknown or damaged entry, that entry needs manual recovery."
+        }
+        ActivationEffect::WriterActive => {
+            "A conflicting handle, normally the updater's exclusive writer lease, holds the installation's activation lock and nothing was read or written; start nothing from this state, and select again only after that handle is released."
         }
     };
     write!(
