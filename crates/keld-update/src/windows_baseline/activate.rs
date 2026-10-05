@@ -744,10 +744,7 @@ impl Transaction {
             .map_err(|cause| self.fault("journal removal", cause))?;
         self.journaled = false;
         observe(true, "journal-removed");
-        let cleanup = self
-            .roots
-            .update
-            .remove_file(&removed)
+        let cleanup = crate::windows_fs::remove_file_relative(&parent, &removed)
             .map_err(|cause| leftover_error(format!("{removed}: {cause}")))
             .and_then(|()| remove_retired_versions(&self.roots));
         Ok(WindowsActivationResolution {
@@ -938,20 +935,21 @@ fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
 }
 
 /// Deletes generated `retired-*` trees left by this or an earlier resolution.
+///
+/// Listing and deletion both go through the retained `versions` handle, so no pathname
+/// is resolved again and a link inside a tree is never followed. A `retired-*` entry
+/// that is not a directory refuses, as before.
 fn remove_retired_versions(roots: &Roots) -> Result<(), UpdateError> {
-    let entries = roots
+    let versions = roots
         .versions
-        .entries()
+        .try_clone()
+        .map_err(|cause| leftover_error(cause.to_string()))?
+        .into_std_file();
+    let names = crate::windows_fs::child_names(&versions)
         .map_err(|cause| leftover_error(cause.to_string()))?;
-    for entry in entries {
-        let entry = entry.map_err(|cause| leftover_error(cause.to_string()))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
+    for name in names {
         if super::is_generated_leaf(&name, "retired") {
-            roots
-                .versions
-                .remove_dir_all(&name)
+            crate::windows_fs::remove_directory_tree(&versions, &name)
                 .map_err(|cause| leftover_error(format!("{name}: {cause}")))?;
         }
     }
@@ -963,25 +961,28 @@ fn remove_retired_versions(roots: &Roots) -> Result<(), UpdateError> {
 /// Such `pending-*` files are created only by this writer under the held lease and are
 /// never read as records. The census admits them by name; this removal additionally
 /// requires a regular single-link file with the installation's exact profile and refuses
-/// anything else.
+/// anything else. The checks and the deletion bind to one handle, so the object that
+/// passed admission is the object deleted.
 pub(super) fn remove_stale_record_preparations(roots: &Roots) -> Result<(), UpdateError> {
-    let entries = roots
+    let update = roots
         .update
-        .entries()
+        .try_clone()
+        .map_err(|cause| super::error("stale record census", cause))?
+        .into_std_file();
+    let names = crate::windows_fs::child_names(&update)
         .map_err(|cause| super::error("stale record census", cause))?;
-    for entry in entries {
-        let entry = entry.map_err(|cause| super::error("stale record census", cause))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
+    for name in names {
         if super::is_generated_leaf(&name, "pending") {
-            drop(
-                super::open_machine_file(&roots.update, &name, roots.profile())
-                    .map_err(|cause| super::error("stale record admission", cause))?,
-            );
-            roots
-                .update
-                .remove_file(&name)
+            let stale = crate::windows_fs::open_for_delete(
+                &update,
+                &name,
+                crate::windows_fs::DeletePurpose::Admit,
+            )
+            .map_err(|cause| super::error("stale record admission", cause))?;
+            super::admit_machine_file(&roots.update, stale.file(), roots.profile())
+                .map_err(|cause| super::error("stale record admission", cause))?;
+            stale
+                .delete()
                 .map_err(|cause| super::error("stale record removal", cause))?;
         }
     }

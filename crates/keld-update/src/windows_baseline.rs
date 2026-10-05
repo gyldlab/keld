@@ -512,12 +512,28 @@ fn open_machine_file(
         .share_mode(FILE_SHARE_READ)
         .follow(FollowSymlinks::No);
     let file = parent.open_with(leaf, &options)?;
-    ensure_regular(&file.metadata()?)?;
-    if file.metadata()?.dev() != parent.dir_metadata()?.dev() {
+    admit_machine_file(
+        parent,
+        &cap_std::io_lifetimes::AsFilelike::as_filelike_view::<std::fs::File>(&file),
+        profile,
+    )?;
+    Ok(file)
+}
+
+/// Admits an open protected record without duplicating its handle: a non-reparse
+/// regular file with one link, on its parent's volume, carrying the installation's
+/// exact protection profile.
+fn admit_machine_file(
+    parent: &Dir,
+    file: &std::fs::File,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<()> {
+    let metadata = cap_std::fs::Metadata::from_file(file)?;
+    ensure_regular(&metadata)?;
+    if metadata.dev() != parent.dir_metadata()?.dev() {
         return Err(io::Error::other("record crosses parent volume"));
     }
-    keld_guard::validate_windows_install_file(&file.try_clone()?.into_std(), profile)?;
-    Ok(file)
+    keld_guard::validate_windows_install_file(file, profile)
 }
 
 /// Opens the persistent installation-wide activation lease without creating it.

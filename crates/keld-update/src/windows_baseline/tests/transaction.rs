@@ -254,6 +254,49 @@ fn record_replacement_requires_a_generated_sibling_and_a_file_destination() {
     assert!(!path.join(&pending).exists());
 }
 
+/// The admission refusals and removal are observable; binding admission and deletion to
+/// one handle is a construction property, because no deterministic swap fits between them.
+#[test]
+fn stale_record_preparations_refuse_links_and_directories_and_remove_genuine_files() {
+    let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
+    for case in ["genuine", "linked", "directory"] {
+        let fixture = tempfile::tempdir().expect("stale preparation fixture");
+        let elsewhere = tempfile::tempdir().expect("same-volume link fixture");
+        let trust = seed_per_user_baseline(fixture.path());
+        let update = trust.installation.update_root.clone();
+        let leaf = format!("pending-{}", "b".repeat(64));
+        if case == "directory" {
+            std::fs::create_dir(update.join(&leaf)).expect("directory at a pending name");
+        } else {
+            let parent = support::directory(&update);
+            let mut file =
+                crate::windows_fs::create_file_relative_with_profile(&parent, &leaf, profile)
+                    .expect("profiled preparation");
+            file.write_all(b"prepared").expect("prepared bytes");
+            drop(file);
+            if case == "linked" {
+                std::fs::hard_link(update.join(&leaf), elsewhere.path().join("second-link"))
+                    .expect("second link outside the update root");
+            }
+        }
+        let result = crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust));
+        if case == "genuine" {
+            result.expect("a genuine preparation is removed");
+            assert!(!update.join(&leaf).exists());
+        } else {
+            let error = result.expect_err("a non-genuine preparation must refuse");
+            assert!(
+                format!("{error:?}").contains("stale record admission"),
+                "{case} refuses at admission, not elsewhere: {error:?}"
+            );
+            assert!(
+                update.join(&leaf).exists(),
+                "{case} preparation stays for manual recovery"
+            );
+        }
+    }
+}
+
 #[test]
 fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versions() {
     support::assert_user_principal_token();
