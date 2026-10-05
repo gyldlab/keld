@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::io::Write as _;
 
 use super::support::{self, CUT_ENV, GOLDEN, ROOT_ENV};
-use super::writer::{higher_release_version, seed_per_user_baseline};
+use super::writer::{higher_release_version, higher_release_version_with, seed_per_user_baseline};
 use crate::records::{ActivationJournal, ActivationPhase, PointerKind};
 use crate::windows_baseline::{
     ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
@@ -31,7 +31,16 @@ pub(super) fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
 /// Extracts and completes `version`, then journals, publishes and selects it under one
 /// writer lease.
 pub(super) fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActivationAttempt {
-    let (root, stage) = complete(trust, version);
+    begin_with(trust, version, GOLDEN)
+}
+
+/// [`begin`] for canonical package content `content`.
+pub(super) fn begin_with(
+    trust: &WindowsBaselineTrust,
+    version: &str,
+    content: &[u8],
+) -> WindowsActivationAttempt {
+    let (root, stage) = complete_with(trust, version, content);
     root.begin_activation(stage, COORDINATOR)
         .expect("journal, publish and select the completed candidate")
 }
@@ -40,6 +49,14 @@ pub(super) fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActiv
 fn complete(
     trust: &WindowsBaselineTrust,
     version: &str,
+) -> (crate::WindowsExtractionRoot, crate::CompletedWindowsStage) {
+    complete_with(trust, version, GOLDEN)
+}
+
+fn complete_with(
+    trust: &WindowsBaselineTrust,
+    version: &str,
+    content: &[u8],
 ) -> (crate::WindowsExtractionRoot, crate::CompletedWindowsStage) {
     let verifier = verifier(trust);
     let snapshot = load_windows_activation_write_snapshot(trust, &verifier)
@@ -51,14 +68,14 @@ fn complete(
         },
         version_floor: Some(snapshot.version_floor().to_owned()),
     };
-    let candidate = higher_release_version(&verifier, &observation, version);
+    let candidate = higher_release_version_with(&verifier, &observation, version, content);
     let source = trust
         .installation
         .install_root
         .parent()
         .expect("fixture root")
         .join(format!("candidate-{version}.tar"));
-    std::fs::write(&source, GOLDEN).expect("write verified candidate source");
+    std::fs::write(&source, content).expect("write verified candidate source");
     let mut root = snapshot
         .open_extraction_root()
         .expect("writer snapshot opens its staging root");
@@ -98,7 +115,12 @@ pub(super) fn retirement(attempt: &WindowsActivationAttempt) -> ProcessFamilyRet
 }
 
 pub(super) fn commit(trust: &WindowsBaselineTrust, version: &str) {
-    let attempt = begin(trust, version);
+    commit_with(trust, version, GOLDEN);
+}
+
+/// [`commit`] for canonical package content `content`.
+pub(super) fn commit_with(trust: &WindowsBaselineTrust, version: &str, content: &[u8]) {
+    let attempt = begin_with(trust, version, content);
     let health = receipt(&attempt);
     let resolution = attempt
         .accept_health(&health)
