@@ -476,10 +476,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
   installation refuses because only its elevated writer may repair. In
-  `MachineUacDirect` that refusal, and the refusal of a pending journal in any phase, is
-  the typed `MachineRecoveryRequired` effect: the ordinary process writes nothing, and
-  until the helper's recovery-only role is enabled its guidance is `RecoveryDisabled`.
-  Live feed
+  `MachineUacDirect` that refusal (once the same read-only checks of both known-good
+  slots and the floor pass under the snapshot lease; a failed check keeps its own error)
+  and the refusal of a pending journal in any phase are the typed
+  `MachineRecoveryRequired` effect: the ordinary process writes nothing, and until the
+  helper's recovery-only role is enabled its guidance is `RecoveryDisabled`. Live feed
   orchestration, host candidate launch, the private health channel and its 30-second
   `Ready` observation, installed-host lifecycle composition, candidate-mode selection,
   the KEL-254 executable-located entrypoint with its `ExpectedAppIdentity` payload, and

@@ -10,6 +10,7 @@ mod per_user;
 mod qualification;
 mod reader;
 mod recovery_required;
+mod repair_source;
 mod role;
 mod selection;
 mod substitutions;

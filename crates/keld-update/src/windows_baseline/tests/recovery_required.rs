@@ -4,8 +4,9 @@
 //! In `MachineUacDirect` only the elevated helper writes, so an ordinary startup that
 //! finds a pending journal of any phase, or no journal with an absent or undecodable
 //! `current` beside a valid last-known-good, returns the typed `MachineRecoveryRequired`
-//! effect and writes nothing. `PerUserDirect` keeps its journal-bound refusal and its
-//! startup repair, and `MachineSeamlessDirect` keeps its untyped refusal.
+//! effect and writes nothing; a damaged last-known-good keeps its own untyped refusal.
+//! `PerUserDirect` keeps its journal-bound refusal and its startup repair, and
+//! `MachineSeamlessDirect` keeps its untyped refusal.
 //!
 //! Oracles are the typed error with its step and code, and the exact bytes of every
 //! protected record (in the operator rows, of every installation file and directory)
@@ -19,6 +20,7 @@ use std::path::Path;
 use super::locate::{expected_for, host_path, open_image, refuses, select_from, state};
 use super::locate_operator::{LABEL, census, leaf, machine_uac_trust, seeded};
 use super::machine_uac::{operator_root, operator_root_path};
+use super::repair_source::COMPLETION_RECORD_REMOVED;
 use super::support::{self, baseline_with, host_package_content};
 use super::writer::{seed_pending_activation_journal, seed_per_user_baseline_with};
 use crate::records::{ActivationPhase, PointerKind};
@@ -31,7 +33,7 @@ use crate::{
     UpdateError,
 };
 
-/// The interim Machine-UAC state: the recovery-only role is not enabled yet.
+/// The interim Machine-UAC state: this release does not provide the recovery-only role.
 const RECOVERY_DISABLED: ActivationEffect =
     ActivationEffect::MachineRecoveryRequired(MachineRecoveryGuidance::RecoveryDisabled);
 const SEEDED: &str = "kel270-recovery-required-seeded.txt";
@@ -121,7 +123,7 @@ fn a_pending_journal_stays_journal_bound_outside_machine_uac() {
 }
 
 /// A per-user installation of the host package, so both startup entry points can run.
-fn per_user_host_install(fixture: &Path) -> WindowsBaselineTrust {
+pub(super) fn per_user_host_install(fixture: &Path) -> WindowsBaselineTrust {
     seed_per_user_baseline_with(fixture, &host_package_content())
 }
 
@@ -263,6 +265,40 @@ enum MachineCase {
     Journal(ActivationPhase),
     CurrentAbsent,
     CurrentUndecodable,
+    /// `current` is absent and last-known-good (the baseline) lost its completion record,
+    /// so it is not a valid repair source.
+    CurrentAbsentLkgDamaged,
+}
+
+/// What an ordinary startup must return for a case: the typed state at its step, or the
+/// untyped refusal of the failed last-known-good check, which keeps its exact reason
+/// (KEL-254 AC16).
+fn expected_refusal(case: &MachineCase) -> Result<&'static str, UpdateError> {
+    match case {
+        MachineCase::Journal(_) => Ok("active package selection"),
+        MachineCase::CurrentAbsent | MachineCase::CurrentUndecodable => {
+            Ok("current pointer repair")
+        }
+        MachineCase::CurrentAbsentLkgDamaged => Err(UpdateError::Baseline {
+            step: "version contents",
+            detail: COMPLETION_RECORD_REMOVED.to_owned(),
+        }),
+    }
+}
+
+fn assert_startup_refusal(
+    label: &str,
+    error: &UpdateError,
+    expected: &Result<&'static str, UpdateError>,
+) {
+    match expected {
+        Ok(step) => assert_eq!(
+            step_and_effect(error),
+            (*step, RECOVERY_DISABLED),
+            "{label}: {error}"
+        ),
+        Err(untyped) => assert_eq!(error, untyped, "{label}: {error}"),
+    }
 }
 
 fn machine_cases() -> Vec<(&'static str, MachineCase)> {
@@ -272,6 +308,10 @@ fn machine_cases() -> Vec<(&'static str, MachineCase)> {
         .collect();
     cases.push(("current-absent", MachineCase::CurrentAbsent));
     cases.push(("current-undecodable", MachineCase::CurrentUndecodable));
+    cases.push((
+        "current-absent-lkg-damaged",
+        MachineCase::CurrentAbsentLkgDamaged,
+    ));
     cases
 }
 
@@ -318,6 +358,18 @@ fn machine_uac_elevated_installer_seeds_recovery_required_states() {
             MachineCase::CurrentUndecodable => {
                 fs::write(&current, UNDECODABLE).expect("corrupt the protected current record");
             }
+            MachineCase::CurrentAbsentLkgDamaged => {
+                fs::remove_file(&current).expect("lose the protected current record");
+                fs::remove_file(
+                    trust
+                        .installation
+                        .update_root
+                        .join("versions")
+                        .join("1.0.0")
+                        .join(".complete"),
+                )
+                .expect("damage the protected last-known-good version");
+            }
         }
         assert_eq!(
             machine_uac_trust(&root.join(label), &content).installation,
@@ -342,21 +394,12 @@ fn machine_uac_ordinary_startup_returns_recovery_required_and_writes_nothing() {
     let content = host_package_content();
     for (label, case) in machine_cases() {
         let trust = machine_uac_trust(&root.join(label), &content);
-        let step = match case {
-            MachineCase::Journal(_) => "active package selection",
-            MachineCase::CurrentAbsent | MachineCase::CurrentUndecodable => {
-                "current pointer repair"
-            }
-        };
+        let expected = expected_refusal(&case);
         let install = &trust.installation.install_root;
         let before = census(install);
         let error = select_windows_active_package(&trust)
             .expect_err("an ordinary Machine-UAC startup selects nothing");
-        assert_eq!(
-            step_and_effect(&error),
-            (step, RECOVERY_DISABLED),
-            "{label}: {error}"
-        );
+        assert_startup_refusal(label, &error, &expected);
         let locator = host_path(&trust, "1.0.0");
         let executable = open_image(&locator);
         let located = crate::windows_baseline::select_active_package_for_executable(
@@ -366,18 +409,16 @@ fn machine_uac_ordinary_startup_returns_recovery_required_and_writes_nothing() {
         )
         .expect_err("an ordinary located Machine-UAC startup selects nothing");
         drop(executable);
-        assert_eq!(
-            step_and_effect(&located),
-            (step, RECOVERY_DISABLED),
-            "{label}: {located}"
-        );
+        assert_startup_refusal(label, &located, &expected);
         assert_eq!(
             census(install),
             before,
             "{label}: the startup writes nothing"
         );
-        println!(
-            "KELD_KEL270_RECOVERY_REQUIRED_PASS case={label} step={step} guidance=RecoveryDisabled writes=0"
-        );
+        let outcome = match &expected {
+            Ok(step) => format!("step={step} guidance=RecoveryDisabled"),
+            Err(untyped) => format!("untyped={}", untyped.code()),
+        };
+        println!("KELD_KEL270_RECOVERY_REQUIRED_PASS case={label} {outcome} writes=0");
     }
 }

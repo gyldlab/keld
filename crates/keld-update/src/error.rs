@@ -44,11 +44,15 @@ pub enum ActivationEffect {
     WriterActive,
     /// An ordinary startup of a `MachineUacDirect` installation found a pending activation
     /// journal, or no journal with an absent or undecodable `current` beside a valid
-    /// last-known-good. In that mode only the elevated `keld-updater-helper.exe` writes, so
-    /// the ordinary process inferred and wrote nothing: it assumed neither health nor
-    /// process-family retirement and preserved the journal, pointers and versions. Startup
-    /// selects no package; only the helper's recovery-only role resolves this state, as the
-    /// guidance says.
+    /// last-known-good: one that holds with previous-known-good and the floor and whose
+    /// version census, completion records and package policies pass, as the per-user
+    /// startup repair requires. A last-known-good that fails any of those checks refuses
+    /// with that check's own error instead. In that mode only the elevated
+    /// `keld-updater-helper.exe` writes, so the ordinary process inferred and wrote nothing:
+    /// it assumed neither health nor process-family retirement and preserved any activation
+    /// journal, the pointers and the versions. Startup selects no package; only the
+    /// helper's recovery-only role resolves this state, and while this release does not
+    /// provide that role the guidance says so.
     MachineRecoveryRequired(MachineRecoveryGuidance),
 }
 
@@ -58,8 +62,8 @@ pub enum ActivationEffect {
 /// the refusal carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MachineRecoveryGuidance {
-    /// The recovery-only role is not enabled yet, so no supported resolution exists other
-    /// than administrator action.
+    /// This release does not provide the recovery-only role, so no supported resolution
+    /// exists other than administrator action.
     RecoveryDisabled,
     /// An unlaunched `publish-pending` attempt or an invalid `current`: run the
     /// recovery-only role now; no restart is needed.
@@ -72,13 +76,13 @@ impl MachineRecoveryGuidance {
     const fn fix_guidance(self) -> &'static str {
         match self {
             Self::RecoveryDisabled => {
-                "This MachineUacDirect installation needs recovery that only the elevated keld-updater-helper.exe recovery-only role may perform, and that role is not enabled yet: no supported resolution exists other than administrator action. Start nothing from this state; the journal, pointers and versions are preserved, and no ordinary process repairs them."
+                "This MachineUacDirect installation needs recovery that only the recovery-only role of the elevated keld-updater-helper.exe may perform, and this release does not provide that role: no supported resolution exists other than administrator action. Start nothing from this state; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them."
             }
             Self::RecoverNow => {
-                "This MachineUacDirect installation needs recovery that only the elevated keld-updater-helper.exe recovery-only role may perform: run that role now from a fresh UAC prompt; no restart is needed. Start nothing from this state; the journal, pointers and versions are preserved, and no ordinary process repairs them."
+                "This MachineUacDirect installation needs recovery that only the recovery-only role of the elevated keld-updater-helper.exe may perform: run that role now and approve its UAC prompt; no restart is needed. Start nothing from this state; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them."
             }
             Self::RestartFirst => {
-                "This MachineUacDirect installation needs recovery that only the elevated keld-updater-helper.exe recovery-only role may perform: restart Windows first, then run that role from a fresh UAC prompt. Start nothing from this state; the journal, pointers and versions are preserved, and no ordinary process repairs them."
+                "This MachineUacDirect installation needs recovery that only the recovery-only role of the elevated keld-updater-helper.exe may perform: restart Windows first, then run that role and approve its UAC prompt. Start nothing from this state; the activation journal, the pointers and the versions are preserved, and no ordinary process repairs them."
             }
         }
     }
