@@ -81,14 +81,14 @@ pending. It optimizes for least privilege and the smallest privileged surface:
    for pinning the initiating user's staged source ("Windows direct-install modes").
 2. A dedicated minimal signed `keld-updater-helper.exe` is the elevated component; the
    application host is never elevated (criterion 17).
-3. Reboot or loss of every owner during any attempt fails closed into a typed
-   recovery-required state (an unlaunched `publish-pending` attempt then resolves under
-   the writer lease alone) with a supported helper recovery path that needs no ordinary
-   host boot (criterion 17). Its retirement evidence is the existing writer-lease rule
-   plus termination of the initiating user's logon session; the kill-on-close attempt
-   Job only ends the candidate promptly ("Machine-UAC owner-loss retirement"; the owner
-   delegated this mechanism in the PR #374 review). Until T4d qualifies it, that case
-   halts.
+3. Reboot or loss of every owner during any attempt fails closed into the typed
+   `MachineRecoveryRequired` state with a supported helper recovery-only role that needs
+   no ordinary host boot ("Machine-UAC recovery-required state and recovery-only role").
+   For a launched attempt its retirement evidence is the existing writer-lease rule plus
+   termination of the initiating user's logon session; the kill-on-close attempt Job
+   only ends the candidate promptly ("Machine-UAC owner-loss retirement"; the owner
+   delegated this mechanism in the PR #374 review). Until the T4d rows pass, the
+   recovery role is disabled and administrator action is the only resolution.
 4. Candidate health in every direct mode uses an authenticated one-shot connect-back
    endpoint, replacing the inherited candidate endpoint; the candidate takes its attempt
    identity from protected state, not argv or environment (criterion 8).
@@ -499,26 +499,11 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     then it is minimal, bound to one installation and one attempt, holds only attenuated
     exact handles, exposes no mutation, process or filesystem command, and exits when the
     attempt is terminal. There is no persistent or ambient privileged broker. If the
-    helper exits, or Windows restarts or every owner is lost before resolution, the next
-    ordinary launch infers nothing: health and process-family retirement are not
-    assumed, nothing is committed or rolled back, and journal and pointers are
-    preserved. The next launch returns a typed
-    recovery-required state before admission or app code. Its supported recovery path
-    needs no active selection or ordinary host boot: the typed error's fix guidance
-    names it, the host's pre-admission failure path offers it, and an administrator can
-    start it directly. It is the installed `keld-updater-helper.exe` in a recovery-only
-    role behind a fresh UAC prompt, and it refuses unless its own image is the journaled
-    helper image inside a protected version tree that the journal names. It reloads the
-    protected provenance of that installation, takes the exclusive writer lease,
-    rereads and fully revalidates provenance, floor, records, journal and both version
-    trees, and resolves only through the KEL-53 phase rules, including their
-    process-family proof; for a launched attempt after owner loss that proof is the
-    Machine-UAC owner-loss retirement evidence, which a full restart always provides,
-    and without it the fix guidance tells the user to restart Windows first. It accepts
-    no candidate, source, path or feed input and launches no application. A declined
-    prompt, failed revalidation or unproven process
-    family writes nothing and leaves the typed state in place; no manual filesystem work
-    is required.
+    helper exits, or Windows restarts or every owner is lost before resolution, an
+    ordinary process never recovers: it returns the typed
+    `ActivationEffect::MachineRecoveryRequired` state, and only the helper's
+    recovery-only role resolves it (§4 "Machine-UAC recovery-required state and
+    recovery-only role" owns both).
     The helper's bootstrap and health exchange use a separate versioned subprotocol with
     its own magic, namespace and message types; it reuses only the low-level framing,
     nonce, deadline and peer-process verification utilities, and the lifecycle purpose
@@ -845,6 +830,51 @@ Recovery requires a live retained-handle zero observation or separately qualifie
 durable retirement evidence. Without either, it halts and preserves the journal and
 all pointers. A supported user-mode boot-epoch proof has not been established.
 Source: [Windows object life cycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/life-cycle-of-an-object).
+
+**Machine-UAC recovery-required state and recovery-only role (criterion 17; T4d).** In
+`MachineUacDirect` only `keld-updater-helper.exe` writes, so an ordinary process never
+recovers or repairs. When an ordinary startup takes the snapshot lease and finds either
+a pending journal or no journal with an absent or undecodable `current` beside a valid
+last-known-good, it infers and writes nothing: it assumes neither health nor
+process-family retirement, commits and rolls back nothing, and preserves journal,
+pointers and versions. It returns `UpdateError::Activation` with the new effect
+`ActivationEffect::MachineRecoveryRequired` before admission or app code. For
+`MachineUacDirect` that typed effect replaces both the untyped `UpdateError::Baseline`
+refusal of the machine-mode `current` repair
+(`crates/keld-update/src/windows_baseline/load.rs:255-262`) and the
+`JournalBoundRecoveryRequired` that the journal-free selection returns for a pending
+journal. A lease conflict stays `WriterActive` (criterion 20), and `MachineSeamlessDirect`
+keeps its current refusal until KEL-270 selects its authority.
+
+The effect's fix guidance names the recovery-only role, and the host's pre-admission
+failure path offers it; neither needs an active selection or an ordinary host boot, and
+an administrator can start the role directly. The role is the installed
+`keld-updater-helper.exe` behind a fresh UAC prompt. It reloads the protected
+provenance of its installation, takes the exclusive writer lease, rereads and fully
+revalidates provenance, floor, records, journal and both version trees, and then does
+exactly one of the following:
+
+1. With a journal, it resolves only through the KEL-53 phase rules, including their
+   process-family proof; for a launched attempt after owner loss that proof is
+   "Machine-UAC owner-loss retirement" below. An unlaunched `publish-pending` attempt
+   keeps the lease-only rule, but the recovery role launches nothing: where that rule
+   would next launch the candidate, it rolls the attempt back with `CandidateLaunch`
+   instead (the landed `resume_unlaunched` followed by `roll_back`), composing the
+   retirement binding from its own empty attempt Job's zero observation. The trust floor
+   keeps its value, so automatic reselection then needs a newer signed release. A
+   candidate that is neither published nor staged at the prior floor is abandoned as
+   today.
+2. Without a journal, it owns the machine-mode repair of an invalid `current`: through
+   the shared repair, it republishes last-known-good and reads it back, only when its own
+   located version is last-known-good (the KEL-254 T2b located-version gate).
+
+It accepts no candidate, source, path or feed input and launches no application. A
+declined prompt, failed revalidation or unproven process family writes nothing and
+leaves the typed state in place; no manual filesystem work is required.
+
+*Interim.* Until the T4d rows pass, the recovery role is disabled: the helper refuses
+it, and the fix guidance of `MachineRecoveryRequired` says that no supported resolution
+exists other than administrator action, with journal, pointers and versions preserved.
 
 **Machine-UAC owner-loss retirement (PR #374 review, 2026-10-05: the owner chose a
 durable proof over a permanent typed halt or pointer-only rollback and delegated the
@@ -1556,7 +1586,7 @@ Must not touch in Slice A:
   ancestor/state DACLs and canonical descriptors on published records; filtered-token
   denial-zero-write; authenticated helper bootstrap, exact candidate revalidation,
   initiating-user candidate launch and live-owner health/rollback;
-  after owner death/reboot recovery returns the typed recovery-required state, and the
+  after owner death/reboot an ordinary launch returns `MachineRecoveryRequired`, and the
   helper's recovery-only role resolves it from a fresh UAC prompt without ordinary host
   boot, writing nothing when revalidation or the process-family proof fails.
   Machine-UAC owner-loss retirement rows: helper terminated and crashed mid-health;
@@ -1612,6 +1642,7 @@ Must not touch in Slice A:
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
 | 8 (claimant binding) | only the exact launched and retained process is accepted; a second instance started from the candidate tree that connects first, and a copy of the candidate image that a hostile role starts during `AwaitingHealth`, are each refused by `CompareObjectHandles`, disconnected and given no selection, after which the same pipe instance accepts the real candidate; a peer whose process ID equals the launched one but whose process object differs, a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, session, integrity or elevation each refuse; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner |
 | 8 (endpoint squatting) | a name that another process of the same user pre-creates before the owner makes the owner's first-instance creation fail, so it launches nothing and rolls back with `CandidateLaunch`; a second creation of a live owner's name fails; a squatter that creates the name after owner death, including one whose process ID equals the journaled owner's, is refused by the claimant on process ID, creation time, image digest, session or descriptor before the claimant sends anything; a squatting server receives only an identification-level token and cannot impersonate the claimant; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label and remote-client admission; Low-integrity and AppContainer clients cannot open the endpoint for write; a v1 journal without owner fields admits no claim |
+| 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an untyped refusal or merely no selection) and writes nothing; the same states in `PerUserDirect` keep their landed recovery and repair; while the T4d rows have not passed, the helper refuses the recovery role and the guidance names administrator action as the only resolution; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
 | 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
 | 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
 | 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
@@ -1659,6 +1690,13 @@ not requests to revisit that decision:
   over-the-shoulder user-token launch, and exact health/rollback under the live elevated
   owner. Reboot/owner death requires fresh consent plus the qualified owner-loss
   retirement proof, or a safe halt.
+- T4d owner decision (pending with this amendment's approval): because the recovery-only
+  role launches nothing, it resolves an unlaunched `publish-pending` attempt by rolling
+  it back, which consumes that signed version until a newer release ships. The
+  alternative is to let the recovery role launch the candidate as an authenticated
+  initiating user when the host started it, which adds the full bootstrap and launch
+  surface to the recovery role. Recommended: the rollback, which keeps the recovery role
+  free of launch authority.
 - T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
   falsifier before any privileged seamless mechanism is selected. The task probe is only
   wake-up feasibility.
