@@ -78,7 +78,10 @@ pending. It optimizes for least privilege and the smallest privileged surface:
    application host is never elevated (criterion 17).
 3. Reboot or loss of every owner during `AwaitingHealth` fails closed into a typed
    recovery-required state with a supported helper recovery path that needs no ordinary
-   host boot (criterion 17).
+   host boot (criterion 17). Its retirement evidence is the helper-owned kill-on-close
+   attempt Job plus an exact owner-death proof ("Machine-UAC owner-death retirement",
+   chosen in the PR #374 review over a permanent typed halt or pointer-only rollback);
+   until T4d qualifies it, that case halts.
 4. Candidate health in every direct mode uses an authenticated one-shot connect-back
    endpoint, replacing the inherited candidate endpoint; the candidate takes its attempt
    identity from protected state, not argv or environment (criterion 8).
@@ -487,10 +490,10 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     then it is minimal, bound to one installation and one attempt, holds only attenuated
     exact handles, exposes no mutation, process or filesystem command, and exits when the
     attempt is terminal. There is no persistent or ambient privileged broker. If the
-    helper exits, or Windows restarts or every owner is lost before resolution, and no
-    durable retirement or health witness exists, nothing is inferred: health and
-    process-family retirement are not assumed, nothing is committed or rolled back, and
-    journal and pointers are preserved. The next launch returns a typed
+    helper exits, or Windows restarts or every owner is lost before resolution, the next
+    ordinary launch infers nothing: health and process-family retirement are not
+    assumed, nothing is committed or rolled back, and journal and pointers are
+    preserved. The next launch returns a typed
     recovery-required state before admission or app code. Its supported recovery path
     needs no active selection or ordinary host boot: the typed error's fix guidance
     names it, the host's pre-admission failure path offers it, and an administrator can
@@ -500,7 +503,9 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     protected provenance of that installation, takes the exclusive writer lease,
     rereads and fully revalidates provenance, floor, records, journal and both version
     trees, and resolves only through the KEL-53 phase rules, including their
-    process-family proof. It accepts no candidate, source, path or feed input and
+    process-family proof; for `AwaitingHealth` after owner loss that proof is the
+    Machine-UAC owner-death retirement evidence; after a reboot its holder check passes
+    because no recorded holder survives. It accepts no candidate, source, path or feed input and
     launches no application. A declined prompt, failed revalidation or unproven process
     family writes nothing and leaves the typed state in place; no manual filesystem work
     is required.
@@ -795,6 +800,41 @@ Recovery requires a live retained-handle zero observation or separately qualifie
 durable retirement evidence. Without either, it halts and preserves the journal and
 all pointers. A supported user-mode boot-epoch proof has not been established.
 Source: [Windows object life cycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/life-cycle-of-an-object).
+
+**Machine-UAC owner-death retirement (owner decision in the PR #374 review, 2026-10-05;
+qualified in T4d).** For `MachineUacDirect`, durable retirement evidence after owner loss
+is construction plus exact owner death, not a boot epoch. The elevated helper creates the
+attempt's unnamed Job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and without
+`JOB_OBJECT_LIMIT_BREAKAWAY_OK` or `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`, holds its only
+handle (never inherited, duplicated or passed to the candidate), and makes the candidate
+a member before its first instruction runs, so every descendant, including nested Jobs,
+belongs to it. The journal records that construction and the PID, creation time and
+image digest of every Job-handle holder; a keeper, if one is ever added, is another
+recorded holder. The helper reuses the existing Windows Job and process-identity
+primitives and their owners rather than adding parallel ones, and KEL-53 consumes the
+result. Windows terminates every process in such a Job when its last handle
+closes (KEL-78 primary source W5), and terminating a process for any reason, including
+a crash, logoff or system shutdown, closes all of its kernel-object handles and signals
+its process object
+([Terminating a Process](https://learn.microsoft.com/en-us/windows/win32/procthread/terminating-a-process),
+`ms.date` 2025-07-14). Recovery therefore treats the family as retired only after
+proving that each recorded holder is no longer running: no process has its PID, the
+process with that PID has a different creation time, or the exact process object is
+signaled. Access denial or any other unknown result halts. This is neither PID
+enumeration nor Job-name absence, and a reboot is not itself evidence; they still prove
+nothing, and the seamless keeper slice's rule below is unchanged. Termination is
+asynchronous, because a thread waiting on a kernel object is not terminated until the
+wait completes: if a retirement step fails because a terminating process still holds a
+candidate file, recovery halts with `rollback-pending` preserved, and a later recovery
+finishes it. After `health-accepted` is durable and before it exits, the helper clears
+the kill-on-close limit so the healthy application survives; a helper crash before that
+ends the application, and `health-accepted` recovery still completes the commit. Helper
+death therefore ends the candidate during the health window, a deliberate
+crash-ownership change. The added holder fields are a journal schema revision under the
+wire review gate. Rejected alternatives: a permanent typed halt after reboot, which
+leaves no supported way out, and pointer-only rollback without retirement proof, which
+can run two versions against one application data set. Until the T4d rows pass, this
+evidence is not admitted and the case halts in the typed recovery-required state.
 
 **Bounded per-attempt lifecycle keeper (proof slice; no production activation writes).**
 The first Windows implementation slice MUST use the exact unnamed attempt Job object
@@ -1341,6 +1381,15 @@ Must not touch in Slice A:
   after owner death/reboot recovery returns the typed recovery-required state, and the
   helper's recovery-only role resolves it from a fresh UAC prompt without ordinary host
   boot, writing nothing when revalidation or the process-family proof fails.
+  Machine-UAC owner-death retirement rows: helper terminated and crashed mid-health,
+  helper crash after `health-accepted` before the limit is cleared, real logoff and
+  reboot mid-health, PID reuse with a different creation time, a denied or unknown
+  holder query, a duplicated Job handle held by another process (a negative control: the
+  family survives, so tests must prove the helper never creates such a duplicate),
+  candidate membership before its first instruction under the selected launch API, a
+  descendant breakaway attempt, nested KEL-96 host Jobs, and a still-terminating family
+  that blocks retirement; each either proves retirement or halts fail-closed, and no
+  family member runs after a passed proof.
   Before implementation, each new production `unsafe` path gets its owner's exact
   AGENTS.md rule; FFI wrappers stay minimal beneath safe typed wrappers with owned
   handles and minimum access rights; no raw handle crosses a normal public API; every
@@ -1414,7 +1463,8 @@ not requests to revisit that decision:
   role write denial; the owning user's authority remains outside the threat claim.
 - T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,
   over-the-shoulder user-token launch, and exact health/rollback under the live elevated
-  owner. Reboot/owner death requires new consent or safe halt.
+  owner. Reboot/owner death requires fresh consent plus the qualified owner-death
+  retirement proof, or a safe halt.
 - T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
   falsifier before any privileged seamless mechanism is selected. The task probe is only
   wake-up feasibility.

@@ -519,12 +519,18 @@ ordinary-user-writable stage afterward. The helper starts the exact candidate as
 initiating ordinary user, including when a different administrator approves UAC, from
 the exact initiating process's own primary token; impersonation only pins the user's
 staged source. If the elevated owner exits, Windows restarts or every owner is lost
-before resolution without a durable witness, nothing is inferred or written: the next
-launch returns a typed recovery-required state before admission. Its supported recovery
+before resolution, the next ordinary launch infers and writes nothing: it returns a
+typed recovery-required state before admission. Its supported recovery
 path needs no ordinary host boot: the journaled `keld-updater-helper.exe` image, from a
 protected version tree and behind fresh UAC consent, runs a recovery-only role that
 takes the writer lease, fully revalidates and resolves only through the KEL-53 phase
-rules, or writes nothing. The application and Bun roles
+rules, or writes nothing. Its `AwaitingHealth` retirement evidence is construction plus
+exact owner death: the helper alone holds the attempt's kill-on-close, non-breakaway Job
+handle, the journal records each holder's PID, creation time and image, and only proof
+that every recorded holder has terminated lets recovery treat the family as retired;
+after a reboot that check passes because no recorded holder survives. A reboot,
+Job-name absence and PID enumeration are not themselves evidence; until KEL-53 T4d
+qualifies this proof, that case halts. The application and Bun roles
 never run elevated or as SYSTEM. This ACL profile differs from KEL-266's SYSTEM-only
 machine-baseline profile; updates never take ownership or repair ACLs ad hoc. The
 profile label and descriptor predicates are owned by `keld-guard`; a persisted profile
@@ -1157,7 +1163,9 @@ the platform process-family owner must prove the recorded coordinator and candid
 have exited; an unknown/live process state halts rather than starting a second
 candidate. The one exception is an unlaunched `publish-pending` attempt, which the lease
 alone proves has no live owner or candidate family. Windows places the candidate in the helper/host's kill-on-close Job and
-waits for its zero-active-process observation before recovery proceeds.
+waits for its zero-active-process observation before recovery proceeds; after
+Machine-UAC owner loss, the qualified owner-death retirement proof above replaces that
+observation.
 
 1. For `publish-pending`, validate the floor and `current` against the exact
    journaled values. If current still equals the rollback target, the floor must equal
