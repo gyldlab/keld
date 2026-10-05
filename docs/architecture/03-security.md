@@ -269,14 +269,19 @@ manifest decoder.
 Current code verifies signed manifests/full artifacts and the Windows canonical
 archive, and extracts to observed owner-private incomplete stages. KEL-266 adds an
 actual SYSTEM-only protected machine-baseline installer/loader and SYSTEM staging
-cell. KEL-270 records explicit mode metadata and a strict journal codec/recovery
-classifier, but it does not publish current/LKG, run a production activation writer,
-confirm candidate health or perform production rollback. Per-user and mode-aware
-provenance/initialization remain implementation work. Architecture 06 and KEL-53 own
+cell. For `PerUserDirect`, KEL-270 T4b adds the common journaled library transaction
+(current/LKG publication, commit/rollback and crash recovery). Host candidate launch
+and health observation, installer/host integration and machine-mode activation remain
+absent. The `PerUserDirect` and
+`MachineUacDirect` baseline initializers have landed as library entrypoints; installer
+integration and mode-aware activation remain implementation work. Architecture 06 and
+KEL-53 own
 the exact support cells. The following is the reviewed full-lifecycle contract; no
 mode is shipped from provenance or state-model code alone.
 V0 update manifests are signed with
-ed25519 and verified by the host's compiled-in public key. Every release has a bounded
+ed25519 and verified by the host's compiled-in public key (Architecture 06 defines
+"compiled-in"; on Windows direct installs it is the signed `ExpectedAppIdentity`
+payload). Every release has a bounded
 full package whose transport and canonical
 content have separate BLAKE3 checks; optional later deltas must reconstruct that same
 full-content digest. Protected installer provenance, rather than path heuristics,
@@ -297,13 +302,10 @@ hostile Keld roles remain denied write access. Legacy same-user role mode refuse
 update. The host keeps the
 semantic-version trust floor separate from `current`, an exact attempt journal and
 `last-known-good`; candidate health cannot advance LKG unless its private receipt
-matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed,
-dedicated, minimal signed `keld-updater-helper.exe` invoked through explicit UAC, never
-an elevated application host; it authenticates its bootstrap from the admitted host over
-its own versioned subprotocol, obtains the write lease, and then reuses the common
-verifier to revalidate the user's cache input under retained read handles before
-publishing the journal or making any protected write.
-Any optional post-exit locked-file helper is a separate, narrower
+matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed
+signed helper invoked through explicit UAC; it authenticates its bootstrap from the
+admitted host and reuses the common verifier before obtaining the write lease or
+publishing the journal. Any optional post-exit locked-file helper is a separate, narrower
 component that consumes only an already-protected journal and sealed handles; it has no
 feed or package parser. The machine-seamless privileged trigger remains unselected until
 its authentication and lifecycle contract passes. In the admitted profile,

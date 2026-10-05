@@ -508,8 +508,10 @@ CLI exit/crash closes the only writer and yields EOF. `CliLeaseLost` is a
 distinct shutdown cause: it quiesces new work and joins the common
 revoke/link-close/terminate/reap/event-loop-exit tail, but sends no impossible
 Quit reply because no lifecycle Call exists. A forged environment value can at
-most make the caller's own host monitor stdin and shut down; it carries no app
-root, path, digest, principal, permission, or application-resource ownership.
+most make the caller's own host monitor stdin and shut down, or, on Windows, route
+the launch to the `DevStage` validator, whose owner-private stage checks still decide
+admission (KEL-254 AC2); it carries no app root, path, digest, principal, permission,
+or application-resource ownership.
 Tests inspect both process handle tables: the host never owns a writer copy and
 Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
 The Windows fixture uses raw `SystemExtendedHandleInformation` for CLI, host,
