@@ -21,6 +21,22 @@ pub mod profile;
 mod startup;
 #[cfg(test)]
 mod view_drop_order;
+/// How long a backend waits for the initial renderer navigation before startup fails
+/// with KELD-WV-005.
+///
+/// This is a hang guard, not a performance budget: a renderer that never finishes its
+/// first navigation becomes a typed startup failure instead of a window that never
+/// becomes ready. It must exceed real cold and relaunch starts. Measured on native
+/// Windows 11 (`WebView2`), the first navigation took a median of 1.3 s and at most 1.9 s
+/// idle, and at most 3.8 s under the full workspace test suite plus extra load. Hosted
+/// `windows-latest` runners exceeded the previous 5 s bound in 3 of 35 runs, mostly when
+/// relaunching right after a previous instance. 15 s keeps at least 3x margin over every
+/// observed healthy start while every test harness that waits for `Ready` allows longer,
+/// so a slow but healthy start is never cut short by either side.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) const INITIAL_NAVIGATION_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
 #[cfg(target_os = "linux")]
 pub mod webkitgtk;
 #[cfg(target_os = "windows")]
