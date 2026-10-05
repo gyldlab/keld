@@ -478,8 +478,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   installation refuses because only its elevated writer may repair. Live feed
   orchestration, host candidate launch, the private health channel and its 30-second
   `Ready` observation, installed-host lifecycle composition, candidate-mode selection,
-  the KEL-254 executable-located entrypoint with its `ExpectedAppIdentity` payload, and
-  the KEL-96 host consumer of the selection remain unimplemented. Planned Windows
+  the KEL-19 `ExpectedAppIdentity` host container with its boot-time reader
+  (`ExpectedAppIdentity::from_signed_image`, KEL-254 T3 Part B), and the KEL-96 host
+  consumer of the selection remain unimplemented; the KEL-254 T2b executable-located
+  entrypoint (`select_active_package_for_executable`) and its payload codec have
+  landed, but no host calls them yet. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
   lifecycle proof and a separately approved architecture/spec amendment selects and
