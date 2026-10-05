@@ -411,12 +411,13 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    journal. Neither path lowers the trust floor; bounded cleanup retains both
    known-good slots.
 10. If Windows requires a post-exit helper, the signed helper inherits only protected
-    update-root/lock handles, the host-process wait handle and the observer/server
-    endpoint for the already-minted health channel. It reads the exact attempt from the
-    protected journal, waits for that host to exit, performs the journaled same-volume
-    publish, launches only the journaled executable with no inherited candidate endpoint
-    (the candidate connects back per criterion 8), observes exact health, commits or
-    rolls back, and exits.
+    update-root/lock handles and the host-process wait handle; it inherits no endpoint.
+    It reads the exact attempt from the protected journal and waits for that host to
+    exit. It then continues the attempt as a resumed owner (the landed
+    `resume_unlaunched`), durably re-minting the health and lifecycle channel identities
+    together with its own owner fields, and creates its own connect-back endpoint under
+    criterion 8. It performs the journaled same-volume publish, launches only the
+    journaled executable, observes exact health, commits or rolls back, and exits.
     Command line, environment, cwd, caller paths and feed bytes convey no authority. The
     journal binds the verified helper image and health-channel identities; replay,
     endpoint substitution/reuse, helper substitution, mixed artifact set or path
@@ -491,7 +492,7 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     writable handles/mappings, or an unauthenticated endpoint fails before protected
     publication. Caller paths/argv/environment do not authorize mutation. The optional post-exit
     helper in criterion 10 is a different, narrower component; it only completes an
-    already journaled attempt through inherited sealed handles and does not parse feeds
+    already journaled attempt through inherited protected handles and does not parse feeds
     or packages. The UAC helper owns the attempt while alive and launches the exact
     candidate under the initiating ordinary user's token/session (including
     over-the-shoulder approval), retaining exact-health/commit/rollback rules. The helper

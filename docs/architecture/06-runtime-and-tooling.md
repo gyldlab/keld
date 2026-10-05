@@ -1243,13 +1243,12 @@ evidence.
 
 If Windows locked-file behavior requires a post-exit helper, it is a signed minimal
 package component, not a second updater. The trusted host passes only protected
-update-root/lock handles, its process wait handle and the observer/server endpoint for
-the already minted attempt-health channel. The helper waits for that exact host to exit,
-reads attempt/artifact/path identity from the protected journal, performs the journaled
-same-volume publish, launches only that journaled executable with no inherited candidate
-endpoint (the candidate connects back over the authenticated one-shot endpoint, taking
-its attempt identity from protected state), observes exact health, commits or rolls
-back, and exits. It has no feed, network, manifest/package parser, shell, arbitrary-path
+update-root/lock handles and its process wait handle; no endpoint is inherited. The
+helper waits for that exact host to exit, reads attempt/artifact/path identity from the
+protected journal, continues the attempt as a resumed owner that re-mints its channel
+identities, creates its own one-shot connect-back endpoint (KEL-53 criterion 10),
+performs the journaled same-volume publish, launches only that journaled executable,
+observes exact health, commits or rolls back, and exits. It has no feed, network, manifest/package parser, shell, arbitrary-path
 or caller-provided command authority. The journal binds the helper image and
 health-channel identities. Replayed attempt, endpoint substitution/reuse, helper
 substitution, mixed

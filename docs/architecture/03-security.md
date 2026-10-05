@@ -309,7 +309,8 @@ its own versioned subprotocol, obtains the write lease, and then reuses the comm
 verifier to revalidate the user's cache input under retained read handles before
 publishing the journal or making any protected write.
 Any optional post-exit locked-file helper is a separate, narrower
-component that consumes only an already-protected journal and sealed handles; it has no
+component that consumes only an already-protected journal and inherited protected
+update-root/lock handles; it inherits no endpoint and has no
 feed or package parser. The machine-seamless privileged trigger remains unselected until
 its authentication and lifecycle contract passes. In the admitted profile,
 application roles and webviews cannot write this state. Administrators and arbitrary
