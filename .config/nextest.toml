@@ -27,6 +27,21 @@
 
 [profile.ci]
 
+# Per-test termination bound: a hung test is killed and reported as TIMEOUT after
+# period x terminate-after = 10 minutes, instead of running until the 45-minute
+# job timeout cancels the whole job with nothing naming the culprit (hosted macOS
+# run 37252493645 hung in keld-core app_session::tests::host_echo_reply_shares_
+# primary_reader_with_bun_call_and_ping for >2580s). This is a kill switch, NOT
+# a retry: nextest does not rerun a terminated test, and the no-retry rule above
+# is unchanged. Measured over the last 9 successful main ci.yml runs on all three
+# hosted OSes (~13.6k PASS lines): slowest test 75.1s (macOS
+# boot_admission::every_invalid_boot_class_fails_before_transient_window_listener_or_bun),
+# then 57.2s (Windows keld-update transaction cut test) and 23.9s (Linux). 10 min
+# is >= 8x the slowest, so no per-test override is needed. Re-measure before
+# adding a slower test; never raise this to absorb a hang. CI installs nextest
+# 0.9.145 (taiki-e/install-action), which supports the `slow-timeout` table form.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 # Real macOS no-flag rows own native AppKit/WKWebView sessions. KEL-142 adds
 # an OS-injected pointer acceptance row whose target must not be obscured or
 # moved by another no-flag fixture while the click is in flight. The product
