@@ -334,3 +334,163 @@ fn generated_leftovers_never_change_the_selection() {
         .expect("a stale record preparation");
     assert_eq!(selected_version(&trust), "2.0.0");
 }
+
+fn current_record(trust: &WindowsBaselineTrust) -> Option<Vec<u8>> {
+    std::fs::read(trust.installation.update_root.join("current")).ok()
+}
+
+fn lkg_pointer_as_current(trust: &WindowsBaselineTrust) -> Vec<u8> {
+    crate::records::encode_pointer(PointerKind::Current, &last_known_good(trust))
+        .expect("encode the last-known-good pointer")
+}
+
+#[test]
+fn an_absent_current_is_republished_from_last_known_good() {
+    let fixture = tempfile::tempdir().expect("absent current fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    std::fs::remove_file(trust.installation.update_root.join("current"))
+        .expect("lose the current record");
+    assert_eq!(selected_version(&trust), "2.0.0");
+    assert_eq!(
+        current_record(&trust),
+        Some(lkg_pointer_as_current(&trust)),
+        "the repair durably republishes last-known-good as current"
+    );
+}
+
+#[test]
+fn an_undecodable_current_is_republished_from_last_known_good() {
+    let fixture = tempfile::tempdir().expect("undecodable current fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    std::fs::write(
+        trust.installation.update_root.join("current"),
+        b"not a pointer",
+    )
+    .expect("corrupt the current record");
+    let pending = trust
+        .installation
+        .update_root
+        .join(format!("pending-{}", "b".repeat(64)));
+    std::fs::write(&pending, b"stale").expect("a stale record preparation");
+    assert_eq!(selected_version(&trust), "2.0.0");
+    assert_eq!(current_record(&trust), Some(lkg_pointer_as_current(&trust)));
+    assert!(
+        !pending.exists(),
+        "the repair removes stale preparations first"
+    );
+}
+
+#[test]
+fn an_invalid_current_is_not_repaired_from_a_damaged_last_known_good() {
+    let fixture = tempfile::tempdir().expect("damaged LKG fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    std::fs::write(
+        trust.installation.update_root.join("current"),
+        b"not a pointer",
+    )
+    .expect("corrupt the current record");
+    std::fs::remove_file(
+        trust
+            .installation
+            .update_root
+            .join("versions")
+            .join("2.0.0")
+            .join(".complete"),
+    )
+    .expect("damage last-known-good");
+    assert_refuses(&trust, "a damaged last-known-good never becomes current");
+    assert_eq!(
+        current_record(&trust).as_deref(),
+        Some(&b"not a pointer"[..])
+    );
+}
+
+#[test]
+fn an_invalid_current_beside_a_pending_journal_stays_journal_bound() {
+    super::support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("invalid current with journal fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    crash_after_publish_pending(fixture.path(), &trust);
+    std::fs::write(
+        trust.installation.update_root.join("current"),
+        b"not a pointer",
+    )
+    .expect("corrupt the current record");
+    match assert_refuses(&trust, "a journal outranks the current repair") {
+        UpdateError::Activation { effect, .. } => {
+            assert_eq!(effect, ActivationEffect::JournalBoundRecoveryRequired);
+        }
+        other => panic!("a pending journal must refuse as journal-bound: {other:?}"),
+    }
+}
+
+fn invalid_current_cause() -> UpdateError {
+    UpdateError::activation(
+        "current pointer",
+        ActivationEffect::ProtectedStateUnchanged,
+        "test cause",
+    )
+}
+
+#[test]
+fn the_repair_never_rewrites_a_current_that_became_valid() {
+    let fixture = tempfile::tempdir().expect("valid current repair fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let previous = last_known_good(&trust);
+    commit(&trust, "3.0.0");
+    // An intentional rollback to previous-known-good is a valid current.
+    write_current(&trust, &previous);
+    let before = record_bytes(&trust);
+    crate::windows_baseline::load::repair_invalid_current(&trust, &invalid_current_cause())
+        .expect("a valid current needs no repair");
+    assert_eq!(
+        record_bytes(&trust),
+        before,
+        "a current that decodes is never rewritten"
+    );
+}
+
+#[test]
+fn a_machine_installation_refuses_the_startup_repair() {
+    let fixture = tempfile::tempdir().expect("machine refusal fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let mut machine = trust.clone();
+    machine.installation.install_mode = crate::DirectInstallMode::MachineUacDirect;
+    let before = record_bytes(&trust);
+    let error =
+        crate::windows_baseline::load::repair_invalid_current(&machine, &invalid_current_cause())
+            .expect_err("only the elevated writer may repair a machine installation");
+    assert!(error.to_string().contains("elevated writer"), "{error}");
+    assert_eq!(record_bytes(&trust), before);
+}
+
+#[test]
+fn an_invalid_current_is_not_repaired_beside_a_damaged_previous_known_good() {
+    let fixture = tempfile::tempdir().expect("damaged PKG fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    std::fs::write(
+        trust.installation.update_root.join("current"),
+        b"not a pointer",
+    )
+    .expect("corrupt the current record");
+    std::fs::remove_file(
+        trust
+            .installation
+            .update_root
+            .join("versions")
+            .join("1.0.0")
+            .join(".complete"),
+    )
+    .expect("damage previous-known-good");
+    assert_refuses(&trust, "a damaged previous-known-good blocks the repair");
+    assert_eq!(
+        current_record(&trust).as_deref(),
+        Some(&b"not a pointer"[..])
+    );
+}
