@@ -313,6 +313,18 @@ jobs:
         env:
           KELD_REAL_LINUX_OWNER_PROOF: "1"
         run: cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture
+      # KEL-19 container spec §5: AC1 on the workspace-built release host. The test
+      # fails, never skips, without KELD_PACK_REAL_HOST; Cargo runs it from the package
+      # directory, so the path is absolute.
+      - name: Real Windows release host identity container round trip (KEL-19)
+        if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
+        shell: bash
+        env:
+          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-host.exe
+        run: |
+          set -euo pipefail
+          cargo build --release -p keld-host
+          cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact
       - name: rustdoc (warnings deny)
         if: matrix.os == 'ubuntu-latest'
         env:
