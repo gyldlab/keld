@@ -659,6 +659,10 @@ Implement in:
 - `crates/keld-pack/Cargo.toml`: a `tempfile = { workspace = true }` dev-dependency
   for the Windows-only AC10 anonymous-file test (already workspace-pinned and in
   `Cargo.lock`) (T1);
+- `crates/keld-pack/Cargo.toml`: a `sha2 = { workspace = true }` dev-dependency on
+  every OS for the AC7 golden SHA-256 (already workspace-pinned and in `Cargo.lock`;
+  owner decision of 2026-10-06, Linear KEL-19 comment
+  `dbddd923-c3e1-4b69-87fd-c7ba7f7210a7`) (T1);
 - `crates/keld-pack/tests/real_host.rs`: a `#![cfg(windows)]` integration test file
   whose one `#[ignore]` test, `real_release_host_round_trip`, reads the release host
   path from `KELD_PACK_REAL_HOST` and fails, never skips, when the variable is absent
@@ -668,8 +672,12 @@ Implement in:
   first line, so a failed `cargo build` fails the step instead of being hidden. It runs
   `cargo build --release -p keld-host`, then
   `cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact`
-  with `KELD_PACK_REAL_HOST` set to `target/release/keld-host.exe`, naming the exact
-  test as the KEL-167 step in that file does. The release build adds time to the
+  with `KELD_PACK_REAL_HOST` set to the absolute
+  `${{ github.workspace }}/target/release/keld-host.exe`, naming the exact test as the
+  KEL-167 step in that file does. The path is absolute because Cargo runs an
+  integration test from its crate directory (`crates/keld-pack`), where the relative
+  `target/release/keld-host.exe` does not exist (verified on Windows: OS error 3, "The
+  system cannot find the path specified."). The release build adds time to the
   Windows `check` job, whose `timeout-minutes` is 45; T1 records the step's duration on
   its first CI run and, if the job nears that limit, moves the step to its own job
   rather than raising the timeout. No `keld-pack -> keld-host` edge is added (T1);
@@ -743,7 +751,7 @@ Must not touch:
 | 6 | One mutation per field, each independently: `MZ`, `e_lfanew` (small, beyond file, overflow), `PE\0\0`, `Machine`, DLL bit, `SizeOfOptionalHeader`, `Magic`, `NumberOfRvaAndSizes`, `FileAlignment` (not a power of two, 256, 131072), `SectionAlignment` (below 4096, below `FileAlignment`), `SizeOfHeaders` (misaligned, beyond file), section table beyond `SizeOfHeaders`, a section with only one of `SizeOfRawData` and `PointerToRawData` zero, misaligned or overlapping raw ranges, raw range beyond file, non-adjacent virtual addresses, wrong `SizeOfImage`, and `u32` overflow; each `KELD-PACK-006` from both writer and reader. The fuzz target asserts no panic and a fixed allocation ceiling. |
 | 7 | Run the writer twice in one process and compare; the CI matrix on Linux, macOS and Windows compares the output SHA-256 with one checked-in golden digest. |
 | 8 | Windows, real signature: intact image returns zero and decodes; XOR `0x01` into one payload byte, one padding byte, and the low byte of the container's `VirtualSize`, each from a fresh copy, each exactly `TRUST_E_BAD_DIGEST` (`0x80096010`); any other status, including another non-zero one, fails the row; XOR `0x01` into one `CheckSum` byte, zero. Record each exact status. |
-| 9 | Missing, duplicate, and each non-canonical field of §4 reader step 3 (characteristics, L below 68 and above 400, `SizeOfRawData`, misaligned pointer, overlap with headers or another section, not last in table, file or address order, wrong `SizeOfImage`, overlap with the certificate table, non-zero padding); a canonical container holding a truncated payload gives `KELD-PACK-005`. |
+| 9 | Missing, duplicate, and each non-canonical field of §4 reader steps 3 and 4 that reaches them, each `KELD-PACK-011` (characteristics, relocation and line-number fields, L below 68 and above 400, `SizeOfRawData`, not last in table, file order, overlap with the certificate table or a certificate table ending beyond the file, non-zero padding); a canonical container holding a truncated payload gives `KELD-PACK-005`. Erratum (2026-10-06): a container whose pointer is misaligned, whose raw data overlaps the headers or another section or ends beyond the file, whose address is out of order, or whose image has a wrong `SizeOfImage` is a header-structure defect that §4 reader step 1 refuses first with `KELD-PACK-006`, as AC6 allows ("or the more specific code §4 assigns"); the reader test asserts `KELD-PACK-006` for each. |
 | 10 | Windows: `read_host_identity` succeeds on an anonymous `tempfile::tempfile()` file (no path) after its cursor is moved to end of file, and an injected read failure gives `KELD-PACK-012`; on every OS, a source scan of `keld-pack` finds no `unsafe`, `LoadLibrary`, `FindResource` or `UpdateResource`. |
 | 11 | `keld build` integration test (T3): signed input refuses with `KELD-PACK-009`; the step log shows digest verification, then embed, then signature; the post-sign check rejects with its `KELD-CLI` code, independently, an unsigned host, a fixture with bytes between the container and the certificate table and a fixture whose signer changed one byte before the certificate table outside the `CheckSum` and Certificate Table entry. |
 | 12 | `keld build` integration test (T3): a packaging input with one flipped byte, a digest for another target or Keld version, a missing digest and a digest that fails channel authentication each refuse with the new `KELD-CLI` code before the writer runs; a writer-call counter stays zero and no host output exists. |
@@ -765,9 +773,12 @@ synthetic fixture or from CI on other hosts.
 - permission model: none — no capability, manifest, guard or grant change; the
   expectation confers no authority (A3 conjunction).
 - dependency addition: yes — the internal workspace edge `keld-cli -> keld-pack` (T3);
-  a path dependency of the existing `keld-update` fuzz crate on `keld-pack` (T1); and a
+  a path dependency of the existing `keld-update` fuzz crate on `keld-pack` (T1); a
   `keld-pack` dev-dependency on the workspace-pinned `tempfile`, already in
-  `Cargo.lock` (T1). No new third-party crate; the container module is std only. The
+  `Cargo.lock` (T1); and a `keld-pack` dev-dependency on the workspace-pinned `sha2`,
+  already in `Cargo.lock`, for the AC7 golden SHA-256 (T1; owner decision of
+  2026-10-06, Linear KEL-19 comment `dbddd923-c3e1-4b69-87fd-c7ba7f7210a7`). No new
+  third-party crate; the container module is std only. The
   T1 `ci.yml` step (§5) is a CI change reviewed under `.agents/ci.md`, not a dependency.
 - wire protocol: yes — container format v1 (section name, characteristics, layout and
   canonical position) needs an independent format review. The A3 payload is unchanged.
