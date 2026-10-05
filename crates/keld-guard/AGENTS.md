@@ -32,3 +32,6 @@ Owner/load: guard/always; trigger `validate_windows_package_paths`. Allow only `
 
 ## KEL-270 T4d admin-owner token FFI
 Owner/load: guard/always; trigger `require_windows_machine_uac_owner_token`. Production FFI: `GetCurrentProcess`, `GetCurrentThread`, `GetLastError`, `OpenProcessToken(TOKEN_QUERY)`, `OpenThreadToken(TOKEN_QUERY, TRUE)`, `GetTokenInformation(TokenGroups, TokenElevation)` only. Only `ERROR_NO_TOKEN` proves no impersonation; other errors refuse. Keep handles in RAII; bounds-check buffer/group/SID reads with inline SAFETY. Require elevated TokenElevation and BUILTIN Administrators `SE_GROUP_OWNER|SE_GROUP_ENABLED`, not deny-only, before creation. Tests cover SID/flags/errors and live thread impersonation via test-only `ImpersonateSelf`/`RevertToSelf`; operator tests cover elevated and filtered tokens. Retire with API.
+
+## KEL-270 T4d S8 Authenticode FFI
+Owner/load: guard/always; trigger `WindowsAuthenticodeImage`. Sole KEL-135 verifier (D4); MUST NOT be copied. `windows_authenticode.rs` only: `WinVerifyTrust` VERIFY then CLOSE on the pinned image; `WTHelperProvDataFromStateData`, `WTHelperGetProvSignerFromChain`, `WTHelperGetProvCertFromChain`, `CryptEncodeObjectEx` (SPKI) and `CryptDecodeObjectEx` (opus) before CLOSE. Bound reads; inline SAFETY. Retire with API.

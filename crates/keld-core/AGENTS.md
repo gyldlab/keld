@@ -5,9 +5,9 @@ Extends root `AGENTS.md`; this file owns the shipping host-session composition.
 - `app_session.rs` is the one no-flag lifecycle/router owner. It composes
   runtime and webview primitives; it MUST NOT duplicate generation, Job, LPAC,
   ACL, guard, or wire policy.
-- Windows production `unsafe` is limited to reviewed lease pipe state/flag,
-  cleanup-sentinel process acquire/image/wait, and KEL-135 Authenticode
-  trust-state/signer/SPKI reads in `app_session.rs`. Every call needs a local
+- Windows production `unsafe` is limited to reviewed lease pipe state/flag and
+  cleanup-sentinel process acquire/image/wait in `app_session.rs`; KEL-135
+  Authenticode FFI is `keld-guard`'s (KEL-270 D4). Every call needs a local
   `// SAFETY:` proof and independent unsafe/security review.
 - macOS KEL-135/T3 Core `unsafe` is limited to `SecCodeCopySelf` →
   `SecRequirementCreateWithString` → `SecCodeCheckValidity` → `SecCodeCopyStaticCode` →
