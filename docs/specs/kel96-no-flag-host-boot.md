@@ -231,7 +231,9 @@ and the KEL-96 consumer lands its own native boot evidence. Per-user direct and
 machine-wide direct installs have separate access/authority acceptance cells;
 machine-seamless activation additionally remains behind KEL-270's lifecycle and
 authority proof gate. Managed/package-manager installs remain owned by their deployment
-mechanism. This note is applicability only: it does not change or reapprove any frozen
+mechanism. KEL-254 amendment A3 makes the executable path a locator only and keeps two
+Windows boot states: dev lease, or authenticated installed provenance, otherwise refuse.
+This note is applicability only: it does not change or reapprove any frozen
 KEL-96 decision row.
 
 ### 4.2 Boot format and ownership
@@ -494,14 +496,22 @@ new inherited-handle protocol. The CLI spawns the host with stdin as an owned
 pipe, retains only its writer, and sets `KELD_DEV_LEASE=stdin-v1` to classify
 that existing stream as liveness-only. The host owns only the reader and marks
 it non-inheritable before spawning Bun; Bun receives null stdin. Standalone
-no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin.
+no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin. On Windows,
+once KEL-254 T3 lands, a launch without a valid dev lease is admitted only as an
+authenticated installed package or refused (KEL-254 AC2); a lease-less staged layout is
+no longer a dev-stage boot there. macOS and Linux standalone boot is unchanged until
+their own authenticated installed-root successor and a separate reviewed amendment
+converge them on the same rule; this is a temporary applicability difference, not a
+trust-model exception.
 
 CLI exit/crash closes the only writer and yields EOF. `CliLeaseLost` is a
 distinct shutdown cause: it quiesces new work and joins the common
 revoke/link-close/terminate/reap/event-loop-exit tail, but sends no impossible
 Quit reply because no lifecycle Call exists. A forged environment value can at
-most make the caller's own host monitor stdin and shut down; it carries no app
-root, path, digest, principal, permission, or application-resource ownership.
+most make the caller's own host monitor stdin and shut down, or, on Windows, route
+the launch to the `DevStage` validator, whose owner-private stage checks still decide
+admission (KEL-254 AC2); it carries no app root, path, digest, principal, permission,
+or application-resource ownership.
 Tests inspect both process handle tables: the host never owns a writer copy and
 Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
 The Windows fixture uses raw `SystemExtendedHandleInformation` for CLI, host,

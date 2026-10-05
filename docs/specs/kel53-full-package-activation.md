@@ -69,6 +69,11 @@ pre-journal orphan window that T4b item 4 could only repair. It removes that win
    The explicit unjournaled-version repair stays for installations that already hold an
    orphan from the earlier order.
 
+KEL-254 A3 cross-reference (2026-10-05): the §4 lifecycle installation-ID sentence and
+the trust-anchor sentence name the KEL-254 executable-located anchor, and KEL-254 T2b
+adds a KEL-53 loader entrypoint; exact content approved with KEL-254 A3 by
+Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec` (PR #374 head `b284d39ab2a479898b4bb53a6ae7d36e80ee3037`).
+
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
 `a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
@@ -614,8 +619,12 @@ is its byte length. This binds the explicit mode, owner, app/channel/target, ins
 update roots, signing-key identity, baseline artifact, profile, principal model,
 publisher scope and volume. The running host derives the expected ID from trusted
 packaging configuration; recovery recomputes it only after reading protected provenance
-and matching every field to that configuration. Equal provenance yields a stable ID;
-relocation changes the ID. This digest is binding context, not a secret or peer
+and matching every field to that configuration. On the KEL-254 executable-located path
+the host derives it only from provenance admitted under that path's anchor. Equal
+provenance yields a stable ID;
+relocation changes the ID only when the admitted canonical provenance bytes change (a
+reinstall), because the executable-located selector refuses a record whose roots differ
+from the located roots. This digest is binding context, not a secret or peer
 authentication. A future provenance schema MUST preserve an explicitly defined v2
 projection or introduce a separately versioned lifecycle-ID derivation.
 
@@ -1056,7 +1065,10 @@ as exactly 64 lowercase hexadecimal characters. Publisher scope is an installer
 assertion, not an Authenticode result. It must originate in trusted deployment/host
 configuration, not lower-trust environment, feed or arguments. The loader compares all
 fields, including observed volume identity; the protected record cannot supply its own
-expected trust anchor. SYSTEM/admin volume restoration is outside the ordinary-user
+expected trust anchor. For the KEL-254 executable-located path, that anchor is the
+build-time `ExpectedAppIdentity`, the located roots' file identities and the recorded
+mode's OS protection profile, and the record's other fields are accepted only after
+those match. SYSTEM/admin volume restoration is outside the ordinary-user
 replay threat; no global monotonic counter is introduced.
 
 Supported paths are lossless UTF-8 absolute drive paths, optionally verbatim-drive,

@@ -303,7 +303,9 @@ command". Garbage verbs are `KELD-CLI-046` (exit 2).
 **The Bun bootstrap env var is `KELD_APP_LINK`, not
 `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.** The separate
 `KELD_DEV_LEASE=stdin-v1` value is private CLI-to-host liveness classification:
-it is removed at macOS guardian spawn or Windows primary spawn and never reaches Bun or selects authority.
+it is removed at macOS guardian spawn or Windows primary spawn and never reaches Bun or
+grants authority. On Windows it only routes boot to the owner-private `DevStage`
+validator instead of installed admission (KEL-254 AC2).
 §1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
 the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
@@ -475,7 +477,8 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
   installation refuses because only its elevated writer may repair. Live feed
   orchestration, host candidate launch, the private health channel and its 30-second
-  `Ready` observation, installed-host lifecycle composition, candidate-mode selection and
+  `Ready` observation, installed-host lifecycle composition, candidate-mode selection,
+  the KEL-254 executable-located entrypoint with its `ExpectedAppIdentity` payload, and
   the KEL-96 host consumer of the selection remain unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
@@ -575,7 +578,9 @@ u64_le(record_bytes.len()) || record_bytes)`, where `record_bytes` is the exact
 canonical `keld.install-provenance/v2` encoding. This binds install mode, owner,
 application scope, install/update roots, signing key, baseline, profile, principal
 model, publisher scope and volume. The host derives its expected ID from trusted
-installer configuration; recovery re-derives it from admitted protected provenance.
+installer configuration (on the KEL-254 executable-located path, only from provenance
+admitted under that path's anchor); recovery re-derives it from admitted protected
+provenance.
 This public identifier is context, not authentication. The v2 projection is frozen;
 future provenance schema changes preserve it or version the lifecycle-ID derivation.
 Lifecycle authentication uses its own named-pipe namespace and retained connected-pipe/
@@ -852,6 +857,9 @@ release missing `full` is part of AC1):
    ed25519 public key **compiled into the host binary at build time** (never fetched
    from the feed itself — a feed that can serve a fake manifest could equally serve a
    fake "trusted" key, so the key cannot be feed-supplied and stay a trust root).
+   "Compiled-in" in this document means fixed at build time inside the signed host; on
+   Windows direct installs the prebuilt host carries the key, app id, channel and target
+   in its signed `ExpectedAppIdentity` payload (KEL-254 §4).
    Reject and stop on any signature failure, before parsing a single field for meaning.
 2. Parse JSON only after step 1 passes, with a parser that rejects duplicate keys.
    Reject unknown `schema`. Reject if `app.id`, `channel`, or `target` do not match this
@@ -918,7 +926,9 @@ users/Keld roles. `MachineSeamlessDirect` is explicit opt-in and retains the
 SYSTEM-protected machine profile; its runtime authority remains a separate unselected
 gate. `Managed(mechanism)` records the package/deployment owner and refuses direct
 mutation before feed access. `Direct` admits the updater only when every recorded value
-matches the running host. Provenance changed by a principal outside its mode's admitted
+matches the running host; on the KEL-254 executable-located path that means the host's
+`ExpectedAppIdentity`, the located roots' file identities and the recorded mode's
+protection profile. Provenance changed by a principal outside its mode's admitted
 writer authority refuses before feed access or filesystem mutation. Missing/mutable/
 mismatched provenance refuses. Paths, executable names, registry-location guesses and
 writable config never infer mode or direct ownership. Legacy same-user role mode refuses
