@@ -77,6 +77,128 @@ pub fn load_windows_baseline(
     })
 }
 
+/// Selects the committed package tree for an ordinary startup (KEL-254 AC4).
+///
+/// Under the shared snapshot lease it binds protected provenance, reads the floor and
+/// every pointer, and requires `current` to equal last-known-good or previous-known-good
+/// with every selected version at or below the floor. The version census admits only
+/// those versions plus generated diagnostics, and each selected version passes the same
+/// metadata admission as the baseline loader (its exact entries, completion identity and
+/// retained archive length) plus its signed no-migration package policy, whose exact
+/// bytes `keld-pack` owns. Content is not rehashed at startup: `contentBlake3` was verified
+/// before publication into the protected, immutable tree, and the boot-file and access
+/// checks belong to KEL-254 and KEL-96. Nothing is written: the lease and every record
+/// handle close before return; the selected version, its tree and the protected ancestry
+/// stay open.
+///
+/// # Errors
+/// A pending activation journal refuses with
+/// [`crate::ActivationEffect::JournalBoundRecoveryRequired`]: only journal-bound recovery
+/// under the writer lease may continue it, so no tree is selected. A sharing conflict on
+/// the lease, normally the updater's exclusive writer lease, refuses with
+/// [`crate::ActivationEffect::WriterActive`] without retrying.
+/// Managed ownership, a missing or damaged lease, unknown or malformed state, provenance
+/// or pointer relationships that do not hold, an absent or changed package policy, and any
+/// unreferenced, missing or substituted version each refuse. The selection never guesses
+/// the newest directory or substitutes the installed baseline.
+pub fn select_windows_active_package(
+    trust: &WindowsBaselineTrust,
+) -> Result<super::ActivePackageSelection, UpdateError> {
+    trust.require_direct_owner()?;
+    let roots =
+        open_roots(trust, false).map_err(|cause| error("selection root admission", cause))?;
+    let lease =
+        super::open_activation_lease(&roots.update, roots.profile(), false).map_err(|cause| {
+            if cause.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION.cast_signed())
+            {
+                UpdateError::activation(
+                    "active package selection",
+                    crate::ActivationEffect::WriterActive,
+                    "a conflicting handle, normally the exclusive writer lease, holds activation.lock",
+                )
+            } else {
+                error("active selection lease", cause)
+            }
+        })?;
+    let provenance = read_writer_provenance(trust, &roots)?;
+    let records = read_writer_records(&roots, true)?;
+    if let Some(journal) = records.journal {
+        return Err(UpdateError::activation(
+            "active package selection",
+            crate::ActivationEffect::JournalBoundRecoveryRequired,
+            format!(
+                "a pending {:?} activation journal selects nothing until journal-bound recovery resolves it",
+                journal.phase
+            ),
+        ));
+    }
+    let floor = semver::Version::parse(&records.version_floor)
+        .map_err(|cause| error("version floor", cause))?;
+    validate_writer_pointer_context(
+        &trust.installation.baseline,
+        &records.current,
+        &records.last_known_good,
+        records.previous_known_good.as_ref(),
+        &floor,
+    )?;
+    let mut selected = vec![records.current.clone(), records.last_known_good.clone()];
+    if let Some(previous) = &records.previous_known_good
+        && !selected.contains(previous)
+    {
+        selected.push(previous.clone());
+    }
+    validate_activation_version_census(&roots, &selected, None)?;
+    let mut current = None;
+    for artifact in &selected {
+        let completion = read_version_completion(&roots, artifact)?;
+        validate_package_policy(&roots, &completion.tree)?;
+        if *artifact == records.current {
+            current = Some((completion.version, completion.tree));
+        }
+    }
+    let (version, tree) =
+        current.ok_or_else(|| error("active package selection", "current was not admitted"))?;
+    drop(lease);
+    Ok(super::ActivePackageSelection {
+        identity: provenance.provenance.identity,
+        publisher_scope: provenance.publisher_scope,
+        tree_root: trust
+            .installation
+            .update_root
+            .join("versions")
+            .join(&records.current.version)
+            .join("tree"),
+        artifact: records.current,
+        _roots: roots,
+        _version: version,
+        _tree: tree,
+    })
+}
+
+/// Checks one immutable tree's signed no-migration policy (KEL-53 criterion 13): the
+/// exact `.keld/update-policy.v1` bytes owned by `keld-pack`. An absent, unprotected or
+/// changed policy refuses before launch.
+fn validate_package_policy(roots: &Roots, tree: &Dir) -> Result<(), UpdateError> {
+    let (directory, leaf) = keld_pack::UPDATE_POLICY_PATH
+        .split_once('/')
+        .ok_or_else(|| error("package policy", "policy path has no directory"))?;
+    let policy_directory = open_directory(tree, directory, roots.profile())?;
+    let file = open_machine_file(&policy_directory, leaf, roots.profile())
+        .map_err(|cause| error("package policy", cause))?;
+    let mut bytes = Vec::new();
+    file.take(keld_pack::NO_MIGRATION_POLICY.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|cause| error("package policy", cause))?;
+    if bytes != keld_pack::NO_MIGRATION_POLICY {
+        return Err(error(
+            "package policy",
+            "the tree's update policy differs from the signed no-migration policy",
+        ));
+    }
+    Ok(())
+}
+
 /// Loads mutable activation state under the per-user installation's exclusive writer lease.
 ///
 /// It validates protected provenance, floor, current/LKG/previous and every referenced

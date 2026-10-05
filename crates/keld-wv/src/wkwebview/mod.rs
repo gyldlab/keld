@@ -51,8 +51,6 @@ pub use macos_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererBr
 use macos_profile::MacMediaPromptProbe;
 use macos_profile::MacProfileOwner;
 
-const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
-
 /// One live webview and the host window it fills (v0: one per window).
 #[repr(C)]
 struct View {
@@ -335,7 +333,7 @@ impl WkWebViewEngine {
             .transpose()?;
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
-        let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
+        let navigation_deadline = Instant::now() + crate::INITIAL_NAVIGATION_DEADLINE;
         let startup_in_loop = Arc::clone(&self.startup);
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
         let fatal_in_loop = Arc::clone(&fatal_outcome);

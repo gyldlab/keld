@@ -33,7 +33,9 @@ pub(crate) const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
 
 pub(crate) const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
 
-pub(crate) const EVENT_DEADLINE: Duration = Duration::from_secs(15);
+/// Exceeds keld-wv's 15 s initial-navigation hang guard, like the Windows and Linux
+/// harness deadlines, so a slow but healthy start is never cut short here first.
+pub(crate) const EVENT_DEADLINE: Duration = Duration::from_secs(20);
 
 #[cfg(feature = "profile-test-hooks")]
 pub(crate) const MEDIA_PROMPT_DEADLINE: Duration = Duration::from_mins(2);

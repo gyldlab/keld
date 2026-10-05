@@ -20,7 +20,7 @@ const COORDINATOR: [u8; 32] = [0x5a; 32];
 const CRASH_HELPER: &str = "windows_baseline::tests::transaction::windows_activation_crash_helper";
 const CRASH_EXIT: i32 = 93;
 
-fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
+pub(super) fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
     crate::UpdateVerifier::new(
         trust.installation.clone(),
         crate::tests::signing_key().verifying_key().to_bytes(),
@@ -30,7 +30,7 @@ fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
 
 /// Extracts and completes `version`, then journals, publishes and selects it under one
 /// writer lease.
-fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActivationAttempt {
+pub(super) fn begin(trust: &WindowsBaselineTrust, version: &str) -> WindowsActivationAttempt {
     let (root, stage) = complete(trust, version);
     root.begin_activation(stage, COORDINATOR)
         .expect("journal, publish and select the completed candidate")
@@ -89,7 +89,7 @@ fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
     )
 }
 
-fn retirement(attempt: &WindowsActivationAttempt) -> ProcessFamilyRetirement {
+pub(super) fn retirement(attempt: &WindowsActivationAttempt) -> ProcessFamilyRetirement {
     ProcessFamilyRetirement::from_exact_zero_observation(
         *attempt.lifecycle_installation_id(),
         *attempt.attempt_id(),
@@ -97,7 +97,7 @@ fn retirement(attempt: &WindowsActivationAttempt) -> ProcessFamilyRetirement {
     )
 }
 
-fn commit(trust: &WindowsBaselineTrust, version: &str) {
+pub(super) fn commit(trust: &WindowsBaselineTrust, version: &str) {
     let attempt = begin(trust, version);
     let health = receipt(&attempt);
     let resolution = attempt
@@ -621,7 +621,7 @@ fn rewrite_completion(stage: &std::path::Path, identity: &crate::ArtifactIdentit
 }
 
 /// Crashes a child commit of 3.0.0 after its durable `publish-pending` journal.
-fn crash_after_publish_pending(fixture: &std::path::Path, trust: &WindowsBaselineTrust) {
+pub(super) fn crash_after_publish_pending(fixture: &std::path::Path, trust: &WindowsBaselineTrust) {
     let stdout = support::child(
         CRASH_HELPER,
         fixture,
