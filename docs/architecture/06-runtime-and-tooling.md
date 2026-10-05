@@ -1247,7 +1247,8 @@ package component, not a second updater. The trusted host passes only protected
 update-root/lock handles and its process wait handle; no endpoint is inherited. The
 helper waits for that exact host to exit, reads attempt/artifact/path identity from the
 protected journal, continues the attempt as a resumed owner that re-mints its channel
-identities, creates its own one-shot connect-back endpoint (KEL-53 criterion 10),
+identities, creates its own one-shot connect-back endpoint (KEL-53 "Candidate
+connect-back"),
 performs the journaled same-volume publish, launches only that journaled executable,
 observes exact health, commits or rolls back, and exits. It has no feed, network, manifest/package parser, shell, arbitrary-path
 or caller-provided command authority. The journal binds the helper image and

@@ -663,7 +663,8 @@ struct ActivationJournal {
     phase: ActivationPhase,
 }
 
-/// The process that creates the connect-back endpoint and launches the candidate.
+/// The process that creates the connect-back endpoint and launches the candidate (§4
+/// "Candidate connect-back").
 struct AttemptOwner {
     owner_process_id: u32,
     owner_creation_time: u64, // `GetProcessTimes` creation FILETIME; zero refuses launch
