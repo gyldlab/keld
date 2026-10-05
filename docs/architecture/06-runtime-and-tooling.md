@@ -1151,20 +1151,17 @@ as failure; it delays commit/LKG replacement, not initial candidate launch.
 
 The candidate inherits no endpoint and takes no authority from argv or environment.
 At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
-holding the running executable makes it a claimant: it derives the owner's one-shot
-endpoint with KEL-53's single locator function of the provenance-derived installation
-ID and the journaled attempt and health-channel IDs (the same function the owner listens
-with; the keeper
-rendezvous is never a health endpoint), authenticates the owner
-against the journaled coordinator or helper identity, and presents itself. The owner
-binds installation, attempt and channel IDs, fresh nonces, the exact process object and
-PID it launched, image, TokenUser, `AuthenticationId`, session, integrity and elevation.
-Only that acceptance selects authenticated candidate-boot mode before ordinary updater
-startup. Candidate mode verifies the exact attempt/current/artifact, does not acquire
-the writer lock or invoke orphan recovery, starts the application and reports
-boot/Ready/health over that connection. It cannot write the journal or commit itself. A
-refused, replayed, substituted or mismatched claim fails before app code, and any other
-process started from the candidate while the owner lives receives no selection. The candidate runs under the initiating ordinary user's token/session in every
+holding the running executable makes it a claimant: it connects back to the one-shot
+endpoint of the component that launched it, and that owner accepts only the exact
+process it launched and still retains, bound by kernel object identity, creation time
+and the initiating token facts. KEL-53 §4 "Candidate connect-back" owns the endpoint,
+claim and acceptance rules. Only that acceptance selects authenticated candidate-boot
+mode before ordinary updater startup. Candidate mode verifies the exact
+attempt/current/artifact, does not acquire the writer lock or invoke orphan recovery,
+starts the application and reports boot/Ready/health over that connection. It cannot
+write the journal or commit itself. A refused claim consumes nothing, and the refused
+process, including any other process started from the candidate tree while the owner
+lives, receives no selection. The candidate runs under the initiating ordinary user's token/session in every
 direct mode; an elevated helper or SYSTEM coordinator must not run the application or a
 Bun role with its own token. UAC approval authority and the initiating-user candidate
 identity are separate facts, including over-the-shoulder consent. With no live owner,

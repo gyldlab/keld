@@ -390,20 +390,14 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    remained alive for 30 monotonic seconds with no unexpected generation exit. A generic
    marker, prior receipt, different artifact, clean early exit, timeout, crash or lost
    channel cannot commit health.
-   Candidate boot takes its installation, attempt and health-channel identity from the
-   authenticated candidate selection over protected attempt state, never from an
-   authoritative argv or environment value, and connects back to the attempt owner over
-   an authenticated one-shot endpoint whose name or locator conveys no authority. Owner
-   and candidate derive that locator with one KEL-53 function of the provenance-derived
-   installation ID and the journaled attempt and health-channel IDs; there is no second
-   lookup path,
-   and the keeper's rendezvous locator is never a health endpoint. Before
-   accepting health the owner binds installation ID, attempt ID, health/lifecycle channel
-   ID, fresh nonces, the connected process object and PID, candidate image, TokenUser,
-   `AuthenticationId`, session, and the expected non-elevated integrity and elevation
-   state. The candidate enters read-only candidate mode: it verifies journal/current
-   identity, does not acquire the writer lock or run orphan recovery, and cannot
-   self-commit health.
+   Candidate boot takes its identity only from protected attempt state, never from argv
+   or environment, and is admitted only when the live attempt owner accepts, over its
+   one-shot connect-back endpoint, the exact process that it launched and still
+   retains; §4 "Candidate connect-back" is the single owner of the endpoint, claim and
+   acceptance rules. Only an accepted claim consumes the endpoint's one-shot; a refused
+   claimant receives no selection. The accepted candidate enters read-only candidate
+   mode: it verifies journal/current identity, does not acquire the writer lock or run
+   orphan recovery, and cannot self-commit health.
 9. The previous last-known-good pointer and package remain unchanged until exact health
    is durably recorded. The owner then journals `health-accepted`, moves the prior
    last-known-good to `previous-known-good`, publishes `last-known-good` to
@@ -1049,19 +1043,53 @@ retirement only after floor, both known-good slots,
 coordinator/helper identity, optional health identity and current exactly match its
 recorded context. Corrupt or mixed state halts without deleting evidence.
 
-The launched candidate inherits no attempt endpoint and takes no authority from argv or
-environment (criterion 8). At startup, a pending `AwaitingHealth` journal whose
-candidate is the exact version tree holding the running executable makes the process a
-candidate claimant: it derives the attempt owner's one-shot endpoint with criterion 8's
-single locator function, authenticates that owner against the journaled
-coordinator or helper identity before sending anything, and presents itself. Only the
-owner's acceptance of the exact process it launched, bound as criterion 8 lists, selects
-candidate boot mode before ordinary updater startup: validate exact
-attempt/current/artifact, skip the writer lock and orphan recovery, start the app, and
-report boot/Ready/health to the owner. A refused, replayed, substituted or mismatched
-claim fails before app code, and any other process started from the candidate while the
-owner lives receives no selection. With no live owner, startup follows the recovery path
-above.
+**Candidate connect-back (criterion 8; every direct mode).** The launched candidate
+inherits no attempt endpoint and takes no authority from argv or environment. The
+component that launches the candidate is the attempt owner: the `PerUserDirect` host
+coordinator, the Machine-UAC `keld-updater-helper.exe`, or a criterion-10 post-exit
+helper. It listens on a one-shot endpoint whose name one KEL-53 locator function
+derives from the provenance-derived installation ID and the journaled attempt and
+health-channel IDs; the owner and every claimant use that function and no second lookup
+path. The name conveys no authority, and the keeper's rendezvous locator is never a
+health endpoint.
+
+At startup, a pending `AwaitingHealth` journal whose candidate is the exact version tree
+holding the running executable makes the process a candidate claimant. It derives the
+owner's endpoint name, authenticates that owner against the journaled coordinator or
+helper identity before sending anything, and presents a fixed-size claim.
+
+The owner accepts a claimant only when the connected peer is the one process it
+launched and still retains. Before it reads more than the fixed-size claim, it takes the
+peer's process ID from `GetNamedPipeClientProcessId`, opens that process and requires
+three facts. First, `CompareObjectHandles` reports that the opened handle and the
+retained launch handle refer to the same kernel object
+([CompareObjectHandles](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-compareobjecthandles),
+`ms.date` 2018-12-05); a process ID by itself identifies a process only until that
+process terminates
+([Process Handles and Identifiers](https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers),
+`ms.date` 2025-07-14). Second, the retained launch handle is still unsignaled. Third, its
+process ID and creation time (`GetProcessTimes`) equal those the owner recorded at
+launch. The owner then impersonates the claim's writer only to query its token, and
+requires the initiating TokenUser, the initiating `AuthenticationId` (`TokenStatistics`),
+the initiating session, Medium integrity and a non-elevated token. It reverts before
+anything else, and a failed `RevertToSelf` terminates the owner. The claim and a
+challenge and acknowledgement over fresh client and server nonces bind the installation,
+attempt and health-channel IDs and both process IDs.
+
+Any mismatch refuses that claimant. The owner disconnects it with `DisconnectNamedPipe`
+and re-arms the same pipe instance for the next client, which is the landed `keld-ipc`
+`disconnect_for_retry` behavior; the instance's one-shot is consumed only by the
+claimant the owner accepts. Refusals never extend the health deadline, so a process that
+keeps connecting can at most cause a health timeout and the ordinary rollback. Any other
+process started from the candidate tree while the owner lives, such as a second instance
+or a copy of the candidate image that a hostile role starts, is refused this way and
+receives no selection.
+
+Only the owner's acceptance selects candidate boot mode before ordinary updater startup.
+The accepted candidate validates the exact attempt/current/artifact under criterion 20's
+reader exception, skips the writer lock and orphan recovery, starts the app, and reports
+boot/Ready/health to the owner. It cannot write the journal or commit itself. With no
+live owner, startup follows the recovery path above.
 
 ### Trust, package and channel ownership
 
@@ -1502,6 +1530,7 @@ Must not touch in Slice A:
 | 5, 13 | independent canonical Windows tar/policy goldens; producer-to-verifier size/hash agreement; missing/duplicate/changed policy refusal; link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases and ancestor collisions reject before output; T3b separately tests extraction-order and filesystem reparse/rename substitution |
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
+| 8 (claimant binding) | only the exact launched and retained process is accepted; a second instance started from the candidate tree that connects first, and a copy of the candidate image that a hostile role starts during `AwaitingHealth`, are each refused by `CompareObjectHandles`, disconnected and given no selection, after which the same pipe instance accepts the real candidate; a peer whose process ID equals the launched one but whose process object differs, a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, session, integrity or elevation each refuse; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner |
 | 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
 | 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
 | 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
