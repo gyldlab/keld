@@ -7369,149 +7369,191 @@ mod tests {
         use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
         use sha2::{Digest as _, Sha256};
 
-        let temp = tempfile::tempdir().expect("FS worker gate root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("FS worker allowed root");
-        let target = allowed.join("held.txt");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text =
-            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write FS worker manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open FS worker manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify FS worker manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare FS worker broker");
+        for (case, denied) in [("allowed", false), ("denied", true)] {
+            let temp = tempfile::tempdir().expect("FS worker gate root");
+            let allowed = temp.path().join("allowed");
+            fs::create_dir(&allowed).expect("FS worker allowed root");
+            let target = if denied {
+                temp.path().join("denied-held.txt")
+            } else {
+                allowed.join("held.txt")
+            };
+            let scope = allowed.display().to_string().replace('\\', "/");
+            let manifest_text =
+                format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
+            let manifest_path = temp.path().join(PERMISSIONS_FILE);
+            fs::write(&manifest_path, &manifest_text).expect("write FS worker manifest");
+            let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+            let verified = load_verified_manifest(
+                File::open(&manifest_path).expect("open FS worker manifest"),
+                manifest_path,
+                digest,
+            )
+            .expect("verify FS worker manifest");
+            let snapshot = GuardSnapshot::prepare(verified).expect("prepare FS worker broker");
 
-        let (taken_tx, taken_rx) = mpsc::sync_channel(1);
-        let (release_tx, release_rx) = mpsc::channel();
-        let gate = Arc::new(FsWorkerTestGate {
-            taken: taken_tx,
-            release: Mutex::new(release_rx),
-        });
-        let (server, mut client) = UnixStream::pair().expect("FS worker primary pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("FS worker client deadlines");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let router = PrimaryRouter::start_with_fs_test_gate(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-            Some(snapshot.fs_weak()),
-            Some(gate),
-        )
-        .expect("gated FS worker router");
+            let (taken_tx, taken_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::channel();
+            let gate = Arc::new(FsWorkerTestGate {
+                taken: taken_tx,
+                release: Mutex::new(release_rx),
+            });
+            let (server, mut client) = UnixStream::pair().expect("FS worker primary pair");
+            client
+                .set_app_link_deadlines(Some(Duration::from_secs(5)))
+                .expect("FS worker client deadlines");
+            let (window_tx, window_rx) = mpsc::channel();
+            let (guardian_tx, guardian_rx) = mpsc::channel();
+            let router = PrimaryRouter::start_with_fs_test_gate(
+                server,
+                window_tx,
+                PlatformPrimaryOwnerHandle {
+                    command_tx: guardian_tx,
+                },
+                SessionShutdownState::new(),
+                Some(snapshot.fs_weak()),
+                Some(gate),
+            )
+            .expect("gated FS worker router");
 
-        let committed = b"committed before quit".to_vec();
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(60),
-            &encode(&FsRequest::Write {
-                path: target.display().to_string().replace('\\', "/"),
-                bytes: committed.clone(),
-            })
-            .expect("encode gated FS write"),
-        )
-        .expect("send gated FS write");
-        taken_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker took FS job");
-
-        write_frame(
-            &mut client,
-            FrameKind::Ping,
-            0,
-            keld_ipc::ChannelId(99),
-            CorrelationId(61),
-            &[],
-        )
-        .expect("send Ping while FS worker is held");
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            LIFECYCLE_CHANNEL,
-            CorrelationId(62),
-            &encode(&LifecycleRequest::Quit).expect("encode held-worker Quit"),
-        )
-        .expect("send Quit while FS worker is held");
-
-        let (ping, ping_payload) = read_frame(&mut client).expect("Ping while FS worker is held");
-        assert_eq!(ping.kind, FrameKind::Ping);
-        assert_eq!(ping.channel, keld_ipc::ChannelId(99));
-        assert_eq!(ping.corr, CorrelationId(61));
-        assert!(ping_payload.is_empty());
-        assert!(
-            matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "UI Quit occurred while admitted FS work was still held"
-        );
-
-        release_tx.send(()).expect("release FS worker");
-
-        let prepare = guardian_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit preparation after FS terminal write");
-        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare_reply) = prepare else {
-            panic!("FS worker Quit skipped shutdown attribution");
-        };
-        prepare_reply
-            .send(Ok(()))
-            .expect("acknowledge FS worker shutdown attribution");
-
-        let (fs_terminal, fs_payload) =
-            read_frame(&mut client).expect("FS terminal outcome before Quit reply");
-        assert_eq!(fs_terminal.kind, FrameKind::Reply);
-        assert_eq!(fs_terminal.channel, FS_CHANNEL);
-        assert_eq!(fs_terminal.corr, CorrelationId(60));
-        assert!(matches!(
-            decode::<FsResponse>(&fs_payload).expect("decode FS terminal outcome"),
-            FsResponse::Write
-        ));
-        assert_eq!(
-            fs::read(&target).expect("read committed FS bytes"),
-            committed,
-            "write effect and terminal FS outcome diverged"
-        );
-
-        let (quit, quit_payload) = read_frame(&mut client).expect("Quit reply after FS terminal");
-        assert_eq!(quit.kind, FrameKind::Reply);
-        assert_eq!(quit.channel, LIFECYCLE_CHANNEL);
-        assert_eq!(quit.corr, CorrelationId(62));
-        assert_eq!(
-            decode::<LifecycleResponse>(&quit_payload).expect("decode held-worker Quit reply"),
-            LifecycleResponse::Quit
-        );
-
-        let shutdown = guardian_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("FS worker guardian shutdown after drain");
-        let TestPrimaryOwnerCommand::Shutdown(shutdown_reply) = shutdown else {
-            panic!("FS worker Quit sent unexpected guardian command");
-        };
-        shutdown_reply
-            .send(Ok(()))
-            .expect("complete FS worker guardian shutdown");
-        assert_eq!(
-            window_rx
+            let committed = format!("{case} committed before quit").into_bytes();
+            let base = if denied { 70 } else { 60 };
+            write_frame(
+                &mut client,
+                FrameKind::Call,
+                0,
+                FS_CHANNEL,
+                CorrelationId(base),
+                &encode(&FsRequest::Write {
+                    path: target.display().to_string().replace('\\', "/"),
+                    bytes: committed.clone(),
+                })
+                .expect("encode gated FS write"),
+            )
+            .expect("send gated FS write");
+            taken_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit after FS terminal outcome"),
-            AppWindowCommand::Quit
-        );
-        router
-            .shutdown()
-            .expect("completed FS worker router shutdown");
+                .expect("worker took FS job");
+
+            write_frame(
+                &mut client,
+                FrameKind::Ping,
+                0,
+                keld_ipc::ChannelId(99),
+                CorrelationId(base + 1),
+                &[],
+            )
+            .expect("send Ping while FS worker is held");
+            let (quit_drain_tx, quit_drain_rx) = mpsc::sync_channel(1);
+            snapshot.fs.observe_next_drain_wait(quit_drain_tx);
+            write_frame(
+                &mut client,
+                FrameKind::Call,
+                0,
+                LIFECYCLE_CHANNEL,
+                CorrelationId(base + 2),
+                &encode(&LifecycleRequest::Quit).expect("encode held-worker Quit"),
+            )
+            .expect("send Quit while FS worker is held");
+
+            let (ping, ping_payload) =
+                read_frame(&mut client).expect("Ping while FS worker is held");
+            assert_eq!(ping.kind, FrameKind::Ping, "{case}");
+            assert_eq!(ping.channel, keld_ipc::ChannelId(99), "{case}");
+            assert_eq!(ping.corr, CorrelationId(base + 1), "{case}");
+            assert!(ping_payload.is_empty(), "{case}");
+            assert!(
+                matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                "{case}: UI Quit occurred while admitted FS work was still held"
+            );
+
+            quit_drain_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap_or_else(|error| {
+                    panic!("{case}: Quit did not reach FS drain before worker release: {error}")
+                });
+            assert!(
+                router.handle.shutdown.is_running(),
+                "{case}: Quit claimed shutdown before the admitted FS terminal outcome"
+            );
+            assert!(
+                matches!(guardian_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                "{case}: shutdown attribution began before the admitted FS terminal outcome"
+            );
+            assert!(
+                !target.exists(),
+                "{case}: held native operation changed the target before worker release"
+            );
+
+            release_tx.send(()).expect("release FS worker");
+
+            let prepare = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Quit preparation after FS terminal write");
+            let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare_reply) = prepare else {
+                panic!("{case}: FS worker Quit skipped shutdown attribution");
+            };
+            prepare_reply
+                .send(Ok(()))
+                .expect("acknowledge FS worker shutdown attribution");
+
+            let (fs_terminal, fs_payload) =
+                read_frame(&mut client).expect("FS terminal outcome before Quit reply");
+            assert_eq!(fs_terminal.channel, FS_CHANNEL, "{case}");
+            assert_eq!(fs_terminal.corr, CorrelationId(base), "{case}");
+            if denied {
+                assert_eq!(fs_terminal.kind, FrameKind::Err, "{case}");
+                let error: CallError =
+                    decode(&fs_payload).expect("decode denied FS terminal outcome");
+                assert_eq!(error.code, "KELD-GUARD002", "{case}");
+                assert!(
+                    !target.exists(),
+                    "{case}: denied write produced a filesystem effect"
+                );
+            } else {
+                assert_eq!(fs_terminal.kind, FrameKind::Reply, "{case}");
+                assert!(matches!(
+                    decode::<FsResponse>(&fs_payload).expect("decode FS terminal outcome"),
+                    FsResponse::Write
+                ));
+                assert_eq!(
+                    fs::read(&target).expect("read committed FS bytes"),
+                    committed,
+                    "{case}: write effect and terminal FS outcome diverged"
+                );
+            }
+
+            let (quit, quit_payload) =
+                read_frame(&mut client).expect("Quit reply after FS terminal");
+            assert_eq!(quit.kind, FrameKind::Reply, "{case}");
+            assert_eq!(quit.channel, LIFECYCLE_CHANNEL, "{case}");
+            assert_eq!(quit.corr, CorrelationId(base + 2), "{case}");
+            assert_eq!(
+                decode::<LifecycleResponse>(&quit_payload).expect("decode held-worker Quit reply"),
+                LifecycleResponse::Quit,
+                "{case}"
+            );
+
+            let shutdown = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("FS worker guardian shutdown after drain");
+            let TestPrimaryOwnerCommand::Shutdown(shutdown_reply) = shutdown else {
+                panic!("{case}: FS worker Quit sent unexpected guardian command");
+            };
+            shutdown_reply
+                .send(Ok(()))
+                .expect("complete FS worker guardian shutdown");
+            assert_eq!(
+                window_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("UI Quit after FS terminal outcome"),
+                AppWindowCommand::Quit,
+                "{case}"
+            );
+            router
+                .shutdown()
+                .expect("completed FS worker router shutdown");
+        }
     }
 
     #[test]
