@@ -658,11 +658,21 @@ fn a_stage_recording_a_different_candidate_refuses_before_the_journal() {
             .join(stage.name()),
         &other,
     );
-    assert_refusal(
-        root.begin_activation(stage, COORDINATOR),
-        "start",
-        ActivationEffect::ProtectedStateUnchanged,
-    );
+    match root.begin_activation(stage, COORDINATOR) {
+        Err(UpdateError::Activation {
+            step,
+            effect,
+            detail,
+        }) => {
+            assert_eq!(step, "start");
+            assert_eq!(effect, ActivationEffect::ProtectedStateUnchanged);
+            assert!(
+                detail.contains("records a different candidate"),
+                "the identity preflight refused: {detail}"
+            );
+        }
+        other => panic!("a stage recording another artifact must refuse: {other:?}"),
+    }
     let refused = observe(&trust);
     assert_eq!(refused.journal, None);
     assert_eq!(
@@ -728,6 +738,119 @@ fn recovery_publishes_one_of_two_exact_stages_and_removes_the_other() {
         incomplete_stages(&trust).is_empty(),
         "the unused exact stage is a completed leftover"
     );
+}
+
+#[test]
+fn a_resolution_never_touches_a_live_extraction_by_a_root_without_the_lease() {
+    let fixture = tempfile::tempdir().expect("live unleased extraction fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let verifier = verifier(&trust);
+    let observation = crate::ProvenanceObservation::Protected {
+        record: crate::InstallProvenance {
+            identity: trust.installation.clone(),
+            owner: crate::InstallOwner::Direct,
+        },
+        version_floor: Some("2.0.0".to_owned()),
+    };
+    let candidate = higher_release_version(&verifier, &observation, "4.0.0");
+    let source = fixture.path().join("unleased-4.0.0.tar");
+    std::fs::write(&source, GOLDEN).expect("write verified candidate source");
+    let mut unleased = verifier
+        .admit(&observation)
+        .expect("admit real provenance")
+        .open_windows_extraction_root()
+        .expect("owner-private staging needs no writer lease");
+    let live = unleased
+        .extract(&candidate, &source)
+        .expect("extract while holding the stage handles");
+    let live_stage = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(live.name());
+
+    // The leased writer resolves an attempt while the unleased stage is still open.
+    commit(&trust, "3.0.0");
+    assert!(live_stage.is_dir(), "the live stage is never deleted");
+    assert_eq!(incomplete_stages(&trust), vec![live_stage.clone()]);
+    drop(live);
+    drop(unleased);
+    assert!(
+        live_stage.is_dir(),
+        "a stage without a completion record stays for diagnosis"
+    );
+}
+
+const TAMPER_HELPER: &str = "windows_baseline::tests::transaction::windows_versions_tamper_helper";
+
+#[test]
+fn a_changed_versions_descriptor_refuses_the_candidate_rename_and_keeps_the_journal() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("versions descriptor fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let stdout = support::child(
+        TAMPER_HELPER,
+        fixture.path(),
+        "tamper",
+        "publish-pending",
+        0,
+    );
+    assert!(stdout.contains("KELD_VERSIONS_TAMPERED"), "{stdout}");
+    assert!(
+        stdout.contains("KELD_TAMPER_REFUSAL=versions profile|JournalBoundRecoveryRequired"),
+        "the rename re-checks the parent descriptor under the journal: {stdout}"
+    );
+    let after = observe(&trust);
+    assert_eq!(
+        after.journal.as_ref().map(|journal| &journal.phase),
+        Some(&ActivationPhase::PublishPending),
+        "the journal stays authoritative"
+    );
+    assert!(!after.versions.contains("3.0.0"), "{after:?}");
+    assert!(after.versions.contains("incomplete-*"), "{after:?}");
+}
+
+/// Adds a readable ACE to `versions` once the `publish-pending` journal is durable, so
+/// the parent no longer has its exact descriptor when the candidate rename runs.
+fn tamper_versions_after_publish_pending(durable: bool, label: &'static str) {
+    if !(durable && label == "publish-pending") {
+        return;
+    }
+    let root = std::path::PathBuf::from(std::env::var_os(ROOT_ENV).expect("fixture root"));
+    let versions = support::trust_for(&root.join("KeldPerUserFixture"))
+        .installation
+        .update_root
+        .join("versions");
+    let status = std::process::Command::new("icacls")
+        .arg(&versions)
+        .args(["/grant", "*S-1-1-0:(R)"])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("run icacls");
+    assert!(status.success(), "icacls changed the versions descriptor");
+    println!("KELD_VERSIONS_TAMPERED");
+}
+
+#[test]
+#[ignore = "private versions-descriptor tamper subprocess entry point"]
+fn windows_versions_tamper_helper() {
+    support::assert_user_principal_token();
+    let root = std::path::PathBuf::from(std::env::var_os(ROOT_ENV).expect("fixture root"));
+    let mut trust = support::trust_for(&root.join("KeldPerUserFixture"));
+    trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
+    crate::windows_baseline::CRASH_CUT_HOOK
+        .set(tamper_versions_after_publish_pending)
+        .expect("install the tamper hook once");
+    let (stage_root, stage) = complete(&trust, "3.0.0");
+    match stage_root.begin_activation(stage, COORDINATOR) {
+        Err(UpdateError::Activation { step, effect, .. }) => {
+            println!("KELD_TAMPER_REFUSAL={step}|{effect:?}");
+        }
+        Err(other) => println!("KELD_TAMPER_OTHER={other}"),
+        Ok(_) => println!("KELD_TAMPER_ACCEPTED"),
+    }
 }
 
 #[test]

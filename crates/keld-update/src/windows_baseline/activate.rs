@@ -96,8 +96,8 @@ pub enum WindowsActivationOutcome {
     Committed,
     /// The attempt failed; `current` is the journaled rollback target and the floor stays.
     RolledBack,
-    /// The attempt never selected its candidate because neither its stage nor its
-    /// version was present. Floor, pointers and known-good slots are unchanged. A
+    /// The attempt never selected its candidate because no stage recording the exact
+    /// candidate and no published candidate version was present. Floor, pointers and known-good slots are unchanged. A
     /// published candidate that fails verification is also abandoned, but is reported
     /// as an [`UpdateError::Activation`] refusal at step `candidate verification`.
     Abandoned,
@@ -1013,7 +1013,9 @@ fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
 /// Deletes generated `retired-*` trees and stale completed `incomplete-*` stages.
 ///
 /// Only the writer-lease holder retires a version or completes a stage, and the caller
-/// holds that lease, so neither can belong to a live operation. A completed stage left
+/// holds that lease, so neither can belong to a live operation. (The initializer also
+/// completes a stage, but only in an empty `versions` before provenance exists, when no
+/// activation writer can run.) A completed stage left
 /// by a refused start, a crash before its journal or an abandoned attempt is never
 /// referenced again. A stage without a completion record may be a live extraction by an
 /// owner-private root that holds no lease, or a failed one that its caller must preserve
