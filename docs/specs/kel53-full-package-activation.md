@@ -77,9 +77,11 @@ pending. It optimizes for least privilege and the smallest privileged surface:
 2. A dedicated minimal signed `keld-updater-helper.exe` is the elevated component; the
    application host is never elevated (criterion 17).
 3. Reboot or loss of every owner during `AwaitingHealth` fails closed into a typed
-   recovery-required state with a supported recovery path (criterion 17).
-4. Candidate health uses an authenticated one-shot connect-back endpoint; the candidate
-   takes its attempt identity from protected state, not argv or environment (criterion 8).
+   recovery-required state with a supported helper recovery path that needs no ordinary
+   host boot (criterion 17).
+4. Candidate health in every direct mode uses an authenticated one-shot connect-back
+   endpoint, replacing the inherited candidate endpoint; the candidate takes its attempt
+   identity from protected state, not argv or environment (criterion 8).
 5. Any keeper is minimal and attempt-scoped; the helper itself prefers to own the attempt.
 6. The privilege-crossing bootstrap and health path uses its own versioned subprotocol,
    reusing only low-level framing, nonce, deadline and peer-verification utilities.
@@ -489,8 +491,19 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     durable retirement or health witness exists, nothing is inferred: health and
     process-family retirement are not assumed, nothing is committed or rolled back, and
     journal and pointers are preserved. The next launch returns a typed
-    recovery-required state, and a supported recovery path (fresh UAC consent plus full
-    revalidation, bounded in its own task) resolves it without manual filesystem work.
+    recovery-required state before admission or app code. Its supported recovery path
+    needs no active selection or ordinary host boot: the typed error's fix guidance
+    names it, the host's pre-admission failure path offers it, and an administrator can
+    start it directly. It is the installed `keld-updater-helper.exe` in a recovery-only
+    role behind a fresh UAC prompt, and it refuses unless its own image is the journaled
+    helper image inside a protected version tree that the journal names. It reloads the
+    protected provenance of that installation, takes the exclusive writer lease,
+    rereads and fully revalidates provenance, floor, records, journal and both version
+    trees, and resolves only through the KEL-53 phase rules, including their
+    process-family proof. It accepts no candidate, source, path or feed input and
+    launches no application. A declined prompt, failed revalidation or unproven process
+    family writes nothing and leaves the typed state in place; no manual filesystem work
+    is required.
     The helper's bootstrap and health exchange use a separate versioned subprotocol with
     its own magic, namespace and message types; it reuses only the low-level framing,
     nonce, deadline and peer-process verification utilities, and the lifecycle purpose
@@ -760,7 +773,7 @@ the active attempt and health window. The authenticated candidate-boot path is t
 reader exception: while the coordinator keeps journal/current stable, it reads the exact
 attempt and current briefly, closes mutable-record handles and acknowledges bootstrap
 completion before app execution/health can permit record replacement. It retains only
-immutable selected-version/tree pins and its attempt endpoint during the health window.
+immutable selected-version/tree pins and its owner connection during the health window.
 Normal host selection closes mutable journal/pointer/floor pins after snapshot and keeps
 only the selected immutable artifact pins. Lock presence never decides whether the
 previous coordinator/candidate family is live; recovery still requires the independent
@@ -927,12 +940,19 @@ retirement only after floor, both known-good slots,
 coordinator/helper identity, optional health identity and current exactly match its
 recorded context. Corrupt or mixed state halts without deleting evidence.
 
-The launched candidate receives the client end of the live attempt channel through the
-platform's protected inherited-handle mechanism. That endpoint selects candidate boot
-mode before ordinary updater startup: validate exact attempt/current/artifact, skip the
-writer lock and orphan recovery, start the app, and report boot/Ready/health to the
-coordinator. Missing, replayed or mismatched bootstrap fails before app code. Normal
-startup has no such endpoint and follows the recovery path above.
+The launched candidate inherits no attempt endpoint and takes no authority from argv or
+environment (criterion 8). At startup, a pending `AwaitingHealth` journal whose
+candidate is the exact version tree holding the running executable makes the process a
+candidate claimant: it locates the attempt owner's one-shot endpoint from the journaled
+attempt and channel identities, authenticates that owner against the journaled
+coordinator or helper identity before sending anything, and presents itself. Only the
+owner's acceptance of the exact process it launched, bound as criterion 8 lists, selects
+candidate boot mode before ordinary updater startup: validate exact
+attempt/current/artifact, skip the writer lock and orphan recovery, start the app, and
+report boot/Ready/health to the owner. A refused, replayed, substituted or mismatched
+claim fails before app code, and any other process started from the candidate while the
+owner lives receives no selection. With no live owner, startup follows the recovery path
+above.
 
 ### Trust, package and channel ownership
 
@@ -1318,7 +1338,9 @@ Must not touch in Slice A:
   ancestor/state DACLs and canonical descriptors on published records; filtered-token
   denial-zero-write; authenticated helper bootstrap, exact candidate revalidation,
   initiating-user candidate launch and live-owner health/rollback;
-  after owner death/reboot recovery returns the typed recovery-required state.
+  after owner death/reboot recovery returns the typed recovery-required state, and the
+  helper's recovery-only role resolves it from a fresh UAC prompt without ordinary host
+  boot, writing nothing when revalidation or the process-family proof fails.
   Before implementation, each new production `unsafe` path gets its owner's exact
   AGENTS.md rule; FFI wrappers stay minimal beneath safe typed wrappers with owned
   handles and minimum access rights; no raw handle crosses a normal public API; every
