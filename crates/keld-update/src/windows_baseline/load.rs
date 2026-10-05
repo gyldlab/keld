@@ -87,9 +87,15 @@ pub fn load_windows_baseline(
 /// retained archive length) plus its signed no-migration package policy, whose exact
 /// bytes `keld-pack` owns. Content is not rehashed at startup: `contentBlake3` was verified
 /// before publication into the protected, immutable tree, and the boot-file and access
-/// checks belong to KEL-254 and KEL-96. Nothing is written: the lease and every record
-/// handle close before return; the selected version, its tree and the protected ancestry
-/// stay open.
+/// checks belong to KEL-254 and KEL-96. The lease and every record handle close before
+/// return; the selected version, its tree and the protected ancestry stay open.
+///
+/// The only write is the startup repair of an invalid `current`: when the `current`
+/// record is absent or does not decode, and last-known-good is valid, a `PerUserDirect`
+/// installation takes the exclusive writer lease, re-validates everything, durably
+/// republishes last-known-good as `current`, reads it back, and selects once more. A
+/// `current` that decodes is never rewritten: one that is not a known-good artifact
+/// refuses with its evidence intact.
 ///
 /// # Errors
 /// A pending activation journal refuses with
@@ -100,39 +106,81 @@ pub fn load_windows_baseline(
 /// Managed ownership, a missing or damaged lease, unknown or malformed state, provenance
 /// or pointer relationships that do not hold, an absent or changed package policy, and any
 /// unreferenced, missing or substituted version each refuse. The selection never guesses
-/// the newest directory or substitutes the installed baseline.
+/// the newest directory or substitutes the installed baseline. An invalid `current` in a
+/// machine installation refuses: only its elevated writer may republish last-known-good.
 pub fn select_windows_active_package(
     trust: &WindowsBaselineTrust,
 ) -> Result<super::ActivePackageSelection, UpdateError> {
+    match select_committed_package(trust)? {
+        CommittedSelection::Selected(selection) => Ok(*selection),
+        CommittedSelection::CurrentInvalid(cause) => {
+            repair_invalid_current(trust, &cause)?;
+            // One reselection after a durable repair; a second failure is returned as is.
+            match select_committed_package(trust)? {
+                CommittedSelection::Selected(selection) => Ok(*selection),
+                CommittedSelection::CurrentInvalid(cause) => Err(cause),
+            }
+        }
+    }
+}
+
+/// Outcome of one shared-lease selection snapshot.
+enum CommittedSelection {
+    Selected(Box<super::ActivePackageSelection>),
+    /// The `current` record is absent or does not decode; this is why.
+    CurrentInvalid(UpdateError),
+}
+
+/// Maps a failure to open the activation lease, typing a sharing conflict.
+fn lease_error(step: &'static str, cause: &std::io::Error) -> UpdateError {
+    if cause.raw_os_error()
+        == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION.cast_signed())
+    {
+        UpdateError::activation(
+            "active package selection",
+            crate::ActivationEffect::WriterActive,
+            "a conflicting handle, normally the exclusive writer lease, holds activation.lock",
+        )
+    } else {
+        error(step, cause)
+    }
+}
+
+fn pending_journal_refusal(journal: &records::ActivationJournal) -> UpdateError {
+    UpdateError::activation(
+        "active package selection",
+        crate::ActivationEffect::JournalBoundRecoveryRequired,
+        format!(
+            "a pending {:?} activation journal selects nothing until journal-bound recovery resolves it",
+            journal.phase
+        ),
+    )
+}
+
+fn select_committed_package(
+    trust: &WindowsBaselineTrust,
+) -> Result<CommittedSelection, UpdateError> {
     trust.require_direct_owner()?;
     let roots =
         open_roots(trust, false).map_err(|cause| error("selection root admission", cause))?;
-    let lease =
-        super::open_activation_lease(&roots.update, roots.profile(), false).map_err(|cause| {
-            if cause.raw_os_error()
-                == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION.cast_signed())
-            {
-                UpdateError::activation(
-                    "active package selection",
-                    crate::ActivationEffect::WriterActive,
-                    "a conflicting handle, normally the exclusive writer lease, holds activation.lock",
-                )
-            } else {
-                error("active selection lease", cause)
-            }
-        })?;
+    let lease = super::open_activation_lease(&roots.update, roots.profile(), false)
+        .map_err(|cause| lease_error("active selection lease", &cause))?;
     let provenance = read_writer_provenance(trust, &roots)?;
-    let records = read_writer_records(&roots, true)?;
-    if let Some(journal) = records.journal {
-        return Err(UpdateError::activation(
-            "active package selection",
-            crate::ActivationEffect::JournalBoundRecoveryRequired,
-            format!(
-                "a pending {:?} activation journal selects nothing until journal-bound recovery resolves it",
-                journal.phase
-            ),
-        ));
+    let records = read_records(&roots, true)?;
+    if let Some(journal) = &records.journal {
+        return Err(pending_journal_refusal(journal));
     }
+    let current = match records.current {
+        Ok(current) => current,
+        Err(cause) => return Ok(CommittedSelection::CurrentInvalid(cause)),
+    };
+    let records = WriterRecords {
+        version_floor: records.version_floor,
+        current,
+        last_known_good: records.last_known_good,
+        previous_known_good: records.previous_known_good,
+        journal: None,
+    };
     let floor = semver::Version::parse(&records.version_floor)
         .map_err(|cause| error("version floor", cause))?;
     validate_writer_pointer_context(
@@ -160,20 +208,90 @@ pub fn select_windows_active_package(
     let (version, tree) =
         current.ok_or_else(|| error("active package selection", "current was not admitted"))?;
     drop(lease);
-    Ok(super::ActivePackageSelection {
-        identity: provenance.provenance.identity,
-        publisher_scope: provenance.publisher_scope,
-        tree_root: trust
-            .installation
-            .update_root
-            .join("versions")
-            .join(&records.current.version)
-            .join("tree"),
-        artifact: records.current,
-        _roots: roots,
-        _version: version,
-        _tree: tree,
-    })
+    Ok(CommittedSelection::Selected(Box::new(
+        super::ActivePackageSelection {
+            identity: provenance.provenance.identity,
+            publisher_scope: provenance.publisher_scope,
+            tree_root: trust
+                .installation
+                .update_root
+                .join("versions")
+                .join(&records.current.version)
+                .join("tree"),
+            artifact: records.current,
+            _roots: roots,
+            _version: version,
+            _tree: tree,
+        },
+    )))
+}
+
+/// Durably republishes last-known-good as `current` when `current` is invalid (KEL-53
+/// "startup without a journal"; KEL-254 AC4).
+///
+/// Only `PerUserDirect` owns a startup writer. Under the exclusive writer lease every
+/// fact is re-read: a journal refuses as journal-bound, a `current` that became valid is
+/// left alone, and last-known-good, previous-known-good and the floor must hold with
+/// `current` equal to last-known-good. Both known-good versions pass the census, metadata
+/// admission and package policy before one prepared record replaces `current` through the
+/// shared write-through publication and is read back. A crash leaves either the invalid
+/// record, repaired again at the next start, or the valid one.
+fn repair_invalid_current(
+    trust: &WindowsBaselineTrust,
+    invalid: &UpdateError,
+) -> Result<(), UpdateError> {
+    if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
+        return Err(error(
+            "current pointer repair",
+            format!(
+                "current is invalid ({}) and only the elevated writer of a machine installation may republish last-known-good",
+                super::activate::refusal_detail(invalid)
+            ),
+        ));
+    }
+    let roots = open_roots(trust, false).map_err(|cause| error("repair root admission", cause))?;
+    let profile = roots.profile();
+    let lease = super::open_activation_lease(&roots.update, profile, true)
+        .map_err(|cause| lease_error("exclusive repair lease", &cause))?;
+    drop(read_writer_provenance(trust, &roots)?);
+    let records = read_records(&roots, true)?;
+    if let Some(journal) = &records.journal {
+        return Err(pending_journal_refusal(journal));
+    }
+    if records.current.is_ok() {
+        // Another writer repaired it after the snapshot; nothing to do.
+        return Ok(());
+    }
+    let floor = semver::Version::parse(&records.version_floor)
+        .map_err(|cause| error("version floor", cause))?;
+    validate_writer_pointer_context(
+        &trust.installation.baseline,
+        &records.last_known_good,
+        &records.last_known_good,
+        records.previous_known_good.as_ref(),
+        &floor,
+    )?;
+    let mut selected = vec![records.last_known_good.clone()];
+    if let Some(previous) = &records.previous_known_good {
+        selected.push(previous.clone());
+    }
+    validate_activation_version_census(&roots, &selected, None)?;
+    for artifact in &selected {
+        let completion = read_version_completion(&roots, artifact)?;
+        validate_package_policy(&roots, &completion.tree)?;
+    }
+    super::activate::remove_stale_record_preparations(&roots)?;
+    let bytes = records::encode_pointer(PointerKind::Current, &records.last_known_good)?;
+    let temporary = super::prepare_record(&roots.update, &bytes, profile)?;
+    super::publish_prepared_record(
+        &roots.update,
+        &temporary,
+        super::RecordTarget::Replace(crate::windows_fs::RecordSlot::Current),
+        &bytes,
+        profile,
+    )?;
+    drop(lease);
+    Ok(())
 }
 
 /// Checks one immutable tree's signed no-migration policy (KEL-53 criterion 13): the
@@ -548,15 +666,36 @@ fn read_writer_provenance(
     Ok(provenance)
 }
 
+/// Every protected activation record, with `current` kept as a result: an absent record
+/// or one that does not decode as a canonical pointer is the one recoverable invalid
+/// state. Every other fault, including an unreadable or unprotected record, is an error.
+struct RecordSet {
+    version_floor: String,
+    current: Result<crate::ArtifactIdentity, UpdateError>,
+    last_known_good: crate::ArtifactIdentity,
+    previous_known_good: Option<crate::ArtifactIdentity>,
+    journal: Option<records::ActivationJournal>,
+}
+
+/// Reads the records for the writer and recovery loaders, which require a valid `current`.
 fn read_writer_records(
     roots: &Roots,
     allow_pending_journal: bool,
 ) -> Result<WriterRecords, UpdateError> {
+    let records = read_records(roots, allow_pending_journal)?;
+    Ok(WriterRecords {
+        version_floor: records.version_floor,
+        current: records.current?,
+        last_known_good: records.last_known_good,
+        previous_known_good: records.previous_known_good,
+        journal: records.journal,
+    })
+}
+
+fn read_records(roots: &Roots, allow_pending_journal: bool) -> Result<RecordSet, UpdateError> {
     let profile = roots.profile();
     let (_, floor_bytes) = read_record(&roots.update, "version-floor", profile)?;
     let version_floor = records::decode_floor(&floor_bytes)?;
-    let (_, current_bytes) = read_record(&roots.update, "current", profile)?;
-    let current = records::decode_pointer(PointerKind::Current, &current_bytes)?;
     let (_, lkg_bytes) = read_record(&roots.update, "last-known-good", profile)?;
     let last_known_good = records::decode_pointer(PointerKind::LastKnownGood, &lkg_bytes)?;
     let entries = roots
@@ -607,13 +746,19 @@ fn read_writer_records(
     } else {
         None
     };
+    let current = if names.contains(std::ffi::OsStr::new("current")) {
+        let (_, bytes) = read_record(&roots.update, "current", profile)?;
+        records::decode_pointer(PointerKind::Current, &bytes)
+    } else {
+        Err(error("current pointer", "the current record is absent"))
+    };
     let journal = if names.contains(std::ffi::OsStr::new("activation-journal")) {
         let (_, bytes) = read_record(&roots.update, "activation-journal", profile)?;
         Some(records::decode_activation_journal(&bytes)?)
     } else {
         None
     };
-    Ok(WriterRecords {
+    Ok(RecordSet {
         version_floor,
         current,
         last_known_good,
