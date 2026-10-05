@@ -61,8 +61,13 @@ Why this shape (each competitor fails differently — see `docs/research/library
 4. **Hot paths are state machines** (Bun-rewrite lesson): the host core runs on platform
    event loops with readiness-driven callbacks; no Tokio in the message path. Async Rust
    is allowed in cold tooling (CLI, packager, updater fetches).
-5. **No Rust toolchain for app developers.** Prebuilt signed host + npm distribution
-   (esbuild lesson). Rust is the *plugin* path, not the entry fee.
+5. **No Rust toolchain for app developers.** Prebuilt host + npm distribution
+   (esbuild lesson); the host in a shipped app is signed. Rust is the *plugin* path, not
+   the entry fee. Target behaviour on Windows (KEL-19 T3, blocked on an authenticated
+   Keld release channel): the packaging-input host is distributed unsigned, and
+   `keld build` verifies its digest from that channel and embeds the app identity before
+   the app publisher applies the only signature
+   (`docs/specs/kel254-expected-identity-container.md`).
 6. **Per-platform engine policy, not ideology.** System webviews where they're good
    (Windows/macOS), pinned engine where they're not (Linux opt-in). Polyfill pack +
    baseline matrix + doctor close the rest. The precise default claim is **no bundled
