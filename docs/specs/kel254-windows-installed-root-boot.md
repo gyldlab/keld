@@ -495,8 +495,10 @@ from paths or test observations.
 
 Capabilities required; manifest changes: none.
 
-Wire/protocol changes: none; KEL-53 feed bytes remain unchanged. The KEL-53 protected
-installer record is OS-local state, not a renderer or KIPC wire contract.
+Wire/protocol changes: one, the new versioned `ExpectedAppIdentity` payload that
+`keld-pack` embeds in signed executables (T2b), which needs an independent format review.
+KEL-53 feed bytes and KIPC frames remain unchanged. The KEL-53 protected installer record
+is OS-local state, not a renderer or KIPC wire contract.
 
 Platform notes: Windows x64 direct install is the only installed-root cell in this
 spec. Its independently qualified cells are per-user direct, machine-wide with
