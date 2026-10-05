@@ -2379,17 +2379,16 @@ fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, 
 }
 
 /// Verifies `executable` through the single `keld-guard` KEL-135 Authenticode owner
-/// (KEL-270 D4), holding the pinned image until the profile identity is built.
+/// (KEL-270 D4), holding the verified pinned image until the profile identity is built.
 #[cfg(windows)]
 fn verified_windows_identity_from_executable(
     executable: &Path,
 ) -> Result<ValidatedAppIdentity, HostAppError> {
-    let image = WindowsAuthenticodeImage::open(executable)
+    let verified = WindowsAuthenticodeImage::open(executable)
+        .and_then(WindowsAuthenticodeImage::verify)
         .map_err(|error| windows_authenticode_error(&error))?;
-    let verified = image
-        .verify()
-        .map_err(|error| windows_authenticode_error(&error))?;
-    ValidatedAppIdentity::from_verified_parts(*verified.publisher_scope(), verified.app_id())
+    let identity = verified.identity();
+    ValidatedAppIdentity::from_verified_parts(*identity.publisher_scope(), identity.app_id())
 }
 
 #[cfg(any(target_os = "linux", windows))]

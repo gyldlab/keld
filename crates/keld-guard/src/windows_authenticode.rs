@@ -67,18 +67,52 @@ impl WindowsAuthenticodeImage {
         Ok(Self { path, image })
     }
 
-    /// Verifies the pinned image and returns its authenticated publisher and app id.
+    /// Verifies the pinned image once and binds its authenticated publisher and app id
+    /// to the same open handle.
     ///
     /// Any `WinTrust` state it creates is closed, or its close failure reported, before
-    /// it returns.
+    /// it returns. A refused image's handle is closed with it.
     ///
     /// # Errors
     /// Refuses a `WinVerifyTrust` failure, any signature set other than one primary
     /// signature, a signer, certificate, SPKI or program-name fact that is missing,
     /// malformed or over its bound, a program name without the exact `keld.app-id/v1:`
     /// prefix and a 1-255 byte app id, and a failure to close the `WinTrust` state.
-    pub fn verify(&self) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
-        verified_windows_identity_from_image(&self.path, &self.image)
+    pub fn verify(self) -> Result<VerifiedWindowsImage, WindowsAuthenticodeError> {
+        let identity = verified_windows_identity_from_image(&self.path, &self.image)?;
+        Ok(VerifiedWindowsImage {
+            image: self.image,
+            identity,
+        })
+    }
+}
+
+/// A pinned executable image and the identity that verifying that handle proved.
+///
+/// Only [`WindowsAuthenticodeImage::verify`] constructs it, so the identity always
+/// belongs to [`file`](Self::file).
+#[derive(Debug)]
+pub struct VerifiedWindowsImage {
+    image: File,
+    identity: WindowsAuthenticodeIdentity,
+}
+
+impl VerifiedWindowsImage {
+    /// The publisher scope and app id that verification of [`file`](Self::file) proved.
+    #[must_use]
+    pub const fn identity(&self) -> &WindowsAuthenticodeIdentity {
+        &self.identity
+    }
+
+    /// The pinned handle that `WinVerifyTrust` verified, opened for reading while sharing
+    /// only reads, so the image cannot be written, renamed or deleted while this value
+    /// lives.
+    ///
+    /// Callers MUST read the verified image through this handle and never reopen it by
+    /// path. The cursor is shared, so no caller may rely on its position.
+    #[must_use]
+    pub const fn file(&self) -> &File {
+        &self.image
     }
 }
 
@@ -818,6 +852,65 @@ mod tests {
         assert_eq!(
             combined.to_string(),
             "synthetic refusal. Synthetic fix.; cleanup: WinVerifyTrust could not close verified state (status 0x800b0100). Restart Windows and retry the signed package; if this persists, repair the package trust installation."
+        );
+    }
+
+    /// Runs only on the KEL-135 operator path, with a trusted Authenticode-signed carrier.
+    #[test]
+    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
+    fn kel135_verified_image_file_is_the_pinned_verified_handle() {
+        use std::os::windows::fs::{FileExt as _, MetadataExt as _};
+
+        let carrier = std::env::var_os("KELD_KEL135_CARRIER_UNDER_TEST")
+            .expect("KELD_KEL135_CARRIER_UNDER_TEST must name a signed carrier");
+        let carrier = Path::new(&carrier);
+        let image = WindowsAuthenticodeImage::open(carrier).expect("the signed carrier opens");
+        let opened = image.image.as_raw_handle();
+        let verified = image.verify().expect("the signed carrier verifies");
+
+        // The verified handle is the opened one, never a reopen by path.
+        assert_eq!(verified.file().as_raw_handle(), opened);
+        // It still shares only reads, so a writer is refused while it is held.
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(carrier)
+            .expect_err("a writer opened the verified image");
+        assert_eq!(writer.raw_os_error(), Some(32), "{writer}");
+        // Its file facts are the opened path's, and every byte read through it matches.
+        let held = verified
+            .file()
+            .metadata()
+            .expect("verified handle metadata");
+        let named = fs::metadata(carrier).expect("carrier path metadata");
+        assert_eq!(
+            (
+                held.file_size(),
+                held.creation_time(),
+                held.last_write_time()
+            ),
+            (
+                named.file_size(),
+                named.creation_time(),
+                named.last_write_time()
+            )
+        );
+        let expected = fs::read(carrier).expect("read the carrier by path for comparison");
+        let mut through_handle = vec![0_u8; expected.len()];
+        let mut filled = 0_usize;
+        while filled < through_handle.len() {
+            let offset = u64::try_from(filled).expect("the offset fits u64");
+            let read = verified
+                .file()
+                .seek_read(&mut through_handle[filled..], offset)
+                .expect("positioned read through the verified handle");
+            assert_ne!(read, 0, "the verified image ended early");
+            filled += read;
+        }
+        assert_eq!(through_handle, expected);
+        println!(
+            "KELD_KEL135_VERIFIED_HANDLE same_handle=true writer_refused=true bytes={} app_id={}",
+            expected.len(),
+            verified.identity().app_id()
         );
     }
 }

@@ -38,7 +38,8 @@ mod windows_owner_private;
 
 #[cfg(windows)]
 pub use windows_authenticode::{
-    WindowsAuthenticodeError, WindowsAuthenticodeIdentity, WindowsAuthenticodeImage,
+    VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeIdentity,
+    WindowsAuthenticodeImage,
 };
 
 #[cfg(windows)]
