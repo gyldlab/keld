@@ -309,7 +309,7 @@ impl WindowsActivationWriteSnapshot {
                     "candidate collides with a referenced known-good version",
                 ));
             }
-            // The stage must be this root's completed stage of exactly this candidate.
+            // The stage's completion record must name exactly this candidate.
             if &super::load::completed_stage_identity(&roots, &stage)? != candidate {
                 return Err(UpdateError::activation(
                     "candidate stage",
