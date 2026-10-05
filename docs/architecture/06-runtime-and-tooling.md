@@ -527,15 +527,12 @@ typed `MachineRecoveryRequired` state before admission, and only the helper's
 recovery-only role, behind fresh UAC consent and without an ordinary host boot, may
 recover or repair (KEL-53 "Machine-UAC recovery-required state and recovery-only
 role"); until the T4d rows pass that role is disabled and administrator action is the
-only resolution. For a launched attempt after owner loss its retirement
-evidence is two facts: the recovery helper holds the share-zero writer lease that every
-live owner retains, and the initiating user's logon session has ended, since a logon
-session terminates when the last token referencing it is deleted. A full restart always
-provides the second, and sign-out or Fast Startup shutdown normally does; otherwise the
-fix guidance says to restart Windows first. The helper's kill-on-close Job only ends the
-candidate promptly; Job-handle-holder death, Job-name absence, PID enumeration and a
-reboot itself prove nothing about the family. Until KEL-53 T4d qualifies this evidence,
-that case halts. The application and Bun roles
+only resolution. For a launched attempt after owner loss, retirement needs KEL-53's
+two-fact "Machine-UAC owner-loss retirement" proof: the recovery helper holds the
+share-zero writer lease, and a logon-session query shows that the initiating user's
+logon session, which every family token was qualified to reference, has ended. The
+helper's kill-on-close Job only ends the candidate promptly and proves nothing about
+the family; until T4d qualifies that proof, the case halts. The application and Bun roles
 never run elevated or as SYSTEM. This ACL profile differs from KEL-266's SYSTEM-only
 machine-baseline profile; updates never take ownership or repair ACLs ad hoc. The
 profile label and descriptor predicates are owned by `keld-guard`; a persisted profile

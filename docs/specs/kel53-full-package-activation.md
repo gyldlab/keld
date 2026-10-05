@@ -935,10 +935,9 @@ owner was lost resolves only when two independent facts hold. An unlaunched
    `ms.date` 2025-12-30), so closing the last handle of a kill-on-close Job only starts
    the family's termination. The journal records the initiating user's logon session
    (`AuthenticationId` and its logon time) durably before launch; a zero logon time
-   refuses launch. Every family process runs with a primary token that references that
-   session (the exact initiating-process token route in "Windows direct-install
-   modes"), and a logon session terminates when the last token referencing it is
-   deleted
+   refuses launch. Every family process must run with a primary token that references
+   that session (the per-role preconditions below), and a logon session terminates
+   when the last token referencing it is deleted
    ([LSA_AP_LOGON_TERMINATED](https://learn.microsoft.com/en-us/windows/win32/api/ntsecpkg/nc-ntsecpkg-lsa_ap_logon_terminated),
    `ms.date` 2018-12-05;
    [SeRegisterLogonSessionTerminatedRoutine](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-seregisterlogonsessionterminatedroutine),
@@ -957,18 +956,31 @@ Fact 2 holds only if every process that runs an image from the candidate version
 or runs code or a command that the family supplies (for example a COM server or a
 scheduled task registered to a candidate-tree image), runs inside the attempt Job under
 the initiating logon session. System brokers that load no candidate image are out of
-scope. The OS sandbox enforces this for LPAC roles and renderers; for the host and the
-WebView2 browser process, which run with the user's ordinary token, it is an audited
-code contract. T4d must show it for every admitted family member, or the proof is not
-admitted. A reboot is not itself
-evidence; the session query after it is. A full restart always ends the session, since
-logon sessions and their IDs do not survive it. Sign-out and Fast Startup shutdown
-normally end it too, but any remaining reference to a token of that session, such as
-one a service holds, keeps it alive, and recovery then halts. A helper crash without a
-restart therefore leaves the typed recovery-required state, whose fix guidance tells
-the user to restart Windows and then run recovery. The same proof covers
+scope. This is a set of per-role preconditions, not an inference from the launch route.
+Each is its own atom with its own observable: for the candidate host, for the WebView2
+browser process and its children, and for each admitted LPAC role, that process's
+primary token reports the journaled `AuthenticationId` through
+`GetTokenInformation(TokenStatistics)`, the LUID of the logon session that a token
+represents, which many tokens may share
+([TOKEN_STATISTICS](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_statistics),
+`ms.date` 2018-12-05), and that process is a member of the attempt Job. The owner checks
+the candidate host's atom when it accepts the claim ("Candidate connect-back"); T4d
+qualifies every other role's atom on real Windows. The OS sandbox is expected to hold
+the atom for LPAC roles and renderers; for the host and the WebView2 browser process,
+which run with the user's ordinary token, it is an audited code contract. Until every
+admitted role's atom passes, fact 2 is not admitted. A reboot is not itself evidence;
+the session query after it is. That a full restart, a sign-out or a Fast Startup
+shutdown ends the initiating session is a T4d qualification target, not an assumed
+fact: Microsoft documents only that a locally unique ID is unique until restart, which
+the logon-time comparison covers, and any remaining reference to a token of that
+session, such as one a service holds, keeps it alive, so recovery then halts. A helper
+crash without a restart therefore leaves `MachineRecoveryRequired`, whose fix guidance
+tells the user to restart Windows and then run recovery, because a restart is the
+expected way to end the session; the query decides. The same proof covers
 `health-accepted`, where the healthy application legitimately outlives the helper,
-because the landed `recovery_decision` requires family exit for every phase.
+because the landed `WindowsRecoveryInspection::recover` requires an exact
+process-family retirement binding for every phase
+(`crates/keld-update/src/windows_baseline/activate.rs:385-399`).
 
 Kill-on-close is kept only for prompt termination. The component that launches the
 candidate (the UAC helper, or the criterion-10 post-exit helper when one is used) alone
@@ -1636,8 +1648,13 @@ Must not touch in Slice A:
   denied or unknown session query, with the single accepted "no such logon session"
   status confirmed; a reference to a token of that session kept alive after sign-out
   (for example a duplicated token handle in an unrelated process), which keeps recovery
-  halted until it closes; every family token (host, WebView2 and LPAC role) referencing
-  the initiating logon session; negative controls showing that no admitted family member
+  halted until it closes; the per-role precondition atoms, one row each for the
+  candidate host, the WebView2 browser process and its children, and each admitted LPAC
+  role, each showing its primary token's `TokenStatistics.AuthenticationId` equal to
+  the journaled one and its Job membership, as preconditions that must pass before any
+  owner-loss retirement row counts; whether a full restart, a sign-out and a Fast
+  Startup shutdown each end the initiating session, recorded as observed rather than
+  assumed; negative controls showing that no admitted family member
   starts a candidate-tree image or family-supplied code outside the attempt Job or under
   another logon session, and that sandboxed roles cannot (netonly
   `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task
