@@ -333,6 +333,14 @@ pub fn validate_primary_app_header(
     pending_echo_reply: Option<CorrelationId>,
     header: FrameHeader,
 ) -> Result<ValidatedFrameHeader, IpcError> {
+    validate_primary_app_header_with_privileged_call(pending_echo_reply, None, header)
+}
+
+pub(crate) fn validate_primary_app_header_with_privileged_call(
+    pending_echo_reply: Option<CorrelationId>,
+    privileged_call_channel: Option<ChannelId>,
+    header: FrameHeader,
+) -> Result<ValidatedFrameHeader, IpcError> {
     match header.kind {
         FrameKind::Reply | FrameKind::Err => {
             let Some(corr) = pending_echo_reply else {
@@ -341,6 +349,14 @@ pub fn validate_primary_app_header(
                 });
             };
             validate_received_header(&ReceivePolicy::primary_echo_reply_waiter(corr), header)
+        }
+        FrameKind::Call
+            if privileged_call_channel.is_some_and(|channel| header.channel == channel) =>
+        {
+            let Some(channel) = privileged_call_channel else {
+                unreachable!("guard above proves the trusted channel is present");
+            };
+            validate_received_header(&ReceivePolicy::privileged_call_receiver(channel), header)
         }
         _ => validate_received_header(&ReceivePolicy::primary_app_receiver(), header),
     }
@@ -894,6 +910,27 @@ mod tests {
             detail_of(err),
             "frame kind is not declared by the session policy"
         );
+    }
+
+    #[test]
+    fn primary_app_privileged_call_requires_trusted_channel_selection() {
+        let call = header(FrameKind::Call, 0, 2, 7, 4);
+        let legacy = validate_primary_app_header(None, call)
+            .expect_err("legacy primary policy must still reject channel 2");
+        assert_eq!(detail_of(legacy), "wrong channel for the session policy");
+
+        validate_primary_app_header_with_privileged_call(None, Some(ChannelId(2)), call)
+            .expect("trusted privileged channel selection admits the exact structured CALL");
+        for bad in [
+            header(FrameKind::Call, 0, 2, 0, 4),
+            header(FrameKind::Call, FLAG_RAW, 2, 7, 4),
+            header(FrameKind::Event, 0, 2, 0, 4),
+        ] {
+            validate_primary_app_header_with_privileged_call(None, Some(ChannelId(2)), bad)
+                .expect_err("privileged channel keeps canonical KEL-133 semantics");
+        }
+        validate_primary_app_header_with_privileged_call(None, None, call)
+            .expect_err("absence of a trusted selection cannot promote channel 2");
     }
 
     #[test]
