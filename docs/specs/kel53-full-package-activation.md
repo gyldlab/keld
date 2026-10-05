@@ -77,10 +77,13 @@ Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec` (PR #374 head `b284d39ab2a
 KEL-270 T4d amendment (Machine-UAC activation decisions): owner decisions recorded in the
 active maintainer session on 2026-10-05. The amendment was split out of PR #374 on
 2026-10-05; the approval that #374 received covers only KEL-254 A3 and T2b/T3, not this
-amendment, and exact-content approval of this revision is pending. The review
+amendment. Its exact content was approved by owner approval comment
+`1cdcf977-7f30-4cf9-ad6d-50e03cf73880` (2026-10-06), binding PR #384 head
+`6944917ddf35e405bb1956d3e4886c488534b814` and the approved spec-content SHA-256
+`659a40449d06c10aba04e6c3e8f3f7e7dc2277e7547fe65389cc3c9b153311f3`. The review
 resolutions made after the split (claimant binding, endpoint squatting, the typed
-`MachineRecoveryRequired` effect, the helper crate and its FFI owners, and the round-1
-review batch) are part of that pending content. It optimizes for least privilege and the
+`MachineRecoveryRequired` effect, the helper crate and its FFI owners, and the review
+batches of rounds 1 to 3) are part of that approved content. It optimizes for least privilege and the
 smallest privileged surface:
 1. Candidate launch uses the exact initiating-process token, which the helper takes from
    the verified host process object ("Machine-UAC bootstrap").

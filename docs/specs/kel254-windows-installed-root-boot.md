@@ -34,7 +34,10 @@ locator has a fixed `HOST` constant (`crates/keld-update/src/windows_baseline/lo
 which KEL-53 T4d slice S9 replaces with a closed choice of the two image names, a
 public-API change of the executable-located entry point under KEL-53's public-API gate,
 owned by KEL-53. These sentences carry no approval from A3 or from the earlier
-revisions; their exact-content approval is pending with the KEL-53 T4d amendment.
+revisions; their exact content was approved with the KEL-53 T4d amendment by owner
+approval comment `1cdcf977-7f30-4cf9-ad6d-50e03cf73880` (2026-10-06), binding PR #384
+head `6944917ddf35e405bb1956d3e4886c488534b814` and this file's approved SHA-256
+`beaa33ed6feb80fbf3c08afa318316ae11d6dc370bfbc702cf7e2ef33bb3a871`.
 
 ## 1. Goal & non-goals
 
