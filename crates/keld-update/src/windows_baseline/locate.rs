@@ -42,9 +42,11 @@ const PROVENANCE: &str = "install-provenance";
 /// [`UpdateError::ExecutableBinding`] when the locator shape, executable identity, located
 /// layout or volume, recorded-root identity, record volume or selected version does not
 /// bind; [`UpdateError::ProvenanceMismatch`] when the record does not carry the expected
-/// app id, channel, target or signing key; and, exactly as
-/// [`super::select_windows_active_package`] reports them, every refusal to read, decode
-/// or admit the protected record or recorded roots against the recorded mode's profile.
+/// app id, channel, target or signing key; and, typed as
+/// [`super::select_windows_active_package`] types them, every refusal to read, decode
+/// or admit the protected record against the recorded mode's profile and every
+/// `open_roots` refusal of the recorded roots ([`UpdateError::Baseline`], step
+/// `recorded roots`).
 pub fn select_active_package_for_executable(
     locator: &Path,
     executable: &std::fs::File,
@@ -160,7 +162,7 @@ impl Located {
         let recorded_install = roots
             .ancestors
             .last()
-            .ok_or_else(|| binding("recorded roots", "install root absent"))?;
+            .ok_or_else(|| error("recorded roots", "install root absent"))?;
         for (step, recorded, located) in [
             ("install root identity", recorded_install, self.install()?),
             ("update root identity", &roots.update, &self.update),
