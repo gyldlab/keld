@@ -75,8 +75,13 @@ adds a KEL-53 loader entrypoint; exact content approved with KEL-254 A3 by
 Linear comment `859b62fb-431c-44c1-8346-5621e65e04ec` (PR #374 head `b284d39ab2a479898b4bb53a6ae7d36e80ee3037`).
 
 KEL-270 T4d amendment (Machine-UAC activation decisions): owner decisions recorded in the
-active maintainer session on 2026-10-05; exact-content approval of this revision is
-pending. It optimizes for least privilege and the smallest privileged surface:
+active maintainer session on 2026-10-05. The amendment was split out of PR #374 on
+2026-10-05; the approval that #374 received covers only KEL-254 A3 and T2b/T3, not this
+amendment, and exact-content approval of this revision is pending. The review
+resolutions made after the split (claimant binding, endpoint squatting, the typed
+`MachineRecoveryRequired` effect, the claimant read, the helper crate and its FFI
+owners) are part of that pending content, and §10 lists the one new owner decision. It
+optimizes for least privilege and the smallest privileged surface:
 1. Candidate launch uses the exact initiating-process token route; impersonation is only
    for pinning the initiating user's staged source ("Windows direct-install modes").
 2. A dedicated minimal signed `keld-updater-helper.exe` is the elevated component; the
@@ -472,9 +477,10 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     activation-lease file and protected ancestors with this profile. Each activation that needs protected mutation requests UAC for a
     fixed signed updater helper; denial/cancellation causes zero protected writes. The
     helper is a dedicated minimal `keld-updater-helper.exe`, never an elevated
-    `keld-host.exe`. Its Authenticode signer must equal the protected provenance
+    `keld-host.exe`, launched and self-anchored as §4 "Helper launch and self-anchor"
+    requires. Its Authenticode signer must equal the protected provenance
     publisher scope, its exact image is covered by the verified selected artifact's
-    `contentBlake3`, and the journal records its image digest. It contains only
+    `contentBlake3`, and the journal's `helper_image_blake3` records its image digest. It contains only
     authenticated bootstrap, source pinning, protected activation, candidate launch,
     health/rollback ownership and recovery handoff: no WebView, Bun or app runtime, feed or
     network client, arbitrary filesystem API, shell execution or general broker. This
@@ -508,8 +514,8 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     `ActivationEffect::MachineRecoveryRequired` state, and only the helper's
     recovery-only role resolves it (§4 "Machine-UAC recovery-required state and
     recovery-only role" owns both).
-    The helper's bootstrap and health exchange use a separate versioned subprotocol with
-    its own magic, namespace and message types; it reuses only the low-level framing,
+    The helper's bootstrap and health exchange use the separate versioned `keld-attempt`
+    subprotocol of §4 "Candidate connect-back"; it reuses only the low-level framing,
     nonce, deadline and peer-process verification utilities, and the lifecycle purpose
     tags keep their lifecycle and keeper meaning. The app and Bun roles never run
     elevated or as SYSTEM.
@@ -1001,11 +1007,13 @@ their owners are listed once in §5.
 The two logon-session fields are a journal schema revision under
 the wire review gate. Rejected alternatives: Job-handle-holder death as the family proof
 (it proves only that termination started); a separate PID and creation-time check for
-the coordinator (the lease already excludes every live owner); a keeper that retains the
+the coordinator as retirement evidence (the lease already excludes every live owner; the
+journaled owner process ID and creation time serve only the claimant's server check in
+"Candidate connect-back"); a keeper that retains the
 Job handle (it defeats kill-on-close and enlarges the privileged surface only to avoid a
 restart); a permanent typed halt; and pointer-only rollback without retirement proof.
-Until the T4d rows pass, neither fact is admitted and the case halts in the typed
-recovery-required state.
+Until the T4d rows pass, neither fact is admitted and the case halts in
+`MachineRecoveryRequired`.
 
 **Bounded per-attempt lifecycle keeper (proof slice; no production activation writes).**
 The first Windows implementation slice MUST use the exact unnamed attempt Job object
@@ -1176,7 +1184,9 @@ landed `keld-ipc` named-pipe server. That server already creates its pipe as the
 instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`, at most one instance), with
 `PIPE_REJECT_REMOTE_CLIENTS`, a non-inheritable handle and a protected DACL that it reads
 back. For this endpoint the single ACE grants the initiating user SID, not the owner's
-own TokenUser, only the individual read and write pipe rights: never
+own TokenUser, only the landed `keld-ipc` access mask `0x0012019B`: the individual
+read/write data, attribute and extended-attribute rights, `READ_CONTROL` so the
+claimant can read the descriptor back, and `SYNCHRONIZE`; never
 `FILE_CREATE_PIPE_INSTANCE`, which `FILE_GENERIC_WRITE` would include, and never
 `WRITE_DAC` or `WRITE_OWNER`. The descriptor also carries an explicit Medium mandatory
 label with `SYSTEM_MANDATORY_LABEL_NO_WRITE_UP`: objects an elevated helper creates
