@@ -2938,10 +2938,15 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   PerUserDirect baseline/bootstrap primitive with owner-private records and provenance-last
   commit, and the common journaled transaction: PerUserDirect journals, publishes and
   activates a completed stage, binds an exact attempt health receipt, commits or rolls back, and resumes from
-  every persisted cut under the writer lease. Live feed orchestration, host candidate
-  launch, the private health channel and its 30-second `Ready` observation, installed-host
-  lifecycle composition and read-only selection of a committed update remain
-  unimplemented. Planned Windows
+  every persisted cut under the writer lease. `select_windows_active_package` mints the
+  journal-free `ActivePackageSelection` (KEL-254 AC4): under the shared snapshot lease it
+  requires `current` to equal last-known-good or previous-known-good within the floor,
+  admits only referenced versions, gives each the baseline loader's metadata admission,
+  refuses a pending journal as journal-bound, and keeps the selected version pinned. Live
+  feed orchestration, host candidate launch, the private health channel and its 30-second
+  `Ready` observation, installed-host lifecycle composition, the invalid-current
+  last-known-good republish, candidate-mode selection and the KEL-96 host consumer of the
+  selection remain unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
   lifecycle proof and a separately approved architecture/spec amendment selects and
