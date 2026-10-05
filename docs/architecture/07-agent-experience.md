@@ -152,8 +152,11 @@ covered:
 6. **Templates are the guardrail delivery vehicle**: `create-keld` output passes
    doctor + attack-mode clean, ships CSP-strict, includes a test harness and the
    generated `AGENTS.md` — agents copy the paved road they are given.
-7. **Supply chain**: 24 h `min-release-age` default on template deps; signed host
-   binaries and update manifests (spec 03 §4–5).
+7. **Supply chain**: 24 h `min-release-age` default on template deps; ed25519-signed
+   update manifests whose BLAKE3 digests authenticate each full artifact (KEL-53;
+   spec 03 §4–5); shipped Windows host binaries carry the app publisher's Authenticode
+   signature, and Keld's Windows packaging input is unsigned and digest-verified
+   (spec 01 §2 principle 5).
 
 ## 7. CLI contract for agents
 

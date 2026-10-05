@@ -463,8 +463,10 @@ restricted token + job object, Linux landlock + seccomp) — possible *because* 
 lives in the host, so clamping the child breaks nothing; always-on webview hardening (CSP
 injection, per-principal `keld://` fetch isolation, `channels: []` for remote content, navigation
 allowlists, devtools off in release); and supply-chain measures (24 h `min-release-age` on
-template deps, ed25519-signed host binaries and updates, `keld.lock` pinning host/Bun/polyfill
-versions).
+template deps, ed25519-signed update manifests whose BLAKE3 digests authenticate each full
+artifact (KEL-53), shipped Windows host binaries that carry the app publisher's Authenticode
+signature while Keld's Windows packaging input is unsigned and digest-verified (Architecture 01
+principle 5), `keld.lock` pinning host/Bun/polyfill versions).
 
 [`03` §6](../architecture/03-security.md) is titled "the honesty ledger" and is worth reading in
 full — it states plainly what Keld does *not* promise: the sandbox protects the user from
