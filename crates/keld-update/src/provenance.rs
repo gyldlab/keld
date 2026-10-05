@@ -401,10 +401,10 @@ fn release_verifying_key(public_key: &[u8; 32]) -> Result<VerifyingKey, String> 
 /// roots' file identities and the recorded mode's protection profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedAppIdentity {
-    app_id: String,
-    channel: Channel,
-    target: String,
-    signing_key_id: SigningKeyId,
+    pub(crate) app_id: String,
+    pub(crate) channel: Channel,
+    pub(crate) target: String,
+    pub(crate) signing_key_id: SigningKeyId,
 }
 
 impl ExpectedAppIdentity {
@@ -434,37 +434,14 @@ impl ExpectedAppIdentity {
         })
     }
 
-    /// Expected canonical application id.
-    #[must_use]
-    pub fn app_id(&self) -> &str {
-        &self.app_id
-    }
-
-    /// Expected release channel.
-    #[must_use]
-    pub const fn channel(&self) -> Channel {
-        self.channel
-    }
-
-    /// Expected target string, such as `windows-x64`.
-    #[must_use]
-    pub fn target(&self) -> &str {
-        &self.target
-    }
-
-    /// Identity of the expected update-signing key.
-    #[must_use]
-    pub const fn signing_key_id(&self) -> &SigningKeyId {
-        &self.signing_key_id
-    }
-
     /// Requires a protected record to carry exactly this app id, channel, target and
-    /// signing key. Roots, mode, baseline and profile are anchored separately.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UpdateError::ProvenanceMismatch`] naming the first differing field.
-    pub fn require_matches(&self, record: &DirectInstallationIdentity) -> Result<(), UpdateError> {
+    /// signing key. Roots and mode are anchored by the located roots' file identity and
+    /// the recorded mode's protection profile; baseline and profile digest are accepted
+    /// from the protected record only after those anchors match (KEL-254 A3 §4).
+    pub(crate) fn require_matches(
+        &self,
+        record: &DirectInstallationIdentity,
+    ) -> Result<(), UpdateError> {
         compare(ProvenanceField::AppId, &self.app_id, &record.app_id)?;
         compare(
             ProvenanceField::Channel,

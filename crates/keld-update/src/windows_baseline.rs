@@ -23,6 +23,7 @@ use crate::{
 mod activate;
 mod initialize;
 mod load;
+mod locate;
 
 #[cfg(test)]
 pub(crate) use activate::CRASH_CUT_HOOK;
@@ -39,6 +40,7 @@ pub use load::{
     load_windows_recovery_inspection, repair_windows_unjournaled_versions,
     select_windows_active_package,
 };
+pub use locate::select_active_package_for_executable;
 
 /// Trusted deployment/host inputs, independent of the record being authenticated.
 ///
@@ -170,7 +172,7 @@ pub struct ActivePackageSelection {
     tree_root: std::path::PathBuf,
     _roots: Roots,
     _version: Dir,
-    _tree: Dir,
+    tree: Dir,
 }
 
 impl ActivePackageSelection {

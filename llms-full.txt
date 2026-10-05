@@ -5739,6 +5739,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The host's build-time expected app identity is not a valid expectation
 - fix: Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then.
 
+## KELD-UPDATE-018
+
+- crate: keld-update
+- message: The running executable is not bound to the installation it locates
+- fix: Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

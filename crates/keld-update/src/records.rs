@@ -613,7 +613,7 @@ fn channel(text: &str) -> Result<Channel, UpdateError> {
     Channel::parse(text).ok_or_else(|| invalid("unsupported channel"))
 }
 
-fn strict_version(text: &str) -> Result<(), UpdateError> {
+pub(crate) fn strict_version(text: &str) -> Result<(), UpdateError> {
     semver::Version::parse(text)
         .map(|_| ())
         .map_err(|_| invalid("version must be strict SemVer"))

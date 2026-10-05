@@ -18,7 +18,7 @@ use crate::{ActivationEffect, ActivationFailureClass, UpdateError};
 ///
 /// The empty `activation.lock` is the lease handle's target, not a record, and a held
 /// writer lease shares it with nobody, so it is left out.
-fn record_bytes(trust: &WindowsBaselineTrust) -> BTreeMap<String, Vec<u8>> {
+pub(super) fn record_bytes(trust: &WindowsBaselineTrust) -> BTreeMap<String, Vec<u8>> {
     std::fs::read_dir(&trust.installation.update_root)
         .expect("update census")
         .map(|entry| entry.expect("update entry").path())
@@ -446,7 +446,7 @@ fn the_repair_never_rewrites_a_current_that_became_valid() {
     // An intentional rollback to previous-known-good is a valid current.
     write_current(&trust, &previous);
     let before = record_bytes(&trust);
-    crate::windows_baseline::load::repair_invalid_current(&trust, &invalid_current_cause())
+    crate::windows_baseline::load::repair_invalid_current(&trust, &invalid_current_cause(), None)
         .expect("a valid current needs no repair");
     assert_eq!(
         record_bytes(&trust),
@@ -462,9 +462,12 @@ fn a_machine_installation_refuses_the_startup_repair() {
     let mut machine = trust.clone();
     machine.installation.install_mode = crate::DirectInstallMode::MachineUacDirect;
     let before = record_bytes(&trust);
-    let error =
-        crate::windows_baseline::load::repair_invalid_current(&machine, &invalid_current_cause())
-            .expect_err("only the elevated writer may repair a machine installation");
+    let error = crate::windows_baseline::load::repair_invalid_current(
+        &machine,
+        &invalid_current_cause(),
+        None,
+    )
+    .expect_err("only the elevated writer may repair a machine installation");
     assert!(error.to_string().contains("elevated writer"), "{error}");
     assert_eq!(record_bytes(&trust), before);
 }

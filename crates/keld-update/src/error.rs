@@ -242,6 +242,13 @@ pub enum UpdateError {
         /// Non-secret failure detail.
         detail: String,
     },
+    /// The running executable is not bound to the installation it locates.
+    ExecutableBinding {
+        /// Selection boundary that refused the executable.
+        step: &'static str,
+        /// Non-secret failure detail.
+        detail: String,
+    },
     /// The build-time expected app identity payload is not a valid expectation.
     ExpectedIdentityInvalid {
         /// Failing part: a keld-pack payload detail, the channel or the public key.
@@ -307,6 +314,7 @@ impl UpdateError {
             Self::VersionPublication { .. } => "KELD-UPDATE-015",
             Self::Activation { .. } => "KELD-UPDATE-016",
             Self::ExpectedIdentityInvalid { .. } => "KELD-UPDATE-017",
+            Self::ExecutableBinding { .. } => "KELD-UPDATE-018",
         }
     }
 }
@@ -343,6 +351,10 @@ impl fmt::Display for UpdateError {
             Self::ManifestAuthentication { detail } => write!(
                 f,
                 "KELD-UPDATE-004: detached manifest authentication failed ({detail}). Do not parse or activate the feed; publish bytes signed by the compiled-in release key."
+            ),
+            Self::ExecutableBinding { step, detail } => write!(
+                f,
+                "KELD-UPDATE-018: installed executable {step} refused ({detail}). Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged."
             ),
             Self::ExpectedIdentityInvalid { detail } => write!(
                 f,

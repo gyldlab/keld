@@ -74,7 +74,7 @@ pub use windows_baseline::{
     initialize_windows_baseline, initialize_windows_machine_uac_baseline,
     initialize_windows_per_user_baseline, load_windows_activation_write_snapshot,
     load_windows_baseline, load_windows_recovery_inspection, repair_windows_unjournaled_versions,
-    select_windows_active_package,
+    select_active_package_for_executable, select_windows_active_package,
 };
 #[cfg(windows)]
 pub use windows_extraction::{CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot};
@@ -93,8 +93,7 @@ pub enum Channel {
 
 impl Channel {
     /// Parses an exact v0 wire spelling; any other text is not a channel.
-    #[must_use]
-    pub fn parse(text: &str) -> Option<Self> {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         match text {
             "stable" => Some(Self::Stable),
             "beta" => Some(Self::Beta),

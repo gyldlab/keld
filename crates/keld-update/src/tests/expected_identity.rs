@@ -36,17 +36,17 @@ fn invalid_detail(error: UpdateError) -> String {
 #[test]
 fn canonical_payload_decodes_to_exact_expectation() {
     let expected = decoded();
-    assert_eq!(expected.app_id(), APP_ID);
-    assert_eq!(expected.channel(), Channel::Stable);
-    assert_eq!(expected.target(), TARGET);
+    assert_eq!(expected.app_id, APP_ID);
+    assert_eq!(expected.channel, Channel::Stable);
+    assert_eq!(expected.target, TARGET);
     assert_eq!(
-        expected.signing_key_id(),
-        &SigningKeyId::from_public_key(&release_key())
+        expected.signing_key_id,
+        SigningKeyId::from_public_key(&release_key())
     );
     for (spelling, channel) in [("beta", Channel::Beta), ("canary", Channel::Canary)] {
         let other = ExpectedAppIdentity::decode(&payload(APP_ID, spelling, TARGET, release_key()))
             .expect("every supported channel spelling decodes");
-        assert_eq!(other.channel(), channel);
+        assert_eq!(other.channel, channel);
     }
 }
 
@@ -64,6 +64,27 @@ fn weak_release_key_refuses() {
     let error = ExpectedAppIdentity::decode(&payload(APP_ID, "stable", TARGET, WEAK_PUBLIC_KEY))
         .expect_err("a weak key cannot anchor update trust");
     assert_eq!(invalid_detail(error), "Ed25519 public key is weak");
+}
+
+#[test]
+fn undecodable_release_key_refuses() {
+    // The first small-y encoding the Ed25519 decoder rejects; found by search so the
+    // oracle is the decoder's own point validation, not a hand-picked constant.
+    let key = (2_u8..=u8::MAX)
+        .map(|y| {
+            let mut key = [0_u8; 32];
+            key[0] = y;
+            key
+        })
+        .find(|key| ed25519_dalek::VerifyingKey::from_bytes(key).is_err())
+        .expect("some small-y encoding is not an Ed25519 point");
+    let error = ExpectedAppIdentity::decode(&payload(APP_ID, "stable", TARGET, key))
+        .expect_err("an undecodable key cannot anchor update trust");
+    let detail = invalid_detail(error);
+    assert!(
+        detail.starts_with("Ed25519 public key is invalid: "),
+        "{detail}"
+    );
 }
 
 #[test]
@@ -124,7 +145,7 @@ fn record_fields_outside_the_expectation_do_not_match_here() {
     record.profile_digest = ProfileDigest([9_u8; 32]);
     expected
         .require_matches(&record)
-        .expect("roots, mode and profile are anchored by the located file identity and OS profile");
+        .expect("roots and mode are anchored by located-root identity and the mode's OS profile; baseline and profile digest follow those anchors");
 }
 
 #[test]

@@ -1812,15 +1812,25 @@ pub(super) fn higher_release_version(
     observation: &crate::ProvenanceObservation,
     version: &str,
 ) -> crate::VerifiedFull {
+    higher_release_version_with(verifier, observation, version, GOLDEN)
+}
+
+/// [`higher_release_version`] for canonical package content `content`.
+pub(super) fn higher_release_version_with(
+    verifier: &crate::UpdateVerifier,
+    observation: &crate::ProvenanceObservation,
+    version: &str,
+    content: &[u8],
+) -> crate::VerifiedFull {
     let admitted = verifier.admit(observation).expect("admit real provenance");
-    let compressed = zstd::stream::encode_all(Cursor::new(GOLDEN), 0)
+    let compressed = zstd::stream::encode_all(Cursor::new(content), 0)
         .expect("compress authenticated full package");
     let release = release_json(
         version,
         &compressed.len().to_string(),
         &digest_hex(&compressed),
-        &GOLDEN.len().to_string(),
-        &digest_hex(GOLDEN),
+        &content.len().to_string(),
+        &digest_hex(content),
         "",
     );
     let manifest = manifest_json(&release);
@@ -1976,8 +1986,16 @@ fn copy_fixture_tree(
 }
 
 pub(super) fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineTrust {
+    seed_per_user_baseline_with(root, GOLDEN)
+}
+
+/// [`seed_per_user_baseline`] for canonical package content `content`.
+pub(super) fn seed_per_user_baseline_with(
+    root: &std::path::Path,
+    content: &[u8],
+) -> WindowsBaselineTrust {
     let install_path = root.join("KeldPerUserFixture");
-    let mut trust = support::trust_for(&install_path);
+    let mut trust = support::trust_for_with(&install_path, content);
     trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
     let parent = support::directory(root);
     let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
@@ -1990,8 +2008,8 @@ pub(super) fn seed_per_user_baseline(root: &std::path::Path) -> WindowsBaselineT
     trust.volume_guid = qualified_volume_root(&parent).expect("fixture volume GUID");
 
     let archive = root.join("baseline.tar");
-    std::fs::write(&archive, GOLDEN).expect("canonical baseline source");
-    let verified = support::baseline(&trust);
+    std::fs::write(&archive, content).expect("canonical baseline source");
+    let verified = support::baseline_with(&trust, content);
     let mut source = open_source(&archive).expect("admit baseline source handle");
     let validated = verified
         .validate_windows_archive(&mut source)
