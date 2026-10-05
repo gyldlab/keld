@@ -3102,13 +3102,12 @@ mod tests {
                 other => panic!("unexpected capture fault control role {other:?}"),
             }
         }
-        if missing_role == "PARENT" {
-            holder_spawned_control
-                .as_mut()
-                .expect("holder spawn observation control")
-                .write_all(b"E")
-                .expect("release missing-parent early return");
-        }
+        // Both fault modes park the parent until the holder has been observed.
+        holder_spawned_control
+            .as_mut()
+            .expect("holder spawn observation control")
+            .write_all(b"E")
+            .expect("release faulted parent early return");
 
         let exited = fixture.supervisor().recv_event(Duration::from_secs(10));
         assert!(
@@ -3208,6 +3207,13 @@ mod tests {
         let mut stream = connect_capture_control(&control);
         write_capture_control_line(&mut stream, "PARENT", std::process::id(), &secret);
         if missing_role.is_some() {
+            // The holder has already exited in this fault mode. Returning drops the last
+            // handle to its process object, so wait until the test has opened it.
+            wait_capture_control_byte(
+                &mut holder_spawned_stream,
+                b'E',
+                "missing-holder early return release",
+            );
             return;
         }
         wait_capture_control_byte(&mut stream, b'E', "parent exit release");
