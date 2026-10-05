@@ -40,8 +40,8 @@
 # is >= 8x the slowest, so no per-test override is needed. Re-measure before
 # adding a slower test; never raise this to absorb a hang. The pinned
 # taiki-e/install-action step installs `cargo-nextest@latest` (0.9.145 on the hosted
-# runs that introduced this bound); that version is not pinned, so a nextest that drops
-# the `slow-timeout` table form would surface as a config error, not a silent skip.
+# runs that introduced this bound). That version is not pinned: re-check this bound's
+# behaviour whenever the installed nextest version changes.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # Real macOS no-flag rows own native AppKit/WKWebView sessions. KEL-142 adds
