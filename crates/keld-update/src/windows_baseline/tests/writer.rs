@@ -125,7 +125,7 @@ fn per_user_writer_snapshot_excludes_readers_and_competing_writers() {
 }
 
 #[test]
-fn per_user_writer_publishes_complete_version_without_selecting_it() {
+fn per_user_writer_completes_a_stage_without_publishing_or_selecting_it() {
     let fixture = tempfile::tempdir().expect("per-user immutable-version fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
@@ -155,44 +155,36 @@ fn per_user_writer_publishes_complete_version_without_selecting_it() {
         .extract(&candidate, &source)
         .expect("extract verified candidate as an incomplete stage");
     let diagnostic_name = stage.name().to_owned();
-    let published = stage
-        .publish_version()
-        .expect("publish complete immutable version under the writer lease");
-    assert_eq!(&published, candidate.identity());
+    let completed = stage
+        .complete()
+        .expect("complete the stage under the writer lease");
+    assert_eq!(completed.identity(), candidate.identity());
+    assert_eq!(completed.name(), diagnostic_name);
 
-    let version = trust
-        .installation
-        .update_root
-        .join("versions")
-        .join(&published.version);
-    assert!(version.is_dir());
-    assert!(!version.join("incomplete").exists());
+    let versions = trust.installation.update_root.join("versions");
+    let staged = versions.join(&diagnostic_name);
     assert!(
-        !trust
-            .installation
-            .update_root
-            .join("versions")
-            .join(&diagnostic_name)
-            .exists()
+        !versions.join(&candidate.identity().version).exists(),
+        "completion never renames the stage to a version"
     );
     assert_eq!(
-        std::fs::read(version.join("content.tar")).expect("retained authenticated archive"),
+        std::fs::read(staged.join("content.tar")).expect("retained authenticated archive"),
         GOLDEN
     );
     let complete = crate::records::decode_complete(
-        &std::fs::read(version.join(".complete")).expect("read completion record"),
+        &std::fs::read(staged.join(".complete")).expect("read completion record"),
     )
     .expect("canonical completion record");
     assert_eq!(complete.artifact, *candidate.identity());
     assert_eq!(complete.content_size, GOLDEN.len() as u64);
-    keld_guard::validate_windows_owner_private_directory(&support::directory(&version))
-        .expect("renamed version retains the exact owner-private descriptor");
+    keld_guard::validate_windows_owner_private_directory(&support::directory(&staged))
+        .expect("the completed stage retains the exact owner-private descriptor");
 
     let after = ["version-floor", "current", "last-known-good"]
-        .map(|name| std::fs::read(update.join(name)).expect("read active record after publish"));
+        .map(|name| std::fs::read(update.join(name)).expect("read active record after completion"));
     assert_eq!(
         after, before,
-        "version publication cannot select a candidate"
+        "completing a stage cannot select a candidate"
     );
     assert!(!update.join("previous-known-good").exists());
     assert!(!update.join("activation-journal").exists());
@@ -202,13 +194,9 @@ fn per_user_writer_publishes_complete_version_without_selecting_it() {
     );
 
     drop(root);
-    let reopen_error = load_windows_activation_write_snapshot(&trust, &verifier)
-        .expect_err("an unjournaled complete version is never selected by directory presence");
-    assert!(
-        reopen_error
-            .to_string()
-            .contains("unreferenced version entry"),
-        "unreferenced candidate must fail closed: {reopen_error}"
+    drop(
+        load_windows_activation_write_snapshot(&trust, &verifier)
+            .expect("a completed stage is a tolerated leftover, never a selectable version"),
     );
 }
 
@@ -250,8 +238,8 @@ fn per_user_version_publication_refuses_windows_case_alias_without_writing_marke
         .join("versions")
         .join(stage.name());
     let error = stage
-        .publish_version()
-        .expect_err("Windows ordinal case alias must refuse before marker or rename");
+        .complete()
+        .expect_err("Windows ordinal case alias must refuse before the completion marker");
     assert_eq!(error.code(), "KELD-UPDATE-015");
     assert!(matches!(
         error,
@@ -267,142 +255,49 @@ fn per_user_version_publication_refuses_windows_case_alias_without_writing_marke
     );
 }
 
+/// The completion marker is the stage's last write: a crash after it leaves only a
+/// tolerated stage. Every later cut belongs to the journaled activation transaction.
 #[test]
-fn version_publication_reports_unconfirmed_effect_after_rename() {
-    let fixture = tempfile::tempdir().expect("post-rename publication failure fixture");
+fn a_crash_after_the_completion_marker_leaves_only_an_unselected_stage() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("stage completion crash-cut fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
         crate::tests::signing_key().verifying_key().to_bytes(),
     )
     .expect("trusted per-user verifier");
-    let baseline = load_windows_baseline(&trust).expect("load exact baseline");
-    let observation = baseline.observation().clone();
-    drop(baseline);
-    let candidate = higher_release(&verifier, &observation);
     let source = fixture.path().join("candidate.tar");
     std::fs::write(&source, GOLDEN).expect("write verified candidate source");
     let update = &trust.installation.update_root;
     let before = ["version-floor", "current", "last-known-good"]
         .map(|name| std::fs::read(update.join(name)).expect("read active record before cut"));
 
-    let snapshot = load_windows_activation_write_snapshot(&trust, &verifier)
-        .expect("acquire exact per-user activation writer");
-    let mut root = snapshot
-        .open_extraction_root()
-        .expect("retain the exclusive writer lease");
-    let stage = root
-        .extract(&candidate, &source)
-        .expect("extract verified candidate");
-    let mut destination_tampered = false;
-    let error = stage
-        .publish_version_with_observer(|boundary, _| {
-            if boundary
-                == crate::windows_extraction::VersionPublicationBoundary::VersionDirectoryPublished
-            {
-                std::fs::write(
-                    update.join("versions").join("2.0.0").join("content.tar"),
-                    b"tampered after rename",
-                )?;
-                destination_tampered = true;
-            }
-            Ok(())
-        })
-        .expect_err("final readback must reject content changed after publication");
-    assert_eq!(error.code(), "KELD-UPDATE-015");
+    let marker =
+        run_version_publication_crash_child(fixture.path(), &trust.volume_guid, "complete-marker");
+    let stage_name = marker
+        .split_once(" stage=")
+        .expect("child reports the exact diagnostic stage")
+        .1
+        .to_owned();
+    let versions = update.join("versions");
+    assert!(versions.join(&stage_name).join(".complete").is_file());
     assert!(
-        destination_tampered,
-        "the observer mutates only after rename"
+        !versions.join("2.0.0").exists(),
+        "completion never publishes the final version name"
     );
-    assert!(
-        error.to_string().contains("final version readback failed"),
-        "the refusal comes from final version validation: {error}"
-    );
-    assert!(matches!(
-        error,
-        crate::UpdateError::VersionPublication {
-            outcome: crate::VersionPublicationOutcome::DestinationUnconfirmed,
-            ..
-        }
-    ));
-    let version = update.join("versions").join("2.0.0");
-    assert!(version.join(".complete").is_file());
-    assert_eq!(
-        std::fs::read(version.join("content.tar")).expect("read mutated destination"),
-        b"tampered after rename",
-        "the final readback test must actually corrupt the published archive"
+    drop(
+        load_windows_activation_write_snapshot(&trust, &verifier)
+            .expect("a completed stage does not halt or select anything"),
     );
     let after = ["version-floor", "current", "last-known-good"]
         .map(|name| std::fs::read(update.join(name)).expect("read active record after cut"));
-    assert_eq!(after, before, "publication cannot mutate active records");
+    assert_eq!(
+        after, before,
+        "the completion cut cannot mutate active records"
+    );
     assert!(!update.join("previous-known-good").exists());
     assert!(!update.join("activation-journal").exists());
-    drop(root);
-    assert!(
-        load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
-        "unconfirmed unjournaled version must stay fail-closed"
-    );
-}
-
-#[test]
-fn per_user_version_publication_crash_cuts_leave_only_unselected_artifacts() {
-    support::assert_user_principal_token();
-    for cut in ["complete-marker", "version-directory"] {
-        let fixture = tempfile::tempdir().expect("version publication crash-cut fixture");
-        let trust = seed_per_user_baseline(fixture.path());
-        let verifier = crate::UpdateVerifier::new(
-            trust.installation.clone(),
-            crate::tests::signing_key().verifying_key().to_bytes(),
-        )
-        .expect("trusted per-user verifier");
-        let source = fixture.path().join("candidate.tar");
-        std::fs::write(&source, GOLDEN).expect("write verified candidate source");
-        let update = &trust.installation.update_root;
-        let before = ["version-floor", "current", "last-known-good"]
-            .map(|name| std::fs::read(update.join(name)).expect("read active record before cut"));
-
-        let marker = run_version_publication_crash_child(fixture.path(), &trust.volume_guid, cut);
-        let stage_name = marker
-            .split_once(" stage=")
-            .expect("child reports the exact diagnostic stage")
-            .1
-            .to_owned();
-        let versions = update.join("versions");
-        let stage = versions.join(&stage_name);
-        let candidate = versions.join("2.0.0");
-        match cut {
-            "complete-marker" => {
-                assert!(stage.join(".complete").is_file());
-                assert!(
-                    !candidate.exists(),
-                    "crash before rename cannot publish the final version name"
-                );
-                drop(
-                    load_windows_activation_write_snapshot(&trust, &verifier)
-                        .expect("incomplete diagnostic stages do not select a candidate"),
-                );
-            }
-            "version-directory" => {
-                assert!(!stage.exists(), "the rename consumes the diagnostic leaf");
-                assert!(candidate.join(".complete").is_file());
-                let error = load_windows_activation_write_snapshot(&trust, &verifier)
-                    .expect_err("an unjournaled version refuses recovery and selection");
-                assert!(
-                    error.to_string().contains("unreferenced version entry"),
-                    "the directory alone cannot authorize selection: {error}"
-                );
-            }
-            _ => unreachable!("parent supplies a closed cut selector"),
-        }
-        let after = ["version-floor", "current", "last-known-good"]
-            .map(|name| std::fs::read(update.join(name)).expect("read active record after cut"));
-        assert_eq!(
-            after, before,
-            "the publication cut cannot mutate active records"
-        );
-        assert!(!update.join("previous-known-good").exists());
-        assert!(!update.join("activation-journal").exists());
-    }
 }
 
 #[test]
@@ -437,15 +332,12 @@ fn windows_version_publication_crash_helper() {
     let stage = extraction
         .extract(&candidate, &root.join("candidate.tar"))
         .expect("extract exact candidate before the requested crash cut");
-    let _ = stage.publish_version_with_observer(|boundary, stage_name| {
+    let _ = stage.complete_with_observer(|boundary, stage_name| {
         let requested = matches!(
             (cut.as_str(), boundary),
             (
                 "complete-marker",
                 crate::windows_extraction::VersionPublicationBoundary::CompleteMarkerPublished
-            ) | (
-                "version-directory",
-                crate::windows_extraction::VersionPublicationBoundary::VersionDirectoryPublished
             )
         );
         if requested {

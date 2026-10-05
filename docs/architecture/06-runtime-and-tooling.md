@@ -455,12 +455,12 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   the matching Windows-host streaming producer as a library API. Windows extraction
   binds the receipt's installation/key/profile to an actual owner-private, fixed-NTFS
   staging root and retains flushed/read-back files in an unpublished incomplete stage;
-  PerUserDirect can publish an immutable complete version under the retained writer
-  lease, without selecting it. KEL-266 implements actual-SYSTEM machine-baseline
+  PerUserDirect can complete an immutable stage under the retained writer lease without
+  publishing or selecting it. KEL-266 implements actual-SYSTEM machine-baseline
   initialization and a read-only protected baseline loader. KEL-270 adds the
   PerUserDirect baseline/bootstrap primitive with owner-private records and provenance-last
-  commit, and the common journaled transaction: PerUserDirect activates a published
-  version, binds an exact attempt health receipt, commits or rolls back, and resumes from
+  commit, and the common journaled transaction: PerUserDirect journals, publishes and
+  activates a completed stage, binds an exact attempt health receipt, commits or rolls back, and resumes from
   every persisted cut under the writer lease. Live feed orchestration, host candidate
   launch, the private health channel and its 30-second `Ready` observation, installed-host
   lifecycle composition and read-only selection of a committed update remain
@@ -981,23 +981,26 @@ does not enter this transaction:
 1. Validate direct-channel provenance and mode; obtain the mode's exclusive write lease;
    verify and stage `full`; validate the policy; retain valid current as the rollback
    target plus both known-good slots.
-2. Durably write `publish-pending` with exact attempt/artifact identities.
-3. Durably advance `version-floor`. A crash cannot expose a candidate while
+2. Durably write `publish-pending` with exact attempt/artifact identities. Until then
+   the candidate exists only as a completed `incomplete-*` stage.
+3. Durably rename that stage to the candidate's absent version name, then fully
+   re-verify and pin the published candidate.
+4. Durably advance `version-floor`. A crash cannot expose a candidate while
    still allowing its version or an older one to be re-offered as new.
-4. Durably publish `current` to the candidate.
-5. Durably write `awaiting-health`, then launch that exact candidate with a
+5. Durably publish `current` to the candidate.
+6. Durably write `awaiting-health`, then launch that exact candidate with a
    private attempt-bound health channel.
-6. On accepted health, durably write `health-accepted`, publish the prior
+7. On accepted health, durably write `health-accepted`, publish the prior
    last-known-good to `previous-known-good`, publish
    `last-known-good` to the candidate, retire the superseded older version (if any), then
    remove the journal durably. Deleting retired trees afterwards is best-effort
    cleanup that never touches either known-good slot.
-7. On launch/health failure, durably write `rollback-pending`, republish
+8. On launch/health failure, durably write `rollback-pending`, republish
    `current` to the attempt's validated rollback target, retire the failed candidate,
    remove the journal durably, and report failure. Rollback never changes the floor. The failed candidate therefore
    cannot be automatically selected again at the same version: selection returns the
    successful no-update result until a newly signed release advances beyond that floor.
-   Failures that occur before step 3 may retry the same signed version after repair.
+   Failures that occur before step 4 may retry the same signed version after repair.
 
 Retirement is the only mutation of a published version. While the journal still
 authorizes it, the writer renames the one unreferenced version directory, with the
@@ -1017,12 +1020,25 @@ leaf followed by deletion. A crash before any record sibling's publication renam
 leaves only such a `pending-*` file. The census admits `pending-*` names; before its
 first write, the next transaction removes each one only after verifying a regular,
 single-link file with the exact installation profile, and refuses anything else.
-A refusal of a new attempt before its `PublishPending` journal exists retires every
-version that attempt published, so a refused start leaves no orphan unless that
-retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
-in that window still leaves an orphan; the ordinary loader halts on it, and only the
-explicit unjournaled-version repair, admitted when no journal exists and every record
-validates, retires it under the writer lease. The repair first verifies and pins every
+A new attempt never publishes a version before its `PublishPending` journal is
+durable. A refused start, or a process crash before the journal, leaves only the
+completed stage under its `incomplete-*` name: no version, record or journal is
+published, and the next resolution deletes stale completed `incomplete-*` stages
+together with `retired-*` trees through retained handles. After installation only the
+writer-lease holder completes a stage (the initializer does so only in an empty
+`versions` before provenance exists), so a stage without a completion record, which may
+be a live or failed extraction by a root without the lease, stays as a diagnostic. Recovery identifies the stage by its
+completion record, which must name the exact journaled candidate; a pending attempt
+whose candidate is neither published nor staged at the recorded prior floor is
+abandoned with no record changed. Only a missing completion record or one naming
+another artifact excludes a stage; any fault reading a stage halts recovery with the
+journal intact. A published copy that fails its full re-verification is retired under
+the journal and the next exact stage is tried; with none left the attempt is abandoned
+before the floor moves, so the same signed version may be retried. A census fault about
+other entries retires nothing and keeps the journal. An installation that already holds an
+orphan complete version from the earlier publication order still halts the ordinary
+loader; only the explicit unjournaled-version repair, admitted when no journal exists
+and every record validates, retires it under the writer lease. The repair first verifies and pins every
 referenced version, removes stale `pending-*` record siblings, and admits for retirement
 only strict-SemVer entries whose completion record names that version in the
 installation's scope; any other unknown or damaged entry, including a non-directory under a
@@ -1118,8 +1134,11 @@ waits for its zero-active-process observation before recovery proceeds.
 
 1. For `publish-pending`, validate the floor and `current` against the exact
    journaled values. If current still equals the rollback target, the floor must equal
-   either the recorded prior floor or the candidate: advance the former to the exact
-   candidate, then publish and enter `awaiting-health`. If current already equals
+   either the recorded prior floor or the candidate. At the prior floor, publish a
+   still-staged candidate, or abandon the attempt without changing any record when the
+   candidate is neither published nor staged; then advance the floor to the exact
+   candidate, publish `current` and enter `awaiting-health`. At the candidate floor the
+   candidate must already be published. If current already equals
    the candidate, the floor must equal that exact candidate and recovery enters
    `awaiting-health` without republishing. Any third pointer/floor value, including
    a floor above the candidate, halts. The journal is never cleared before health or
@@ -1145,8 +1164,9 @@ evidence.
   sibling directory under `versions/`; create `tree/`, `content.tar`
   and `.complete` there in that order, call `FlushFileBuffers` on every
   writable file handle, close all stage handles, then publish the absent final version
-  directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Reopen the
-  final directory and read back every digest, policy and marker before pointer
+  directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`; an update does so
+  only after its `publish-pending` journal is durable. Reopen the
+  final directory and read back every digest, policy and marker before floor and pointer
   publication. Journal/pointer record replacement separately uses a
   same-directory temporary file, `FlushFileBuffers`, and same-volume
   `MoveFileExW` with replace-existing plus write-through. Neither path sets

@@ -9,12 +9,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use cap_fs_ext::DirExt as _;
 use cap_std::fs::File;
 
 use super::{
     RecordTarget, Roots, VersionPins, WindowsActivationWriteSnapshot, WindowsRecoveryInspection,
 };
-use crate::activation::{ActivationStep, ProtectedSlots, next_activation_step, retirement_due};
+use crate::activation::{
+    ActivationStep, CandidateLocation, ProtectedSlots, next_activation_step, retirement_due,
+};
 use crate::records::{
     self, ActivationFailureClass, ActivationJournal, ActivationPhase, PointerKind,
 };
@@ -22,7 +25,7 @@ use crate::windows_fs::RecordSlot;
 use crate::{ActivationEffect, ArtifactIdentity, UpdateError};
 
 const JOURNAL: &str = "activation-journal";
-/// The longest uninterrupted run is four steps; a larger count is a state-machine fault.
+/// The longest uninterrupted run is five steps; a larger count is a state-machine fault.
 const MAX_STEPS_PER_RUN: usize = 8;
 
 /// Attempt-bound health result delivered over the attempt's private health channel.
@@ -93,6 +96,12 @@ pub enum WindowsActivationOutcome {
     Committed,
     /// The attempt failed; `current` is the journaled rollback target and the floor stays.
     RolledBack,
+    /// The attempt never selected its candidate because no stage recording the exact
+    /// candidate and no published candidate version was present. Floor, pointers and
+    /// known-good slots are unchanged. An attempt whose every copy fails verification is
+    /// also abandoned, but is reported as an [`UpdateError::Activation`] refusal at step
+    /// `candidate verification`.
+    Abandoned,
 }
 
 /// Resolved attempt: the journal is removed and the writer lease is released.
@@ -260,13 +269,14 @@ impl WindowsActivationAttempt {
 }
 
 impl WindowsActivationWriteSnapshot {
-    /// Journals and selects one complete version published under this exact lease.
+    /// Journals an attempt for one stage completed under this exact lease, then publishes
+    /// and selects its candidate through the common transaction.
     ///
-    /// Any refusal before the `PublishPending` journal exists retires every version the
-    /// attempt published but no record references, so no orphan outlives the call unless
-    /// that retirement itself fails.
+    /// Nothing is renamed before the `PublishPending` journal is durable, so a refusal or
+    /// crash before it leaves only the stage, which every census tolerates.
     pub(crate) fn begin_activation(
         self,
+        stage: String,
         candidate: &ArtifactIdentity,
         coordinator_image_blake3: [u8; 32],
     ) -> Result<WindowsActivationAttempt, UpdateError> {
@@ -278,13 +288,8 @@ impl WindowsActivationWriteSnapshot {
             current,
             last_known_good,
             previous_known_good,
-            version_pins: mut pins,
+            version_pins: pins,
         } = self;
-        let referenced: Vec<ArtifactIdentity> = [&current, &last_known_good]
-            .into_iter()
-            .chain(previous_known_good.iter())
-            .cloned()
-            .collect();
         let preflight = (|| {
             if coordinator_image_blake3 == [0; 32] {
                 return Err(UpdateError::activation(
@@ -305,12 +310,15 @@ impl WindowsActivationWriteSnapshot {
                     "candidate collides with a referenced known-good version",
                 ));
             }
+            // The stage's completion record must name exactly this candidate.
+            if super::load::completed_stage_identity(&roots, &stage)?.as_ref() != Some(candidate) {
+                return Err(UpdateError::activation(
+                    "candidate stage",
+                    ActivationEffect::ProtectedStateUnchanged,
+                    "the completed stage records a different candidate",
+                ));
+            }
             remove_stale_record_preparations(&roots)?;
-            // The snapshot already verified and pinned every referenced version under
-            // this lease. Verify and pin the candidate; the census refuses any other
-            // complete version before a journal can reference it.
-            let candidate_pins =
-                super::load::pin_published_version(&roots, &referenced, candidate)?;
             let [attempt_id, health_channel_id, lifecycle_channel_id] = mint_identities()?;
             let journal = ActivationJournal {
                 attempt_id,
@@ -327,14 +335,15 @@ impl WindowsActivationWriteSnapshot {
             // The encoder validates the candidate strictly above the prior floor and the
             // complete prior-context invariants before any journal byte exists.
             let bytes = records::encode_activation_journal(&journal)?;
-            Ok((installation_id, candidate_pins, journal, bytes))
+            Ok((installation_id, journal, bytes))
         })();
-        let referenced_names: BTreeSet<String> = pins.keys().cloned().collect();
-        let (installation_id, candidate_pins, journal, bytes) = match preflight {
-            Ok(prepared) => prepared,
-            Err(cause) => return Err(abandon_unjournaled(&roots, &referenced_names, &cause)),
-        };
-        pins.insert(candidate.version.clone(), candidate_pins);
+        let (installation_id, journal, bytes) = preflight.map_err(|cause| {
+            UpdateError::activation(
+                "start",
+                ActivationEffect::ProtectedStateUnchanged,
+                refusal_detail(&cause),
+            )
+        })?;
         let mut transaction = Transaction {
             roots,
             lease,
@@ -344,6 +353,7 @@ impl WindowsActivationWriteSnapshot {
             last_known_good,
             previous_known_good,
             pins,
+            stage: Some(stage),
             journaled: false,
         };
         if let Err(cause) =
@@ -353,11 +363,10 @@ impl WindowsActivationWriteSnapshot {
                 transaction.journaled = true;
                 return Err(transaction.refault(&cause));
             }
-            drop(transaction.pins.remove(&candidate.version));
-            return Err(abandon_unjournaled(
-                &transaction.roots,
-                &referenced_names,
-                &cause,
+            return Err(UpdateError::activation(
+                "start",
+                ActivationEffect::ProtectedStateUnchanged,
+                refusal_detail(&cause),
             ));
         }
         transaction.journaled = true;
@@ -396,9 +405,7 @@ impl WindowsRecoveryInspection {
         transaction.require_retirement_binding(retirement, &installation_id)?;
         transaction.remove_stale_record_preparations()?;
         if transaction.journal.phase == ActivationPhase::PublishPending {
-            return transaction
-                .resume_unlaunched(installation_id)
-                .map(|attempt| WindowsRecoveryOutcome::AwaitingHealth(Box::new(attempt)));
+            return transaction.resume_unlaunched(installation_id);
         }
         if transaction.journal.phase == ActivationPhase::AwaitingHealth {
             transaction.write_phase(
@@ -419,16 +426,21 @@ impl WindowsRecoveryInspection {
     /// transaction owner keeps the share-zero lease (or its keeper retains a duplicate),
     /// so acquiring this lease proves no prior owner can still write and no candidate
     /// family exists. The resumed owner receives freshly minted health and lifecycle
-    /// channel identities, so no witness from an earlier owner can bind to it.
+    /// channel identities, so no witness from an earlier owner can bind to it. An
+    /// attempt whose candidate is neither staged nor published resolves as
+    /// [`WindowsActivationOutcome::Abandoned`].
     ///
     /// # Errors
     /// Refuses every other phase: a launched attempt needs
     /// [`Self::recover`] with an exact process-family retirement binding. A coordinator
-    /// digest that differs from the journal also refuses before any write.
+    /// digest that differs from the journal also refuses before any write. When every
+    /// exact copy fails verification, each is retired, the journal is removed, and the
+    /// refusal names step `candidate verification`. A fault reading a stage or an
+    /// unrelated census fault keeps the journal.
     pub fn resume_unlaunched(
         self,
         coordinator_image_blake3: [u8; 32],
-    ) -> Result<WindowsActivationAttempt, UpdateError> {
+    ) -> Result<WindowsRecoveryOutcome, UpdateError> {
         let (transaction, installation_id) = self.into_transaction(coordinator_image_blake3)?;
         if transaction.journal.phase != ActivationPhase::PublishPending {
             return Err(transaction.fault(
@@ -455,6 +467,7 @@ impl WindowsRecoveryInspection {
             last_known_good,
             previous_known_good,
             version_pins,
+            candidate_stage,
         } = self;
         let transaction = Transaction {
             roots,
@@ -465,6 +478,7 @@ impl WindowsRecoveryInspection {
             last_known_good,
             previous_known_good,
             pins: version_pins,
+            stage: candidate_stage,
             journaled: true,
         };
         if coordinator_image_blake3 != transaction.journal.helper_image_blake3 {
@@ -510,6 +524,8 @@ struct Transaction {
     last_known_good: ArtifactIdentity,
     previous_known_good: Option<ArtifactIdentity>,
     pins: BTreeMap<String, VersionPins>,
+    /// Completed `incomplete-*` stage of a candidate not yet renamed to its version.
+    stage: Option<String>,
     /// Whether the protected journal exists; it decides every refusal's effect.
     journaled: bool,
 }
@@ -538,7 +554,7 @@ impl Transaction {
     fn resume_unlaunched(
         mut self,
         installation_id: [u8; 32],
-    ) -> Result<WindowsActivationAttempt, UpdateError> {
+    ) -> Result<WindowsRecoveryOutcome, UpdateError> {
         let [_, health_channel_id, lifecycle_channel_id] =
             mint_identities().map_err(|cause| self.refault(&cause))?;
         let mut journal = self.journal.clone();
@@ -552,14 +568,13 @@ impl Transaction {
         journal.lifecycle_channel_id = lifecycle_channel_id;
         self.write_journal(journal, "channels-reminted")?;
         match self.advance()? {
-            Progress::AwaitingHealth => Ok(WindowsActivationAttempt {
-                transaction: self,
-                installation_id,
-            }),
-            Progress::Resolved(_) => Err(self.fault(
-                "unlaunched resume",
-                "a publish-pending attempt resolved before health",
-            )),
+            Progress::AwaitingHealth => Ok(WindowsRecoveryOutcome::AwaitingHealth(Box::new(
+                WindowsActivationAttempt {
+                    transaction: self,
+                    installation_id,
+                },
+            ))),
+            Progress::Resolved(resolution) => Ok(WindowsRecoveryOutcome::Resolved(resolution)),
         }
     }
 
@@ -571,19 +586,29 @@ impl Transaction {
                 Some(retiree) => self.version_present(&retiree.version)?,
                 None => false,
             };
-            let step = next_activation_step(&self.journal, &self.slots(), retiree_present)
-                .map_err(|refusal| {
-                    self.fault(
-                        "state",
-                        format!("journal and protected slots disagree: {refusal:?}"),
-                    )
-                })?;
+            let candidate = self.candidate_location()?;
+            let step =
+                next_activation_step(&self.journal, &self.slots(), candidate, retiree_present)
+                    .map_err(|refusal| {
+                        self.fault(
+                            "state",
+                            format!("journal and protected slots disagree: {refusal:?}"),
+                        )
+                    })?;
             match step {
                 ActivationStep::AwaitHealth => return Ok(Progress::AwaitingHealth),
                 ActivationStep::RemoveJournal => {
                     return self.remove_journal().map(Progress::Resolved);
                 }
+                ActivationStep::AbandonAttempt => {
+                    return self
+                        .remove_journal_as(WindowsActivationOutcome::Abandoned)
+                        .map(Progress::Resolved);
+                }
+                ActivationStep::PublishCandidate => self.publish_candidate()?,
                 ActivationStep::AdvanceFloor => {
+                    // The floor never names a candidate that has not been fully verified.
+                    self.ensure_candidate_pinned()?;
                     let floor = self.journal.candidate.version.clone();
                     let bytes =
                         records::encode_floor(&floor).map_err(|cause| self.refault(&cause))?;
@@ -719,6 +744,93 @@ impl Transaction {
         Ok(())
     }
 
+    /// Where the journal's candidate is: published under its version name, still in its
+    /// completed stage, or neither.
+    fn candidate_location(&self) -> Result<CandidateLocation, UpdateError> {
+        if self.version_present(&self.journal.candidate.version)? {
+            Ok(CandidateLocation::Published)
+        } else if self.stage.is_some() {
+            Ok(CandidateLocation::Staged)
+        } else {
+            Ok(CandidateLocation::Absent)
+        }
+    }
+
+    /// Renames the completed stage to the candidate's version name under the journal.
+    fn publish_candidate(&mut self) -> Result<(), UpdateError> {
+        let stage = self
+            .stage
+            .clone()
+            .ok_or_else(|| self.fault("candidate publication", "no completed stage is known"))?;
+        let versions = versions_for_rename(&self.roots).map_err(|cause| self.refault(&cause))?;
+        observe(false, "candidate-published");
+        crate::windows_fs::publish_new(&versions, &stage, &self.journal.candidate.version)
+            .map_err(|cause| self.fault("candidate publication", cause))?;
+        self.stage = None;
+        observe(true, "candidate-published");
+        Ok(())
+    }
+
+    /// Fully re-verifies and pins the published candidate.
+    ///
+    /// A census fault concerns other entries, so it keeps the journal and retires
+    /// nothing. A copy whose own content fails verification is retired under the journal
+    /// and the next stage recording the exact candidate is published and verified in its
+    /// place; each pass renames one stage away, so the loop ends. With no copy left, the
+    /// attempt is abandoned with nothing selected.
+    fn ensure_candidate_pinned(&mut self) -> Result<(), UpdateError> {
+        let candidate = self.journal.candidate.clone();
+        if self.pins.contains_key(&candidate.version) {
+            return Ok(());
+        }
+        let referenced: Vec<ArtifactIdentity> = [&self.current, &self.last_known_good]
+            .into_iter()
+            .chain(self.previous_known_good.iter())
+            .cloned()
+            .collect();
+        loop {
+            super::load::validate_publication_census(&self.roots, &referenced, &candidate)
+                .map_err(|cause| self.refault(&cause))?;
+            let cause = match super::load::verify_published_version(&self.roots, &candidate) {
+                Ok(pins) => {
+                    self.pins.insert(candidate.version.clone(), pins);
+                    return Ok(());
+                }
+                Err(cause) => cause,
+            };
+            self.retire(&candidate).map_err(|retirement| {
+                let (step, detail) = retirement.step_and_detail();
+                self.fault(
+                    step,
+                    format!(
+                        "{detail}; the candidate had failed verification: {}",
+                        refusal_detail(&cause)
+                    ),
+                )
+            })?;
+            self.stage = super::load::find_candidate_stage(&self.roots, &candidate)
+                .map_err(|stage_fault| self.refault(&stage_fault))?;
+            if self.stage.is_some() {
+                self.publish_candidate()?;
+                continue;
+            }
+            let resolution = self.remove_journal_as(WindowsActivationOutcome::Abandoned)?;
+            let effect = if resolution.cleanup.is_some() {
+                ActivationEffect::ResolvedWithLeftovers
+            } else {
+                ActivationEffect::ProtectedStateUnchanged
+            };
+            return Err(UpdateError::activation(
+                "candidate verification",
+                effect,
+                format!(
+                    "the published candidate failed verification and was retired: {}",
+                    refusal_detail(&cause)
+                ),
+            ));
+        }
+    }
+
     fn remove_journal(&mut self) -> Result<WindowsActivationResolution, UpdateError> {
         let outcome = match self.journal.phase {
             ActivationPhase::HealthAccepted { .. } => WindowsActivationOutcome::Committed,
@@ -730,6 +842,13 @@ impl Transaction {
                 ));
             }
         };
+        self.remove_journal_as(outcome)
+    }
+
+    fn remove_journal_as(
+        &mut self,
+        outcome: WindowsActivationOutcome,
+    ) -> Result<WindowsActivationResolution, UpdateError> {
         // Removal is a write-through rename to a generated never-read `pending-*` leaf,
         // so the fixed journal name is durably absent before resolution is reported.
         let removed = super::random_leaf_name("pending")
@@ -746,7 +865,7 @@ impl Transaction {
         observe(true, "journal-removed");
         let cleanup = crate::windows_fs::remove_file_relative(&parent, &removed)
             .map_err(|cause| leftover_error(format!("{removed}: {cause}")))
-            .and_then(|()| remove_retired_versions(&self.roots));
+            .and_then(|()| remove_generated_leftovers(&self.roots));
         Ok(WindowsActivationResolution {
             outcome,
             current: self.current.clone(),
@@ -805,33 +924,6 @@ impl Transaction {
     fn refault(&self, cause: &UpdateError) -> UpdateError {
         let (step, detail) = cause.step_and_detail();
         self.fault(step, detail)
-    }
-}
-
-/// Retires every unreferenced complete version left by an attempt refused before its
-/// journal existed, so no orphan outlives the call unless that retirement itself fails
-/// ([`ActivationEffect::UnjournaledVersionRetained`]).
-///
-/// Under the held lease the snapshot census admitted no unreferenced version, so any
-/// non-generated entry outside `referenced` was published during this lease session.
-fn abandon_unjournaled(
-    roots: &Roots,
-    referenced: &BTreeSet<String>,
-    cause: &UpdateError,
-) -> UpdateError {
-    let cause = refusal_detail(cause);
-    let retired = admit_unreferenced_versions(roots, referenced)
-        .and_then(|admitted| retire_admitted_versions(roots, &admitted));
-    match retired {
-        Ok(_) => UpdateError::activation("start", ActivationEffect::ProtectedStateUnchanged, cause),
-        Err(retirement) => UpdateError::activation(
-            "start",
-            ActivationEffect::UnjournaledVersionRetained,
-            format!(
-                "{cause}; retiring the unjournaled version failed: {}",
-                refusal_detail(&retirement)
-            ),
-        ),
     }
 }
 
@@ -906,11 +998,7 @@ fn retire_version_directory(roots: &Roots, version: &str) -> Result<(), UpdateEr
     }
     let leaf = super::random_leaf_name("retired")
         .map_err(|cause| super::error("retired identity", cause))?;
-    let versions = roots
-        .versions
-        .try_clone()
-        .map_err(|cause| super::error("versions parent", cause))?
-        .into_std_file();
+    let versions = versions_for_rename(roots)?;
     crate::windows_fs::publish_new(&versions, version, &leaf)
         .map_err(|cause| super::error("version retirement", cause))?;
     if version_present(roots, version)? {
@@ -920,6 +1008,19 @@ fn retire_version_directory(roots: &Roots, version: &str) -> Result<(), UpdateEr
         ));
     }
     Ok(())
+}
+
+/// The retained `versions` handle for a rename beneath it, after re-checking its exact
+/// installation descriptor: a write never trusts an earlier observation of the parent.
+fn versions_for_rename(roots: &Roots) -> Result<std::fs::File, UpdateError> {
+    let versions = roots
+        .versions
+        .try_clone()
+        .map_err(|cause| super::error("versions parent", cause))?
+        .into_std_file();
+    keld_guard::validate_windows_install_directory(&versions, roots.profile())
+        .map_err(|cause| super::error("versions profile", cause))?;
+    Ok(versions)
 }
 
 fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
@@ -934,12 +1035,21 @@ fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
     }
 }
 
-/// Deletes generated `retired-*` trees left by this or an earlier resolution.
+/// Deletes generated `retired-*` trees and stale completed `incomplete-*` stages.
 ///
+/// Only the writer-lease holder retires a version or completes a stage, and the caller
+/// holds that lease, so neither can belong to a live operation. (The initializer also
+/// completes a stage, but only in an empty `versions` before provenance exists, when no
+/// activation writer can run.) A completed stage left
+/// by a refused start, a crash before its journal or an abandoned attempt is never
+/// referenced again. A stage without a completion record may be a live extraction by an
+/// owner-private root that holds no lease, or a failed one that its caller must preserve
+/// for diagnosis, so it is left untouched; such an extraction always creates a fresh
+/// name and never reuses an existing one.
 /// Listing and deletion both go through the retained `versions` handle, so no pathname
 /// is resolved again and a link inside a tree is never followed. A `retired-*` entry
 /// that is not a directory refuses, as before.
-fn remove_retired_versions(roots: &Roots) -> Result<(), UpdateError> {
+fn remove_generated_leftovers(roots: &Roots) -> Result<(), UpdateError> {
     let versions = roots
         .versions
         .try_clone()
@@ -948,12 +1058,28 @@ fn remove_retired_versions(roots: &Roots) -> Result<(), UpdateError> {
     let names = crate::windows_fs::child_names(&versions)
         .map_err(|cause| leftover_error(cause.to_string()))?;
     for name in names {
-        if super::is_generated_leaf(&name, "retired") {
+        let stale = super::is_generated_leaf(&name, "retired")
+            || (super::is_generated_leaf(&name, "incomplete")
+                && completed_stage(roots, &name)
+                    .map_err(|cause| leftover_error(format!("{name}: {cause}")))?);
+        if stale {
             crate::windows_fs::remove_directory_tree(&versions, &name)
                 .map_err(|cause| leftover_error(format!("{name}: {cause}")))?;
         }
     }
     Ok(())
+}
+
+/// Whether the generated stage `name` is a non-reparse directory holding a completion
+/// record. The check opens the stage read-only and never follows a link, so it neither
+/// conflicts with the handles of a live extraction, which deny delete sharing, nor
+/// reports such a stage as a leftover. Any other failure is returned.
+fn completed_stage(roots: &Roots, name: &str) -> std::io::Result<bool> {
+    let metadata = roots.versions.symlink_metadata(name)?;
+    if crate::windows_extraction::ensure_directory(&metadata).is_err() {
+        return Ok(false);
+    }
+    super::load::completion_present(&roots.versions.open_dir_nofollow(name)?)
 }
 
 /// Removes flushed record siblings left by a crash before their publication rename.

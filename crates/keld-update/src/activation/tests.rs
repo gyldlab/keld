@@ -201,6 +201,7 @@ struct Slots {
     current: ArtifactIdentity,
     last_known_good: ArtifactIdentity,
     previous_known_good: Option<ArtifactIdentity>,
+    candidate: CandidateLocation,
     retiree_present: bool,
 }
 
@@ -221,6 +222,7 @@ fn prior_slots(journal: &ActivationJournal) -> Slots {
         current: journal.rollback_target.clone(),
         last_known_good: journal.prior_last_known_good.clone(),
         previous_known_good: journal.prior_previous_known_good.clone(),
+        candidate: CandidateLocation::Staged,
         retiree_present: true,
     }
 }
@@ -229,6 +231,7 @@ fn prior_slots(journal: &ActivationJournal) -> Slots {
 /// This is the specification's write list, not the Windows executor under test.
 fn apply_spec_effect(journal: &mut ActivationJournal, slots: &mut Slots, step: ActivationStep) {
     match step {
+        ActivationStep::PublishCandidate => slots.candidate = CandidateLocation::Published,
         ActivationStep::AdvanceFloor => slots.floor = journal.candidate.version.clone(),
         ActivationStep::SelectCandidate => slots.current = journal.candidate.clone(),
         ActivationStep::EnterAwaitingHealth => journal.phase = ActivationPhase::AwaitingHealth,
@@ -238,7 +241,9 @@ fn apply_spec_effect(journal: &mut ActivationJournal, slots: &mut Slots, step: A
         ActivationStep::CommitCandidate => slots.last_known_good = journal.candidate.clone(),
         ActivationStep::RestoreRollbackTarget => slots.current = journal.rollback_target.clone(),
         ActivationStep::RetireVersion => slots.retiree_present = false,
-        ActivationStep::AwaitHealth | ActivationStep::RemoveJournal => {
+        ActivationStep::AwaitHealth
+        | ActivationStep::RemoveJournal
+        | ActivationStep::AbandonAttempt => {
             panic!("{step:?} is a terminal decision, not a slot write")
         }
     }
@@ -248,12 +253,19 @@ fn apply_spec_effect(journal: &mut ActivationJournal, slots: &mut Slots, step: A
 fn trace(journal: &mut ActivationJournal, slots: &mut Slots) -> Vec<ActivationStep> {
     let mut steps = Vec::new();
     loop {
-        let step = next_activation_step(journal, &slots.view(), slots.retiree_present)
-            .unwrap_or_else(|refusal| panic!("on-trace state refused: {refusal:?} at {slots:?}"));
+        let step = next_activation_step(
+            journal,
+            &slots.view(),
+            slots.candidate,
+            slots.retiree_present,
+        )
+        .unwrap_or_else(|refusal| panic!("on-trace state refused: {refusal:?} at {slots:?}"));
         steps.push(step);
         if matches!(
             step,
-            ActivationStep::AwaitHealth | ActivationStep::RemoveJournal
+            ActivationStep::AwaitHealth
+                | ActivationStep::RemoveJournal
+                | ActivationStep::AbandonAttempt
         ) {
             return steps;
         }
@@ -269,7 +281,7 @@ fn trace(journal: &mut ActivationJournal, slots: &mut Slots) -> Vec<ActivationSt
 fn every_persisted_cut_resumes_the_exact_next_spec_step_for_commit_and_rollback() {
     use ActivationStep::{
         AdvanceFloor, AwaitHealth, CommitCandidate, EnterAwaitingHealth, PreservePriorKnownGood,
-        RemoveJournal, RestoreRollbackTarget, RetireVersion, SelectCandidate,
+        PublishCandidate, RemoveJournal, RestoreRollbackTarget, RetireVersion, SelectCandidate,
     };
     let start = journal(ActivationPhase::PublishPending);
     let mut forward = start.clone();
@@ -278,6 +290,7 @@ fn every_persisted_cut_resumes_the_exact_next_spec_step_for_commit_and_rollback(
     assert_eq!(
         publish,
         [
+            PublishCandidate,
             AdvanceFloor,
             SelectCandidate,
             EnterAwaitingHealth,
@@ -354,6 +367,7 @@ fn every_persisted_cut_resumes_the_exact_next_spec_step_for_commit_and_rollback(
         if !matches!(phase, ActivationPhase::PublishPending) {
             slots.floor = journal.candidate.version.clone();
             slots.current = journal.candidate.clone();
+            slots.candidate = CandidateLocation::Published;
         }
         for cut in 0..expected.len() {
             let mut resumed_journal = journal.clone();
@@ -399,7 +413,7 @@ fn retirement_targets_only_the_unreferenced_version_after_its_pointer_steps() {
         "the first update has no superseded version to retire"
     );
     assert_eq!(
-        next_activation_step(&accepted, &slots.view(), true),
+        next_activation_step(&accepted, &slots.view(), slots.candidate, true),
         Ok(ActivationStep::RemoveJournal)
     );
 
@@ -420,7 +434,7 @@ fn retirement_targets_only_the_unreferenced_version_after_its_pointer_steps() {
         Some(&rollback.candidate)
     );
     assert_eq!(
-        next_activation_step(&rollback, &slots.view(), false),
+        next_activation_step(&rollback, &slots.view(), slots.candidate, false),
         Ok(ActivationStep::RemoveJournal),
         "an already-retired candidate resolves by removing the journal"
     );
@@ -442,14 +456,14 @@ fn off_trace_slots_refuse_in_every_phase_without_a_write_step() {
     let mut above = prior_slots(&publish);
     above.floor = "9.0.0".to_owned();
     assert_eq!(
-        next_activation_step(&publish, &above.view(), true),
+        next_activation_step(&publish, &above.view(), above.candidate, true),
         Err(RecoveryRefusal::FloorMismatch)
     );
 
     let awaiting = journal(ActivationPhase::AwaitingHealth);
     let unselected = prior_slots(&awaiting);
     assert_eq!(
-        next_activation_step(&awaiting, &unselected.view(), true),
+        next_activation_step(&awaiting, &unselected.view(), unselected.candidate, true),
         Err(RecoveryRefusal::FloorMismatch),
         "awaiting-health with the prior floor is not a persisted cut"
     );
@@ -462,7 +476,7 @@ fn off_trace_slots_refuse_in_every_phase_without_a_write_step() {
     wrong_lkg.current = accepted.candidate.clone();
     wrong_lkg.last_known_good = accepted.candidate.clone();
     assert_eq!(
-        next_activation_step(&accepted, &wrong_lkg.view(), true),
+        next_activation_step(&accepted, &wrong_lkg.view(), wrong_lkg.candidate, true),
         Err(RecoveryRefusal::KnownGoodMismatch),
         "last-known-good cannot be committed before previous-known-good is preserved"
     );
@@ -474,7 +488,7 @@ fn off_trace_slots_refuse_in_every_phase_without_a_write_step() {
     unrelated.floor = rollback.candidate.version.clone();
     unrelated.current.content_blake3 = [0xee; 32];
     assert_eq!(
-        next_activation_step(&rollback, &unrelated.view(), true),
+        next_activation_step(&rollback, &unrelated.view(), unrelated.candidate, true),
         Err(RecoveryRefusal::CurrentFloorMismatch),
         "rollback never adopts an unrelated current artifact"
     );
@@ -489,7 +503,7 @@ fn accepted_health_with_a_digest_for_other_attempt_fields_refuses() {
     slots.floor = accepted.candidate.version.clone();
     slots.current = accepted.candidate.clone();
     assert_eq!(
-        next_activation_step(&accepted, &slots.view(), true),
+        next_activation_step(&accepted, &slots.view(), slots.candidate, true),
         Ok(ActivationStep::PreservePriorKnownGood),
         "the digest of the journal's own attempt, channel and candidate is accepted"
     );
@@ -503,9 +517,37 @@ fn accepted_health_with_a_digest_for_other_attempt_fields_refuses() {
         let mut mixed_slots = slots.clone();
         mixed_slots.current = mixed.candidate.clone();
         assert_eq!(
-            next_activation_step(&mixed, &mixed_slots.view(), true),
+            next_activation_step(&mixed, &mixed_slots.view(), mixed_slots.candidate, true),
             Err(RecoveryRefusal::InvalidJournalContext),
             "a recorded digest that no longer matches its journal fields halts"
+        );
+    }
+}
+
+#[test]
+fn a_publish_pending_attempt_publishes_a_staged_candidate_or_abandons_a_missing_one() {
+    let publish = journal(ActivationPhase::PublishPending);
+    let mut slots = prior_slots(&publish);
+    let step = |slots: &Slots| next_activation_step(&publish, &slots.view(), slots.candidate, true);
+    assert_eq!(step(&slots), Ok(ActivationStep::PublishCandidate));
+    slots.candidate = CandidateLocation::Absent;
+    assert_eq!(
+        step(&slots),
+        Ok(ActivationStep::AbandonAttempt),
+        "a journal whose stage is gone changed nothing, so it is abandoned"
+    );
+    slots.candidate = CandidateLocation::Published;
+    assert_eq!(step(&slots), Ok(ActivationStep::AdvanceFloor));
+
+    // Once the floor names the candidate, publication must already have happened.
+    slots.floor = publish.candidate.version.clone();
+    assert_eq!(step(&slots), Ok(ActivationStep::SelectCandidate));
+    for missing in [CandidateLocation::Staged, CandidateLocation::Absent] {
+        slots.candidate = missing;
+        assert_eq!(
+            step(&slots),
+            Err(RecoveryRefusal::CandidateUnpublished),
+            "{missing:?} with an advanced floor is not a persisted cut"
         );
     }
 }

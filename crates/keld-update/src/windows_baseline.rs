@@ -195,6 +195,8 @@ pub struct WindowsRecoveryInspection {
     last_known_good: ArtifactIdentity,
     previous_known_good: Option<ArtifactIdentity>,
     version_pins: BTreeMap<String, VersionPins>,
+    /// Completed stage of a publish-pending candidate that is not yet renamed.
+    candidate_stage: Option<String>,
 }
 
 impl WindowsActivationWriteSnapshot {
@@ -262,14 +264,6 @@ impl WindowsActivationWriteSnapshot {
 
     pub(crate) const fn profile(&self) -> keld_guard::WindowsInstallProtectionProfile {
         self.roots.profile()
-    }
-
-    pub(crate) fn verify_published_version(
-        &self,
-        expected: &ArtifactIdentity,
-        content_size: u64,
-    ) -> Result<(), UpdateError> {
-        load::verify_completed_version(&self.roots, expected, content_size)
     }
 }
 

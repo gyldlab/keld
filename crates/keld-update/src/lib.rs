@@ -76,7 +76,7 @@ pub use windows_baseline::{
     load_windows_recovery_inspection, repair_windows_unjournaled_versions,
 };
 #[cfg(windows)]
-pub use windows_extraction::{ExtractedWindowsStage, WindowsExtractionRoot};
+pub use windows_extraction::{CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot};
 
 /// Release channels supported by update feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

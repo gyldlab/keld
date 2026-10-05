@@ -160,6 +160,10 @@ pub fn load_windows_recovery_inspection(
 
     // A version whose retirement is the next journal step may already be renamed by
     // a lost owner; it is admitted by name but never pinned, validated or selected.
+    // A publish-pending attempt whose floor is still prior may not have renamed its
+    // stage yet: its candidate is located here and verified by the transaction itself.
+    let unpublished_candidate = journal.phase == crate::records::ActivationPhase::PublishPending
+        && records.version_floor == journal.prior_floor;
     let retiree = crate::activation::retirement_due(
         &journal,
         &crate::activation::ProtectedSlots {
@@ -170,24 +174,15 @@ pub fn load_windows_recovery_inspection(
         },
     )
     .cloned();
-    let mut selected = vec![records.current.clone(), records.last_known_good.clone()];
-    if let Some(previous) = &records.previous_known_good
-        && !selected.contains(previous)
-    {
-        selected.push(previous.clone());
-    }
-    for artifact in [
-        &journal.candidate,
-        &journal.rollback_target,
-        &journal.prior_last_known_good,
-    ]
-    .into_iter()
-    .chain(journal.prior_previous_known_good.iter())
-    {
-        if !selected.contains(artifact) && retiree.as_ref() != Some(artifact) {
-            selected.push(artifact.clone());
-        }
-    }
+    let excluded = [
+        retiree.as_ref(),
+        unpublished_candidate.then_some(&journal.candidate),
+    ];
+    let slots = [Some(&records.current), Some(&records.last_known_good)]
+        .into_iter()
+        .chain([records.previous_known_good.as_ref()])
+        .flatten();
+    let selected = recovery_selection(&journal, slots, &excluded);
     for artifact in [&records.current, &records.last_known_good]
         .into_iter()
         .chain(records.previous_known_good.iter())
@@ -203,7 +198,12 @@ pub fn load_windows_recovery_inspection(
         validate_selected_artifact(&trust.installation.baseline, artifact, &prior_floor)?;
     }
     validate_artifact_scope_and_baseline(&trust.installation.baseline, &journal.candidate)?;
-    let version_pins = pin_selected_versions(&roots, &selected, retiree.as_ref())?;
+    let (admitted_by_name, candidate_stage) = if unpublished_candidate {
+        locate_unpublished_candidate(&roots, &journal.candidate)?
+    } else {
+        (retiree.clone(), None)
+    };
+    let version_pins = pin_selected_versions(&roots, &selected, admitted_by_name.as_ref())?;
     Ok(WindowsRecoveryInspection {
         roots,
         lease,
@@ -215,6 +215,7 @@ pub fn load_windows_recovery_inspection(
         last_known_good: records.last_known_good,
         previous_known_good: records.previous_known_good,
         version_pins,
+        candidate_stage,
     })
 }
 
@@ -601,18 +602,128 @@ pub(super) fn validate_unjournaled_version(roots: &Roots, name: &str) -> Result<
     Ok(())
 }
 
-/// Pins one version published under the held writer lease.
+/// Every version a recovery must keep pinned: the protected slots and the journal's
+/// artifacts, except the `excluded` ones that the transaction handles by name.
+fn recovery_selection<'a>(
+    journal: &'a records::ActivationJournal,
+    slots: impl Iterator<Item = &'a crate::ArtifactIdentity>,
+    excluded: &[Option<&crate::ArtifactIdentity>],
+) -> Vec<crate::ArtifactIdentity> {
+    let mut selected: Vec<crate::ArtifactIdentity> = Vec::new();
+    for artifact in slots
+        .chain([
+            &journal.candidate,
+            &journal.rollback_target,
+            &journal.prior_last_known_good,
+        ])
+        .chain(journal.prior_previous_known_good.iter())
+    {
+        if !selected.contains(artifact) && !excluded.contains(&Some(artifact)) {
+            selected.push(artifact.clone());
+        }
+    }
+    selected
+}
+
+/// Locates a publish-pending candidate whose floor is still prior: a published version
+/// is admitted by name for the transaction to verify; otherwise its completed stage, if
+/// any, is returned for publication.
+fn locate_unpublished_candidate(
+    roots: &Roots,
+    candidate: &crate::ArtifactIdentity,
+) -> Result<(Option<crate::ArtifactIdentity>, Option<String>), UpdateError> {
+    match roots.versions.symlink_metadata(&candidate.version) {
+        Ok(_) => Ok((Some(candidate.clone()), None)),
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+            Ok((None, find_candidate_stage(roots, candidate)?))
+        }
+        Err(cause) => Err(error("candidate presence", cause)),
+    }
+}
+
+/// Whether `stage` holds a completion record. Only a definite absence is `false`; every
+/// other failure is returned, never read as absence.
+pub(super) fn completion_present(stage: &Dir) -> std::io::Result<bool> {
+    match stage.symlink_metadata(".complete") {
+        Ok(_) => Ok(true),
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(cause) => Err(cause),
+    }
+}
+
+/// Reads the completion identity of one generated `incomplete-*` stage after admitting
+/// the stage directory and its completion record against the installation profile.
 ///
-/// The census admits only the already-pinned selections, this candidate and generated
-/// diagnostics; the candidate's completion record, archive and tree are fully re-verified.
-pub(super) fn pin_published_version(
+/// `None` means the stage has no completion record. Every other failure, including a
+/// stage or record that does not admit, is a fault.
+pub(super) fn completed_stage_identity(
+    roots: &Roots,
+    stage: &str,
+) -> Result<Option<crate::ArtifactIdentity>, UpdateError> {
+    if !super::is_generated_leaf(stage, "incomplete") {
+        return Err(error("candidate stage", "not a generated stage name"));
+    }
+    let directory = open_directory(&roots.versions, stage, roots.profile())?;
+    if !completion_present(&directory).map_err(|cause| error("stage completion", cause))? {
+        return Ok(None);
+    }
+    let (_, bytes) = read_record(&directory, ".complete", roots.profile())?;
+    Ok(Some(records::decode_complete(&bytes)?.artifact))
+}
+
+/// Finds the lowest-named completed stage whose completion record names exactly
+/// `candidate`.
+///
+/// Only two answers skip a stage: it has no completion record, or its record names
+/// another artifact. Any fault reading a stage is returned, so recovery halts with the
+/// journal intact instead of mistaking an unreadable stage for an absent one. Every copy
+/// is fully re-verified after its rename, and a copy that fails is retired before the
+/// next exact copy is tried, so the order among exact matches never decides the outcome.
+pub(super) fn find_candidate_stage(
+    roots: &Roots,
+    candidate: &crate::ArtifactIdentity,
+) -> Result<Option<String>, UpdateError> {
+    let mut stages = Vec::new();
+    for entry in roots
+        .versions
+        .entries()
+        .map_err(|cause| error("candidate stage census", cause))?
+    {
+        let entry = entry.map_err(|cause| error("candidate stage census", cause))?;
+        if let Ok(name) = entry.file_name().into_string()
+            && super::is_generated_leaf(&name, "incomplete")
+        {
+            stages.push(name);
+        }
+    }
+    stages.sort();
+    for stage in stages {
+        if completed_stage_identity(roots, &stage)?.as_ref() == Some(candidate) {
+            return Ok(Some(stage));
+        }
+    }
+    Ok(None)
+}
+
+/// Validates the version census around a published candidate: only the already-pinned
+/// selections, this candidate and generated diagnostics may exist. A failure here is
+/// about other entries, never about the candidate's own content.
+pub(super) fn validate_publication_census(
     roots: &Roots,
     pinned: &[crate::ArtifactIdentity],
     candidate: &crate::ArtifactIdentity,
-) -> Result<VersionPins, UpdateError> {
+) -> Result<(), UpdateError> {
     let mut selected = pinned.to_vec();
     selected.push(candidate.clone());
-    validate_activation_version_census(roots, &selected, None)?;
+    validate_activation_version_census(roots, &selected, None)
+}
+
+/// Fully re-verifies and pins one version published under the held writer lease: its
+/// completion record, archive and tree.
+pub(super) fn verify_published_version(
+    roots: &Roots,
+    candidate: &crate::ArtifactIdentity,
+) -> Result<VersionPins, UpdateError> {
     validate_version_contents(roots, read_version_completion(roots, candidate)?)
 }
 
@@ -1059,22 +1170,6 @@ fn validate_version_contents(
         _directories: directories,
         files,
     })
-}
-
-pub(super) fn verify_completed_version(
-    roots: &Roots,
-    expected: &crate::ArtifactIdentity,
-    expected_content_size: u64,
-) -> Result<(), UpdateError> {
-    let completion = read_version_completion(roots, expected)?;
-    if completion.record.content_size != expected_content_size {
-        return Err(error(
-            "completion size",
-            "recorded content size differs from the verified package receipt",
-        ));
-    }
-    drop(validate_version_contents(roots, completion)?);
-    Ok(())
 }
 
 fn open_directory(

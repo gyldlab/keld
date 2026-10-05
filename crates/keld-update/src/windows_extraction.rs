@@ -89,8 +89,31 @@ pub struct ExtractedWindowsStage<'root> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VersionPublicationBoundary {
     CompleteMarkerPublished,
-    BeforeVersionRename,
-    VersionDirectoryPublished,
+}
+
+/// A stage whose completion record is published, still under its `incomplete-*` name.
+///
+/// It selects nothing and is not a version: only
+/// [`WindowsExtractionRoot::begin_activation`] journals an attempt and then renames
+/// it to its version name. Until then the stage is a tolerated diagnostic leftover.
+#[derive(Debug)]
+pub struct CompletedWindowsStage {
+    name: String,
+    identity: ArtifactIdentity,
+}
+
+impl CompletedWindowsStage {
+    /// Signed identity recorded in the stage's completion record.
+    #[must_use]
+    pub const fn identity(&self) -> &ArtifactIdentity {
+        &self.identity
+    }
+
+    /// Generated `incomplete-*` directory name beneath the admitted root's `versions`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl ExtractedWindowsStage<'_> {
@@ -106,33 +129,34 @@ impl ExtractedWindowsStage<'_> {
         &self.name
     }
 
-    /// Publishes this verified stage as one complete, immutable version directory.
+    /// Publishes this verified stage's completion record without renaming it.
     ///
-    /// This does not change the version floor, active pointer, known-good slots or
-    /// activation journal. The stage is consumable only when its root retains the
-    /// installation-wide activation writer lease.
+    /// The stage keeps its generated `incomplete-*` name, so a crash at any point
+    /// leaves only a tolerated leftover and never an unreferenced version.
+    /// [`WindowsExtractionRoot::begin_activation`] journals the attempt before it
+    /// renames the stage to its version name. This changes no version floor, pointer,
+    /// known-good slot or journal.
     ///
     /// # Errors
     /// Refuses a stage without the writer lease, any stage or destination substitution,
-    /// profile/readback mismatch, and any failure at the completion-marker or
-    /// absent-target version-publication boundary. A post-rename readback failure
-    /// reports that the destination may exist but remains unselected.
-    pub fn publish_version(self) -> Result<ArtifactIdentity, UpdateError> {
-        self.publish_version_inner(|_, _| Ok(()))
+    /// a case-insensitive version-name collision, and any failure at the
+    /// completion-marker boundary. The stage is retained in every case.
+    pub fn complete(self) -> Result<CompletedWindowsStage, UpdateError> {
+        self.complete_inner(|_, _| Ok(()))
     }
 
     #[cfg(test)]
-    pub(crate) fn publish_version_with_observer(
+    pub(crate) fn complete_with_observer(
         self,
         observe: impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
-    ) -> Result<ArtifactIdentity, UpdateError> {
-        self.publish_version_inner(observe)
+    ) -> Result<CompletedWindowsStage, UpdateError> {
+        self.complete_inner(observe)
     }
 
-    fn publish_version_inner(
+    fn complete_inner(
         self,
         mut observe: impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
-    ) -> Result<ArtifactIdentity, UpdateError> {
+    ) -> Result<CompletedWindowsStage, UpdateError> {
         let stage_name = self.name.clone();
         let candidate = self.identity.clone();
         let content_size = self.content_size;
@@ -165,20 +189,14 @@ impl ExtractedWindowsStage<'_> {
             content_size,
             &mut observe,
         )?;
-
-        // This cloned directory handle has no delete sharing. Release it with the
-        // retained tree/file handles before the same-volume directory rename.
+        // The retained tree/file handles have no delete sharing; release them so the
+        // journaled transaction can rename the stage.
         drop(self.files);
         drop(self.directories);
-        publish_complete_stage(
-            root,
-            snapshot,
-            &candidate,
-            &stage_name,
-            content_size,
-            &mut observe,
-        )?;
-        Ok(candidate)
+        Ok(CompletedWindowsStage {
+            name: stage_name,
+            identity: candidate,
+        })
     }
 }
 
@@ -278,74 +296,6 @@ fn prepare_complete_stage(
             )
         },
     )
-}
-
-fn publish_complete_stage(
-    root: &WindowsExtractionRoot,
-    snapshot: &crate::WindowsActivationWriteSnapshot,
-    candidate: &ArtifactIdentity,
-    stage_name: &str,
-    content_size: u64,
-    observe: &mut impl FnMut(VersionPublicationBoundary, &str) -> io::Result<()>,
-) -> Result<(), UpdateError> {
-    let versions = root
-        .versions
-        .try_clone()
-        .map_err(|cause| {
-            version_publication_error(
-                candidate,
-                stage_name,
-                VersionPublicationOutcome::StageRetained,
-                format!("retained versions directory clone failed: {cause}"),
-            )
-        })?
-        .into_std_file();
-    root.authority.validate_parent(&versions).map_err(|cause| {
-        version_publication_error(
-            candidate,
-            stage_name,
-            VersionPublicationOutcome::StageRetained,
-            format!("versions profile changed before rename: {cause}"),
-        )
-    })?;
-    observe(VersionPublicationBoundary::BeforeVersionRename, stage_name).map_err(|cause| {
-        version_publication_error(
-            candidate,
-            stage_name,
-            VersionPublicationOutcome::StageRetained,
-            format!("failure before version-directory rename: {cause}"),
-        )
-    })?;
-    crate::windows_fs::publish_new(&versions, stage_name, &candidate.version).map_err(|cause| {
-        version_publication_error(
-            candidate,
-            stage_name,
-            VersionPublicationOutcome::DestinationUnconfirmed,
-            format!("absent-target write-through rename did not confirm its effect: {cause}"),
-        )
-    })?;
-    observe(
-        VersionPublicationBoundary::VersionDirectoryPublished,
-        stage_name,
-    )
-    .map_err(|cause| {
-        version_publication_error(
-            candidate,
-            stage_name,
-            VersionPublicationOutcome::DestinationUnconfirmed,
-            format!("failure after version-directory rename: {cause}"),
-        )
-    })?;
-    snapshot
-        .verify_published_version(candidate, content_size)
-        .map_err(|cause| {
-            version_publication_error(
-                candidate,
-                stage_name,
-                VersionPublicationOutcome::DestinationUnconfirmed,
-                format!("final version readback failed: {cause}"),
-            )
-        })
 }
 
 fn version_publication_error(
@@ -581,26 +531,33 @@ impl WindowsExtractionRoot {
         })
     }
 
-    /// Starts the common journaled activation for a version published under this root.
+    /// Starts the common journaled activation for a completed stage.
     ///
-    /// The root must retain the exclusive activation-writer lease that published the
-    /// candidate. Under that same lease the transaction re-verifies and pins the
-    /// complete candidate and every referenced version, mints fresh attempt, health and
-    /// lifecycle identities, durably journals `PublishPending`, advances the floor,
-    /// selects `current` and journals `AwaitingHealth`. The returned attempt keeps the
-    /// lease until health commits or rolls it back.
+    /// The root must retain the exclusive activation-writer lease. The stage value is
+    /// not bound to the lease session that completed it: under this root's lease the
+    /// transaction re-reads the stage's completion
+    /// record, re-verifies and pins every referenced version, mints fresh attempt,
+    /// health and lifecycle identities and durably journals `PublishPending`. Only then
+    /// does it rename the stage to its version name, fully re-verify and pin the
+    /// candidate, advance the floor, select `current` and journal `AwaitingHealth`. The
+    /// returned attempt keeps the lease until health commits or rolls it back.
     ///
     /// # Errors
-    /// Refuses a root without the writer lease, a zero coordinator digest, a candidate
+    /// Refuses a root without the writer lease, a zero coordinator digest, a stage
+    /// whose completion record does not name that exact candidate, a candidate
     /// outside the installation scope or not above the floor, any unverified or
     /// unreferenced version, or a failed durable step. Every refusal is
     /// [`UpdateError::Activation`]; its [`crate::ActivationEffect`] states what remains.
-    /// A refusal before the `PublishPending` journal exists retires the versions this
-    /// attempt published, so no orphan outlives the call unless that retirement itself
-    /// fails ([`crate::ActivationEffect::UnjournaledVersionRetained`]).
+    /// A refusal before the journal exists leaves only the stage, which is a tolerated
+    /// leftover, never an unreferenced version. A copy that fails verification after its
+    /// rename is retired under the journal and the next stage recording the exact
+    /// candidate is tried. With none left the journal is removed, and the refusal names
+    /// step `candidate verification` with
+    /// [`crate::ActivationEffect::ProtectedStateUnchanged`] (or
+    /// [`crate::ActivationEffect::ResolvedWithLeftovers`] if cleanup is incomplete).
     pub fn begin_activation(
         self,
-        candidate: &ArtifactIdentity,
+        stage: CompletedWindowsStage,
         coordinator_image_blake3: [u8; 32],
     ) -> Result<crate::WindowsActivationAttempt, UpdateError> {
         let Self {
@@ -611,7 +568,7 @@ impl WindowsExtractionRoot {
         drop(versions);
         match authority {
             RootAuthority::ActivationWriter { snapshot } => {
-                snapshot.begin_activation(candidate, coordinator_image_blake3)
+                snapshot.begin_activation(stage.name, &stage.identity, coordinator_image_blake3)
             }
             RootAuthority::OwnerPrivate { .. } | RootAuthority::Machine { .. } => {
                 Err(UpdateError::activation(

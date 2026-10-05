@@ -47,6 +47,28 @@ existing exclusive writer lease, and item 4 adds one public repair entry point:
 Rationale and native evidence are in KEL-270 comments `b571afdb` and `f6b1e538` and the
 T4b pull request.
 
+KEL-270 F1 amendment: owner approval comment
+`9c84d37c-7f13-43ef-b5ec-fb5bc189bb81` (2026-10-05), recorded with the approved proposal
+in execution artifact `adaa572e-9b3a-4528-8f6d-1b644782470e`, after review of the
+pre-journal orphan window that T4b item 4 could only repair. It removes that window at its cause instead of repairing its result:
+1. A completed stage keeps its generated `incomplete-*` name. The `PublishPending`
+   journal is written first, and renaming the stage to its version name is the first
+   journaled step. A crash before the journal is durable leaves only a stage, which the
+   census already tolerates and the next resolution removes.
+2. The trust floor advances only after the published candidate is fully re-verified and
+   pinned. A published copy whose own content fails verification is retired under the
+   journal and the next stage recording the exact candidate is tried; with none left the
+   attempt is abandoned with no record changed. A census fault about other entries, or
+   a fault reading a stage, keeps the journal for journal-bound recovery.
+3. A `PublishPending` journal whose candidate is neither published nor staged, with the
+   floor still at the recorded prior floor, is abandoned: the journal is removed and no
+   record changes. The journal schema is unchanged; recovery finds the stage by its
+   completion record, which must name the exact journaled candidate.
+4. `ExtractedWindowsStage::publish_version` is replaced by `complete`, and
+   `WindowsExtractionRoot::begin_activation` takes the resulting `CompletedWindowsStage`.
+   The explicit unjournaled-version repair stays for installations that already hold an
+   orphan from the earlier order.
+
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
 `a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
@@ -313,8 +335,9 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    activation journal containing a fresh attempt id, exact candidate
    `(app, channel, target, version, contentBlake3)`, validated rollback target,
    exact prior floor, prior last-known-good and previous-known-good artifacts. The order is journal
-   `publish-pending`, trust floor, `current`, journal
-   `awaiting-health`; each step is durable before the next begins.
+   `publish-pending`, candidate version publication, trust floor, `current`, journal
+   `awaiting-health`; each step is durable before the next begins. Until the journal is
+   durable the candidate exists only as a completed `incomplete-*` stage.
 7. After termination at every persisted boundary, recovery under the single-writer lock
    either resumes that exact journaled attempt, completes a journaled rollback, or halts
    for manual recovery. A malformed, replayed, mixed-artifact or pointer-inconsistent
@@ -324,6 +347,9 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
    candidate and advances to `awaiting-health` without republishing. Current equal
    to rollback target permits only the recorded prior floor or exact candidate floor
    before resuming; every other combination, including floor above candidate, halts.
+   At the prior floor, a still-staged candidate is published first, and a candidate
+   that is neither published nor staged abandons the attempt without changing any
+   record. At the candidate floor the candidate must already be published.
 8. Candidate health is accepted only over a host-owned private channel minted for the
    journaled attempt. The receipt repeats the attempt id and artifact identity; the host
    must have booted from that exact version, reached application `Ready`, and
@@ -747,14 +773,16 @@ The single-writer transition is:
    then verify/extract `full`, including `.complete` and policy;
 2. retain and validate current as the rollback target plus both known-good slots;
 3. persist `PublishPending`;
-4. advance the semantic-version trust floor;
-5. publish `current` to the candidate;
-6. persist `AwaitingHealth` and launch with a private health channel;
-7. on exact health, persist `HealthAccepted`, publish the prior LKG to
+4. rename the completed stage to the candidate's absent version name, then fully
+   re-verify and pin the published candidate;
+5. advance the semantic-version trust floor;
+6. publish `current` to the candidate;
+7. persist `AwaitingHealth` and launch with a private health channel;
+8. on exact health, persist `HealthAccepted`, publish the prior LKG to
    `previous-known-good`, publish `last-known-good` to candidate, retire the
    superseded older version (if any), then remove the journal; deleting retired trees is
    best-effort cleanup that never touches either known-good slot;
-8. on failure, persist `RollbackPending`, publish `current` to the
+9. on failure, persist `RollbackPending`, publish `current` to the
    validated rollback target, retire the failed candidate, remove the journal, then
    report failure.
 
@@ -776,12 +804,25 @@ leaf followed by deletion. A crash before any record sibling's publication renam
 leaves only such a `pending-*` file. The census admits `pending-*` names; before its
 first write, the next transaction removes each one only after verifying a regular,
 single-link file with the exact installation profile, and refuses anything else.
-A refusal of a new attempt before its `PublishPending` journal exists retires every
-version that attempt published, so a refused start leaves no orphan unless that
-retirement itself fails, which reports `UnjournaledVersionRetained`. A process crash
-in that window still leaves an orphan; the ordinary loader halts on it, and only the
-explicit unjournaled-version repair, admitted when no journal exists and every record
-validates, retires it under the writer lease. The repair first verifies and pins every
+A new attempt never publishes a version before its `PublishPending` journal is
+durable. A refused start, or a process crash before the journal, leaves only the
+completed stage under its `incomplete-*` name: no version, record or journal is
+published, and the next resolution deletes stale completed `incomplete-*` stages
+together with `retired-*` trees through retained handles. After installation only the
+writer-lease holder completes a stage (the initializer does so only in an empty
+`versions` before provenance exists), so a stage without a completion record, which may
+be a live or failed extraction by a root without the lease, stays as a diagnostic. Recovery identifies the stage by its
+completion record, which must name the exact journaled candidate; a pending attempt
+whose candidate is neither published nor staged at the recorded prior floor is
+abandoned with no record changed. Only a missing completion record or one naming
+another artifact excludes a stage; any fault reading a stage halts recovery with the
+journal intact. A published copy that fails its full re-verification is retired under
+the journal and the next exact stage is tried; with none left the attempt is abandoned
+before the floor moves, so the same signed version may be retried. A census fault about
+other entries retires nothing and keeps the journal. An installation that already holds an
+orphan complete version from the earlier publication order still halts the ordinary
+loader; only the explicit unjournaled-version repair, admitted when no journal exists
+and every record validates, retires it under the writer lease. The repair first verifies and pins every
 referenced version, removes stale `pending-*` record siblings, and admits for retirement
 only strict-SemVer entries whose completion record names that version in the
 installation's scope; any other unknown or damaged entry, including a non-directory under a
@@ -826,7 +867,9 @@ previous-known-good may be absent only before the first successful update. Recov
 acquires the attempt lease and proves the prior
 coordinator/candidate family exited. Valid `PublishPending` with current still at
 the rollback target accepts only the recorded prior floor or exact candidate floor
-before resuming. With current already at the candidate it requires floor exactly equal
+before resuming; at the prior floor it first publishes a still-staged candidate and
+abandons an attempt whose candidate is neither published nor staged. With current
+already at the candidate it requires floor exactly equal
 to candidate and advances to `AwaitingHealth` without republishing. Every other
 combination, including floor above candidate, halts. `AwaitingHealth` rolls back
 only after the process-family
