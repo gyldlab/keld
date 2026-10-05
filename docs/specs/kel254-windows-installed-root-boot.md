@@ -571,7 +571,8 @@ Runtime seam: `keld-host` remains thin and calls the existing `keld-core` boot-s
 entrypoint. Within the host process, `keld-core` derives `current_exe`; KEL-135 verifies
 the image and returns immutable publisher/app identity;
 KEL-53 validates installer provenance and resolves normal or candidate state into one
-opaque active-tree selection; KEL-96 compares the identities and executable path; the
+opaque active-tree selection; KEL-96 compares the identities and relies on the T2b
+executable-handle identity, never path text; the
 Windows root owner checks effective user/role access and opens the selected tree; then
 the existing boot parser validates the descriptor and targets. Only after guard
 preflight may the host create listener, child, or window. Any failed step returns a
@@ -650,7 +651,8 @@ opaque outside their owner except for the documented read-only identity accessor
   T3.
 - [ ] T3 — in the KEL-96 consumer issue, consume the landed KEL-53 active selection and
   one KEL-135 identity value to add opaque Windows installed-root boot. Verify the
-  executable is the exact selected version-tree host, preserve current strict parser and
+  executable is the exact selected version-tree host by the T2b handle identity, preserve
+  current strict parser and
   resource-free ordering, and pass the same verified identity to profile selection.
   As KEL-53 loader work in this task, `keld-update` adds
   `ExpectedAppIdentity::from_signed_image`, which delegates extraction to `keld-pack`'s
