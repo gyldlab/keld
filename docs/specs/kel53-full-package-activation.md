@@ -47,9 +47,10 @@ existing exclusive writer lease, and item 4 adds one public repair entry point:
 Rationale and native evidence are in KEL-270 comments `b571afdb` and `f6b1e538` and the
 T4b pull request.
 
-KEL-270 F1 amendment: the owner approved F1 in the active maintainer session on
-2026-10-05, after review of the pre-journal orphan window that T4b item 4 could only
-repair. It removes that window at its cause instead of repairing its result:
+KEL-270 F1 amendment: owner approval comment
+`9c84d37c-7f13-43ef-b5ec-fb5bc189bb81` (2026-10-05), recorded with the approved proposal
+in execution artifact `adaa572e-9b3a-4528-8f6d-1b644782470e`, after review of the
+pre-journal orphan window that T4b item 4 could only repair. It removes that window at its cause instead of repairing its result:
 1. A completed stage keeps its generated `incomplete-*` name. The `PublishPending`
    journal is written first, and renaming the stage to its version name is the first
    journaled step. A crash before the journal is durable leaves only a stage, which the
@@ -804,8 +805,10 @@ single-link file with the exact installation profile, and refuses anything else.
 A new attempt never publishes a version before its `PublishPending` journal is
 durable. A refused start, or a process crash before the journal, leaves only the
 completed stage under its `incomplete-*` name: no version, record or journal is
-published, and the next resolution deletes stale `incomplete-*` stages together with
-`retired-*` trees through retained handles. Recovery identifies the stage by its
+published, and the next resolution deletes stale completed `incomplete-*` stages
+together with `retired-*` trees through retained handles. Only the writer-lease holder
+completes a stage, so a stage without a completion record, which may be a live or failed
+extraction by a root without the lease, stays as a diagnostic. Recovery identifies the stage by its
 completion record, which must name the exact journaled candidate; a pending attempt
 whose candidate is neither published nor staged at the recorded prior floor is
 abandoned with no record changed. A published candidate that fails its full

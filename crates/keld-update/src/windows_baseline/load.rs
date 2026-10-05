@@ -660,8 +660,10 @@ pub(super) fn completed_stage_identity(
 ///
 /// Stages without a completion record, or whose record or profile does not admit, are
 /// tolerated leftovers and are skipped: none can be published by this search, and an
-/// attempt with no admitted stage is abandoned without selecting anything. Every copy
-/// is fully re-verified after its rename, so the choice among exact matches is free.
+/// attempt with no admitted stage is abandoned without selecting anything. A transient
+/// read failure is skipped the same way; its only cost is a fresh download of the same
+/// signed release, never a selection or a halt. Every copy is fully re-verified after
+/// its rename, so the choice among exact matches is free.
 pub(super) fn find_candidate_stage(
     roots: &Roots,
     candidate: &crate::ArtifactIdentity,

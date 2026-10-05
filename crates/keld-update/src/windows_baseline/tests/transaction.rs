@@ -576,9 +576,186 @@ fn a_refusal_before_the_journal_leaves_only_the_completed_stage() {
         "generated entries are neither renamed nor deleted by a refused start"
     );
 
-    // The next resolution removes every generated leftover through retained handles.
+    // The next resolution removes completed stages and retired trees through retained
+    // handles; a stage without a completion record stays for diagnosis.
+    commit(&trust, "3.0.0");
+    assert_resolved(
+        &trust,
+        "3.0.0",
+        Some("2.0.0"),
+        "3.0.0",
+        &["2.0.0", "3.0.0", "incomplete-*"],
+    );
+    assert_eq!(
+        incomplete_stages(&trust),
+        vec![diagnostic.clone()],
+        "only the stage without a completion record remains"
+    );
+    assert!(!earlier_retired.exists());
+}
+
+/// Every `incomplete-*` entry under `versions`, sorted by name.
+fn incomplete_stages(trust: &WindowsBaselineTrust) -> Vec<std::path::PathBuf> {
+    let mut stages: Vec<_> = std::fs::read_dir(trust.installation.update_root.join("versions"))
+        .expect("version census")
+        .map(|entry| entry.expect("version entry").path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("incomplete-"))
+        })
+        .collect();
+    stages.sort();
+    stages
+}
+
+/// Rewrites a stage's completion record to name `identity`, keeping its content size.
+fn rewrite_completion(stage: &std::path::Path, identity: &crate::ArtifactIdentity) {
+    let marker = stage.join(".complete");
+    let record = crate::records::decode_complete(&std::fs::read(&marker).expect("completion"))
+        .expect("canonical completion record");
+    std::fs::write(
+        &marker,
+        crate::records::encode_complete(identity, record.content_size).expect("encode"),
+    )
+    .expect("rewrite the completion record");
+}
+
+/// Crashes a child commit of 3.0.0 after its durable `publish-pending` journal.
+fn crash_after_publish_pending(fixture: &std::path::Path, trust: &WindowsBaselineTrust) {
+    let stdout = support::child(
+        CRASH_HELPER,
+        fixture,
+        "commit",
+        "publish-pending",
+        CRASH_EXIT,
+    );
+    assert!(
+        stdout.contains("KELD_ACTIVATION_CUT=publish-pending"),
+        "{stdout}"
+    );
+    assert_eq!(
+        observe(trust)
+            .journal
+            .as_ref()
+            .map(|journal| &journal.phase),
+        Some(&ActivationPhase::PublishPending)
+    );
+}
+
+#[test]
+fn a_stage_recording_a_different_candidate_refuses_before_the_journal() {
+    let fixture = tempfile::tempdir().expect("mismatched stage fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let (root, stage) = complete(&trust, "3.0.0");
+    let mut other = stage.identity().clone();
+    other.content_blake3[0] ^= 1;
+    rewrite_completion(
+        &trust
+            .installation
+            .update_root
+            .join("versions")
+            .join(stage.name()),
+        &other,
+    );
+    assert_refusal(
+        root.begin_activation(stage, COORDINATOR),
+        "start",
+        ActivationEffect::ProtectedStateUnchanged,
+    );
+    let refused = observe(&trust);
+    assert_eq!(refused.journal, None);
+    assert_eq!(
+        refused.versions,
+        names(&["1.0.0", "2.0.0", "incomplete-*"]),
+        "a stage whose record names another artifact is never renamed"
+    );
     commit(&trust, "3.0.0");
     assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
+    assert!(incomplete_stages(&trust).is_empty());
+}
+
+#[test]
+fn recovery_never_publishes_a_stage_recording_another_artifact_of_that_version() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("foreign stage recovery fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let before = observe(&trust);
+    crash_after_publish_pending(fixture.path(), &trust);
+    let stages = incomplete_stages(&trust);
+    assert_eq!(stages.len(), 1, "{stages:?}");
+    let journal = observe(&trust).journal.expect("publish-pending journal");
+    let mut other = journal.candidate.clone();
+    other.content_blake3[0] ^= 1;
+    rewrite_completion(&stages[0], &other);
+
+    assert_eq!(
+        recover_exact(&trust).expect("no stage records the exact candidate"),
+        WindowsActivationOutcome::Abandoned
+    );
+    let abandoned = observe(&trust);
+    assert_eq!(abandoned.journal, None);
+    assert_eq!(
+        (
+            &abandoned.floor,
+            &abandoned.current,
+            &abandoned.last_known_good
+        ),
+        (&before.floor, &before.current, &before.last_known_good)
+    );
+    assert_eq!(abandoned.versions, names(&["1.0.0", "2.0.0"]));
+}
+
+#[test]
+fn recovery_publishes_one_of_two_exact_stages_and_removes_the_other() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("duplicate stage recovery fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    let (root, earlier) = complete(&trust, "3.0.0");
+    drop(root);
+    drop(earlier);
+    crash_after_publish_pending(fixture.path(), &trust);
+    assert_eq!(incomplete_stages(&trust).len(), 2);
+
+    assert_eq!(
+        recover_exact(&trust).expect("either exact stage resumes the attempt"),
+        WindowsActivationOutcome::Committed
+    );
+    assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
+    assert!(
+        incomplete_stages(&trust).is_empty(),
+        "the unused exact stage is a completed leftover"
+    );
+}
+
+#[test]
+fn recovery_halts_on_a_non_directory_stage_name_and_keeps_the_journal() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("non-directory stage fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0");
+    crash_after_publish_pending(fixture.path(), &trust);
+    let impostor = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join(format!("incomplete-{}", "0".repeat(64)));
+    std::fs::write(&impostor, b"not a stage").expect("a file under a stage name");
+    let lost = observe(&trust);
+
+    assert!(
+        recover_exact(&trust).is_err(),
+        "a non-directory generated entry halts recovery"
+    );
+    let halted = observe(&trust);
+    assert_eq!(
+        halted.journal, lost.journal,
+        "the journal stays authoritative"
+    );
+    assert_eq!(halted.versions, lost.versions);
+    assert!(impostor.is_file());
 }
 
 #[test]

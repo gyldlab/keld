@@ -1023,8 +1023,10 @@ single-link file with the exact installation profile, and refuses anything else.
 A new attempt never publishes a version before its `PublishPending` journal is
 durable. A refused start, or a process crash before the journal, leaves only the
 completed stage under its `incomplete-*` name: no version, record or journal is
-published, and the next resolution deletes stale `incomplete-*` stages together with
-`retired-*` trees through retained handles. Recovery identifies the stage by its
+published, and the next resolution deletes stale completed `incomplete-*` stages
+together with `retired-*` trees through retained handles. Only the writer-lease holder
+completes a stage, so a stage without a completion record, which may be a live or failed
+extraction by a root without the lease, stays as a diagnostic. Recovery identifies the stage by its
 completion record, which must name the exact journaled candidate; a pending attempt
 whose candidate is neither published nor staged at the recorded prior floor is
 abandoned with no record changed. A published candidate that fails its full

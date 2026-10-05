@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use cap_fs_ext::DirExt as _;
 use cap_std::fs::File;
 
 use super::{
@@ -95,8 +96,10 @@ pub enum WindowsActivationOutcome {
     Committed,
     /// The attempt failed; `current` is the journaled rollback target and the floor stays.
     RolledBack,
-    /// The attempt never selected its candidate: its stage was gone or the published
-    /// candidate failed verification. Floor, pointers and known-good slots are unchanged.
+    /// The attempt never selected its candidate because neither its stage nor its
+    /// version was present. Floor, pointers and known-good slots are unchanged. A
+    /// published candidate that fails verification is also abandoned, but is reported
+    /// as an [`UpdateError::Activation`] refusal at step `candidate verification`.
     Abandoned,
 }
 
@@ -423,13 +426,15 @@ impl WindowsRecoveryInspection {
     /// so acquiring this lease proves no prior owner can still write and no candidate
     /// family exists. The resumed owner receives freshly minted health and lifecycle
     /// channel identities, so no witness from an earlier owner can bind to it. An
-    /// attempt whose candidate stage is gone, or whose published candidate fails
-    /// verification, is abandoned instead: [`WindowsActivationOutcome::Abandoned`].
+    /// attempt whose candidate is neither staged nor published resolves as
+    /// [`WindowsActivationOutcome::Abandoned`].
     ///
     /// # Errors
     /// Refuses every other phase: a launched attempt needs
     /// [`Self::recover`] with an exact process-family retirement binding. A coordinator
-    /// digest that differs from the journal also refuses before any write.
+    /// digest that differs from the journal also refuses before any write. A published
+    /// candidate that fails verification is retired, its journal removed, and the
+    /// refusal names step `candidate verification`.
     pub fn resume_unlaunched(
         self,
         coordinator_image_blake3: [u8; 32],
@@ -755,12 +760,7 @@ impl Transaction {
             .stage
             .clone()
             .ok_or_else(|| self.fault("candidate publication", "no completed stage is known"))?;
-        let versions = self
-            .roots
-            .versions
-            .try_clone()
-            .map_err(|cause| self.fault("candidate publication", cause))?
-            .into_std_file();
+        let versions = versions_for_rename(&self.roots).map_err(|cause| self.refault(&cause))?;
         observe(false, "candidate-published");
         crate::windows_fs::publish_new(&versions, &stage, &self.journal.candidate.version)
             .map_err(|cause| self.fault("candidate publication", cause))?;
@@ -973,11 +973,7 @@ fn retire_version_directory(roots: &Roots, version: &str) -> Result<(), UpdateEr
     }
     let leaf = super::random_leaf_name("retired")
         .map_err(|cause| super::error("retired identity", cause))?;
-    let versions = roots
-        .versions
-        .try_clone()
-        .map_err(|cause| super::error("versions parent", cause))?
-        .into_std_file();
+    let versions = versions_for_rename(roots)?;
     crate::windows_fs::publish_new(&versions, version, &leaf)
         .map_err(|cause| super::error("version retirement", cause))?;
     if version_present(roots, version)? {
@@ -987,6 +983,19 @@ fn retire_version_directory(roots: &Roots, version: &str) -> Result<(), UpdateEr
         ));
     }
     Ok(())
+}
+
+/// The retained `versions` handle for a rename beneath it, after re-checking its exact
+/// installation descriptor: a write never trusts an earlier observation of the parent.
+fn versions_for_rename(roots: &Roots) -> Result<std::fs::File, UpdateError> {
+    let versions = roots
+        .versions
+        .try_clone()
+        .map_err(|cause| super::error("versions parent", cause))?
+        .into_std_file();
+    keld_guard::validate_windows_install_directory(&versions, roots.profile())
+        .map_err(|cause| super::error("versions profile", cause))?;
+    Ok(versions)
 }
 
 fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
@@ -1001,11 +1010,15 @@ fn version_present(roots: &Roots, version: &str) -> Result<bool, UpdateError> {
     }
 }
 
-/// Deletes generated `retired-*` trees and stale `incomplete-*` stages.
+/// Deletes generated `retired-*` trees and stale completed `incomplete-*` stages.
 ///
-/// Only the writer-lease holder creates either, and a resolved attempt needs neither:
-/// a stage left by a crash before its journal, or by an abandoned extraction, is never
-/// referenced again.
+/// Only the writer-lease holder retires a version or completes a stage, and the caller
+/// holds that lease, so neither can belong to a live operation. A completed stage left
+/// by a refused start, a crash before its journal or an abandoned attempt is never
+/// referenced again. A stage without a completion record may be a live extraction by an
+/// owner-private root that holds no lease, or a failed one that its caller must preserve
+/// for diagnosis, so it is left untouched; such an extraction always creates a fresh
+/// name and never reuses an existing one.
 /// Listing and deletion both go through the retained `versions` handle, so no pathname
 /// is resolved again and a link inside a tree is never followed. A `retired-*` entry
 /// that is not a directory refuses, as before.
@@ -1018,14 +1031,36 @@ fn remove_generated_leftovers(roots: &Roots) -> Result<(), UpdateError> {
     let names = crate::windows_fs::child_names(&versions)
         .map_err(|cause| leftover_error(cause.to_string()))?;
     for name in names {
-        if super::is_generated_leaf(&name, "retired")
-            || super::is_generated_leaf(&name, "incomplete")
-        {
+        let stale = super::is_generated_leaf(&name, "retired")
+            || (super::is_generated_leaf(&name, "incomplete")
+                && completed_stage(roots, &name)
+                    .map_err(|cause| leftover_error(format!("{name}: {cause}")))?);
+        if stale {
             crate::windows_fs::remove_directory_tree(&versions, &name)
                 .map_err(|cause| leftover_error(format!("{name}: {cause}")))?;
         }
     }
     Ok(())
+}
+
+/// Whether the generated stage `name` is a non-reparse directory holding a completion
+/// record. The check opens the stage read-only and never follows a link, so it neither
+/// conflicts with the handles of a live extraction, which deny delete sharing, nor
+/// reports such a stage as a leftover. Any other failure is returned.
+fn completed_stage(roots: &Roots, name: &str) -> std::io::Result<bool> {
+    let metadata = roots.versions.symlink_metadata(name)?;
+    if crate::windows_extraction::ensure_directory(&metadata).is_err() {
+        return Ok(false);
+    }
+    match roots
+        .versions
+        .open_dir_nofollow(name)?
+        .symlink_metadata(".complete")
+    {
+        Ok(_) => Ok(true),
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(cause) => Err(cause),
+    }
 }
 
 /// Removes flushed record siblings left by a crash before their publication rename.
