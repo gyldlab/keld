@@ -2941,8 +2941,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   every persisted cut under the writer lease. `select_windows_active_package` mints the
   journal-free `ActivePackageSelection` (KEL-254 AC4): under the shared snapshot lease it
   requires `current` to equal last-known-good or previous-known-good within the floor,
-  admits only referenced versions, gives each the baseline loader's metadata admission,
-  refuses a pending journal as journal-bound, and keeps the selected version pinned. Live
+  admits only referenced versions, gives each the baseline loader's metadata admission
+  plus its signed no-migration package policy, refuses a pending journal as
+  journal-bound and a held writer lease as `WriterActive`, and keeps the selected version,
+  its tree and the protected ancestry pinned. It carries the protected installation
+  identity and publisher scope for the host's comparison with the verified image. Live
   feed orchestration, host candidate launch, the private health channel and its 30-second
   `Ready` observation, installed-host lifecycle composition, the invalid-current
   last-known-good republish, candidate-mode selection and the KEL-96 host consumer of the
@@ -5709,7 +5712,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The common journaled activation transaction refused or could not confirm a step
-- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery.
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When another updater transaction holds the writer lease, nothing was read or written: start nothing, and select again after it releases the lease.
 
 ## KELD-PACK-001
 
