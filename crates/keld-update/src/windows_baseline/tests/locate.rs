@@ -37,7 +37,7 @@ fn installed() -> Install {
     }
 }
 
-fn host_path(trust: &WindowsBaselineTrust, version: &str) -> PathBuf {
+pub(super) fn host_path(trust: &WindowsBaselineTrust, version: &str) -> PathBuf {
     trust
         .installation
         .update_root
@@ -49,7 +49,7 @@ fn host_path(trust: &WindowsBaselineTrust, version: &str) -> PathBuf {
 
 /// Opens an image the way the verified-image owner does: read access, no write or
 /// delete sharing, so the identity stays bound for the handle's lifetime.
-fn open_image(path: &Path) -> std::fs::File {
+pub(super) fn open_image(path: &Path) -> std::fs::File {
     OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
@@ -57,11 +57,18 @@ fn open_image(path: &Path) -> std::fs::File {
         .expect("open the executable image")
 }
 
-fn expected_for(trust: &WindowsBaselineTrust) -> ExpectedAppIdentity {
+pub(super) fn expected_for(trust: &WindowsBaselineTrust) -> ExpectedAppIdentity {
+    expected_for_identity(&trust.installation)
+}
+
+/// The build-time expectation a host built for `identity` embeds.
+pub(super) fn expected_for_identity(
+    identity: &crate::DirectInstallationIdentity,
+) -> ExpectedAppIdentity {
     let payload = keld_pack::ExpectedAppIdentityPayload::new(
-        &trust.installation.app_id,
-        trust.installation.channel.as_str(),
-        &trust.installation.target,
+        &identity.app_id,
+        identity.channel.as_str(),
+        &identity.target,
         crate::tests::signing_key().verifying_key().to_bytes(),
     )
     .expect("fixture identity fits the canonical payload");
@@ -69,7 +76,7 @@ fn expected_for(trust: &WindowsBaselineTrust) -> ExpectedAppIdentity {
 }
 
 /// Every protected record of the installation, including `install-provenance`.
-fn state(trust: &WindowsBaselineTrust) -> BTreeMap<String, Vec<u8>> {
+pub(super) fn state(trust: &WindowsBaselineTrust) -> BTreeMap<String, Vec<u8>> {
     let mut records = record_bytes(trust);
     let provenance = trust.installation.install_root.join("install-provenance");
     records.insert(
@@ -79,7 +86,7 @@ fn state(trust: &WindowsBaselineTrust) -> BTreeMap<String, Vec<u8>> {
     records
 }
 
-fn select_from(
+pub(super) fn select_from(
     trust: &WindowsBaselineTrust,
     version: &str,
 ) -> Result<crate::ActivePackageSelection, UpdateError> {
@@ -88,7 +95,7 @@ fn select_from(
     select_active_package_for_executable(&path, &executable, &expected_for(trust))
 }
 
-fn refuses(
+pub(super) fn refuses(
     trust: &WindowsBaselineTrust,
     locator: &Path,
     executable: &std::fs::File,
@@ -101,14 +108,14 @@ fn refuses(
     error
 }
 
-fn binding_step(error: &UpdateError) -> &'static str {
+pub(super) fn binding_step(error: &UpdateError) -> &'static str {
     match error {
         UpdateError::ExecutableBinding { step, .. } => step,
         other => panic!("expected KELD-UPDATE-018, got {other:?}"),
     }
 }
 
-fn baseline_step(error: &UpdateError) -> &'static str {
+pub(super) fn baseline_step(error: &UpdateError) -> &'static str {
     match error {
         UpdateError::Baseline { step, .. } => step,
         other => panic!("expected KELD-UPDATE-013, got {other:?}"),
