@@ -242,6 +242,11 @@ pub enum UpdateError {
         /// Non-secret failure detail.
         detail: String,
     },
+    /// The build-time expected app identity payload is not a valid expectation.
+    ExpectedIdentityInvalid {
+        /// Failing part: a keld-pack payload detail, the channel or the public key.
+        detail: String,
+    },
     /// The common journaled activation transaction refused or could not confirm a step.
     Activation {
         /// Transaction boundary that refused the operation.
@@ -301,6 +306,7 @@ impl UpdateError {
             Self::Extraction { .. } => "KELD-UPDATE-012",
             Self::VersionPublication { .. } => "KELD-UPDATE-015",
             Self::Activation { .. } => "KELD-UPDATE-016",
+            Self::ExpectedIdentityInvalid { .. } => "KELD-UPDATE-017",
         }
     }
 }
@@ -337,6 +343,10 @@ impl fmt::Display for UpdateError {
             Self::ManifestAuthentication { detail } => write!(
                 f,
                 "KELD-UPDATE-004: detached manifest authentication failed ({detail}). Do not parse or activate the feed; publish bytes signed by the compiled-in release key."
+            ),
+            Self::ExpectedIdentityInvalid { detail } => write!(
+                f,
+                "KELD-UPDATE-017: the host's expected app identity is invalid ({detail}). Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then."
             ),
             Self::ManifestInvalid { detail } => write!(
                 f,

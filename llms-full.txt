@@ -5733,6 +5733,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The common journaled activation transaction refused or could not confirm a step
 - fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released.
 
+## KELD-UPDATE-017
+
+- crate: keld-update
+- message: The host's build-time expected app identity is not a valid expectation
+- fix: Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

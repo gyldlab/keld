@@ -610,12 +610,7 @@ fn digest(text: &str) -> Result<[u8; 32], UpdateError> {
 }
 
 fn channel(text: &str) -> Result<Channel, UpdateError> {
-    match text {
-        "stable" => Ok(Channel::Stable),
-        "beta" => Ok(Channel::Beta),
-        "canary" => Ok(Channel::Canary),
-        _ => Err(invalid("unsupported channel")),
-    }
+    Channel::parse(text).ok_or_else(|| invalid("unsupported channel"))
 }
 
 fn strict_version(text: &str) -> Result<(), UpdateError> {

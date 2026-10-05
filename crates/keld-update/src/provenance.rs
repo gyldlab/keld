@@ -205,16 +205,11 @@ impl UpdateVerifier {
         public_key: [u8; 32],
     ) -> Result<Self, UpdateError> {
         validate_expected(&expected)?;
-        let verifying_key = VerifyingKey::from_bytes(&public_key).map_err(|error| {
+        let verifying_key = release_verifying_key(&public_key).map_err(|detail| {
             UpdateError::ManifestAuthentication {
-                detail: format!("compiled-in Ed25519 public key is invalid: {error}"),
+                detail: format!("compiled-in {detail}"),
             }
         })?;
-        if verifying_key.is_weak() {
-            return Err(UpdateError::ManifestAuthentication {
-                detail: "compiled-in Ed25519 public key is weak".to_owned(),
-            });
-        }
         let actual_key_id = SigningKeyId::from_public_key(&public_key);
         if expected.signing_key_id != actual_key_id {
             return Err(mismatch(
@@ -386,6 +381,107 @@ pub(crate) fn validate_expected(expected: &DirectInstallationIdentity) -> Result
         }
     })?;
     Ok(())
+}
+
+/// The single admission rule for a release Ed25519 public key: it must decode and must
+/// not be weak. The error is a detail that each caller wraps in its own typed refusal.
+fn release_verifying_key(public_key: &[u8; 32]) -> Result<VerifyingKey, String> {
+    let key = VerifyingKey::from_bytes(public_key)
+        .map_err(|error| format!("Ed25519 public key is invalid: {error}"))?;
+    if key.is_weak() {
+        return Err("Ed25519 public key is weak".to_owned());
+    }
+    Ok(key)
+}
+
+/// Build-time expected app identity that a signed host carries (KEL-254 A3 §4).
+///
+/// It is decoded only from keld-pack's canonical payload; runtime code never
+/// hand-writes it. It anchors executable-located selection together with the located
+/// roots' file identities and the recorded mode's protection profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedAppIdentity {
+    app_id: String,
+    channel: Channel,
+    target: String,
+    signing_key_id: SigningKeyId,
+}
+
+impl ExpectedAppIdentity {
+    /// Decodes keld-pack payload bytes (not a whole executable image).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::ExpectedIdentityInvalid`] when keld-pack refuses the
+    /// payload bytes, the channel is not a supported channel, or the update-signing
+    /// public key is not a valid, non-weak Ed25519 key.
+    pub fn decode(payload: &[u8]) -> Result<Self, UpdateError> {
+        let payload = keld_pack::ExpectedAppIdentityPayload::decode(payload).map_err(|error| {
+            let detail = match error {
+                keld_pack::PackError::ExpectedIdentityInvalid { detail } => detail,
+                _ => "payload",
+            };
+            invalid_expected(format!("payload {detail}"))
+        })?;
+        let channel = Channel::parse(payload.channel())
+            .ok_or_else(|| invalid_expected("unsupported channel".to_owned()))?;
+        release_verifying_key(payload.update_public_key()).map_err(invalid_expected)?;
+        Ok(Self {
+            app_id: payload.app_id().to_owned(),
+            channel,
+            target: payload.target().to_owned(),
+            signing_key_id: SigningKeyId::from_public_key(payload.update_public_key()),
+        })
+    }
+
+    /// Expected canonical application id.
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    /// Expected release channel.
+    #[must_use]
+    pub const fn channel(&self) -> Channel {
+        self.channel
+    }
+
+    /// Expected target string, such as `windows-x64`.
+    #[must_use]
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Identity of the expected update-signing key.
+    #[must_use]
+    pub const fn signing_key_id(&self) -> &SigningKeyId {
+        &self.signing_key_id
+    }
+
+    /// Requires a protected record to carry exactly this app id, channel, target and
+    /// signing key. Roots, mode, baseline and profile are anchored separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::ProvenanceMismatch`] naming the first differing field.
+    pub fn require_matches(&self, record: &DirectInstallationIdentity) -> Result<(), UpdateError> {
+        compare(ProvenanceField::AppId, &self.app_id, &record.app_id)?;
+        compare(
+            ProvenanceField::Channel,
+            self.channel.as_str(),
+            record.channel.as_str(),
+        )?;
+        compare(ProvenanceField::Target, &self.target, &record.target)?;
+        compare(
+            ProvenanceField::SigningKey,
+            &hex_digest(self.signing_key_id.as_bytes()),
+            &hex_digest(record.signing_key_id.as_bytes()),
+        )
+    }
+}
+
+fn invalid_expected(detail: String) -> UpdateError {
+    UpdateError::ExpectedIdentityInvalid { detail }
 }
 
 pub(crate) fn match_identity(
