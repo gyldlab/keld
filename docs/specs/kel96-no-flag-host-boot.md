@@ -499,7 +499,10 @@ it non-inheritable before spawning Bun; Bun receives null stdin. Standalone
 no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin. On Windows,
 once KEL-254 T3 lands, a launch without a valid dev lease is admitted only as an
 authenticated installed package or refused (KEL-254 AC2); a lease-less staged layout is
-no longer a dev-stage boot there.
+no longer a dev-stage boot there. macOS and Linux standalone boot is unchanged until
+their own authenticated installed-root successor and a separate reviewed amendment
+converge them on the same rule; this is a temporary applicability difference, not a
+trust-model exception.
 
 CLI exit/crash closes the only writer and yields EOF. `CliLeaseLost` is a
 distinct shutdown cause: it quiesces new work and joins the common

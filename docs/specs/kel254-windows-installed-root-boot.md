@@ -13,7 +13,8 @@ active maintainer session on 2026-10-05; exact-content approval of this revision
 pending. A3 makes the current executable path a locator only, keeps exactly two admitted
 Windows boot states, and names one build-time producer of the expected app identity
 (§3 AC1–AC2, §4 "Internal selection shape", §6 T2b–T3). It adds no install mode, no
-production `unsafe`, and no record field.
+production `unsafe`, and no record field. It changes Windows only: macOS and Linux keep
+their current standalone and lease-less boot behavior and tests (see AC2).
 
 ## 1. Goal & non-goals
 
@@ -87,7 +88,13 @@ D4 note remains outside the frozen decision block so its approved digest does no
    valid dev lease is not a dev-stage boot, and there is no third signed-dev-stage state.
    Existing KEL-135 acceptance rows that launch a signed host from a lease-less dev stage
    move in T3: rows testing dev semantics receive a real dev lease, and rows testing
-   installed identity or profile semantics move to installed fixtures.
+   installed identity or profile semantics move to installed fixtures. macOS and Linux
+   keep their current standalone and lease-less boot behavior, and their tests are not
+   migrated, because neither has an authenticated installed-root provenance successor
+   yet. That is a temporary applicability difference, not a permanent trust-model
+   exception: when such a successor exists for either platform, a separate reviewed
+   amendment must converge it on the same rule (authenticated dev authority or
+   authenticated installed authority; otherwise fail closed).
 3. Given a Windows x64 direct package, when the trusted installer installs it, then it
    verifies the signed canonical full artifact, installs that exact artifact as the
    baseline version, protects the immutable version tree, seeds the version floor,
