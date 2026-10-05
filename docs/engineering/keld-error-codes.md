@@ -817,3 +817,9 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-pack
 - message: Package source, sink, or compression processing failed
 - fix: Discard partial output, repair the source or sink, and rebuild the package.
+
+## KELD-PACK-005
+
+- crate: keld-pack
+- message: Expected-app-identity payload bytes or fields are not canonical
+- fix: Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the host; never hand-edit the embedded bytes.

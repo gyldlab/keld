@@ -4,15 +4,20 @@
 //! `docs/architecture/06-runtime-and-tooling.md` §3; repository maturity and evidence
 //! live in `docs/engineering/product-status.tsv`.
 //! [`produce_windows_v0`] streams a package on Windows; other hosts refuse before I/O.
+//! [`ExpectedAppIdentityPayload`] owns the canonical expected-app-identity bytes that a
+//! signed host carries (KEL-254 A3); embedding them belongs to the KEL-19 packaging work.
 //! This library API does not create installers, sign releases, or activate updates.
 
 use std::fmt;
 use std::io::{self, Read, Write};
 
+mod expected_identity;
 #[cfg(windows)]
 mod producer;
 #[cfg(test)]
 mod tests;
+
+pub use expected_identity::{EXPECTED_APP_IDENTITY_KEY_BYTES, ExpectedAppIdentityPayload};
 
 /// Exact relative path of the content-authenticated Slice-A update policy.
 pub const UPDATE_POLICY_PATH: &str = ".keld/update-policy.v1";
@@ -209,6 +214,11 @@ pub enum PackError {
         /// Original I/O error.
         source: io::Error,
     },
+    /// Expected-app-identity payload bytes or fields are not canonical.
+    ExpectedIdentityInvalid {
+        /// Stable reason naming the failing part, without untrusted bytes.
+        detail: &'static str,
+    },
 }
 
 impl PackError {
@@ -220,6 +230,7 @@ impl PackError {
             Self::InvalidMetadata { .. } => "KELD-PACK-002",
             Self::SourceSizeMismatch { .. } => "KELD-PACK-003",
             Self::Processing { .. } => "KELD-PACK-004",
+            Self::ExpectedIdentityInvalid { .. } => "KELD-PACK-005",
         }
     }
 }
@@ -231,6 +242,7 @@ impl fmt::Display for PackError {
             Self::InvalidMetadata { detail } => write!(f, "KELD-PACK-002: invalid Windows v0 package input ({detail}). Supply a complete file/directory tree with canonical Windows names and leave update-policy.v1 to the producer; no output was written."),
             Self::SourceSizeMismatch { name, expected, observed } => write!(f, "KELD-PACK-003: package source `{name}` declared {expected} bytes but supplied {observed}. Discard partial output and rebuild from sources with correct lengths."),
             Self::Processing { stage, source } => write!(f, "KELD-PACK-004: package {stage} failed ({source}). Discard partial output, repair the source or sink, and rebuild the package."),
+            Self::ExpectedIdentityInvalid { detail } => write!(f, "KELD-PACK-005: expected-app-identity payload is not canonical ({detail}). Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the host; never hand-edit the embedded bytes."),
         }
     }
 }
