@@ -922,6 +922,42 @@ fn activation_errors_name_what_remains_and_the_only_safe_next_action() {
     }
 }
 
+/// KEL-53 criterion 17 (T4d slice S2): each closed Machine-UAC recovery guidance renders
+/// exactly one pinned fix-guidance text, byte for byte, after the shared activation prefix.
+#[test]
+fn machine_recovery_guidance_renders_its_exact_pinned_text() {
+    use crate::MachineRecoveryGuidance::{RecoverNow, RecoveryDisabled, RestartFirst};
+    let pinned = [
+        (
+            RecoveryDisabled,
+            "This MachineUacDirect installation needs recovery that only the elevated keld-updater-helper.exe recovery-only role may perform, and that role is not enabled yet: no supported resolution exists other than administrator action. Start nothing from this state; the journal, pointers and versions are preserved, and no ordinary process repairs them.",
+        ),
+        (
+            RecoverNow,
+            "This MachineUacDirect installation needs recovery that only the elevated keld-updater-helper.exe recovery-only role may perform: run that role now from a fresh UAC prompt; no restart is needed. Start nothing from this state; the journal, pointers and versions are preserved, and no ordinary process repairs them.",
+        ),
+        (
+            RestartFirst,
+            "This MachineUacDirect installation needs recovery that only the elevated keld-updater-helper.exe recovery-only role may perform: restart Windows first, then run that role from a fresh UAC prompt. Start nothing from this state; the journal, pointers and versions are preserved, and no ordinary process repairs them.",
+        ),
+    ];
+    for (guidance, text) in pinned {
+        let error = UpdateError::Activation {
+            step: "active package selection",
+            effect: crate::ActivationEffect::MachineRecoveryRequired(guidance),
+            detail: "a pending PublishPending activation journal".to_owned(),
+        };
+        assert_code(&error, "KELD-UPDATE-016");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "KELD-UPDATE-016: activation active package selection refused (a pending PublishPending activation journal). {text}"
+            ),
+            "{guidance:?}"
+        );
+    }
+}
+
 #[test]
 fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
     let mut empty = Vec::new();

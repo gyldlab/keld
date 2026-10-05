@@ -475,7 +475,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   `current` record is absent or does not decode, a `PerUserDirect` selection republishes
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
-  installation refuses because only its elevated writer may repair. Live feed
+  installation refuses because only its elevated writer may repair. In
+  `MachineUacDirect` that refusal, and the refusal of a pending journal in any phase, is
+  the typed `MachineRecoveryRequired` effect: the ordinary process writes nothing, and
+  until the helper's recovery-only role is enabled its guidance is `RecoveryDisabled`.
+  Live feed
   orchestration, host candidate launch, the private health channel and its 30-second
   `Ready` observation, installed-host lifecycle composition, candidate-mode selection,
   the KEL-254 executable-located entrypoint with its `ExpectedAppIdentity` payload, and

@@ -108,6 +108,9 @@ pub fn load_windows_baseline(
 /// unreferenced, missing or substituted version each refuse. The selection never guesses
 /// the newest directory or substitutes the installed baseline. An invalid `current` in a
 /// machine installation refuses: only its elevated writer may republish last-known-good.
+/// In `MachineUacDirect` both a pending journal of any phase and that invalid `current`
+/// refuse with the typed [`crate::ActivationEffect::MachineRecoveryRequired`] instead,
+/// writing nothing: only the elevated helper's recovery-only role resolves them.
 pub fn select_windows_active_package(
     trust: &WindowsBaselineTrust,
 ) -> Result<super::ActivePackageSelection, UpdateError> {
@@ -157,13 +160,38 @@ fn lease_error(step: &'static str, cause: &std::io::Error) -> UpdateError {
     }
 }
 
-fn pending_journal_refusal(journal: &records::ActivationJournal) -> UpdateError {
+/// What an ordinary startup returns for a Machine-UAC recovery-required state (KEL-53
+/// "Machine-UAC recovery-required state and recovery-only role"). Every such state carries
+/// `RecoveryDisabled` until the helper's recovery-only role is enabled: KEL-270 T4d slice
+/// S10 for an unlaunched attempt or an invalid `current`, slice S12 for a launched attempt.
+const MACHINE_RECOVERY_REQUIRED: crate::ActivationEffect =
+    crate::ActivationEffect::MachineRecoveryRequired(
+        crate::MachineRecoveryGuidance::RecoveryDisabled,
+    );
+
+/// The journal-free selection's refusal of a pending journal in any phase. In
+/// `MachineUacDirect` only the elevated helper writes, so an ordinary process infers
+/// nothing and returns the typed recovery-required state; the other modes keep
+/// journal-bound recovery under the writer lease.
+pub(super) fn pending_journal_refusal(
+    mode: DirectInstallMode,
+    phase: &records::ActivationPhase,
+) -> UpdateError {
+    let (effect, resolver) = match mode {
+        DirectInstallMode::MachineUacDirect => (
+            MACHINE_RECOVERY_REQUIRED,
+            "the elevated helper's recovery-only role",
+        ),
+        DirectInstallMode::PerUserDirect | DirectInstallMode::MachineSeamlessDirect => (
+            crate::ActivationEffect::JournalBoundRecoveryRequired,
+            "journal-bound recovery",
+        ),
+    };
     UpdateError::activation(
         "active package selection",
-        crate::ActivationEffect::JournalBoundRecoveryRequired,
+        effect,
         format!(
-            "a pending {:?} activation journal selects nothing until journal-bound recovery resolves it",
-            journal.phase
+            "a pending {phase:?} activation journal selects nothing until {resolver} resolves it"
         ),
     )
 }
@@ -179,7 +207,10 @@ fn select_committed_package(
     let provenance = read_writer_provenance(trust, &roots)?;
     let records = read_records(&roots, true)?;
     if let Some(journal) = &records.journal {
-        return Err(pending_journal_refusal(journal));
+        return Err(pending_journal_refusal(
+            trust.installation.install_mode,
+            &journal.phase,
+        ));
     }
     let current = match records.current {
         Ok(current) => current,
@@ -247,19 +278,36 @@ fn select_committed_package(
 /// admission and package policy before one prepared record replaces `current` through the
 /// shared write-through publication and is read back. A crash leaves either the invalid
 /// record, repaired again at the next start, or the valid one.
+///
+/// A machine installation refuses before any lease or write: `MachineUacDirect` with the
+/// typed [`crate::ActivationEffect::MachineRecoveryRequired`], whatever version holds the
+/// running executable, and `MachineSeamlessDirect` with its untyped baseline refusal.
 pub(super) fn repair_invalid_current(
     trust: &WindowsBaselineTrust,
     invalid: &UpdateError,
     located_version: Option<&str>,
 ) -> Result<(), UpdateError> {
-    if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
-        return Err(error(
-            "current pointer repair",
-            format!(
-                "current is invalid ({}) and only the elevated writer of a machine installation may republish last-known-good",
-                super::activate::refusal_detail(invalid)
-            ),
-        ));
+    match trust.installation.install_mode {
+        DirectInstallMode::PerUserDirect => {}
+        DirectInstallMode::MachineUacDirect => {
+            return Err(UpdateError::activation(
+                "current pointer repair",
+                MACHINE_RECOVERY_REQUIRED,
+                format!(
+                    "current is invalid ({}) and only the elevated helper's recovery-only role may republish last-known-good",
+                    super::activate::refusal_detail(invalid)
+                ),
+            ));
+        }
+        DirectInstallMode::MachineSeamlessDirect => {
+            return Err(error(
+                "current pointer repair",
+                format!(
+                    "current is invalid ({}) and only the elevated writer of a machine installation may republish last-known-good",
+                    super::activate::refusal_detail(invalid)
+                ),
+            ));
+        }
     }
     let roots = open_roots(trust, false).map_err(|cause| error("repair root admission", cause))?;
     let profile = roots.profile();
@@ -268,7 +316,10 @@ pub(super) fn repair_invalid_current(
     drop(read_writer_provenance(trust, &roots)?);
     let records = read_records(&roots, true)?;
     if let Some(journal) = &records.journal {
-        return Err(pending_journal_refusal(journal));
+        return Err(pending_journal_refusal(
+            trust.installation.install_mode,
+            &journal.phase,
+        ));
     }
     if records.current.is_ok() {
         // Another writer repaired it after the snapshot; nothing to do.

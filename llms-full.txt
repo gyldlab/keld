@@ -2982,7 +2982,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   `current` record is absent or does not decode, a `PerUserDirect` selection republishes
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
-  installation refuses because only its elevated writer may repair. Live feed
+  installation refuses because only its elevated writer may repair. In
+  `MachineUacDirect` that refusal, and the refusal of a pending journal in any phase, is
+  the typed `MachineRecoveryRequired` effect: the ordinary process writes nothing, and
+  until the helper's recovery-only role is enabled its guidance is `RecoveryDisabled`.
+  Live feed
   orchestration, host candidate launch, the private health channel and its 30-second
   `Ready` observation, installed-host lifecycle composition, candidate-mode selection,
   the KEL-254 executable-located entrypoint with its `ExpectedAppIdentity` payload, and
@@ -5778,7 +5782,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The common journaled activation transaction refused or could not confirm a step
-- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released.
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved the journal, pointers and versions: start nothing, and follow the reported guidance, which names the elevated `keld-updater-helper.exe` recovery-only role; while that role is not enabled, no supported resolution exists other than administrator action.
 
 ## KELD-UPDATE-017
 

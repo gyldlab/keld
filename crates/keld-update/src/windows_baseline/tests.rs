@@ -9,6 +9,7 @@ mod machine_uac;
 mod per_user;
 mod qualification;
 mod reader;
+mod recovery_required;
 mod role;
 mod selection;
 mod substitutions;
