@@ -354,7 +354,8 @@ admitted to Keld's direct updater.
 ### Selection shape (workspace export)
 
 These are opaque Rust values that `keld-update` exports for `keld-core`, their only Rust
-consumer; they are not a wire format, and their export is reviewed under the public-API
+consumer; apart from the versioned `ExpectedAppIdentity` payload, which is wire-gated
+below, they are not a wire format, and their export is reviewed under the public-API
 gate below. `ExpectedAppIdentity` wraps the canonical build identity whose encoding
 `keld-pack` owns through the existing `keld-update -> keld-pack` edge. `keld-pack`
 produces those bytes and never imports `keld-update`; `keld build` invokes it, and that
@@ -416,14 +417,15 @@ impl DirectInstallationIdentity {
 pub struct ActivePackageSelection { /* private fields; not Clone */ }
 
 /// Non-secret build-time expectation: app id, channel, target and the expected
-/// update-signing key identity. Produced only by `keld-pack`/`keld build` inside the
-/// bytes covered by the executable's final signature; it never contains private key
-/// material.
+/// update-signing public key, from which `keld-update` derives its key ID. Encoded only
+/// by `keld-pack` inside the bytes covered by the executable's final signature; it
+/// never contains private key material.
 pub struct ExpectedAppIdentity { /* private fields */ }
 
 impl ExpectedAppIdentity {
-    /// Decodes the embedded build identity through `keld-pack`'s canonical decoder.
-    pub fn decode(embedded: &[u8]) -> Result<Self, UpdateError>;
+    /// Decodes the embedded payload bytes (not the whole executable image) through
+    /// `keld-pack`'s canonical decoder.
+    pub fn decode(payload: &[u8]) -> Result<Self, UpdateError>;
 }
 
 pub fn select_active_package_for_executable(
@@ -444,7 +446,8 @@ pub enum ActiveLaunchKind { Normal, Candidate }
 Only the KEL-53 OS loader/state machine can mint it. **The executable path locates
 candidate provenance; authenticated provenance supplies authority.** From the canonical
 current executable KEL-53 derives candidate locations by one fixed rule, then proves
-them. The executable's file name must be literally `keld-host.exe`; its parent is the
+them. Names compare exactly, including case, and any other spelling refuses. The
+executable's file name must be literally `keld-host.exe`; its parent is the
 candidate tree and must be named `tree`; the tree's parent is the version directory and
 must have a strict-SemVer name; that directory's parent must be named `versions`; the
 parent of `versions` is the candidate update root, and the update root's parent is the
@@ -456,17 +459,24 @@ located roots by
 file identity (volume serial number and file index, never path text); its volume GUID
 must read back; every ancestor and record must carry the exact protection profile of the
 *recorded* install mode; and the selected tree's literal `keld-host.exe` must be the
-running executable by file identity. No install mode, owner SID, root, volume, baseline,
+given executable by file identity, which T3 binds to the running process image (KEL-96
+`current_exe`). No install mode, owner SID, root, volume, baseline,
 current selection, protection profile or profile digest, and no trust decision, comes
 from path shape, `%ProgramFiles%`, registry, environment, cwd, argv or an ACL observation
 alone; the protected record stays authoritative for each. `ExpectedAppIdentity` carries
 only non-secret expectations from one canonical build-time producer; runtime code never
-hand-writes them. `keld-pack` embeds their canonical encoding exactly once in
-`keld-host.exe` before the executable's final Authenticode signature, and T2b fixes the
-container. At boot `keld-core` reads those bytes from the running executable only after
-KEL-135 has verified that executable's signature, and constructs the value with
-`ExpectedAppIdentity::decode`; a missing, duplicated or malformed encoding refuses before
-resources. KEL-53 refuses unless the record matches that expectation, and KEL-96
+hand-writes them. `keld-pack` owns their canonical, versioned encoding and decoder
+(T2b). Its writer embeds that payload exactly once in `keld-host.exe` before the
+executable's final Authenticode signature; the writer and its container land with the
+KEL-19 packaging work, because `keld build` has no packaging path yet. At boot
+`keld-core` reads the payload from the running executable (T3) only after KEL-135 has
+verified that executable's signature, and constructs the value with
+`ExpectedAppIdentity::decode`; a missing, duplicated or malformed payload refuses before
+resources. For this executable-located path the trusted anchor is that expectation, the
+located roots' file identities and the recorded mode's OS protection profile; the
+record's remaining fields are accepted only after those match, so the record never
+anchors itself (KEL-53 provenance binding).
+KEL-53 refuses unless the record matches that expectation, and KEL-96
 independently requires the record's publisher scope and app id to equal the KEL-135
 Authenticode identity of the same executable. The entrypoint reads no environment
 payload or argv for authority, and candidate admission comes from protected attempt
@@ -564,11 +574,14 @@ opaque outside their owner except for the documented read-only identity accessor
   updater state machine; connect only the per-user and explicit-UAC lease adapters after
   their own acceptance. Machine-seamless activation remains gated on KEL-270. This is a
   strict predecessor; KEL-254 does not copy KEL-53 recovery or pointer policy.
-- [ ] T2b — make `keld-pack`/`keld build` the one canonical producer of
-  `ExpectedAppIdentity` (app id, channel, target, expected update-signing key identity),
-  embedded in the bytes covered by the final executable signature; no runtime code or
-  test hand-writes these values. KEL-53 adds `select_active_package_for_executable`,
-  which locates provenance from the executable and proves it as §4 requires.
+- [ ] T2b — make `keld-pack` the one owner of the canonical, versioned
+  `ExpectedAppIdentity` encoding and decoder (app id, channel, target, expected
+  update-signing public key; std only, with a literal golden vector). `keld-update`
+  exposes `ExpectedAppIdentity::decode`, and KEL-53 adds
+  `select_active_package_for_executable`, which locates provenance from the executable
+  and proves it as §4 requires. No runtime code hand-writes these values; tests use the
+  canonical encoder or its single golden vector. The embedding writer and container wait
+  for KEL-19 packaging, and the boot reader for T3.
 - [ ] T3 — in the KEL-96 consumer issue, consume the landed KEL-53 active selection and
   one KEL-135 identity value to add opaque Windows installed-root boot. Verify the
   executable is the exact selected version-tree host, preserve current strict parser and
@@ -614,7 +627,9 @@ CI or a synthetic `Protected` value.
 - dependency addition: yes — one internal workspace edge `keld-core -> keld-update`,
   with no third-party crate and no reverse edge; independent review verifies ownership
   and an acyclic Cargo graph;
-- wire protocol: none.
+- wire protocol: yes — the versioned `ExpectedAppIdentity` payload that `keld-pack`
+  embeds in signed executables (T2b) needs an independent format review; there is no
+  other wire change.
 
 ## 9. Perf impact
 

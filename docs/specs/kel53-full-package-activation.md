@@ -1219,7 +1219,10 @@ as exactly 64 lowercase hexadecimal characters. Publisher scope is an installer
 assertion, not an Authenticode result. It must originate in trusted deployment/host
 configuration, not lower-trust environment, feed or arguments. The loader compares all
 fields, including observed volume identity; the protected record cannot supply its own
-expected trust anchor. SYSTEM/admin volume restoration is outside the ordinary-user
+expected trust anchor. For the KEL-254 executable-located path, that anchor is the
+build-time `ExpectedAppIdentity`, the located roots' file identities and the recorded
+mode's OS protection profile, and the record's other fields are accepted only after
+those match. SYSTEM/admin volume restoration is outside the ordinary-user
 replay threat; no global monotonic counter is introduced.
 
 Supported paths are lossless UTF-8 absolute drive paths, optionally verbatim-drive,
