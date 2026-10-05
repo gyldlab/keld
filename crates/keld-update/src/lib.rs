@@ -55,10 +55,12 @@ pub use full::VerifiedFull;
 #[doc(hidden)]
 pub use full::fuzz_canonical_archive;
 pub use manifest::{ManifestDecision, SelectedFull};
+#[cfg(any(windows, test))]
+pub use provenance::ExpectedAppIdentity;
 pub use provenance::{
     AdmittedInstallation, ArtifactIdentity, DirectInstallMode, DirectInstallationIdentity,
-    ExpectedAppIdentity, InstallOwner, InstallProvenance, PrincipalModel, ProvenanceObservation,
-    SigningKeyId, UpdateVerifier,
+    InstallOwner, InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId,
+    UpdateVerifier,
 };
 #[cfg(windows)]
 pub use records::ActivationFailureClass;
@@ -93,6 +95,7 @@ pub enum Channel {
 
 impl Channel {
     /// Parses an exact v0 wire spelling; any other text is not a channel.
+    #[cfg(any(windows, test, feature = "fuzzing"))]
     pub(crate) fn parse(text: &str) -> Option<Self> {
         match text {
             "stable" => Some(Self::Stable),

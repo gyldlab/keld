@@ -398,7 +398,9 @@ fn release_verifying_key(public_key: &[u8; 32]) -> Result<VerifyingKey, String> 
 ///
 /// It is decoded only from keld-pack's canonical payload; runtime code never
 /// hand-writes it. It anchors executable-located selection together with the located
-/// roots' file identities and the recorded mode's protection profile.
+/// roots' file identities and the recorded mode's protection profile. Windows only:
+/// A3 changes Windows boot alone.
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedAppIdentity {
     pub(crate) app_id: String,
@@ -407,6 +409,7 @@ pub struct ExpectedAppIdentity {
     pub(crate) signing_key_id: SigningKeyId,
 }
 
+#[cfg(any(windows, test))]
 impl ExpectedAppIdentity {
     /// Decodes keld-pack payload bytes (not a whole executable image).
     ///
@@ -457,6 +460,7 @@ impl ExpectedAppIdentity {
     }
 }
 
+#[cfg(any(windows, test))]
 fn invalid_expected(detail: String) -> UpdateError {
     UpdateError::ExpectedIdentityInvalid { detail }
 }
