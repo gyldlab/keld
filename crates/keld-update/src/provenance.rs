@@ -401,7 +401,7 @@ fn release_verifying_key(public_key: &[u8; 32]) -> Result<VerifyingKey, String> 
 /// roots' file identities and the recorded mode's protection profile. Windows only:
 /// A3 changes Windows boot alone.
 #[cfg(any(windows, test))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ExpectedAppIdentity {
     pub(crate) app_id: String,
     pub(crate) channel: Channel,

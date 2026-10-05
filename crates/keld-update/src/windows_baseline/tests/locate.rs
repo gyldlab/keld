@@ -108,6 +108,13 @@ fn binding_step(error: &UpdateError) -> &'static str {
     }
 }
 
+fn baseline_step(error: &UpdateError) -> &'static str {
+    match error {
+        UpdateError::Baseline { step, .. } => step,
+        other => panic!("expected KELD-UPDATE-013, got {other:?}"),
+    }
+}
+
 fn rewrite_provenance(trust: &WindowsBaselineTrust, edit: impl FnOnce(&mut WindowsBaselineTrust)) {
     let mut recorded = trust.clone();
     edit(&mut recorded);
@@ -315,6 +322,15 @@ fn a_record_naming_another_installation_refuses() {
         other_record,
     )
     .expect("substitute a valid record that names another installation");
+    // The named installation's last-known-good is the located version and its `current`
+    // is invalid, so only the root-identity refusal stands between this record and a
+    // repair write into the installation it names.
+    std::fs::write(
+        other.trust.installation.update_root.join("current"),
+        b"not a pointer",
+    )
+    .expect("invalidate the named installation's current");
+    let named_before = state(&other.trust);
     let locator = host_path(&install.trust, "1.0.0");
     let executable = open_image(&locator);
     let error = refuses(
@@ -325,6 +341,11 @@ fn a_record_naming_another_installation_refuses() {
         "a record must name the located roots",
     );
     assert_eq!(binding_step(&error), "install root identity");
+    assert_eq!(
+        state(&other.trust),
+        named_before,
+        "the installation the record names is never written"
+    );
 }
 
 #[test]
@@ -360,7 +381,9 @@ fn a_rewritten_install_mode_refuses_on_its_protection_profile() {
         &expected_for(&install.trust),
         "an owner-private record cannot claim the machine-UAC profile",
     );
-    assert_eq!(binding_step(&error), "protected record profile");
+    // A protection-profile refusal is typed as the installed-root selector types it.
+    assert_eq!(baseline_step(&error), "protected record profile");
+    assert_eq!(error.code(), "KELD-UPDATE-013");
 }
 
 #[test]

@@ -546,17 +546,24 @@ pub(crate) fn exact_entries(directory: &Dir, expected: &[&str]) -> io::Result<()
     Ok(())
 }
 
-fn open_machine_file(
-    parent: &Dir,
-    leaf: &str,
-    profile: keld_guard::WindowsInstallProtectionProfile,
-) -> io::Result<File> {
+/// Opens a leaf for reading without following a reparse point and sharing only read
+/// access, so it cannot be written, renamed or deleted while the handle is held; the
+/// caller admits the handle (a protected record against its profile).
+fn open_pinned_leaf(parent: &Dir, leaf: &str) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .read(true)
         .share_mode(FILE_SHARE_READ)
         .follow(FollowSymlinks::No);
-    let file = parent.open_with(leaf, &options)?;
+    parent.open_with(leaf, &options)
+}
+
+fn open_machine_file(
+    parent: &Dir,
+    leaf: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<File> {
+    let file = open_pinned_leaf(parent, leaf)?;
     admit_machine_file(
         parent,
         &cap_std::io_lifetimes::AsFilelike::as_filelike_view::<std::fs::File>(&file),
@@ -618,8 +625,14 @@ fn read_record(
     leaf: &str,
     profile: keld_guard::WindowsInstallProtectionProfile,
 ) -> Result<(File, Vec<u8>), UpdateError> {
-    let mut file = open_machine_file(parent, leaf, profile)
+    let file = open_machine_file(parent, leaf, profile)
         .map_err(|cause| error("protected record open", cause))?;
+    read_open_record(file)
+}
+
+/// Reads an open protected record of at most 64 KiB, returning the handle so the caller
+/// can keep it pinned.
+fn read_open_record(mut file: File) -> Result<(File, Vec<u8>), UpdateError> {
     let length = file
         .metadata()
         .map_err(|cause| error("protected record size", cause))?

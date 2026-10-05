@@ -5,14 +5,16 @@
 //! located roots' file identities and the recorded mode's OS protection profile; the
 //! record's remaining fields are accepted only after those match.
 
-use std::io::{self, Read as _};
+use std::io;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use cap_fs_ext::{DirExt as _, FollowSymlinks, MetadataExt as _, OpenOptionsFollowExt as _};
-use cap_std::fs::{Dir, File, OpenOptions, OpenOptionsExt as _};
-use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use cap_fs_ext::{DirExt as _, MetadataExt as _};
+use cap_std::fs::{Dir, File};
 
-use super::{ActivePackageSelection, WindowsBaselineTrust, admit_machine_file, exact_entries};
+use super::{
+    ActivePackageSelection, WindowsBaselineTrust, admit_machine_file, error, exact_entries,
+    open_pinned_leaf, read_open_record,
+};
 use crate::windows_extraction::{ensure_regular, open_ancestors};
 use crate::windows_fs::qualified_volume_root;
 use crate::{ExpectedAppIdentity, UpdateError, records};
@@ -37,11 +39,12 @@ const PROVENANCE: &str = "install-provenance";
 /// any other tree never causes a write.
 ///
 /// # Errors
-/// [`UpdateError::ExecutableBinding`] when the locator shape, executable identity, root
-/// identity, volume or selected version does not bind; [`UpdateError::ProvenanceMismatch`]
-/// when the record does not carry the expected app id, channel, target or signing key;
-/// and every refusal of the protected record codec, protection profiles and
-/// [`super::select_windows_active_package`].
+/// [`UpdateError::ExecutableBinding`] when the locator shape, executable identity, located
+/// layout or volume, recorded-root identity, record volume or selected version does not
+/// bind; [`UpdateError::ProvenanceMismatch`] when the record does not carry the expected
+/// app id, channel, target or signing key; and, exactly as
+/// [`super::select_windows_active_package`] reports them, every refusal to read, decode
+/// or admit the protected record or recorded roots against the recorded mode's profile.
 pub fn select_active_package_for_executable(
     locator: &Path,
     executable: &std::fs::File,
@@ -66,6 +69,9 @@ pub fn select_active_package_for_executable(
             ),
         ));
     }
+    // Defence in depth that A3 §4 requires literally: every located component is held
+    // open without delete sharing, so none can be renamed or replaced, and the
+    // located-host identity with the version equality above already implies this check.
     let selected_host =
         open_host(&selection.tree).map_err(|cause| binding("selected host", cause))?;
     if ObjectIdentity::of_cap_file(&selected_host)
@@ -146,10 +152,11 @@ impl Located {
     }
 
     /// Every root the record names must be the located root by volume serial and file
-    /// ID; the recorded mode's profiles and volume are enforced by `open_roots`.
+    /// ID; the recorded mode's profiles and volume are enforced by `open_roots`, whose
+    /// refusals are typed as the installed-root selector types them.
     fn require_recorded_roots(&self, trust: &WindowsBaselineTrust) -> Result<(), UpdateError> {
         let roots =
-            super::open_roots(trust, false).map_err(|cause| binding("recorded roots", cause))?;
+            super::open_roots(trust, false).map_err(|cause| error("recorded roots", cause))?;
         let recorded_install = roots
             .ancestors
             .last()
@@ -172,14 +179,16 @@ impl Located {
     }
 }
 
-/// Reads, decodes and matches the located record, then admits the same handle against
-/// the recorded mode's profile before building trust from it.
+/// Reads, decodes and matches the located record before its mode is known, then admits
+/// the same handle against the recorded mode's profile before building trust from it.
 fn admit_record(
     install: &Dir,
     expected: &ExpectedAppIdentity,
     volume: &str,
 ) -> Result<(File, WindowsBaselineTrust), UpdateError> {
-    let (record_file, record_bytes) = read_unadmitted_record(install)?;
+    let record_file = open_pinned_leaf(install, PROVENANCE)
+        .map_err(|cause| error("protected record open", cause))?;
+    let (record_file, record_bytes) = read_open_record(record_file)?;
     let record = records::decode_provenance(&record_bytes)?;
     expected.require_matches(&record.provenance.identity)?;
     let profile = record.provenance.identity.install_mode.protection_profile();
@@ -188,7 +197,7 @@ fn admit_record(
         &cap_std::io_lifetimes::AsFilelike::as_filelike_view::<std::fs::File>(&record_file),
         profile,
     )
-    .map_err(|cause| binding("protected record profile", cause))?;
+    .map_err(|cause| error("protected record profile", cause))?;
     if !record.volume_guid.eq_ignore_ascii_case(volume) {
         return Err(binding(
             "record volume",
@@ -298,42 +307,7 @@ impl ObjectIdentity {
 }
 
 fn open_host(tree: &Dir) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .follow(FollowSymlinks::No);
-    tree.open_with(HOST, &options)
-}
-
-/// Reads the located provenance record before its mode is known; the same handle is
-/// admitted against the recorded mode's profile before any field is trusted.
-fn read_unadmitted_record(install: &Dir) -> Result<(File, Vec<u8>), UpdateError> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .follow(FollowSymlinks::No);
-    let mut file = install
-        .open_with(PROVENANCE, &options)
-        .map_err(|cause| binding("protected record open", cause))?;
-    let metadata = file
-        .metadata()
-        .map_err(|cause| binding("protected record size", cause))?;
-    let limit = u64::try_from(records::MAX_LOCAL_RECORD_BYTES)
-        .map_err(|cause| binding("protected record size", cause))?;
-    if !metadata.is_file() || metadata.len() > limit {
-        return Err(binding(
-            "protected record size",
-            "record is not a regular file of at most 64 KiB",
-        ));
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|cause| binding("protected record read", cause))?;
-    Ok((file, bytes))
+    open_pinned_leaf(tree, HOST)
 }
 
 fn require_volume(directory: &Dir, volume: &str, step: &'static str) -> Result<(), UpdateError> {
