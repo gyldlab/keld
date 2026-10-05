@@ -134,7 +134,9 @@ D4 note remains outside the frozen decision block so its approved digest does no
    app resources. It never guesses the newest directory or silently substitutes the
    install baseline. Given a persisted valid journal and no authenticated live candidate
    endpoint, KEL-53 takes its exclusive attempt lease and proves the prior coordinator/
-   candidate process family has exited before recovering the exact journal phase.
+   candidate process family has exited before recovering the exact journal phase. In
+   machine modes only the elevated writer may take that lease and recover a journal; an
+   ordinary launch returns no selection with typed guidance naming that writer.
    `PublishPending`, `AwaitingHealth`, `HealthAccepted`, and `RollbackPending` follow
    their existing KEL-53 phase rules; unknown/live process state, corrupt/mixed journal,
    or failed recovery returns no boot selection. If another coordinator still owns the
