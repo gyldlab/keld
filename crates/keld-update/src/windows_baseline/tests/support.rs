@@ -142,10 +142,15 @@ pub(super) fn create_suite() -> PathBuf {
 }
 
 pub(super) fn trust_for(install: &Path) -> WindowsBaselineTrust {
+    trust_for_with(install, GOLDEN)
+}
+
+/// [`trust_for`] for a baseline whose canonical package content is `content`.
+pub(super) fn trust_for_with(install: &Path, content: &[u8]) -> WindowsBaselineTrust {
     let mut identity = expected_identity();
     identity.install_root = install.to_path_buf();
     identity.update_root = install.join("updates");
-    identity.baseline.content_blake3 = *blake3::hash(GOLDEN).as_bytes();
+    identity.baseline.content_blake3 = *blake3::hash(content).as_bytes();
     // Trusted test configuration observes the fixture's selected volume, never the
     // untrusted on-disk provenance whose equality is being tested. Some fixtures have
     // not created the install leaf yet, so bind to its nearest existing ancestor.
@@ -235,13 +240,19 @@ pub(super) fn provision_per_user(root: &Path, label: &str) -> WindowsBaselineTru
 }
 
 pub(super) fn baseline(trust: &WindowsBaselineTrust) -> VerifiedBaseline {
-    let compressed = zstd::stream::encode_all(Cursor::new(GOLDEN), 0).expect("fixture compression");
+    baseline_with(trust, GOLDEN)
+}
+
+/// [`baseline`] for canonical package content `content`.
+pub(super) fn baseline_with(trust: &WindowsBaselineTrust, content: &[u8]) -> VerifiedBaseline {
+    let compressed =
+        zstd::stream::encode_all(Cursor::new(content), 0).expect("fixture compression");
     let release = release_json(
         "1.0.0",
         &compressed.len().to_string(),
         &digest_hex(&compressed),
-        &GOLDEN.len().to_string(),
-        &digest_hex(GOLDEN),
+        &content.len().to_string(),
+        &digest_hex(content),
         "",
     );
     let manifest = manifest_json(&release);
@@ -254,6 +265,21 @@ pub(super) fn baseline(trust: &WindowsBaselineTrust) -> VerifiedBaseline {
     .expect("actual detached signature")
     .verify_full(&mut Cursor::new(compressed), &mut Vec::new())
     .expect("authenticated full bytes")
+}
+
+/// Canonical Windows v0 package content whose tree holds a `keld-host.exe` image, made by
+/// keld-pack's producer (KEL-254 T2b executable-located selection).
+pub(super) fn host_package_content() -> Vec<u8> {
+    let image: &[u8] = b"keld-host fixture image";
+    let mut input = image;
+    let mut entries = [keld_pack::PackageEntry::File {
+        name: "keld-host.exe",
+        size: u64::try_from(image.len()).expect("fixture image length"),
+        input: &mut input,
+    }];
+    let mut compressed = Vec::new();
+    keld_pack::produce_windows_v0(&mut entries, &mut compressed).expect("native producer");
+    zstd::stream::decode_all(compressed.as_slice()).expect("canonical package content")
 }
 
 pub(super) fn child(selector: &str, root: &Path, case: &str, cut: &str, code: i32) -> String {

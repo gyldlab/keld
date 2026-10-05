@@ -111,10 +111,21 @@ pub fn load_windows_baseline(
 pub fn select_windows_active_package(
     trust: &WindowsBaselineTrust,
 ) -> Result<super::ActivePackageSelection, UpdateError> {
+    select_with_repair_gate(trust, None)
+}
+
+/// Shared selection body. `located_version`, when present, is the version tree that
+/// holds the running executable (KEL-254 T2b): an invalid `current` is then repaired
+/// only when last-known-good is exactly that version, so a host started from any other
+/// tree never causes a write.
+pub(super) fn select_with_repair_gate(
+    trust: &WindowsBaselineTrust,
+    located_version: Option<&str>,
+) -> Result<super::ActivePackageSelection, UpdateError> {
     match select_committed_package(trust)? {
         CommittedSelection::Selected(selection) => Ok(*selection),
         CommittedSelection::CurrentInvalid(cause) => {
-            repair_invalid_current(trust, &cause)?;
+            repair_invalid_current(trust, &cause, located_version)?;
             // One reselection after a durable repair; a second failure is returned as is.
             match select_committed_package(trust)? {
                 CommittedSelection::Selected(selection) => Ok(*selection),
@@ -221,7 +232,7 @@ fn select_committed_package(
             artifact: records.current,
             _roots: roots,
             _version: version,
-            _tree: tree,
+            tree,
         },
     )))
 }
@@ -239,6 +250,7 @@ fn select_committed_package(
 pub(super) fn repair_invalid_current(
     trust: &WindowsBaselineTrust,
     invalid: &UpdateError,
+    located_version: Option<&str>,
 ) -> Result<(), UpdateError> {
     if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
         return Err(error(
@@ -261,6 +273,17 @@ pub(super) fn repair_invalid_current(
     if records.current.is_ok() {
         // Another writer repaired it after the snapshot; nothing to do.
         return Ok(());
+    }
+    if let Some(located) = located_version
+        && records.last_known_good.version != located
+    {
+        return Err(UpdateError::ExecutableBinding {
+            step: "current pointer repair",
+            detail: format!(
+                "the running executable is in version `{located}`, not last-known-good `{}`; only a last-known-good host repairs current",
+                records.last_known_good.version
+            ),
+        });
     }
     let floor = semver::Version::parse(&records.version_floor)
         .map_err(|cause| error("version floor", cause))?;

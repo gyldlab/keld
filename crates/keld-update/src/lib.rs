@@ -55,6 +55,8 @@ pub use full::VerifiedFull;
 #[doc(hidden)]
 pub use full::fuzz_canonical_archive;
 pub use manifest::{ManifestDecision, SelectedFull};
+#[cfg(any(windows, test))]
+pub use provenance::ExpectedAppIdentity;
 pub use provenance::{
     AdmittedInstallation, ArtifactIdentity, DirectInstallMode, DirectInstallationIdentity,
     InstallOwner, InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId,
@@ -74,7 +76,7 @@ pub use windows_baseline::{
     initialize_windows_baseline, initialize_windows_machine_uac_baseline,
     initialize_windows_per_user_baseline, load_windows_activation_write_snapshot,
     load_windows_baseline, load_windows_recovery_inspection, repair_windows_unjournaled_versions,
-    select_windows_active_package,
+    select_active_package_for_executable, select_windows_active_package,
 };
 #[cfg(windows)]
 pub use windows_extraction::{CompletedWindowsStage, ExtractedWindowsStage, WindowsExtractionRoot};
@@ -92,6 +94,17 @@ pub enum Channel {
 }
 
 impl Channel {
+    /// Parses an exact v0 wire spelling; any other text is not a channel.
+    #[cfg(any(windows, test, feature = "fuzzing"))]
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "stable" => Some(Self::Stable),
+            "beta" => Some(Self::Beta),
+            "canary" => Some(Self::Canary),
+            _ => None,
+        }
+    }
+
     /// Stable v0 wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

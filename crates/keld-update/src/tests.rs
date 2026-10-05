@@ -8,6 +8,8 @@ use keld_guard::ProfileDigest;
 
 use super::*;
 
+mod expected_identity;
+
 const APP_ID: &str = "dev.keld.fixture";
 const TARGET: &str = "windows-x64";
 const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
