@@ -1347,9 +1347,10 @@ disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
 connecting. It has its own magic values and message types and reuses only the low-level
 framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every other
-rule, which is wire-gated: "Candidate connect-back" owns the endpoints, each side's
-quality of service and impersonation, the records and their failures, and "Machine-UAC
-bootstrap" owns the bootstrap roles.
+rule, which is wire-gated: "Candidate connect-back" owns the connect-back endpoint, the
+claim's quality of service and impersonation, and every record and its failures;
+"Machine-UAC bootstrap" owns the bootstrap endpoint, roles, argument shape, quality of
+service and impersonation.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -3588,13 +3589,8 @@ the lease proves no prior owner can still write and no candidate family exists. 
 resumed owner durably re-mints the attempt's health and lifecycle channel identities
 before continuing, so no health receipt or retirement witness from a lost owner binds
 to the resumed run. Launched phases still require an exact process-family retirement
-binding. That binding is an exact installation/attempt/lifecycle-channel value that the
-host composes from the QF1 retirement witness or its own retained Job-zero observation,
-or that the Machine-UAC recovery-only helper composes from KEL-53's owner-loss
-retirement facts once T4d qualifies them; `keld-update` cannot authenticate its
-producer. A sealed witness type was rejected
-because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
-graph.
+binding; KEL-53 §4 owns who composes it and from which evidence, and why a sealed
+witness type was rejected.
 
 `HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
 attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical

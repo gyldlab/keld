@@ -103,10 +103,21 @@ smallest privileged surface:
 
 Owner decisions of the round-1 review (2026-10-05), each applied in its owning
 paragraph:
-- **D1, unlaunched `publish-pending` under owner loss:** the recovery-only role rolls the
-  attempt back and never launches, which consumes that signed version until a newer
-  release ships ("Machine-UAC recovery-required state and recovery-only role").
-  Rejected: letting the recovery role launch the candidate.
+- **D1, unlaunched `publish-pending` under owner loss (refined 2026-10-06, "abandon
+  intent"):** the recovery-only role never launches and resolves such an attempt with an
+  abandon intent inside the one `next_activation_step` state machine, so every
+  intermediate state stays `PublishPending` ("Machine-UAC recovery-required state and
+  recovery-only role"). Rationale: the landed step order advances the floor before
+  `AwaitingHealth` (`AdvanceFloor`, `SelectCandidate`, `EnterAwaitingHealth`:
+  `windows_baseline/activate.rs:609-629`, `activation.rs:280-297`), so the first D1
+  route through `resume_unlaunched` and `roll_back` always consumed the signed version,
+  even when the floor had not moved, and left a crash window from `AwaitingHealth`
+  through `RollbackPending` until journal removal that looks launched. Rejected: letting
+  the recovery role launch the candidate; that first route through `resume_unlaunched`
+  and `roll_back`; a journal marker for "owned by a role that never launches", which
+  still consumes the version because `RollbackPending` requires the floor at the
+  candidate (`activation.rs:340-342`) and adds a v2 variant and a new invariant; and
+  accepting the residual window.
 - **D2, bootstrap shape:** the host is the pipe server, admitting only its own user SID
   and BUILTIN Administrators, and verifies the connecting helper by exact process-object
   identity against the process handle that `ShellExecuteExW` returned; the elevated
@@ -132,8 +143,10 @@ paragraph:
   `keld-core` into `keld-guard`, which already owns the token FFI and the Windows ACL
   validators; `keld-core` and the helper both call that single owner, and copying it is
   forbidden (§5). Rejected: a new crate.
-- **D5, Machine-UAC claimant fallback:** every `MachineUacDirect` endpoint carries an
-  explicit `O:BA` owner, and when a Medium claimant cannot open the elevated owner it
+- **D5, Machine-UAC claimant fallback:** every connect-back endpoint that the elevated
+  helper creates carries an explicit `O:BA` owner (the host-created bootstrap endpoint
+  keeps the host's own user SID as owner), and when a Medium claimant cannot open the
+  elevated owner it
   checks that owner together with the server's process ID and session; a Medium
   squatter cannot make BUILTIN Administrators the owner ("Candidate connect-back").
   Rejected: adding a query ACE to the helper's own process.
@@ -219,11 +232,15 @@ open of the verified host process instead.
 
 1. *The host is the pipe server.* Before elevation, the admitted host mints a fresh
    bootstrap nonce, derives the rendezvous name from it with the `keld-attempt` locator
-   function ("Candidate connect-back") and creates that endpoint under the creation
-   rules there, except that its protected DACL grants the landed `keld-ipc` mask to
-   exactly two SIDs: the host's own user SID and BUILTIN Administrators. It starts the
-   helper under "Helper launch and self-anchor" with `ShellExecuteExW`, the `runas` verb
-   and `SEE_MASK_NOCLOSEPROCESS`, passing the rendezvous name as the helper's single
+   function ("Candidate connect-back") and creates that endpoint as the only instance,
+   rejecting remote clients, with a non-inheritable handle, an explicit Medium
+   no-write-up label and a protected DACL that grants the landed `keld-ipc` mask to
+   exactly two SIDs, the host's own user SID and BUILTIN Administrators; it reads the
+   descriptor back. The descriptor's owner is the host's own user SID: a Medium process
+   cannot make BUILTIN Administrators the owner, so the `O:BA` owner of owner decision D5
+   applies only to the endpoints the elevated helper creates. The host starts the helper
+   under "Helper launch and self-anchor" with `ShellExecuteExW`, the `runas` verb and
+   `SEE_MASK_NOCLOSEPROCESS`, passing the rendezvous name as the helper's single
    argument; the name carries no authority. `hProcess` is not returned in every case
    ([SHELLEXECUTEINFOW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow),
    `ms.date` 2018-12-05), so the host refuses without it; whether an elevated `runas`
@@ -238,22 +255,40 @@ open of the verified host process instead.
    also open that process, `CompareObjectHandles` must agree. A mismatch disconnects the
    client and re-arms the same instance (`disconnect_for_retry`) until the one-shot is
    consumed or the bootstrap deadline passes.
-3. *The helper is the client and verifies the server first.* The helper opens the
+3. *The helper is the client and verifies the server first.* Before it opens anything,
+   the helper accepts its single argument only in the exact local shape
+   `\\.\pipe\keld-attempt-<64 lowercase hex>`, through an `is_attempt_endpoint`
+   predicate beside the landed exact-shape predicates in `keld-ipc`
+   (`bootstrap.rs:2147-2170`); a UNC or remote path, another namespace, uppercase hex, a
+   wrong length or any extra argument refuses before any open or write. It opens the
    endpoint with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so the host can at
-   most identify the elevated helper and never impersonate it. Before it sends anything,
-   it opens and pins the process that `GetNamedPipeServerProcessId` names and requires
-   its image to be the `keld-host.exe` of the helper's own located installation's
-   selected version tree, by file identity, its session to be the helper's own session,
-   and the endpoint descriptor to be exactly the form in item 1.
+   most identify the elevated helper and never impersonate it. Before it sends
+   anything, it opens and pins the process that `GetNamedPipeServerProcessId` names and
+   requires its image to be the `keld-host.exe` of the helper's own located
+   installation's selected version tree, by file identity, its session to be the
+   helper's own session, and the endpoint descriptor to be exactly the form in item 1,
+   owned by that host process's user SID. These checks bind the helper to a host of its
+   own installation; they do not authenticate the host against other code running as
+   the same user, which criterion 12 places outside the boundary. That residual is
+   bounded: such code can supply at most that same user's token, and the helper
+   re-verifies the source against the signature and the floor.
 4. *The initiating token comes from that same process object.* From the pinned host
    process the helper opens the primary token with query, duplicate and assign-primary
    rights and duplicates it with `DuplicateTokenEx(TokenPrimary)`. It never derives the
    launch token from a thread or pipe impersonation token, from a token another process
    supplies, or from identity strings. It reads TokenUser, `AuthenticationId`, session
    id, elevation type and integrity level through `query_windows_peer_token_facts` (§5)
-   and records `initiating_logon`. Over-the-shoulder consent with alternate
-   administrator credentials changes only the helper's own token; the initiating token
-   still comes from the host process object, so that case is admitted.
+   and refuses an elevated or non-Medium initiating token here, before any protected
+   write, because the later claim check would come after a version was consumed; it then
+   records `initiating_logon`. Over-the-shoulder consent with alternate administrator
+   credentials changes only the helper's own token; the initiating token still comes
+   from the host process object, so that case is admitted. If slice S1 shows that the
+   helper cannot open the host process or its token after alternate-administrator
+   consent, T4d stops before slice S11 for a new owner decision, and until then that
+   cell refuses with a typed `ProtectedStateUnchanged` whose detail names the
+   unsupported consent, before any protected write. None of these is a fallback:
+   enabling further privileges, changing the token's owner or DACL, a session-token API
+   such as `WTSQueryUserToken`, or pipe impersonation.
 5. *Source pinning uses token impersonation, not pipe impersonation.* The bootstrap
    request carries only KEL-53's bounded source lookup locator beneath the initiating
    user's owner-private staging root; it conveys no authority and cannot select an
@@ -273,14 +308,17 @@ open of the verified host process instead.
    user's interactive session, because the new process runs in the caller's session,
    not the token's
    ([CreateProcessWithTokenW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw),
-   `ms.date` 2018-12-05). Before it resumes the candidate, the helper verifies the
-   resulting token, session, integrity and elevation, image, profile, environment and
-   desktop. A session mismatch, missing privilege, identification-only token, failed
-   reversion, unavailable desktop or profile, or failed token proof refuses before
-   publication; detected after publication, it rolls the attempt back with
-   `CandidateLaunch` under the same lease, as "Candidate connect-back" requires for
-   every launch refusal, so no unlaunched `AwaitingHealth` attempt is left to the
-   restart-gated owner-loss proof. The helper never substitutes its elevated
+   `ms.date` 2018-12-05). Every launch-readiness proof that needs no created process (the
+   token facts, the session, `SeImpersonatePrivilege`, failed reversion, and desktop and
+   profile availability) runs before the mint-then-journal seam writes `PublishPending`,
+   so its refusal is `ProtectedStateUnchanged`. Only process creation and the
+   verification of the suspended process (its token, session, integrity and elevation,
+   image, profile, environment and desktop, before it is resumed) come after
+   `AwaitingHealth` is durable; their refusal terminates any suspended process and rolls
+   the attempt back with `CandidateLaunch` under the same lease ("Candidate
+   connect-back"). A crash inside that rollback leaves a phase that the journal treats
+   as launched, so its recovery needs the owner-loss proof; the recovery-only role's
+   abandon intent covers only attempts still in `PublishPending`. The helper never substitutes its elevated
    administrator token. `CreateProcessAsUser` is not an automatic fallback: its
    token-session behavior and additional caller privileges need separate exact proof. A
    pre-existing ordinary-user launcher may be reused only if its installed lifecycle and
@@ -289,8 +327,8 @@ open of the verified host process instead.
 
 The bootstrap messages are listed once in "Candidate connect-back". Opening the host
 process and its token from the elevated helper, including after alternate-administrator
-consent, the `hProcess` rights, and same-session `CreateProcessWithTokenW` are
-qualification targets of T4d slice S1.
+consent (with the stop rule in item 4), the `hProcess` rights, and same-session
+`CreateProcessWithTokenW` are qualification targets of T4d slice S1.
 
 Mode is authenticated installation provenance, never inferred from Program Files paths,
 ACL observations, executable location, command line, environment, or caller flags. The
@@ -950,21 +988,33 @@ provenance of its installation, takes the exclusive writer lease, rereads and fu
 revalidates provenance, floor, records, journal and both version trees, and then does
 exactly one of the following:
 
-1. With a journal, it resolves only through the KEL-53 phase rules, including their
-   process-family proof; for a launched attempt after owner loss that proof is
-   "Machine-UAC owner-loss retirement" below. An unlaunched `publish-pending` attempt
-   keeps the lease-only rule, but under owner decision D1 the recovery role launches
-   nothing: where that rule would next launch the candidate, it rolls the attempt back
-   with `CandidateLaunch` instead (the landed `resume_unlaunched` followed by
-   `roll_back`), composing the retirement binding from its own empty attempt Job's zero
-   observation. `resume_unlaunched` advances the floor to the candidate and `roll_back`
-   keeps it there (`activate.rs:244-250`), so the floor stays at the candidate and
-   automatic reselection then needs a newer signed release. The recovery role creates
-   no connect-back endpoint because it launches nothing. A candidate that is neither
-   published nor staged at the prior floor is abandoned as today.
-2. Without a journal, it owns the machine-mode repair of an invalid `current`: through
+1. With a launched journal phase, it resolves only through the KEL-53 phase rules,
+   including their process-family proof, which after owner loss is "Machine-UAC
+   owner-loss retirement" below.
+2. With a `publish-pending` journal, which the lease alone proves unlaunched, it uses
+   the abandon intent of owner decision D1 (refined): one intent argument of the single
+   `next_activation_step` state machine (`activation.rs`), not a second state machine.
+   The journal stays `PublishPending` through every step, so a crash at any step leaves
+   a state that the next run resumes on the lease alone, without the logon-session proof.
+   - If the floor is still at its prior value, it retires a published candidate (the
+     landed retire path of `ensure_candidate_pinned`, `windows_baseline/activate.rs:801-830`,
+     without republishing a stage) and then removes the journal as `Abandoned` (the
+     landed rule for a candidate that is neither published nor staged,
+     `activation.rs:200-206`; a completed stage stays a never-selectable `incomplete-*`
+     diagnostic). The floor never moved, so the same signed version stays retryable
+     (criterion 14 and amendment F1).
+   - If the floor is already at the candidate, it first restores `current` to the
+     rollback target if `current` names the candidate, then retires a published
+     candidate, then removes the journal. The version is consumed, as it would be on any
+     route. This needs one landed-code change: under the abandon intent, an unpublished
+     candidate at the candidate floor resolves as `AbandonAttempt` instead of the
+     `CandidateUnpublished` refusal of `activation.rs:207-213`.
+3. Without a journal, it owns the machine-mode repair of an invalid `current`: through
    the shared repair, it republishes last-known-good and reads it back, only when its own
    located version is last-known-good (the KEL-254 T2b located-version gate).
+
+It never writes `AwaitingHealth` or `RollbackPending` for an attempt it did not launch,
+and it creates no connect-back endpoint because it launches nothing.
 
 It accepts no candidate, source, path or feed input and launches no application. A
 declined prompt, failed revalidation or unproven process family writes nothing and
@@ -1291,12 +1341,15 @@ name, with the owner's `owner_process_id` and `owner_creation_time`: `PublishPen
 a fresh attempt, or the re-mint record for a resumed owner. The endpoint is therefore
 held before anyone can derive its name from the journal, which BUILTIN Users may read.
 If the name already exists, or creation or readback fails, a fresh attempt refuses with
-`ProtectedStateUnchanged` before any protected write, and a resumed owner refuses with
-the journal unchanged. If a later launch step refuses, the owner rolls the attempt back
-with `CandidateLaunch` under the same lease, composing the retirement binding from its
-own retained Job-zero observation because nothing ran, so no unlaunched
-`AwaitingHealth` attempt is left to the restart-gated owner-loss proof. The
-recovery-only role launches nothing and creates no endpoint.
+`ProtectedStateUnchanged` before any protected write, and a resumed owner, which only
+`PerUserDirect` has, refuses with the journal unchanged and the effect
+`JournalBoundRecoveryRequired` that the landed `Transaction::fault` gives every
+journaled refusal (`windows_baseline/activate.rs:911-921`). A launch refusal after
+`AwaitingHealth` is durable rolls the attempt back with `CandidateLaunch` under the same
+lease, composing the retirement binding from the owner's own retained Job-zero
+observation; "Machine-UAC bootstrap" item 6 owns which refusals come before
+`PublishPending` instead, and why a crash inside that rollback needs the owner-loss
+proof. The recovery-only role launches nothing and creates no endpoint.
 
 *Creation.* The owner creates the endpoint through the landed `keld-ipc` named-pipe
 server: at most one instance, `FILE_FLAG_FIRST_PIPE_INSTANCE`,
@@ -1305,9 +1358,10 @@ back. The single ACE grants the initiating user SID, not the owner's own TokenUs
 the landed `keld-ipc` access mask `0x0012019B`: the individual read/write data, attribute
 and extended-attribute rights, `READ_CONTROL` so the claimant can read the descriptor
 back, and `SYNCHRONIZE`; never `FILE_CREATE_PIPE_INSTANCE`, which `FILE_GENERIC_WRITE`
-would include, and never `WRITE_DAC` or `WRITE_OWNER`. Every `MachineUacDirect` endpoint
-carries the explicit owner `O:BA` (owner decision D5); a `PerUserDirect` endpoint's owner
-is the user. The descriptor also carries an explicit Medium mandatory label with
+would include, and never `WRITE_DAC` or `WRITE_OWNER`. Every connect-back endpoint that
+the elevated helper creates carries the explicit owner `O:BA` (owner decision D5); a
+`PerUserDirect` endpoint's owner is the user, and the host-created bootstrap endpoint's
+owner is the host's own user SID ("Machine-UAC bootstrap"). The descriptor also carries an explicit Medium mandatory label with
 `SYSTEM_MANDATORY_LABEL_NO_WRITE_UP`, which denies Low-integrity and AppContainer
 writers. Microsoft documents that the objects a process creates receive its integrity
 level and that unlabelled objects are treated as Medium
@@ -1329,9 +1383,13 @@ qualification target.
 
 *Claim.* The owner starts the candidate with the endpoint name as its single rendezvous
 argument, which carries no authority (owner decision D3). Only a process started with
-that argument attempts a claim. It takes no snapshot lease and never reads the journal
-or any other mutable record before acceptance; to learn its install mode it reads only
-its immutable protected provenance record, which no writer ever replaces. It opens the
+that argument attempts a claim, and it accepts the argument only in the exact local
+shape of "Machine-UAC bootstrap" item 3, refusing anything else before any open. It takes no snapshot lease and never reads the journal
+or any other mutable record before acceptance. To learn its install mode and
+installation ID it reads only its immutable protected provenance record, which no writer
+ever replaces, through the executable-located anchor of KEL-254 §4. A future mode
+transition or v1 migration that replaces provenance (criterion 1) must account for these
+claimants, which hold no lease. It opens the
 name with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so a server that is not the
 owner can at most identify the claimant, never impersonate it; named-pipe servers
 otherwise receive impersonation by default
@@ -1369,8 +1427,12 @@ launch. The owner then impersonates the claim's writer, at the identification le
 claimant granted, only to query its token, and requires the initiating TokenUser, the
 initiating `AuthenticationId` (`TokenStatistics`), the initiating session, Medium
 integrity and a non-elevated token. It reverts before anything else, and a failed
-`RevertToSelf` terminates the owner. The `AH1`, `AC1` and `AA1` exchange binds the
-installation, attempt and health-channel IDs, both fresh nonces and both process IDs.
+`RevertToSelf` terminates the owner. The claimant's `AH1` carries only what it knows
+without the journal: the installation ID, its nonce and its process ID. The owner's
+`AC1` supplies the attempt and health-channel IDs. Before it sends `AA1`, the claimant
+requires the locator function over the installation, attempt and health-channel IDs to
+yield exactly its own rendezvous name, so the `AH1`, `AC1` and `AA1` exchange binds all
+three IDs, both fresh nonces and both process IDs to the name it was launched with.
 
 *Refusal.* Any mismatch on either side refuses that claimant, and the refused process
 refuses its own start with a typed `WriterActive` before app code; this paragraph owns
@@ -1387,8 +1449,8 @@ at all, because the DACL and the label deny it.
 ordinary updater startup. The accepted candidate performs criterion 20's authenticated
 candidate-boot read while the owner replaces no mutable record. It requires an
 `AwaitingHealth` journal whose candidate is the version tree holding its running
-executable, whose attempt and health-channel IDs equal the `AC1` values and give the
-locator output that equals its rendezvous name, and whose `owner_process_id` equals the
+executable, whose attempt and health-channel IDs equal the `AC1` values that it already
+matched against its rendezvous name, and whose `owner_process_id` equals the
 server's process ID and, when the server process could be opened, whose
 `owner_creation_time` and `helper_image_blake3` match that process. A mismatch refuses
 with a typed `WriterActive` before app code. It then validates the exact
@@ -1407,11 +1469,11 @@ lifecycle records in `bootstrap.rs`), with the Windows pipe primitives in
   bounded source locator); the helper's `KELD-BA1` acknowledgement of that transcript;
   the host's `KELD-BR1` receipt, sent after it consumes its one-shot; and the helper's
   `KELD-BO1` outcome, a closed outcome class, before it closes;
-- claim: the candidate's `KELD-AH1` claim (installation, attempt and health-channel IDs,
-  client nonce, client process ID); the owner's `KELD-AC1` challenge (adding the server
-  nonce and server process ID); the candidate's `KELD-AA1` acknowledgement of the whole
-  transcript; and the owner's `KELD-AR1` acceptance receipt, sent only after it consumes
-  its one-shot;
+- claim: the candidate's `KELD-AH1` claim (installation ID, client nonce, client
+  process ID); the owner's `KELD-AC1` challenge (the attempt and health-channel IDs, the
+  server nonce and the server process ID); the candidate's `KELD-AA1` acknowledgement of
+  the whole transcript, sent only after its locator check; and the owner's `KELD-AR1`
+  acceptance receipt, sent only after it consumes its one-shot;
 - health: the candidate's `KELD-AB1` boot acknowledgement after criterion 20's read
   (attempt, health channel, artifact), `KELD-AY1` Ready and `KELD-AF1` failure (a closed
   class: bootstrap read refused, application exit before Ready, or boot error), and the
@@ -1786,6 +1848,15 @@ Implement in:
 - dependencies outside this spec: KEL-19's payload writer and container, which embed
   `ExpectedAppIdentity` in both `keld-host.exe` and `keld-updater-helper.exe`, and
   KEL-254 T3 Part B's `ExpectedAppIdentity::from_signed_image`;
+- two landed-code changes in `keld-update` (safe code; owner KEL-53): the
+  executable-located locator replaces its fixed `HOST` constant
+  (`windows_baseline/locate.rs:21`) with the closed choice of `keld-host.exe` or
+  `keld-updater-helper.exe` ("Helper launch and self-anchor"), which changes the public
+  entry point's signature (slice S9); and `next_activation_step` (`activation.rs`) gains
+  the abandon intent of owner decision D1 (refined), including the change that resolves
+  an unpublished candidate at the candidate floor as `AbandonAttempt` under that intent
+  instead of the `CandidateUnpublished` refusal (`activation.rs:207-213`), behind a new
+  public recovery-role entry point (slice S10);
 - the new T4d production FFI. Each call below lives in the named file of its existing
   owner, only after an issue-scoped amendment of that owner's AGENTS.md `unsafe` rule;
   calls that the owner already lists gain only the stated new scope:
@@ -1814,8 +1885,10 @@ Implement in:
   - `keld-ipc`, `src/windows_named_pipe.rs`: an exact expected-ACE set instead of the
     one current-user ACE (the initiating user's SID for connect-back; the host's own
     SID plus BUILTIN Administrators for the bootstrap), the explicit Medium no-write-up
-    label and, for `MachineUacDirect`, the `O:BA` owner at creation, with readback of
-    all three; client-side readback of the server descriptor's owner, DACL and label;
+    label and, for the endpoints the elevated helper creates, the `O:BA` owner at
+    creation, with readback of all three; client-side readback of the server
+    descriptor's owner, DACL and label; the `is_attempt_endpoint` exact-shape predicate
+    beside the landed ones in `bootstrap.rs` (safe code);
     and `TokenStatistics`, `TokenElevation` and `TokenElevationType` added to the public
     `query_windows_peer_token_facts`, which stays the single token-fact reader for the
     claim writer's token and the initiating token alike. `GetNamedPipeServerProcessId`,
@@ -1910,7 +1983,9 @@ Must not touch in Slice A:
     `PIPE_REJECT_REMOTE_CLIENTS` against a local SMB loopback open;
     `STATUS_NO_SUCH_LOGON_SESSION`; and whether a full restart, a sign-out and a Fast
     Startup shutdown end the initiating session. Evidence: research receipts with the
-    exact Windows build.
+    exact Windows build. Stop rule: if the helper cannot open the host process or its
+    token after alternate-administrator consent, T4d stops before S11 for a new owner
+    decision ("Machine-UAC bootstrap" item 4).
   - S2, typed `MachineRecoveryRequired(MachineRecoveryGuidance)` in `keld-update`
     (`error.rs`, `windows_baseline/load.rs`). Gates: public API (breaking). Evidence:
     exact-text guidance tests, the §7 recovery-required row, `PerUserDirect` unchanged.
@@ -1935,20 +2010,26 @@ Must not touch in Slice A:
     land. Gates: unsafe (`keld-core` and `keld-guard` amendments), public API.
     Evidence: the existing KEL-135 rows pass unchanged against the moved owner, and the
     payload reads back from both executables.
-  - S9, the helper crate, its self-anchor, loader hardening and static runtime, the
-    `keld-pack` helper member, and the `keld-runtime` launch calls; the recovery role
-    stays disabled (`RecoveryDisabled`). Gates: dependency (new crate,
-    `Win32_UI_Shell`, `Win32_System_Com`), unsafe (`keld-runtime`), wire (canonical
-    package content). Evidence: the helper launch, planted-DLL and edge-set rows.
-  - S10, the recovery-only role under D1 (`keld-updater-helper`, with Machine-UAC
-    admission in `load_windows_recovery_inspection`). Gates: public API, permission
-    model. Evidence: the `publish-pending` owner-loss, `resume_unlaunched` crash-window
-    and recovery-required rows.
+  - S9, the helper crate, its self-anchor (with the `locate.rs` image choice that
+    replaces the fixed `HOST` constant), loader hardening and static runtime, the
+    `keld-pack` helper member, the `keld-ipc` argument-shape predicate, and the
+    `keld-runtime` launch calls; the recovery role stays disabled (`RecoveryDisabled`).
+    Gates: dependency (new crate, `Win32_UI_Shell`, `Win32_System_Com`), unsafe
+    (`keld-runtime`), wire (canonical package content), public API (the locator's image
+    choice). Evidence: the helper launch, argument-shape, planted-DLL and edge-set rows.
+  - S10, the recovery-only role under D1 (refined): the abandon intent in
+    `next_activation_step` with the `activation.rs:207-213` change and its public
+    recovery-role entry point (`keld-update`), the role in `keld-updater-helper`, and
+    Machine-UAC admission in `load_windows_recovery_inspection`. Gates: public API,
+    permission model. Evidence: the `publish-pending` owner-loss, abandon-intent
+    crash-cut and recovery-required rows.
   - S11, the activation role with the D2 bootstrap (`keld-updater-helper`, the host
     side in `keld-core`, Machine-UAC admission in `load_windows_activation_write_snapshot`
     reusing `require_windows_machine_uac_owner_token`, `keld-ipc`). Gates: all five.
     Evidence: the bootstrap rows under the UAC operator evidence protocol, including
-    the second ordinary account and alternate-administrator rows.
+    the second ordinary account and alternate-administrator rows. It starts only after
+    S1 showed that the helper can open the host process and its token after
+    alternate-administrator consent, or after the owner decided otherwise.
   - S12, enabling owner-loss retirement (`keld-updater-helper`, `keld-guard`'s logon
     wrapper, `keld-runtime`'s census seam). Gates: permission model, unsafe review of
     the exact diff. Evidence: the owner-loss retirement row with its census and static
@@ -1986,9 +2067,10 @@ Must not touch in Slice A:
 | 8 (endpoint squatting) | at every durable step a test reader of the journal finds the named endpoint already held; a name that exists when a fresh owner creates its endpoint (seam-injected, since the order makes it otherwise unobservable) refuses with `ProtectedStateUnchanged` and no protected write, and for a resumed owner leaves the journal unchanged; a second creation of a live owner's name fails; after owner death, a squatter that creates the name as the same user and one that creates it as a second ordinary user, including one whose process ID equals the journaled owner's (seam-injected), are refused by the claimant on descriptor owner, DACL, label, session or image before it sends anything, or on the journaled owner fields after acceptance; in `MachineUacDirect` a Medium process cannot create the endpoint with an `O:BA` owner; a squatting server receives only an identification-level token; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label, a wrong owner and remote-client admission; the observed default label of an unlabelled pipe that an elevated process creates is recorded; a v1 journal admits no claim |
 | 8 (connect-back in every direct mode) | separately for `PerUserDirect` with the host coordinator as owner, `PerUserDirect` with a criterion-10 post-exit helper if one is used, and `MachineUacDirect` with `keld-updater-helper.exe` as owner: the candidate inherits no endpoint, receives only its rendezvous name, connects back, is accepted, reports Ready and commits after 30 seconds, and the claimant-binding and endpoint-squatting rows pass in that cell; no `MachineUacDirect` cell uses a post-exit helper; `MachineSeamlessDirect` is refusal-only, so no claim is accepted before its authority is selected; a pass in one cell does not close another |
 | 8, 17 (D5 fallback) | when the Medium claimant cannot open the elevated owner, the claim binds on the `O:BA` owner and the session before sending and on the journaled owner process ID after acceptance; when the open is admitted, creation time and `helper_image_blake3` are checked as well |
-| 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS, verifies the host process's image, session and descriptor before sending, and takes the initiating token only from that host process object; a forged rendezvous argument, a squatting server, a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted and leaves the initiating token unchanged; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
-| 17 (owner loss in `publish-pending`) | the owner is killed after the `publish-pending` journal is durable and before launch, at each persisted step (before publication, after publication, after the floor, after `current`): no candidate family exists and no logon-session proof is needed; in `MachineUacDirect` an ordinary launch returns `MachineRecoveryRequired` with `RecoverNow` once S10 is enabled, and under D1 the recovery role abandons an attempt whose candidate is neither published nor staged at the prior floor and otherwise rolls back with `CandidateLaunch` without launching; in `PerUserDirect` the landed lease-only resume is unchanged |
-| 17 (`resume_unlaunched` crash window) | the recovery role is killed inside `resume_unlaunched` after publication and after the floor advance: the next run resolves the attempt by the same D1 rule with nothing launched and the floor at the candidate; a cut after `AwaitingHealth` is durable but before `roll_back` leaves a launched phase as far as the journal can show, so the next run needs the owner-loss proof and carries `RestartFirst` guidance, and it then rolls back |
+| 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL and its own user SID as owner before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS and, before sending, verifies that the host process image is its installation's selected `keld-host.exe`, the session, and a descriptor owned by that host's user SID; it takes the initiating token only from that host process object and refuses an elevated or non-Medium initiating token before any protected write; a forged rendezvous argument, a squatting server that is not that `keld-host.exe` (same-user code is outside the boundary and is not claimed), a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted with the initiating token unchanged once S1 shows the open works, and otherwise refuses with a typed `ProtectedStateUnchanged` before any protected write; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
+| 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
+| 17 (owner loss in `publish-pending`) | the owner is killed after the `publish-pending` journal is durable and before launch, at each persisted step (before publication, after publication, after the floor, after `current`): no candidate family exists and no logon-session proof is needed; in `MachineUacDirect` an ordinary launch returns `MachineRecoveryRequired` with `RecoverNow` once S10 is enabled, and the recovery role resolves the attempt with the abandon intent of D1 (refined): with the floor at its prior value the published candidate is retired, the journal is removed as `Abandoned`, the floor never moves and the same signed version is retryable; with the floor at the candidate, `current` is restored and the candidate retired before journal removal, and the version is consumed; in `PerUserDirect` the landed lease-only resume is unchanged |
+| 17 (abandon-intent crash cuts) | the recovery role is killed at every step of the abandon intent: after the candidate's retirement and before journal removal, during journal removal (a `pending-*` leftover), and, at the candidate floor, after `current` is restored and after the retirement; at each cut the journal is still `PublishPending` (or already removed), the next run resumes it on the writer lease alone with `RecoverNow` guidance, never needs the logon-session proof, and never writes `AwaitingHealth` or `RollbackPending`; the unpublished-candidate-at-candidate-floor case resolves as `AbandonAttempt` only under the abandon intent and still refuses with `CandidateUnpublished` under the ordinary intent |
 | 17 (owner-loss retirement) | helper terminated and crashed mid-health; helper crash after `health-accepted` both before the limit is cleared (the application ends) and after it (the healthy application keeps running); a `rollback-pending` crash; a live owner still holding the lease; sign-out, a real full restart and a Fast Startup shutdown mid-health, each binary: afterwards the session query returns no such logon session or a session with a different logon time, otherwise the row fails and recovery halts; logon-session LUID reuse with a different logon time (seam-injected); a denied or unknown session-query status (seam-injected), with the single accepted "no such logon session" status confirmed on real Windows; a reference to a token of that session kept alive after sign-out, such as a duplicated token handle in an unrelated process, which keeps recovery halted until it closes; the census at Ready, at health acceptance and before the limit clear, through the acceptance-only Job process-list seam and per-process `TokenStatistics`; the static scan of the host and WebView crates; negative controls showing that no admitted family member starts a candidate-tree image or family-supplied code outside the attempt Job or under another logon session, and that sandboxed roles cannot (netonly `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task registered to a candidate-tree image as falsifiers); Job membership before the first instruction under `CreateProcessWithTokenW` with `CREATE_SUSPENDED`; a descendant breakaway attempt; nested KEL-96 host Jobs; and a family still terminating with pending I/O (the `pending_io_family` fixture: the census seam holds a not-yet-exited Job member; seam-injected). Each row either proves both facts or halts fail-closed, and no family member runs or has pending I/O after a passed proof |
 | 17 (helper crash after `health-accepted`) | after the limit is cleared and with the application still running, a helper crash leaves `health-accepted` durable: the next ordinary launch, including a second launch of the application, refuses with `MachineRecoveryRequired` and `RestartFirst` guidance (`RecoveryDisabled` before S12); nothing is written; the recovery role halts while the initiating session is live and finishes the commit only after the session query proves that it ended |
 | 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an `UpdateError::Baseline` refusal or merely no selection) and writes nothing; each `MachineRecoveryGuidance` variant's fix-guidance text matches its pinned bytes; the same states in `PerUserDirect` keep their landed recovery and repair; `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline` refusal; while S10's rows have not passed, the helper refuses the recovery role and the guidance is `RecoveryDisabled`; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
@@ -2025,7 +2107,10 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `load_windows_activation_write_snapshot` and `load_windows_recovery_inspection`,
   which today admit only `PerUserDirect` (`windows_baseline/load.rs:353`, `:382-385`),
   through the existing `require_windows_machine_uac_owner_token` predicate rather than a
-  second one; the helper role entry points; the `keld-guard` Authenticode owner moved
+  second one; the recovery-role entry point for the D1 (refined) abandon intent and the
+  `activation.rs:207-213` change behind it; the executable-located entry point's closed
+  image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:21`);
+  the helper role entry points; the `keld-guard` Authenticode owner moved
   under D4; the `keld-ipc` `attempt` module; and the new safe wrappers that
   `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate;
 - permission model: yes — the install-mode protection profiles, UAC elevation and

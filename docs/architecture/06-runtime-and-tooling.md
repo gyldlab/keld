@@ -1087,13 +1087,8 @@ the lease proves no prior owner can still write and no candidate family exists. 
 resumed owner durably re-mints the attempt's health and lifecycle channel identities
 before continuing, so no health receipt or retirement witness from a lost owner binds
 to the resumed run. Launched phases still require an exact process-family retirement
-binding. That binding is an exact installation/attempt/lifecycle-channel value that the
-host composes from the QF1 retirement witness or its own retained Job-zero observation,
-or that the Machine-UAC recovery-only helper composes from KEL-53's owner-loss
-retirement facts once T4d qualifies them; `keld-update` cannot authenticate its
-producer. A sealed witness type was rejected
-because it would add a `keld-update` -> `keld-runtime` edge outside the approved crate
-graph.
+binding; KEL-53 §4 owns who composes it and from which evidence, and why a sealed
+witness type was rejected.
 
 `HealthAccepted` records `BLAKE3(UTF8("keld.activation-health-receipt/v1\0") ||
 attempt_id || health_channel_id || u64_le(n) || a)`, where `a` is the canonical

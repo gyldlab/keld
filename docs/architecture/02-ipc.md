@@ -79,9 +79,10 @@ disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
 connecting. It has its own magic values and message types and reuses only the low-level
 framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every other
-rule, which is wire-gated: "Candidate connect-back" owns the endpoints, each side's
-quality of service and impersonation, the records and their failures, and "Machine-UAC
-bootstrap" owns the bootstrap roles.
+rule, which is wire-gated: "Candidate connect-back" owns the connect-back endpoint, the
+claim's quality of service and impersonation, and every record and its failures;
+"Machine-UAC bootstrap" owns the bootstrap endpoint, roles, argument shape, quality of
+service and impersonation.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then

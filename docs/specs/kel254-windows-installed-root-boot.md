@@ -26,9 +26,14 @@ launch-refusal and owner-loss sentences) and AC16, the active-selection atom, th
 active-resolver sentence, the helper sentence after §4's executable-located rule and the
 §7 rows for criteria 4 and 5 point to KEL-53's T4d amendment (the bootstrap, candidate
 connect-back, the Machine-UAC recovery-required state, the helper self-anchor and
-owner-loss retirement). These
-sentences carry no approval from A3 or from the earlier revisions; their exact-content
-approval is pending with the KEL-53 T4d amendment.
+owner-loss retirement). Two of these edits lie inside A3's approved §4: the
+active-resolver sentence in the reuse decision, and the helper sentence after the
+executable-located rule. The second changes landed code, not only text: the landed
+locator has a fixed `HOST` constant (`crates/keld-update/src/windows_baseline/locate.rs:21`),
+which KEL-53 T4d slice S9 replaces with a closed choice of the two image names, a
+public-API change of the executable-located entry point under KEL-53's public-API gate,
+owned by KEL-53. These sentences carry no approval from A3 or from the earlier
+revisions; their exact-content approval is pending with the KEL-53 T4d amendment.
 
 ## 1. Goal & non-goals
 
