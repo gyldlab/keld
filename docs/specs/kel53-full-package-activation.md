@@ -1416,7 +1416,7 @@ If the name already exists, or creation or readback fails, a fresh attempt refus
 `ProtectedStateUnchanged` before any protected write, and a resumed owner, which only
 `PerUserDirect` has, refuses with the journal unchanged and the effect
 `JournalBoundRecoveryRequired` that the landed `Transaction::fault` gives every
-journaled refusal (`windows_baseline/activate.rs:911-921`). A launch refusal after
+journaled refusal (`windows_baseline/activate.rs:1047-1057`). A launch refusal after
 `AwaitingHealth` is durable rolls the attempt back with `CandidateLaunch` under the same
 lease, composing the retirement binding from the owner's own retained Job-zero
 observation; "Machine-UAC bootstrap" item 6 owns which refusals come before
