@@ -1267,12 +1267,19 @@ fn bind_observed_claimant(
 
 /// Reports whether two handles name one kernel object.
 ///
-/// `CompareObjectHandles` needs no access right on either handle. `TRUE` means
-/// one object. Its reference page documents only `FALSE` for "not the same"; its
-/// example shows that a different object leaves `ERROR_NOT_SAME_OBJECT`, so only
-/// that error is the different-object verdict. Any other `FALSE` (an invalid or
-/// closed handle leaves `ERROR_INVALID_HANDLE`, observed on Windows 11 build
-/// 26300) is neither verdict, so it is an error and the caller refuses.
+/// `CompareObjectHandles` requires no access right on either handle. Its
+/// reference page documents only the return value: `TRUE` for one object,
+/// otherwise `FALSE`. Its example names `ERROR_NOT_SAME_OBJECT` only for two
+/// objects of different types, an event and a process. That two different
+/// process objects leave `ERROR_NOT_SAME_OBJECT`, and that a null, out-of-range
+/// or closed handle leaves `ERROR_INVALID_HANDLE`, is observed only on Windows 11
+/// build 26300, pinned by
+/// `compare_object_handles_classifies_same_different_and_invalid_handles` and
+/// `compare_object_handles_refuses_a_closed_handle`. So `FALSE` with
+/// `ERROR_NOT_SAME_OBJECT` is the only different-object verdict, and any other
+/// `FALSE` is an error. Every non-`TRUE` result refuses the claimant: the verdict
+/// as [`WindowsClaimantRefusal::NotLaunchedProcess`], an error as
+/// [`WindowsClaimantRefusal::Unverifiable`].
 fn same_kernel_object(first: HANDLE, second: HANDLE) -> io::Result<bool> {
     // SAFETY: CompareObjectHandles only resolves the two handle values through
     // this process's handle table and dereferences no caller memory; an unusable
