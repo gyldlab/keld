@@ -83,7 +83,10 @@ amendment. Its exact content was approved by owner approval comment
 `659a40449d06c10aba04e6c3e8f3f7e7dc2277e7547fe65389cc3c9b153311f3`. The review
 resolutions made after the split (claimant binding, endpoint squatting, the typed
 `MachineRecoveryRequired` effect, the helper crate and its FFI owners, and the review
-batches of rounds 1 to 3) are part of that approved content. It optimizes for least privilege and the
+batches of rounds 1 to 3) are part of that approved content. The SHA-256 above binds the
+PR #384 head only: a later reviewed PR may amend this file, and every such amendment
+cites its authority (an owner decision, a Linear coordination record or the review that
+required it) in the amended text itself. It optimizes for least privilege and the
 smallest privileged surface:
 1. Candidate launch uses the exact initiating-process token, which the helper takes from
    the verified host process object ("Machine-UAC bootstrap").
@@ -114,7 +117,7 @@ paragraph:
   `retirement_due` change, all listed in §5, and leaves the ordinary intent unchanged.
   Rationale: the landed step order advances the floor before
   `AwaitingHealth` (`AdvanceFloor`, `SelectCandidate`, `EnterAwaitingHealth`:
-  `windows_baseline/activate.rs:609-629`, `activation.rs:280-297`), so the first D1
+  `windows_baseline/activate.rs:745-765`, `activation.rs:280-297`), so the first D1
   route through `resume_unlaunched` and `roll_back` always consumed the signed version,
   even when the floor had not moved, and left a crash window from `AwaitingHealth`
   through `RollbackPending` until journal removal that looks launched. Rejected: letting
@@ -727,7 +730,7 @@ version and report the missing predecessor or owning update mechanism.
 **Target boundary:** `keld-update` remains the common transaction and recovery owner,
 and it alone mints attempt, health and lifecycle identities, inside the lease-holding
 attempt owner; config, roles, environment and the feed never supply them (landed
-`activate.rs:322`, `:558`). That owner creates the connect-back endpoint and the
+`activate.rs:480`, `:697`). That owner creates the connect-back endpoint and the
 candidate only connects back to it ("Candidate connect-back"). The
 mode-specific adapter obtains the one temporary write lease for that attempt: the
 ordinary user-owned updater for `PerUserDirect`, an explicitly elevated signed helper
@@ -1220,7 +1223,7 @@ expected way to end the session; the query decides. The same proof covers
 `health-accepted`, where the healthy application legitimately outlives the helper,
 because the landed `WindowsRecoveryInspection::recover` requires an exact
 process-family retirement binding for every phase
-(`crates/keld-update/src/windows_baseline/activate.rs:385-399`).
+(`crates/keld-update/src/windows_baseline/activate.rs:526-541`).
 
 Kill-on-close is kept only for prompt termination. The UAC helper, which launches the
 candidate, alone holds the attempt's unnamed `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job,
