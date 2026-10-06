@@ -5420,6 +5420,54 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Permissions manifest exceeds the 64 KiB input limit
 - fix: Reduce keld.permissions.jsonc to 64 KiB or less and retry.
 
+## KELD-GUARD018
+
+- crate: keld-guard
+- message: A Windows token open, query, privilege lookup, duplication or impersonation call failed or returned malformed data
+- fix: Retry from a fresh launch of the installed host; Keld never substitutes another token, changes a token's owner or DACL, or enables a privilege to get past this.
+
+## KELD-GUARD019
+
+- crate: keld-guard
+- message: The updater helper runs in another session than the initiating token
+- fix: Approve the elevation prompt in the initiating user's interactive session; a process in another session cannot launch the candidate there.
+
+## KELD-GUARD020
+
+- crate: keld-guard
+- message: The updater helper token does not hold SeImpersonatePrivilege enabled
+- fix: Approve the full elevated administrator prompt; Keld never enables a privilege as a fallback.
+
+## KELD-GUARD021
+
+- crate: keld-guard
+- message: The calling thread is already impersonating when token-based impersonation starts
+- fix: Revert the existing impersonation first; Keld refuses nested impersonation.
+
+## KELD-GUARD022
+
+- crate: keld-guard
+- message: The logon-session query returned a status other than success or STATUS_NO_SUCH_LOGON_SESSION, or unusable data
+- fix: Retry the update or recovery as an administrator; Keld accepts only success or STATUS_NO_SUCH_LOGON_SESSION from this query and halts on every other status.
+
+## KELD-GUARD023
+
+- crate: keld-guard
+- message: The initiating logon session still exists with its recorded logon time
+- fix: Sign out the initiating user or restart Windows, close every process that holds a token of that session, then run recovery again.
+
+## KELD-GUARD024
+
+- crate: keld-guard
+- message: The initiating logon session does not exist or has no positive logon time to record
+- fix: Start the update again from a live interactive sign-in.
+
+## KELD-GUARD025
+
+- crate: keld-guard
+- message: The initiating token is elevated or not at Medium integrity
+- fix: Start the update from the installed host as the signed-in user without elevation; Keld never substitutes another token.
+
 ## KELD-DOCS001
 
 - crate: llms-docs

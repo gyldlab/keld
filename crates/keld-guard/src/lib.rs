@@ -44,13 +44,18 @@ pub use windows_authenticode::{
 
 #[cfg(windows)]
 pub use windows_machine::{
+    WindowsInitiatingImpersonationToken, WindowsInitiatingPrimaryToken, WindowsInitiatingToken,
+    WindowsLogonSessionError, WindowsLogonSessionId, WindowsLogonTime, WindowsTokenError,
+    require_windows_initiating_token_profile, require_windows_logon_session_ended,
     require_windows_machine_uac_owner_token, require_windows_non_system_token,
+    require_windows_own_impersonate_privilege, require_windows_own_token_session,
     require_windows_system_token, seal_windows_machine_directory, seal_windows_machine_file,
     validate_windows_admin_machine_directory, validate_windows_admin_machine_file,
     validate_windows_install_directory, validate_windows_install_file,
     validate_windows_machine_ancestor_directory, validate_windows_machine_directory,
     validate_windows_machine_file, validate_windows_machine_volume_anchor,
-    windows_install_directory_security, windows_install_file_security,
+    windows_initiating_logon_time, windows_install_directory_security,
+    windows_install_file_security,
 };
 
 #[cfg(windows)]
