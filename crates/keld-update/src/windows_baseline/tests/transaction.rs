@@ -2041,6 +2041,11 @@ fn run_crash_cut(scenario: Scenario, cut: &str, after: AfterCut) {
     let label = format!("{}/{:?}/{cut}", scenario.case, scenario.first_crash);
     let before = observe(&trust);
     let (lost_channel, at_cut) = crash_children(&trust, fixture.path(), scenario, cut, &label);
+    // Every durable record of these owners is v2 at its own cut, including the first one
+    // that reveals minted identities: a fresh `PublishPending` or a `channels-reminted`.
+    if let Some(journal) = &at_cut.journal {
+        assert_eq!(journal.ownership, Some(OWNERSHIP), "{label}: {at_cut:?}");
+    }
     assert!(
         [prior, candidate].contains(&at_cut.floor.as_str()),
         "{label}: the floor never drops or skips: {at_cut:?}"
