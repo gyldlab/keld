@@ -224,10 +224,12 @@ binding the current host and exact sidecar bytes/location/root relationship. The
 multi-mode expansion is approved by exact-content approval recorded in Linear comment
 `e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`; that approval leaves its implementation and
 native qualification gates open. Neither contract changes T1a's owner-private dev
-layout or adds a caller-selected release mode. Windows
-installed boot remains unavailable until KEL-53 supplies mode-aware authenticated active selection and its
-native install-mode proof, KEL-135 supplies the existing verified signer/app identity,
-and the KEL-96 consumer lands its own native boot evidence. Per-user direct and
+layout or adds a caller-selected release mode. The KEL-96
+consumer (KEL-254 T3 Part B) implements Windows installed boot over KEL-53's
+executable-located active selection and the existing KEL-135 verified signer/app
+identity; its native boot evidence covers `PerUserDirect` only, and each machine-mode
+cell stays unqualified until KEL-53's native install-mode proof and the consumer's own
+native boot evidence exist for it. Per-user direct and
 machine-wide direct installs have separate access/authority acceptance cells;
 machine-seamless activation additionally remains behind KEL-270's lifecycle and
 authority proof gate. Managed/package-manager installs remain owned by their deployment

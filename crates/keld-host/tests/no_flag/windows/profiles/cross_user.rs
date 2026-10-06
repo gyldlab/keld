@@ -1,4 +1,5 @@
-//! Signed second-user storage isolation and active context-binding contract.
+//! Signed second-user storage isolation on installed packages and the active
+//! context-binding contract.
 
 use crate::profile_state_run_nonce;
 use crate::support::control::accept_control_until;
@@ -6,6 +7,7 @@ use crate::support::cross_user::{
     profile_test_user_sid, read_profile_coordinator, run_remote_profile_state_case,
     validate_profile_second_user, write_profile_coordinator,
 };
+use crate::support::installed::{INSTALLER_ENV, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::product::ProductFixture;
 use crate::support::profile_run::{SignedProfileStateCase, run_signed_profile_state_case};
 use crate::support::profile_server::ProfileStateServer;
@@ -19,9 +21,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires an operator-authenticated second ordinary user and shared signed fixtures"]
+#[ignore = "requires an operator-authenticated second ordinary user and shared KELD_KEL254_SIGNED_HOST_A_P1, KELD_KEL254_INSTALLER_FIXTURE and KELD_KEL135_SIGNED_IDENTITY_A_P1 fixtures"]
 fn kel135_signed_host_cross_user_storage_isolation() {
-    let host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1").expect("signed A/P1 host");
+    let host = fixture_env(SIGNED_HOST_A_P1);
+    let installer = fixture_env(INSTALLER_ENV);
     let identity =
         env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1").expect("signed A/P1 identity fixture");
     let shared = env::var_os("KELD_KEL135_SHARED_DIRECTORY")
@@ -37,6 +40,7 @@ fn kel135_signed_host_cross_user_storage_isolation() {
     let seed = SignedProfileStateCase {
         name: "u1-seed",
         host: &host,
+        installer: &installer,
         before: "",
         after: &first_value,
     };
@@ -52,7 +56,8 @@ fn kel135_signed_host_cross_user_storage_isolation() {
         &serde_json::json!({
             "coordinator": coordinator.local_addr().expect("coordinator address").to_string(),
             "server": server.address().to_string(), "nonce": nonce,
-            "host": Path::new(&host), "identity": Path::new(&identity),
+            "host": Path::new(&host), "installer": Path::new(&installer),
+            "identity": Path::new(&identity),
             "controller": env::current_exe().expect("current acceptance controller"),
         }),
     )
@@ -89,6 +94,7 @@ fn kel135_signed_host_cross_user_storage_isolation() {
         let case = SignedProfileStateCase {
             name,
             host: &host,
+            installer: &installer,
             before,
             after,
         };
@@ -103,6 +109,7 @@ fn kel135_signed_host_cross_user_storage_isolation() {
         let case = SignedProfileStateCase {
             name,
             host: &host,
+            installer: &installer,
             before,
             after,
         };
