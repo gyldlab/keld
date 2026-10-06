@@ -13,7 +13,7 @@ crates/keld-update/AGENTS.md	always	1536	updater-invariants	path:crates/keld-upd
 crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv
 .agents/index.md	routed	4096	task-router	root:instruction-loading
 .agents/ci.md	routed	4096	ci-keldbot-policy	route:ci
-.agents/coordination.md	routed	4352	coordination-templates	route:coordination
+.agents/coordination.md	routed	5120	coordination-templates	route:coordination
 .agents/dependencies.md	routed	2560	dependency-policy	route:dependencies
 .agents/docs.md	routed	3072	documentation-policy	route:docs
 .agents/instructions.md	routed	3072	instruction-authoring-policy	route:instructions

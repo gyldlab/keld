@@ -80,7 +80,7 @@ const SOURCES: &[Source] = &[
         section: "Engineering",
         title: "Current/target/evidence product status",
         path: "docs/engineering/product-status.md",
-        description: "Generated repository status ledger; architecture remains normative design and Linear remains live execution state.",
+        description: "Generated repository status ledger; architecture remains normative design and the tracker issue (Linear, or GitHub under #517) remains live execution state.",
     },
     Source {
         section: "Engineering",

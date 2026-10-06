@@ -137,8 +137,8 @@ No external benchmark or runtime performance conclusion is inferred from this au
 
 ### First-principles and reuse
 
-Git owns worktree registration, refs and locks. Linear remains the cross-device task
-claim authority. Existing session baselines/receipts own findings and evidence. A small
+Git owns worktree registration, refs and locks. The tracker issue (Linear, or GitHub under
+#517; `docs/agents/workflow.md` § Tracker issue) remains the cross-device task claim authority. Existing session baselines/receipts own findings and evidence. A small
 Python stdlib tool owns local path allocation and cleanup admission; `just` exposes it.
 No new Rust crate, Python dependency, daemon or second closeout system is required.
 
@@ -186,8 +186,8 @@ keld/
 ```
 
 Directories are lazy: do not create empty category trees to appear complete.
-Task slug: `kel-` plus positive issue number and a lowercase kebab slug, maximum
-64 ASCII characters. Client session/turn IDs reuse the existing validator grammar;
+Task slug: `kel-` (or `gh-` for a GitHub tracker issue) plus positive issue number and a
+lowercase kebab slug, maximum 64 ASCII characters. Client session/turn IDs reuse the existing validator grammar;
 each is checked as a single component. Files use descriptive kebab names. Repeated
 experiments use separate exclusive scratch directories mapped to their run IDs; only necessary result evidence is
 promoted. Do not accumulate `final-final`, `retry2` or full copied checkouts as evidence.

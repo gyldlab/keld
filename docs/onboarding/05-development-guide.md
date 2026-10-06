@@ -387,7 +387,7 @@ reach for them:
 | What has already bitten someone? | [`docs/agents/learnings.md`](../agents/learnings.md) |
 | What is the system supposed to be? | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Why did we choose this? | [`docs/engineering/decisions.md`](../engineering/decisions.md) (engineering narrative, not RFC 2119). [`AGENTS.md`](../../AGENTS.md) still binds. Canonical categorized `docs/research/library/` is exploratory evidence, not required reading. |
-| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); Linear owns live scheduling |
+| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); the tracker issue (Linear, or GitHub under #517) owns live scheduling |
 | Which of these actually binds me? | [`06-documentation-map.md`](./06-documentation-map.md) |
 
 There is no `.claude/project-calibration.json` and no `project-conventions` skill in this

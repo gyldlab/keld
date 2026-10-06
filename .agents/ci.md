@@ -11,8 +11,9 @@ are source of truth; this file owns the design invariants.
 - Job-level `if` may use `needs`, `github`, `vars`, and `inputs`, never `matrix` (GitHub
   evaluates the job condition before matrix expansion).
 - Every lane names its observable contract and changed inputs. `gitleaks` is unconditional
-  because every byte is input. `CI required` always runs, consumes every routed lane plus
-  gitleaks, and rejects missing, cancelled, failed, or selected-as-skipped evidence.
+  because every byte is input; it is the checksum-pinned CLI job, not the org-licensed
+  Action. `CI required` always runs, consumes every routed lane plus gitleaks, and
+  rejects missing, cancelled, failed, or selected-as-skipped evidence.
 - Mermaid is separate from broad documentation routing: changed/added/deleted/malformed
   diagram blocks and parser/renderer/config/pin/router/workflow inputs select it; prose-only
   changes do not. Local and hosted routing share the same applicability owner. Unknown

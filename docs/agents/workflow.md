@@ -53,11 +53,12 @@ claim no enforcement; report unsupported/untrusted clients.
 
 ## Tracker issue
 
-The KELD Linear issue; if none live covers the work and Linear cannot take one (#517),
-its GitHub issue, linked from the nearest live Linear issue. Here and in routed
-playbooks, Linear means the tracker issue: its comment timestamps order claims and a
-claim elsewhere never wins. On GitHub, `kel-<n>` is `gh-<n>`; open unassigned = Todo,
-assigned = In Progress, blocked-by = Blocked, closed = Done.
+The KELD Linear issue, or under #517 the GitHub issue whose body names itself tracker of
+record (no live Linear issue covers the work and Linear cannot take one), linked from the
+nearest live Linear issue; never re-derive it. Linear scope, claim, status, comment and
+handoff duties, here and in routed playbooks, target the tracker issue. Claims post and
+order only there, by creation time (edits never reorder); a claim for the same work
+elsewhere never wins and is a conflict. GitHub mechanics: `.agents/coordination.md`.
 
 ## The loop (one issue, one agent, one concern)
 
@@ -224,8 +225,7 @@ after the claim — one record of availability, not two.
   Visual inspection and the render report remain review artifacts in addition to CI.
 - **Review gates:** the five in root `AGENTS.md` block until named independent
   security/architecture evidence covers the exact final diff. `.github/CODEOWNERS` requests relevant reviewers
-  but is not a human-only approval gate. Secret scan is the checksum-pinned `gitleaks` CLI job in
-  `.github/workflows/ci.yml` (not the org-licensed GitHub Action).
+  but is not a human-only approval gate.
 - **Architectural review covers** intent, boundaries, spec conformance and API shape;
   lints own style. A PR too large for independent review gets split, not skimmed.
 - Fork PRs never run with secrets. Perf-budget regressions >5% need a written waiver.

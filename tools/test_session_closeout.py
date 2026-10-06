@@ -241,7 +241,10 @@ class CloseoutTests(unittest.TestCase):
                     "http://github.com/gyldlab/keld/issues/520",
                     "https://github.com:8443/gyldlab/keld/issues/520",
                     "https://user@github.com/gyldlab/keld/issues/520",
-                    "https://linear.app/gyldlab-keld/issue/GH-520"]:
+                    "https://linear.app/gyldlab-keld/issue/GH-520",
+                    "https://evil.example/gyldlab/keld/issues/520",
+                    "https://github.com.evil.example/gyldlab/keld/issues/520",
+                    "https://github.com/gyldlab/keld/issues/520/extra"]:
             with self.subTest(url=url):
                 finding["remote_receipt"] = url
                 self.reject("matching GitHub issue")
