@@ -564,7 +564,9 @@ KEL-96 independently requires the record's publisher scope and app id to equal t
 KEL-135 Authenticode identity of the same executable. The entrypoint reads no
 environment payload or argv for authority. In T2b it is journal-free: like the landed
 `select_windows_active_package`, it refuses any pending journal with
-`JournalBoundRecoveryRequired`. It repairs an invalid `current` only when the located
+`JournalBoundRecoveryRequired`, and in `MachineUacDirect` with KEL-53's typed
+`MachineRecoveryRequired` instead (KEL-53 "Machine-UAC recovery-required state and
+recovery-only role"). It repairs an invalid `current` only when the located
 tree is the last-known-good tree, so a stale host never causes a write, and after any
 repair the selected version must equal the located one. Journal recovery,
 process-family ownership and candidate

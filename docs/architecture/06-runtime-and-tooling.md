@@ -482,11 +482,16 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   `current` record is absent or does not decode, a `PerUserDirect` selection republishes
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
-  installation refuses because only its elevated writer may repair. The KEL-254 T2b
-  executable-located entrypoint (`select_active_package_for_executable`) and its payload
-  codec, the KEL-19 `.keldeai` host container (T1) and its boot-time reader
-  `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and the
-  KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
+  installation refuses because only its elevated writer may repair. In
+  `MachineUacDirect` that refusal (once the same read-only checks of both known-good
+  slots and the floor pass under the snapshot lease; a failed check keeps its own error)
+  and the refusal of a pending journal in any phase are the typed
+  `MachineRecoveryRequired` effect: the ordinary process writes nothing, and until the
+  helper's recovery-only role is enabled its guidance is `RecoveryDisabled`. The
+  KEL-254 T2b executable-located entrypoint (`select_active_package_for_executable`)
+  and its payload codec, the KEL-19 `.keldeai` host container (T1) and its boot-time
+  reader `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and
+  the KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
   through `keld-guard`, reads the expectation from that pinned handle, selects its
   installation and requires the record's publisher and app id to equal the verified
   identity before any listener, child or window. No `keld build` step embeds the
