@@ -1,0 +1,1083 @@
+{
+ "unit": "F03",
+ "name": "webcontents-navigation",
+ "published": {
+  "epic": {
+   "key": "F03-EPIC",
+   "title": "compat(webContents): navigation event vocabulary, navigation policy, window-open handler, executeJavaScript, preload registration, print/devtools",
+   "body": "## Scope\n34 entities / 381 members: `WebContents` (195), `WebFrameMain`, `NavigationHistory`, `Debugger`, `webFrame` (renderer), `webContents` module, input-event and print structures, `sharedTexture`/offscreen structures (never). Live today: no WebContents facade; keld-wv `WebEngine` = create/navigate/eval(fire-and-forget)/bounds/devtools/destroy; the only navigation observable is a page-load-finished event; Windows denies popups and guards permission requests; the KEL-142 macOS bridge supplies the isolated-world injection seam and a navigation generation counter.\n\n## Corpus demand (resolved)\n`will-navigate` + unconditional `preventDefault` and `setWindowOpenHandler` (both apps; Zettlr deny-all, draw.io allows only `about:blank` with `overrideBrowserWindowOptions` after an `openExternal` side effect); `webContents.send` (Zettlr 49 / draw.io 9); `did-finish-load`; `loadURL`/`loadFile`; awaited `executeJavaScript` (draw.io 5+); zoom; `printToPDF`/`print`; `openDevTools`; `render-process-gone`; `destroyed`; `before-input-event` + `pasteAndMatchStyle` (draw.io). Zero demand for NavigationHistory, Debugger, offscreen (except draw.io's export window), sharedTexture, WebFrameMain frame-tree APIs.\n\n## Maturity ladder\n- L0: `webContents` facade exists with typed errors; never-list rows published.\n- L1: `loadURL/loadFile`, `did-finish-load`, `send`, `executeJavaScript` work for quick-start and draw.io on macOS.\n- L2: ordered navigation vocabulary, will-navigate veto semantics (guard ∧ app), window-open handler default, destroyed semantics pass pinned conformance entries on each engine or carry an explicit per-engine ▲.\n- L3: corpus apps' navigation workflows pass under `keld dev`.\n\n## Linear owners consumed\nKEL-79 (origin/resource/navigation/popup policy), KEL-132 (media/GPU), KEL-142 (isolated world, generation counter), KEL-135 (profile), KEL-80 (bounded host→renderer delivery), SCV codec owner (open — see F03-D4).\n\n## Design facts fixed by research (two refuters)\n- Split ownership: keld-wv delivers a small engine-neutral navigation signal set (provisional-start, commit, same-document change, dom-content-loaded, finish, fail{code}) per backend; Electron's event vocabulary is synthesised once above it (facade/keld-compat), keyed by `(WebviewId, navigation generation)`. One generation owner is required (two counters exist today: bridge vs guard) — decision F04-A4.\n- Navigation policy is guard-first, app-hook deny-only: the app's `will-navigate`/`will-frame-navigate` hook is invoked for every page-initiated cross-document navigation, the guard decision is computed independently, outcome = guard ∧ app; programmatic `loadURL` bypasses the app hook but not the guard.\n- `setWindowOpenHandler`: the handler is always invoked (draw.io's has side effects); unrecognised returns are deny; default without handler is deny-with-diagnostic (▲ or `windowOpenHandler` quirk, chosen in the PR); `allow` requires synchronous host window minting inside the engine delegate.\n- `executeJavaScript` needs an `EvalCallback` result envelope on `WebEngine::eval` and a structured-clone-compatible codec; the SCV codec has no owner yet (F03-D4 open).\n- Preload runs in a dedicated app content world (third world), not the trusted KEL-142 world — panel contested decision; F07 owns the preload runtime.\n- Devtools are dev-only; a host print broker serves `printToPDF`/`print`; `Debugger` is ✘.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F03-T1",
+    "title": "conformance(webContents): pinned entries for navigation event order, will-navigate veto, window-open handler defaults, destroyed semantics and executeJavaScript results",
+    "kind": "conformance",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Land red-until-implemented conformance entries citing the pinned `web-contents.md`: `did-start-loading → did-start-navigation → did-navigate → dom-ready → did-frame-finish-load → did-finish-load → did-stop-loading` for a top-level load; `will-navigate` not emitted for programmatic `loadURL`; `setWindowOpenHandler` unrecognised return = deny with console error; `executeJavaScript` resolves with the value / rejects with the thrown error; `render-process-gone` carries `details.reason`; `destroyed` ordering.",
+    "acceptance_criteria": [
+     "Every entry cites the doc sentence and an ordered observable; no timing comparisons",
+     "Negative controls exist for ordering and for the veto path",
+     "Entries are tagged per engine where Electron does not state the behaviour (observed-only cells can reach BEHAVIOR_MATCH only)"
+    ],
+    "negative_controls": [
+     "Deleting did-navigate from the synthesised sequence fails the order entry"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-237 manifest reuse",
+     "X01 oracle rules"
+    ],
+    "linear_owner": "KEL-237",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "did-start-loading",
+     "did-stop-loading",
+     "did-start-navigation",
+     "did-navigate",
+     "did-navigate-in-page",
+     "dom-ready",
+     "did-finish-load",
+     "did-fail-load",
+     "will-navigate",
+     "will-frame-navigate",
+     "setWindowOpenHandler",
+     "executeJavaScript",
+     "render-process-gone",
+     "destroyed",
+     "page-title-updated"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** conformance\n\n**Current behavior:** No webContents conformance entries exist.\n\n**Desired behavior:** Land red-until-implemented conformance entries citing the pinned `web-contents.md`: `did-start-loading → did-start-navigation → did-navigate → dom-ready → did-frame-finish-load → did-finish-load → did-stop-loading` for a top-level load; `will-navigate` not emitted for programmatic `loadURL`; `setWindowOpenHandler` unrecognised return = deny with console error; `executeJavaScript` resolves with the value / rejects with the thrown error; `render-process-gone` carries `details.reason`; `destroyed` ordering.\n\n**Key interfaces:** KEL-237 manifest cells; fixtures with main.js + preload.cjs + index.html.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementation.",
+    "out_of_scope": "Implementation.",
+    "notes": ""
+   },
+   {
+    "key": "F03-T2",
+    "title": "feat(webContents): engine-neutral navigation signals in keld-wv (macOS first) and Electron vocabulary synthesis keyed by one navigation generation",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Add the small navigation signal set to keld-wv (WKNavigationDelegate on macOS first: provisional start, commit, finish, fail, same-document change via the isolated-world reporter, DOMContentLoaded) and synthesise Electron events above it keyed by `(WebviewId, generation)`; `webContents.id` is the host webview id; `loadURL/loadFile` are host navigations that bypass the app hook but not the guard.",
+    "acceptance_criteria": [
+     "Top-level load emits the pinned ordered sequence on macOS",
+     "Same-document navigation (hash/pushState) emits `did-navigate-in-page` only",
+     "`webContents.id` is stable across navigations and host-minted",
+     "Windows/Linux lanes either pass the same entries or carry an explicit per-engine ▲"
+    ],
+    "negative_controls": [
+     "Removing the commit signal fails the did-navigate entry"
+    ],
+    "blocked_by_keys": [
+     "F03-T1",
+     "F02-T2",
+     "F04-A4"
+    ],
+    "blocked_by_external": [
+     "KEL-142 generation counter",
+     "KEL-79 navigation policy"
+    ],
+    "linear_owner": "KEL-79 / KEL-142",
+    "review_gates": [
+     "public API"
+    ],
+    "platforms": "macOS first",
+    "electron_members_covered": [
+     "id",
+     "loadURL",
+     "loadFile",
+     "getURL",
+     "getTitle",
+     "isLoading",
+     "reload",
+     "stop",
+     "did-start-loading",
+     "did-stop-loading",
+     "did-navigate",
+     "did-navigate-in-page",
+     "dom-ready",
+     "did-finish-load",
+     "did-fail-load",
+     "page-title-updated"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Only a page-load-finished observable exists.\n\n**Desired behavior:** Add the small navigation signal set to keld-wv (WKNavigationDelegate on macOS first: provisional start, commit, finish, fail, same-document change via the isolated-world reporter, DOMContentLoaded) and synthesise Electron events above it keyed by `(WebviewId, generation)`; `webContents.id` is the host webview id; `loadURL/loadFile` are host navigations that bypass the app hook but not the guard.\n\n**Key interfaces:** keld-wv navigation hooks (design review of the engine trait); facade webContents class; one generation owner.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Guard navigation policy (F03-T3); window-open handler (F03-T4).",
+    "out_of_scope": "Guard navigation policy (F03-T3); window-open handler (F03-T4).",
+    "notes": ""
+   },
+   {
+    "key": "F03-T3",
+    "title": "feat(webContents): guard-first navigation policy with deny-only will-navigate/will-frame-navigate hooks (outcome = guard ∧ app)",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Evaluate every top-level/frame navigation against a generated per-window `web.navigate` allow-list (app bundle resources and the app origin implicit) before the engine commits (WK decidePolicyFor, WebView2 NavigationStarting, WebKitGTK decide-policy); invoke the app hook for every page-initiated cross-document navigation; deny when either denies; programmatic loads skip the app hook only.",
+    "acceptance_criteria": [
+     "A page-initiated navigation to a non-granted origin is cancelled before commit with `KELD-GUARD` deny text naming the manifest patch",
+     "draw.io/Zettlr unconditional `preventDefault` keeps the app on its page; `loadURL` by the app still works",
+     "Removing the guard check leaves the app hook alone — the negative test proves the guard denies independently"
+    ],
+    "negative_controls": [
+     "Making the app hook able to allow a guard-denied navigation fails the \"cannot widen\" negative test"
+    ],
+    "blocked_by_keys": [
+     "F03-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-79",
+     "arch 03 §2 windows.<w>.web grant block (new key web.navigate)"
+    ],
+    "linear_owner": "KEL-79 / KEL-102",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "will-navigate",
+     "will-frame-navigate",
+     "did-redirect-navigation",
+     "will-redirect"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No navigation policy exists (wry defaults).\n\n**Desired behavior:** Evaluate every top-level/frame navigation against a generated per-window `web.navigate` allow-list (app bundle resources and the app origin implicit) before the engine commits (WK decidePolicyFor, WebView2 NavigationStarting, WebKitGTK decide-policy); invoke the app hook for every page-initiated cross-document navigation; deny when either denies; programmatic loads skip the app hook only.\n\n**Key interfaces:** keld-wv pre-commit policy hook; keld-guard `windows.<name>.web.navigate` key; facade hook invocation.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Popup/window-open (F03-T4).",
+    "out_of_scope": "Popup/window-open (F03-T4).",
+    "notes": ""
+   },
+   {
+    "key": "F03-T4",
+    "title": "feat(webContents): setWindowOpenHandler — always invoke the handler, deny by default with diagnostic, allow via synchronous host window minting",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Install per-engine new-window hooks; always call the app handler (side effects matter); treat unrecognised returns as deny; without a handler deny with a diagnostic (documented ▲ against Electron allow-by-default, or a `windowOpenHandler` quirk); on `allow`, mint a child window synchronously inside the engine delegate with `overrideBrowserWindowOptions` and `channels: []` unless granted.",
+    "acceptance_criteria": [
+     "draw.io `about:blank` allow path creates a child window with the override options; `openExternal` side effect still runs",
+     "Zettlr deny-all handler produces no window and no engine popup",
+     "A minted child webview starts with no channel grants (KELD-GUARD003 on first `el:` call)"
+    ],
+    "negative_controls": [
+     "Removing the handler invocation when the host would deny anyway fails the side-effect entry"
+    ],
+    "blocked_by_keys": [
+     "F03-T2",
+     "F02-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-79 popup policy",
+     "KEL-168 WebView2 popup guard"
+    ],
+    "linear_owner": "KEL-79",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "setWindowOpenHandler",
+     "WindowOpenHandlerResponse",
+     "did-create-window"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Windows denies all popups at the engine; macOS/Linux rely on wry defaults.\n\n**Desired behavior:** Install per-engine new-window hooks; always call the app handler (side effects matter); treat unrecognised returns as deny; without a handler deny with a diagnostic (documented ▲ against Electron allow-by-default, or a `windowOpenHandler` quirk); on `allow`, mint a child window synchronously inside the engine delegate with `overrideBrowserWindowOptions` and `channels: []` unless granted.\n\n**Key interfaces:** keld-wv new-window hooks on three engines; host child-window minting; facade handler.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** <webview> (F07, Tier 3).",
+    "out_of_scope": "<webview> (F07, Tier 3).",
+    "notes": ""
+   },
+   {
+    "key": "F03-T5",
+    "title": "feat(webContents): executeJavaScript/insertCSS with a host-owned result envelope over WebEngine::eval",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Extend the engine eval seam with a completion callback and wrap app code in one host-owned async envelope producing `{ok,value}` / `{ok:false,name,message,stack}` serialised with the shared structured-clone-compatible codec (owner per F03-D4); reject when the page navigates before completion; bound result size.",
+    "acceptance_criteria": [
+     "`await executeJavaScript(\"1+1\")` resolves 2 on all three engines; a thrown error rejects with name/message",
+     "A result above the bound rejects with a typed error naming the limit",
+     "Navigation during execution rejects with the stale-generation error"
+    ],
+    "negative_controls": [
+     "Returning a fire-and-forget undefined fails the resolve entry"
+    ],
+    "blocked_by_keys": [
+     "F03-T2",
+     "F03-D4"
+    ],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-142",
+    "review_gates": [
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "executeJavaScript",
+     "executeJavaScriptInIsolatedWorld",
+     "insertCSS",
+     "removeInsertedCSS"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** eval is fire-and-forget on every live backend.\n\n**Desired behavior:** Extend the engine eval seam with a completion callback and wrap app code in one host-owned async envelope producing `{ok,value}` / `{ok:false,name,message,stack}` serialised with the shared structured-clone-compatible codec (owner per F03-D4); reject when the page navigates before completion; bound result size.\n\n**Key interfaces:** keld-wv eval callback; codec; facade Promise mapping.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** webFrame renderer variants beyond the subset the preload shim exposes.",
+    "out_of_scope": "webFrame renderer variants beyond the subset the preload shim exposes.",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F03-D4",
+    "title": "Who owns the structured-clone-compatible value codec (arch 02 §5 SCV) used by executeJavaScript, ipc and webContents.send?",
+    "type": "grilling",
+    "question": "Arch 02 §5 names a postcard-encoded SCV codec covering Electron's value domain, but no spec, owner or Linear issue exists; KEL-98 is explicitly echo-only; KEL-80 does not own it. Decide the owner and the minimum v0 domain (JSON domain + Date/Map/Set/Error/TypedArray refs → bulk lane) before F03-T5, F04-T3 and F04-T4 can be specified.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F03-D6",
+    "title": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+    "type": "research",
+    "question": "Host print broker candidates: WKWebView createPDF (macOS 11+), WebView2 PrintToPdf to a host temp path, WebKitGTK print operation (unverified); Zettlr prints from the renderer (`window.print()`), draw.io from main. Devtools are dev-only; whether a public WKWebView API can present the Web Inspector is unverified. Settle with receipts and record ✔/▲/✘ per engine.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "sharedTexture / OffscreenSharedTexture / offscreen rendering (no OSR on system webviews)",
+   "Debugger (CDP) in production webviews",
+   "NavigationHistory restore from serialised state beyond ▲ (zero corpus demand)"
+  ],
+  "out_of_scope": [
+   "WebFrameMain frame-tree APIs beyond senderFrame (zero demand)"
+  ],
+  "not_yet_specified": [
+   "`before-input-event` + `pasteAndMatchStyle` engine hooks (draw.io) — new engine hooks not derivable from navigation signals",
+   "Zoom API mapping per engine (`zoomFactor`, `setVisualZoomLevelLimits`)",
+   "draw.io export window (offscreen + capturePage): replacement path to be specified"
+  ],
+  "issue_numbers": {
+   "F03-D4": 396,
+   "F03-D6": 397,
+   "F03-EPIC": 457,
+   "F03-T1": 458,
+   "F03-T2": 459,
+   "F03-T3": 460,
+   "F03-T4": 461,
+   "F03-T5": 462
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "app event 'web-contents-created' (and 'browser-window-created')",
+    "problem": "Zero mentions in any issue body. draw.io registers will-navigate, setWindowOpenHandler and will-attach-webview only inside app.on('web-contents-created') (electron.js:2189-2226); if the facade never emits it, F03-T3/F03-T4/F07-T2 acceptance criteria are unreachable. 'browser-window-created' is what electron-context-menu is believed to hook (INFERENCE: no node_modules in the clone).",
+    "suggested_unit": "F02-T2 (emit on window/webContents creation) with a conformance entry in F02-T1."
+   },
+   {
+    "entity": "webContents.zoomFactor (setter/getter), webContents.setVisualZoomLevelLimits",
+    "problem": "Only in MAP/F03-EPIC fog. FACT: both run inside the did-finish-load listener BEFORE loadFinished() (electron.js:1835-1837); a missing method throws there and 'args-obj' is never sent — activation-path break.",
+    "suggested_unit": "F03-T2 first-proof slice (typed no-throw member with a recorded ▲ until the per-engine zoom mapping is specified)."
+   },
+   {
+    "entity": "webContents 'before-input-event', webContents.pasteAndMatchStyle, BrowserWindow option `icon`, app.name, app.disableHardwareAcceleration",
+    "problem": "Called or registered on the draw.io window-creation path (electron.js:808-816, :720, :2020, :166) but covered only by fog lines or a decision ticket (F08-D6). Registration must not throw; behaviour needs a recorded ▲.",
+    "suggested_unit": "F02-T2 / F03-T2 member lists (L0 typed members with scoreboard rows)."
+   },
+   {
+    "entity": "F03: webFrameMain (module), ColorSpace, InputEvent, KeyboardInputEvent, MouseInputEvent, MouseWheelInputEvent, NavigationEntry, PostBody, PreloadScriptRegistration, PreloadScript, PrintToPDFMargins, PrintToPDFOptions, PrinterInfo, Referrer, UploadData, UploadFile, UploadRawData, WebSource, SharedTextureHandle, SharedTextureImportTextureInfo, SharedTextureImportedSubtle, SharedTextureImported, SharedTextureSubtle, SharedTextureSyncToken, SharedTextureTransfer",
+    "problem": "Not named in any issue. SharedTexture* are implied by the 'sharedTexture/OffscreenSharedTexture' never row and print structures by F03-D6, but nothing enumerates them. The epic title promises 'preload registration' yet no ticket covers PreloadScript/PreloadScriptRegistration (session.registerPreloadScript).",
+    "suggested_unit": "F03-EPIC never/out-of-scope enumeration; PreloadScript* to F07-T1 or an explicit ✘ row."
+   }
+  ],
+  "duplicates": [],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F04-T3",
+    "problem": "Missing gate: its negative control ('keying reply to the webview id instead of the document generation') and senderFrame-null-after-navigation depend on the one-generation-owner decision F04-A4, which gates only F03-T2. External predecessor 'windows.<w>.channels grant spec (open, no owner)' is a non-artifact.",
+    "fix": "Add F04-T3 ← F04-A4; the grant spec becomes the named output of F04-A1."
+   },
+   {
+    "key": "F03-T5",
+    "problem": "Lists executeJavaScriptInIsolatedWorld but has no edge to PANEL-D21, which decides what worlds exist. F03-D4 is a real gate but is filed 'not resolvable from current evidence' although it is an ownership decision, not an evidence gap.",
+    "fix": "Drop executeJavaScriptInIsolatedWorld (zero corpus demand) or add F03-T5 ← PANEL-D21; resolve F03-D4 with a decision packet — the v0 domain must include Error because draw.io replies an Error instance (electron.js:4541)."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F03-T4",
+    "violation": "Default-deny softened by a quirk: 'without a handler deny with a diagnostic (documented ▲ ... or a `windowOpenHandler` quirk)', with the choice deferred to 'the PR' (F03-EPIC). A quirk that restores Electron's allow-by-default widens authority, and deferring a permission-model decision into a PR carries ambiguity forward.",
+    "fix": "Decide now: deny + ▲, no quirk."
+   },
+   {
+    "key": "F01-T1, F02-T1, F03-T1, F04-T1, F05-T1, F06-T1",
+    "violation": "'Entries may fail (red) until the implementing tickets land; they must not be skipped or retried' collides with the verification floor (reported passing workspace tests; merge admission enforced — KEL-128 Done) and with 'MUST NOT weaken tests / skip gates'. No mechanism is named that lets a red entry coexist with a green required gate.",
+    "fix": "State the mechanism as a contract: entries are KEL-74 cells recorded with an explicit expected status (fail/unknown) asserted by the runner, flipped to pass in the implementing PR; a silently red or ignored test is not allowed."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F02-T5, F03-T2, F04-T4, F06-T6",
+    "problem": "Disjunctive ACs that cannot fail: 'either implemented or a typed ▲' (F02-T5 AC2), 'either pass the same entries or carry an explicit per-engine ▲' (F03-T2 AC4), '✔ or ▲' (F04-T4 AC4), 'round-trips once the broker lands; until then the typed error' (F06-T6 AC2).",
+    "fix": "Choose the branch per platform in the ticket and assert that one."
+   },
+   {
+    "key": "F03-T3",
+    "problem": "AC3 is unparseable ('Removing the guard check leaves the app hook alone — the negative test proves the guard denies independently').",
+    "fix": "AC: with no app hook registered, a page-initiated navigation to a non-granted origin is cancelled before commit. Negative control: deleting the guard evaluation lets it commit."
+   },
+   {
+    "key": "F04-T3, F03-T3, F03-T4, F06-T3, F06-T4",
+    "problem": "First-proof-relevant tickets carry Zettlr acceptance criteria (e.g. F04-T3 AC2 'Zettlr invoke/handle with 186 sites completes mount', F06-T4 '45 accelerators'), so they cannot close at the draw.io milestone.",
+    "fix": "Move Zettlr ACs to follow-up tickets labelled next."
+   },
+   {
+    "key": "F01-A4, F03-D4, F04-A1, F04-A4, X02-A1, F06-D1, X04-D4",
+    "problem": "Filed as 'open (not resolvable from current evidence)' with body '_No evidence-backed resolution yet; see the unit research note_' — the doctrine's banned 'needs discussion'. Most are ownership choices with a stated recommendation (X02-A1 even contains one), not evidence gaps.",
+    "fix": "Each gets a decision packet in the issue body: options, cost, new invariant, falsifier, recommendation, the one remaining question; resolve the ones evidence already determines (X02-A1, F04-A4)."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F03-T1",
+    "milestone": "first-proof",
+    "reason": "Conformance-first for the webContents members on the activation path: did-finish-load, executeJavaScript result, destroyed. Slice: those three; park will-navigate/window-open entries."
+   },
+   {
+    "key": "F03-T2",
+    "milestone": "first-proof",
+    "reason": "Slice only: loadURL(file://) (:777), did-finish-load (:782, :1817 — activation completes there), did-navigate/destroyed registration (:792-803), host-minted webContents identity, plus the uncovered zoomFactor/setVisualZoomLevelLimits calls (:1835-1836). Park the full provisional/commit/fail vocabulary and Windows/Linux."
+   },
+   {
+    "key": "F03-T3",
+    "milestone": "next",
+    "reason": "The four workflow steps contain no page-initiated cross-document navigation; draw.io's hook is an unconditional preventDefault (:2192). Needed for the strict profile and Zettlr."
+   },
+   {
+    "key": "F03-T4",
+    "milestone": "next",
+    "reason": "window.open is not on open/edit/save/close; draw.io allows only about:blank children (:2197-2219). Zettlr deny-all handler → next."
+   },
+   {
+    "key": "F03-T5",
+    "milestone": "first-proof",
+    "reason": "Awaited executeJavaScript runs during activation and on file access: legacy-recents/libraries migration at did-finish-load (:565, :609, :785, :1833) and config-readable-paths collection (:491). Slice: JSON-domain results; park insertCSS and executeJavaScriptInIsolatedWorld (zero demand)."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "F03-EPIC (also F07-T1 title, F04-T4 title)",
+    "claim": "'Design facts fixed by research: Preload runs in a dedicated app content world (third world), not the trusted KEL-142 world.'",
+    "problem": "PANEL-D21 is published as CONTESTED and open ('the world choice is open ... decide on arm G results and measured relay cost, not prose') and gates F04-T4 and F07-T1. A contested decision is presented as a fixed fact; F07-T1 even lists a 'KEL-142 spec revision (third world/relay)' predecessor.",
+    "fix": "INFERENCE (one invariants refuter): co-locating the preload with the KEL-142 handler/nonce is unsafe, so a third world is the leading candidate. UNKNOWN until PANEL-D21 arm G: same-world-with-proxy vs third world, and the relay's per-call cost."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "F04-A4",
+     "F04-T3",
+     "F03-T2",
+     "F02-T2",
+     "X05-EPIC"
+    ],
+    "coupling": "At least four 'generation' notions are used interchangeably: Bun role generation (tombstones, stale-generation errors in F02-T2), WindowGeneration (F02-T2), bridge navigation_generation u64 rotated on navigation start (keld-wv macos_bridge.rs:335), guard Principal::Webview.generation (0 in live backends per the refuter), plus X05's 'per-window state generation' for the mirror. F04-T3's reply/senderFrame semantics depend on the unification but only F03-T2 is gated by F04-A4.",
+    "fix": "F04-A4's resolution names each generation, its minting owner and rotation point; add edge F04-T3 ← F04-A4; forbid the bare word 'generation' in ticket ACs."
+   },
+   {
+    "keys": [
+     "PANEL-D21",
+     "F03-T5",
+     "F03-T2",
+     "F07-T1"
+    ],
+    "coupling": "The world decision silently changes three other atoms: what executeJavaScriptInIsolatedWorld's worldId can address, where F03-T2's 'same-document change via the isolated-world reporter' runs, and which world host-initiated executeJavaScript lands in (must never be the KEL-142 trusted world holding handler and nonce).",
+    "fix": "Drop executeJavaScriptInIsolatedWorld from F03-T5 (zero demand); add an AC to F03-T5 'app-supplied script never executes in the trusted bridge world' and an edge F03-T2 ← PANEL-D21 for the reporter placement."
+   },
+   {
+    "keys": [
+     "F04-T2",
+     "F03-D4",
+     "F04-T3"
+    ],
+    "coupling": "The payload bound and codec domain decide whether open and save work: file contents travel as IPC payloads (:4441-4447, :4493) and the error reply carries an Error instance (:4541). A JSON-only v0 domain or a bound below the document size turns into silent corruption or a failed save.",
+    "fix": "F03-D4 packet states v0 domain includes Error and a bulk path or explicit size ceiling with a typed failure; F04-T2 AC exercises a save above the old floor."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "F04-A4",
+    "why_now": "Takeable now as a decision packet (evidence already determines the facts); gates F03-T2 and — once the missing edge is added — F04-T3.",
+    "consumes": "keld-wv macos_bridge navigation_generation (rotates on navigation start), guard Principal::Webview.generation (0 in live backends, kel102 spec note), KEL-75 WindowGeneration spec. Produces: one named owner + rotation point."
+   },
+   {
+    "key": "F03-D4",
+    "why_now": "Takeable now as an ownership decision; gates F03-T5 and F04-T3.",
+    "consumes": "arch 02 §5 SCV text; draw.io value shapes (plain objects, strings, an Error instance at electron.js:4541, file contents). Produces: owner + v0 domain + size ceiling."
+   },
+   {
+    "key": "F03-T1",
+    "why_now": "Takeable now; did-finish-load, executeJavaScript result and destroyed entries only.",
+    "consumes": "KEL-237 manifest/runner; pinned web-contents.md."
+   },
+   {
+    "key": "F04-T3",
+    "why_now": "Next: after F04-T2, F04-A1, F03-D4 and F04-A4.",
+    "consumes": "Floor v2; channel-grant amendment; SCV v0 domain; generation owner."
+   },
+   {
+    "key": "F03-T2",
+    "why_now": "Next: after F03-T1, F02-T2, F04-A4 — macOS slice (loadURL file://, did-finish-load, did-navigate, destroyed, zoom members).",
+    "consumes": "Existing page-load-finished observable in keld-wv; generation owner; F02-T2 webview identity."
+   },
+   {
+    "key": "F03-T5",
+    "why_now": "Next: after F03-T2 and F03-D4; needed at did-finish-load.",
+    "consumes": "keld-wv eval seam (fire-and-forget today); SCV v0 domain."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse: four uniques; default-deny never bypassed; no Electron-isms in host crates outside keld-compat/@keld/electron; one owner per policy/schema/parser/lifecycle state; reuse of KEL-75/79/80/102/135/142 owners; spec+Linear gate; prior decisions #312/#313/#319/#322/#323/#325 and KEL-127. Verified against <keld repo> at d150a14 (arch 01-05, keld-wv engine.rs / wkwebview/mod.rs / macos_bridge.rs / webview2/mod.rs, keld-guard lib.rs, specs kel102/kel142/kel75/kel98, research 186/195/214/13, incubator 16b/16c/16d, learnings, compat-scoreboard) plus Linear KEL-79 retrieved live 2026-10-06.",
+   "verdicts": [
+    {
+     "decision_id": "F03-D1",
+     "verdict": "refuted",
+     "reason": "The identity atoms survive (webContents.id = host WebviewId; promise correlation per generation; raw engine signals per backend), but the ownership atom is wrong on two counts. (1) Placing a state machine in keld-wv that 'synthesizes Electron's event vocabulary' and emits 'a pinned-oracle ordered sequence' puts an Electron-ism (Electron's event names and total order) into the engine crate, whereas arch 04 §3 layer 4 assigns host-side emulation of 'webContents routing identity' to the keld-compat crate and keld-compat/AGENTS.md says compat pressure stays there; arch 05 §1 describes keld-wv's job as generic hooks ('principal identity per navigation, pre-load script atomicity, navigation interception, window.open handling, print, zoom, find'), not Electron ordering. (2) 'Reusing KEL-142's generation counter as the single document-identity source' names the wrong owner: KEL-102 §(GuardSnapshot) says the Webview principal generation is 'Created and rotated only by the host webview/navigation registry' and arch 03 §1 says webview identity 'is derived from the host's engine/navigation registry'; the bridge's BridgeState.navigation_generation (macos_bridge.rs:301,334) is a private per-bridge counter bumped from wry PageLoadEvent::Started (wkwebview/mod.rs page_load_trace_handler) while the guard principal generation is still 0 (arch 03 §4.3). Today there are two counters and no registry; the destination owner is the keld-core registry (arch 01 §3 table: keld-core owns 'window registry'), which engine.rs's module doc also names as the owner of the callback/command-queue plumbing. Minor: the quoted sentence 'principal generation rotates; pending replies to the old principal drop' is arch 02 §7 line 362, not §5.",
+     "evidence": "docs/architecture/04-electron-compat.md §3 item 4 ('Host-side emulation (keld-compat crate) ... webContents routing identity'); crates/keld-compat/AGENTS.md ('compat pressure stays here'); docs/architecture/05-webview-and-native.md §1 'Why not just use wry' (a)/(b); crates/keld-wv/src/engine.rs module doc ('the callback plumbing belongs to the command-queue design keld-core will own'); docs/specs/kel102-host-guard-enforcement.md TrustedCaller::Webview comment + 'a later navigation registry must increment it'; docs/architecture/03 §1 lines 28-30; crates/keld-wv/src/wkwebview/macos_bridge.rs:301-336; crates/keld-wv/src/wkwebview/mod.rs:693-704; docs/architecture/02-ipc.md:362.",
+     "correction": "Split the machine: keld-wv HostHooks (design review, arch 05 §1 sketch) delivers a small engine-neutral navigation signal set — provisional-start, commit, same-document-change, dom-content-loaded, finish, fail{engine code}, title-change, content-process-terminated — each tagged with (WebviewId, generation) that the host navigation registry mints (keld-core owner per arch 01 §3 / KEL-102; the KEL-142 bridge and the guard principal both consume that one counter, replacing the private BridgeState counter). The Electron vocabulary, the did-* total order from the pinned oracle, loadURL promise settlement and WebFrameMain identity are synthesized once in keld-compat (host side) or @keld/electron, where keld-compat/AGENTS.md's ordering tests apply. Cite arch 02 §7 for the rotation rule."
+    },
+    {
+     "decision_id": "F03-D2",
+     "verdict": "survives",
+     "reason": "Guard-first, deny-only app hook, host-initiated loads bypass will-navigate but not the guard, failure before commit — all consistent with the repo contracts, and the engine pre-commit vetoes are corroborated by repo research (16b M8 decidePolicyForNavigationAction; 16c NavigationStarting; 16d PSON/decide-policy). KEL-79's live Linear acceptance contains exactly 'navigation/popup/download/permission policy are explicit' and 'stale navigation principal' negatives (status Backlog, priority High, startedAt null — matches the object). One citation is loose: research 186 #4 is about Electron permission request/check handlers, not navigation; the correct source for 'missing handler ≠ allow' is briefing invariant 2 / arch 03 §4.3. The 'default allow-list' unknown is largely answered by arch 03 §2: 'No glob grants any host for a multi-character scheme — name the origins', so an implicit allow for host-initiated remote loadURL would contradict the manifest contract; strict remote origins + implicit bundle resources is the only shape consistent with it, and keld migrate emitting grants from loadURL literals is the right path.",
+     "evidence": "docs/architecture/03 §4.3 item 3 lines 242-245 and 260-263; docs/architecture/03 §2 lines 97-98 (windows.<name>.web block) and URL-scope rules ('No glob grants any host'); docs/architecture/05 §2 ('fail before guard evaluation and before any response bytes'); Linear KEL-79 (retrieved 2026-10-06: Backlog, High, startedAt null, acceptance bullets quoted); docs/research/incubator/drafts/16b-wkwebview-risks.md:213; 16c:31,109,189; 16d:26,172-174; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md item 4 (permission paths, not navigation).",
+     "correction": "Replace the research-186 #4 citation with arch 03 §4.3/invariant 2. State that `web.navigate` is a new key inside the existing per-window `windows.<name>.web` block evaluated by the existing vetted URL-scope matcher (no second grammar), and that it needs the permission-model review gate (no `web.*` capability beyond web.camera/web.microphone exists in keld-guard today). Resolve the default-scope unknown as strict-for-remote per arch 03 §2."
+    },
+    {
+     "decision_id": "F03-D3",
+     "verdict": "survives",
+     "reason": "Deny-by-default with diagnostic, exact-match deny for malformed returns, allow gated on host window minting, and synchronous delegate return all hold against repo evidence: Windows already installs deny-all SetHandled(true) before the GuardInstalled witness (webview2/mod.rs:1936-1948; crate AGENTS.md KEL-168 rule); research 16b M8 records WKUIDelegate must 'return a webview created with the passed configuration or WebKit throws'; 16d records the WebKitGTK `create` signal; arch 01 §3 assigns the window registry to keld-core (still TARGET); research 195 P4a footnote refuses a BrowserWindow shim ahead of the host registry (four uniques); KEL-75 AC4's window-generation close tombstone is the existing owner for outlivesOpener:false revocation. Two notes: arch 04 §3 layer 5 names `windowOpenHandler` strictness as a keld.compat.ts quirks-flag example, so the ▲-vs-quirk choice is the PR's per keld-compat/AGENTS.md, not fixed as ▲; and no Linear id for H7 exists in the repo (research 195 P2a/H7 only), which the object correctly marks unknown.",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:1931-1948; crates/keld-wv/AGENTS.md Windows bullet (KEL-168); docs/research/incubator/drafts/16b-wkwebview-risks.md:212; 16d:266; docs/architecture/01-overview.md:106; docs/research/library/execution-governance/195-master-roadmap-checklist.md P4a + footnote; docs/specs/kel75-principalized-bun-child-roles.md AC4 lines 61-68; docs/architecture/04-electron-compat.md §3 item 5.",
+     "correction": "Record that the deny default may land as either scoreboard ▲ or a `windowOpenHandler` quirks flag (arch 04 §3 layer 5 already reserves that flag name); choose in the PR. Add the unverified atom: on WebView2, SetHandled(true) without NewWindow 'loads nothing' (Keld comment) but whether the page's window.open() returns null is not proven — a one-page probe on the live Windows backend settles it."
+    },
+    {
+     "decision_id": "F03-D4",
+     "verdict": "unresolved",
+     "reason": "The need for a host-owned result envelope survives: `WebEngine::eval` is fire-and-forget on every live backend (webview2/mod.rs:2855-2866 passes a no-op ExecuteScriptCompletedHandler; macos_bridge.rs:797-804 evaluate_in_world passes a None completion handler; engine.rs doc defers EvalCallback), and the world-remap rule follows from KEL-142 §5.1/AC2. Two owner atoms are unproven or wrong. (a) The object names 'arch 02 §5 SCV codec owner (KEL-98 echo-codegen)': the KEL-98 spec is postcard echo codegen for the one echo channel and contains no SCV/Date/Map/TypedArray text; no SCV codec owner exists in the repo, so the blocker is an unnamed owner, not KEL-98. (b) 'JSON-with-tags' in-page serialization plus a postcard SCV on kipc is two encodings of the Electron value domain; unless the in-page tag grammar is generated from the same contract source (KEL-127: one minimal contract source, existing echo-codegen owner, no new IDL), it is a parallel codec. (c) The design-review owner is joint keld-wv + keld-core (engine.rs: callback plumbing belongs to keld-core's command queue), not the trait alone. The WebView2 'null collapses undefined/throw' claim is from the author's receipt R20 and is not independently verified here.",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:2855-2866; crates/keld-wv/src/wkwebview/macos_bridge.rs:797-805; crates/keld-wv/src/engine.rs module doc bullets 2-3; docs/specs/kel142-macos-renderer-bridge-api.md §5.1 and AC2 (lines 371-384); docs/specs/kel98-echo-codegen.md (postcard echo only; grep for SCV/Date/Map returns nothing); docs/architecture/02-ipc.md §5 bullet 2 (SCV is postcard-encoded); briefing KEL-127 line ('one minimal contract source + existing echo-codegen owner (KEL-98); no new IDL').",
+     "correction": "Missing evidence: (1) an owner for the SCV codec — grep arch 02/KEL-80/KEL-98 confirms none; the F03 ticket must name it as a prerequisite spec slice (arch 02 §5 SCV) rather than cite KEL-98 as if it existed; (2) prove the in-page envelope's tag grammar is generated from that same source (or declare it a bounded engine-boundary transcoding with one owner and a golden-vector test). Cheapest experiments: run `undefined`, `throw new Error()`, and `null` through the live webview2 eval with a capturing handler to confirm the indistinguishability claim; and confirm WK `evaluateJavaScript(_:in:in:completionHandler:)` surfaces a thrown error as NSError vs. a rejected promise before fixing the envelope shape."
+    },
+    {
+     "decision_id": "F03-D5",
+     "verdict": "refuted",
+     "reason": "The policy core survives — no Node/Bun in a webview (not a unique; arch 03 §4.2: Electron `sandbox` options 'never select or auto-downgrade into legacy'), sandbox-subset `require` only, explicit diagnostic + static-scan quirk, async-form injection on WebView2 (learning 2026-08-15 confirmed), main-frame default. The world-placement atom is wrong and contradicts D4: D5 runs the preload 'in the Keld isolated world (the KEL-142 injection path)'. KEL-142 §5.1/§5.2 make that world the holder of the native message handler, handler name, app generation and the host-minted document nonce ('isolated script retains the nonce outside the page world'); the preload is app/third-party code executing as the untrusted webview principal (arch 03 §1 table), so co-locating it hands that code the handler and nonce, and D4 itself rules 'the KEL-142 world is unreachable' from app-visible worlds. Citation errors: research 186 #5 is about IPC sender/frame/origin confusion, not 'early script injection ≠ permission boundary'; that sentence is KEL-142 §5.1 ('The page-to-isolated-world handoff is not an authority boundary').",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md §5.1 lines 215-240, §5.2 steps 3-4, AC2 lines 379-381; docs/architecture/03 §1 table (webview = untrusted) and §4.2 legacy-profile rule; docs/agents/learnings.md:69 (2026-08-15 wry sync AddScriptToExecuteOnDocumentCreated 96-109 ms); crates/keld-wv/src/webview2/mod.rs:11-16; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md item 5 (IPC confusion, not injection); D4 text 'never the bridge world'.",
+     "correction": "Preload runs in a third, app-visible script world (a distinct named WKContentWorld / WebView2 and WebKitGTK equivalents) registered at document start on the same per-view user-content controller as the KEL-142 scripts, main-frame-only, seeing only the frozen `window.keld` facade (the contextBridge/ipcRenderer shim builds on that), never the native handler or nonce. Reuse KEL-142's injection mechanism and ordering guarantee, not its world. Fix the two citations (KEL-142 §5.1 for the authority-boundary sentence)."
+    },
+    {
+     "decision_id": "F03-D6",
+     "verdict": "unresolved",
+     "reason": "Policy atoms survive: arch 03 §4.3 'devtools off in release unless web.devtools: true'; Windows already applies SetAreDevToolsEnabled(cfg!(debug_assertions)) (webview2/mod.rs:2790); 06-webview-reality records 'App Store rules forbid enabling devtools features in release builds' and no CDP on WK/WebKitGTK; research 13's never table lists full CDP in production. Two mechanism atoms are wrong or unproven. (a) macOS: research 16b M8 records that `isInspectable` is public but 'opening the inspector window is `_WKInspector` SPI' with 'MAS rejection risk'; the recorded Keld policy is SPI only under `keld dev`, release = isInspectable + doctor hint. D6's 'openDevTools() allowed ... when web.devtools:true' in release therefore cannot open a window on macOS without SPI — with the grant it can only set isInspectable and let the user attach via Safari (▲), and devtools-opened/closed cannot be synthesized from host opens there. (b) 'One host print broker (keld-native-style)': keld-native/AGENTS.md forbids production unsafe and arch 05 §3's module table has no print row, while WK createPDF/printOperation and WebView2 PrintToPdf are objc2/COM engine calls that arch 05 §1 assigns to keld-wv ('print, zoom, find'); only the file sink belongs to FsBroker fs.write. (c) No `web.devtools` or `print.silent` capability exists in keld-guard (live: fs.read, fs.write, web.camera, web.microphone) — a permission-model gate, not a reuse. The WebKitGTK PDF path remains a lead (16d cites a Stack Overflow example), as the object says.",
+     "evidence": "docs/architecture/03 §4.3 lines 244-245, 262-263; crates/keld-wv/src/webview2/mod.rs:2790, 2888; docs/research/library/host-platforms/06-webview-reality.md:34-35, 112; docs/research/library/compatibility-competitors/13-electron-api-usage.md:49; docs/research/incubator/drafts/16b-wkwebview-risks.md:218-223, 359; crates/keld-native/AGENTS.md ('Production MUST NOT use unsafe'); docs/architecture/05 §3 module table (no print/pdf module) and §1 (keld-wv control surface list); crates/keld-guard/src/lib.rs capability literals (grep).",
+     "correction": "Missing evidence: whether any public WKWebView API in the current macOS SDK can present the Web Inspector — settle by grepping the objc2-web-kit `WKWebView` headers for an inspector-show selector (expected none) and by checking what wry's `devtools` feature calls (expected `_inspector` SPI). Then restate D6: macOS `openDevTools()` = SPI under `keld dev` only; release + `web.devtools` grant = isInspectable + diagnostic (▲, no window, no opened/closed events). Move print/PDF to a `WebEngine` method (design review) returning bounded bytes, serialized per view/host; FsBroker handles only dialog-selected or granted output paths; name `web.devtools` and `print.silent` as new manifest keys needing a KEL-102-style permission-model gate."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Two navigation-generation counters exist today and the object proposes building on the wrong one: the KEL-142 bridge's private BridgeState.navigation_generation (bumped from wry PageLoadEvent::Started) and the guard's Principal::Webview generation (fixed at 0, to be rotated 'only by the host webview/navigation registry' per KEL-102). Any F03 slice that keys events, eval invalidation and webContents.send routing on the bridge counter creates a parallel lifecycle-state owner (root AGENTS principle 3). The first F03 prerequisite is the registry that both consume; neither keld-wv nor @keld/electron may mint it.",
+     "severity": "high",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs:301,334-338; crates/keld-wv/src/wkwebview/mod.rs:693-704; docs/architecture/03 §4.3 ('generation 0'); docs/specs/kel102-host-guard-enforcement.md TrustedCaller::Webview comment and 'a later navigation registry must increment it'."
+    },
+    {
+     "finding": "The object's owners table omits keld-compat as a host-side owner (it lists it only for evidence/corpus), yet arch 04 §3 layer 4 assigns host-side emulation of `webContents` routing identity to the keld-compat crate. Without that row, 'implement once' defaults to keld-wv and Electron ordering leaks into the engine crate.",
+     "severity": "medium",
+     "evidence": "docs/architecture/04-electron-compat.md §3 item 4; crates/keld-compat/AGENTS.md; object owners list."
+    },
+    {
+     "finding": "Guard vocabulary gap is understated: `web.navigate`, `web.popup`, `web.devtools`, `print.silent` and any getPrintersAsync enumeration grant are all new manifest keys. The live guard knows only fs.read/fs.write/web.camera/web.microphone and the manifest's per-window `web` block has only `csp`. Each key needs the permission-model review gate and must reuse the arch 03 §2 vetted URL-scope matcher (no any-host glob) rather than a new scope grammar; KEL-102 D9 explicitly says that spec authorizes no manifest-schema change.",
+     "severity": "medium",
+     "evidence": "crates/keld-guard/src/lib.rs capability literals; docs/architecture/03 §2 lines 97-98 and URL-scope rules; docs/specs/kel102-host-guard-enforcement.md KEL-102-D9."
+    },
+    {
+     "finding": "D4's 'queue the request until did-stop-loading' introduces a per-view host→renderer pending queue with no stated bound; KEL-142 admits exactly one pending renderer→host call per view and arch 02 §6 forbids unbounded steady-state allocation on hot paths. The queue depth and overflow error (reject with a KELD code) must be part of the design, with a slow-page negative control.",
+     "severity": "medium",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md §4.1 lines 125-127; docs/architecture/02-ipc.md §6; root AGENTS.md 'Hot kipc/event-loop/guard paths ... no steady-state allocation'."
+    },
+    {
+     "finding": "WK content-process termination carries no public reason (16b: reason is SPI `_webView:webContentProcessDidTerminateWithReason:`), and GPU-process crash limits can terminate every WebContent process at once. The object's render-process-gone mapping should state reason='crashed'-or-unknown ▲ on WK and treat 'all webviews died simultaneously' as one event, not N; it must also never fire render-process-gone for a Bun generation loss (KEL-143), which the object already notes.",
+     "severity": "medium",
+     "evidence": "docs/research/incubator/drafts/16b-wkwebview-risks.md:171-185."
+    },
+    {
+     "finding": "Spec+Linear gate: F03 proposes WebEngine trait changes (HostHooks, EvalCallback, print, zoom, policy hooks) that crates/keld-wv/AGENTS.md says require design review and 'no new method until a live backend implements it in the same PR'. KEL-79 is Backlog with no started date and owns only the origin/resource/policy contract; no approved F03 spec exists. The object correctly types D1 as prototype, but D3/D4/D5 are typed 'task' while their trait prerequisites are unapproved — they are spec-blocked tasks, not executable ones.",
+     "severity": "medium",
+     "evidence": "crates/keld-wv/AGENTS.md trait rule; Linear KEL-79 (Backlog, startedAt null, retrieved 2026-10-06); docs/specs listing (no kel79/F03 spec)."
+    },
+    {
+     "finding": "Minor citation defects that would mislead a ticket author: the 'principal generation rotates; pending replies drop' sentence is arch 02 §7 (line 362) not §5; research 186 #4 is permission handlers (not navigation) and #5 is IPC sender confusion (not injection); 'SCV codec owner KEL-98' has no basis in the KEL-98 spec.",
+     "severity": "low",
+     "evidence": "docs/architecture/02-ipc.md:362; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md items 4-5; docs/specs/kel98-echo-codegen.md."
+    },
+    {
+     "finding": "Not independently verifiable in this review (treat as the author's receipts, not verified facts): Electron 44.4.5 doc quotes R1-R32, Microsoft WebView2 ExecuteScript/NavigationStarting/PrintToPdf text, Apple createPDF/isInspectable availability, WebKitGTK PrintOperation PDF output. Repo research corroborates isInspectable (16b), WebView2 control-surface presence and CDP (16c), and the GTK PDF lead (16d); the rest remains unverified here.",
+     "severity": "low",
+     "evidence": "docs/research/incubator/drafts/16b-wkwebview-risks.md:218; 16c:260-269; 16d:269-271; no offline copy of Electron/Microsoft/Apple docs in the repo."
+    }
+   ]
+  },
+  {
+   "lens": "Electron v44.4.5 semantics accuracy + corpus demand + sequencing/sizing (F03 webcontents-navigation)",
+   "verdicts": [
+    {
+     "decision_id": "F03-D1",
+     "verdict": "survives",
+     "reason": "Ownership/identity claims hold against sources: Electron defines every navigation event by trigger only (web-contents.md L115-171, 402-449: 'spinner started/stopped', 'onload dispatched', 'document in top-level frame is loaded', 'main frame navigation is done'); no total order is documented, so an oracle recording is genuinely required. WebView2's partial order is documented verbatim (ContentLoading 'follows the NavigationStarting and SourceChanged events and precedes the HistoryChanged and NavigationCompleted events'; DocumentTitleChanged 'may run before or after the NavigationCompleted event'; SourceChanged 'does not trigger for ... history.pushState with the same URL'). WKNavigationDelegate topic list (Apple JSON) has only decidePolicyFor/didStartProvisional/didReceiveServerRedirect/didCommit/didFinish/didFail/didFailProvisional/webContentProcessDidTerminate/shouldGoTo:willUseInstantBack — no same-document callback, so the injected reporter fallback is the only route and the author's [unknown] is now a confirmed gap. KEL-142 generation rotation exists in code (macos_bridge.rs:334-335 navigation_started; wkwebview/mod.rs:700-704 wired to wry PageLoadEvent::Started). Current observable is Started|Finished only (mod.rs:733-736). Blockers are real: crates/keld-wv/AGENTS.md forbids a new trait method without a live backend in the same PR.",
+     "evidence": "docs fetched to scratchpad/notes/f03-refute/ (web-contents.v44.4.5.md L115-171, 313-449; apple-webkit_wknavigationdelegate.json topicSections; ms-icorewebview2.html ContentLoading/SourceChanged/DocumentTitleChanged paragraphs); crates/keld-wv/src/wkwebview/mod.rs:693-736; macos_bridge.rs:301-335; crates/keld-wv/AGENTS.md trait rule.",
+     "correction": "Sizing: as written this is not a tracer bullet a fresh agent could finish (three engines + trait change + wry removal). First slice should be macOS-only over the already-pinned wry hooks (wry exposes with_navigation_handler, with_on_page_load_handler, with_document_title_changed_handler, with_new_window_req_handler — read in wry 0.57.0 source; pinned is 0.56.1, verify the same names) emitting did-start-navigation/did-navigate/did-finish-load/did-fail-load + loadURL promise correlation on the existing generation counter, with no WebEngine trait change. Also add did-fail-provisional-load (window.stop / WebView2 WebErrorStatus OPERATION_CANCELED) as a distinct state; and record in the oracle that loadURL(A)-then-loadURL(B) rejects A with ERR_ABORTED — this is NOT in the pinned docs (L1097-1100 only say resolve on did-finish-load / reject on did-fail-load), so the test oracle currently asserts undocumented behavior."
+    },
+    {
+     "decision_id": "F03-D2",
+     "verdict": "refuted",
+     "reason": "The loadURL-bypass and guard-first veto survive (web-contents.md L272-273 'will not emit when the navigation is started programmatically with APIs like webContents.loadURL and webContents.back'; draw.io electron.js:2192-2194 and Zettlr attach-app-navigation-handlers.ts:67-83 both preventDefault unconditionally, so surfacing host-initiated loads would blank both apps). But the rule 'Only guard-allowed ... navigations are surfaced as will-navigate' is contradicted by Zettlr's actual handler: it calls event.preventDefault() AND maybeOpenExternal(url) for EVERY page-initiated navigation (shell.openExternal for http(s), shell.openPath for its custom safe-file:// scheme). Under the proposed ordering, a user clicking an external link produces a guard deny (remote origin not allow-listed) and the app hook never runs, so no browser opens — a silent feature loss that no scoreboard cell would catch because Electron fires will-navigate for exactly these navigations. Same shape in draw.io's popup handler (openExternal side effect, D3).",
+     "evidence": "corpus/zettlr/source/app/util/attach-app-navigation-handlers.ts:24-43 (maybeOpenExternal), 67-83 (will-navigate → preventDefault + maybeOpenExternal); web-contents.v44.4.5.md L269-279; KEL-79 (Linear, retrieved 2026-10-06) Backlog/High, acceptance includes 'navigation/popup/download/permission policy are explicit' and 'stale navigation principal' — as claimed.",
+     "correction": "Invoke the app's will-navigate / will-frame-navigate hook for EVERY page-initiated cross-document navigation (deny-only, cannot widen), compute the guard decision independently, and apply outcome = guard ∧ app. Default-deny is preserved (no handler ⇒ guard decision stands; app cannot allow what the guard denies) while the app's side effects (open externally, log) are preserved and the app-visible event set matches Electron. Emit the KELD diagnostic only when the guard denied something the app did not. Keep host-initiated loads out of the hook (confirmed). Add a conformance cell: anchor click to https://example.org with Zettlr-style handler → will-navigate observed, navigation blocked, shell.openExternal broker invoked."
+    },
+    {
+     "decision_id": "F03-D3",
+     "verdict": "survives",
+     "reason": "All cited Electron semantics verified: unrecognized/null/undefined return 'will result in a console error and have the same effect as returning {action: \"deny\"}' (L1492-1494); handler called for window.open, target=_blank, shift+click, form target=_blank (L1496-1498); did-create-window 'Not emitted if the creation of the window is canceled' (L240-242); outlivesOpener default false and about:blank child copies parent WebPreferences 'and there is no way to override it' (window-open.md); window.open returns Window | null. Engine contract verified: WKUIDelegate createWebViewWith 'The web view returned must be created with the specified configuration ... A new web view or nil' (Apple JSON); Keld's Windows deny-all NewWindowRequested handler exists and is a GuardInstalled precondition (webview2/mod.rs:1932-1949). Corpus verified: Zettlr always {action:'deny'} (ts:59-65); draw.io allows about:blank with overrideBrowserWindowOptions.webPreferences and otherwise openExternal(url) or deny (electron.js:2197-2219). Window registry TARGET confirmed (product-status.tsv crate.keld-core partial; research 214 L147 'SUBSTRATE-BLOCKED').",
+     "evidence": "web-contents.v44.4.5.md L205-244, 1464-1500; notes/f03-refute/window-open.md, window-open-handler-response.md; apple-webkit_wkuidelegate_webview___createwebviewwith_for_windowfeatures__.json; crates/keld-wv/src/webview2/mod.rs:1932-1949; corpus/drawio-desktop/src/main/electron.js:2196-2219; corpus/zettlr/.../attach-app-navigation-handlers.ts:59-65.",
+     "correction": "Two sharpenings, not reversals: (1) the handler MUST always be invoked before the host's popup decision — draw.io's handler has a side effect (openExternal) and then returns undefined when openExternal succeeded; Electron logs a console error and denies; Keld must do the same without throwing. (2) For about:blank children Electron ignores overrideBrowserWindowOptions.webPreferences (copies the opener's); draw.io's restated prefs are therefore no-ops in Electron and Keld must inherit the opener (as proposed) rather than validate-and-apply them."
+    },
+    {
+     "decision_id": "F03-D4",
+     "verdict": "survives",
+     "reason": "Electron semantics verified: Promise<any> 'resolves with the result of the executed code or is rejected if the result of the code is a rejected promise' and 'Code execution will be suspended until web page stop loading' (L1426-1435); WebFrameMain variant adds 'rejected if execution throws' (web-frame-main.md L97-98) — the asymmetry justifies the [unknown]; world 999 = contextIsolation world (L1449; web-frame.md L172-174, 196). WebView2 ExecuteScript collapse verified verbatim ('If the result is undefined, contains a reference cycle, or otherwise is not able to be encoded into JSON, then the result is considered to be null ... If the script that was run throws an unhandled exception, then the result is also \"null\"'). Apple evaluateJavaScript(_:in:in:completionHandler:) macOS 11+ confirmed; completion 'with either the result of the script evaluation or an error'. draw.io awaits results at electron.js:491, 565, 609 (plus fire-and-forget in progress-bar.js:109). Keld eval is fire-and-forget per engine.rs module doc. KEL-142 AC2 'page world cannot access the isolated native handler' confirmed (spec L379).",
+     "evidence": "web-contents.v44.4.5.md L1421-1456; notes/f03-refute/web-frame-main.md L92-98; web-frame.md L169-196; ms-icorewebview2.html ExecuteScript paragraph; apple-webkit_wkwebview_evaluatejavascript___in_in_completionhandler__.json; crates/keld-wv/src/engine.rs:12-14; docs/specs/kel142-macos-renderer-bridge-api.md:371-380.",
+     "correction": "Hidden coupling with D5 must be promoted to an explicit ▲: in Electron world 999 IS the preload world, so executeJavaScriptInIsolatedWorld(999, …) can observe preload globals. D5 places the preload in the KEL-142 bridge world and D4 makes that world unreachable, so 999 cannot behave as in Electron. Either document 999 as ▲ (remapped to an app world that does not see preload globals; zero corpus demand makes this acceptable) or give the preload its own third world — which would need its own native message path and contradicts 'without a second IPC path'. Pick and record; do not leave both decisions silently inconsistent."
+    },
+    {
+     "decision_id": "F03-D5",
+     "verdict": "survives",
+     "reason": "Electron defaults verified: sandbox 'Default is true since Electron 20. The sandbox will automatically be disabled when nodeIntegration is set to true' (web-preferences.md L22-28); contextIsolation 'Defaults to true' (L104-106); preload 'will always have access to node APIs' (L15-18); nodeIntegrationInSubFrames 'All your preloads will load for every iframe' when enabled (L11-14); sandbox.md: require polyfill limited to electron(contextBridge, crashReporter, ipcRenderer, nativeImage, webFrame, webUtils)/events/timers/url, 'you will not be able to use CommonJS modules to separate your preload script'. Corpus verified: draw.io contextIsolation:true/nodeIntegration:false/webviewTag:false/webSecurity:true (electron.js:721-729, 1405-1410, 3083-3091) and isolated-world window.navigation listener (electron-preload.js:40-55); Zettlr 12 sandbox:true, 2 sandbox:false (onboarding-window.ts:72, splash-screen.ts:65). KEL-142 document-start isolated-world injection confirmed. Research 186 #5 and the never-list rule out Node-in-webview.",
+     "evidence": "notes/f03-refute/web-preferences.md L3-28, 104-123; tut-sandbox.md L15-20, 50-76, 106; corpus/zettlr/forge.config.js:79-81 and source/common/modules/preload/index.ts:17 (single shared preload importing only contextBridge, ipcRenderer, webUtils from 'electron'); corpus/drawio-desktop/src/main/electron-preload.js:40-55.",
+     "correction": "Three refinements: (1) the shim list omits the globals the sandbox also polyfills — Buffer, process, setImmediate, clearImmediate (sandbox.md L66-71); apps use these without require. (2) The [unknown] about Zettlr's two sandbox:false preloads is resolved: forge.config.js builds ONE preload (source/common/modules/preload/index.ts) for all 14 windows and it imports only contextBridge/ipcRenderer/webUtils, so the static-scan quirk `treatUnsandboxedPreloadAsSandboxed` would pass for Zettlr (verify the file body for other Node globals before promising the cell). (3) The WebView2 per-frame gate [unknown] is cheap: the host-injected script self-gates with `if (window !== window.top) return;` at document-created time (runs before any page script), no ICoreWebView2Frame needed; keep the all-frames claim for AddScriptToExecuteOnDocumentCreated as the author's R20 quote — not re-verified in this pass."
+    },
+    {
+     "decision_id": "F03-D6",
+     "verdict": "survives",
+     "reason": "The decision (dev-only devtools, host print broker, Debugger ✘) is supported by arch 03 §4.3 ('devtools off in release unless web.devtools: true', L244-245), the existing SetAreDevToolsEnabled(cfg!(debug_assertions)) (webview2/mod.rs:2790), 06-webview-reality L34-35 ('devtools = Safari Web Inspector (no CDP); App Store rules forbid enabling devtools features in release builds'), and engine facts all re-verified from primary sources: WK createPDF macOS 11.0+, isInspectable macOS 13.3+ 'Defaults to false' (Apple JSON); WebView2 PrintToPdf introduced 1.0.1020.30 and 'Only one Printing operation can be in progress at a time ... the completed handler is immediately invoked with isSuccessful set to FALSE' (verbatim); Electron print failureReasons/353-micron throw/silent default false (L1833-1874), printToPDF defaults (print-to-pdf-options.md), devTools 'Default is true'. Corpus: Zettlr pdf-exporter.ts:54-67 hidden window → loadFile → printToPDF({printBackground:false, landscape:false, pageSize:'A4'}) → close() confirmed; draw.io print retry on 'Invalid printer settings' (electron.js:3303-3320) and printToPDF merge (3323) confirmed. One evidence item is false, see correction.",
+     "evidence": "docs/architecture/03-security.md:243-245; crates/keld-wv/src/webview2/mod.rs:2790, 2888; docs/research/library/host-platforms/06-webview-reality.md:30-36, 106-112; notes/f03-refute/apple-webkit_wkwebview_createpdf*.json, apple-webkit_wkwebview_isinspectable.json, ms-icorewebview2_7.html; web-contents.v44.4.5.md L1830-1938, 1996-2019; corpus/electron-quick-start/main.js:18-19.",
+     "correction": "Evidence error: electron-quick-start does NOT call openDevTools() unconditionally — main.js:19 is `// mainWindow.webContents.openDevTools()` (commented). The compat-matrix 'qs=1' for openDevTools is scanner noise from that comment; drop it from Tier 1 exit reasoning. Real devtools demand is draw.io __DEV__-gated openDevTools (electron.js:819-822) + ipc 'openDevTools' (1027-1031), Zettlr menu toggleDevTools ×2 and context-menu inspectElement(x,y) (windows/index.ts:196) — add inspectElement to the dev-only mapping. Also Zettlr's print window prints from the RENDERER via window.print() (win-print/App.vue:113), not webContents.print; [lead] WKWebView has no public window.print() support — this needs its own engine prototype or Zettlr's print workflow is ✘ on macOS."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "draw.io DOES use offscreen rendering: its image/PDF export window is created with `webPreferences.offscreen: { deviceScaleFactor: 2 }` and the PNG/JPG path calls `browser.capturePage()` after setBounds + 1 s timer. The object's summary states 'no corpus app uses ... offscreen' and puts offscreen on the Never list, and capturePage is not among the enumerated corpus demands. The offscreen flag here is used only as a DPR knob for the snapshot; Keld can satisfy the workflow with a hidden-window snapshot (WK takeSnapshot(with:) with snapshotWidth, WebView2 CapturePreview, WebKitGTK webkit_web_view_get_snapshot) and must document `offscreen` as ▲ accepted-but-only-deviceScaleFactor-honored rather than ✘, otherwise draw.io CLI/PNG export cells fail. Hidden never-shown-view snapshot timing is the same unknown as hidden-view printToPDF.",
+     "evidence": "corpus/drawio-desktop/src/main/electron.js:3080-3098 (offscreen: { deviceScaleFactor: 2 }, show:false, transparent), 3205-3225 (browser.setBounds(newBounds); setTimeout → browser.capturePage().then(img => ...)); Electron capturePage doc web-contents.md L1806-1817 ('The page is considered visible when its browser window is hidden and the capturer count is non-zero'); compat-matrix.tsv row WebContents.capturePage drawio=1."
+    },
+    {
+     "severity": "high",
+     "finding": "Zettlr's print workflow is renderer-driven: win-print/App.vue calls `window.print()`; the main process never calls webContents.print. The D6 broker covers only main-process print/printToPDF. [lead, verify] WKWebView does not implement window.print() through public API (WebKit routes it to a private WKUIDelegate `_webView:printFrame:`), so on macOS the page's print button would be a silent no-op. This needs an engine prototype (WK: intercept via injected override of window.print → host broker; WebView2 ShowPrintUI; WebKitGTK print signal) before any Zettlr print cell can be promised.",
+     "evidence": "corpus/zettlr/source/win-print/App.vue:113 (`window.print()`); corpus census shows no `webContents.print(` in Zettlr source; D6 only maps webContents.print/printToPDF."
+    },
+    {
+     "severity": "medium",
+     "finding": "Corpus demand omitted from the summary that requires NEW engine hooks not derivable from the navigation state machine: draw.io `before-input-event` + `pasteAndMatchStyle()` (intercepts Cmd/Ctrl+Shift+V before the page); Zettlr `startDrag({file, icon})` (native file drag-out source), `inspectElement(x,y)`, and edit commands cut/copy/paste/selectAll/undo/redo/pasteAndMatchStyle (×11). before-input-event needs pre-dispatch key interception (WK performKeyEquivalent / NSEvent local monitor; WebView2 CoreWebView2Controller.AcceleratorKeyPressed; GTK key-press-event) and `event.preventDefault` must suppress the page keydown — a WebEngine trait addition with its own design review. startDrag needs an OS drag source (NSDraggingSession / DoDragDrop / gtk_drag_begin) and is a native broker + fs scope question. Electron documents before-input-event as 'Emitted before dispatching the keydown and keyup events in the page. Calling event.preventDefault will prevent the page keydown/keyup events and the menu shortcuts.'",
+     "evidence": "corpus/drawio-desktop/src/main/electron.js:806-816; corpus/zettlr/source/app/service-providers/windows/index.ts:196, 201; Zettlr menu.darwin.ts/menu.win32.ts roles; web-contents.v44.4.5.md L517-540, 1696-1698, 2041-2044, 2206-2209; compat-matrix.tsv rows before-input-event drawio=1, pasteAndMatchStyle 2, selectAll 11, startDrag."
+    },
+    {
+     "severity": "medium",
+     "finding": "D4 and D5 are coupled through the isolated world: Electron world 999 is the preload (contextIsolation) world; D5 runs the preload inside the KEL-142 bridge world while D4 forbids any app world from mapping to it. Consequence: executeJavaScriptInIsolatedWorld(999) cannot observe preload globals as it does in Electron, and app-authored preload code shares a world with the bridge's document nonce/endpoint (KEL-142 §5.2 keeps those 'outside the page world', not outside the preload). Zero corpus demand for 999, so a documented ▲ is acceptable, but the two decisions must name the same world model.",
+     "evidence": "web-contents.v44.4.5.md L1449; notes/f03-refute/web-frame.md L172-174; docs/specs/kel142-macos-renderer-bridge-api.md §5.1-5.2 (L215-258), AC2 L371-380; D5 text 'host-registered, document-start user script in the Keld isolated world (the KEL-142 injection path)'."
+    },
+    {
+     "severity": "medium",
+     "finding": "Demand-ranking inputs carry scanner noise that will leak into tickets: compat-matrix.tsv ranks `WebContents.replace` (132) and `WebContents.focus` (30) at the top of F03 — these are String.prototype.replace and DOM .focus() hits; `WebContents.send`=99 includes ipcRenderer.send; `WebContents.openDevTools qs=1` is a comment line. Conversely draw.io webContents.send is 13 call sites (incl. `contents.send('import', …)` at electron.js:1462), not 9. The summary's hand-curated list is right to ignore the noise, but the TSV feeding ticket bodies is not.",
+     "evidence": "scratchpad/compat-matrix.tsv F03 rows sorted by demand (top: replace 132, send 99, focus 30, close 26, loadURL 18, delete 16, selectAll 11); grep count `(contents|webContents|sender)\\.send\\(` in drawio main = 13; corpus/electron-quick-start/main.js:19."
+    },
+    {
+     "severity": "low",
+     "finding": "Zettlr's `unresponsive` handler is the BrowserWindow event (onboardingWindow.on('unresponsive')), not webContents 'unresponsive'; the compat matrix attributes it to WebContents. Either mapping is fine for the facade (both exist in Electron) but the F02/F03 ownership should be recorded once.",
+     "evidence": "corpus/zettlr/source/app/service-providers/config/onboarding-window.ts:114; compat-matrix.tsv row WebContents.unresponsive zettlr=1."
+    },
+    {
+     "severity": "low",
+     "finding": "Zettlr reads `webContents.session` in all 12 window factories (`let ses = window.webContents.session` → session API). This is an F05 member, but `contents.session` identity per view is a WebContents property and depends on KEL-135's per-view WKWebsiteDataStore; the F03 object lists KEL-135 as owner but no decision states what `contents.session` returns before KEL-135 lands (undefined would crash these 12 code paths).",
+     "evidence": "corpus/zettlr/source/app/service-providers/windows/create-*.ts (12 files, e.g. create-main-window.ts:119); web-contents.v44.4.5.md L2523-2525."
+    },
+    {
+     "severity": "low",
+     "finding": "Sequencing: D2/D3 deny-by-default and D1's first events do not need the WebEngine trait change the object lists as a blocker. The pinned wry builder already exposes with_navigation_handler (bool veto = decidePolicyFor / decide-policy), with_new_window_req_handler, with_document_title_changed_handler and with_on_page_load_handler; keld-wv currently wires only with_permission_handler, with_devtools and with_on_page_load_handler (media.rs:335-336). A macOS/Linux tracer bullet (deny page-initiated navigations unless host-initiated; page-title-updated; did-start/finish) is available on the interim scaffolding today, with the direct-binding replacement following under the state-machine owner.",
+     "evidence": "~/.cargo/registry/src/*/wry-0.57.0/src/lib.rs:1307,1405,1424,1446 (pinned Cargo.lock wry 0.56.1 — confirm same API); crates/keld-wv/src/media.rs:258,335-336."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "F03-D4",
+   "decision": "Which existing owner carries the structured-clone-compatible value codec used by el:<channel> ipc, webContents.send and the executeJavaScript result envelope, and what is its minimum v0 value domain for the first proof.",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "LINEAR AVAILABILITY: Linear (team KELD) is reachable in this session; about 23 read calls (get_issue, list_issues, list_comments) succeeded with 0 failures on 2026-10-06. The mempalace MCP server failed to connect and was not used.",
+    "Arch 02 section 5 is the only place the codec is named: 'CALL/REPLY with structured-clone-compatible codec: a postcard-encoded SCV (structured-clone value) sum type covering Electron's value domain (incl. Buffer/TypedArray -> bulk lane refs, Date, Map/Set, Error)'. A git grep for SCV / structured-clone over docs/architecture, docs/specs, crates and packages at origin/main cb7d8e9e finds no other hit: no spec, no code. Source: docs/architecture/02-ipc.md.",
+    "The live renderer bridge already carries host-opaque bytes with endpoint codecs: 'invoke(channel: number, payload: Uint8Array): Promise<Uint8Array>', 'payload.byteLength <= 4096', and AppChannel exposes decodeRequest/encodeResponse. Source: docs/specs/kel142-macos-renderer-bridge-api.md section 4.1. KEL-142 is Done, completed 2026-10-01 (Linear, fetched 2026-10-06).",
+    "KEL-98 is Done (completed 2026-09-20) and is echo-only; its description carries an unchecked direction: 'Before widening beyond echo, add shared vectors for ... bytes, absent versus null ... Unsupported types must fail explicitly rather than lose data silently.' (Linear, fetched 2026-10-06).",
+    "KEL-80 is Backlog with no assignee; its text says 'KEL-98 retains generated-contract ownership' and does not mention a value codec. KEL-13 (typed IPC RFC) is Done. KEL-97 is Backlog, blocked by KEL-75 (In Progress) and KEL-133. KEL-127 (program parent) is Todo. (Linear, fetched 2026-10-06).",
+    "crates/keld-compat/AGENTS.md: 'No Electron-isms in keld-core/keld-ipc; compat pressure stays here via quirks flags.'",
+    "Electron docs/api/ipc-renderer.md v44.4.5 (retrieved 2026-10-06): 'Arguments will be serialized with the Structured Clone Algorithm, just like window.postMessage, so prototype chains will not be included. Sending Functions, Promises, Symbols, WeakMaps, or WeakSets will throw an exception.'",
+    "Electron docs/api/web-contents.md v44.4.5 (retrieved 2026-10-06): executeJavaScript 'Returns Promise<any> - A promise that resolves with the result of the executed code or is rejected if the result of the code is a rejected promise.'",
+    "drawio-desktop @2edf9fb awaits executeJavaScript at three main-process sites; the results are an array of strings and string-or-null (localStorage reads parsed with JSON.parse in main). Source: corpus clone, src/main/electron.js.",
+    "drawio-desktop @2edf9fb multiplexes renderer requests over 'rendererReq' -> 'mainResp' with {success, data, reqId} or {error, msg, e: <Error object>, reqId}; saveFile and fileStat return a Node fs.Stats object (Date-valued fields) that the renderer stores and sends back as origStat; main compares only mtimeMs. Source: corpus clone, src/main/electron.js and src/main/electron-preload.js.",
+    "The draw.io webapp at the submodule pin 24b76c2 reads only stat.mtimeMs (no .mtime Date read), and its open/save paths request readFile with 'utf-8' or 'base64' (one .vsdx path passes null). Source: jgraph/drawio ElectronApp.js at 24b76c2, fetched 2026-10-06, sha256 9527e6d4...; the submodule directory in the corpus clone is empty, so this file was fetched separately.",
+    "WebEngine::eval is fire-and-forget: 'eval takes a plain &str and returns Result instead of ScriptRef + EvalCallback: the callback plumbing belongs to the command-queue design keld-core will own.' Source: crates/keld-wv/src/engine.rs module doc at origin/main."
+   ],
+   "inferences": [
+    "The host never needs to read an Electron value: routing and authorization are by channel plus host-minted principal (the enumerated per-window el:<channel> grant), so the value payload can stay opaque bytes inside the control envelope and the codec exists only at the two JavaScript endpoints.",
+    "The arch 02 section 5 'postcard-encoded SCV' sentence is target prose with no implementation; choosing an endpoint codec makes it a code/spec mismatch that must be amended in the same PR as the F04 ipc spec.",
+    "A tagged JSON text encoding is the one shape that survives every engine return path unchanged (WebView2 ExecuteScript returns a JSON string per the refuter's Microsoft receipt, which I did not re-fetch; the KEL-142 envelope carries a byte array).",
+    "The draw.io 4-step workflow (open, edit, save, close-with-unsaved-prompt) crosses only JSON-domain values plus an fs.Stats-shaped object whose consumed field is a number, and an Error only on the failure path. This is a static read, not a runtime census.",
+    "The refuter's 'two encodings' objection (tagged JSON in page plus postcard on kipc) disappears if the same TypeScript module is the only encoder and decoder at both ends."
+   ],
+   "unknowns": [
+    "Runtime value census on the 4-step workflow: no trace has recorded which value types actually cross ipc. The PANEL-P3 E1 trace can record it.",
+    "Whether a saved diagram's XML exceeds the 4 KiB bridge payload floor. That is a payload-bound question owned by F04-T2 (renderer floor v2), an explicit edge and not part of this decision.",
+    "Electron's behaviour for a synchronous throw inside webContents.executeJavaScript (the doc names only the rejected-promise case); the conformance oracle must record it.",
+    "No Linear issue owns this slice, and the workspace is at its free issue cap (KEL-132 comment dated 2026-10-05 records 'You've exceeded the free issue limit for this workspace')."
+   ],
+   "alternatives": [
+    {
+     "option": "A. One TypeScript endpoint codec owned by @keld/electron, shared by the Bun facade, the renderer compat script and the executeJavaScript envelope; the host carries the encoded value as opaque bytes inside the generated el control envelope.",
+     "cost": "One module, shared golden vectors, hostile-input decode tests, and an arch 02 section 5 amendment (wire-protocol and public-API review gates).",
+     "new_invariant": "The host never parses Electron values; there is exactly one encoder/decoder source with shared vectors, and unsupported types throw instead of degrading.",
+     "invariant_at_risk": "One source of truth, if the in-page envelope copy is hand-written instead of built from the same module. The page-world copy is page-tamperable, so every decoder must treat bytes as hostile (bounded size and depth, no prototype writes)."
+    },
+    {
+     "option": "B. Rust postcard SCV sum type in keld-ipc/keld-core, as arch 02 section 5 literally says.",
+     "cost": "Three implementations (Rust, Bun TypeScript, renderer JavaScript) or a codegen widening well beyond KEL-98's echo scope; a host decode on every frame.",
+     "new_invariant": "The host validates value structure on every el frame.",
+     "invariant_at_risk": "'No Electron-isms in keld-core/keld-ipc'; the no-steady-state-allocation hot-path rule; YAGNI, since no named requirement needs the host to read values."
+    },
+    {
+     "option": "C. Plain JSON.stringify/parse with no tags.",
+     "cost": "Near zero.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "KEL-98's direction that unsupported types fail explicitly rather than lose data silently: Date becomes a string, undefined is dropped, Error becomes an empty object, all without a diagnostic."
+    },
+    {
+     "option": "D. keld-compat (Rust) owns a generated codec through the KEL-98 codegen, emitting TypeScript.",
+     "cost": "Codegen widening before any consumer exists; the Rust side has no reader.",
+     "new_invariant": "Value grammar generated from a Rust schema.",
+     "invariant_at_risk": "YAGNI; reopens a Done issue's scope without a current requirement."
+    }
+   ],
+   "recommendation": "Choose A. Owner: the @keld/electron package under keld-compat rules. v0 domain: the JSON domain plus undefined, Date, Error (name, message, stack) and class instances flattened to own enumerable properties with the prototype dropped, as the Electron sentence states. Functions, Promises, Symbols, WeakMaps and WeakSets throw as in Electron. Map, Set, RegExp, TypedArray/Buffer and bulk-lane refs throw a typed KELD-COMPAT error and are parked until a denominator cell needs them; add bounded inline bytes only if the E1 census shows a binary value on the workflow. Amend arch 02 section 5 in the F04 ipc spec PR to say the value codec is an endpoint codec that is opaque to the host. The exact spec text still needs its own review-gate approval; this packet determines the direction only.",
+   "falsifier": "Any one of: a named requirement in which the host must read or rewrite a value inside an el payload (for example a guard rule keyed on argument content, or bulk-lane ref substitution that envelope metadata cannot express); the E1 trace showing a Map, Set, TypedArray or ArrayBuffer crossing ipc on the 4-step workflow; or an engine return path on WKWebView that cannot carry the tagged text unchanged.",
+   "reversible": "Yes. The payload is opaque to the host, so changing the encoding touches one TypeScript module and its vectors and no kipc frame or version byte. It stops being cheap only if app code is allowed to depend on the tag grammar, so the grammar must stay private.",
+   "missing_evidence": "A runtime value-type census per el channel over install, activation and the 4-step workflow (add as a column to the PANEL-P3 E1 trace); the Linear issue that will carry the F04 ipc spec.",
+   "next_action": "Owner: map orchestrator (single writer). Update gyldlab/keld#396 to resolved with the owner line (@keld/electron endpoint codec, host-opaque), the v0 domain above and the arch 02 section 5 amendment requirement, and add 'value types per el channel' to the PANEL-P3 trace outputs. First completion check: #396 shows status resolved and F03-T5 (#462) and F04-T3 (#466) no longer list F03-D4 as an open blocker.",
+   "owner": "Package owner: packages/@keld/electron under crates/keld-compat/AGENTS.md. Linear: no live issue owns the codec slice. KEL-98 Done (2026-09-20), KEL-13 Done, KEL-80 Backlog and unassigned, program parent KEL-127 Todo (all fetched 2026-10-06). The owner is therefore unknown at issue level; first identification action: the repository owner names which existing issue carries the F04 ipc spec, because the workspace cannot create new issues."
+  },
+  {
+   "key": "F03-D6",
+   "decision": "How webContents.print, printToPDF and openDevTools/toggleDevTools/inspectElement map onto each system engine while devtools stay off in release, and which crate owns the engine print seam.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "Linear (team KELD) is reachable in this session (fetched 2026-10-06). Searches for 'print' and 'devtools' return no issue that owns either surface; KEL-79 is Backlog and unassigned; KEL-102 is In Progress and unassigned.",
+    "Apple documentation (JSON endpoint, retrieved 2026-10-06): createPDF(configuration:completionHandler:) is macOS 11.0, 'Generates PDF data from the web view's contents asynchronously'. WKPDFConfiguration exposes only rect ('The portion of your web view to capture ... The default value of this property is CGRectNull, which captures everything in the view's bounds rectangle') and allowTransparentBackground. It has no page size, orientation, margin or page-range setting.",
+    "Apple documentation (retrieved 2026-10-06): printOperation(with:) is macOS 11.0, 'Returns the print operation object to use when printing the contents of the web view ... or nil if printing is not supported.'",
+    "Apple documentation (retrieved 2026-10-06): isInspectable is macOS 13.3, 'Defaults to false. Set to true ... to allow Safari Web Inspector access to inspect the view's content.'",
+    "Electron docs/api/web-contents.md v44.4.5 (retrieved 2026-10-06): printToPDF 'Returns Promise<Buffer> - Resolves with the generated PDF data'; print failure reasons are 'Invalid printer settings', 'Print job canceled', 'Print job failed'; pageSize is an option of both.",
+    "Arch 03 section 4.3: 'devtools off in release unless web.devtools: true', and 'web.devtools [is] not in this slice'. Source: docs/architecture/03-security.md at origin/main.",
+    "WebEngine already has devtools(id, DevtoolsAction) on all three backends; WebView2 sets SetAreDevToolsEnabled(cfg!(debug_assertions)); the WKWebView and WebKitGTK backends call the wry open_devtools/close_devtools. The trait has no print or PDF method. Source: crates/keld-wv at origin/main (git grep).",
+    "Arch 05 section 1 lists print among the hooks that require touching platform APIs directly, which is keld-wv territory; keld-native MODULES has no print entry. Sources: docs/architecture/05-webview-and-native.md, crates/keld-native/src/lib.rs.",
+    "Research incubator draft 16b (M8) records: isInspectable is public; 'opening the inspector window is _WKInspector SPI'; policy: SPI only under keld dev, release = isInspectable plus Safari attach. This is an incubator draft, not an approved spec.",
+    "drawio-desktop @2edf9fb calls openDevTools only under __DEV__ and on an 'openDevTools' ipc message, and calls print/printToPDF only inside the export path. None of these is on open, edit, save or close. Source: corpus clone, src/main/electron.js."
+   ],
+   "inferences": [
+    "createPDF is a snapshot of a rectangle, not a paginated print, so it cannot honour Electron's pageSize, landscape, margins or pageRanges; the only public paginated route on macOS is printOperation(with:) with a save-to-file print info.",
+    "The devtools half is already determined by arch 03 section 4.3 plus the recorded 16b policy and the live code: dev-only open; release without the grant is a diagnosed no-op with isDevToolsOpened() false (a labelled divergence from Electron's default).",
+    "The first proof does not exercise print or devtools, so nothing here gates it."
+   ],
+   "unknowns": [
+    "Whether printOperation(with:) can write a paginated PDF without showing a panel, and whether it completes on a never-shown view (Zettlr's hidden print window).",
+    "Whether page-initiated window.print() reaches any public WKWebView delegate (Zettlr prints from the renderer).",
+    "WebKitGTK PDF output without a dialog (refuter lead only, unverified).",
+    "Electron's own behaviour for print() on a hidden window.",
+    "WebView2 PrintToPdf minimum runtime and single-flight behaviour (refuter-verified receipt, not re-fetched by me)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Split the ticket: record devtools as resolved by existing policy; make print a WebEngine method in keld-wv returning bounded bytes, specified only after a macOS experiment.",
+     "cost": "One trait design review (public-API gate) and roughly one day of macOS experiment when the surface is scheduled.",
+     "new_invariant": "PDF bytes originate in a host engine call, serialized per view; silent printing requires a guard capability.",
+     "invariant_at_risk": "New capability keys (web.devtools, a silent-print key) are a permission-model gate under KEL-102, not a reuse."
+    },
+    {
+     "option": "B. A keld-native-style host print broker, as the research note proposed.",
+     "cost": "A new arch 05 section 3 module row; keld-native forbids production unsafe while the engine calls are objc2/COM.",
+     "new_invariant": "A second crate issues engine calls.",
+     "invariant_at_risk": "One rule, one owner: engine calls belong to keld-wv."
+    },
+    {
+     "option": "C. Leave every print member unsupported (typed error) until draw.io export or Zettlr PDF export enters a committed denominator; devtools as in A.",
+     "cost": "Nothing now; those export cells score as unsupported.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "D. Electron-faithful devtools on by default in release.",
+     "cost": "None to build.",
+     "new_invariant": "Devtools reachable in shipped apps.",
+     "invariant_at_risk": "Arch 03 section 4.3, and the App Store constraint recorded in research."
+    }
+   ],
+   "recommendation": "Take C now and A when scheduled. Resolve the devtools atom today from existing policy. Keep print unsupported for the first proof. Before any F03 print ticket is specified, run one macOS experiment. Arms: (1) createPDF on a visible view; (2) createPDF on a never-shown view; (3) printOperation(with:) with an A4 save-to-file print info and no panel, visible; (4) the same on a never-shown view; (5) page-initiated window.print(). Fixture: a three-page document. Oracle: Electron 44.4.5 printToPDF({pageSize: 'A4'}) page count and page box. Exit: an arm passes only if it produces the same page count and page box without a visible panel and completes on an event, with no sleep; arm 5 passes only if a public callback fires. Drop createPDF as the printToPDF mapping unless arm 1 or 2 matches the oracle.",
+   "falsifier": "printOperation(with:) cannot produce paginated output without a visible panel, or fails on a never-shown view: then macOS printToPDF is a labelled divergence or unsupported and the 'WebEngine print method returning bytes' design is wrong for macOS. Separately, a public WKWebView API that presents the inspector in the current SDK would change the release devtools mapping.",
+   "reversible": "Yes. Nothing is built; unsupported rows flip later, and the devtools policy is already in arch 03.",
+   "missing_evidence": "The five-arm macOS result above; a primary WebKitGTK receipt for dialog-free PDF output; the Electron hidden-window print transcript.",
+   "next_action": "Owner: map orchestrator. Edit gyldlab/keld#397 into two rows: devtools resolved (citing arch 03 section 4.3 and the recorded SPI-only-in-dev policy) and print open, experiment-gated, outside the first-proof denominator. First completion check: #397 shows the devtools row resolved and the print row marked 'not in first-proof denominator' with the five arms listed.",
+   "owner": "Crate owner: keld-wv (engine seam, arch 05 section 1) for the print and devtools mechanism. KEL-102 (In Progress, unassigned, fetched 2026-10-06) owns any new guard capability vocabulary. No Linear issue owns print: unknown; first identification action: the repository owner says whether KEL-79 (Backlog) or the F03 spec carries it."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F03-D4": {
+   "status": "decided",
+   "resolution": "Choose A. Owner: the @keld/electron package under keld-compat rules. v0 domain: the JSON domain plus undefined, Date, Error (name, message, stack) and class instances flattened to own enumerable properties with the prototype dropped, as the Electron sentence states. Functions, Promises, Symbols, WeakMaps and WeakSets throw as in Electron. Map, Set, RegExp, TypedArray/Buffer and bulk-lane refs throw a typed KELD-COMPAT error and are parked until a denominator cell needs them; add bounded inline bytes only if the E1 census shows a binary value on the workflow. Amend arch 02 section 5 in the F04 ipc spec PR to say the value codec is an endpoint codec that is opaque to the host. The exact spec text still needs its own review-gate approval; this packet determines the direction only.",
+   "milestone": "first-proof"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "[fact] The family is 34 entities / 381 members (WebContents alone 195). Corpus demand is narrow and consistent: both draw.io Desktop and Zettlr register `will-navigate` with an unconditional `event.preventDefault()` plus a `setWindowOpenHandler` (Zettlr deny-all; draw.io allows only `about:blank` with `overrideBrowserWindowOptions`), rely on `webContents.send` (49 / 9 call sites), `did-finish-load` (draw.io 7), `loadURL`/`loadFile`, `executeJavaScript` with awaited results (draw.io 5), zoom (`zoomFactor`/`zoomLevel`/`setVisualZoomLevelLimits`), `printToPDF`/`print`, `openDevTools`/`toggleDevTools`, `render-process-gone`, `destroyed`/`did-navigate`/`isDestroyed`, `console-message`, `unresponsive`; no corpus app uses NavigationHistory, Debugger, offscreen, sharedTexture, WebFrameMain frame-tree APIs, or `<webview>` (draw.io's 7 hits all DISABLE it). [fact] Keld today has no WebContents facade at all: keld-wv v0 `WebEngine` = create/navigate/eval(fire-and-forget)/set_bounds/devtools(Open|Close)/destroy; the only navigation observable is `AppWindowEvent::NavigationReady` from wry `PageLoadEvent::Finished`; the only policy hooks are Windows deny-all `NewWindowRequested` + guarded `PermissionRequested` (type-witnessed before first navigation); the KEL-142 macOS bridge supplies the reusable pieces (isolated `WKContentWorld` document-start user scripts, host-owned navigation generation counter, pending-call invalidation on navigation, `KELD-WV-011`). Window registry (H7) is TARGET in keld-core; KEL-79 (origin/resource/navigation/popup policy) is Backlog; KEL-132 is In Progress. Design answer: implement this family ONCE as (a) one engine-neutral per-webview navigation state machine in keld-wv keyed by (WebviewId, navigation generation) that synthesizes Electron's event vocabulary from raw engine signals, (b) guard-first navigation/popup policy (default-deny, app hooks can only further deny; host-initiated loads bypass `will-navigate` exactly as Electron documents but never bypass the guard), (c) `eval` extended with a structured result envelope, (d) preload = host-injected isolated-world document-start script with the Electron sandbox `require` subset, (e) a serialized host print/PDF broker, (f) devtools off in release unless `web.devtools`. Documented divergences (▲): default window.open = deny, devtools default off in release, zoom per-view not per-origin, `render-process-gone.exitCode`/`unresponsive` absent on WKWebView, NavigationHistory `pageState`/`restore` ✘. Never: sharedTexture/offscreen, Debugger CDP in production, device emulation, WebRTC policy knobs, `clone()`, Node-in-webview (`sandbox:false` honoring), trusting invalid certs via `certificate-error`.",
+  "decisions": [
+   {
+    "id": "F03-D1",
+    "question": "Where is Electron's navigation event vocabulary (did-start-loading … did-finish-load/did-fail-load, did-navigate(-in-page), dom-ready, will-redirect, page-title-updated, destroyed) produced, and from what identity?",
+    "proposed_answer": "One engine-neutral per-webview navigation state machine in keld-wv, keyed by (WebviewId, navigation generation) and reusing KEL-142's generation counter as the single document-identity source. Each backend feeds raw engine signals (WK: WKNavigationDelegate didStartProvisional/didCommit/didFinish/didFail/didFailProvisional + an injected isolated-world document-start reporter for DOMContentLoaded/hashchange/popstate/title; WebView2: NavigationStarting/SourceChanged/ContentLoading/DOMContentLoaded/HistoryChanged/DocumentTitleChanged/NavigationCompleted(IsSuccess, WebErrorStatus); WebKitGTK: load-changed/decide-policy/notify::title). The machine emits a pinned-oracle ordered sequence; `@keld/electron` only renames and fans out to listeners. `loadURL`/`loadFile` promises resolve on the generation's did-finish-load and reject with the generation's did-fail-load (errorCode/description) — a superseded navigation must reject the earlier promise. `webContents.id` = host WebviewId; `WebFrameMain` identity = (WebviewId, generation, frame token).",
+    "evidence": [
+     "[fact] Electron docs define each event only by trigger ('onload dispatched', 'main frame navigation is done', 'document in top-level frame is loaded'); no total order is documented → order must be recorded from the pinned oracle (receipt R1–R4).",
+     "[fact] KEL-142 already owns generation rotation + pending-call invalidation (crates/keld-wv/src/wkwebview/macos_bridge.rs `navigation_started`, `settle(navigation, request)`; spec §5.2 steps 1–6).",
+     "[fact] Current observable is a single `NavigationReady` from wry `PageLoadEvent::Finished` (Started|Finished only) — insufficient for dom-ready/did-navigate/in-page/redirect (wkwebview/mod.rs:693-736; learnings 2026-08-17).",
+     "[fact] WebView2 documents its own partial order: SourceChanged before ContentLoading; ContentLoading after NavigationStarting/SourceChanged and before HistoryChanged/NavigationCompleted; DocumentTitleChanged may run before or after NavigationCompleted (receipt R20).",
+     "[fact] arch 02 §5: 'Webview navigation: principal generation rotates; pending replies to the old principal drop' — the same generation must drive both IPC and events (one rule, one owner)."
+    ],
+    "alternatives_rejected": "Per-backend ad-hoc emission in @keld/electron or in each backend (three parallel state machines, violates one-rule-one-owner and makes ordering untestable once); extending wry PageLoadEvent (interim scaffolding, only 2 states, being replaced by direct bindings); deriving document identity from URL strings (forgeable, breaks on same-URL reload).",
+    "confidence": "medium-high on ownership/identity; medium on exact ordering until the oracle recording exists",
+    "type": "prototype",
+    "blocked_by": [
+     "Oracle recording of Electron 44.4.5 event order for file/http/failed/reload/hash/pushState cases (P1)",
+     "WebEngine trait design review (crate AGENTS.md) to add HostHooks/EvalCallback"
+    ],
+    "unknowns": "[unknown] Whether WKWebView exposes any delegate for same-document navigations (none seen in WKNavigationDelegate topic list; the injected reporter is the inferred fallback). [unknown] Electron ordering of page-title-updated relative to did-finish-load for file:// loads with synthesized titles (`explicitSet=false`)."
+   },
+   {
+    "id": "F03-D2",
+    "question": "Who decides whether a navigation proceeds, and what does `will-navigate` + `event.preventDefault()` mean under default-deny?",
+    "proposed_answer": "Guard first, app second, deny-only hooks. The host evaluates every top-level/frame navigation against a generated allow-list (`web.navigate`-shaped origin/scheme scopes; app bundle resources and the app's own origin are implicit) BEFORE the engine commits (WK decidePolicyFor → .cancel/.allow; WebView2 NavigationStarting.Cancel; WebKitGTK decide-policy ignore/use). Only guard-allowed, non-host-initiated, non-same-document navigations are surfaced as `will-navigate`/`will-frame-navigate`, where the app may further deny; it can never widen. Host-initiated `loadURL`/`loadFile`/`reload`/`navigationHistory.go*` bypass `will-navigate` exactly as Electron documents but still pass the guard. Denied navigations produce a stable KELD code + diagnostic, not silence. Default allow-list scope is a user-owned choice (see unknowns).",
+    "evidence": [
+     "[fact] Electron: 'This event will not emit when the navigation is started programmatically with APIs like webContents.loadURL and webContents.back. It is also not emitted for in-page navigations' (receipt R5).",
+     "[fact] Corpus: draw.io `contents.on('will-navigate', (event) => { event.preventDefault() })` unconditionally (electron.js:2192) and blocks `about:` in the isolated-world `navigation` listener because 'Navigations to about: URLs never reach will-navigate'; Zettlr denies all but dev `http://localhost:3000` and opens externally (attach-app-navigation-handlers.ts:67-83). A facade that surfaced host-initiated loads would blank both apps.",
+     "[fact] arch 03 §4.3 item 3: 'navigation policy hooks (allow-list)' are always-on webview hardening, 'not in this slice'; invariant 2 forbids a missing handler becoming allow; research 186 #4 shows Electron's handler-dependent allow-by-default is the anti-pattern.",
+     "[fact] Engines all provide a pre-commit veto: WKNavigationActionPolicy allow/cancel/download (R15), WebView2 NavigationStarting 'Navigations will be blocked until all NavigationStarting event handlers return' with Cancel (R20), WebKitGTK decide-policy default `webkit_policy_decision_use()` with deferral via ref+TRUE (R23).",
+     "[fact] KEL-79 acceptance owns 'navigation/popup/download/permission policy are explicit' and 'stale navigation principal' negatives (Linear, retrieved 2026-10-06)."
+    ],
+    "alternatives_rejected": "Emulating Electron's default-allow and trusting app `will-navigate` handlers (violates invariant 2; Electron's own security checklist #13 treats navigation limiting as app opt-in); surfacing host-initiated loads to `will-navigate` for 'completeness' (breaks both corpus apps); engine-level allow-everything with post-commit cancellation (bytes already loaded; arch 05 §2 requires failure before bytes).",
+    "confidence": "high on ownership and the loadURL bypass; medium on default allow-list shape",
+    "type": "grilling",
+    "blocked_by": [
+     "KEL-79 (Backlog) or an approved spec slice naming the `web.navigate` grant shape",
+     "KEL-102 verified session snapshot for policy evaluation"
+    ],
+    "unknowns": "[unknown/user decision] Default allow-list: does an app that calls `loadURL('https://example.com')` need an explicit `web.navigate` grant (strict, recommended) or is any host-initiated top-level navigation implicitly allowed (Electron-like)? Recommendation: strict for remote origins, implicit for bundle resources; `keld migrate` emits the grant from observed loadURL literals. [unknown] Electron behaviour of `will-navigate` for `about:` URLs is only corpus-asserted (draw.io comment), not documented."
+   },
+   {
+    "id": "F03-D3",
+    "question": "What does `setWindowOpenHandler` do in Keld when the host cannot yet mint windows, and what is the default when no handler is registered?",
+    "proposed_answer": "Default = deny with a diagnostic (documented ▲ against Electron's default of creating a BrowserWindow). `{action:'deny'}` and malformed returns are exact matches (Electron also treats unrecognized returns as deny). `{action:'allow'}` requires the host to synchronously mint a child window + webview inside the engine's delegate on the UI thread, with the engine-supplied configuration (WK) / related-view (WebKitGTK) / NewWindow target (WebView2), and inherit the opener's isolated world + preload + guard install — this is gated on the keld-core window registry (H7) and is Tier 2 for `about:blank` children (draw.io) with `overrideBrowserWindowOptions` validated against the profile (nodeIntegration:true never). `did-create-window` fires only on a host-minted child; `outlivesOpener:false` is enforced by window-generation revocation (arch 02 §5 window close). `window.open()` in the page must return `null` on deny (native semantics).",
+    "evidence": [
+     "[fact] Electron: unrecognized return 'will result in a console error and have the same effect as returning {action: \"deny\"}'; handler is 'Called before creating a window when a new window is requested by the renderer, e.g. by window.open(), a link with target=\"_blank\", shift+clicking on a link, or submitting a form with <form target=\"_blank\">' (R6); `did-create-window` 'Not emitted if the creation of the window is canceled' (R7); 'By default, child windows are closed when their opener is closed' (R8); window.open 'Returns Window | null' and 'When opening about:blank, the child window's WebPreferences will be copied' (R9).",
+     "[fact] Corpus: Zettlr returns `{action:'deny'}` always; draw.io allows `about:blank` with `overrideBrowserWindowOptions.webPreferences {contextIsolation:true, nodeIntegration:false, webviewTag:false, webSecurity:true}` and otherwise `openExternal(url)` or deny (electron.js:2197-2219).",
+     "[fact] Engine contracts: WKUIDelegate `webView(_:createWebViewWith:for:windowFeatures:)` 'The web view returned must be created with the specified configuration… A new web view or nil' (R16); WebView2 'If either Handled or NewWindow properties are not set, the target content will be opened on a popup window' (R20) — Keld already installs deny-all (webview2/mod.rs:1936-1946); WebKitGTK `create` 'The new WebKitWebView must be related to web_view… should not be displayed until ready-to-show' (R22).",
+     "[fact] Window registry is TARGET (arch 01 §3, product-status keld-core 'partial'); research 214 refuses a pre-H7 BrowserWindow shim."
+    ],
+    "alternatives_rejected": "Electron-default allow (creates unguarded popups; WebView2 default popup is exactly the hole KEL-168 closed); emulating `allow` by navigating the opener (changes the page's own semantics; window.open must return a Window); deferring the delegate decision asynchronously (WK/WebKitGTK require a synchronous return of the view; WebKitGTK allows deferral only for decide-policy, not create).",
+    "confidence": "high",
+    "type": "task",
+    "blocked_by": [
+     "H7 window registry in keld-core (for allow); nothing blocks deny-by-default + diagnostic in Tier 1"
+    ],
+    "unknowns": "[unknown] Which draw.io user workflow exercises the `about:blank` allow branch (print preview vs. plugins) — determines whether Tier 1 draw.io cells can pass with deny-only. [unknown] Whether WK child views created from the supplied `WKWebViewConfiguration` inherit the parent's `WKUserContentController` scripts and message handler at AtDocumentStart timing (P2)."
+   },
+   {
+    "id": "F03-D4",
+    "question": "How does `executeJavaScript` (and WebFrameMain/webFrame variants, insertCSS) return values and errors across three engines without a second IPC path?",
+    "proposed_answer": "Extend `WebEngine::eval` (design review) with the destination `EvalCallback` carrying a structured-clone-compatible result or a typed error, implemented by ONE host-owned script envelope: the host wraps `code` as an async IIFE producing `{ok:true,value}` / `{ok:false,name,message,stack}` serialized with a single shared encoder (JSON-with-tags for Date/Map/Set/TypedArray refs → bulk lane per arch 02 §5 SCV codec), evaluated in the PAGE world (`executeJavaScript`) or in a named Keld app world that is never the bridge world (`executeJavaScriptInIsolatedWorld`; world ids are remapped, the KEL-142 world is unreachable). Queue the request until the current generation's did-stop-loading ('suspended until web page stop loading'); a generation rotation before completion rejects with a KELD code (reusing KEL-142 invalidation). `userGesture:true` is ▲ (no engine exposes a user-activation flag for evaluated script; WK/WebView2 may refuse `requestFullscreen`). `insertCSS` returns a host-minted key and is implemented by the same envelope inserting a `<style data-keld-key>`; `removeInsertedCSS` removes it.",
+    "evidence": [
+     "[fact] Electron: 'Returns Promise<any> — resolves with the result of the executed code or is rejected if the result of the code is a rejected promise… Code execution will be suspended until web page stop loading' (R10); WebFrameMain variant 'rejected if execution throws or results in a rejected promise' (R11).",
+     "[fact] Corpus: draw.io awaits results at 3+ sites (`collectConfigPathsScript`, recents, settings; electron.js:491, 565, 609) — a `Promise<void>` facade fails draw.io's primary workflow.",
+     "[fact] Keld `eval` is fire-and-forget `Result<(), WvError>`; the callback form is explicitly deferred to the command-queue design (engine.rs module doc).",
+     "[fact] WebView2 `ExecuteScript`: result 'is a JSON encoded string. If the result is undefined, contains a reference cycle, or otherwise is not able to be encoded into JSON, then the result is considered to be null… If the script that was run throws an unhandled exception, then the result is also \"null\"' (R20) — undefined/throw/null are indistinguishable without an envelope.",
+     "[fact] WebKitGTK `webkit_web_view_evaluate_javascript` (since 2.40) runs in a named script world and returns a JSCValue via `_finish` (R25); WK `evaluateJavaScript(_:in:in:completionHandler:)` is the KEL-142 `evaluate_in_world` path (macos_bridge.rs:797).",
+     "[fact] KEL-142 AC2: page world cannot access the isolated native handler — app-visible isolated worlds must therefore be distinct from the bridge world; Electron reserves world 999 for contextIsolation (R13)."
+    ],
+    "alternatives_rejected": "Round-tripping results through the page-world `window.keld.invoke` bridge (page-controllable, forgeable, and the bridge admits one pending call per view); engine-native JSON only (loses undefined/throw/Date/Map and ordering of multiple evals); structured-clone over the engine message channel (WebView2 postMessage is string/JSON only — 06-webview-reality bridge table).",
+    "confidence": "high",
+    "type": "task",
+    "blocked_by": [
+     "WebEngine trait design review (EvalCallback)",
+     "arch 02 §5 SCV codec owner (KEL-98 echo-codegen) for non-JSON values"
+    ],
+    "unknowns": "[unknown] Electron's behaviour for a synchronous `throw` in `webContents.executeJavaScript` (doc only says rejected-promise; oracle must record). [unknown] Whether WK evaluateJavaScript on a never-shown (hidden) view completes before first paint (affects Zettlr's hidden print window)."
+   },
+   {
+    "id": "F03-D5",
+    "question": "What is a 'preload script' in Keld, and what happens to `sandbox:false` / `nodeIntegration:true` apps?",
+    "proposed_answer": "A preload is a host-registered, document-start user script in the Keld isolated world (the KEL-142 injection path), main-frame-only by default, bundled by `keld migrate`/`keld build` into the package and resolved by the host from the package root (an absolute path outside the package is a typed refusal, not a filesystem read). The isolated world provides the Electron sandbox `require` polyfill subset ONLY (`events`, `timers`, `url`, `electron` → contextBridge/ipcRenderer/webFrame/nativeImage/webUtils/crashReporter shims over `window.keld`). `sandbox:false` or `nodeIntegration:true` are never honored (no Node in a webview — it is not one of the four uniques, and the strict profile forbids ambient authority): the facade emits an explicit diagnostic and the cell scores ✘ unless `keld migrate`'s static scan proves the preload only uses the sandbox subset, in which case a `keld.compat.ts` quirk (`treatUnsandboxedPreloadAsSandboxed`) lets it run. `preload-error` (path + Error) is emitted when the injected script throws. On WebView2 the injection must use the async completion form (learning: sync form blocks UI 96–109 ms) and must be gated to the main frame (the API injects into all frames).",
+    "evidence": [
+     "[fact] Electron: sandbox 'Default is true since Electron 20'; sandboxed preload `require` is a polyfill limited to events/timers/url + electron subset and 'you will not be able to use CommonJS modules to separate your preload script into multiple files'; 'Sandboxing is also disabled whenever Node.js integration is enabled' (R17, R18); contextIsolation 'enabled by default since Electron 12' (R19); preload 'will always have access to node APIs no matter whether node integration is turned on or off' (R12 — the part Keld cannot and must not clone).",
+     "[fact] Corpus: draw.io preload with contextIsolation:true/nodeIntegration:false/webviewTag:false/webSecurity:true (electron.js:721-729) and preload-side isolated-world `navigation` listener; Zettlr: 14 windows with preload, 12 `sandbox:true`, 2 `sandbox:false` (onboarding, splash) with contextIsolation:true.",
+     "[fact] KEL-142 §5.1/AC2: isolated `WKContentWorld` scripts at AtDocumentStart; 'page code observes window.keld.invoke before its first script runs'; page world cannot reach the native handler. WebView2 `AddScriptToExecuteOnDocumentCreated` 'runs on all top-level document and child frame page navigations' (R20); 06-webview-reality: pre-load user scripts ✅ on all three engines.",
+     "[fact] research 186 #5: 'Do not equate early script injection or an isolated world with a permission boundary… a compat escape hatch cannot silently turn a role/webview into an authority holder'; briefing never list: `nodeIntegration:true` in renderer.",
+     "[fact] Electron `webPreferences.nodeIntegrationInSubFrames` default false → preload main-frame-only by default (R12)."
+    ],
+    "alternatives_rejected": "A Node/Bun-backed preload runtime (fifth unique; violates invariant 1); honoring `sandbox:false` via a labeled legacy profile (legacy profile forfeits zero-authority for Bun roles per arch 03, it does not and cannot put Node inside a system webview); injecting preload into the page world (KEL-142 forbids page-world fallback).",
+    "confidence": "high",
+    "type": "task",
+    "blocked_by": [
+     "F04/contextBridge-ipc family owns the shim surface; this unit owns registration/injection/ordering",
+     "keld migrate (KELD-CLI-045 reserved) for the static scan"
+    ],
+    "unknowns": "[unknown] Whether WebView2 offers a per-frame gate without `ICoreWebView2Frame` (not fetched). [unknown] Zettlr's two `sandbox:false` preloads: whether they use Node modules beyond the subset (needs corpus trace before promising a quirk pass)."
+   },
+   {
+    "id": "F03-D6",
+    "question": "How are print/printToPDF/devtools/Debugger mapped so that Tier 1 apps run while release policy stays closed?",
+    "proposed_answer": "One host print broker (keld-native-style, serialized single-flight queue per host) implements `printToPDF` → bytes to the app role (WK `createPDF` macOS 11+; WebView2 `PrintToPdf` to a host-owned temp path then read back, Runtime ≥1.0.1020.30; WebKitGTK `WebKitPrintOperation` with GTK print-to-file settings — unverified) and `print()` → native dialog when `silent:false` (user-mediated, no grant) / explicit grant for `silent:true`; `failureReason` strings are matched to Electron's three documented values. DevTools: `openDevTools()/toggleDevTools()` are allowed under `keld dev` and when `web.devtools:true`; in release without the grant they are a no-op with a diagnostic and `isDevToolsOpened()===false` (▲ vs Electron `devTools` default true); WK requires `isInspectable=true` (macOS 13.3+, default false) and devtools-opened/closed events can only be synthesized from host-triggered opens (WK gives no inspector lifecycle callback → ▲). `Debugger` (CDP) is ✘ in production on all engines and at most dev-only on WebView2; `fromDevToolsTargetId`, `setDevToolsWebContents`, `inspectSharedWorker*`, `inspectServiceWorker`, `addWorkSpace`, device emulation are ✘.",
+    "evidence": [
+     "[fact] Electron: printToPDF 'Returns Promise<Buffer> — Resolves with the generated PDF data'; options defaults Letter/portrait/printBackground false/scale 1 (R14); print `silent` 'Default is false'; failureReasons 'Invalid printer settings', 'Print job canceled', 'Print job failed'; invalid custom pageSize 'an error will be thrown' (R14); `webPreferences.devTools` 'Default is true' (R12).",
+     "[fact] Corpus: Zettlr pdf-exporter: hidden `BrowserWindow({show:false})` → `loadFile` → `printToPDF({printBackground:false, landscape:false, pageSize:'A4'})` → `close()` (pdf-exporter.ts:57-67); draw.io `contents.print(pdfOptions, cb)` with retry on 'Invalid printer settings' and `printToPDF(pdfOptions)` merge (electron.js:3303-3330); electron-quick-start calls `openDevTools()` unconditionally; draw.io `openDevTools` on an ipc message.",
+     "[fact] Engines: WK `createPDF(configuration:completionHandler:)` macOS 11+ returns Data (R27); `isInspectable` macOS 13.3+ 'Defaults to false' (R26); 06-webview-reality: 'App Store rules forbid enabling devtools features in release builds', devtools = Safari inspector, no CDP; WebView2 `PrintToPdf` writes to `ResultFilePath`, 'Only one Printing operation can be in progress at a time… completed handler is immediately invoked with isSuccessful set to FALSE' (R21); WebKitGTK `WebKitPrintOperation` run_dialog/print with GtkPrintSettings (R24, PDF path not in excerpt).",
+     "[fact] arch 03 §4.3: 'devtools off in release unless web.devtools: true'; Windows backend already `SetAreDevToolsEnabled(cfg!(debug_assertions))`; learning: wry devtools needs the `devtools` feature or release builds fail.",
+     "[fact] briefing never list: 'full CDP in production webviews'; research 13 never table."
+    ],
+    "alternatives_rejected": "Electron-faithful devtools-on-by-default in release (violates arch 03 and App Store constraint); per-call concurrent PrintToPdf on WebView2 (documented to fail the second call); implementing printToPDF in the app role via a headless Chromium (bundles an engine; invariant 1/5).",
+    "confidence": "medium (GTK PDF path and WK hidden-view printing unproven)",
+    "type": "research",
+    "blocked_by": [
+     "P4 three-engine PDF prototype",
+     "guard vocabulary for `web.devtools` / `print.silent` (KEL-102)"
+    ],
+    "unknowns": "[unknown] WebKitGTK PDF export without a dialog (GtkPrintSettings 'output-file-format'/'output-uri' are GTK-level; not verified against WebKit's print operation). [unknown] Whether WK `createPDF` works on a never-displayed view (Zettlr's hidden printer window). [unknown] Electron `print()` on a hidden window."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "sharedTexture module (importSharedTexture, sendSharedTexture, setSharedTextureReceiver, subtle) + OffscreenSharedTexture/SharedTexture* structures + offscreen rendering (paint, startPainting/stopPainting/isPainting, setFrameRate/getFrameRate, invalidate, beginFrameSubscription/endFrameSubscription, webPreferences.offscreen)",
+    "rationale": "Experimental in Electron; no engine path on WebView2 (offscreen ❌, open issue) and only hacks on WK/WebKitGTK (06-webview-reality); zero corpus demand; Tier 3 research at most, documented-never for v1."
+   },
+   {
+    "surface": "Debugger (CDP) in production webviews; fromDevToolsTargetId; getOrCreateDevToolsTargetId; setDevToolsWebContents; inspectSharedWorker/inspectSharedWorkerById/getAllSharedWorkers/inspectServiceWorker; addWorkSpace/removeWorkSpace; enableDeviceEmulation/disableDeviceEmulation",
+    "rationale": "Briefing never list ('full CDP in production webviews'); WK and WebKitGTK have no CDP; App Store policy; device emulation is CDP-backed."
+   },
+   {
+    "surface": "Honoring webPreferences.sandbox:false, nodeIntegration:true, nodeIntegrationInWorker/InSubFrames, additionalArguments, enableBlinkFeatures/disableBlinkFeatures, experimentalFeatures, webSecurity:false, allowRunningInsecureContent, or any Chromium/V8 switch via this family",
+    "rationale": "No Node in a system webview (four uniques only); default-deny is sacred; Electron's own security checklist items 2, 6, 8, 9, 10 say the same; explicit diagnostic + ✘, never a silent downgrade."
+   },
+   {
+    "surface": "certificate-error callback(true) / select-client-certificate app-chosen trust in release",
+    "rationale": "TLS trust is a host decision; an app hook may only deny; honoring app trust of invalid certificates would let a compromised main role MITM its own webview."
+   },
+   {
+    "surface": "setWebRTCIPHandlingPolicy / getWebRTCIPHandlingPolicy / setWebRTCUDPPortRange / getWebRTCUDPPortRange",
+    "rationale": "Chromium-only knobs; no WK/WebKitGTK API; documented ✘ rather than a silent no-op."
+   },
+   {
+    "surface": "clone()",
+    "rationale": "Chromium SiteInstance/process-sharing semantics have no equivalent in system engines."
+   },
+   {
+    "surface": "forcefullyCrashRenderer in production builds",
+    "rationale": "No public engine API to crash the content process; a test hook only; a production facade must not fake a crash event."
+   },
+   {
+    "surface": "executeJavaScriptInIsolatedWorld / setIsolatedWorldInfo targeting Keld's bridge world (Electron world 999 equivalent)",
+    "rationale": "KEL-142 AC2: the isolated native handler must be unreachable from app-visible worlds; app world ids are remapped."
+   },
+   {
+    "surface": "A renderer-side `webFrame`/`WebFrameMain` that exposes routing ids, OS pids or frame tokens as authority",
+    "rationale": "Identity is host-minted (WebviewId, generation, frame token); PIDs are diagnostic only (arch 04 §3.1)."
+   }
+  ],
+  "open_unknowns": [
+   "[unknown] Electron 44.4.5 total ordering of navigation events (incl. page-title-updated/page-favicon-updated placement and did-frame-finish-load vs did-finish-load for main frame) — docs define triggers only; must be recorded by P1 against an immutable fixture.",
+   "[unknown] Electron behaviour of `webContents.send`/`executeJavaScript` on a destroyed WebContents (throw vs no-op) and of a synchronous `throw` in `webContents.executeJavaScript` — docs silent; oracle recording required before the facade picks an error shape.",
+   "[unknown] `render-process-gone.details.reason` value emitted by `forcefullyCrashRenderer()` in Electron; WK provides no reason/exitCode (▲ shape to be decided).",
+   "[unknown] Whether WKWebView exposes any delegate for same-document navigations or DOMContentLoaded (none in the WKNavigationDelegate topic list fetched) — the injected reporter is inference until P1 runs on WK.",
+   "[unknown] Whether a WKWebView child created via createWebViewWith with the parent's configuration inherits user scripts/message handlers at AtDocumentStart timing (P2).",
+   "[unknown] WebKitGTK dialog-less PDF export path for printToPDF; WK createPDF / Electron print() behaviour on a never-shown window (Zettlr's hidden printer window).",
+   "[unknown] WKWebView back/forward list mutation for `removeEntryAtIndex`/`clear` (not fetched) and WebView2 entry removal — likely ✘.",
+   "[unknown] WebView2 per-frame gating of document-created scripts without ICoreWebView2Frame (not fetched).",
+   "[unknown] Which draw.io workflow exercises the `about:blank` window.open allow branch, and whether Zettlr's two `sandbox:false` preloads use Node beyond the sandbox subset (needs corpus traces before promising Tier 1 cells).",
+   "[unknown/user decision] Default navigation allow-list shape: are host-initiated `loadURL` to remote https origins implicitly allowed (Electron-like) or grant-gated (strict)? Recommendation in D2.",
+   "[unknown] Linear id for the keld-core window registry (H7) — no issue found in repo text; GitHub #322/#323/#325 name the product-spine route only.",
+   "[unknown] Per-origin zoom persistence across reload/windows in Electron (oracle-recorded) vs engine per-view semantics; whether Keld should emulate propagation or document ▲ only."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

@@ -1,0 +1,771 @@
+{
+ "unit": "F08",
+ "name": "diagnostics-crash-tracing",
+ "published": {
+  "epic": {
+   "key": "F08-EPIC",
+   "title": "compat(diagnostics): process-gone events, crashReporter local-state facade, app metrics census and Bun-side process stats (contentTracing never)",
+   "body": "## Scope\n12 entities / 63 members: crashReporter (8), contentTracing (5), app metrics/GPU structures, process memory/CPU methods. Corpus demand for the module surfaces is zero; adjacent demand is real: draw.io listens to `render-process-gone` and installs `uncaughtException → app.exit(1)` in export mode; Zettlr handles `unresponsive` → destroy and logs `unhandledRejection`; both call `disableHardwareAcceleration()` before ready.\n\n## Maturity ladder\n- L0: every member exists; contentTracing rejects with the arch 07 structured compat error; never rows published.\n- L1: `render-process-gone` from engine web-content-process termination (WKWebView webContentProcessDidTerminate; WebView2 ProcessFailed beside the existing BrowserProcessExited observation; WebKitGTK web-process-terminated); Bun-side `process.getHeapStatistics/getCPUUsage/getProcessMemoryInfo` with documented ▲ fields.\n- L2: `getAppMetrics` as the arch 01 §5.1 census (host = Browser row; guardian; Bun primary = Utility `keld.primary`; named roles) with KiB units; crashReporter local-state facade at BEHAVIOR_MATCH.\n\n## Linear owners consumed\nKEL-105/KEL-116 (crash ledger), KEL-90/KEL-129 (census rules), KEL-75 (generations), KEL-143, KEL-78, KEL-132 (GpuSafeMode).\n\n## Design facts fixed by research (two refuters)\n- Bun-primary death is never mapped to any Electron event; a host-emitted process-gone family over the app link feeds `render-process-gone` and `child-process-gone` facades with reason fidelity recorded per engine.\n- crashReporter is a local-state facade (start/add/remove/get/setUploadToServer; getLastCrashReport null; getUploadedReports []); keys ≥ 40 bytes ignored with a warning, values truncated (documented); no uploader, no minidumps.\n- `getAppMetrics` consumes the §5.1 census (KiB, `>> 10`); percentCPUUsage normalised by CPU count with a per-process last sample.\n- contentTracing: never, with Promise rejections for the Promise-returning methods; GPU getters are a research atom (Linux GpuSafeMode yields at most one derived fact).\n",
+   "tier": "Tier 2",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F08-T1",
+    "title": "feat(diagnostics): host-emitted process-gone events → render-process-gone/child-process-gone facades with per-engine reason fidelity",
+    "kind": "feature",
+    "tier": "Tier 2",
+    "maturity_target": "L1",
+    "what_to_build": "Wire engine web-content-process termination hooks per backend and the role-generation ledger into one host-emitted event family over the app link; facades map them to `webContents`/`app` `render-process-gone` (reason per engine, documented ▲ where the engine gives none) and `child-process-gone` for named roles; Bun-primary death is never mapped.",
+    "acceptance_criteria": [
+     "Killing the WebContent process on macOS emits `render-process-gone` with a reason and the window stays",
+     "A named role crash emits `child-process-gone` with the role name; the primary's death emits nothing Electron-shaped",
+     "WebView2 lane reuses the existing browser-process-exited observation and adds per-webview ProcessFailed"
+    ],
+    "negative_controls": [
+     "Mapping primary death to render-process-gone fails the never entry"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-143",
+     "KEL-75 generations"
+    ],
+    "linear_owner": "KEL-143 / KEL-75",
+    "review_gates": [
+     "wire protocol"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "render-process-gone",
+     "child-process-gone",
+     "RenderProcessGoneDetails",
+     "unresponsive",
+     "responsive"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Crash ledger exists; no engine process-gone hooks beyond WebView2 browser-process exit.\n\n**Desired behavior:** Wire engine web-content-process termination hooks per backend and the role-generation ledger into one host-emitted event family over the app link; facades map them to `webContents`/`app` `render-process-gone` (reason per engine, documented ▲ where the engine gives none) and `child-process-gone` for named roles; Bun-primary death is never mapped.\n\n**Key interfaces:** keld-wv per-backend termination hooks; app-link event family; facades.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Automatic recovery policy (KEL-143).",
+    "out_of_scope": "Automatic recovery policy (KEL-143).",
+    "notes": ""
+   },
+   {
+    "key": "F08-T2",
+    "title": "task(diagnostics): crashReporter local-state facade, Bun-side process stats, getAppMetrics census, contentTracing never rows",
+    "kind": "task",
+    "tier": "Tier 2",
+    "maturity_target": "L2",
+    "what_to_build": "Implement the crashReporter local-state facade with documented limits; `process.getHeapStatistics/getCPUUsage/getProcessMemoryInfo/getSystemMemoryInfo` from Bun primitives (KiB, camelCase, documented ▲ for underivable fields); `app.getAppMetrics` as a cold host Call returning the §5.1 census; `contentTracing.*` rejects with the structured compat error; `getGPUInfo/getGPUFeatureStatus` tracked per F08-D6.",
+    "acceptance_criteria": [
+     "`crashReporter.start({submitURL})` then `getParameters()` round-trips; a 40-byte key is ignored with a warning",
+     "`getAppMetrics()` rows name host/guardian/primary/roles with KiB memory and normalised CPU",
+     "`contentTracing.startRecording()` rejects with the compat error code and tracking issue"
+    ],
+    "negative_controls": [
+     "Uploading anything from crashReporter fails the default-deny negative test"
+    ],
+    "blocked_by_keys": [
+     "F08-T1"
+    ],
+    "blocked_by_external": [
+     "KEL-129 census"
+    ],
+    "linear_owner": "KEL-129",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "crashReporter.start",
+     "crashReporter.addExtraParameter",
+     "crashReporter.removeExtraParameter",
+     "crashReporter.getParameters",
+     "crashReporter.getLastCrashReport",
+     "crashReporter.getUploadedReports",
+     "crashReporter.getUploadToServer",
+     "crashReporter.setUploadToServer",
+     "process.getHeapStatistics",
+     "process.getCPUUsage",
+     "process.getProcessMemoryInfo",
+     "process.getSystemMemoryInfo",
+     "app.getAppMetrics",
+     "contentTracing"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** task\n\n**Current behavior:** None exist.\n\n**Desired behavior:** Implement the crashReporter local-state facade with documented limits; `process.getHeapStatistics/getCPUUsage/getProcessMemoryInfo/getSystemMemoryInfo` from Bun primitives (KiB, camelCase, documented ▲ for underivable fields); `app.getAppMetrics` as a cold host Call returning the §5.1 census; `contentTracing.*` rejects with the structured compat error; `getGPUInfo/getGPUFeatureStatus` tracked per F08-D6.\n\n**Key interfaces:** Facade modules; host census Call.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** GPU getters (F08-D6).",
+    "out_of_scope": "GPU getters (F08-D6).",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F08-D6",
+    "title": "What can getGPUFeatureStatus/getGPUInfo/disableHardwareAcceleration honestly report per engine?",
+    "type": "research",
+    "question": "Linux GpuSafeMode yields at most one derived fact (DMA-BUF renderer disabled when degraded); macOS WKWebView exposes no public GPU-feature API; WebView2 could be launched with host-owned arguments. GPUFeatureStatus has no unknown value. Settle per engine with receipts; the post-ready throw text must match Electron.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "contentTracing in production (and in dev)",
+   "automatic crash upload honoring uploadToServer:true",
+   "minidump/core capture shipped to app code",
+   "mapping Bun-primary death to render-process-gone",
+   "a second crash ledger or process census"
+  ],
+  "out_of_scope": [],
+  "not_yet_specified": [
+   "Diagnostic shape of an unhealthy role when a close-veto reply never arrives (panel open)"
+  ],
+  "issue_numbers": {
+   "F08-D6": 408,
+   "F08-EPIC": 487,
+   "F08-T1": 488,
+   "F08-T2": 489
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "webContents 'before-input-event', webContents.pasteAndMatchStyle, BrowserWindow option `icon`, app.name, app.disableHardwareAcceleration",
+    "problem": "Called or registered on the draw.io window-creation path (electron.js:808-816, :720, :2020, :166) but covered only by fog lines or a decision ticket (F08-D6). Registration must not throw; behaviour needs a recorded ▲.",
+    "suggested_unit": "F02-T2 / F03-T2 member lists (L0 typed members with scoreboard rows)."
+   },
+   {
+    "entity": "F08 structures: CPUUsage, CrashReport, EnableHeapProfilingOptions, MemoryInfo, MemoryUsageDetails, ProcessMemoryInfo, ProcessMetric, TraceCategoriesAndOptions, TraceConfig, GPUFeatureStatus",
+    "problem": "No ticket, no never row, no blanket row promise in F08 (GPUFeatureStatus appears only in decision F08-D6). Zero corpus demand.",
+    "suggested_unit": "F08-EPIC out-of-scope enumeration (or F08-T2 if it is ever un-parked)."
+   }
+  ],
+  "duplicates": [],
+  "edge_problems": [
+   {
+    "key": "X05-T2",
+    "problem": "Declared 'serial step 0 before family fan-out' but no ticket is blocked by it — the gate is fictional. Per-family reserved id ranges also conflict with F04-EPIC's 'one fixed control channel, no runtime-minted ids' design.",
+    "fix": "Either add it as a predecessor of every ticket that introduces a kipc channel (F02-T2, F04-T2/T3, F06-T2/T4/T5, F08-T1) or drop the 'step 0' claim; cut reserved family ranges."
+   },
+   {
+    "key": "F08-T2",
+    "problem": "F08-T1 (process-gone events) is not consumed by a crashReporter local-state facade, Bun process stats or contentTracing never rows.",
+    "fix": "Remove the edge."
+   },
+   {
+    "key": "PANEL-P3",
+    "problem": "No ticket depends on it although it decides the descriptor set, the denominator and config-only vs config+N. Decisions with zero dependents that are cited in ticket prose as conditions: F02-A6 (F02-T5), F06-D3 (F06-T4/T5/T6 use app.system tokens), F07-E1 (F07-T1 'env per the open decision'), F08-D6 (F08-T2), X01-A5 (X01-T2 normalisers), X04-D3 (F05-T4).",
+    "fix": "Add the edges named above so each prose condition is a graph edge consuming a named output."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F07-T1, F08-T1, F08-T2, F09-T1, X03-T1",
+    "violation": "'Compat lands a conformance entry (citing the pinned Electron doc sentence) before implementation' — F07, F08, F09 and X03 have no conformance ticket and these implementation tickets have no conformance-entry predecessor.",
+    "fix": "Add a conformance entry ticket (or an explicit first AC 'entry lands first, cites sentence') per family; for first proof at least F07 (preload order, sandboxed require error text) and F09 (setFeedURL never throws)."
+   },
+   {
+    "key": "F05-T6, F06-T6, F08-T2",
+    "violation": "Features without a spec: labelled ready-for-agent 'task' with Review gates none/permission-model, yet they add implementation — net.fetch event-ordering facade and a new keld-native net row (F05-T6); Notification broker + secrets module + typed facades for eleven modules (F06-T6); app.getAppMetrics as a new host Call (F08-T2). Also 'one concern per PR'.",
+    "fix": "Reduce each to publishing scoreboard rows; any broker/Call/facade becomes its own needs-spec ticket when a corpus call site demands it."
+   }
+  ],
+  "quality_problems": [],
+  "yagni": [
+   {
+    "key": "F08-T1",
+    "milestone": "next",
+    "reason": "draw.io listens to render-process-gone only on the import and export windows (:1455, :3115), not on the workflow window; Zettlr handles 'unresponsive' (onboarding-window.ts:114)."
+   },
+   {
+    "key": "F08-T2",
+    "milestone": "parked",
+    "reason": "No call site in either clone for crashReporter, getAppMetrics, contentTracing or the process memory/CPU getters (grep: zero hits)."
+   }
+  ],
+  "ambiguity_laundering": [],
+  "hidden_coupling": [],
+  "first_proof_frontier": []
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny never defaulted to allow; no Electron-isms in keld-core/keld-ipc; no parallel process model/transport/schema/parser/policy owner; reuse of KEL-75/76/77/78/79/80/53/74/102/135/139-144 owners; measured performance; spec+Linear gate; #312/#313/#319/#322/#323/#325 and KEL-127). Verified against origin/main d150a14 sources, pinned Electron v44.4.5 docs and Electron source copies in scratchpad/f08-refute, a live Bun 1.4.2+744846f84 probe, and the corpus clones.",
+   "verdicts": [
+    {
+     "decision_id": "F08-D1",
+     "verdict": "survives",
+     "reason": "Every load-bearing fact checks out: no minidump/crashpad/upload code anywhere in crates/; keld-guard evaluates `net.connect` with URL scopes (crates/keld-guard/src/lib.rs tests at 1601-1695) so an upload would have exactly one gate; CrashLedger/SelfTerminationRecord exist as described (crates/keld-runtime/src/lib.rs:527-580); Electron's cr.ts derives getLastCrashReport from getUploadedReports (uploaded-only, f08-refute/cr.ts:51-62); the corpus has zero crashReporter call sites (grep over drawio-desktop/src, zettlr/source, electron-quick-start). The local-state facade with no network path keeps default-deny intact, reuses the one crash-fact owner, and the ▲ is explicit per KEL-127. The user-owned 'ever upload?' blocker is genuine.",
+     "evidence": "crates/keld-guard/src/lib.rs (net.connect scope tests 1601-1695; `audit` top-level key ignored at 565); crates/keld-runtime/src/lib.rs:527-580; f08-refute/cr.ts:14-62 (start() throws only when uploadToServer && !submitURL; no already-started guard in JS; globalExtra amended with _productName/_version/_companyName via app.getVersion()); f08-refute/crash_keys.cc:48-62 (key.size() >= 40 → EmitWarning + ignore, never throw); api_crash-reporter.md:100-140,204-226.",
+     "correction": "Three of the stated unknowns are now settled from source and must be written into the cell: (1) getParameters()/other methods before start() do not throw in JS (cr.ts calls the binding directly) — the Electron oracle for 'other-method-before-start' is 'no throw'; (2) an over-long key (>=40 bytes) is warned and silently ignored, not rejected or thrown; values are bounded by CrashKeyString<20320> (truncation is an inference from Chromium CrashKeyString semantics, not shown in the copied source — still needs the oracle run); (3) BEHAVIOR_MATCH for getParameters() requires the facade to inject `_productName`, `_version` (and `_companyName` when given) exactly as cr.ts does, which depends on app.getVersion()/app.getName() — neither exists in @keld/electron today (packages/@keld/electron/src/app.ts), so D1 has an unlisted dependency on the app facade (F01/F02 territory)."
+    },
+    {
+     "decision_id": "F08-D2",
+     "verdict": "refuted",
+     "reason": "Two factual claims are wrong and one fidelity assumption has no Keld owner. (a) 'keld-wv WebView2 backend registers only NavigationCompleted' is false: crates/keld-wv/src/webview2/mod.rs registers add_BrowserProcessExited (line 1259, environment-level, reads BrowserProcessId + BrowserProcessExitKind against an expected pid for profile-release lifecycle), add_PermissionRequested (1927), add_NewWindowRequested (1946) and add_NavigationCompleted (1995). An engine-process-exit observation already exists and must be the reuse point, not 'no owner today'. (b) Mapping named-role clean exits onto app 'child-process-gone' with reason clean-exit contradicts Electron's emission path: f08-refute/app.cc:814-848 emits child-process-gone only from BrowserChildProcessCrashed/BrowserChildProcessKilled; BrowserChildProcessHostDisconnected (normal exit) only drops the metrics row. The pinned doc lists clean-exit as a vocabulary value, but the source gives no emission for a zero exit; the semantic-trap oracle 'two events, clean-exit (exitCode 0) and killed' is therefore unverified and probably wrong. (c) Reason fidelity for roles is asserted as 'clean-exit/abnormal-exit/killed by exit status/signal', but Keld's role exit observation carries no status at all (RoleEvent::Revoked { generation, attempt, cause: RoleRevocationCause::ChildExited } at crates/keld-runtime/src/role.rs:317-324, 248-264) and the per-role ledger (RoleSupervisor::crash_ledger(), role.rs:629) records only SelfTerminationRecord.exit_code: Option<i32> with None for any signal — no signal number. 'killed' (SIGTERM/SIGKILL) and 'crashed' (SIGSEGV/SIGABRT) are indistinguishable from Keld's own owner today.",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:1229-1263 (BrowserProcessExitedEventHandler, expected_pid, matching_browser_exit), 1927, 1946, 1995; f08-refute/app.cc:806-848; f08-refute/api_app.md:415-440; crates/keld-runtime/src/role.rs:248-264, 286-324, 629; crates/keld-runtime/src/lib.rs:161-195 (ChildCrashed { pid, exit_code, stderr_tail } — no signal), 499-506 (SupervisorEvent::Exited { pid, code }), 516-518 (Stopped: exit zero stops supervision, no restart); docs/architecture/06-runtime-and-tooling.md:346-349 ('Status zero does not consume crash-loop budget or restart').",
+     "correction": "Rewrite D2 as: (1) WebView2: extend the existing BrowserProcessExited observation (environment level, browser-process pid already known) and add add_ProcessFailed beside it in the same module — name keld-wv/KEL-132-adjacent as the owner, not 'no owner'. (2) Named-role clean exit maps to the utilityProcess facade's own 'exit' event (KEL-75 facade; fetch utility-process.md v44.4.5 as the receipt — not in current receipts), and app 'child-process-gone' is emitted only for crash/kill-class role terminations; replace the trap oracle with: exit-0 role → Electron oracle run must confirm no child-process-gone; SIGKILL role → exactly one event. (3) Add a blocker on the supervisor owner (KEL-116 fixed-size SelfTerminationRecord): record the terminating signal (std::os::unix::process::ExitStatusExt::signal(), allocation-free Option<i32>) so 'killed' vs 'crashed' vs 'oom' is a fact, not a guess; until then any reason other than abnormal-exit/clean-exit for a signal death is fabricated. (4) State that the Bun-primary 'successor reads predecessor' KEL-143 contract applies to crash-class exits only — a status-zero primary exit ends supervision (SupervisorEvent::Stopped), which matches Electron's main exiting."
+    },
+    {
+     "decision_id": "F08-D3",
+     "verdict": "survives",
+     "reason": "The one-owner census argument holds against the sources: arch 01 §5.1 (docs/architecture/01-overview.md:196-226) and decisions §15 (docs/engineering/decisions.md:893-899) fix the keld-owned census (host, guardian re-exec, Bun primary, named roles) with engine helpers 'reported as separate diagnostics'; no census code exists in crates (grep hits only keld-runtime tests/guardian); WebView2 GetProcessInfos and ProcessFailed receipts verified in f08-refute/ms-env8.html and ms-pfe2.html. Electron's own ProcessMetric derivation (f08-refute/app.cc:1470-1505) matches the proposed field set (creationTime, serviceName=metrics_name, sandboxed, integrityLevel). Appending engine rows only where a public API enumerates them keeps §5.1's exclusion explicit rather than inventing a parallel ppid census.",
+     "evidence": "docs/architecture/01-overview.md:216,222; docs/engineering/decisions.md:893-899; f08-refute/app.cc:1485-1493 (workingSetSize/peakWorkingSetSize/privateBytes = bytes >> 10), 1500-1505; f08-refute/process_metric.cc:84-86,155-156; crates/keld-wv/src/webview2/mod.rs:1229-1263 (host already tracks the WebView2 browser pid); docs/architecture/04-electron-compat.md:117-125 ('PID is diagnostic only, never a Keld identity or control handle'); docs/agents/learnings.md:158.",
+     "correction": "(1) Delete the 'Kilobytes divisor 1000 vs 1024' unknown: app.cc:1485-1493 uses `>> 10`, i.e. KiB, which is also §5.1's unit — no oracle run needed. (2) Name the contract owner: getAppMetrics is a new host CALL, so it must be minted through the existing echo-codegen contract source (KEL-98; KEL-127 'one minimal contract source, no new IDL'), not an ad hoc kipc message. (3) On Windows the host already knows the WebView2 browser-process pid from the BrowserProcessExited observation; the engine-row source is GetProcessInfos plus that pid, and the learnings 2026-08-24 [bench/windows] churn rule means engine rows must be labeled timing-dependent. (4) integrityLevel for the LPAC primary stays unknown (docs/specs/kel210-windows-lpac-primary.md names no integrity level) — cheapest check: read the token integrity RID of a live LPAC primary with GetTokenInformation(TokenIntegrityLevel) in the KEL-210 fixture."
+    },
+    {
+     "decision_id": "F08-D4",
+     "verdict": "survives",
+     "reason": "Re-ran the probe on Bun 1.4.2+744846f84: process.memoryUsage(), process.cpuUsage(), process.resourceUsage(), node:v8.getHeapStatistics() (all 14 snake_case fields) and process.abort are present; process.type is undefined natively. Electron's bindings confirm the shapes the facade must mirror: heap statistics are bytes >> 10 (KiB), getProcessMemoryInfo sets residentSet only under IS_LINUX || IS_WIN, and process.crash()/hang() are plain main-thread crash/hang. Serving self-process metrics from Bun with no host round trip respects reuse-before-rewrite and keeps kipc hot paths untouched.",
+     "evidence": "scratchpad/f08-bun-probe.ts run 2026-10-06 (bun --revision 1.4.2+744846f84); f08-refute/bindings.cc:128-150 (>> 10), 255-270 (#if IS_LINUX||IS_WIN residentSet; promise rejects 'Failed to create memory dump' / 'Failed to find current process memory details'), 274-300 (percentCPUUsage = usagePercent / NumberOfProcessors; idleWakeupsPerSecond 0 on Windows); f08-refute/api_process.md:150-206; crates/keld-runtime/src/lib.rs:527-540 (SelfTerminationRecord.exit_code None for signal).",
+     "correction": "(1) Divisor settled: KiB (>> 10) for getHeapStatistics and getAppMetrics; drop the unknown. (2) Add a missed semantic trap: Electron divides percentCPUUsage by the processor count (bindings.cc:290), so a facade computing process.cpuUsage() deltas / wall time must also divide by os.cpus().length or it over-reports by up to N×. (3) getProcessMemoryInfo in Electron can reject; the facade's Promise must keep a rejection path for the fields it cannot derive rather than resolving with undefined. (4) The probe shows Bun's v8 shim is numerically degenerate (total_heap_size == used_heap_size == malloced_memory == 140250; total_physical_size == peak_malloced_memory == 14417920), so the ▲ must say values are JSC-derived and not comparable to Electron's, not merely 'renamed'. (5) crash() → process.abort() yields exit_code None, which the ledger cannot distinguish from SIGKILL (see D2 correction); the trap oracle 'SIGABRT appears as exit_code None' is true but weak until a signal field exists."
+    },
+    {
+     "decision_id": "F08-D5",
+     "verdict": "survives",
+     "reason": "The decision is right on the invariants: arch 07 §2 requires structured compat errors (docs/architecture/07-agent-experience.md:54-60), the briefing never-list #10 forbids production CDP/Chromium flags, KEL-127 forbids a silent no-op, and the corpus has zero contentTracing call sites. Pinned content-tracing.md (f08-refute/api_content-tracing.md:11,74-75,103) matches the quoted semantics. WebKit has no Chromium tracing service, so there is no honest analog.",
+     "evidence": "docs/architecture/07-agent-experience.md:49-60; crates/keld-cli/tests/error_registry.rs:22-38 (scan roots are crates/* and keld-cli/templates only; packages/ is not scanned); docs/engineering/keld-error-codes.md:593-647 (KELD-COMPAT-001..009 are all keld-compat evidence-schema codes); packages/@keld/kipc/src/transport.ts:1043-1050 (KeldCallError = Error & { code: string } — no tier/issue/workaround fields); packages/@keld/electron/src/link.ts (re-export only).",
+     "correction": "The proof mechanism named in the trap ('registry test proves the code is documented') does not hold today for a TypeScript-side throw: error_registry.rs scans only Rust crates and keld-cli templates, every existing KELD-COMPAT-* code belongs to the evidence schema in crates/keld-compat, and @keld/electron has no structured compat error type (KeldCallError carries only `code`). Before any contentTracing cell lands: extend error_registry.rs scan roots to packages/@keld/*/src (or mint the codes from Rust), reserve a code range distinct from KELD-COMPAT-001..009, and give @keld/electron one error shape with code, tier status, tracking issue and workaround as arch 07 §2 requires — this is a prerequisite shared by every 'documented-never' cell in the program, not F08-specific."
+    },
+    {
+     "decision_id": "F08-D6",
+     "verdict": "refuted",
+     "reason": "The proposed answer says KEL-132's GpuSafeMode 'can honestly drive gpu_compositing and rasterization as enabled vs disabled_software/disabled_off_ok'. The code says otherwise: GpuSafeMode is an NVIDIA+Wayland DMA-BUF mitigation state, not a GPU-feature probe. `Normal` is documented as 'No known-risky driver/session combination detected' (crates/keld-wv/src/webkitgtk/mod.rs:62-72) and detect_gpu_safe_mode_with returns Normal for every non-NVIDIA or non-Wayland session regardless of whether WebKitGTK is hardware-accelerated. Emitting 'enabled' from Normal would be the fabrication the atom itself forbids, and even NvidiaWaylandDmabufDisabled only proves the DMA-BUF renderer is off, not that compositing or rasterization is software. The Linux-has-a-signal premise is therefore overstated; today no Keld owner can prove any GPUFeatureStatus field on any OS.",
+     "evidence": "crates/keld-wv/src/webkitgtk/mod.rs:55-135 (enum docs, is_degraded, reason strings, detect_gpu_safe_mode_with); docs/specs/kel132-webview-gpu-media.md:49-53,112,261-262; docs/architecture/05-webview-and-native.md:93-103; f08-refute/app.cc:1155-1160 (DisableHardwareAcceleration after ready → ThrowError 'can only be called before app is ready'), 1514-1535 (GetGPUFeatureStatus is a synchronous content::GetFeatureStatus(); GetGPUInfo rejects 'Invalid info type' / 'GPU access not allowed'); f08-refute/api_structures_gpu-feature-status.md (no 'unknown' value); corpus: drawio-desktop/src/main/electron.js:166 and zettlr/source/main.ts:79 call disableHardwareAcceleration().",
+     "correction": "(1) Replace the Linux mapping claim with: GpuSafeMode supports at most one derived fact — when is_degraded() is true, the DMA-BUF renderer is disabled — which maps to no GPUFeatureStatus field without a KEL-132-owned ruling; getGPUFeatureStatus returns an empty partial structure under the ▲ flag until a real engine signal exists. (2) Two unknowns are settled from Electron source: disableHardwareAcceleration() after ready throws with the exact message above (the Keld facade must throw identically), and getGPUFeatureStatus has no readiness throw in source (the doc's 'only usable after gpu-info-update' is advisory). (3) The cheapest experiments that would move this from research to a decision: read ICoreWebView2EnvironmentOptions.AdditionalBrowserArguments for a Microsoft receipt on --disable-gpu under a shared user-data folder (WebView2), and confirm WebKitGTK's webkit_settings_set_hardware_acceleration_policy as the single named Linux policy for disableHardwareAcceleration — both are host-owned single policies, not 'arbitrary flags', but need KEL-132 spec amendment and remain unverified here."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Supervisor records no terminating signal. RuntimeError::ChildCrashed carries { pid, exit_code: Option<i32>, stderr_tail } and SelfTerminationRecord carries exit_code: Option<i32> only; every signal death collapses to None. Any Electron reason finer than abnormal-exit (killed / crashed / oom) for a Bun generation or named role is unprovable until KEL-116's fixed-size record gains an allocation-free signal field. This blocks D2's reason fidelity and weakens the D4 crash() oracle.",
+     "severity": "high",
+     "evidence": "crates/keld-runtime/src/lib.rs:161-195, 527-540; crates/keld-runtime/src/role.rs:248-264, 317-324"
+    },
+    {
+     "finding": "Electron emits app 'child-process-gone' only from the crashed/killed observer callbacks; a normal child exit only disconnects the metrics row. The research object's child-process-gone trap oracle (exit-0 role → clean-exit event) is contradicted by source and must be re-run against a real Electron oracle; clean exits belong to the utilityProcess 'exit' event (receipt not yet collected: utility-process.md v44.4.5).",
+     "severity": "high",
+     "evidence": "scratchpad/f08-refute/app.cc:806-848 (BrowserChildProcessHostDisconnected vs BrowserChildProcessCrashed/Killed → BrowserChildProcessCrashedOrKilled → Emit('child-process-gone'))"
+    },
+    {
+     "finding": "The error-code registry gate does not cover TypeScript. crates/keld-cli/tests/error_registry.rs scans only crates/*/src and keld-cli/templates; all nine existing KELD-COMPAT-* codes are keld-compat evidence-schema codes; @keld/electron's only error type is KeldCallError = Error & { code }. The 'structured compat error + registry test' proof cited by D5 and by every documented-never cell has no owner yet — it is a program-wide prerequisite, not an F08 detail.",
+     "severity": "medium",
+     "evidence": "crates/keld-cli/tests/error_registry.rs:22-38; docs/engineering/keld-error-codes.md:593-647; packages/@keld/kipc/src/transport.ts:1043-1050; docs/architecture/07-agent-experience.md:54-60"
+    },
+    {
+     "finding": "Electron normalizes percentCPUUsage by NumberOfProcessors (bindings.cc:290). A Bun-side getCPUUsage facade that computes cpuUsage deltas over wall time without dividing by core count over-reports by up to N×; the object's CPUUsage trap omits this.",
+     "severity": "medium",
+     "evidence": "scratchpad/f08-refute/bindings.cc:274-300"
+    },
+    {
+     "finding": "Oracle pin drift: the committed lifecycle corpus pins oracle ids at electron-v44.3.0 while this map pins v44.4.5 and the briefing notes v44.5.1 is current. KEL-74 denominator honesty requires one declared oracle per cell; any F08 cell landing in the same panel needs a ruling on per-cell versus per-panel oracle version before it can be scored.",
+     "severity": "medium",
+     "evidence": "crates/keld-compat/fixtures/lifecycle-corpus/corpus.json:14,22,30; docs/engineering/compat-scoreboard.md:3-22; briefing.md:3-4"
+    },
+    {
+     "finding": "WebView2 engine-process lifecycle is already partially wired: keld-wv registers add_BrowserProcessExited with an expected browser pid for profile release. D2's 'keld-wv wires no engine process-failure hook (no owner today)' understates the live code; the correct plan is to extend this owner (same module, same handler pattern) with add_ProcessFailed and to reuse the known browser pid for D3's Windows engine rows.",
+     "severity": "medium",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:1229-1263, 1927, 1946, 1995"
+    },
+    {
+     "finding": "crashReporter.start() in Electron calls app.getVersion() and injects _productName/_version/_companyName into the global crash keys; getParameters() BEHAVIOR_MATCH therefore depends on app.getVersion()/app.getName(), which @keld/electron does not implement. D1 has an undeclared cross-unit dependency on the app facade.",
+     "severity": "medium",
+     "evidence": "scratchpad/f08-refute/cr.ts:28-49; packages/@keld/electron/src/app.ts (whenReady/isReady/quit/on/off/removeListener only)"
+    },
+    {
+     "finding": "Electron behavior now settled from source for three stated unknowns: getParameters()/other methods before start() do not throw in JS; a crash-key name of 40+ bytes is warned and ignored (never thrown); disableHardwareAcceleration() after ready throws 'app.disableHardwareAcceleration() can only be called before app is ready'. The object should cite these rather than schedule oracle runs for them.",
+     "severity": "low",
+     "evidence": "scratchpad/f08-refute/cr.ts:51-62,89-90; scratchpad/f08-refute/crash_keys.cc:48-62; scratchpad/f08-refute/app.cc:1155-1160"
+    },
+    {
+     "finding": "A status-zero Bun primary exit stops supervision without restart (SupervisorEvent::Stopped; arch 06 'Status zero does not consume crash-loop budget or restart'), and the live KELD-RUNTIME-012 text tells the app to stay alive while the host-owned session is active. The KEL-143 'successor reads predecessor' contract therefore applies to crash-class exits only; D2 should say so explicitly so process.exit(0) in main is not mistaken for a recoverable event.",
+     "severity": "low",
+     "evidence": "crates/keld-runtime/src/lib.rs:166-174, 516-518; docs/architecture/06-runtime-and-tooling.md:346-349"
+    },
+    {
+     "finding": "The manifest `audit` top-level key is ignored by the live parser (guard lib.rs doc: 'Unknown top-level keys ($schema, windows, audit) are ignored'), so the reuse point 'arch 03 §2 audit.log as the future owner of local crash records' has no parser or sink today; naming it is fine, but any crash-record persistence proposal must route through KEL-102 schema work first, not assume the key is live.",
+     "severity": "low",
+     "evidence": "crates/keld-guard/src/lib.rs:565; docs/architecture/03-security.md:100; docs/architecture/07-agent-experience.md:49"
+    }
+   ]
+  },
+  {
+   "lens": "Electron semantics accuracy and corpus demand (pinned v44.4.5 docs + v44.4.5 source where docs are silent; corpus clones re-grepped; Keld origin/main d150a14 re-grepped; vendor receipts re-fetched 2026-10-06)",
+   "verdicts": [
+    {
+     "decision_id": "F08-D1",
+     "verdict": "survives",
+     "reason": "The local-state facade shape is Electron-faithful: lib/browser/api/crash-reporter.ts shows getLastCrashReport() is literally the newest entry of getUploadedReports() or null, getUploadToServer/setUploadToServer throw outside the browser process, and start() defaults uploadToServer=true and throws 'submitURL must be specified when uploadToServer is true'. Corpus demand is zero (grep of drawio-desktop, zettlr, electron-quick-start finds no crashReporter). Keld has no dump/upload code (grep confirms). But two stated facts in the object are wrong and one surface is missing.",
+     "evidence": "crash-reporter.md v44.4.5: 'Keys with names longer than the maximum will be silently ignored. Key values longer than the maximum length will be truncated' (both NOTEs). shell/common/crash_keys.cc v44.4.5: kMaxCrashKeyNameLength=40 with `if (key.size() >= 40) { EmitWarning(...ignoring it); return; }`; CrashKeyString<20320> truncates. shell/browser/api/electron_api_crash_reporter.cc Start(): `for (extra) crash_keys::SetCrashKey(...)` — same 20320 path. crash-reporter.md addExtraParameter bullet says 'no longer than 127 bytes' while its NOTE says 20320. lib/browser/api/crash-reporter.ts lines 1-75. Doc 'In Node child processes' section: process.crashReporter.{start,getParameters,addExtraParameter,removeExtraParameter}.",
+     "correction": "(1) Delete the 'throw vs truncate' unknown: it is documented and confirmed in source — keys ≥40 bytes are ignored with a warning, values are truncated. (2) Do not enforce the doc's 127-byte value limit for start().extra: the v44.4.5 code truncates both start().extra and addExtraParameter at 20320 bytes; the doc contradicts itself (127 vs 20320) and the facade must follow the oracle binary, with the doc defect recorded in the conformance cell. (3) start() must throw the exact Electron message when uploadToServer is true/omitted and submitURL is missing; setUploadToServer is a no-op before start(). (4) Add the missing `ignoreSystemCrashHandler` option and the `process.crashReporter.*` surface that Electron exposes in utilityProcess children — the KEL-75 named-role facade needs it. (5) Renderer ✘ is right but its blocker is 'no preload injection' (Electron requires preload+contextBridge), a cross-unit dependency, not the absence of a process object."
+    },
+    {
+     "decision_id": "F08-D2",
+     "verdict": "survives",
+     "reason": "The three-source mapping and the refusal to map Bun-primary death onto any Electron event hold, and every vendor receipt re-fetched matches: Apple webViewWebContentProcessDidTerminate has no reason parameter (macOS 10.11+); Microsoft get_ExitCode is 'always STILL_ACTIVE (259)' for RENDER_PROCESS_UNRESPONSIVE; WebKitGTK web-process-terminated carries CRASHED/EXCEEDED_MEMORY_LIMIT/TERMINATED_BY_API. draw.io's two render-process-gone handlers only stringify details.reason (src/main/electron.js:1455, 3115). However two evidence lines about Keld are false, one 'unknown' is settled by the receipts the author already had, and the sequencing claim '(1) land this first' is blocked by a dependency the object omits.",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:1225-1263 registers `environment5.add_BrowserProcessExited` reading BrowserProcessId + BrowserProcessExitKind (NORMAL vs failed) — a live engine process-exit hook; the same file also registers add_PermissionRequested (1927) and add_NewWindowRequested (1946), so 'registers only NavigationCompleted' is false. grep of crates/keld-wv/src/wkwebview for WKNavigationDelegate/didFinish/navigationDelegate returns nothing (only define_class for the bridge handler in macos_bridge.rs:444), so 'WKWebView navigation delegate … lives in the same per-backend module' is false. grep of crates/keld-wv/src/webkitgtk/mod.rs for connect/signal returns nothing. learn.microsoft.com ICoreWebView2ProcessFailedEventArgs: ProcessFailedKind 'is a combination of process kind … and failure (exit, unresponsiveness)'. webkitgtk.org property.WebView.is-web-process-responsive (since 2.34) + method.WebView.get_is_web_process_responsive; method.WebView.terminate_web_process (2.34) emits web-process-terminated with TERMINATED_BY_API. web-contents.md: forcefullyCrashRenderer emits render-process-gone 'with the reason=killed || reason=crashed'. packages/@keld/electron/src/index.ts exports only `app`; briefing: no BrowserWindow/webContents facade.",
+     "correction": "(1) Fix the Keld facts: WebView2 BrowserProcessExited is already wired (reuse it as the browser-process-gone observation; ProcessFailed per-webview is what is missing); WKWebView and WebKitGTK backends have no delegate/signal plumbing at all, so the first macOS slice introduces a WKNavigationDelegate class rather than extending one. (2) Settle the 'unknown': WebView2 RENDER_PROCESS_UNRESPONSIVE is a hang kind and maps to webContents/BrowserWindow 'unresponsive', never render-process-gone; WebKitGTK notify::is-web-process-responsive gives both 'unresponsive' and 'responsive'; WKWebView has no public hang signal (▲). Add 'unresponsive' to the event family — it is Zettlr's only process-health demand (onboarding-window.ts:114). (3) Map webkit_web_view_terminate_web_process / WebView2 TerminateProcess-of-renderer as the forcefullyCrashRenderer analog (reason 'killed'). (4) Add blocked_by: 'BrowserWindow/webContents facade (other unit)' — render-process-gone is a webContents event and @keld/electron has no webContents object, so this cannot be this unit's first Electron-facing tracer bullet; the keld-wv engine-gone observable can land independently as a Keld-native contract."
+    },
+    {
+     "decision_id": "F08-D3",
+     "verdict": "survives",
+     "reason": "Consuming the arch 01 §5.1 census instead of inventing a second one is confirmed by the spec text (keld-owned processes only; engine helpers 'reported as separate diagnostics'; resident set + private footprint companion; 90 MiB = 92,160 KiB) and arch 04 §3.1 ('A returned PID is diagnostic only'). WebView2 GetProcessInfos (1.0.1108.44, pid+kind only) confirmed. Two unknowns are settled by Electron source and one Electron platform fact the doc omits must be added.",
+     "evidence": "shell/browser/api/electron_api_app.cc v44.4.5 GetAppMetrics: `memory_info.working_set_size >> 10`, `peak_working_set_size >> 10`, `private_bytes >> 10` (Windows) — divisor is 1024, i.e. KiB; the whole memory block is inside `#if !BUILDFLAG(IS_LINUX)`, so ProcessMetric.memory is ABSENT on Linux while structures/process-metric.md carries no platform tag. shell/browser/api/process_metric.cc: macOS working set = task_info resident_size, peak = resident_size_max via TaskForPid; Windows = PROCESS_MEMORY_COUNTERS_EX. electron_api_app.cc:1454 `percentCPUUsage = usagePercent / processor_count`. webkitgtk.org class.WebView index lists only get_page_id, is-web-process-responsive, terminate_web_process, web-process-terminated — no web-process pid accessor (get_web_process_identifier URL is 404). docs/architecture/01-overview.md:216,222; docs/architecture/04-electron-compat.md:124-125.",
+     "correction": "(1) Delete the divisor unknown: Electron 'Kilobytes' is `>> 10` = KiB, identical to §5.1's binary units. (2) Add an Electron platform fact the doc hides: on Linux v44.4.5 omits `memory` from every ProcessMetric row; Keld must pick follow-Electron (omit) or extend under a quirks flag, and the conformance differential must assert field SETS per platform. (3) Close 'unless a public pid API is found' for WebKitGTK: none exists in the stable reference today — engine rows omitted on Linux is the ruling, not a pending search. (4) percentCPUUsage must be divided by the logical processor count for parity. (5) macOS host read of the Bun child's resident size: Electron uses task_for_pid; whether Keld's hardened host may obtain the child's task port is [unknown] — prefer a proc_pid_rusage-class read and record the receipt before the F08-P3 prototype."
+    },
+    {
+     "decision_id": "F08-D4",
+     "verdict": "survives",
+     "reason": "Re-running the probe under Bun 1.4.2 reproduces every claimed shape (process.memoryUsage rss, process.cpuUsage, process.resourceUsage, node:v8.getHeapStatistics with all 14 snake_case fields, bun:jsc heapStats/memoryUsage, process.abort function, process.type undefined). The divergence policy is right but three parity details come from source, not docs, and the 'dialog' lead is now a fact.",
+     "evidence": "/private/tmp/.../scratchpad/f08-bun-probe.ts run 2026-10-06 under bun 1.4.2: v8.getHeapStatistics total_heap_size=139553, used_heap_size=139553, malloced_memory=139553, peak_malloced_memory=14303232=total_physical_size, total_available_size=17179729631, heap_size_limit=143032320 — degenerate shim values. shell/common/api/electron_bindings.cc v44.4.5: GetHeapStatistics uses `>> 10` on every field; GetCPUUsage sets percentCPUUsage = GetPlatformIndependentCPUUsage / NumberOfProcessors, idleWakeupsPerSecond=0 on Windows, cumulativeCPUUsage = InSecondsF(); GetProcessMemoryInfo rejects with 'Failed to find current process memory details in memory dump' when unresolved and sets residentSet only under IS_LINUX||IS_WIN. lib/browser/init.ts:18-33: default uncaughtException handler calls dialog.showErrorBox('A JavaScript error occurred in the main process', …) only when listenerCount <= 1. grep heartbeat|watchdog|liveness over crates/keld-runtime, keld-core, keld-ipc src: no Bun hang watchdog.",
+     "correction": "(1) Divisor settled: KiB via `>> 10`. (2) percentCPUUsage must be normalized by os.cpus().length and the facade must keep a per-process last-sample for the interval; cumulativeCPUUsage = (user+system µs)/1e6 from process.cpuUsage(). (3) Promote the draw.io 'modal dialog' lead to fact (init.ts) and record the Keld ▲ explicitly: an uncaught exception in Bun main is a CrashLedger crash-class exit + restart (KELD-RUNTIME-012/-002), where Electron keeps main alive behind a dialog unless the app registered its own handler; whether @keld/electron installs a default handler that logs a KELD-COMPAT diagnostic instead of letting Bun die is a user-owned ruling (KEL-143 territory), not a facade default. (4) The getHeapStatistics ▲ must say the Bun shim reports degenerate values (total==used==malloced; ~16 GiB available) so no consumer treats them as V8-equivalent."
+    },
+    {
+     "decision_id": "F08-D5",
+     "verdict": "survives",
+     "reason": "Every Electron claim matches content-tracing.md v44.4.5 ('Collect tracing data from Chromium'; do not use before 'ready'; startRecording resolves immediately if a recording is running; stopRecording writes a temporary file when the path is omitted; getTraceBufferUsage {value, percentage}; enableHeapProfiling experimental, must precede startRecording). Arch 07 §2 structured-error rule and the error_registry.rs CI check exist; research 214 exists; corpus demand is zero; the never-list rationale is coherent (Chromium tracing service, no WebKit analog).",
+     "evidence": "f08-refute/api_content-tracing.md; docs/architecture/07-agent-experience.md:54-60; crates/keld-cli/tests/error_registry.rs; docs/engineering/keld-error-codes.md has KELD-COMPAT-001..007 headings (new codes continue the sequence); docs/research/library/compatibility-competitors/214-electron-spec-corpus-oracle.md; corpus grep: no contentTracing call sites.",
+     "correction": "None required. Minor: the throw must be a Promise rejection for the four Promise-returning methods (and for enableHeapProfiling), not a synchronous throw, so `await contentTracing.startRecording()` fails the way an Electron rejection would."
+    },
+    {
+     "decision_id": "F08-D6",
+     "verdict": "survives",
+     "reason": "Treating the GPU getters as research is right (no Keld-owned signal outside Linux; GPUFeatureStatus has no 'unknown' value; KEL-132 GpuSafeMode is live in crates/keld-wv/src/webkitgtk/mod.rs:62). But the one buildable member, disableHardwareAcceleration, has its post-ready behavior settled by source, its corpus demand is overstated, and a WebView2 constraint the author did not cite changes the design.",
+     "evidence": "shell/browser/api/electron_api_app.cc v44.4.5:1155-1178: DisableHardwareAcceleration throws 'app.disableHardwareAcceleration() can only be called before app is ready' when Browser::is_ready(), otherwise appends --disable-gpu; IsHardwareAccelerationEnabled returns !disable_hw_acceleration_ before GpuDataManager init. app.md:1336-1347 also documents `app.isHardwareAccelerationEnabled()` (missing from the object's entity list). Corpus: drawio-desktop/src/main/electron.js:163-167 calls it only when process.argv contains '--disable-acceleration'; zettlr/source/main.ts:77-80 only when the DISABLE_HARDWARE_ACCELERATION CLI flag is set (issue #2127, VMs). learn.microsoft.com ICoreWebView2EnvironmentOptions get_AdditionalBrowserArguments: switches 'important to WebView functionality' are ignored; webview2-idl CreateCoreWebView2EnvironmentWithOptions: creation fails with HRESULT_FROM_WIN32(ERROR_INVALID_STATE) 'if the specified options does not match the options of the WebViews that are currently running in the shared browser process'. app.md:400-402: 'gpu-info-update' is 'Emitted whenever there is a GPU info update'.",
+     "correction": "(1) Delete the after-ready unknown: Electron throws with that exact message; the Keld facade must throw identically after ready. (2) Correct the demand statement: both corpus apps call it only behind an opt-in CLI flag, so it is real but user-triggered demand — rank it below 'unresponsive'/'render-process-gone'. (3) Split disableHardwareAcceleration out of the research atom into a finishable tracer bullet: before-ready records intent + after-ready throws + isHardwareAccelerationEnabled answers consistently; honoring it stays ▲ until KEL-132 rules per engine. (4) WebView2 ruling input: the switch must be fixed at environment creation and a mismatched option set against an already-running shared browser process fails with ERROR_INVALID_STATE, so the mapping is host-owned, per-user-data-folder, and cannot be toggled late; whether --disable-gpu itself is honored remains [unknown]. (5) 'gpu-info-update fires once' is a Keld narrowing of an Electron 'whenever' event — flag it."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Sequencing: the proposed first slice (host-emitted engine process-gone → Electron 'render-process-gone') cannot be this unit's first tracer bullet because @keld/electron has no BrowserWindow/webContents object to hang the event on; the fresh-agent-finishable first slice is the zero-host-change trio — D4 Bun-side process.getHeapStatistics/getCPUUsage/getProcessMemoryInfo, D1 local crashReporter facade, D5 structured-error contentTracing — each with a conformance cell against the pinned oracle; the keld-wv engine-gone/unresponsive observables proceed in parallel as Keld-native contracts.",
+     "evidence": "packages/@keld/electron/src/index.ts exports only `app`; briefing current code facts: 'no BrowserWindow, no ipcMain, no preload injection'; draw.io attaches both handlers to `contents` (webContents) at src/main/electron.js:1455 and 3115."
+    },
+    {
+     "severity": "medium",
+     "finding": "Pinned doc self-contradiction on crash-key value limits (addExtraParameter bullet 127 bytes vs NOTE 20320 bytes), and the v44.4.5 code applies the 20320-byte truncation to start().extra as well; a facade that 'enforces the documented byte limits' with 127 would fail the oracle differential it claims to pass.",
+     "evidence": "f08-refute/api_crash-reporter.md addExtraParameter section; shell/common/crash_keys.cc kMaxCrashKeyValueSize=20320, kMaxCrashKeyNameLength=40; electron_api_crash_reporter.cc Start() loops extra through SetCrashKey."
+    },
+    {
+     "severity": "medium",
+     "finding": "Electron v44.4.5 getAppMetrics omits the `memory` field entirely on Linux, undocumented in process-metric.md; any Keld conformance cell that populates MemoryInfo on Linux diverges from the oracle and must be a flagged extension.",
+     "evidence": "shell/browser/api/electron_api_app.cc GetAppMetrics: memory block wrapped in `#if !BUILDFLAG(IS_LINUX)`; structures/process-metric.md has no platform tag on `memory`."
+    },
+    {
+     "severity": "medium",
+     "finding": "The 'unresponsive'/'responsive' pair is the corpus's actual process-health demand (Zettlr destroys the onboarding window on 'unresponsive') and has engine sources on two of three platforms, yet it is absent from the unit's sequencing and only appears as an 'unknown' inside D2.",
+     "evidence": "zettlr/source/app/service-providers/config/onboarding-window.ts:114-117; WebView2 ProcessFailedKind RENDER_PROCESS_UNRESPONSIVE (ExitCode 259); WebKitGTK property is-web-process-responsive since 2.34; WKWebView has no public equivalent [inference from Apple WKNavigationDelegate/WKUIDelegate surfaces]."
+    },
+    {
+     "severity": "medium",
+     "finding": "keld-wv already observes WebView2 browser-process exit (BrowserProcessExited with exit kind) for profile lifecycle; the object says no engine process-exit hook exists. Reuse-before-rewrite applies: the browser-process-gone observable should be lifted from this handler, not re-registered.",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:1225-1263 observe_profile_browser_exit; ICoreWebView2Environment5::add_BrowserProcessExited."
+    },
+    {
+     "severity": "medium",
+     "finding": "Electron's main-process default uncaughtException handler (modal error box, suppressed when the app has its own listener) is a fact, not a lead; Keld's equivalent path is process death → CrashLedger → restart → possible KELD-RUNTIME-002, which is a lifecycle divergence apps like draw.io's non-export mode will hit; it needs a user-owned ruling on whether @keld/electron installs a default handler, and a documented ▲ either way.",
+     "evidence": "lib/browser/api/../init.ts v44.4.5 lines 17-33; drawio-desktop/src/main/electron.js:1075-1083 (handler registered only in export mode); crates/keld-runtime/src/lib.rs RestartPolicy max_crashes 3 / 30 s."
+    },
+    {
+     "severity": "medium",
+     "finding": "WebView2 refuses environment creation with ERROR_INVALID_STATE when options differ from WebViews already running in the shared browser process, so any disableHardwareAcceleration→browser-argument mapping is a per-user-data-folder, creation-time decision that cannot be toggled after the first WebView; D6's interim 'records intent, honored where prepared' must say the Windows decision point is environment creation.",
+     "evidence": "learn.microsoft.com webview2-idl CreateCoreWebView2EnvironmentWithOptions NOTE and error table (HRESULT_FROM_WIN32(ERROR_INVALID_STATE))."
+    },
+    {
+     "severity": "low",
+     "finding": "percentCPUUsage in both Electron APIs is normalized by the logical processor count; a facade reporting raw process.cpuUsage() deltas over wall time would over-report by a factor of N cores and fail the interval oracle.",
+     "evidence": "shell/common/api/electron_bindings.cc GetCPUUsage `usagePercent / processor_count`; electron_api_app.cc:1454 same."
+    },
+    {
+     "severity": "low",
+     "finding": "`app.isHardwareAccelerationEnabled()` and `process.crashReporter.*` (utilityProcess children) are Electron surfaces in this family's dependency set that the object omits; both are cheap to specify alongside D6/D1 and matter for KEL-75 roles.",
+     "evidence": "app.md:1342-1347; crash-reporter.md 'In Node child processes' section."
+    },
+    {
+     "severity": "low",
+     "finding": "On macOS Electron reads child memory via task_for_pid/task_info; whether Keld's hardened host can obtain the Bun child's task port is unverified — the §5.1-shared per-pid reader should name its macOS primitive (proc_pid_rusage class) with a receipt before F08-P3.",
+     "evidence": "shell/browser/api/process_metric.cc GetTaskInfo(TaskForPid(pid)); no Keld census code exists (grep working_set|task_info|GetProcessMemoryInfo|smaps over crates returns nothing). [inference] on entitlement constraints."
+    },
+    {
+     "severity": "low",
+     "finding": "Bun's node:v8.getHeapStatistics shim returns degenerate values (total_heap_size == used_heap_size == malloced_memory; total_available_size ≈ 16 GiB sentinel), so a getHeapStatistics cell can be SCAFFOLDED/▲ at best, never BEHAVIOR_MATCH on values.",
+     "evidence": "Live probe output 2026-10-06 under bun 1.4.2: total_heap_size=139553, used_heap_size=139553, malloced_memory=139553, total_available_size=17179729631."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "F08-D6",
+   "decision": "What app.getGPUFeatureStatus(), app.getGPUInfo(), app.isHardwareAccelerationEnabled() and app.disableHardwareAcceleration() return or do under @keld/electron on each system engine, given that no engine signal maps to a GPUFeatureStatus value.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "Linear (team KELD) is reachable in this session (fetched 2026-10-06). KEL-132 is In Progress, unassigned, updated 2026-10-05; its latest ledger comment shows the macOS rows still awaiting.",
+    "Electron source v44.4.5, shell/browser/api/electron_api_app.cc (retrieved 2026-10-06, sha256 2186eae4...): DisableHardwareAcceleration throws 'app.disableHardwareAcceleration() can only be called before app is ready' when the browser is ready, otherwise appends the --disable-gpu switch. GetGPUFeatureStatus synchronously returns content::GetFeatureStatus() with no readiness check. GetGPUInfo rejects with 'Invalid info type. Use 'basic' or 'complete'' or 'GPU access not allowed. Reason: ...'.",
+    "Electron docs/api/app.md v44.4.5 (retrieved 2026-10-06): disableHardwareAcceleration 'can only be called before app is ready'; getGPUFeatureStatus returns 'The Graphics Feature Status from chrome://gpu/'; 'gpu-info-update' is 'Emitted whenever there is a GPU info update'.",
+    "Electron docs/api/structures/gpu-feature-status.md v44.4.5 (retrieved 2026-10-06) lists eleven possible values from disabled_software to enabled_force_on; none means unknown.",
+    "drawio-desktop @2edf9fb calls app.disableHardwareAcceleration() only when process.argv contains '--disable-acceleration'; Zettlr @e6c7fd8 calls it only when its DISABLE_HARDWARE_ACCELERATION CLI argument is set. Neither corpus app, nor electron-quick-start, calls getGPUFeatureStatus, getGPUInfo or isHardwareAccelerationEnabled. Source: corpus clones (grep).",
+    "Keld's GpuSafeMode is an NVIDIA plus Wayland DMA-BUF mitigation state; its Normal variant is documented as 'No known-risky driver/session combination detected'. Source: crates/keld-wv/src/webkitgtk/mod.rs at origin/main.",
+    "The KEL-132 spec is approved and lists as a non-goal: 'change the GPU population or claim a rendering speedup'. Source: docs/specs/kel132-webview-gpu-media.md.",
+    "No Keld crate, package, architecture doc or spec references any of the four members (git grep at origin/main cb7d8e9e returns nothing).",
+    "The map already carries the applicable rules: the F01 epic's L0 exit is 'every app member exists with a typed KELD-COMPAT error for unsupported calls (never a silent no-op)', and F01-T6 defines facade-local shims where commandLine keeps a private switch map with one dev-only warning and enableSandbox() 'still throws after ready like Electron'. disableHardwareAcceleration is not yet in F01-T6's member list. Source: publish_plan.json."
+   ],
+   "inferences": [
+    "No Keld owner can prove any GPUFeatureStatus field on any OS today: GpuSafeMode Normal does not mean accelerated, and a degraded state proves only that the DMA-BUF renderer is off.",
+    "macOS WKWebView exposes no public GPU-feature or disable-acceleration API. This is a negative claim that a single documentation page cannot prove; it stays an inference.",
+    "Electron's own disableHardwareAcceleration is a command-line switch append, so the existing F01-T6 commandLine shim pattern covers it without new design.",
+    "The first proof never passes '--disable-acceleration' and never calls the getters, so nothing here gates it."
+   ],
+   "unknowns": [
+    "Whether WebView2 honours --disable-gpu through host-owned additional browser arguments under a shared user-data folder (refuter receipt says options must match the running browser process; the switch itself is unverified).",
+    "Whether WebKitGTK's hardware-acceleration policy setting is the single Linux mapping.",
+    "What isHardwareAccelerationEnabled() should answer after intent is recorded but not honoured; zero corpus demand, so left unsupported."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Getters and isHardwareAccelerationEnabled are typed KELD-COMPAT unsupported under the existing F01 L0 rule; disableHardwareAcceleration joins the F01-T6 facade shims: before ready it records intent and emits one diagnostic that the engine setting is not honoured, after ready it throws Electron's exact message.",
+     "cost": "One member added to an existing ticket; no engine work.",
+     "new_invariant": "No GPU status value is ever emitted without an engine signal that proves it.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "B. Return an empty partial GPUFeatureStatus object under a quirks flag (the refuter's correction).",
+     "cost": "A quirks flag and report wording for members nobody calls.",
+     "new_invariant": "A structure may be returned with every documented field absent.",
+     "invariant_at_risk": "The F01 L0 'never a silent no-op' rule: callers read undefined with no diagnostic."
+    },
+    {
+     "option": "C. Derive fields from Linux GpuSafeMode.",
+     "cost": "Small.",
+     "new_invariant": "A mitigation state is reported as GPU feature status.",
+     "invariant_at_risk": "Honest reporting: this is the fabrication the research note itself forbids, and the code refutes the mapping."
+    },
+    {
+     "option": "D. Honour disableHardwareAcceleration per engine now (WebView2 browser arguments, WebKitGTK policy).",
+     "cost": "A KEL-132 spec amendment, two primary receipts and Windows and Linux devices; nothing for macOS.",
+     "new_invariant": "A host-owned per-engine software-rendering policy.",
+     "invariant_at_risk": "YAGNI: zero first-proof value and user-triggered demand only."
+    }
+   ],
+   "recommendation": "Take A and park D. The honest per-engine answer today is that nothing can be reported, so the getters stay unsupported with a typed error until a denominator app calls them. Fold disableHardwareAcceleration into F01-T6 with Electron's exact post-ready message as an acceptance line. If per-engine honouring is ever scheduled, it goes to KEL-132 with two named receipts first: the Microsoft page for ICoreWebView2EnvironmentOptions AdditionalBrowserArguments, and the WebKitGTK WebKitSettings hardware-acceleration-policy page.",
+   "falsifier": "A denominator app calls getGPUFeatureStatus, getGPUInfo or isHardwareAccelerationEnabled on a scored path (resolved call-site scan or the PANEL-P3 trace), so the typed error breaks a cell; or a public engine API exposing compositing state is found for any of the three engines.",
+   "reversible": "Yes. The change is facade-only and each member can move from unsupported to supported independently.",
+   "missing_evidence": "None for this decision. For the parked option D: the two primary receipts named in the recommendation.",
+   "next_action": "Owner: map orchestrator. Edit gyldlab/keld#408 to resolved/parked with the ruling above and add disableHardwareAcceleration to F01-T6's covered members with the exact post-ready throw text as acceptance. First completion check: #408 shows status resolved, and F01-T6 lists disableHardwareAcceleration.",
+   "owner": "Package owner: packages/@keld/electron under crates/keld-compat/AGENTS.md for the shim and the unsupported rows. KEL-132 (In Progress, unassigned, fetched 2026-10-06) owns any per-engine GPU policy. No Linear issue owns the facade members themselves; they ride the F01 epic on the map."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F08-D6": {
+   "status": "decided",
+   "resolution": "Take A and park D. The honest per-engine answer today is that nothing can be reported, so the getters stay unsupported with a typed error until a denominator app calls them. Fold disableHardwareAcceleration into F01-T6 with Electron's exact post-ready message as an acceptance line. If per-engine honouring is ever scheduled, it goes to KEL-132 with two named receipts first: the Microsoft page for ICoreWebView2EnvironmentOptions AdditionalBrowserArguments, and the WebKitGTK WebKitSettings hardware-acceleration-policy page.",
+   "milestone": "parked"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "[fact] Corpus demand for this family's module surfaces is zero: neither draw.io Desktop, Zettlr nor electron-quick-start calls crashReporter.*, contentTracing.*, app.getAppMetrics, app.getGPUFeatureStatus/getGPUInfo, process.getProcessMemoryInfo/getHeapStatistics/getCPUUsage (grep over the clones, 2026-10-06). What the corpus DOES need from the diagnostics area is adjacent: draw.io listens to webContents 'render-process-gone' twice (reads only details.reason into a string) and installs process.on('uncaughtException') → app.exit(1) in export mode; Zettlr handles BrowserWindow 'unresponsive' → destroy() and logs process 'unhandledRejection'; both call app.disableHardwareAcceleration() before ready. So the sequencing answer is: (1) land the host-emitted engine process-gone and Bun-generation-gone events first (they ride on live keld-runtime CrashLedger/KEL-75 generations and on engine hooks keld-wv has not yet wired: WKWebView webViewWebContentProcessDidTerminate, WebView2 ProcessFailed, WebKitGTK web-process-terminated); (2) ship process.getHeapStatistics/getCPUUsage/getProcessMemoryInfo as a pure Bun-side facade (Bun 1.4.2 exposes process.memoryUsage, process.cpuUsage, process.resourceUsage, node:v8.getHeapStatistics, bun:jsc heapStats — probed live) with KB conversion and documented ▲ for fields Bun cannot derive (private/shared); (3) ship crashReporter as a local-state facade (start/addExtraParameter/removeExtraParameter/getParameters/get/setUploadToServer BEHAVIOR_MATCH-capable because they are pure data; getLastCrashReport/getUploadedReports honestly return null/[] because Keld has no uploader, and Electron itself only returns UPLOADED reports) with upload gated behind an explicit `net.connect` grant + opt-in — Electron's default uploadToServer:true cannot survive default-deny and is a documented ▲; (4) app.getAppMetrics must consume architecture 01 §5.1's ruled census (keld-owned processes: host, macOS guardian, Bun primary, named roles; engine helpers are separate diagnostics) and its counters (resident set + private companion, KiB) rather than inventing a second census; WebView2 GetProcessInfos gives pid+kind only (caller reads memory itself), WKWebView exposes no public web-process pid; (5) contentTracing is a documented-never in production (Chromium tracing service; WebKit has none; briefing never-list #10) delivered as an arch 07 §2 structured error; (6) GPUFeatureStatus/getGPUInfo are research: only Linux has a Keld-owned signal today (KEL-132 GpuSafeMode three-state), the enum has no 'unknown' value, so an honest mapping needs a ruling. Live Keld today: keld_runtime::CrashLedger {count, last (KELD-RUNTIME-012 + bounded stderr tail 64 KiB head / 192 KiB tail), stdout_len_at_last_crash, self_termination_count, last_self_termination}, Supervisor::crash_ledger()/current_pid(), KELD-RUNTIME-002 breaker (3 crashes/30 s sliding), KELD-CORE-033 surfacing in the no-flag host; @keld/electron exports only `app`; no crash dumps, no uploader, no process census code, no engine process-failure hooks, no GPU status API. Key new observable with no Electron analog: in Keld the developer \"main\" (Bun) can crash and be replaced while the host-owned window survives; the restarted generation could be told about its predecessor's death — that needs a Keld-named contract (KEL-143 territory), not an Electron API name.",
+  "decisions": [
+   {
+    "id": "F08-D1",
+    "question": "What does the Tier-2 'crashReporter map' honestly mean in Keld, given Keld has no crash-dump capture or uploader and default-deny forbids Electron's uploadToServer:true default?",
+    "proposed_answer": "crashReporter becomes a local-state facade in @keld/electron: start(options) validates and stores {submitURL, productName (default app name), uploadToServer, rateLimit, compress, extra, globalExtra} and enforces the documented byte limits; addExtraParameter/removeExtraParameter/getParameters/getUploadToServer/setUploadToServer are pure data and can reach BEHAVIOR_MATCH; getLastCrashReport returns null and getUploadedReports returns [] (this is Electron-faithful whenever nothing was uploaded, because Electron only returns UPLOADED reports). No minidump, no network: uploading anything requires a future approved spec that (a) names the record source (CrashLedger crash-class facts: pid, exit status, bounded stderr tail, generation) — not a minidump — (b) requires a `net.connect` grant whose URL scope covers submitURL, and (c) treats uploadToServer as an opt-in that the manifest, not the app, decides. The effective default (no upload) is a documented ▲ on the scoreboard with a quirks flag, never a silent downgrade (KEL-127). crashReporter in the renderer is ✘ (Keld renderers have no process object; Electron requires preload+contextBridge anyway).",
+    "evidence": [
+     "[fact] Electron: 'This method must be called before using any other crashReporter APIs'; uploadToServer default true; submitURL required unless uploadToServer false; getLastCrashReport: 'Only crash reports that have been uploaded will be returned' (crash-reporter.md v44.4.5, retrieved 2026-10-06)",
+     "[fact] Keld has no dump/upload code: grep of crates/ for minidump/crashpad/upload returns nothing; keld-native exposes FsBroker fs.read/fs.write only (briefing current code facts)",
+     "[fact] CrashLedger exists and carries pid, exit status, bounded stderr tail, stdout ordering point (crates/keld-runtime/src/lib.rs CrashLedger, SelfTerminationRecord)",
+     "[fact] Corpus: zero crashReporter call sites in draw.io, Zettlr, quick-start (grep 2026-10-06)",
+     "[fact] Briefing invariant 2: missing Electron permission handler must NOT become allow; arch 03 default-deny"
+    ],
+    "confidence": "medium (shape high; whether Keld ever uploads crash records at all is a user-owned product decision)",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Host-side crashpad/minidump writer + uploader — a new privileged network authority with no spec owner, violates reuse-before-rewrite and YAGNI (zero corpus demand); (b) throw on crashReporter.start() — breaks apps that call it unconditionally at boot (common in the wider ecosystem even if absent from this corpus) and gives no scoreboard cell; (c) returning CrashLedger's last crash from getLastCrashReport — diverges from Electron's uploaded-only semantics and leaks local facts under an API apps treat as 'already sent'.",
+    "unknowns": "Electron's behavior when an extra key exceeds 39 bytes / value exceeds 127 (start) or 20320 (addExtraParameter) bytes — throw vs truncate — is not stated in the pinned doc. Whether a future Keld crash record should include Bun-side extras (Electron does NOT propagate main-process extras to renderer crashes). Bun's own panic reporter behavior (prints a bun.report URL; whether any automatic upload exists) unverified.",
+    "blocked_by": [
+     "user decision: does Keld ever transmit crash data off-device (yes → spec with net.connect + opt-in; no → crashReporter stays local-only forever and uploadToServer is a documented ▲)"
+    ]
+   },
+   {
+    "id": "F08-D2",
+    "question": "Which process-gone events can Keld deliver honestly, over which primitive, and with what reason fidelity — given Keld's process family (host, guardian, Bun primary, named roles, engine helpers) differs from Chromium's?",
+    "proposed_answer": "Three distinct event sources, one host-emitted event family over the app link, consumed by two Electron facades: (1) webContents/app 'render-process-gone' ← engine web-content-process termination, wired in keld-wv per backend (WKWebView WKNavigationDelegate webViewWebContentProcessDidTerminate; WebView2 ICoreWebView2 ProcessFailed with ICoreWebView2ProcessFailedEventArgs2 Reason/ExitCode; WebKitGTK WebKitWebView::web-process-terminated with WebKitWebProcessTerminationReason). Reason fidelity is platform-bound: WebKitGTK → {crashed, oom, killed}; WebView2 → full reason + exitCode (259 STILL_ACTIVE when unresponsive); WKWebView → no reason at all. Proposed ▲: on macOS emit reason 'crashed' with exitCode undefined under a quirks flag `renderProcessGoneReasonCoarse`, because the corpus only stringifies details.reason (draw.io) — never fabricate an exitCode. (2) app 'child-process-gone' (type 'Utility') ← KEL-75 named-role generation exit observed by the supervisor (clean-exit/abnormal-exit/killed by exit status/signal; 'oom' only where the OS says so). (3) The Bun PRIMARY dying has NO Electron analog (Electron's main cannot observe its own death); do not map it to any Electron event. It is a Keld-native contract (KEL-143): the successor generation may read the predecessor's CrashLedger facts through @keld/api, and the renderer sees nothing unless the app chooses to tell it. Events are emitted once per termination, after the engine/supervisor observed it and before any reload Keld performs; window identity survives (host owns it).",
+    "evidence": [
+     "[fact] Electron render-process-gone reasons: clean-exit, abnormal-exit, killed, crashed, oom, launch-failed, integrity-failure, memory-eviction; exitCode is platform launch error when launch-failed (structures/render-process-gone-details.md v44.4.5, retrieved 2026-10-06)",
+     "[fact] Electron child-process-gone: type Utility/Zygote/Sandbox helper/GPU/Pepper Plugin..., reason same enum, exitCode, serviceName, name (app.md v44.4.5)",
+     "[fact] Apple: webViewWebContentProcessDidTerminate(_:) 'WebKit calls this method when the process for the specified web view terminates for any reason' — no reason parameter; macOS 10.11+ (developer.apple.com JSON, retrieved 2026-10-06)",
+     "[fact] Microsoft: ICoreWebView2ProcessFailedEventArgs2 get_Reason, get_ExitCode ('always STILL_ACTIVE (259) when ... RENDER_PROCESS_UNRESPONSIVE'), get_ProcessDescription, get_FrameInfosForFailedProcess; introduced 1.0.818.41 (learn.microsoft.com, retrieved 2026-10-06)",
+     "[fact] WebKitGTK: WebKitWebView::web-process-terminated 'emitted when the web process terminates abnormally due to reason', since 2.20; reasons WEBKIT_WEB_PROCESS_CRASHED, WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT, WEBKIT_WEB_PROCESS_TERMINATED_BY_API (webkitgtk.org, retrieved 2026-10-06)",
+     "[fact] keld-wv has none of these hooks wired (grep 2026-10-06; WebView2 backend registers only NavigationCompleted at crates/keld-wv/src/webview2/mod.rs:1972)",
+     "[fact] Corpus: draw.io uses details.reason only as a string in an error message (src/main/electron.js ~1455 and ~3115); Zettlr handles 'unresponsive' → destroy()",
+     "[fact] Research 87: 'developer main crashes independently while host-owned windows survive' is a boundary Electron does not provide (inference recorded there, no crash oracle run)"
+    ],
+    "confidence": "medium-high for sources and mapping; low for the macOS reason policy (needs a ruling)",
+    "type": "task",
+    "alternatives_rejected": "(a) Mapping Bun-primary death to 'render-process-gone' or 'child-process-gone' — semantically false (the listener IS the process that died) and would hide the Keld-native recovery contract; (b) synthesizing exitCode on macOS — fabricated data; (c) polling engine pids from the host to detect death — no public pid on WKWebView, and the engines already deliver callbacks.",
+    "unknowns": "Whether Electron fires 'render-process-gone' when the app itself destroys the window (draw.io comment says 'Not emitted when finalize destroys the window' — corpus lead, not a doc receipt). WebKitGTK 'unresponsive' detection API not verified. Whether WebView2 ProcessFailed for RENDER_PROCESS_UNRESPONSIVE should map to Electron 'unresponsive' (webContents) rather than render-process-gone — Electron separates them.",
+    "blocked_by": [
+     "KEL-75 role exit observation surface for named roles",
+     "keld-wv per-backend hook wiring (no owner today)",
+     "F08-P1 prototype for reason fidelity"
+    ]
+   },
+   {
+    "id": "F08-D3",
+    "question": "What census and counters does app.getAppMetrics() report in Keld, and how does it avoid becoming a second, conflicting process census beside architecture 01 §5.1?",
+    "proposed_answer": "getAppMetrics is a cold host CALL that returns one ProcessMetric row per keld-owned process exactly as §5.1 defines the census: host (type 'Browser'), macOS guardian re-exec (type 'Unknown', serviceName 'keld.guardian' — no Electron analog), Bun primary (type 'Utility', serviceName 'keld.primary' — the Electron 'Browser' row is the host because the host owns windows; documented ▲ since Electron apps read the Browser row as 'my main process'), named roles (type 'Utility', serviceName = role name). Engine helper rows are appended only where a public API enumerates them: WebView2 ICoreWebView2Environment8::GetProcessInfos (pid + COREWEBVIEW2_PROCESS_KIND → 'Tab'/'GPU'/'Utility'/'Sandbox helper', memory read by the host via OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) + GetProcessMemoryInfo); absent on macOS (no public WKWebView web-process pid; WebKit XPCs are not the app's children) and on WebKitGTK unless a public pid API is found — documented ▲ 'engine rows omitted'. MemoryInfo uses the same counters §5.1 already names: workingSetSize = resident set (ps RSS / working set), privateBytes = private footprint (Windows per Electron; Keld MAY also fill it elsewhere as a ▲), peakWorkingSetSize where the OS reports it; unit KiB (Electron 'Kilobytes'; divisor to be confirmed, see unknowns). CPUUsage per Electron: first call 0, each call resets the interval for every row at once, interval tracked per API (getAppMetrics vs process.getCPUUsage separately). No row of this API is ever a budget score; §5.1 keeps MEM-IDLE on the harness.",
+    "evidence": [
+     "[fact] Electron: getAppMetrics returns ProcessMetric[] for 'all processes associated with the app'; 'each call starts a new measurement interval for every process at once' (app.md v44.4.5, retrieved 2026-10-06); ProcessMetric fields pid, type (Browser|Tab|Utility|Zygote|Sandbox helper|GPU|Pepper Plugin|Pepper Plugin Broker|Unknown), serviceName, name, cpu, creationTime, memory, sandboxed[mac,win], integrityLevel[win] (structures/process-metric.md)",
+     "[fact] Arch 01 §5.1 (KEL-129 ruling): census = keld-owned processes only (host, macOS guardian re-exec, Bun primary, named roles); engine helpers (WebKit, WebView2, WebKitGTK) and CLI dev-loop helpers excluded and 'reported as separate diagnostics'; resident set is the named counter, private footprint is a mandatory companion; 90 MiB = 92,160 KiB",
+     "[fact] WebView2 GetProcessInfos 'Provide a list of all process using same user data folder except for crashpad process'; sample code reads memory itself with GetProcessMemoryInfo PrivateUsage/1024 (learn.microsoft.com ICoreWebView2Environment8, retrieved 2026-10-06)",
+     "[fact] No census code exists in Keld crates today (grep working_set|rss|task_info|GetProcessMemoryInfo hits only tests/profile/tools)",
+     "[fact] learnings 2026-08-24 [bench/windows]: a process-tree RSS sample can be byte-stable while the tree is still incomplete (no msedgewebview2 child yet) — engine rows are timing-dependent",
+     "[fact] Corpus: zero getAppMetrics call sites"
+    ],
+    "confidence": "medium",
+    "type": "task",
+    "alternatives_rejected": "(a) A second 'all children by ppid' census inside the facade — duplicates §5.1's one-owner rule and lies on macOS where WebKit XPCs are launchd children; (b) reporting Bun primary as type 'Browser' — makes the host invisible and mislabels the window owner; (c) private WKWebView `_webProcessIdentifier` — never list.",
+    "unknowns": "Electron's 'Kilobytes' divisor (1000 vs 1024) — Chromium uses KiB [inference], needs an oracle run; whether Keld's LPAC primary (KEL-210) should report integrityLevel 'low' or 'untrusted'; whether a diagnostics read of host-family pids/memory needs its own guard capability (proposal: `diagnostics.metrics`, default-deny) or is implicit for the primary role.",
+    "blocked_by": [
+     "KEL-129/KEL-90 harness landing is NOT required, but the counter definitions must be shared with it (one owner)",
+     "F08-P3 prototype"
+    ]
+   },
+   {
+    "id": "F08-D4",
+    "question": "Can process.getHeapStatistics / getProcessMemoryInfo / getCPUUsage / crash() / hang() be served from Bun alone, and what diverges?",
+    "proposed_answer": "Yes for the Bun main role, as a pure facade with no host call: getHeapStatistics ← node:v8.getHeapStatistics() renamed to camelCase and divided to KB (fields totalHeapSize, totalHeapSizeExecutable, totalPhysicalSize, totalAvailableSize, usedHeapSize, heapSizeLimit, mallocedMemory, peakMallocedMemory, doesZapGarbage — all present in Bun 1.4.2's v8 shim); getCPUUsage ← process.cpuUsage() deltas with facade-tracked interval (first call 0, cumulativeCPUUsage seconds since start, idleWakeupsPerSecond = 0 as a ▲ — Electron itself returns 0 on Windows); getProcessMemoryInfo ← Promise of {private, shared, residentSet} where only residentSet (process.memoryUsage().rss/1024) is derivable in Bun; `private`/`shared` need the host (task_info / PROCESS_MEMORY_COUNTERS_EX / smaps_rollup) → ▲ until a host diagnostics call exists; on macOS Electron omits residentSet entirely, so Keld must choose follow-Electron (omit) or extend (quirks flag). process.crash() ← process.abort() (SIGABRT → CrashLedger crash-class record, KELD-RUNTIME-012, restart/backoff — Electron's main-process crash kills the whole app instead: ▲). process.hang() ← busy loop; Keld has no Bun hang watchdog, so nothing observes it (▲/unknown). Renderer-side process.* is ✘ (no Node in Keld renderers; Electron's sandboxed renderer does expose these). getBlinkMemoryInfo/getSystemMemoryInfo: ✘ Blink; system memory via host only.",
+    "evidence": [
+     "[fact] Live probe on Bun 1.4.2 (scratchpad f08-bun-probe.ts, 2026-10-06): process.memoryUsage() {rss, heapTotal, heapUsed, external, arrayBuffers}; process.cpuUsage() {user, system}; process.resourceUsage() incl. maxRSS; node:v8.getHeapStatistics() returns all 14 V8 snake_case fields; bun:jsc heapStats() {heapSize, heapCapacity, extraMemorySize, objectCount,...} and memoryUsage() {current, peak, currentCommit, peakCommit, pageFaults}; process.abort is a function; process.type undefined natively",
+     "[fact] Electron process.getHeapStatistics fields and 'all statistics are reported in Kilobytes'; getProcessMemoryInfo 'Chromium does not provide residentSet value for macOS'; getCPUUsage averages since previous call; sandboxed renderers expose crash/hang/getHeapStatistics/getProcessMemoryInfo/getCPUUsage etc. (process.md v44.4.5, retrieved 2026-10-06)",
+     "[fact] @keld/electron already patches process.versions.electron and process.type at import (packages/@keld/electron/src/index.ts)",
+     "[fact] Corpus: zero call sites for any of these"
+    ],
+    "confidence": "high for Bun-side shapes; medium for divergence policy",
+    "type": "task",
+    "alternatives_rejected": "(a) Routing heap/CPU through the host — adds a kipc round trip for data the process already owns and duplicates OS code; (b) implementing a Bun hang watchdog just for process.hang() — YAGNI without a consumer (Electron's own 'unresponsive' is renderer-only).",
+    "unknowns": "Electron KB divisor; whether to report residentSet on macOS; Bun's heap_size_limit semantics vs V8's (Bun returns a JSC-derived shim; values are not V8-equivalent — a ▲ note, not a bug)."
+   },
+   {
+    "id": "F08-D5",
+    "question": "Is contentTracing dev-only or never?",
+    "proposed_answer": "Never in production and not shimmed in dev either: every method throws the arch 07 §2 structured compat error (code, tier status, tracking issue, workaround) — `contentTracing` has no Keld analog because it drives Chromium's tracing service across all Chromium child processes, WebKit (WKWebView/WebKitGTK) has no such service, and WebView2's public COM surface exposes no tracing control [inference]. The useful intent — 'find performance bottlenecks' — is served by the keld-benches registry beacons (PAINT-OPPORTUNITY, kipc client-timed RTT) under `keld dev`, and a future Keld-owned trace export (Chrome trace-event JSON so Perfetto opens it) would be a Keld API, not an Electron alias; it is YAGNI until a consumer appears. Scoreboard mark ✘ with 'documented-never' and the briefing's never-list #10 (full CDP / Chromium flags in production webviews) as rationale.",
+    "evidence": [
+     "[fact] Electron: 'Collect tracing data from Chromium'; 'You should not use this module until the ready event'; startRecording resolves immediately if already recording ('only one trace operation can occur at a time'); stopRecording writes a temp file when resultFilePath omitted; enableHeapProfiling experimental, must precede startRecording (content-tracing.md v44.4.5, retrieved 2026-10-06)",
+     "[fact] Briefing never-list #10: arbitrary Chromium/V8 flags, full CDP in production webviews",
+     "[fact] Arch 07 §2: compat shim unsupported APIs throw structured errors naming tier status, tracking issue, workaround — never a bare 'not implemented'",
+     "[fact] Research 214: api-content-tracing-spec.ts has 18 Electron tests — not runnable under Bun as-is (REFUSE ruling)",
+     "[fact] Corpus: zero call sites"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "Shimming to Instruments/ETW/perf or to WebView2 DevTools Protocol tracing in production — a fifth unique and a CDP exposure; a no-op that resolves successfully — a silent downgrade forbidden by KEL-127.",
+    "unknowns": "Whether WebView2's CallDevToolsProtocolMethod could drive Tracing.* in a dev-only build — not verified and would be dev-only CDP, which the never-list already constrains."
+   },
+   {
+    "id": "F08-D6",
+    "question": "What can app.getGPUFeatureStatus()/getGPUInfo() and app.disableHardwareAcceleration() honestly report or do on each engine, given GPUFeatureStatus has no 'unknown' value?",
+    "proposed_answer": "Research atom, not a build decision yet. Facts available today: Linux WebKitGTK has a Keld-owned three-state GpuSafeMode (Normal / preparation required / DMA-BUF) from KEL-132's probe, which can honestly drive gpu_compositing and rasterization as 'enabled' vs 'disabled_software'/'disabled_off_ok'; macOS WKWebView exposes no public GPU-feature or disable-acceleration API [inference]; WebView2 (Chromium-derived) can be launched with host-owned additional browser arguments, so a host-controlled mapping of disableHardwareAcceleration → the engine's software-rendering switch is a single named policy, not 'arbitrary flags' — but it needs a Microsoft receipt and a KEL-132-owned spec amendment. Proposed interim: disableHardwareAcceleration() before ready records intent and is honored only where KEL-132 has a prepared path (▲ elsewhere, logged with a KELD-COMPAT code); after ready it is rejected like Electron's 'must be called before app is ready'. getGPUFeatureStatus returns only fields Keld can prove and omits the rest (▲ 'partial structure' quirks flag) — never fills 'enabled' by default. 'gpu-info-update' fires once after engine construction. Corpus demand is real for disableHardwareAcceleration (draw.io and Zettlr both call it at boot) and zero for the getters.",
+    "evidence": [
+     "[fact] Electron: getGPUFeatureStatus 'The Graphics Feature Status from chrome://gpu/'; getGPUInfo basic|complete; both 'only usable after the gpu-info-update event is emitted'; disableHardwareAcceleration 'must be called before app is ready' (app.md v44.4.5, retrieved 2026-10-06); GPUFeatureStatus values disabled_software, disabled_off, disabled_off_ok, unavailable_software, unavailable_off, ... (structures/gpu-feature-status.md via family JSON)",
+     "[fact] KEL-132 spec: webkitgtk probe session/driver/env → GpuSafeMode; 'detection does not mutate the environment'; GPU-PREP/GPU-STATE passed with historical receipt PR #157 (docs/specs/kel132-webview-gpu-media.md)",
+     "[fact] Corpus: draw.io src/main/electron.js:166 and Zettlr source/main.ts:79 call app.disableHardwareAcceleration(); no getGPUFeatureStatus/getGPUInfo call sites",
+     "[fact] Arch 01 §5.1 Windows note: CreateCoreWebView2Controller boots a Chromium process — WebView2 is Chromium-derived"
+    ],
+    "confidence": "low-medium",
+    "type": "research",
+    "alternatives_rejected": "Returning a fully populated GPUFeatureStatus with 'enabled' everywhere — fabrication; exposing app.commandLine.appendSwitch to pass --disable-gpu — never list.",
+    "unknowns": "WebView2 software-rendering switch receipt and whether it is honored for an already-created shared user-data-folder; WKWebView GPU process state exposure (none public [inference]); what Electron does when disableHardwareAcceleration is called after ready (throw vs ignore — doc says only 'must be called before'); mapping of GpuSafeMode states to the GPUFeatureStatus enum."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "contentTracing.* in production (and TraceConfig/TraceCategoriesAndOptions/EnableHeapProfilingOptions)",
+    "rationale": "Chromium tracing service over all child processes; WebKit has none; would require CDP/tracing in production webviews (briefing never-list #10) or a fifth unique."
+   },
+   {
+    "surface": "Automatic crash upload honoring Electron's uploadToServer:true default without a manifest net.connect grant and explicit opt-in",
+    "rationale": "Default-deny is sacred; a missing permission must not become allow; privacy."
+   },
+   {
+    "surface": "Minidump/core-dump capture of host or Bun shipped to an app-selected submitURL by a privileged host path",
+    "rationale": "Mirrors the briefing's 'app-selected updater feed URLs into a privileged updater' hazard: app-controlled destination for privileged data."
+   },
+   {
+    "surface": "Private WKWebView API (_webProcessIdentifier, _killWebContentProcess) for ProcessMetric rows or forcefullyCrashRenderer",
+    "rationale": "Private API; App Store and ABI hazard; §5.1 already excludes engine helpers from the census."
+   },
+   {
+    "surface": "app.commandLine.appendSwitch pass-through for --disable-gpu/--enable-tracing/--memlog etc.",
+    "rationale": "Arbitrary Chromium/V8 flags are on the never-list; GPU policy is a named KEL-132 host decision."
+   },
+   {
+    "surface": "Mapping the Bun primary's death to Electron 'render-process-gone' or 'child-process-gone'",
+    "rationale": "Semantically false (the listener is the dead process) and hides the Keld-native recovery contract (KEL-143)."
+   },
+   {
+    "surface": "A second crash log/ledger or a second process census in the compat layer",
+    "rationale": "One rule one owner: CrashLedger (KEL-105/116) and §5.1 census (KEL-129) already own these facts."
+   },
+   {
+    "surface": "Using CrashLedger counts or getAppMetrics output as a budget score",
+    "rationale": "§5.1: crash recovery has no budget; MEM-IDLE is scored only by the harness on the shipped hello app."
+   },
+   {
+    "surface": "process.crash()/hang() reaching the host, other roles or webviews",
+    "rationale": "KEL-78 fact: crash/OOM/abort/hang of a role must not take down host or webviews."
+   }
+  ],
+  "open_unknowns": [
+   "Electron behavior when crashReporter extra key/value exceeds the documented byte limits (throw vs truncate vs ignore) — pinned doc is silent; needs an oracle run.",
+   "Electron 'Kilobytes' divisor (1000 vs 1024) for MemoryInfo/ProcessMemoryInfo/HeapStatistics — [inference] Chromium uses 1024; must be measured against OS readings (F08-P3).",
+   "Electron main-process uncaughtException default (modal dialog per draw.io comment) — not verified in pinned docs this session; needed to size the ▲ for Bun's exit-on-throw + supervisor restart.",
+   "Whether Electron emits render-process-gone when the app destroys the window (draw.io comment 'Not emitted when finalize destroys the window' is a corpus lead).",
+   "What Electron does when disableHardwareAcceleration() is called after ready (throw vs ignore).",
+   "WebView2: public switch/receipt for software rendering honoring disableHardwareAcceleration; any public renderer-kill API; integrityLevel of Keld's LPAC primary (KEL-210).",
+   "WebKitGTK: public web-process pid API and unresponsive detection (is-web-process-responsive) not verified.",
+   "WKWebView: confirmed no public reason for content-process termination; GPU process state exposure assumed absent [inference].",
+   "Whether Keld should expose a Bun hang watchdog at all (no evidence of one; Electron's 'unresponsive' is renderer-only).",
+   "Linear status of KEL-105/KEL-116/KEL-90/KEL-129 was not queried (Linear MCP unavailable headless per memory note); code and KEL-96 spec checkboxes indicate KEL-105/116 landed and bench/ (KEL-90) has not — [inference].",
+   "Bun's native panic reporter (bun.report URL) — whether anything is ever transmitted automatically; affects the privacy statement for crash telemetry.",
+   "Whether a host read of keld-family pids/memory needs a new guard capability (`diagnostics.metrics`) or is implicit to the primary role — a KEL-102/KEL-15 schema decision.",
+   "Owner for wiring engine process-failure hooks in keld-wv (none today; neither KEL-132 nor KEL-79 names it)."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

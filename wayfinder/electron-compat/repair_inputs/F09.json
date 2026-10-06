@@ -1,0 +1,892 @@
+{
+ "unit": "F09",
+ "name": "update-packaging",
+ "published": {
+  "epic": {
+   "key": "F09-EPIC",
+   "title": "compat(update): autoUpdater and electron-updater facades over the host-owned KEL-53 updater, keld.build.ts translation, bridge release recipe",
+   "body": "## Scope\n`autoUpdater` (10 members, macOS+Windows) plus the ecosystem reality: draw.io uses electron-updater v6 (setFeedURL provider github, autoDownload=false, downloadUpdate, download-progress, quitAndInstall) with five electron-builder configs and @electron/fuses; Zettlr ships its own downloader. Live today: keld-update verifies signed v0 manifests/full packages, Windows extraction/staging/journaled activation and startup repair; keld-pack streams Windows v0 packages; `keld build`/`migrate` reserved; no update channel to Bun; no keld.build.ts schema.\n\n## Maturity ladder\n- L0: both facades exist; feed-URL writes are recorded no-ops ▲; `checkForUpdates` emits a typed error only when invoked without a host updater.\n- L1: KEL-53 state machine events reach Bun (checking/available/not-available/progress/downloaded/error) with versions/dates/sizes, never paths.\n- L2: `quitAndInstall` ordering split by facade × platform passes pinned entries; bridge release recipe validated on Windows NSIS (publisher match) and macOS.\n\n## Linear owners consumed\nKEL-53 (host-owned updater: full-package activation first), KEL-254/KEL-270 (Windows install modes/journal), KEL-19/KEL-15 (keld.build.ts schema — RFC text missing), KEL-103/KEL-141/KEL-137 (macOS package cells), KEL-98 (contract source for update.* calls).\n\n## Design facts fixed by research (two refuters + panel)\n- Two thin Bun facades over one host state machine; electron-updater rewritten by migrate to a Keld shim exporting the AppUpdater subset draw.io exercises; pin 6.8.9.\n- `setFeedURL` is accepted and recorded (never thrown — draw.io routes throws to a user-facing Update Error dialog); mismatch vs `keld.build.ts` feed → dev diagnostic; the host never reads it; `DRAWIO_DISABLE_UPDATE=true` written into the host-declared role environment by migrate; never a fabricated `update-not-available`.\n- `update-downloaded` = staged-and-verified (not published); `quitAndInstall` → host activation with health check and rollback; ordering atoms split per facade × platform (macOS native inverts before-quit).\n- Authority: all network/verify/stage/activate/relaunch in the host; Bun gets `update.check/download/quitAndInstall` guarded calls (new guard operations need KEL-102 admission; contract source is open).\n- Bridge release: Windows NSIS requires the Keld installer be signed by the same publisher (publisherName verification is skipped when absent from app-update.yml); macOS zip/latest-mac.yml path; Linux AppImage/deb per electron-updater ≥ 6.x sentinel.\n",
+   "tier": "Tier 2",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F09-T1",
+    "title": "feat(update): autoUpdater core facade + electron-updater shim over the KEL-53 state machine with recorded no-op setFeedURL and info-only events",
+    "kind": "feature",
+    "tier": "Tier 2",
+    "maturity_target": "L1",
+    "what_to_build": "Expose `update.check/download/quitAndInstall` guarded calls and an info-only host→Bun event stream; implement the 10-member `autoUpdater` and the electron-updater AppUpdater subset draw.io uses; setFeedURL recorded (▲) and compared with `keld.build.ts`; typed error on explicit check without a host updater; `update-downloaded` only after stage+verify; `quitAndInstall` ordering split per facade × platform with conformance entries.",
+    "acceptance_criteria": [
+     "draw.io boots with its updater code unmodified, `setFeedURL` recorded, no boot-time error dialog",
+     "`checkForUpdates()` against a declared host feed walks checking → available/not-available with versions and sizes; no filesystem path reaches Bun",
+     "`quitAndInstall()` triggers host activation; a failed health check rolls back and the facade reports `error`"
+    ],
+    "negative_controls": [
+     "Throwing from setFeedURL triggers draw.io's Update Error dialog — negative test must fail the activation entry"
+    ],
+    "blocked_by_keys": [
+     "F09-A2"
+    ],
+    "blocked_by_external": [
+     "KEL-53 activation + feed base owner (F09-A2)",
+     "KEL-102 new guard operations",
+     "contract source (open)"
+    ],
+    "linear_owner": "KEL-53",
+    "review_gates": [
+     "permission model",
+     "wire protocol",
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "autoUpdater.setFeedURL",
+     "autoUpdater.getFeedURL",
+     "autoUpdater.checkForUpdates",
+     "autoUpdater.quitAndInstall",
+     "error",
+     "checking-for-update",
+     "update-available",
+     "update-not-available",
+     "update-downloaded",
+     "before-quit-for-update"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No update channel to Bun; no facade.\n\n**Desired behavior:** Expose `update.check/download/quitAndInstall` guarded calls and an info-only host→Bun event stream; implement the 10-member `autoUpdater` and the electron-updater AppUpdater subset draw.io uses; setFeedURL recorded (▲) and compared with `keld.build.ts`; typed error on explicit check without a host updater; `update-downloaded` only after stage+verify; `quitAndInstall` ordering split per facade × platform with conformance entries.\n\n**Key interfaces:** keld-update state machine; guarded update.* calls; facades.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Delta transport; bridge recipe (F09-T2).",
+    "out_of_scope": "Delta transport; bridge recipe (F09-T2).",
+    "notes": ""
+   },
+   {
+    "key": "F09-T2",
+    "title": "task(update): keld.build.ts translation of electron-builder/forge configs and the bridge-release recipe per platform",
+    "kind": "task",
+    "tier": "Tier 2",
+    "maturity_target": "L0",
+    "what_to_build": "Specify `keld.build.ts` (KEL-15/KEL-19 schema; RFC text to be located — F09-A6) and the per-field disposition report migrate emits for electron-builder JSON/YAML and forge configs (appId → ExpectedAppIdentity, files/asar → canonical tree, targets, signing/notarize, fuses dropped with explanation incl. wasmTrapHandlers); document the bridge release recipe: final Electron release whose electron-updater feed points at a Keld installer signed by the same publisher (Windows NSIS publisherName rule), macOS latest-mac.yml, Linux AppImage sentinel.",
+    "acceptance_criteria": [
+     "draw.io's five electron-builder configs translate with every field dispositioned (mapped/▲/✘)",
+     "The bridge recipe names the exact client constraints per platform with receipts",
+     "`keld build` remains reserved; no execution of app build hooks"
+    ],
+    "negative_controls": [
+     "Executing an afterPack hook during translation fails the never entry"
+    ],
+    "blocked_by_keys": [
+     "F09-A6"
+    ],
+    "blocked_by_external": [
+     "KEL-15/KEL-19",
+     "KEL-137 package representation"
+    ],
+    "linear_owner": "KEL-19",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "keld.build.ts",
+     "electron-builder",
+     "electron-forge",
+     "@electron/fuses"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** task\n\n**Current behavior:** No keld.build.ts schema exists.\n\n**Desired behavior:** Specify `keld.build.ts` (KEL-15/KEL-19 schema; RFC text to be located — F09-A6) and the per-field disposition report migrate emits for electron-builder JSON/YAML and forge configs (appId → ExpectedAppIdentity, files/asar → canonical tree, targets, signing/notarize, fuses dropped with explanation incl. wasmTrapHandlers); document the bridge release recipe: final Electron release whose electron-updater feed points at a Keld installer signed by the same publisher (Windows NSIS publisherName rule), macOS latest-mac.yml, Linux AppImage sentinel.\n\n**Key interfaces:** migrate translation report; packaging policy docs.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementing keld build.",
+    "out_of_scope": "Implementing keld build.",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F09-A2",
+    "title": "Who owns the compiled-in feed base (KEL-53/KEL-19 amendment) that autoUpdater.getFeedURL reports and setFeedURL is compared against?",
+    "type": "grilling",
+    "question": "The host feed identity is compiled into the signed host (ExpectedAppIdentity) but no owner names the feed base field; `keld.build.ts` has no schema. Name the owner and the field before any facade contract; record the ▲ per platform (Windows: one `error` event \"Update URL is not set\"; macOS: no event — inference needing one Electron run).",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F09-A6",
+    "title": "Locate the accepted KEL-15 configuration RFC text (repo has no spec file) and land it as docs/specs before keld.build.ts work",
+    "type": "research",
+    "question": "Linear marks KEL-15 Done but the repository holds no RFC document; the keld.build.ts/keld.config.ts schema work cannot start from prose. Ask the KEL-15 owner for the accepted text and land it.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "app-selected feed URLs/headers/servers reaching the privileged updater",
+   "allowDowngrade / allowAnyVersion under the monotonic floor",
+   "app-executed installers or exposure of staged artifacts",
+   "@electron/fuses as a runtime API",
+   "ASAR virtual filesystem",
+   "executing electron-builder/forge JS hooks",
+   "running Electron autoupdater specs under Bun"
+  ],
+  "out_of_scope": [],
+  "not_yet_specified": [
+   "Zettlr's got-based self-updater (shell.openPath of an installer + app.quit) → migrate fix-it wording"
+  ],
+  "issue_numbers": {
+   "F09-A2": 409,
+   "F09-A6": 410,
+   "F09-EPIC": 490,
+   "F09-T1": 491,
+   "F09-T2": 492
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "ecosystem packages loaded at draw.io module top level: electron-store, electron-log, electron-context-menu, electron-updater",
+    "problem": "Their Electron member requirements are owned only by a decision (X03-A6), an inventory line in X03-T2 and PANEL-P3. contextMenu({...}) (electron.js:169) and autoUpdater.logger.transports.* (:82-83) execute unguarded at import; any missing member aborts module evaluation.",
+    "suggested_unit": "PANEL-P3 output becomes a named artifact consumed by F01-T4, F06-T4, F09-T1 and X03-T1 (add edges)."
+   }
+  ],
+  "duplicates": [],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "X02-T3",
+    "problem": "Missing gates: it emits keld.build.ts 'per F09-T2' (schema does not exist; F09-A6 open), enumerated `el:` channels into windows.<w>.channels (parse-and-ignore until F04-A1), and — per PANEL-D14 — DRAWIO_DISABLE_UPDATE into a host-declared role environment that is not in its five-file list.",
+    "fix": "Edges X02-T3 ← F04-A1 and ← F09-A6 (or drop keld.build.ts from the first-proof artifact); add the role-environment output and its owning schema to the ticket."
+   },
+   {
+    "key": "F09-T1",
+    "problem": "F09-A2 (compiled-in feed base owner) gates the whole ticket, but the first-proof slice (inert electron-updater adapter with recorded setFeedURL) reads no feed.",
+    "fix": "Split the adapter slice out with no F09-A2 edge."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F07-T1, F08-T1, F08-T2, F09-T1, X03-T1",
+    "violation": "'Compat lands a conformance entry (citing the pinned Electron doc sentence) before implementation' — F07, F08, F09 and X03 have no conformance ticket and these implementation tickets have no conformance-entry predecessor.",
+    "fix": "Add a conformance entry ticket (or an explicit first AC 'entry lands first, cites sentence') per family; for first proof at least F07 (preload order, sandboxed require error text) and F09 (setFeedURL never throws)."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F06-T2, F06-T4, F06-T5, F06-T6, F01-T5, F09-T1",
+    "problem": "Oversized: F06-T2 (4 dialog kinds × sync variants + scope minting + parenting, two review gates), F06-T4 (Menu + Tray), F06-T5 (4 modules, 27 members), F06-T6 (11 modules), F01-T5 (lock + second-instance + open-file + open-url + protocol client), F09-T1 (KEL-53 state machine + guarded calls + two facades).",
+    "fix": "Split along the first-proof slices named in the yagni rows; each slice one concern, one review gate set."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F09-T1",
+    "milestone": "first-proof",
+    "reason": "Slice only: an inert electron-updater adapter — autoUpdater.logger.transports.*, autoDownload, autoInstallOnAppQuit are set unconditionally at import (:82-86), on('error') is registered at top level (:2233) and setFeedURL runs outside the disable guard (:2078). Park the KEL-53 state machine, update.* guarded calls and quitAndInstall."
+   },
+   {
+    "key": "F09-T2",
+    "milestone": "parked",
+    "reason": "The proof runs under `keld dev`; nothing reads keld.build.ts, its schema does not exist (KEL-15 body is only the RFC brief — Linear, fetched 2026-10-06), and the bridge-release recipe is distribution polish that #312 orders after the migration proof."
+   }
+  ],
+  "ambiguity_laundering": [],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "PANEL-D14",
+     "X02-T3",
+     "F01-T4",
+     "F09-T1"
+    ],
+    "coupling": "Updater disablement depends on an environment variable: PANEL-D14 has migrate write DRAWIO_DISABLE_UPDATE=true into 'the host-declared role environment', read at module top level (:75). That is a boot fact delivered at spawn (F01-T4 / KEL-75 no-inherited-env) and a migrate output not present in X02-T3's file list. If it is absent, the boot-time checkForUpdates runs (:2092-2100) and F09-T1's 'typed error on explicit check' fires at activation.",
+    "fix": "Name the declared-role-environment field and its schema owner; add it to X02-T3 outputs and to F01-T4's payload; F09-T1 AC covers both env-present and env-absent boots."
+   },
+   {
+    "keys": [
+     "X02-T3",
+     "F09-T2",
+     "F09-A6"
+    ],
+    "coupling": "X02-T3's byte-identical artefact includes keld.build.ts 'per F09-T2', whose schema has no text anywhere (KEL-15 body is only a brief). Changing the build schema later silently invalidates the golden artefact that defines the generator.",
+    "fix": "Remove keld.build.ts from the first-proof artefact (nothing reads it under keld dev) or add the edge and accept the delay."
+   },
+   {
+    "keys": [
+     "swarm research pin",
+     "all tickets' 'Current behavior'"
+    ],
+    "coupling": "Every 'Current behavior' line was verified by refuters at origin/main d150a14; main is now b4b907c3 (5 commits: KEL-270 S5/S8 runtime/guard, KEL-19 T1 ExpectedAppIdentity container, KEL-254). F09-A2 (feed base in ExpectedAppIdentity) and the role-spawn facts in F01-T4/X03-T1 touch code that moved.",
+    "fix": "Stamp each ticket with the verification SHA; re-verify F09-A2, F01-T4, X03-T1 at b4b907c3 before they are taken."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "F09-T1",
+    "why_now": "Next: after PANEL-P3 — inert electron-updater adapter slice only (no F09-A2 gate).",
+    "consumes": "PANEL-P3 list of AppUpdater members touched at import; PANEL-D14 resolution; X03-T1 alias."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny; no Electron-isms in core/ipc; no parallel owners; reuse KEL-53/74/75/79/80/98/102/135/254; measured perf; spec+Linear gate; #312/#313/#319/#322/#323/#325 and KEL-127 direction)",
+   "verdicts": [
+    {
+     "decision_id": "F09-A1",
+     "verdict": "survives",
+     "reason": "Corpus facts check out (draw.io src/main/electron.js:17-18 imports electron-updater, :85-86 autoDownload=false/autoInstallOnAppQuit=silentUpdate, :2078 setFeedURL github provider, :2099 checkForUpdates, :2350 quitAndInstall; Zettlr uses got+sha256+shell.openPath). Arch 04 §4 Tier 2 lists 'autoUpdater→keld-update adapter', §2 says migrate replaces 'electron*' deps with '@keld/*' deps (so a Keld-owned electron-updater-shaped package is within the five-file contract), and §7's bridge presupposes electron-updater clients. One host state machine with thin facades respects one-owner and the four uniques. Two accounting claims are wrong and must be corrected (see correction).",
+     "evidence": "docs/architecture/04-electron-compat.md lines 36-45, 138-141, 194-200; docs/specs/kel74-compat-evidence-schema.md lines 149, 159-167 (`kind` closed set install|activation|primary_workflow|full_feature; 'Electron API scoreboard rows stay narrative until a committed product denominator'); scratchpad corpus drawio-desktop/src/main/electron.js lines 17-18, 84-86, 2078-2082, 2350; Linear KEL-17 status Done (RFC) with no docs/specs entry.",
+     "correction": "(1) KEL-74 has no 'L3 ecosystem row' concept: `kind` is a closed set and Electron API rows are narrative. Record the shim as cells inside the draw.io product denominator (e.g. primary_workflow/full_feature cells for 'check → download → quitAndInstall') plus narrative scoreboard rows; do not invent a new denominator kind without a KEL-74 schema bump. (2) Order by demand (root AGENTS YAGNI): the electron-updater-shaped shim has corpus demand (draw.io); the 10-member Electron-core autoUpdater facade has zero corpus demand across all three apps and should be the second slice, kept only because arch 04 §4 Tier 2 names it. (3) KEL-17 is Done in Linear but its migrate/shim UX is not in the repo; the shim needs its own spec+issue (GitHub, Linear at cap)."
+    },
+    {
+     "decision_id": "F09-A2",
+     "verdict": "refuted",
+     "reason": "The policy (host-owned feed, app-selected URL never honored, allowDowngrade/allowAnyVersion impossible under the monotonic floor) survives and is well sourced. The stated mechanism does not: the object says the feed URL is 'compiled into the signed host (ExpectedAppIdentity)' and that getFeedURL 'returns the host's compiled-in feed base from ExpectedAppIdentity'. ExpectedAppIdentityPayload carries only app_id, channel, target and update_public_key; arch 06 §4a step 1 says the host carries 'the key, app id, channel and target'; KEL-254 provenance v2 lists app id, channel, target, mode, owner, roots, baseline, key identity, channel owner — no feed base. No Keld source names an owner for `<feed-base>`.",
+     "evidence": "crates/keld-pack/src/expected_identity.rs lines 52-60 (struct fields: app_id, channel, target, update_public_key); docs/architecture/06-runtime-and-tooling.md lines 633-636 (`<feed-base>` placeholder) and 869-875 (compiled-in = key, app id, channel, target); grep of docs/specs/kel53-full-package-activation.md and kel254-*.md for 'feed-base|feed base|feed URL' returns no owner; docs/specs/kel53 §'Trust, package and channel ownership' lists no feed origin.",
+     "correction": "Name the feed-base owner before any facade contract: the cheapest consistent choice is a KEL-53/KEL-19 amendment adding the feed base (or a feed-origin identity) to the signed host identity or to installer provenance v2 — one owner, byte-validated like the other fields — with keld.build.ts `update.feed` as its build-time input. Until that lands, getFeedURL has no source of truth and the conformance entry must be 'unknown', not ▲. Keep setFeedURL as accepted-and-ignored with a dev diagnostic only after a code is allocated (KELD-COMPAT-001..009 are keld-compat evidence-parser codes, and the registry rejects un-emitted codes)."
+    },
+    {
+     "decision_id": "F09-A3",
+     "verdict": "survives",
+     "reason": "State mapping matches landed code and spec: completed stage 'is neither published nor selected' (product-status row 9; arch 06 §4), activation runs journaled publish → candidate launch → 30 s Ready health → commit/rollback with floor unchanged on rollback (KEL-53 criteria 8-9), errors are typed KELD-UPDATE-001..018 and 'CLI/compat render them without remapping' (KEL-53 line 1830), Channel enum is Stable/Beta/Canary, manifest has publishedAt and no release notes. Electron docs confirm quitAndInstall/before-quit-for-update semantics. Two of the author's unknowns are now settled by sources (see correction).",
+     "evidence": "docs/specs/kel53-full-package-activation.md lines 512-531 (criterion 8: candidate 'must have booted from that exact version, reached application Ready, and remained alive for 30 monotonic seconds'; criterion 9 rollback), 1473 ('starts the app and reports boot, Ready and health'), 1830; docs/engineering/product-status.tsv row 9; docs/architecture/06 lines 644-660 (publishedAt, no releaseNotes); crates/keld-update/src/error.rs lines 300-317, 445-451; crates/keld-update/src/lib.rs lines 84-95; electron-builder v26.0.12 AppUpdater.ts (checkForUpdates emits 'error' AND rethrows); Electron v44.4.5 auto-updater.md quitAndInstall/before-quit-for-update.",
+     "correction": "(1) Unknown 'quit without relaunch' is answered by KEL-53: there is no headless health boot — the candidate 'starts the app' and must reach Ready; so electron-updater's silent install-at-quit without relaunch (autoInstallOnAppQuit / isForceRunAfter=false) cannot be honored. Record a ▲: Keld either relaunches the app as the candidate at quit, or defers activation to the next user launch (which then pays publish+candidate boot+30 s health). This must be a recorded divergence, not an owner choice. (2) Unknown 'does electron-updater reject and emit' is settled at v26.0.12: checkForUpdates emits 'error' and rethrows; the shim's exactly-once emission + rejected promise is therefore itself a ▲ versus electron-updater (draw.io's 5 s dedupe tolerates it) and must be entered as such."
+    },
+    {
+     "decision_id": "F09-A4",
+     "verdict": "refuted",
+     "reason": "Authority placement (all network/verify/stage/activate in the host; roles get no paths; no installer spawn) is correct and matches KEL-53 non-goals and arch 03 broker pattern. Three mechanism claims fail: (a) 'generated through the existing KEL-98 echo-codegen contract source' — KEL-98 is explicitly 'a bootstrap for the existing echo vertical slice, not Keld's general contract', non-goal 'no general ... IDL, or arbitrary schema generator', and product-status says general schema codegen is absent; today @keld/api channels.ts hard-codes a single echoChannel and rejects any other descriptor. (b) 'Grants are declared in keld.permissions.jsonc' — KEL-53 §'Capabilities, wire and errors' states 'Application permissions cannot grant update authority. No KIPC, renderer bridge or permission-manifest change is introduced', and keld-guard today evaluates only dotted fs.* capabilities with path scopes; an update.* grant is a guard/KEL-102 schema change needing its own spec. (c) The object names the install grant `update.quitAndInstall` in A4 and `update.install` in security_mapping — two names for one rule.",
+     "evidence": "docs/specs/kel98-echo-codegen.md lines 19-25, 93-94, 219; docs/engineering/product-status.tsv row 23 ('general schema codegen ... remain absent'); packages/@keld/api/src/channels.ts lines 55-66 ('channel descriptor is not declared by this Keld build'); docs/specs/kel53-full-package-activation.md lines 1819-1822; crates/keld-guard/src/lib.rs lines 6, 672, 730, 1016 (fs.read|fs.write only); packages/@keld/api/src/link.ts lines 176-183 (host→Bun Event frames exist: ready / last-window-closed); docs/architecture/02-ipc.md lines 248-256, 389 (credit windows 'remain later work').",
+     "correction": "(1) State the dependency honestly: update.check/download/install need either the absent general contract source (`@keld/schema`/`keld gen`, KEL-98 owner's successor) or a hand-written typed lifecycle-channel extension like the KEL-142 slice; the F09 ticket must consume that owner, not claim KEL-98 echo-codegen covers it. (2) Reconcile with KEL-53 via an amendment that distinguishes 'trigger a host-owned, host-verified check/activation' (a grantable app capability) from 'update authority' (never grantable); extend keld-guard's capability schema under KEL-102 rather than special-casing. (3) Resolve the unknown: unsolicited host→Bun events exist (Event frames on the lifecycle channel) but credit-window backpressure is not live, so progress must be latest-value-wins coalesced on the host. (4) One grant name (`update.install`) everywhere."
+    },
+    {
+     "decision_id": "F09-A5",
+     "verdict": "survives",
+     "reason": "The client-side constraints are confirmed at electron-updater v26.0.12: NsisUpdater.doInstall args are exactly --updated, /S (silent), --force-run, /D=<installDirectory>, --package-file; verifySignature fails with 'New version X is not signed by the application owner' (ERR_UPDATER_INVALID_SIGNATURE); elevate.exe when isAdminRightsRequired, EACCES→elevate, ENOENT→shell.openPath. draw.io electron-builder-win.json confirms nsis.perMachine=true and publisherName ['JGraph Ltd','draw.io Ltd']. Keld constraints confirmed: KEL-53 first cell is windows-x64 only, MachineUacDirect (T4d) unimplemented, KEL-137 In Progress and a predecessor for every macOS/Linux cell, KEL-103 still draft (kel139 line 432), arch 06 §4a feed is static files. Ordering Windows x64 first follows.",
+     "evidence": "electron-builder v26.0.12 NsisUpdater.ts (fetched 2026-10-06); scratchpad corpus drawio-desktop/electron-builder-win.json (perMachine true, publisherName list, nsis+msi targets); docs/specs/kel53-full-package-activation.md lines 185-215, 226-229, 388-392; docs/specs/kel139-macos-product-spine.md line 432; Linear KEL-137 status In Progress; docs/architecture/06 lines 427-441, 492, 629-636; product-status row 10 (installers/signing absent).",
+     "correction": "Add two receipts the object lacks: (1) publisherName verification is read from app-update.yml on disk and is SKIPPED when absent — so the Authenticode-publisher constraint binds draw.io (configured) but is not a universal bridge requirement; (2) for draw.io specifically the Windows bridge is blocked twice, not once: Keld's installer must honor /D=<Program Files dir> + /S under electron-updater's elevate.exe flow, and that is a machine install → MachineUacDirect (T4d) must land first or the bridge must be an explicit owner decision to leave a stale per-machine Electron install. Mark the bridge 'blocked on T4d' for draw.io rather than 'reachable for Windows x64'."
+    },
+    {
+     "decision_id": "F09-A6",
+     "verdict": "unresolved",
+     "reason": "The disposition table is consistent with sources (arch 04 §2 keld.build.ts row; arch 06 §3 signers rcodesign/signtool/osslsigncode; fuse defaults per research 186; KEL-75 no inherited env/argv; keld-pack ExpectedAppIdentity app id; corpus configs verified). But the decision cannot be settled: keld.build.ts has no schema anywhere in the repo, and KEL-15 ('RFC: Configuration schema') is marked Done in Linear (2026-07-10) with no docs/specs artifact — so the target the translation generates into is unowned in-repo. The proposal also asserts a 'sandboxed Bun subprocess' for forge.config.js evaluation; no such tooling sandbox exists (KEL-78 strict profile is for app roles) and arch 03 says migrate seeds via static analysis.",
+     "evidence": "grep for 'keld.build' across docs/crates/packages: only docs/architecture/04-electron-compat.md lines 27, 38 and 06 line 440; Linear KEL-15 status Done, no docs/specs/kel15-*; docs/architecture/03-security.md lines 213-216 ('keld migrate seeds the manifest from static analysis'); docs/specs/kel75-principalized-bun-child-roles.md lines 142, 367; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md fuse sub-ledger; scratchpad corpus drawio-desktop/electron-builder-win.json, zettlr/forge.config.js lines 4-46, zettlr/electron-builder.yml lines 49-94.",
+     "correction": "Missing evidence: the KEL-15 RFC text (Linear says Done; repo has nothing). Cheapest step: ask the KEL-15 owner (GYLDLAB) for the accepted RFC and land it as docs/specs/kel15-config-schema.md, or open a successor issue that owns keld.build.ts's schema (identity, targets, installMode, signing, update.feed/channel) before migrate translation is specified. Replace 'sandboxed Bun subprocess' with an honest policy: static parse of JSON/YAML; for executable forge configs require `--config-json` or an explicit `--eval-config` run as the developer with a warning (no sandbox claim)."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Spec/spec tension the object missed: architecture 03 §3 says `keld migrate` seeds the permission manifest with 'autoUpdater → net to feed URL' (an app-role network grant toward the feed), while KEL-53 says 'Application permissions cannot grant update authority' and arch 06 §4a makes the host the only feed client. One of the two must change; the F09 ticket should name this as a doc fix (code/spec mismatch rule) and not cite arch 03 line 215 as support for a host-owned grant.",
+     "evidence": "docs/architecture/03-security.md lines 213-216; docs/specs/kel53-full-package-activation.md lines 1819-1822; docs/architecture/06-runtime-and-tooling.md lines 869-875"
+    },
+    {
+     "severity": "high",
+     "finding": "Feed-base ownership gap: no Keld artifact (ExpectedAppIdentity, provenance v2, KEL-53 spec, arch 06) names where `<feed-base>` comes from or how it is bound to the signed host. Every facade claim about getFeedURL, setFeedURL cross-checks and the bridge feed layout depends on this unowned field.",
+     "evidence": "crates/keld-pack/src/expected_identity.rs lines 52-60; docs/architecture/06 lines 633-636, 869-875; grep 'feed-base|feed base|feed URL' in docs/specs/kel53-*.md and kel254-*.md: no owner"
+    },
+    {
+     "severity": "medium",
+     "finding": "`KELD-COMPAT-*` is already the keld-compat evidence/denominator parser family (KELD-COMPAT-001..009); the object reuses the prefix for runtime dev diagnostics. New codes must be allocated in docs/engineering/keld-error-codes.md with emitting code ('the registry rejects un-emitted codes'), or the facade diagnostics need their own family.",
+     "evidence": "docs/engineering/keld-error-codes.md lines 593-641; docs/specs/kel53-full-package-activation.md line 1831"
+    },
+    {
+     "severity": "medium",
+     "finding": "The object's `update.*` events assume a backpressured host→Bun stream (KEL-80). Today unsolicited Event frames exist only on the lifecycle channel with two decoded events (ready, last-window-closed) and credit windows are 'later work'; a progress stream must be host-coalesced (latest value wins) and declared on the lifecycle/app-link receive policy, otherwise a flood of download-progress frames violates invariant 7 (no unbounded queues).",
+     "evidence": "packages/@keld/api/src/link.ts lines 176-183; docs/architecture/02-ipc.md lines 248-256, 389"
+    },
+    {
+     "severity": "medium",
+     "finding": "Prior-decision alignment: KEL-15 and KEL-17 are both 'Done' RFCs in Linear with no repo spec, and `keld migrate`/`keld build` are KELD-CLI-045 reserved. Under the spec+Linear gate (invariant 6) every F09 implementation slice (facade, shim, migrate translation, bridge recipe) needs a new approved spec and GitHub issue; the object does not say which existing Linear owner each slice consumes versus which needs a new ticket.",
+     "evidence": "Linear KEL-15/KEL-17 statusType completed; crates/keld-cli/src/verb.rs lines 11, 60-75; ls docs/specs (no kel15/kel17/kel10 entries)"
+    },
+    {
+     "severity": "medium",
+     "finding": "Windows arm64: draw.io publishes a separate `latest-arm64` electron-updater channel, but KEL-53's only admitted cell is windows-x64 and keld-pack's target list has no windows-arm64 cell; arm64 draw.io users have no Keld bridge target at all. The object lists this as an unknown; it is a known blocker to record against the bridge order.",
+     "evidence": "docs/specs/kel53-full-package-activation.md lines 185-190, 388-392; docs/architecture/06 line 640 (target triples); scratchpad corpus drawio-desktop/electron-builder-win-arm64.json / src/main/update-channel.js"
+    },
+    {
+     "severity": "low",
+     "finding": "In MachineUacDirect, keld-updater-helper.exe 'has no feed, network, manifest/package parser' — feed fetch and download stay in the non-elevated host and only activation crosses UAC. The facade's single `update.install` call therefore maps to a two-process sequence with UAC consent in the middle; the ▲ for quitAndInstall must mention a possible UAC prompt (electron-updater shows elevate.exe's prompt too, so parity is plausible but must be tested).",
+     "evidence": "docs/architecture/06-runtime-and-tooling.md lines 1236-1242; docs/specs/kel53-full-package-activation.md line 227"
+    },
+    {
+     "severity": "low",
+     "finding": "Electron-core autoUpdater facade has zero demand in the declared corpus (draw.io: electron-updater; Zettlr: custom; quick-start: none). Building it before the electron-updater shim is YAGNI under root AGENTS; keep it only because arch 04 §4 Tier 2 names it, and sequence it after the shim.",
+     "evidence": "scratchpad corpus usage; docs/architecture/04-electron-compat.md lines 138-141; AGENTS.md 'Reuse before adding ... YAGNI forbids it'"
+    }
+   ]
+  },
+  {
+   "lens": "Electron semantics accuracy and corpus demand (F09 update-packaging): verified against pinned v44.4.5 docs AND Electron source (lib/browser/api/auto-updater/*.ts, shell/browser/auto_updater_mac.mm, shell/browser/api/electron_api_auto_updater.cc), electron-updater at the tag the author cited (v26.0.12 = electron-updater 6.6.2) AND at the version draw.io actually resolves (package-lock: electron-updater 6.8.9 npm tarball), electron-builder v26.0.12 NSIS templates/PublishManager, Squirrel.Mac SQRLCodeSignature.m, the scratchpad corpus clones/usage scans, and the Keld repo (arch 04/06, KEL-53, keld-update error.rs, keld-guard, keld-compat evidence.rs, @keld/api, keld-cli verb.rs, product-status.tsv).",
+   "verdicts": [
+    {
+     "decision_id": "F09-A1",
+     "verdict": "survives",
+     "reason": "Two thin facades over one host-owned KEL-53 state machine is supported by the corpus and by arch 04 §4 Tier 2 ('autoUpdater→keld-update adapter'). Demand ranking confirmed: drawio-desktop.usage.json signals autoUpdater=20/electron-updater=4; zettlr and electron-quick-start = 0. Zettlr's updater is got+semver+sha256+shell.openPath+app.quit (source/app/service-providers/updates/index.ts:24-25,179,547,626-647). The electron-updater surface the shim must clone is confirmed at the version draw.io resolves (6.8.9): autoDownload/autoInstallOnAppQuit/autoRunAppAfterInstall are plain booleans defaulting true (out/AppUpdater.js:109-119), quitAndInstall(isSilent?, isForceRunAfter?), downloadUpdate(): Promise<Array<string>>, getFeedURL() returns 'Deprecated. Do not use it.' (AppUpdater.js:228).",
+     "evidence": "corpus/drawio-desktop/package.json:45 'electron-updater': '^6.8.9'; package-lock.json:1943-1946 resolves 6.8.9; src/main/electron.js:17-18,85-86,2078-2082,2099,2228,2279,2329-2350,2355-2389 match the cited call sites. electron-updater 6.8.9 tarball out/AppUpdater.d.ts:31-200. F09-update-packaging.json lists exactly 1 module + 10 members. crates/keld-compat/src/evidence.rs:270-290 OperationKind = Install|Activation|PrimaryWorkflow|FullFeature.",
+     "correction": "(1) The author's unknown 'exact electron-updater version pin' is settled: pin 6.8.9 (not 6.6.2). The receipts labelled v26.0.12 describe 6.6.2; electron-builder's GitHub tag list jumps v26.0.20 → v28.0.0 (no v26.15.x tag), so the authoritative receipt for 6.8.9 is the npm tarball, not a GitHub raw URL. (2) 'Declared as an L3 ecosystem row in the KEL-74 denominator' is not possible as-is: OperationKind has no ecosystem kind; the shim row needs a KEL-74 owner decision (new kind or scored under full_feature). (3) platform_specific's 'electron-updater adds Linux AppImage self-replacement only' is false at 6.8.9, which ships DebUpdater/RpmUpdater/PacmanUpdater (see F09-A5)."
+    },
+    {
+     "decision_id": "F09-A2",
+     "verdict": "survives",
+     "reason": "Compiled-in feed identity and refusing app-selected URLs is required by KEL-53 §1 non-goals ('no arbitrary relaunch helper, shell command, self-update plugin, or role-writable update state', spec line 207), arch 06 §4a (compiled-in key, <feed-base>/<channel>/<target>/updates.json(.sig) lines 633-636, 869), KELD-UPDATE-006 ManifestIdentityMismatch (error.rs:307,373), and the briefing never-list item 10. Electron source confirms the URL is handed unchanged to Squirrel/Update.exe/SQRLUpdater. The author's unknown ('throw vs error event when checkForUpdates runs before setFeedURL') is now settled by source for Windows and MSIX: an 'error' event with message 'Update URL is not set', no throw.",
+     "evidence": "electron v44.4.5 lib/browser/api/auto-updater/auto-updater-win.ts:44-48 `if (!url) return this.emitError(new Error('Update URL is not set'))`; auto-updater-msix.ts:386-390 identical; emitError emits ('error', error, error.message). shell/browser/auto_updater_mac.mm:120-130: CheckForUpdates messages g_updater (nil before SetFeedURL) through a RAC chain with no nil guard → [inference] silent no-op, no event. auto_updater_mac.mm:53-54: setFeedURL THROWS TypeError for serverType not in {'default','json'}.",
+     "correction": "Record the ▲ per platform, not once: Windows/MSIX oracle = one 'error' event 'Update URL is not set'; macOS oracle = [inference] no event at all (needs one Electron-run receipt). Also note setFeedURL is not throw-free in Electron: on macOS an invalid serverType throws TypeError synchronously (auto_updater_mac.mm:53-54); a shim that never throws must record that as ▲ too."
+    },
+    {
+     "decision_id": "F09-A3",
+     "verdict": "refuted",
+     "reason": "The proposed single quitAndInstall ordering ('emit before-quit-for-update → close all windows → before-quit → will-quit → quit') is Electron's NATIVE (macOS) and MSIX behavior only. On Windows Squirrel — the first admitted Keld cell — Electron's quitAndInstall never emits before-quit-for-update and does not close windows first; it calls squirrelUpdate.processStart() then app.quit() (ordinary quit order). electron-updater (what draw.io runs on Windows/Linux) likewise spawns the installer, then setImmediate(emit 'before-quit-for-update'; app.quit()) — ordinary before-quit-first order. Only MacUpdater delegates to the native path. A single ordering oracle therefore contradicts the Electron observable on Windows and the semantic_traps[0] test oracle is wrong for the first cell. The rest of the mapping (events, staged≠activated ▲, exactly-once error) survives.",
+     "evidence": "electron v44.4.5 lib/browser/api/auto-updater/auto-updater-win.ts:11-17 (quitAndInstall = processStart + app.quit; no before-quit-for-update emission anywhere in the file); shell/browser/api/electron_api_auto_updater.cc:116-128 (Emit('before-quit-for-update'); WindowList::CloseAllWindows()) is the native path; auto-updater-msix.ts:460 emits it. electron-updater 6.8.9 out/BaseUpdater.js:13-26 (install() then setImmediate → emit before-quit-for-update → app.quit()); out/MacUpdater.js:233 nativeUpdater.quitAndInstall(). Exactly-once: out/AppUpdater.js:271-272 checkForUpdates emits 'error' AND rethrows (promise rejection), no sync throw — settles the author's second unknown in favor of the proposed contract. Doc staleness: auto-updater.md says 'With Squirrel.Windows only releaseName is available' but auto-updater-win.ts:60-65 emits releaseNotes, version, a faked new Date(), updateURL.",
+     "correction": "Split the quitAndInstall ordering atom by facade × platform: core facade on Windows/Linux-analogue = no before-quit-for-update, before-quit → window close → will-quit → quit; core facade on macOS and MSIX = before-quit-for-update → window close×N → before-quit → will-quit → quit; electron-updater shim on Windows/Linux = before-quit-for-update then ordinary quit order; shim on macOS = native order. Write one conformance entry per cell citing the source lines above (docs alone are wrong for Windows). Payload-shape oracle for update-downloaded must cite auto-updater-win.ts, not the stale doc sentence. Add a cell for electron-updater autoInstallOnAppQuit=false + 'Later': BaseUpdater.js:79-80 logs 'Update will not be installed on quit' and nothing installs at next launch — unlike Electron-core where the update applies on next start regardless; Keld must honor the flag per facade rather than 'same deferred activation'."
+    },
+    {
+     "decision_id": "F09-A4",
+     "verdict": "survives",
+     "reason": "Host-owned authority with three narrow guarded calls and an info-only event stream is the only shape consistent with KEL-53 non-goals (spec line 207), arch 06 line 499 ('strict Keld role restrictions deny Bun/webview writes to the install and updater state'), and the briefing never-list (raw spawn from strict roles). electron-updater's downloadUpdate resolving installer paths and NsisUpdater spawning them (with elevate.exe) is exactly what must not be reproduced. A host→Bun event precedent exists (keld-ipc LifecycleEvent on LIFECYCLE_CHANNEL; @keld/api Unsubscribe pattern), and keld-guard capability ids are dotted (`fs.read` → `/app/fs/read`), so `update.check`-style ids fit the manifest shape.",
+     "evidence": "docs/specs/kel53-full-package-activation.md:207; docs/architecture/06-runtime-and-tooling.md:499; electron-updater 6.8.9 out/AppUpdater.d.ts:185 downloadUpdate(): Promise<Array<string>>; out/NsisUpdater.js:107-127 spawns installer / elevate.exe; crates/keld-ipc/src/lib.rs:48 LifecycleEvent; packages/@keld/api/src/app.ts:11-16 Unsubscribe/onLastWindowClosed; crates/keld-guard/src/lib.rs:573,672,1016.",
+     "correction": "Two sizing facts the object omits: (1) keld-guard's accepted operation set is hard-coded — lib.rs:1016 `matches!(operation, \"fs.read\" | \"fs.write\")` — so new capability ids need a keld-guard change plus evaluate tests, not only a keld.permissions.jsonc entry and echo-codegen declarations; (2) the object names the install grant inconsistently (`update.quitAndInstall` in A4 vs `update.install` in security_mapping) — pick one id (one rule, one owner). The backpressure unknown (KEL-80) remains open; the transport exposes push/parked frames but no documented latest-value coalescing for unsolicited progress."
+    },
+    {
+     "decision_id": "F09-A5",
+     "verdict": "refuted",
+     "reason": "The Windows NSIS and macOS constraints are confirmed by source, but the Linux row and one 'unknown' are wrong at the electron-updater version draw.io ships. (a) 'electron-updater only self-updates AppImage; deb/rpm users are ManagedOwner' is false for 6.8.9: main.js selects DebUpdater/RpmUpdater/PacmanUpdater when resources/package-type says deb/rpm/pacman, and installs via `dpkg -i`/`rpm`/`pacman` under pkexec/gksudo/kdesudo/sudo. So draw.io deb/rpm users may be auto-updated by the Electron client into whatever the bridge feed lists — the bridge Linux row must either serve a Keld .deb/.rpm or explicitly starve those updaters, and this is a privileged-spawn path the bridge inherits. (b) The 'unknown' about MSI and app-update.yml is settled and is a trap: PublishManager writes app-update.yml into the shared appOutDir whenever ANY Windows target in the build is nsis/nsis-*, and draw.io's win config builds nsis+msi together, so MSI-installed users run a live NsisUpdater; latest.yml never lists the MSI (isSuitableWindowsTarget is nsis-only), so they would download and spawn the NSIS bridge installer over an MSI install. (c) '--updated'/'--force-run' are electron-builder NSIS script flags (NsisTarget flags list; common.nsh sets startAppArgs '--updated'), so a Keld NSIS installer must parse and honor them — settled, no longer unknown.",
+     "evidence": "electron-updater 6.8.9 out/main.js:44-75 (platform/package-type switch), out/DebUpdater.js:14-69 (`dpkg -i`, apt-get -f), out/LinuxUpdater.js:34-83 (pkexec/gksudo/kdesudo/sudo wrapper). electron-builder v26.0.12 packages/app-builder-lib/src/publish/PublishManager.ts:113-127 (onAfterPack writes app-update.yml when any target isSuitableWindowsTarget), :470-475 isSuitableWindowsTarget = nsis|nsis-* (appx only with electronUpdaterAware), :211-219 update-info only for suitable targets; src/targets/nsis/NsisTarget.ts:651 flags ['updated','force-run',...], :362-364 isAdminRightsRequired only when perMachine && (oneClick || packElevateHelper); templates/nsis/common.nsh:125-126. electron-updater NsisUpdater.ts:109-123 reads publisherName from the installed app-update.yml, :73-79 ERR_UPDATER_INVALID_SIGNATURE; MacUpdater.ts:93 ERR_UPDATER_ZIP_FILE_NOT_FOUND, :143-249 localhost server + nativeUpdater.setFeedURL/checkForUpdates; Squirrel.Mac SQRLCodeSignature.m:48-50,80,127. draw.io electron-builder-win.json:26-51 (publisherName ['JGraph Ltd','draw.io Ltd'], nsis+msi, oneClick false, perMachine true, allowToChangeInstallationDirectory true); electron-builder-win-arm64.json:23-24 channel latest-arm64, :33-41 nsis+portable. KEL-53 spec lines 188,480,1535 first cell Windows x64; arch 06 §3 lines 427-450.",
+     "correction": "Rewrite the Linux row: 'AppImage self-replacement + deb/rpm/pacman self-install via electron-updater ≥6.x (package-type sentinel) when draw.io's electron-builder writes that sentinel; snap/flatpak have no path'. Decide explicitly whether the bridge feed lists Keld .deb/.rpm (then Keld's packages are installed by a sudo-spawned dpkg from the OLD Electron client — document as bridge-only, never a Keld-owned path) or omits them (strand → announcement). Add an MSI row: MSI installs carry app-update.yml and will fetch the NSIS bridge installer — either ship the bridge NSIS so it detects/uninstalls the MSI product or filter MSI installs in the final Electron release before the bridge. Add a 'portable' row (win-arm64 target 'portable' has no update-info; announcement-only). Keep Windows x64 NSIS first. Note isAdminRightsRequired for draw.io is set only if packElevateHelper is on (oneClick is false) — check the published latest.yml rather than assume elevate.exe is used."
+    },
+    {
+     "decision_id": "F09-A6",
+     "verdict": "survives",
+     "reason": "The translation inventory matches the corpus configs and the repo state: arch 04 §2 names keld.build.ts as 'packaging: targets, signing, update feed, delta settings — generated by migrate (from electron-builder config)'; no keld.build.ts schema exists in crates/ or packages/ (only prose mentions in docs); there is no KEL-15 spec file in docs/specs; keld-cli reserves build/migrate as KELD-CLI-045 with Migrate → KEL-17. draw.io's five electron-builder configs, build/fuses.mjs flips, notarize.mjs Quick Look .appex embedding and sign-trusted.mjs (Azure Trusted Signing dlib) are as stated; Zettlr's forge.config.js (Pandoc download hooks, FusesPlugin, asar.unpack '*.{node,dll}', osxSign/osxNotarize, extraResource) and electron-builder.yml (dmg, nsis perMachine:false allowElevation, AppImage, azureSignOptions publisherName) are as stated. fuses.md defaults match the object for the eight fuses it lists.",
+     "evidence": "docs/architecture/04-electron-compat.md:34-41; grep keld.build.ts → docs only; ls docs/specs has no kel15*; crates/keld-cli/src/verb.rs:11,23-25,37-38,60; corpus drawio-desktop/electron-builder-*.json, build/fuses.mjs:34-42, build/notarize.mjs:40-56, build/sign-trusted.mjs:1-36; corpus zettlr/forge.config.js:4-5,16-147,197-245, electron-builder.yml:5,35-36,48-63,91-94; tutorial/fuses.md:26-153.",
+     "correction": "The fuse-disposition table is incomplete: fuses.md v44.4.5 lists a ninth fuse, `wasmTrapHandlers` (Default: Enabled, lines 151-153), which the object omits; every FuseV1Option must have a disposition row or the ✘/▲ accounting is wrong. draw.io also ships build/msi-project-created.mjs (another custom build hook) and a 'portable' Windows target — add both to the drop/translate report. nsis.allowToChangeInstallationDirectory=true means the install root is user-chosen; migrate must say how that maps onto KEL-254's bound launch path/ExpectedAppIdentity (currently unstated). KEL-15 ownership remains [unknown]: no spec file exists, so the schema owner must be named before migrate can be sized."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Electron docs and source disagree on Windows quitAndInstall: docs claim windows close first and before-quit-for-update fires; the Windows Squirrel implementation does neither. Any conformance entry written from auto-updater.md alone will fail against a real Electron oracle on Windows, Keld's first admitted cell. Conformance entries for F09 must cite source lines (per platform), with docs as secondary.",
+     "evidence": "electron v44.4.5 lib/browser/api/auto-updater/auto-updater-win.ts:11-17 vs docs/api/auto-updater.md 'Under the hood ... will close all application windows first'; emission exists only in shell/browser/api/electron_api_auto_updater.cc:117 (native/mac) and auto-updater-msix.ts:460."
+    },
+    {
+     "severity": "high",
+     "finding": "electron-updater 6.8.9 (draw.io's resolved version) installs deb/rpm/pacman packages by spawning `dpkg -i` / `rpm` / `pacman` under pkexec/gksudo/kdesudo/sudo from the Electron main process. This is a never-list-class behavior (privileged spawn from app code) that the bridge release inherits on Linux, and it invalidates the object's 'AppImage only' Linux model.",
+     "evidence": "electron-updater-6.8.9.tgz out/main.js:51-75, out/DebUpdater.js:33-69, out/LinuxUpdater.js:34-83."
+    },
+    {
+     "severity": "medium",
+     "finding": "Sequencing/sizing: the object names no first slice. Every end-to-end F09 cell depends on host feed orchestration, candidate launch and the 30 s health channel, all TARGET (arch 06 lines 479-492; product-status row 9). The only slice a fresh agent can finish today is Bun-side: (1) conformance entries per facade×platform from the source receipts above, (2) the keld-guard capability-id extension for update.* with evaluate tests, (3) the echo-codegen declarations and a mock-host facade. Anything that claims 'checkForUpdates reaches a feed' is blocked on KEL-53 T5/T6.",
+     "evidence": "docs/architecture/06-runtime-and-tooling.md:479-492; docs/engineering/product-status.tsv row crate.keld-update; crates/keld-guard/src/lib.rs:1016 hard-coded operation set."
+    },
+    {
+     "severity": "medium",
+     "finding": "MSI installs of draw.io carry app-update.yml (written once per pack when nsis is co-built) but are never listed in latest.yml; the live NsisUpdater will download and run the NSIS bridge installer over an MSI install, leaving two install families. The object marks this 'unknown'; it is settled and needs an owner decision.",
+     "evidence": "electron-builder v26.0.12 app-builder-lib/src/publish/PublishManager.ts:113-127,211-219,470-475; draw.io electron-builder-win.json:32-41 (nsis+msi in one build)."
+    },
+    {
+     "severity": "medium",
+     "finding": "electron-updater's 'Later' path differs from Electron-core: with autoInstallOnAppQuit=false (draw.io when silentUpdate is false) a downloaded update is NOT installed on quit or next launch; Electron-core applies a downloaded update on next start regardless. The object's 'autoInstallOnAppQuit=true maps to deferred activation at quit' is right but the false branch needs its own cell: a Keld stage left unactivated forever vs activated at next quit.",
+     "evidence": "electron-updater 6.8.9 out/BaseUpdater.js:70-88 ('Update will not be installed on quit because autoInstallOnAppQuit is set to false'); docs/api/auto-updater.md update-downloaded NOTE; draw.io electron.js:78,86,2329-2350."
+    },
+    {
+     "severity": "medium",
+     "finding": "KEL-74 evidence schema has no 'ecosystem'/L3 denominator kind (install, activation, primary_workflow, full_feature only). The 'L3 electron-updater shim row' in A1 requires a schema change owned by KEL-74, which the object does not list as a blocker.",
+     "evidence": "crates/keld-compat/src/evidence.rs:270-290."
+    },
+    {
+     "severity": "medium",
+     "finding": "Receipt version drift: all electron-updater receipts are from electron-builder tag v26.0.12 whose electron-updater is 6.6.2; draw.io resolves 6.8.9 (electron-builder ^26.15.7). GitHub tags have no v26.15.x (they jump v26.0.20 → v28.0.0), so the correct receipt is the npm tarball sha512 recorded in draw.io's package-lock. The shim must pin 6.8.9's surface (still plain-boolean autoInstallOnAppQuit; Deb/Rpm/Pacman updaters present).",
+     "evidence": "corpus/drawio-desktop/package-lock.json:1943-1946; eu_package.json at v26.0.12 '6.6.2'; GitHub tags API listing; electron-updater-6.8.9.tgz out/ listing."
+    },
+    {
+     "severity": "medium",
+     "finding": "checkForUpdates-before-setFeedURL is platform-divergent in Electron itself: Windows/MSIX emit 'error' ('Update URL is not set'); macOS [inference from nil messaging in auto_updater_mac.mm:120-130] does nothing. Keld's ▲ must be recorded per platform and the mac side needs one run receipt.",
+     "evidence": "auto-updater-win.ts:44-48; auto-updater-msix.ts:386-390; auto_updater_mac.mm:27,120-130."
+    },
+    {
+     "severity": "low",
+     "finding": "Fuse table omits `wasmTrapHandlers` (Default: Enabled) present in v44.4.5 fuses.md; the migrate disposition table would silently drop a FuseV1Option.",
+     "evidence": "docs/tutorial/fuses.md lines 151-153."
+    },
+    {
+     "severity": "low",
+     "finding": "Docs claim 'Calling autoUpdater.checkForUpdates() twice will download the update two times'; the object's fetch-count oracle ('exactly 1 after update-available') must specify the double-call case (Keld dedupes via the in-flight check, which is ▲ vs Electron-core but ✔ vs electron-updater's 'already in progress' reuse).",
+     "evidence": "docs/api/auto-updater.md checkForUpdates NOTE; electron-updater 6.8.9 out/AppUpdater.js checkForUpdates in-progress promise reuse."
+    },
+    {
+     "severity": "low",
+     "finding": "semantic_traps[0] overstates corpus risk: draw.io's mac before-quit handler only sets cmdQPressed=true and window-all-closed then calls app.quit(); under either ordering no install is cancelled, and quitAndInstall calls app.quit() itself. The ordering trap is real for the oracle but has no draw.io demand.",
+     "evidence": "corpus/drawio-desktop/src/main/electron.js:2104-2126,2350."
+    },
+    {
+     "severity": "low",
+     "finding": "Grant naming inconsistency inside the object: A4 uses `update.quitAndInstall`, security_mapping uses `update.install`. One capability id, one owner.",
+     "evidence": "research object F09-A4 proposed_answer vs security_mapping[4]."
+    },
+    {
+     "severity": "low",
+     "finding": "draw.io's comment 'On mac, download-progress event is not called' may be stale for 6.8.9: MacUpdater routes through AppUpdater.executeDownload, which wires onProgress when a 'download-progress' listener exists. The shim's progress cell needs an Electron-run receipt on macOS rather than the corpus comment.",
+     "evidence": "corpus/drawio-desktop/src/main/electron.js:2282; electron-updater 6.8.9 out/MacUpdater.js:87, out/AppUpdater.js:567-568,675-676."
+    },
+    {
+     "severity": "low",
+     "finding": "auto-updater.md 'With Squirrel.Windows only releaseName is available' is stale: the Windows implementation emits releaseNotes, version, a fabricated Date and updateURL. The update-downloaded payload-shape oracle should not assert releaseNotes undefined on Windows against Electron; it is a Keld ▲ (v0 manifest has no notes), not a Windows match.",
+     "evidence": "auto-updater-win.ts:59-66."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "F09-A2",
+   "decision": "Which existing owner names the updater feed base, and which host-controlled carrier binds it to an installation, so that Electron-core autoUpdater.getFeedURL has a source of truth and setFeedURL has something to be compared against.",
+   "classification": "needs-human",
+   "milestone": "parked",
+   "facts": [
+    "Linear (team KELD) was reachable read-only in this session on 2026-10-06; every call succeeded. KEL-53 'Updater: signed manifest and delta patch vertical slice' is In Progress, assignee Amisha Ramani, updated 2026-10-06T01:55Z. KEL-254 is In Progress (Amisha Ramani). KEL-19 is Done (2026-07-10, GYLDLAB) but carries the live ExpectedAppIdentity container work in its comments (spec approved at PR #382 with SHA 2293ad68..., T1 landed in #386 as main e330db8f, T2 PRs #515/#514 open). KEL-137 In Progress, KEL-103 In Progress, KEL-141 Backlog. Source: Linear get_issue/list_comments, fetched 2026-10-06.",
+    "ExpectedAppIdentityPayload has exactly four fields: app_id, channel, target, update_public_key (32 bytes). There is no feed field. Source: crates/keld-pack/src/expected_identity.rs:68-72 at origin/main cb7d8e9e.",
+    "Architecture 06 section 4a defines the feed layout as <feed-base>/<channel>/<target>/updates.json(.sig) and says the prebuilt host carries 'the key, app id, channel and target' in its signed ExpectedAppIdentity payload. It never says where <feed-base> comes from. Source: docs/architecture/06-runtime-and-tooling.md:633-639 and 869-875.",
+    "A fixed-string search for 'keld.build.ts', 'feed-base', 'feed base', 'feed URL' and 'update.feed' over docs/architecture, docs/specs, crates and packages finds only the arch 06 layout lines, the arch 04 section 2 table row ('update feed' inside keld.build.ts) and arch 03 line 215. No artifact names an owner or carrier for the feed base. Source: git grep at origin/main cb7d8e9e, run 2026-10-06.",
+    "The KEL-53 spec states 'docs/architecture/06 section 4/4a owns the v0 feed, manifest, canonical archive, verification order, local trust floor and activation model'. Source: docs/specs/kel53-full-package-activation.md:378-380.",
+    "Live feed orchestration is unimplemented: arch 06 lists 'Live feed orchestration, host candidate launch, the private health channel ... remain unimplemented'. Source: docs/architecture/06-runtime-and-tooling.md:478-485.",
+    "Manifest artifact URLs are feed-relative (example '1.4.2/full.zst'), and the manifest is verified against the compiled-in key before any field is parsed. Source: docs/architecture/06-runtime-and-tooling.md:680 and 869-876.",
+    "draw.io never calls getFeedURL. It imports electron-updater (not Electron's autoUpdater) at src/main/electron.js:17, calls setFeedURL at :2078 outside the disable guard, and checkForUpdates at :1901 and :2099. Source: corpus/drawio-desktop at 2edf9fb, fixed-string grep 2026-10-06.",
+    "electron-updater's own getFeedURL returns the literal string 'Deprecated. Do not use it.'. Source: electron-userland/electron-builder master packages/electron-updater/src/AppUpdater.ts:476-478, retrieved 2026-10-06.",
+    "Electron v44.4.5: getFeedURL is documented as 'Returns string - The current update feed URL' and checkForUpdates as 'You must call setFeedURL before using this API' (docs/api/auto-updater.md:160,164). On Windows, checkForUpdates without a URL calls emitError(new Error('Update URL is not set')) (lib/browser/api/auto-updater/auto-updater-win.ts:44-47). On macOS, setFeedURL throws a TypeError for an invalid serverType (shell/browser/auto_updater_mac.mm:53-54). Source: raw.githubusercontent.com/electron/electron/v44.4.5, retrieved 2026-10-06.",
+    "The panel already resolved the first-proof updater behaviour: setFeedURL is a recorded no-op, DRAWIO_DISABLE_UPDATE=true is set in the host-declared role environment, and 'Real updater activation stays KEL-53'. Source: wayfinder/electron-compat/panel/synthesis.md:68.",
+    "Architecture 03 says keld migrate seeds 'autoUpdater -> net to feed URL', an app-role network grant, which conflicts with the host being the only feed client. Source: docs/architecture/03-security.md:214-215.",
+    "GitHub gyldlab/keld#409 is open with zero comments; F09-T1 (#491) lists F09-A2 as its only map blocker. Source: gh issue view and publish_plan.json, 2026-10-06."
+   ],
+   "inferences": [
+    "The feed base is a locator, not a trust root. A hostile feed base can withhold updates or replay signed manifests that the floor rejects, but it cannot forge one. The carrier therefore needs authority protection (no role, environment or argv may set it), not secrecy.",
+    "The ownership half of the question is already answered by the KEL-53 spec text: the field must be named in arch 06 section 4a under KEL-53, not in F09 or @keld/electron. Only the carrier is undecided.",
+    "The only signed carrier today is a Windows PE section. A carrier chosen now would not cover macOS, the first-proof OS, whose signed-host work is KEL-103.",
+    "The electron-updater-shaped shim, the only updater surface draw.io uses, can return upstream's literal deprecated string from getFeedURL and needs no feed base. Only the Electron-core autoUpdater facade needs one, and that facade has zero call sites in the three-app corpus.",
+    "F09-T1's block on F09-A2 over-blocks: its first acceptance criterion (draw.io boots with setFeedURL recorded and no error dialog) does not depend on a feed base."
+   ],
+   "unknowns": [
+    "Whether the ExpectedAppIdentity container has room and bounds for a URL field. Not inspected.",
+    "Whether the owner wants feed migration (moving the feed base through an update) to be a supported operation.",
+    "What the macOS carrier will be (KEL-103).",
+    "What Electron 44.4.5 on macOS does when checkForUpdates runs before setFeedURL. The research note infers 'no event'; nobody has run it. This matters only for the Electron-core facade."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Add a canonical https feed-base field to the signed ExpectedAppIdentity payload as a new format version.",
+     "cost": "Reopens a contract the owner approved by exact SHA (comment 9ac5ecb2) and its golden vector while KEL-19 T2/T3 are in flight. Needs the wire gate, re-approval and URL canonicalisation rules (the KEL-208 authority-boundary lesson applies).",
+     "new_invariant": "The host's update identity tuple (key, app id, channel, target, feed base) lives in one signed, byte-validated carrier read through the verified handle.",
+     "invariant_at_risk": "Stability of the approved container format; the carrier is Windows-only until a macOS equivalent exists."
+    },
+    {
+     "option": "B. Record the feed base in the OS-protected installer provenance record (KEL-254).",
+     "cost": "A second copy of a build-time value, written at install time; Windows-only; adds a provenance field to a slice that declared none.",
+     "new_invariant": "Installer provenance carries the feed base.",
+     "invariant_at_risk": "One source of truth (the installer must copy the value from the package); the protected-state schema."
+    },
+    {
+     "option": "C. A host-read descriptor inside the signed full package, generated from keld.build.ts.",
+     "cost": "A new file and parser in the canonical package. Depends on keld build (reserved, KELD-CLI-045) and a keld.build.ts schema (absent).",
+     "new_invariant": "The feed base is read only from the active verified package.",
+     "invariant_at_risk": "A second host-read configuration surface beside ExpectedAppIdentity; ordering of parse versus activation."
+    },
+    {
+     "option": "D. Leave the field unnamed for now; the facade exposes no feed base (core getFeedURL cell stays 'unknown', the shim returns upstream's literal).",
+     "cost": "No pass cell for Electron-core getFeedURL. Blocks nothing in the first proof. KEL-53's feed-orchestration spec must still choose A, B or C later.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None now."
+    },
+    {
+     "option": "E. Honour the app-selected setFeedURL value.",
+     "cost": "Rejected: it is on the never-list (research 186 row 10) and contradicts KEL-53 ('feed bytes convey no authority').",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Host-owned update authority."
+    }
+   ],
+   "recommendation": "Park it (option D now). Record the owner as arch 06 section 4a under KEL-53. Narrow F09-T1 (#491) so F09-A2 blocks only the 'checkForUpdates against a declared host feed' and Electron-core getFeedURL criteria, and drop 'compared with keld.build.ts' until a schema and a consumer exist. When KEL-53's live feed-orchestration slice is specified, prefer option A, with the macOS carrier decided under KEL-103. The one remaining question for the owner: when that slice is specified, should the feed base be added to the signed ExpectedAppIdentity payload (reopening the approved container format with a new version), or carried in a separate host-read descriptor inside the signed package?",
+   "falsifier": "A first-proof cell (install, activation or any of the four workflow steps on macOS under the legacy profile) that fails or cannot be scored without a host feed base. For example: draw.io or one of its dependencies branching on getFeedURL's value on the boot or workflow path, or the owner admitting a macOS update cell into the first proof.",
+   "reversible": "Yes. Parking writes nothing. No host ships with a feed-base carrier today, so choosing A, B or C later breaks no deployed format.",
+   "missing_evidence": "The owner's carrier choice; the container's size headroom; the macOS carrier (KEL-103); one Electron 44.4.5 run on macOS for checkForUpdates before setFeedURL (Electron-core facade only).",
+   "next_action": "Orchestrator (the single GitHub writer) updates gyldlab/keld#409 to 'parked - owner KEL-53 (arch 06 section 4a); unpark when KEL-53's live feed-orchestration slice is specified' and narrows the F09-A2 block in #491. First check: #409 shows that parked line and #491's first acceptance criterion no longer depends on F09-A2.",
+   "owner": "KEL-53 (In Progress, assignee Amisha Ramani; Linear fetched 2026-10-06), through arch 06 section 4a which its spec names as owner of the v0 feed. Carrier owners if option A is chosen: the ExpectedAppIdentity spec tracked on KEL-19 (Done in Linear, live in comments) and KEL-254 (In Progress); macOS: KEL-103 (In Progress). Crates: keld-update, keld-pack.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F09-A6",
+   "decision": "Is there an accepted KEL-15 configuration-RFC text outside the repository to recover, and what must exist in the repo before keld.build.ts translation work starts.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "Linear (team KELD) was reachable read-only in this session on 2026-10-06; every call succeeded.",
+    "KEL-15 'RFC: Configuration schema - keld.config and friends' is Done, completed 2026-07-10T15:57Z, moved Backlog to Done without an In Progress state, creator and assignee GYLDLAB, project 'Phase 1 - Architecture & Specs'. Its documents and attachments lists are empty. All three acceptance checkboxes are unchecked, including 'RFC drafted with the complete v1 schema'. Source: Linear get_issue KEL-15, fetched 2026-10-06.",
+    "KEL-15's only comment (d1137b07, GYLDLAB, 2026-07-08) says: 'Draft spec already exists at docs/architecture/04-electron-compat.md section 2 (currently uncommitted in the repo working tree) - this RFC should review/ratify the config file contract', then lists the four Keld config files, the two edited files and the keld.config.ts defineConfig sketch. Source: Linear list_comments KEL-15, fetched 2026-10-06.",
+    "Linear holds no RFC document: list_documents for the Phase 1 project and for the queries 'configuration schema', 'RFC' and 'keld.build' each returned an empty list. Source: Linear list_documents, fetched 2026-10-06.",
+    "Architecture 04 section 2 has been in the repo since b93ebb6e (2026-08-13, PR #2). Its table gives keld.build.ts one row ('packaging: targets, signing, update feed, delta settings', generated by migrate); only keld.config.ts has a sketch. Source: docs/architecture/04-electron-compat.md:32-61 at origin/main cb7d8e9e.",
+    "No RFC or schema file was ever committed on any ref: 'git log --all -S keld.build.ts' finds only prose commits (KEL-53 spec, the wayfinder research branch, checkpoint refs), and no added file on any ref matches rfc, config-schema or kel15. Source: local clone, 2026-10-06.",
+    "Nothing reads keld.build.ts: a fixed-string search over crates and packages has no hit. 'keld build' and 'keld migrate' are reserved verbs (KELD-CLI-045) tracked to KEL-19 and KEL-17. Source: crates/keld-cli/src/verb.rs:11,60-61.",
+    "The only live config file is the hello template's keld.config.ts with the shape {name, entry, renderer}, which differs from arch 04 section 2's defineConfig sketch. Source: crates/keld-cli/templates/hello/keld.config.ts.",
+    "KEL-19 is Done in Linear (2026-07-10, GYLDLAB) but is the live tracking issue for packaging work: comment c3dded99 records 'The owner asked that this be tracked on this existing issue rather than a new one', and comment 9ac5ecb2 records the owner direction that work with no nearby Linear issue be tracked in GitHub issues. Source: Linear list_comments KEL-19, fetched 2026-10-06.",
+    "macOS packaging owners are not landed: KEL-103 In Progress, KEL-137 In Progress, KEL-141 Backlog. Source: Linear, fetched 2026-10-06.",
+    "GitHub gyldlab/keld#410 is open with zero comments; F09-T2 (#492) is blocked by it and says 'RFC text to be located'. Source: gh issue view and publish_plan.json, 2026-10-06."
+   ],
+   "inferences": [
+    "The 'accepted RFC text' is architecture 04 section 2 itself (and arch 06 sections 2-5 for KEL-19). There is nothing else to locate. Done on KEL-15 ratified the file-set contract; it did not deliver a v1 schema.",
+    "The ticket's premise ('the repository holds no RFC document') is wrong in one respect: the ratified text is in the repo, but it contains no keld.build.ts schema.",
+    "keld.build.ts has no consumer until keld build is live, so a hand-authored keld.build.ts in the first-proof draw.io artefact would be an unread file.",
+    "F09-T2's real predecessor is 'write the keld.build.ts schema spec', not 'locate the RFC'."
+   ],
+   "unknowns": [
+    "Whether the owner holds an off-Linear draft (local file or chat). Nothing recorded suggests one.",
+    "Which issue should carry the future keld.build.ts schema spec: KEL-19 by precedent, or a GitHub issue under the owner's direction for work with no nearby Linear issue."
+   ],
+   "alternatives": [
+    {
+     "option": "1. Resolve by evidence: no RFC text exists beyond arch 04 section 2. Park the schema and rewrite F09-T2's predecessor as 'approved keld.build.ts schema spec under the keld build owner'.",
+     "cost": "None now.",
+     "new_invariant": "The keld.build.ts schema is owned by one approved spec under the keld build owner; migrate translation targets that spec, never prose.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "2. Reconstruct a kel15-config-schema spec from arch 04 section 2 now and land it under docs/specs.",
+     "cost": "A spec with no consumer that restates arch 04 section 2; any schema content would be invented and need exact-content owner approval.",
+     "new_invariant": "A second configuration-contract document.",
+     "invariant_at_risk": "One source of truth; the YAGNI rule; the no-hollow-files rule."
+    },
+    {
+     "option": "3. Ask the KEL-15 owner for the text and wait (the ticket as written).",
+     "cost": "Blocks F09-T2 on a question whose recorded answer is KEL-15's own comment.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None; it only delays."
+    },
+    {
+     "option": "4. Hand-author keld.build.ts for draw.io in X02-T3 anyway.",
+     "cost": "An unconsumed generated file with an unapproved shape that later work would treat as precedent.",
+     "new_invariant": "A de facto schema defined by an example.",
+     "invariant_at_risk": "The no-stubs rule; the spec-plus-Linear gate for features."
+    }
+   ],
+   "recommendation": "Take option 1. Mark the ticket resolved with the Linear receipt, and change F09-T2's blocker from 'locate the RFC' to 'approved keld.build.ts schema spec, written when the keld build slice starts'. For the first proof, omit keld.build.ts from the draw.io artefact in X02-T3 (#499) and have the migrate report say 'not generated: keld build is reserved (KELD-CLI-045)'. Route the discovered drift between the hello keld.config.ts and the arch 04 sketch to the X02-T1 (#497) spec; do not fix it here.",
+   "falsifier": "The owner producing an RFC document dated on or before 2026-07-10 that contains a keld.build.ts schema; or a live code path that reads keld.build.ts on the first-proof route (a reader appearing in crates or packages).",
+   "reversible": "Yes. Only ticket text changes; an RFC found later can still be landed.",
+   "missing_evidence": "None needed to decide. Optional: a one-line owner confirmation that no off-Linear draft exists.",
+   "next_action": "Orchestrator updates gyldlab/keld#410 to resolved, citing Linear comment d1137b07 and the empty documents list, and rewrites the blocker sentence in #492. First check: #410 reads resolved with that citation and #492 no longer contains 'RFC text to be located'.",
+   "owner": "KEL-15 (Done, assignee GYLDLAB; Linear fetched 2026-10-06) for the historical RFC. Forward owner of the keld.build.ts schema: KEL-19 (Done in Linear but the live packaging tracking issue; the reserved build verb points to it), with keld-cli and keld-pack as crate owners.",
+   "prompt_tracker_node": ""
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F09-A6": {
+   "status": "decided",
+   "resolution": "Take option 1. Mark the ticket resolved with the Linear receipt, and change F09-T2's blocker from 'locate the RFC' to 'approved keld.build.ts schema spec, written when the keld build slice starts'. For the first proof, omit keld.build.ts from the draw.io artefact in X02-T3 (#499) and have the migrate report say 'not generated: keld build is reserved (KELD-CLI-045)'. Route the discovered drift between the hello keld.config.ts and the arch 04 sketch to the X02-T1 (#497) spec; do not fix it here.",
+   "milestone": "parked"
+  },
+  "F09-A2": {
+   "status": "owner-decision-delegated",
+   "resolution": "Park (option D now): the facade exposes no feed base; owner of the eventual field is architecture 06 section 4a under KEL-53. F09-A2 no longer blocks the inert updater-adapter slice. Reopen when the KEL-53 feed-orchestration slice is specified (preferred carrier: the signed ExpectedAppIdentity payload, new format version).",
+   "milestone": "parked"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "Electron's autoUpdater is a 10-member module (setFeedURL/getFeedURL/checkForUpdates/quitAndInstall + 6 events), macOS+Windows only, that delegates verification and installation to Squirrel.Mac / Squirrel.Windows / MSIX and takes an app-selected feed URL [fact: v44.4.5 auto-updater.md]. Neither corpus app uses it directly: draw.io uses electron-updater v6 (setFeedURL({provider:'github',...}), autoDownload=false, autoInstallOnAppQuit, downloadUpdate, download-progress, info.version, logger) and Zettlr ships its own got-based downloader (shell.openPath of the downloaded installer + app.quit) [fact: corpus grep]. Keld today: keld-update implements signed v0 manifest/full verification, Windows x64 extraction/staging, PerUserDirect journaled activation, read-only active selection and startup repair; keld-pack streams Windows v0 packages only; keld-cli `build`/`migrate` are reserved (KELD-CLI-045); @keld/electron exports only `app`; no update event channel to Bun, no keld.build.ts schema, no autoUpdater facade, no bridge recipe [fact: product-status.tsv rows 9/10/13, crates, packages]. Feed orchestration, candidate launch, 30-second health, host consumer, macOS/Linux package cells (blocked on KEL-137 + KEL-103) are TARGET. Design answer: implement ONE host-owned updater (KEL-53) and expose two thin Bun facades over kipc — Electron-core `autoUpdater` and an electron-updater-shaped shim for migrated apps — with the feed URL compiled into the signed host (never app-selected), staged≠activated semantics documented as ▲, errors mapped from KELD-UPDATE-*; `keld migrate` translates electron-builder/forge config into keld.build.ts with a per-field disposition report (fuses/ASAR/custom hooks → explained drops); the arch 04 §7 bridge release is constrained by electron-updater's publisherName Authenticode check + NSIS spawn args on Windows and by Squirrel.Mac's designated-requirement check on macOS, and is only reachable for Windows x64 until KEL-137/KEL-103 land. Six decision atoms below; three prototypes; evidence receipts attached.",
+  "decisions": [
+   {
+    "id": "F09-A1",
+    "question": "Which updater contract does the compat layer clone: Electron-core `autoUpdater` (the F09 census) or the electron-updater v6 surface the corpus actually calls?",
+    "proposed_answer": "Both, as two thin Bun facades over ONE host-owned KEL-53 state machine: (a) `@keld/electron`.autoUpdater implements the 10-member Electron-core surface for the per-API scoreboard; (b) `keld migrate` rewrites `electron-updater` imports to a Keld-owned shim exporting the AppUpdater subset draw.io exercises (autoDownload, autoInstallOnAppQuit, downloadUpdate, download-progress, update-available(info.version), update-downloaded, error(err), logger, checkForUpdates():Promise<result|null>, quitAndInstall(isSilent?, isForceRunAfter?)). Provider options ({provider:'github', owner, repo, channel}) are parsed only to cross-check against keld.build.ts and never contacted. Zettlr needs neither (custom got downloader) and scores N/A in this family. Declared as an L3 ecosystem row in the KEL-74 denominator, not as Electron API.",
+    "evidence": [
+     "[fact] draw.io imports {autoUpdater} from 'electron-updater' (src/main/electron.js:17-18), sets autoDownload=false, autoInstallOnAppQuit=silentUpdate (:85-86), calls setFeedURL({provider:'github', repo:'drawio-desktop', owner:'jgraph', channel?}) (:2078), checkForUpdates (:2099), downloadUpdate (:2360, :2389), quitAndInstall (:2350); listens error/update-not-available/download-progress/update-downloaded/update-available (:2228-2355); reads info.version (:2383)",
+     "[fact] Zettlr: no autoUpdater/electron-updater; source/app/service-providers/updates/index.ts uses got + semver + sha256 verification, shell.openPath(installer), app.quit()",
+     "[fact] electron-quick-start: no updater usage (corpus usage json)",
+     "[fact] arch 04 §4 Tier 2 and research 13 line 35: 'autoUpdater → keld-update adapter'",
+     "[fact] electron-updater v26.0.12 AppUpdater.ts: autoDownload=true default; autoInstallOnAppQuit=true default (not deprecated at that tag); quitAndInstall(isSilent?, isForceRunAfter?); AppUpdaterEvents list"
+    ],
+    "confidence": "medium",
+    "type": "grilling",
+    "alternatives_rejected": "Only Electron-core autoUpdater: draw.io (migration candidate #1) would score ✘ on its updater and the arch 04 §7 bridge would have no client contract to meet. Re-implementing electron-updater's providers (GitHub Releases scraping, latest.yml parsing, sha512) inside Keld: duplicates feed parsing/trust (one owner rule), and would copy an app-selected feed into the privileged updater (never list). Forking electron-updater to run on Bun: it spawns installers and reads app-update.yml — contradicts KEL-53 'no arbitrary relaunch helper, no role-writable update state'.",
+    "unknowns": "Exact electron-updater version pin draw.io resolves in 2026 (^6.8.9; master already deprecates autoInstallOnAppQuit) — the shim must pin one AppUpdater surface and record it in the denominator. Whether a product decision admits an L3 'ecosystem shim' row at all (KEL-127 says no silent downgrade; a shim is a visible row, but the owner must confirm)."
+   },
+   {
+    "id": "F09-A2",
+    "question": "What does `autoUpdater.setFeedURL(...)` do under Keld, given the host's feed, key, app id, channel and target are compiled into the signed host (ExpectedAppIdentity)?",
+    "proposed_answer": "setFeedURL is accepted syntactically (no throw, so migrated apps keep running), its argument is compared with keld.build.ts `update.feed`/`channel`, and a mismatch emits a KELD-COMPAT dev diagnostic; the host NEVER reads it. getFeedURL returns the host's compiled-in feed base (read-only). `headers`, `serverType`, `allowAnyVersion`, electron-updater `requestHeaders`, `login` event, `allowDowngrade`, `channel` setter are documented-never (▲ accepted-and-ignored for the first three/last two, ✘ for login). checkForUpdates without a prior setFeedURL succeeds under Keld (▲ more permissive than Electron's 'You must call setFeedURL before using this API').",
+    "evidence": [
+     "[fact] briefing never-list item 10: 'app-selected updater feed URLs into a privileged updater'",
+     "[fact] research 186 row 10: macOS passes developer URL to SQRLUpdater; classic Windows spawns Update.exe --update <url> unchanged; 'Never copy an app-selected feed URL into a privileged updater'",
+     "[fact] arch 06 §4a step 1: key compiled into the host, 'never fetched from the feed itself'; step 2: app.id/channel/target must match host identity → KELD-UPDATE-006 ManifestIdentityMismatch",
+     "[fact] keld-pack ExpectedAppIdentityPayload carries key bytes, app id, channel, target (crates/keld-pack/src/expected_identity.rs; kel254-expected-identity-container.md)",
+     "[fact] KEL-53 step 4: floor-based filtering makes downgrade impossible → allowDowngrade/allowAnyVersion cannot be honored",
+     "[fact] auto-updater.md: checkForUpdates 'You must call setFeedURL before using this API'"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "Dev-only feed override under `keld dev` + recorder: tempting for fixture feeds, but `keld dev` has no protected provenance (KELD-UPDATE-001) so the updater is inactive there anyway; a dev override would be a parallel trust path (one rule one owner). Throwing on setFeedURL to be 'honest': breaks draw.io at boot (its safeUpdaterCall would show an 'Update Error' modal).",
+    "unknowns": "Electron's exact observable when checkForUpdates runs without setFeedURL (synchronous throw vs 'error' event text) — needs an Electron-run receipt before the conformance entry is written."
+   },
+   {
+    "id": "F09-A3",
+    "question": "How do KEL-53 states map onto the Electron/electron-updater event sequence, and what does `update-downloaded` + `quitAndInstall` mean when Keld's activation can roll back after a failed 30-second health check?",
+    "proposed_answer": "Mapping: checking-for-update = feed fetch begins; update-available(info{version, releaseDate=publishedAt, releaseName=version, releaseNotes undefined}) = SelectedFull minted after signature+shape+floor filter; update-not-available = typed empty filtered set; download-progress(percent, transferred, total=full.size, bytesPerSecond) = streamed verify_full bytes (electron-updater shim only); update-downloaded = CompletedWindowsStage exists (staged, verified, NOT published/selected); error(Error{message: KELD-UPDATE-* Display, code}) = any typed refusal, delivered exactly once; quitAndInstall = emit before-quit-for-update → close all windows → before-quit → will-quit → quit → host runs the journaled activation. Documented divergence ▲: 'downloaded' ≠ 'will run next launch'; if the candidate fails health the host rolls back to last-known-good and the next launch runs the OLD version (observable via app.getVersion()). autoInstallOnAppQuit=true (electron-updater default; draw.io's silent path) maps to the same deferred activation at quit. Electron-core autoUpdater's implicit auto-download after update-available is honored; the shim honors autoDownload=false by not fetching the full artifact.",
+    "evidence": [
+     "[fact] auto-updater.md: 'Under the hood calling autoUpdater.quitAndInstall() will close all application windows first, and automatically call app.quit() after all windows have been closed'; before-quit-for-update 'emitted after a user calls quitAndInstall()'; app.md before-quit note: when initiated by quitAndInstall, before-quit fires after closing all windows",
+     "[fact] auto-updater.md checkForUpdates: 'If an update is available it will be downloaded automatically'; update-available: 'The update is downloaded automatically'",
+     "[fact] F09 family JSON update-downloaded desc: 'It is not strictly necessary to handle this event. A successfully downloaded update will …' (truncated; Electron applies on next start regardless)",
+     "[fact] arch 06 §4: candidate must boot the exact version, reach application Ready within 30 s over a private health channel, else rollback to retained last-known-good; floor advances only after the published candidate is re-verified (KEL-270 F1)",
+     "[fact] keld-update windows_extraction: completed stage 'is neither published nor selected and active records/journal stay unchanged' (product-status row 9)",
+     "[fact] electron-updater v26.0.12 AppUpdater: checkForUpdates emits checking-for-update then update-available|update-not-available; downloadUpdate manual when autoDownload=false",
+     "[fact] draw.io dedupes error dialogs within 5 s because one failure 'can fan out into both a sync throw and an error event' (electron.js:92-96, 122-123)"
+    ],
+    "confidence": "medium",
+    "type": "task",
+    "alternatives_rejected": "Emitting update-downloaded only after activation commit: impossible without quitting (activation requires candidate launch), so draw.io's 'Install / Later' dialog would never appear. Emitting error on rollback into the OLD app instance: the old instance was not the caller; instead surface a typed startup diagnostic (KELD-UPDATE-016) and an `error` on the next checkForUpdates. Synchronous throws from facade methods: rejected — electron-updater's throw+event fan-out is the bug draw.io works around; Keld delivers one `error` emission and a rejected promise, never a sync throw.",
+    "unknowns": "Whether KEL-53 admits a 'quit without relaunch' activation (electron-updater isForceRunAfter=false / autoInstallOnAppQuit silent install): the transaction needs the candidate to boot and report Ready, so a user-visible relaunch or a headless health boot must be chosen by the KEL-53 owner. Whether electron-updater's checkForUpdates both rejects and emits `error` for the same failure (needs source receipt at the pinned tag) to decide the shim's exactly-once contract."
+   },
+   {
+    "id": "F09-A4",
+    "question": "Where does the facade's authority live and what kipc/guard shape carries it, given Bun roles have zero ambient OS authority and KEL-53 forbids role-writable update state?",
+    "proposed_answer": "All network, verification, staging, activation and relaunch stay in the Rust host (keld-update + host lifecycle owner). The main Bun role gets three guarded calls — `update.check` (rate-limited; returns typed result), `update.download` (shim only; honors autoDownload=false), `update.quitAndInstall({silent, forceRunAfter})` — plus a host→Bun event stream (checking/available/not-available/progress/downloaded/error) carrying versions, dates and sizes but never filesystem paths (electron-updater's `downloadedFile`/`updateFile` are undefined ▲). Grants are declared in keld.permissions.jsonc and generated through the existing KEL-98 echo-codegen contract source (no new IDL). Quit sequencing reuses @keld/api app.quit and the F01 before-quit ordering; error text reuses KELD-UPDATE-* Display verbatim.",
+    "evidence": [
+     "[fact] KEL-53 §1 non-goals: 'no arbitrary relaunch helper, shell command, self-update plugin, or role-writable update state'; arch 06: 'strict Keld role restrictions deny Bun/webview writes to the install and updater state'",
+     "[fact] arch 03 §5 line 215 example mapping: 'autoUpdater → net to feed URL' as a host-owned grant; arch 01 line 63: network allowed in cold tooling (CLI, packager, updater fetches)",
+     "[fact] briefing invariant 7: hot kipc paths are callbacks/state machines; invariant 4: no parallel process model; KEL-127: one contract source + echo-codegen owner (KEL-98), no new IDL",
+     "[fact] packages/@keld/electron/src/app.ts: facade pattern (listeners Map, per-listener try/catch, apiApp.quit Promise)",
+     "[fact] electron-updater downloadUpdate resolves file paths (v26.0.12: Promise<Array<string>>) and NsisUpdater spawns the downloaded installer itself — exposing paths would recreate that"
+    ],
+    "confidence": "medium",
+    "type": "task",
+    "alternatives_rejected": "Running electron-updater (or a port) inside the Bun main role with a net grant: duplicates feed trust and lets a role spawn installers (never list: raw child_process from strict roles). A single `update.*` wildcard grant: too wide; check vs install are different authorities (install closes windows and terminates the app).",
+    "unknowns": "Whether the current kipc/app-link transport already supports unsolicited host→Bun events with backpressure for progress (KEL-80 virtual channels) — if not, progress must be coalesced to the latest-value-wins shape. The exact rate limit for update.check (Electron has none; draw.io checks at boot once per 24 h by default)."
+   },
+   {
+    "id": "F09-A5",
+    "question": "What must the arch 04 §7 bridge release (final Electron release whose electron-updater feed points at a Keld installer) satisfy on each platform, and in what order can it ship?",
+    "proposed_answer": "The bridge is constrained by the CLIENT already in users' hands (electron-updater v6 via GitHub Releases): (Windows NSIS) latest.yml/latest-arm64.yml files[] must list a Keld installer with sha512+size; NsisUpdater verifies the downloaded .exe's Authenticode publisherName against the configured list ('JGraph Ltd'/'draw.io Ltd') — so the Keld installer must be signed by the same publisher; it is then spawned with `--updated`, `/S` (silent), optionally `--force-run`, `/D=<dir>`, via elevate.exe when perMachine — Keld's NSIS installer must tolerate those args. draw.io's Electron install is perMachine; Keld's default is PerUserDirect → the bridge must either ship MachineUacDirect (T4d, not implemented) or uninstall the old machine install, else two installs coexist. (macOS) latest-mac.yml must list a zip; MacUpdater proxies it to Squirrel.Mac, which validates the new bundle against the running app's designated requirement (SecCodeCopyDesignatedRequirement → SecStaticCodeCheckValidityWithErrors) → the Keld .app must satisfy the Electron app's DR (same team + bundle id [inference]) and be notarized; blocked on KEL-137 + KEL-103. (Linux) electron-updater only self-updates AppImage; deb/rpm/snap users are ManagedOwner → bridge = AppImage + distro-channel republish; blocked on KEL-137. (MSI/APPX/snap) no electron-updater path → repo-level announcement only. Order: Windows x64 NSIS first (matches KEL-53's first admitted cell), macOS/Linux after KEL-137/KEL-103. The feed must serve both artifact families for the transition window: GitHub Release assets can hold latest*.yml alongside Keld's <channel>/<target>/updates.json(.sig) static tree.",
+    "evidence": [
+     "[fact] arch 04 §7: 'final Electron release whose electron-updater feed points at a Keld-built installer, plus feed-server config for serving both formats during the transition window'",
+     "[fact] electron-updater v26.0.12 NsisUpdater.ts: doInstall args --updated, /S, --force-run, /D=, --package-file=; elevate.exe when isAdminRightsRequired; verifySignature → 'New version X is not signed by the application owner' ERR_UPDATER_INVALID_SIGNATURE",
+     "[fact] electron-updater v26.0.12 MacUpdater.ts: requires a zip asset (ERR_UPDATER_ZIP_FILE_NOT_FOUND), runs a localhost server returning {url} JSON and feeds Electron's native autoUpdater (Squirrel.Mac)",
+     "[fact] Squirrel.Mac SQRLCodeSignature.m: +currentApplicationSignature uses SecCodeCopySelf + SecCodeCopyDesignatedRequirement; bundles verified with SecStaticCodeCheckValidityWithErrors against that requirement",
+     "[fact] builder-util-runtime updateInfo.ts: UpdateInfo{version, files[{url,sha512,size,blockMapSize,isAdminRightsRequired}], releaseDate, releaseName, releaseNotes, stagingPercentage, minimumSystemVersion}",
+     "[fact] draw.io electron-builder-win.json: nsis.perMachine=true, publisherName ['JGraph Ltd','draw.io Ltd'], targets nsis+msi, publish github; win-arm64 config publishes channel 'latest-arm64' (update-channel.js)",
+     "[fact] arch 06 §4a feed tree is static files servable from GitHub Releases/CDN; arch 06 §3 keld-pack formats: .app/.dmg (rcodesign notarization), NSIS+MSI, deb/rpm/AppImage/flatpak",
+     "[fact] KEL-53 non-goal: no macOS/Linux package claim before KEL-137; keld-pack product-status: installers/signing/notarization absent"
+    ],
+    "confidence": "medium",
+    "type": "prototype",
+    "alternatives_rejected": "A redirecting update server that lies to electron-updater: still subject to publisherName/DR checks, adds a server Keld does not run. 'Announcement-only' migration (no bridge): the Fluxzy-class stranding arch 04 §7 exists to prevent. Shipping Keld per-user over an existing perMachine Electron install: leaves a stale privileged copy and two Start-menu entries — must be an explicit owner decision.",
+    "unknowns": "Composition of Electron apps' default designated requirement (team ID + identifier) — needs an Apple receipt; whether electron-builder writes app-update.yml for the MSI target (if not, MSI users have no bridge path); whether electron-updater's NSIS flow tolerates a non-electron-builder NSIS script (its `--updated`/`--force-run` are custom flags handled by electron-builder's installer script); Keld windows-arm64 cell admission (draw.io ships arm64)."
+   },
+   {
+    "id": "F09-A6",
+    "question": "What does `keld migrate` translate from electron-builder JSON/YAML and electron-forge JS configs into keld.build.ts, and how are fuses, ASAR, notarize and signing hooks disposed?",
+    "proposed_answer": "Generate keld.build.ts (schema owned by KEL-15/KEL-19 — currently absent) with a per-field disposition report: appId/appBundleId → identity.appId (must equal ExpectedAppIdentity app id); productName/copyright/fileAssociations/extendInfo/UTIs → bundle metadata; files/asar/asar.unpack/extraResource(s) → bundle include/exclude (Keld ships a canonical plain tree; `asar` is dropped with explanation, `original-fs`/app.asar.unpacked paths flagged ✘); win.target nsis/msi → targets; appx/snap/flatpak → ManagedOwner targets with 'no direct updater' note; nsis.perMachine → installMode MachineUacDirect (not yet live) vs default PerUserDirect; publish{provider,channel} → update.feed base + channel∈{stable,beta,canary} (draw.io's `latest-arm64` per-arch channel dissolves into Keld's per-target feed path); mac.hardenedRuntime/entitlements/osxSign/osxNotarize/azureSignOptions/signtoolOptions.publisherName → signing.{mac,win} driven natively by keld build (rcodesign/signtool); custom JS hooks (afterPack fuses.mjs, afterSign notarize.mjs with Quick Look appex embedding, sign-trusted.mjs, forge generateAssets/postMake, Pandoc download) → ✘ 'manual: keld build does not execute arbitrary build hooks'; @electron/fuses → a fuse-disposition table mapping each FuseV1Option to the Keld invariant that subsumes it (RunAsNode/NodeOptions/NodeCliInspect → no inherited env/argv for Bun roles (KEL-75); OnlyLoadAppFromAsar + EmbeddedAsarIntegrityValidation → signed full-package contentBlake3 + bound launch path (KEL-53/KEL-254); CookieEncryption → engine profile policy (KEL-135, unknown parity); GrantFileProtocolExtraPrivileges → webview origin policy (KEL-79)). Forge configs are executable JS: migrate evaluates them in a sandboxed Bun subprocess or asks for `--config-json`; electron-builder JSON/YAML parse statically.",
+    "evidence": [
+     "[fact] arch 04 §2: keld.build.ts 'packaging: targets, signing, update feed, delta settings — generated by migrate (from electron-builder config)'; §2 'Nothing else. No src-tauri/, no Rust files, no new IDL'",
+     "[fact] draw.io: 5 electron-builder JSON configs (win nsis+msi perMachine, win-arm64 channel latest-arm64, appx, linux-mac zip/dmg/AppImage/deb/rpm with afterSign notarize.mjs + afterPack fuses.mjs, snap core24); build/fuses.mjs flips RunAsNode=false, CookieEncryption=true, NodeOptions=false, NodeCliInspect=false, OnlyLoadAppFromAsar=true, EmbeddedAsarIntegrityValidation=false, LoadBrowserProcessSpecificV8Snapshot=false; notarize.mjs embeds and re-signs a Quick Look .appex then notarytool",
+     "[fact] Zettlr: forge.config.js (JS with hooks downloading Pandoc, FusesPlugin in production, osxSign/osxNotarize, asar.unpack '*.{node,dll}', makers deb/rpm/zip) plus electron-builder.yml (dmg, nsis perMachine:false, AppImage, azureSignOptions) used with --prepackaged",
+     "[fact] fuses.md: fuses are 'magic bits' flipped before signing; defaults runAsNode on, cookieEncryption off, nodeOptions on, nodeCliInspect on, embeddedAsarIntegrityValidation off, onlyLoadAppFromAsar off, grantFileProtocolExtraPrivileges on; asar-integrity.md: on mismatch 'the app will forcefully terminate'; research 186 rows 8–9: fuses are build hardening not a capability system; ASAR-only lookup and integrity are separate controls",
+     "[fact] asar-archives.md: archives read-only; no cwd inside asar; execFile/fs.open/dlopen unpack to temp; original-fs bypass",
+     "[fact] arch 06 §3: signing via rcodesign/signtool/osslsigncode, config in keld.build.ts; keld-cli migrate/build reserved KELD-CLI-045; keld.build.ts has no schema in repo (grep)"
+    ],
+    "confidence": "medium",
+    "type": "research",
+    "alternatives_rejected": "Executing electron-builder/forge hooks from keld build for parity: runs arbitrary project JS at build time inside Keld's trusted packaging step and re-creates the plugin surface Keld refuses (no custom native, no fifth unique). Emulating ASAR as a virtual filesystem for compat: would need an fs shim in every role and defeats the signed canonical tree; the corpus does not depend on asar paths at runtime beyond Zettlr's native-module unpack (routed to KEL-215 addon workers).",
+    "unknowns": "KEL-15 keld.build.ts schema status/owner approval; whether `keld build` will support embedding app extensions (Quick Look .appex) and extra resources (Pandoc binary) — Zettlr/draw.io both need extraResource at minimum; forge-config evaluation policy for migrate."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "autoUpdater.setFeedURL / electron-updater provider options / requestHeaders / headers / serverType / login as feed authority",
+    "rationale": "App-selected feed URLs into a privileged updater are on the program never-list; Keld's key/app id/channel/target are compiled into the signed host (arch 06 §4a step 1; research 186 row 10)."
+   },
+   {
+    "surface": "allowDowngrade / channel-switch downgrade / allowAnyVersion",
+    "rationale": "KEL-53's monotonic protected floor is the replay/downgrade defense; honoring downgrade flags would reopen it."
+   },
+   {
+    "surface": "App-executed installers or exposure of staged artifact paths (electron-updater downloadedFile/updateFile, NsisUpdater spawn, Zettlr shell.openPath of an installer)",
+    "rationale": "KEL-53 forbids arbitrary relaunch helpers and role-writable update state; raw spawn from strict roles is never-listed."
+   },
+   {
+    "surface": "app.relaunch({execPath}) to an updater/Squirrel layout",
+    "rationale": "Candidate launch is host-owned under the exact initiating token; app-chosen exec paths are a privilege path."
+   },
+   {
+    "surface": "Electron's MSIX self-update path and any direct mutation of store/package-manager installs",
+    "rationale": "ManagedOwner mode refuses direct activation and registers no competing writer (arch 06, KEL-53 non-goals)."
+   },
+   {
+    "surface": "@electron/fuses as a runtime or permission API",
+    "rationale": "Fuses are Electron-binary hardening bits; Keld's equivalents are host invariants, not app-toggled flags (research 186 row 8)."
+   },
+   {
+    "surface": "ASAR virtual filesystem / original-fs / app.asar.unpacked path contracts",
+    "rationale": "Keld ships a signed canonical plain tree; an fs shim per role would duplicate FsBroker policy."
+   },
+   {
+    "surface": "Executing electron-builder/forge JS hooks (afterPack/afterSign/custom sign scripts) inside keld build",
+    "rationale": "Arbitrary project code inside the trusted packaging/signing step and a plugin surface Keld does not offer; declarative signing config only."
+   },
+   {
+    "surface": "Running Electron's api-autoupdater-*-spec.ts under Bun as the oracle",
+    "rationale": "Research 214 refuses running Electron's spec tree; cite test identities via an approved per-surface spec and land Keld-owned tests."
+   }
+  ],
+  "open_unknowns": [
+   "Electron's observable when checkForUpdates is called without setFeedURL (sync throw vs 'error' event and its text) — needs a run receipt on v44.4.5 before the conformance entry.",
+   "Whether electron-updater's checkForUpdates both rejects and emits `error` for one failure at draw.io's resolved version (draw.io's 5 s dedupe suggests yes) — needed for the shim's exactly-once contract.",
+   "Whether KEL-53 admits 'install at quit without relaunch' (electron-updater isForceRunAfter=false / silent autoInstallOnAppQuit): the transaction requires the candidate to boot and report Ready within 30 s; owner decision needed between a visible relaunch, a headless health boot, or deferring activation to the next user launch.",
+   "Whether the live kipc/app-link transport supports unsolicited host→Bun events with backpressure for download-progress (KEL-80), or progress must be latest-value coalesced.",
+   "Composition of Electron apps' default designated requirement on macOS and therefore which identity fields the bridge .app must preserve — needs an Apple receipt (A5 macOS is [inference]).",
+   "Whether electron-builder emits app-update.yml for the MSI target (if not, draw.io MSI users have no electron-updater bridge path).",
+   "Whether electron-updater's NSIS flow tolerates an installer that ignores `--updated`/`--force-run` (custom electron-builder flags) and how it detects success.",
+   "Keld windows-arm64 and macOS universal target admission (draw.io ships both); §4a lists only fixed triples 'matching keld-pack's own target list'.",
+   "KEL-15 keld.build.ts schema status and owner approval path; KEL-17 migrate spec status (verb reserved, KELD-CLI-045).",
+   "Whether keld build will support extraResource(s) (Pandoc binary, icons) and app-extension embedding (draw.io Quick Look .appex) — both corpus apps need at least extraResource.",
+   "CookieEncryption fuse parity: whether Keld's engine profile (KEL-135) encrypts cookie stores on each engine (WKWebView/WebView2/WebKitGTK) — not examined in this unit.",
+   "Linear state for KEL-53/KEL-103/KEL-141/KEL-137/KEL-15/KEL-17 could not be read live (Linear MCP not used; all statuses cited from repo specs/product-status.tsv and the briefing as of 2026-10-06)."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

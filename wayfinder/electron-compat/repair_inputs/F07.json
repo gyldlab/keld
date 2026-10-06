@@ -1,0 +1,992 @@
+{
+ "unit": "F07",
+ "name": "renderer-webview-tag",
+ "published": {
+  "epic": {
+   "key": "F07-EPIC",
+   "title": "compat(renderer): preload runtime, sandboxed-preload require shim, process polyfill, disabled-<webview> contract, browser-quirk ledger",
+   "body": "## Scope\n`<webview>` tag (113 members, Tier 3) plus the renderer-side compat user-script: `ipcRenderer`/`contextBridge`/`webFrame` subset, `process` polyfill (`type='renderer'`, versions, argv from `additionalArguments`, platform/arch/env policy), `webUtils.getPathForFile`, preload execution order. Live today: macOS KEL-142 isolated `WKContentWorld` script + frozen page-world facade (`window.keld.invoke` only), main-frame-only, document start; no app-preload injection; no `@keld/web`.\n\n## Corpus demand (corrected: draw.io DISABLES `<webview>` everywhere — all 7 hits are `webviewTag:false` or a `will-attach-webview` preventDefault)\ndraw.io preload: `contextBridge.exposeInMainWorld('electron', {request, registerMsgListener, sendMessage, listenOnce})` over `ipcRenderer.send/on/once`, `process.type/versions`, `--initial-adaptive-colors=` from `process.argv`, localStorage seeding, a Navigation-API guard. Zettlr preload: ipc {send, sendSync, invoke, on → off closure}, config get/set via sendSync, `process` {platform, version, versions, arch, uptime, getSystemVersion, env copy, argv}, `webUtils.getPathForFile`; `sandbox:false` on two windows that still only use the sandboxed allow-list.\n\n## Maturity ladder\n- L0: `webviewTag` accepted and defaulted false; `<webview>` is an unknown element; `will-attach-webview` registrable (never fires).\n- L1: draw.io's preload runs byte-for-byte unmodified in a Keld content world and its page round trips work on macOS.\n- L2: preload order (before page scripts), sandboxed `require` allow-list, process polyfill fields, isolation negative tests, Error/Symbol value-table semantics pass pinned entries per engine (✔ WK/WebKitGTK; ▲ WebView2 where no isolated world exists).\n- L3: Zettlr preload (sync-returning wrappers) handled per the F04-A3/A5 decisions.\n\n## Linear owners consumed\nKEL-142 (world/injection seam; spec revision for a third world and the relay), KEL-79 (WebView2 worlds, origin), KEL-80 (floor v2), KEL-132.\n\n## Design facts fixed by research (invariants refuter; semantics refuter pending batch 2)\n- Ship the renderer user-script + disabled-webview contract first; `<webview>` element stays Tier 3 as a host-owned child webview mapping (never a DOM-embedded engine), with zero corpus pressure.\n- The preload runs in a dedicated app content world (third world) registered at document start on the same per-view user-content controller as the KEL-142 scripts, with a relay no broader than `window.keld.*`; the KEL-142 isolation negative tests must pass with the preload present (panel contested decision PANEL-D21 decides same-world vs third-world on measured results).\n- `require('electron')` resolves exactly the sandboxed-preload module map (contextBridge, crashReporter, ipcRenderer, nativeImage, webFrame, webUtils) plus events/timers/url and the globals Buffer/process/setImmediate/clearImmediate; preload bytes are host-loaded from the bundle-relative path inside the content-authenticated package (never an absolute path read).\n- `process.env` re-exposure to the page (Zettlr) is an information-flow decision with no owner (open).\n- Migrated apps change origin when `file://` or a custom scheme is replaced; web-storage continuity is a product decision (open F07-A6).\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F07-T1",
+    "title": "feat(renderer): preload runtime — app content world, sandboxed require shim, process polyfill, document-start ordering, isolation negative tests re-run with the preload present",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Inject the bundled app preload at document start into the app content world (per PANEL-D21), provide `require` for exactly the sandboxed-preload module map plus Node globals, a `process` polyfill (type=renderer, versions, argv from `additionalArguments`, platform/arch, `getSystemVersion`, `uptime`; `env` per the open decision), and prove the KEL-142 isolation negative tests still pass; main-frame-only by default.",
+    "acceptance_criteria": [
+     "draw.io `electron-preload.js` runs unmodified; `window.electron.request` round-trips through F04",
+     "`require(\"fs\")` inside the preload throws the Electron sandbox error; `require(\"electron\").contextBridge` exists",
+     "Page world cannot reach the native handler, nonce, endpoint or token with the preload installed (KEL-142 negative tests green)",
+     "Preload referenced by an absolute path outside the package is refused typed"
+    ],
+    "negative_controls": [
+     "Injecting after page scripts fails the ordering entry",
+     "Exposing the raw bridge handler through the preload world fails the isolation test"
+    ],
+    "blocked_by_keys": [
+     "F04-T2",
+     "PANEL-D21"
+    ],
+    "blocked_by_external": [
+     "KEL-142 spec revision (third world/relay)",
+     "KEL-79 for WebView2 worlds"
+    ],
+    "linear_owner": "KEL-142 / KEL-79",
+    "review_gates": [
+     "public API",
+     "permission model"
+    ],
+    "platforms": "macOS first (WKContentWorld); WebKitGTK named worlds; WebView2 ▲ until an isolated world exists",
+    "electron_members_covered": [
+     "preload (webPreferences)",
+     "additionalArguments",
+     "process.type",
+     "process.versions",
+     "process.argv",
+     "process.platform",
+     "process.arch",
+     "process.sandboxed",
+     "process.contextIsolated",
+     "webUtils.getPathForFile",
+     "webFrame.setZoomFactor",
+     "webFrame.getZoomFactor"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No app preload injection; only the KEL-142 bridge scripts.\n\n**Desired behavior:** Inject the bundled app preload at document start into the app content world (per PANEL-D21), provide `require` for exactly the sandboxed-preload module map plus Node globals, a `process` polyfill (type=renderer, versions, argv from `additionalArguments`, platform/arch, `getSystemVersion`, `uptime`; `env` per the open decision), and prove the KEL-142 isolation negative tests still pass; main-frame-only by default.\n\n**Key interfaces:** keld-wv user-script registration per view/world; preload bundling by migrate; renderer runtime script.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** sendSync (F04-A5); `<webview>` (F07-T3).",
+    "out_of_scope": "sendSync (F04-A5); `<webview>` (F07-T3).",
+    "notes": ""
+   },
+   {
+    "key": "F07-T2",
+    "title": "task(renderer): disabled-<webview> contract — webviewTag defaults false, <webview> is an unknown element, will-attach-webview registrable; publish the browser-quirk ledger",
+    "kind": "task",
+    "tier": "Tier 1",
+    "maturity_target": "L0",
+    "what_to_build": "Accept `webPreferences.webviewTag` (default false) and record it; `<webview>` renders as an unknown element; `will-attach-webview` can be registered and never fires; publish the per-engine browser-quirk ledger (Service Workers on custom schemes, iframe origins, clipboard permissions, drag/drop, IME/focus, WebGL/WebGPU, codecs, media capture, storage, WebRTC) as scoreboard ▲/✘ rows with receipts.",
+    "acceptance_criteria": [
+     "draw.io with `webviewTag:false` and its `will-attach-webview` handler boots without errors",
+     "The quirk ledger lists every quirk with an engine column and a receipt",
+     "`<webview>` usage in a migrated app is reported ✘ by migrate with the Tier-3 tracking issue"
+    ],
+    "negative_controls": [
+     "Rendering `<webview>` as an iframe fails the honesty entry"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-79",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "webviewTag",
+     "will-attach-webview",
+     "webviewTag element (113 members, Tier 3)"
+    ],
+    "size": "S",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** task\n\n**Current behavior:** Nothing exists.\n\n**Desired behavior:** Accept `webPreferences.webviewTag` (default false) and record it; `<webview>` renders as an unknown element; `will-attach-webview` can be registered and never fires; publish the per-engine browser-quirk ledger (Service Workers on custom schemes, iframe origins, clipboard permissions, drag/drop, IME/focus, WebGL/WebGPU, codecs, media capture, storage, WebRTC) as scoreboard ▲/✘ rows with receipts.\n\n**Key interfaces:** BrowserWindow option handling; scoreboard.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** A real `<webview>` mapping (F07-T3).",
+    "out_of_scope": "A real `<webview>` mapping (F07-T3).",
+    "notes": ""
+   },
+   {
+    "key": "F07-T3",
+    "title": "feat(renderer): <webview> tag as a host-owned child webview routed through the same bridge (Tier 3; no corpus demand)",
+    "kind": "feature",
+    "tier": "Tier 3",
+    "maturity_target": "L1",
+    "what_to_build": "Map `<webview>` to one host-owned child WebviewId per element (bounds synced from the element rect), routed through the same `window.keld` bridge with its own principal and `channels: []`; attributes `src`, `preload`, `partition`, `allowpopups`, `webpreferences` mapped or ▲; methods/events subset by demand.",
+    "acceptance_criteria": [
+     "A `<webview src>` element shows a child webview with its own principal; `will-attach-webview` can veto",
+     "Guest IPC is isolated from the host page (negative test)"
+    ],
+    "negative_controls": [
+     "Sharing the host page principal with the guest fails the isolation test"
+    ],
+    "blocked_by_keys": [
+     "F07-T2",
+     "F02-T2",
+     "F04-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-79",
+     "KEL-75 window-bound roles"
+    ],
+    "linear_owner": "KEL-79",
+    "review_gates": [
+     "permission model",
+     "wire protocol"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "webviewTag (113 members)"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Nothing exists; Tier 3 per arch 04 §4.\n\n**Desired behavior:** Map `<webview>` to one host-owned child WebviewId per element (bounds synced from the element rect), routed through the same `window.keld` bridge with its own principal and `channels: []`; attributes `src`, `preload`, `partition`, `allowpopups`, `webpreferences` mapped or ▲; methods/events subset by demand.\n\n**Key interfaces:** Host child webview minting; bridge principal routing.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Guest process model emulation.",
+    "out_of_scope": "Guest process model emulation.",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F07-A6",
+    "title": "Web-storage continuity when `keld migrate` replaces `file://`/custom-scheme origins: empty first launch (▲) or a one-shot host-side storage import?",
+    "type": "grilling",
+    "question": "A migrated app changes origin, so localStorage/IndexedDB keyed to the old origin become invisible. Decide: declare \"first launch under Keld starts with empty web storage\" as a visibly labelled ▲ in the migrate report, or specify an engine-specific one-shot import (WK/WebView2/WebKitGTK data stores). draw.io stores `.configuration` and recents in localStorage.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F07-E1",
+    "title": "process.env re-exposure to the page (Zettlr copies process.env into the renderer) — information-flow policy",
+    "type": "grilling",
+    "question": "On Keld the renderer has no process; the shim must synthesise `env`. Copying the host environment into the page leaks secrets; omitting it may break apps that read `process.env.NODE_ENV`. Decide the allow-list (e.g. NODE_ENV only) and the migrate report wording.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "`<webview>` as a DOM-embedded engine or iframe emulation presented as a webview",
+   "preload executed in the page world to obtain synchronous contextBridge semantics",
+   "absolute-path preload reads outside the package"
+  ],
+  "out_of_scope": [
+   "`webFrame` full surface beyond the zoom subset (zero demand)"
+  ],
+  "not_yet_specified": [
+   "WebView2 isolated-world availability (▲ emulation vs real)",
+   "Per-engine `beforeunload` primitive (0 demand)"
+  ],
+  "issue_numbers": {
+   "F07-A6": 406,
+   "F07-E1": 407,
+   "F07-EPIC": 483,
+   "F07-T1": 484,
+   "F07-T2": 485,
+   "F07-T3": 486
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "app event 'web-contents-created' (and 'browser-window-created')",
+    "problem": "Zero mentions in any issue body. draw.io registers will-navigate, setWindowOpenHandler and will-attach-webview only inside app.on('web-contents-created') (electron.js:2189-2226); if the facade never emits it, F03-T3/F03-T4/F07-T2 acceptance criteria are unreachable. 'browser-window-created' is what electron-context-menu is believed to hook (INFERENCE: no node_modules in the clone).",
+    "suggested_unit": "F02-T2 (emit on window/webContents creation) with a conformance entry in F02-T1."
+   },
+   {
+    "entity": "F03: webFrameMain (module), ColorSpace, InputEvent, KeyboardInputEvent, MouseInputEvent, MouseWheelInputEvent, NavigationEntry, PostBody, PreloadScriptRegistration, PreloadScript, PrintToPDFMargins, PrintToPDFOptions, PrinterInfo, Referrer, UploadData, UploadFile, UploadRawData, WebSource, SharedTextureHandle, SharedTextureImportTextureInfo, SharedTextureImportedSubtle, SharedTextureImported, SharedTextureSubtle, SharedTextureSyncToken, SharedTextureTransfer",
+    "problem": "Not named in any issue. SharedTexture* are implied by the 'sharedTexture/OffscreenSharedTexture' never row and print structures by F03-D6, but nothing enumerates them. The epic title promises 'preload registration' yet no ticket covers PreloadScript/PreloadScriptRegistration (session.registerPreloadScript).",
+    "suggested_unit": "F03-EPIC never/out-of-scope enumeration; PreloadScript* to F07-T1 or an explicit ✘ row."
+   }
+  ],
+  "duplicates": [
+   {
+    "keys": [
+     "F04-T4",
+     "F07-T1"
+    ],
+    "problem": "Preload runtime has two owners. Both claim 'draw.io preload runs unmodified' and 'window.electron.request round-trips', both carry the KEL-142 isolation negative tests, both list webUtils.getPathForFile, both are gated by PANEL-D21. F04-T4 says it consumes the 'F07-T1 runtime' but has no edge to it; F07-T1's AC1 needs F04-T3/T4 but is gated only by F04-T2. F04-T4's out-of-scope cites 'preload bundling (F07-T2)' — F07-T2 is the disabled-<webview> ticket.",
+    "fix": "F07-T1 owns world placement, injection order, require map, process polyfill and the isolation re-run. F04-T4 owns contextBridge value table + ipcRenderer semantics and the round-trip AC. Add edge F04-T4 ← F07-T1; delete the duplicated ACs from F07-T1; correct the F07-T2 reference."
+   },
+   {
+    "keys": [
+     "F02-T4",
+     "F07-T2",
+     "X04-T1"
+    ],
+    "problem": "WebPreferences handling has three claimants: F02-T4 classifies all 46 fields (which include webviewTag), F07-T2 separately 'accepts webPreferences.webviewTag', X04-T1 specs 'weak-isolation webPreferences'.",
+    "fix": "F02-T4 owns option triage including webviewTag; F07-T2 keeps only the will-attach-webview registrable/never-fires contract; X04-T1 references F02-T4's table."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F04-T4",
+    "problem": "Over-gate: F04-A3 (synchronous cross-world return) is Zettlr-only — its own text says the async fallback 'keeps draw.io config-only', and draw.io's exposed functions return nothing (results flow through page-supplied callbacks, electron-preload.js:91-126). Missing gate: no edge to F07-T1 whose runtime it consumes.",
+    "fix": "Remove F04-T4 ← F04-A3 (attach it to a Zettlr sync-return follow-up); add F04-T4 ← F07-T1."
+   },
+   {
+    "key": "F07-T1",
+    "problem": "Near-cycle and non-gate: AC1 ('window.electron.request round-trips through F04') needs F04-T3 and F04-T4, while F04-T4 needs F07-T1's runtime. The F04-T2 edge is not consumed by injection, require map or process polyfill. Predecessor 'KEL-142 spec revision (third world/relay)' — KEL-142 is Done and no revision task exists.",
+    "fix": "Move the round-trip AC to F04-T4; F07-T1 ← PANEL-D21 only (plus F02-T2 for per-view registration); name who owns the kel142 spec amendment."
+   },
+   {
+    "key": "PANEL-P3",
+    "problem": "No ticket depends on it although it decides the descriptor set, the denominator and config-only vs config+N. Decisions with zero dependents that are cited in ticket prose as conditions: F02-A6 (F02-T5), F06-D3 (F06-T4/T5/T6 use app.system tokens), F07-E1 (F07-T1 'env per the open decision'), F08-D6 (F08-T2), X01-A5 (X01-T2 normalisers), X04-D3 (F05-T4).",
+    "fix": "Add the edges named above so each prose condition is a graph edge consuming a named output."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F07-T1, F08-T1, F08-T2, F09-T1, X03-T1",
+    "violation": "'Compat lands a conformance entry (citing the pinned Electron doc sentence) before implementation' — F07, F08, F09 and X03 have no conformance ticket and these implementation tickets have no conformance-entry predecessor.",
+    "fix": "Add a conformance entry ticket (or an explicit first AC 'entry lands first, cites sentence') per family; for first proof at least F07 (preload order, sandboxed require error text) and F09 (setFeedURL never throws)."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F07-T2",
+    "problem": "Two unrelated deliverables (disabled-<webview> contract; a per-engine browser-quirk ledger covering ten subsystems) and an unbounded AC ('lists every quirk').",
+    "fix": "Split; the ledger is parked with an enumerated list."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F07-T1",
+    "milestone": "first-proof",
+    "reason": "The preload must run at document start: require('electron') (:1-4), process.argv from additionalArguments (:14), localStorage seeding before page scripts (:22-29), then the bridge."
+   },
+   {
+    "key": "F07-T2",
+    "milestone": "first-proof",
+    "reason": "Slice only, and it folds into F02-T4/F02-T2: webviewTag:false accepted (:728) and will-attach-webview registrable (:2223). The browser-quirk ledger is parked."
+   },
+   {
+    "key": "F07-T3",
+    "milestone": "parked",
+    "reason": "draw.io disables <webview> at every window; Zettlr and quick-start have none (F07-EPIC, refuter-confirmed). Tier 3 with no call site."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "F03-EPIC (also F07-T1 title, F04-T4 title)",
+    "claim": "'Design facts fixed by research: Preload runs in a dedicated app content world (third world), not the trusted KEL-142 world.'",
+    "problem": "PANEL-D21 is published as CONTESTED and open ('the world choice is open ... decide on arm G results and measured relay cost, not prose') and gates F04-T4 and F07-T1. A contested decision is presented as a fixed fact; F07-T1 even lists a 'KEL-142 spec revision (third world/relay)' predecessor.",
+    "fix": "INFERENCE (one invariants refuter): co-locating the preload with the KEL-142 handler/nonce is unsafe, so a third world is the leading candidate. UNKNOWN until PANEL-D21 arm G: same-world-with-proxy vs third world, and the relay's per-call cost."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "PANEL-D21",
+     "F03-T5",
+     "F03-T2",
+     "F07-T1"
+    ],
+    "coupling": "The world decision silently changes three other atoms: what executeJavaScriptInIsolatedWorld's worldId can address, where F03-T2's 'same-document change via the isolated-world reporter' runs, and which world host-initiated executeJavaScript lands in (must never be the KEL-142 trusted world holding handler and nonce).",
+    "fix": "Drop executeJavaScriptInIsolatedWorld from F03-T5 (zero demand); add an AC to F03-T5 'app-supplied script never executes in the trusted bridge world' and an edge F03-T2 ← PANEL-D21 for the reporter placement."
+   },
+   {
+    "keys": [
+     "F05-T4",
+     "F04-T3",
+     "F07-A6"
+    ],
+    "coupling": "Page URL identity. draw.io authorizes every IPC with senderFrame.url.startsWith(codeUrl) (:694-700) and filters file:// loads by the same prefix (:1010-1022). If the host serves the app from any origin other than file://<codeDir> (F07-A6 contemplates replacing file:// origins; WebView2 'virtual host mapping' in F05-T4), validateSender returns false for all 25 channels and the app is silently dead.",
+    "fix": "AC in F05-T4: the document URL reported to the app (webContents.getURL, senderFrame.url) equals the file:// URL the app loaded; edge F04-T3 ← F05-T4; F07-A6 records this as a constraint."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "PANEL-D21",
+    "why_now": "Takeable now; gates F07-T1 and F04-T4. Arm G with the real draw.io preload installed.",
+    "consumes": "Landed KEL-142 bridge (KEL-142 Done; keld-wv macOS bridge and its isolation negative tests), corpus electron-preload.js. Produces: world choice + measured relay cost."
+   },
+   {
+    "key": "F07-T1",
+    "why_now": "Next: after PANEL-D21 and F02-T2 (per-view script registration).",
+    "consumes": "PANEL-D21 result; KEL-142 injection seam; corpus electron-preload.js."
+   },
+   {
+    "key": "F04-T4",
+    "why_now": "Next: after F07-T1 and F04-T3 (drop the F04-A3 gate for draw.io).",
+    "consumes": "F07-T1 runtime; F04-T1 value-table entries; F04-T3 routing."
+   },
+   {
+    "key": "F07-T2",
+    "why_now": "Next and trivial: fold webviewTag acceptance into F02-T4; keep will-attach-webview registrable.",
+    "consumes": "F02-T4 option triage; F02-T2 webContents emitter."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse: four uniques only; default-deny never bypassed; no Electron-isms in keld-core/keld-ipc; no parallel process model/transport/schema/parser/policy owner; reuse of existing owners (KEL-75/76/77/78/79/80/53/74/102/135/139-144); measured performance claims; spec+Linear gate; prior decisions #312/#313/#319/#322/#323/#325 and KEL-127 delegated direction. Note: the research object was truncated mid-F07-A3 (at alternatives_rejected); only F07-A1, F07-A2, F07-A3 were visible. Any later decision ids (e.g. F07-P1) were not received and are not judged.",
+   "verdicts": [
+    {
+     "decision_id": "F07-A1",
+     "verdict": "refuted",
+     "reason": "The corpus facts survive (draw.io electron.js: webviewTag:false at 728/1090/1407/2210/3087, will-attach-webview preventDefault at 2223; Zettlr and quick-start have no <webview>), and keeping <webview> at Tier 3 matches arch 04 §4. But the 'ship now, as Tier-1 cells' set violates the author's own evidence and the spec+Linear gate in three ways. (1) It bundles sendSync, ipcRenderer.postMessage and webUtils.getPathForFile into the ship-now set while the same object marks sendSync as having no engine mechanism without the KEL-79 bulk lane (a prototype atom), getPathForFile as [unknown] on WebKit engines, and postMessage as owned by KEL-80 virtual ports (Backlog/High, narrowed to product-spine subsets by #322–#325). Those cannot be Tier-1 'ship now' cells; they are prototype/owner-gated. (2) Every renderer cell requires lifting the KEL-142 floor (channel 1 only, u16 channels, 4096 B, one pending; kel142 §4.1, macos_bridge.rs PAGE_FACADE_SCRIPT). kel142 §12 says any change to caller-selected identity, pending queue or envelope shape must 'stop and revise this spec'; wv_link.rs is 'deliberately not KIPC' and its envelope is a wire-protocol review gate. A1 lists blocked_by: [] — that is wrong. (3) arch 04 §4 Tier 1 names ipcMain/ipcRenderer/invoke and contextBridge; webUtils and a webFrame subset are not Tier-1 items (webFrame appears only in §3 layer 3 prose). The unknown about Zettlr's sandbox:false preloads is also resolvable now and was not: forge.config.js generateRendererEntrypoint gives every window the single preload source/common/modules/preload/index.ts, which imports only contextBridge/ipcRenderer/webUtils plus a type-only import, so sandbox:false is a ▲ (ignored with KELD-COMPAT diagnostic; preload needs no Node) rather than a ✘.",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md §4.1 lines 114–133, §11, §12; crates/keld-wv/src/wv_link.rs lines 1–5, 42–57; crates/keld-wv/src/wkwebview/macos_bridge.rs PAGE_FACADE_SCRIPT (channel !== 1, 4096, pending !== null); docs/architecture/04-electron-compat.md §4 Tier list; scratchpad corpus/zettlr/forge.config.js lines 59–84; corpus/zettlr/source/common/modules/preload/index.ts line 17; corpus/zettlr/source/app/util/splash-screen.ts:65, service-providers/config/onboarding-window.ts:72; crates/keld-cli/src/main.rs:105 (build/migrate reserved).",
+     "correction": "Split A1 into: (a) ship-after-spec Tier-1 cells with existing owners — webviewTag accepted/defaulted false, <webview> as HTMLUnknownElement, will-attach-webview registrable-never-fires (depends on the webContents facade owner, name it), contextBridge.exposeInMainWorld, ipcRenderer send/on/once/off/removeAllListeners/setMaxListeners/invoke, synthesized process subset; blocked_by: KEL-142 spec revision (string channels, multi-pending, host→renderer events, SCV codec via KEL-98), wire-protocol + public-API review gates, KEL-97/BrowserWindow owner; (b) prototype-gated: sendSync (KEL-79 scheme + sync XHR), postMessage (KEL-80), getPathForFile (per-engine feasibility). Record Zettlr sandbox:false as ▲-with-diagnostic, not ✘ or unknown. Drop webUtils/webFrame from the Tier-1 label; cite arch 04 §3 layer 3 for webFrame instead."
+    },
+    {
+     "decision_id": "F07-A2",
+     "verdict": "refuted",
+     "reason": "Engine placement facts survive: macOS install() uses one per-view WKUserContentController with the isolated script/handler in defaultClientWorld and only the frozen facade in pageWorld, AtDocumentStart, forMainFrameOnly=true, fail-closed below macOS 11 — appending preload+compat script there is the right seam. WebKitGTK APIs are correctly cited and, better than the author states, the UI process can both receive replies (register_script_message_handler_with_reply(name, world_name), 2.40) and evaluate into the named world (webkit_web_view_evaluate_javascript(..., world_name, ...), 2.40), so the GTK [unknown] about needing a WebKitWebProcessExtension is resolved negative. Two load-bearing claims are false. (1) 'contextBridge.exposeInMainWorld = isolated→page proxy installed by the pageWorld facade pattern already used for window.keld': the existing pattern is an async window.postMessage relay whose shape KEL-142 §5.1 restricts to 'no broader shape than window.keld.invoke'; exposing arbitrary app function tables widens the relay grammar (§12: stop and revise), and an async relay cannot return values synchronously, which Zettlr's exposed config.get / citation callback require (they return sendSync results synchronously to the page). A cross-world synchronous call path (shared DOM per WKContentWorld doc, e.g. synchronous CustomEvent dispatch) is an unlisted design atom. (2) 'preload must contain no secrets or authority — which Keld's host-minted document nonce already guarantees' is wrong on WebView2: kel142 §5.2 step 4 has the isolated script retain the nonce outside the page world; with no isolated world on WebView2 the nonce would live in the page realm and be readable, so the identity model is not transferable. Identity there must come from host-side engine metadata: the ICoreWebView2 instance that raised WebMessageReceived (host-bound WebviewId) plus host-tracked navigation generation; WebMessageReceivedEventArgs.Source is only 'the URI of the document that sent this web message', not a frame identity. The 'self-gated to window === window.top' emulation is page-controlled and therefore not a boundary; whether ICoreWebView2.WebMessageReceived fires for child frames vs only ICoreWebView2Frame.WebMessageReceived was not verified by the author or by me.",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs lines 489–560 (install) and PAGE_FACADE_SCRIPT/ISOLATED_BRIDGE_SCRIPT postMessage relay; docs/specs/kel142-macos-renderer-bridge-api.md §5.1 ('relay must accept no broader shape than window.keld.invoke'), §5.2 step 4, §12; crates/keld-wv/src/webkitgtk/mod.rs header (wry 0.56.1, WebKit2GTK 4.1, no world code); webkitgtk.org method.UserContentManager.register_script_message_handler_with_reply (since 2.40, UI process) and method.WebView.evaluate_javascript world_name (since 2.40), retrieved 2026-10-06; learn.microsoft.com icorewebview2webmessagereceivedeventargs get_Source ('The URI of the document that sent this web message'), retrieved 2026-10-06; scratchpad corpus/zettlr preload index.ts lines 55–82 (synchronous returns).",
+     "correction": "Rewrite A2 as: macOS/Linux real isolation (✔) via the KEL-142 seam and WebKitGTK named worlds, with a new decision atom 'cross-world function proxy + synchronous return path' that requires a KEL-142 spec revision of the relay grammar (wire-protocol gate). For WebView2, state that the KEL-142 nonce model does not apply; the identity owner is the host-side COM event source (per-ICoreWebView2 WebviewId) plus host navigation generation, and the page-world script may hold nothing that authorizes. Replace 'self-gated to window.top' with a host-side rule: accept WebMessageReceived only from the ICoreWebView2 main-frame event, verify (cheapest experiment: a WebView2 fixture with a same-origin and a cross-origin iframe each calling window.chrome.webview.postMessage; record which host event fires). Keep blocked_by: KEL-142 revision, WebKitGTK direct-binding replacement of wry, KEL-79 CSP interaction."
+    },
+    {
+     "decision_id": "F07-A3",
+     "verdict": "refuted",
+     "reason": "The Electron contract mirror survives: sandbox.md names exactly contextBridge/crashReporter/ipcRenderer/nativeImage/webFrame/webUtils plus events/timers/url, 'you will not be able to use CommonJS modules to separate your preload script', and globals Buffer/process/setImmediate/clearImmediate; arch 03 §4.2 confirms no auto-downgrade into legacy. Two ownership claims are wrong under the one-owner rule. (1) 'Preload bytes are resolved by the host from the verified app bundle (ExpectedAppIdentity)': keld-pack's ExpectedAppIdentityPayload is the KEL-254 A3 expected-app-identity bytes (app_id, channel, target) that a signed host carries; it is not a per-file verified bundle manifest and verifies no preload bytes. Content authentication lives in the KEL-53/keld-pack canonical archive + update policy path, and no live owner verifies app-bundle file bytes at launch. Naming ExpectedAppIdentity as the verifier creates a phantom owner. (2) 'keld build/keld migrate bundles each preload': both subcommands are KELD-CLI-045 reserved, not live, and the migrate UX is owned by KEL-19 (CLI RFC); A3 must name KEL-19 and the bundler owner rather than assume the facility. Also, static analysis of 'imports outside the map' must run on the bundled output: Zettlr's preload source imports a type from 'source/app/service-providers/citeproc' that is erased by the bundler and would be a false ✘ on raw source. The visible portion of A3 ends mid-field (alternatives_rejected truncated), so any rejected alternatives were not evaluated.",
+     "evidence": "crates/keld-pack/src/lib.rs lines 7–9 ('canonical expected-app-identity bytes that a signed host carries (KEL-254 A3); embedding them belongs to the KEL-19 packaging work'), expected_identity.rs pub fns app_id/channel/target; crates/keld-cli/src/main.rs:105 'reserved (not live): build, migrate, gen, ext'; docs/architecture/03-security.md §4.2 legacy-profile sentence; raw.githubusercontent.com electron v44.4.5 docs/tutorial/sandbox.md retrieved 2026-10-06; scratchpad corpus/zettlr/source/common/modules/preload/index.ts line 18 (type-only import); briefing line 73 (KEL-19 CLI RFC migrate UX).",
+     "correction": "Keep the module-map mirror and bundled-require contract. Replace the verifier claim with: 'preload bytes are host-loaded from the bundle-relative path inside the content-authenticated app package; the verification owner is the KEL-53/keld-pack canonical package + KEL-19 packaging work, not ExpectedAppIdentity, and no live owner exists today (gap to ticket)'. Name KEL-19 as owner of keld migrate/build bundling and record KELD-CLI-045 reserved status as a blocker. Specify static analysis runs on the bundled preload artifact. Re-send the truncated alternatives_rejected for review."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "A1's synthesized process subset (type, sandboxed, contextIsolated, argv, versions) omits members Zettlr's preload calls at top level: process.getSystemVersion(), process.uptime(), process.env, process.arch, process.platform, process.version. Electron's sandboxed renderer exposes all of these (process.md sandboxed list). With the proposed subset, `process.getSystemVersion()` throws TypeError during preload evaluation, breaking every Zettlr window before contextBridge runs — a corpus-blocking failure the object presents as covered.",
+     "severity": "high",
+     "evidence": "scratchpad corpus/zettlr/source/common/modules/preload/index.ts lines 85–93 (platform, version, versions, arch, uptime(), getSystemVersion(), env, argv); electron v44.4.5 docs/api/process.md sandboxed subset (author's receipt)."
+    },
+    {
+     "finding": "process.env re-exposure to the page (Zettlr: `env: Object.assign({}, process.env)`) is an information-flow decision with no owner: on Keld the renderer has no process, so the shim must synthesize env. Copying host env into an untrusted webview principal leaks host environment (paths, tokens) across the trust boundary in arch 03 §1. Must be declared: empty object or a manifest-declared allowlist, scored ▲.",
+     "severity": "medium",
+     "evidence": "docs/architecture/03-security.md §1 principal table (webview untrusted); corpus/zettlr preload line 91."
+    },
+    {
+     "finding": "Synchronous cross-world calls are a missing design atom. Zettlr exposes functions whose page-visible return value is produced synchronously (config.get, getCitationCallback → sendSync). Even if sendSync itself is solved via a synchronous XHR to a host scheme, the isolated→page function proxy must also be synchronous. The existing KEL-142 relay is async window.postMessage. WKContentWorld documents a shared DOM across worlds, so a synchronous DOM event dispatch (CustomEvent with mutable detail) is the candidate mechanism; it has no owner, no test oracle and no mention in the object.",
+     "severity": "high",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs ISOLATED_BRIDGE_SCRIPT/PAGE_FACADE_SCRIPT (postMessage relay); author's WKContentWorld receipt ('Changes you make to the DOM are visible to all script code, regardless of content world'); corpus/zettlr preload lines 55–82."
+    },
+    {
+     "finding": "Lifting the KEL-142 floor (string channels, multiple pending, host→renderer events, SCV codec) changes the keld.wv-link/v1 envelope and the page-visible window.keld contract. That is simultaneously a wire-protocol review gate and a public-API gate, and kel142 §12 requires stopping and revising the spec rather than widening ad hoc. The object mentions 'lifting the floor' only in the summary; A1 lists blocked_by: [] and A2 does not name it. Every renderer cell must carry this blocker explicitly.",
+     "severity": "medium",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md §4.1, §5.3, §12; crates/keld-wv/src/wv_link.rs enum WvLinkEnvelope (Bind | Invoke only); root AGENTS.md review gates (public API, wire protocol)."
+    },
+    {
+     "finding": "WebView2 frame-origin of WebMessageReceived is unverified. The author's AddScriptToExecuteOnDocumentCreated receipt says the script runs in 'all top-level document and child frame page navigations'; whether a child frame's window.chrome.webview.postMessage reaches ICoreWebView2.WebMessageReceived or only ICoreWebView2Frame.WebMessageReceived determines whether host-side main-frame gating is possible at all. WebMessageReceivedEventArgs.Source is a URI string only, so origin-based gating is spoofable by same-origin frames.",
+     "severity": "medium",
+     "evidence": "learn.microsoft.com icorewebview2webmessagereceivedeventargs get_Source retrieved 2026-10-06; author's icorewebview2 receipt. Cheapest experiment: WebView2 fixture with same-origin and cross-origin iframes posting messages; record which host event fires and with what Source."
+    },
+    {
+     "finding": "Positive resolution of an author unknown: WebKitGTK ≥2.40 UI-process APIs webkit_user_content_manager_register_script_message_handler_with_reply(manager, name, world_name) and webkit_web_view_evaluate_javascript(view, script, len, world_name, ...) allow isolated-world request/reply and host→world evaluation without a WebKitWebProcessExtension. The Linux prerequisite is replacing the wry 0.56.1 scaffold (WebKit2GTK 4.1, no world selector) with direct bindings, already the arch 05 §1 destination.",
+     "severity": "low",
+     "evidence": "webkitgtk.org stable docs for both methods (since 2.40), retrieved 2026-10-06; crates/keld-wv/src/webkitgtk/mod.rs header; docs/specs/kel142 §3 fact 5 (wry exposes no world selector)."
+    },
+    {
+     "finding": "draw.io's preload relies on the Navigation API (`window.navigation.addEventListener('navigate', ...)`) in the isolated world to block about: navigations because Electron's will-navigate cannot. On Keld, navigation policy is a host-owned allow-list (arch 03 §4.3, KEL-168 for popups), not preload code; and Navigation API availability on WKWebView/WebKitGTK at the shipped engine versions is [unknown]. The cell should assert the host-side navigation policy denies about:/window.open('about:blank','_self') regardless of preload, otherwise the compat claim depends on an engine feature nobody measured.",
+     "severity": "medium",
+     "evidence": "scratchpad corpus/drawio-desktop/src/main/electron-preload.js lines 39–56; docs/architecture/03-security.md §4.3 'navigation policy hooks (allow-list)'; crates/keld-wv/AGENTS.md KEL-168 bullet."
+    },
+    {
+     "finding": "A1's zero-webview cell 'will-attach-webview registrable and never firing' requires a webContents facade (`contents.on` from `app.on('web-contents-created')`) that no visible owner provides; it is cross-unit (F03 webcontents-navigation) and must be named as a dependency rather than implied inside F07.",
+     "severity": "low",
+     "evidence": "corpus/drawio-desktop/src/main/electron.js lines 2222–2225 (contents.on('will-attach-webview')); packages/@keld/electron/src (app only; no webContents)."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [
+  {
+   "unit": "F07",
+   "lens": "semantics",
+   "verdict": {
+    "lens": "Electron semantics accuracy and corpus demand (pinned Electron v44.4.5 docs + lib/ sources fetched 2026-10-06; resolved fixed-string call sites in corpus clones drawio-desktop@2edf9fb, zettlr@e6c7fd8, electron-quick-start@82dbb35; Keld origin/main b4b907c3; Linear read live 2026-10-06). Sequencing and sizing checked against the first-proof milestone (draw.io on macOS).",
+    "verdicts": [
+     {
+      "decision_id": "F07-A1",
+      "verdict": "refuted",
+      "reason": "The <webview> half survives; the 'ship now as Tier-1 cells' renderer set does not. FACT: it bundles members with zero resolved demand in all three corpus apps (webFrame: 0 sites, ipcRenderer.postMessage: 0 sites) and members the same research marks unproven (sendSync is prototype-gated in F07-A4 and SCAFFOLDED on the map; webUtils.getPathForFile is an open unknown on WebKit). FACT: its demand evidence is token-scan counts stated as facts and is wrong for draw.io: resolved ipcRenderer sites in draw.io are on x3, once x1, send x2, all in one preload; there is no ipcRenderer.removeListener/removeAllListeners/invoke/sendSync call anywhere (usage.json 'send 15, once 15, removeListener 5' are misattributed tokens). FACT: Zettlr's real electron.ipcRenderer sites are 9 in one preload (invoke 1, send 1, sendSync 4, on 1, off 1, setMaxListeners 1); the '187 invoke' are page-world calls on the contextBridge proxy window.ipc (63 files) - the load is on contextBridge function proxying, not on the ipcRenderer surface. FACT: the stated unknown is already answerable from the clone: Zettlr splash_screen and onboarding use the same single preload as every other window (forge.config.js generateRendererEntrypoint), which imports only contextBridge, ipcRenderer, webUtils - inside the sandbox map. FACT: the process subset listed (type, sandboxed, contextIsolated, argv, versions) is sufficient for draw.io but not Zettlr, whose preload reads process.platform, version, arch, uptime(), getSystemVersion(), env and argv.",
+      "evidence": "corpus/drawio-desktop/src/main/electron-preload.js (whole file; grep -rnoE 'ipcRenderer\\.[a-zA-Z]+' => on 3, once 1, send 2); electron.js webviewTag:false at 728/1090/1407/2210/3087 + progress-bar.js:48, will-attach-webview preventDefault at 2223; corpus/zettlr/source/common/modules/preload/index.ts lines 17-104; zettlr/forge.config.js lines 74-83, 274-287; grep webFrame|ipcRenderer.postMessage over all three clones => no hits. Electron v44.4.5 docs/api/structures/web-preferences.md ('webviewTag ... Defaults to false'; 'additionalArguments ... appended to process.argv in the renderer process'), docs/api/process.md Sandbox list, docs/tutorial/web-embeds.md ('not explicitly supported by Electron'), lib/renderer/api/ipc-renderer.ts ('class IpcRenderer extends EventEmitter') - all retrieved 2026-10-06.",
+      "correction": "Split the cell set by milestone. First proof (draw.io, macOS): webviewTag accepted and defaulted false, <webview> left unregistered, will-attach-webview registrable and never emitted; contextBridge.exposeInMainWorld (see F07-A2 for the required shapes); ipcRenderer.on/once/send on a real EventEmitter; process.type/versions/argv with per-window additionalArguments. Zettlr tranche (separately gated): invoke, off, setMaxListeners, process.platform/version/arch/uptime/getSystemVersion/env, sendSync as SCAFFOLDED until the F07-A4 experiment, webUtils.getPathForFile as UNKNOWN until an OS-drop probe on WKWebView. Park webFrame and ipcRenderer.postMessage (zero demand). Replace token-scan counts in the evidence with the resolved counts above and close the sandbox:false unknown."
+     },
+     {
+      "decision_id": "F07-A2",
+      "verdict": "refuted",
+      "reason": "The per-engine isolation honesty (WebKit real, WebView2 emulated) is not contradicted, but the macOS check mark is. The decision says exposeInMainWorld is 'installed by the pageWorld facade pattern already used for window.keld'. FACT: that pattern is a window.postMessage relay between the two worlds - asynchronous, structured-clone only, one pending call. FACT: Electron defines contextBridge as 'a safe, bi-directional, synchronous bridge' in which functions are proxied in both directions and return values, Promises, Elements and Blobs cross. The existing pattern cannot carry any of the shapes the corpus needs: (1) draw.io exposes window.electron and window.process and the page must see them before its first script runs - a posted message task gives no such ordering; (2) draw.io's request(msg, callback, error) passes page functions into the isolated world, including a function nested inside an object argument (msg.listener for watchFile) that is called repeatedly; functions are not structured-cloneable; (3) Zettlr needs synchronous returns across the bridge (window.config.get 36 sites, config.set 20, getPathForFile 3), a function returned from a bridged function (ipc.on returns stopListening; getCitationCallback 8 sites returns a function), and a File object passed page-to-isolated. INFERENCE: a synchronous cross-world trampoline is plausible on WebKit (DOM event dispatch is synchronous across worlds) but that is a new mechanism with no evidence yet, and it is the first-proof critical path. Sequencing defect: blocked_by names only the WebView2 prototype (Windows, not first proof) and KEL-79; the macOS contextBridge experiment exists only as an unlinked prototype candidate.",
+      "evidence": "Keld origin/main b4b907c3 crates/keld-wv/src/wkwebview/macos_bridge.rs lines 30-173: PAGE_FACADE_SCRIPT and ISOLATED_BRIDGE_SCRIPT relay via window.postMessage(..., '*') with 'pending' single slot. Electron v44.4.5 docs/api/context-bridge.md: 'Create a safe, bi-directional, synchronous bridge across isolated contexts'; type table rows Function/Promise/Element/Blob supported for parameters and returns; '999 is the world used by Electron's contextIsolation feature' (retrieved 2026-10-06). corpus drawio electron-preload.js (request/registerMsgListener/listenOnce, msg.listener); zettlr preload index.ts lines 28-104; grep window.config.get => 36, window.config.set => 20, window.getCitationCallback => 8, window.getPathForFile => 3. Linear KEL-142 (Done, fetched 2026-10-06) acceptance: 'Page cannot ... access preload realm'. Apple WKContentWorld doc (JSON endpoint, retrieved 2026-10-06): a content world is a separate namespace of variables.",
+      "correction": "Mark macOS contextBridge SCAFFOLDED, not a pass, and make a macOS two-world contextBridge experiment the blocking prototype for first proof, ahead of the WebView2 one (which is parked by the first-proof rule). Cheapest discriminating experiment on WKWebView with defaultClientWorld + pageWorld: (a) first inline head script reads typeof window.electron.request and window.process.versions.electron; (b) a page callback passed as an argument is invoked three times from the isolated world; (c) a function nested in an object argument is invoked; (d) a bridged function returns a value synchronously; (e) a bridged function returns a function; negative control: page code cannot reach the isolated world's closure variables. Do not describe the mechanism as reuse of the window.keld relay; state that the relay stays the transport to the host and the contextBridge trampoline is a separate, synchronous, in-renderer mechanism."
+     },
+     {
+      "decision_id": "F07-A3",
+      "verdict": "refuted",
+      "reason": "The core (mirror Electron's sandboxed-preload contract, no auto-downgrade into legacy) survives. Four stated specifics do not. (1) 'Precisely' the listed map is contradicted by pinned source: the sandboxed require also resolves 'electron/common' and 'electron/renderer', the electron module list includes sharedTexture, and the preload wrapper receives exports, module and a global alias in addition to Buffer, process, setImmediate, clearImmediate. The tutorial page omits these; source and doc disagree and the source is the runtime truth. (2) 'Static-analysis rejection' is stricter than Electron: an out-of-map require is a runtime throw 'module not found: X' that a preload may catch; an uncaught one is logged as 'Unable to load preload script', emits preload-error on the webContents, and the page still loads. (3) 'file:/asar: paths rewritten at migrate time' has no literal to rewrite in the corpus: every preload value is a runtime-computed absolute path (draw.io template literal on __dirname x4, quick-start path.join(__dirname), Zettlr build-injected *_PRELOAD_WEBPACK_ENTRY constants); Electron's contract is 'the absolute file path to the script'. (4) Sequencing: blocking on keld build/migrate is unnecessary for first proof - draw.io's preload is a single file whose only require is 'electron', and quick-start's has none; Electron itself does not bundle, it runs the file as a function body with a map-backed require.",
+      "evidence": "Electron v44.4.5 lib/sandboxed_renderer/init.ts (loadedModules: electron, electron/common, electron/renderer, events, node:events; loadableModules: timers, node:timers, url, node:url; exposeGlobals: Buffer, global, setImmediate, clearImmediate), lib/sandboxed_renderer/preload.ts (paramNames require, process, exports, module; 'throw new Error(`module not found: ${module}`)'; catch => console.error('Unable to load preload script: ...') + BROWSER_PRELOAD_ERROR), lib/sandboxed_renderer/api/module-list.ts (contextBridge, crashReporter, ipcRenderer, nativeImage, sharedTexture, webFrame, webUtils), docs/tutorial/sandbox.md module list and 'you will not be able to use CommonJS modules to separate your preload script', docs/api/structures/web-preferences.md preload 'should be the absolute file path', docs/api/web-contents.md Event 'preload-error' - retrieved 2026-10-06. corpus: drawio electron.js 722/1087/1404/3083, electron-quick-start/main.js:11, zettlr create-*-window.ts preload constants.",
+      "correction": "Derive the loadable map and wrapper bindings from the pinned source files, not the tutorial list, and record the doc/source difference in the conformance entry. Runtime behaviour: out-of-map require throws 'module not found: <name>'; an uncaught preload error is logged, emits preload-error, and does not stop the page; the migrate-time finding is a diagnostic, not the only enforcement. Resolve the app-supplied absolute preload path at window creation to a member of the verified bundle and refuse paths outside it; drop the migrate-time rewrite. Remove the keld build/migrate blocker for first proof: single-file preloads run under the function-wrapper contract; bundling is needed only for multi-file source preloads (Zettlr)."
+     },
+     {
+      "decision_id": "F07-A4",
+      "verdict": "refuted",
+      "reason": "The blocking-caller requirement and the prototype gate survive, and demand is correctly Zettlr-only (FACT: draw.io has zero sendSync; Zettlr funnels at least 64 page-world call sites through 4 preload sendSync sites and its config store calls it at module construction, so a Promise shim breaks boot). Three specifics are wrong. (1) The '[fact] only engine-neutral primitive that blocks with a reply is synchronous XHR' is contradicted by primary docs: window.prompt is a blocking call with a host-supplied string reply on all three engines (WKUIDelegate text-input-panel completion handler; WebView2 ScriptDialogOpening with GetDeferral and put_ResultText; WebKitGTK script-dialog with webkit_script_dialog_ref/close for asynchronous handling). INFERENCE: it is viable as a transport (strings only, callable from page code too, so the document nonce must still gate it); that needs the same prototype. (2) Therefore the fall-through rule 'if sync XHR is blocked, sendSync becomes a documented failure' is premature. (3) 'response body is the SCV-encoded returnValue' cannot be read as binary: the XHR standard throws InvalidAccessError when responseType or timeout is set on a synchronous request in a Window, so the reply must be text-safe and the deadline can only be host-side. Also unspecified versus Electron: Electron has no deadline - sendSync with no listener only warns in main and the renderer stays blocked - so deadline expiry and rate-limit behaviour are Keld divergences that need defined outcomes (a rate limit that throws would break Zettlr's high-frequency config.get).",
+      "evidence": "Electron v44.4.5 docs/api/ipc-renderer.md ('block the whole renderer process until the reply is received'), lib/browser/ipc-dispatch.ts ('called ipcRenderer.sendSync() with ... channel without listeners' is a console.warn only; returnValue setter sends the reply) - retrieved 2026-10-06. xhr.spec.whatwg.org retrieved 2026-10-06: 'If the current global object is a Window object and this's synchronous is true, then throw an \"InvalidAccessError\"' (responseType setter and timeout setter); 'Developers must not pass false for the async argument when the current global object is a Window object'. Apple developer.apple.com WKUIDelegate webView(_:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:) JSON endpoint; learn.microsoft.com ICoreWebView2ScriptDialogOpeningEventArgs ('GetDeferral ... complete the event at a later time', 'put_ResultText'); webkitgtk.org WebView::script-dialog ('possible to handle the script dialog request asynchronously, by ... webkit_script_dialog_ref() ... webkit_script_dialog_close()', since 2.24) - all retrieved 2026-10-06. corpus zettlr: preload lines 37/57/63/74, pinia/config.ts lines 28/49; draw.io: no sendSync.",
+      "correction": "Restate the claim as: no script-message API blocks; two candidate blocking primitives exist (synchronous XHR to a host scheme; the prompt dialog hook). Run the experiment with both arms on WKWebView from the isolated world: round-trip a 64 KiB reply, confirm the host UI thread is not blocked while Bun answers, and confirm page code without the document nonce is refused. Specify the reply as text-safe encoding. Define the deadline outcome (throw a named error, recorded as a divergence from Electron's unbounded block) and make rate limiting warn-only or delaying, never throwing. sendSync is marked failed only if both arms fail. Not on the first-proof path."
+     },
+     {
+      "decision_id": "F07-A5",
+      "verdict": "survives",
+      "reason": "Each of the four floor rules is real and each lift is needed for the three-app exit. FACT: the KEL-142 spec freezes one pending invoke, a 4096-byte payload, channel 1 only, and ships no send/on/stream/meta; its stop rule forbids a second transport. FACT (Linear, fetched 2026-10-06): KEL-142 is Done, so a successor spec is the right vehicle; KEL-80 is Backlog and unassigned and carries the quoted lines on MessagePort separation and the 4 KiB ceiling. Corpus demand confirms lifts 2, 3 and 4 are first-proof critical: draw.io sends whole file contents renderer-to-main (saveFile args.data) and receives file contents main-to-renderer (readFile via event.reply 'mainResp'), all on string channels. It survives with three amendments that do not change the direction (see correction).",
+      "evidence": "Keld origin/main b4b907c3 docs/specs/kel142-macos-renderer-bridge-api.md section 4.1 ('Exactly one renderer-originated invoke may be pending', 'payload.byteLength <= 4096', 'does not ship send, on, stream, meta, a window.ipc alias'), section 12 stop rule. Linear KEL-80 (Backlog, no assignee, updated 2026-09-29), KEL-142 (Done 2026-10-01), KEL-79 (Backlog, no assignee, updated 2026-09-26) - fetched 2026-10-06; KEL-80 text: 'Host-enforced credits bound control requests, queued bytes and chunked logical blobs'. corpus drawio electron-preload.js (ipcRenderer.send 'rendererReq', ipcRenderer.on 'mainResp'), electron.js 4431-4541; grep -rlF 'ipcRenderer.invoke' zettlr/source => 64 files (63 page-world callers of window.ipc + the preload), 186 occurrences.",
+      "correction": "(1) Add an explicit fifth lift: one-way renderer-to-host send with no reply and no held pending slot - it is the only renderer-to-main primitive draw.io uses (2 sites, 0 invoke), and the list currently covers 'on' but not 'send'. (2) Reorder by milestone: first proof needs send, host-to-renderer push, string channels and payloads above 4 KiB in both directions; pending-set > 1 is Zettlr-only. (3) Lift 3 depends on a transport that is not in blocked_by: either add KEL-79 (bulk lane, Backlog and unassigned) as a first-proof blocker, or choose chunked logical blobs under KEL-80 credits, which that issue already names; for the push direction require that a large event fetched out of band cannot be delivered after a later small event on the same window. (4) Replace '65 files' with the resolved 64 and label 'concurrent' as an inference."
+     },
+     {
+      "decision_id": "F07-A6",
+      "verdict": "refuted",
+      "reason": "The core choice (host-owned child webview rather than iframe; Tier 3; not on any corpus path - zero <webview> call sites in all three apps) survives and stays parked. The attribute mapping as written is wrong in three places. (1) Partition: Electron has three cases, not two - 'persist:' prefix is a persistent session shared by every page with the same partition; no prefix is an in-memory session, also shared by name; unset uses the app's default session. 'persist: = identity-bound, else memory-only' sends the unset case (the common one) to a memory-only store and loses sharing by name. (2) The cited owner fact is a misread: KEL-135 gives one store per app identity supplied to every view, not one per view; a partition dimension contradicts that spec's current invariant and needs a KEL-135 spec change, not consumption. (3) 'nodeintegration ... refused at attach with a code' diverges from Electron: security-critical preferences are inherited from the embedder and the attribute is ignored, and the guest still attaches; refusing would fail guests Electron loads. The mapping also omits httpreferrer, webpreferences and nodeintegrationinsubframes, and the answer text omits that most <webview> methods are synchronous for the caller.",
+      "evidence": "Electron v44.4.5 docs/api/webview-tag.md: partition ('If the partition is unset then default session of the app will be used'; 'By assigning the same partition, multiple pages can share the same session'; 'can only be modified before the first navigation'), webpreferences ('the guest inherits that value and the corresponding webpreferences entry is ignored'), 'Most methods called on the webview from the host page require a synchronous call to the main process', 'Popups are disabled by default', getWebContentsId 'Returns number'; lib/browser/guest-view-manager.ts makeWebPreferences inheritedWebPreferences loop and 'if (event.defaultPrevented) return -1' - retrieved 2026-10-06. Keld origin/main b4b907c3 docs/specs/kel135-persistent-profile-identity.md: 'One WkWebViewEngine retains exactly one selected persistent or nonpersistent store and supplies it to every view it creates.' Linear KEL-135 In Progress (fetched 2026-10-06), acceptance scoped to per-app identity. corpus: grep -i webview => only webviewTag:false and the preventDefault handler in draw.io.",
+      "correction": "Keep the decision parked with only the direction recorded. When it is opened: map unset partition to the embedder app's default store, a non-prefixed name to a named in-memory store shared by all views using that name, 'persist:name' to a named persistent store shared likewise, and raise the multi-store requirement against the KEL-135 spec as a change. For nodeintegration, nodeintegrationinsubframes and insecure webpreferences entries, ignore and attach as Electron does under a secure embedder; reserve refusal for attributes Electron does not inherit and Keld cannot honour (disablewebsecurity, plugins, blink feature lists), recorded as divergences. Add httpreferrer and webpreferences to the table, return a numeric id from getWebContentsId, and state that synchronous getters need either the F07-A4 lane or a renderer-side mirror."
+     }
+    ],
+    "extra_findings": [
+     {
+      "finding": "Linear availability for the swarm: Linear (team KELD) is reachable from this session for reads. Four issue reads succeeded with relations and descriptions. The mempalace MCP server did not connect (executable not found), so no MemPalace lookups were possible here.",
+      "severity": "info",
+      "evidence": "FACT, Linear fetched 2026-10-06: KEL-80 Backlog, unassigned, updated 2026-09-29; KEL-142 Done, completed 2026-10-01, parent KEL-139, blocks KEL-140/143/144; KEL-79 Backlog, unassigned, updated 2026-09-26; KEL-135 In Progress, assignee Amisha Ramani, updated 2026-10-05. No Linear writes were made."
+     },
+     {
+      "finding": "The draw.io web application is not in the corpus clone: the drawio submodule directory is empty. Every page-side caller of window.electron.request / registerMsgListener / listenOnce and every reader of window.process is therefore unresolved; payload shapes and call ordering for the first-proof workflow are known only from the main-process handler.",
+      "severity": "high",
+      "evidence": "FACT: ls corpus/drawio-desktop/drawio => 0 entries; the only file containing ipcRenderer is src/main/electron-preload.js. Cheapest fix: populate the submodule at the commit pinned by drawio-desktop@2edf9fb and grep for 'electron.request(' and 'mxIsElectron'."
+     },
+     {
+      "finding": "The F07 research summary and one semantic trap state token-scan leads as facts. 'draw.io uses once/removeListener/removeAllListeners' and 'ipcRenderer.send 15, once 15' are false as resolved call sites; 'Zettlr 187 invoke sites' are page-world calls on a contextBridge proxy, not Electron API call sites.",
+      "severity": "medium",
+      "evidence": "FACT: fixed-string grep over drawio-desktop gives ipcRenderer.on 3, once 1, send 2 and nothing else; zettlr gives one preload with 9 electron.ipcRenderer sites, and 'const ipcRenderer = window.ipc' in the 63 other files."
+     },
+     {
+      "finding": "draw.io's preload installs an isolated-world listener on window.navigation to block about: navigations, guarded by a null check. If the WKWebView on the target macOS lacks the Navigation API, the guard is silently absent and the hardening the app relies on disappears without an error.",
+      "severity": "medium",
+      "evidence": "FACT: corpus drawio electron-preload.js 'if (window.navigation != null) { window.navigation.addEventListener(\"navigate\", ...) }' and electron.js comment at 2190-2191. UNKNOWN: Navigation API availability in WKWebView at the first-proof minimum macOS. Cheapest experiment: evaluate typeof window.navigation in defaultClientWorld on that OS and record the result as a conformance cell."
+     },
+     {
+      "finding": "Zettlr copies the whole preload process.env into the page world. The synthesized preload process object must define what env contains; passing through host or Bun ambient environment would hand it to page script.",
+      "severity": "medium",
+      "evidence": "FACT: zettlr preload index.ts line 90 'env: Object.assign({}, process.env)' inside contextBridge.exposeInMainWorld('process', ...). Electron v44.4.5 docs/api/process.md lists env in the sandboxed subset (retrieved 2026-10-06). No F07 decision assigns an owner for the env contents."
+     },
+     {
+      "finding": "A research open unknown is closed by pinned source: invoke on a channel with no handler rejects in the renderer with \"Error invoking remote method '<channel>': Error: No handler registered for '<channel>'\"; sendSync on a channel with no listener only logs a warning in main and leaves the renderer blocked.",
+      "severity": "low",
+      "evidence": "FACT: Electron v44.4.5 lib/browser/ipc-dispatch.ts ('replyWithError(new Error(`No handler registered for '${channel}'`))', 'sendReply({ error: error.toString() })', console.warn '... called ipcRenderer.sendSync() with ... channel without listeners.') and lib/renderer/api/ipc-renderer.ts ('Error invoking remote method ...') - retrieved 2026-10-06."
+     },
+     {
+      "finding": "Pinned doc and pinned source disagree on the sandboxed preload module list: the tutorial lists six electron modules, the source list has seven (adds sharedTexture) and also accepts the 'electron/common' and 'electron/renderer' specifiers. Conformance entries that cite only the tutorial sentence will encode the shorter list.",
+      "severity": "low",
+      "evidence": "FACT: v44.4.5 docs/tutorial/sandbox.md vs lib/sandboxed_renderer/api/module-list.ts and lib/sandboxed_renderer/init.ts, retrieved 2026-10-06. Corpus demand for sharedTexture: 0 sites."
+     },
+     {
+      "finding": "The existing macOS relay posts between worlds with window.postMessage and target origin '*', so relayed request and result payloads are delivered to any page-world message listener on that window. That is acceptable for the current echo floor (the page is the caller) but must not be inherited as the carrier for isolated-world-only data once preload code exists.",
+      "severity": "low",
+      "evidence": "FACT: Keld origin/main b4b907c3 crates/keld-wv/src/wkwebview/macos_bridge.rs lines 79-84 and 134-141 (post({...}, \"*\")); listeners filter only on event.source === window."
+     }
+    ]
+   }
+  }
+ ],
+ "decision_packets": [
+  {
+   "key": "PANEL-D21",
+   "decision": "On macOS the app preload and the renderer compat runtime run in a content world separate from the KEL-142 bridge world, with their own world-scoped message handler, rather than sharing the bridge world.",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "FACT (measured, world-probe run by this agent 2026-10-06, macOS 26.5.1, system WKWebView; source and output in scratchpad/prototypes/world-probe): a script placed in the same content world as a bridge-shaped script read the world-scoped handler object directly, posted a forged message that reached the native handler from the main frame, wrapped the global bind hook, captured the host-delivered document nonce, posted a forged invoke carrying the correct nonce, leaked the nonce to the page, and relayed page-chosen bytes to the raw native handler.",
+    "FACT (measured, same run): the same script placed in a named content world saw the handler as undefined and the bind hook as undefined, and no forged message reached the native handler.",
+    "FACT (measured, same run): a hardened bridge script could freeze its bind hook (the nonce then did not leak), but its attempt to shadow window.webkit threw 'Attempting to change value of a readonly property', so the handler stayed reachable and both forged messages still arrived.",
+    "FACT (measured, same run): window.postMessage crosses content worlds, and the handler also exists in subframes of the same world (those messages arrive with isMainFrame false).",
+    "FACT: Apple documents that the user content controller defines the handler function 'in all frames in the specified content world' (developer.apple.com, WKUserContentController addScriptMessageHandler(_:contentWorld:name:), JSON endpoint fetched 2026-10-06).",
+    "FACT: the live bridge registers its handler in the default client world, assigns the bind and result hooks as plain writable globals, and calls JSON.stringify, Number.isInteger, Array.isArray and Array.from at call time rather than capturing them; the host rejects non-main-frame messages and stale or forged nonces (crates/keld-wv/src/wkwebview/macos_bridge.rs at b4b907c3, read 2026-10-06).",
+    "FACT: KEL-142 section 5.1 says the page world must not be able to access the native message-handler object, its handler name, or the host's document binding, and that a page-callable relay 'must accept no broader shape than window.keld.invoke'; AC2 requires the nonce to be absent from page globals and request arguments, and 'Deleting content-world isolation ... must fail a named test' (docs/specs/kel142-macos-renderer-bridge-api.md, read 2026-10-06).",
+    "FACT: draw.io's preload calls contextBridge.exposeInMainWorld twice and exposes sendMessage(action, args), which forwards a page-chosen channel to ipcRenderer.send (corpus drawio-desktop @2edf9fb, src/main/electron-preload.js).",
+    "FACT: F07-T1 (GitHub #484) lists PANEL-D21 in blocked_by and names a 'KEL-142 spec revision (third world/relay)' as an external predecessor (publish_plan.json).",
+    "FACT (Linear, fetched 2026-10-06): KEL-142 Done (completed 2026-10-01), parent KEL-139 Done; KEL-79 Backlog, unassigned. No open Linear issue owns a KEL-142 revision."
+   ],
+   "inferences": [
+    "INFERENCE: the world-probe mimics the bridge's two decisive properties (world-scoped handler, writable global bind hook) rather than running the real bridge. The real bridge has the same two properties in code, so the same result is expected.",
+    "INFERENCE: arm G as written (adversarial preload must not be able to re-export the handler or nonce) cannot pass in a shared world under any contextBridge value table, because proxying functions is the feature and the handler is reachable by platform design.",
+    "INFERENCE: a same-world preload could also alter the trusted script's behaviour by replacing the uncaptured built-ins it calls; host-side validation stays authoritative, but the script would no longer be trusted.",
+    "INFERENCE: a DOM postMessage relay from the app world through the bridge world is page-forgeable, so it would let page script send on any granted el: channel even when the preload exposed a narrower API. That is broader than Electron, where the page reaches ipcRenderer only through what the preload exposes, and broader than the section 5.1 relay rule allows.",
+    "INFERENCE: relay cost cannot flip the world choice, because the shared world fails a condition the judges called mandatory; cost only informs the relay shape."
+   ],
+   "unknowns": [
+    "UNKNOWN: per-call cost of an app-world handler versus a DOM relay. This agent's relay-cost probe produced no result within 120 s in an offscreen web view and the cause was not diagnosed, so the cost is unmeasured.",
+    "UNKNOWN: how the app-world handler binds messages to the current document (reusing the host's existing per-document state versus a second nonce).",
+    "UNKNOWN: WebView2 has no isolated-world API per the F07 research note; Windows remains a divergence row and is not first-proof."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Separate named app world for preload plus compat runtime, with a second world-scoped handler on the same per-view controller that accepts only compat (el:) envelopes; the KEL-142 handler and nonce stay unreachable by app code.",
+     "cost": "A KEL-142 spec revision (second world and handler), one more host handler path through the existing bridge owner, and an unmeasured per-call cost.",
+     "new_invariant": "App-authored renderer code never shares a content world with the trusted bridge script; the app world's capability is no broader than Electron's ipcRenderer under the window's enumerated el: grant.",
+     "invariant_at_risk": "KEL-142's single-handler assumption; must not become a second transport owner or a second policy check."
+    },
+    {
+     "option": "B. Preload in the bridge world, with contextBridge enforcing Electron's value table (maintainer position).",
+     "cost": "Measured: handler and nonce reachable by the preload and re-exportable to the page. KEL-142 AC2 becomes conditional on app code.",
+     "new_invariant": "The app preload is part of the trusted bridge base.",
+     "invariant_at_risk": "KEL-142 section 5.1 and AC2 as written; the 'trusted script' premise."
+    },
+    {
+     "option": "C. Separate app world with a nonce-less DOM relay through the bridge world.",
+     "cost": "Page script can forge relay messages, so every granted el: channel becomes page-reachable regardless of what the preload exposes.",
+     "new_invariant": "Page authority equals preload authority for compat channels.",
+     "invariant_at_risk": "KEL-142 section 5.1 relay rule ('no broader shape than window.keld.invoke'); Electron's preload-as-filter contract."
+    },
+    {
+     "option": "D. Shared world with a hardened bridge (frozen hooks, hidden handler).",
+     "cost": "Measured: the hook can be frozen but the handler cannot be hidden; it becomes an arms race inside one world.",
+     "new_invariant": "Bridge safety depends on script-level hardening holding against same-world code.",
+     "invariant_at_risk": "KEL-142 AC2."
+    }
+   ],
+   "recommendation": "Adopt A and close the world question. Carry the relay shape into the KEL-142 revision as option A's world-scoped handler, with C recorded as the rejected alternative. Keep Side B's conditions as F07-T1 acceptance: re-run the KEL-142 negative tests with draw.io's real preload installed, add the adversarial-preload case as a named test, and record the per-call cost as a diagnostic.",
+   "falsifier": "A run against the real bridge in which an adversarial same-world preload cannot obtain the handler or nonce (contradicting the probe and Apple's documented scoping), or a measured app-world handler cost that makes draw.io's request path unusable.",
+   "reversible": "Yes until the KEL-142 revision and its conformance entries land; world placement is host-internal and not visible to app code. After that, changing it means a spec change and re-running the isolation tests.",
+   "missing_evidence": "Per-call cost of the app-world handler (unmeasured); the document-binding design for the second handler; the real arm G run, which needs the unbuilt compat runtime.",
+   "next_action": "Owner: map orchestrator. Post the world-probe result and this decision on GitHub #441, close it, and remove PANEL-D21 from the blocked-by list of #484, leaving the KEL-142 revision as its remaining predecessor. First check: #484 shows the KEL-142 revision as its only non-ticket predecessor and quotes the adversarial-preload test as an acceptance criterion.",
+   "owner": "Crate owner keld-wv (macOS bridge install seam) under spec KEL-142 (Linear: Done, completed 2026-10-01, fetched 2026-10-06). The revision has no open Linear issue; the nearest open owner is KEL-79 (Backlog, unassigned). The orchestrator must route the revision to an existing issue because the workspace is at its issue cap.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F07-A6",
+   "decision": "When an installed Electron app is replaced by its Keld build, does Keld carry the app's web storage (localStorage/IndexedDB) across, or declare an empty first launch as a labelled divergence in the migrate report?",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "FACT (Linear, fetched live 2026-10-06, read-only): KEL-135 In Progress (Amisha Ramani); KEL-79 Backlog, unassigned; KEL-142 Done (2026-10-01); KEL-177 In Progress, unassigned; KEL-17 Done (closed RFC). KEL-127 names KEL-177 as owner of 'later explicit migration friction'.",
+    "FACT (cached pinned doc docs/api/app.md v44.4.5, lines 634-639): sessionData is 'the directory for storing data generated by Session, such as localStorage, cookies, disk cache...' and defaults to userData. Electron's web storage lives in Chromium's session store on disk.",
+    "FACT (corpus drawio-desktop@2edf9fb, re-read): the main window loads file://<codeDir>/index.html (electron.js:768-777). localStorage keys in use: '.configuration' (electron-preload.js:23-29, inside try/catch), '.recent' (electron.js:550-566) and '.drawio-config' (electron.js:610), the last two read by main through a try-wrapped script.",
+    "FACT (docs/specs/kel135-persistent-profile-identity.md:183-186, 384, 516): Keld's macOS store is an identifier-addressed WKWebsiteDataStore whose physical layout Apple owns; 'v1 performs no cross-identity data migration' and 'accepts no old-root input'.",
+    "FACT (panel synthesis line 74): the first proof keeps draw.io on file:// through host file containment (unbuilt); it does not introduce a custom scheme.",
+    "FACT (panel synthesis line 64): the first proof scores install + activation + open/edit/save/close on a fresh install. No cell reads pre-existing Electron state.",
+    "FACT (docs/architecture/04-electron-compat.md:115, 195-200): keld migrate is not live. The spec already defines a 'bridge release recipe' (a final Electron release that hands users to the Keld build)."
+   ],
+   "inferences": [
+    "INFERENCE: the ticket's premise is incomplete. Storage becomes invisible because the engine and its data store change (Chromium session store to WKWebsiteDataStore), not only because the origin changes. Keeping the same origin does not preserve anything on macOS.",
+    "INFERENCE: a host-side import would require the privileged host to parse Chromium's on-disk storage formats (a new untrusted-input parser and dependency) and to write through page-context script at the final origin, three times over (WK, WebView2, WebKitGTK).",
+    "INFERENCE: an app-assisted export in the bridge release (the last Electron build writes chosen keys to a file; the Keld build seeds them before page scripts on first launch) needs no Chromium-format parser and reuses the arch 04 bridge concept."
+   ],
+   "unknowns": [
+    "UNKNOWN (not fetched): whether any public WebKit API writes localStorage/IndexedDB into a WKWebsiteDataStore without executing page script.",
+    "UNKNOWN: whether WebView2, being Chromium-derived, could open a copied Electron profile directly on Windows (this is the one case where origin continuity would matter).",
+    "UNKNOWN (discovered here, first-proof relevant, not this decision): whether WKWebView persists localStorage for a file:// document loaded with scoped read access in an identifier-addressed store, which draw.io preferences across relaunch depend on.",
+    "UNKNOWN: whether Keld's userData path for a migrated app resolves to the Electron app's existing directory (electron-store state would then carry over while web storage does not)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Declare 'first launch under Keld starts with empty web storage' as a labelled divergence in the migrate report, listing statically detected storage keys; never read, move or delete the Electron session data.",
+     "cost": "Users of an in-place upgrade lose web-storage state (draw.io: configuration, recent list, drawio-config). No mechanism.",
+     "new_invariant": "Keld never mutates an Electron app's session data directory (keeps a later import possible).",
+     "invariant_at_risk": "KEL-127 data-integrity expectation if an in-place upgrade is ever claimed without the disclosure."
+    },
+    {
+     "option": "B. One-shot host-side import from the Chromium session store.",
+     "cost": "Chromium storage-format parsers in the host (dependency gate, format drift per Chromium version), three engine-specific writers, IndexedDB and cookies each separate.",
+     "new_invariant": "The privileged host parses third-party browser profile formats.",
+     "invariant_at_risk": "Std-first minimal dependencies; one-parser rule; KEL-135 'accepts no old-root input'; host attack surface."
+    },
+    {
+     "option": "C. App-assisted export in the bridge release, replayed by a host-injected first-launch seed before page scripts.",
+     "cost": "Requires the bridge release; per-app key list; exactly-once marker; depends on the final origin (KEL-79).",
+     "new_invariant": "A first-launch seed script with an exactly-once guarantee in the preload ordering contract.",
+     "invariant_at_risk": "Preload ordering contract; coupling to the unowned origin decision."
+    }
+   ],
+   "recommendation": "Decided: A. The evidence that determines it: keld migrate is not live; the first proof is a fresh install with no pre-existing state; the KEL-135 spec excludes store migration and Apple owns the physical store; and the engine change means origin preservation alone carries nothing. Reject B. Record C as the only import shape worth specifying, and only when an in-place upgrade (the arch 04 bridge release) is actually scheduled. Correct the ticket text so it no longer attributes the loss to the origin change alone.",
+   "falsifier": "A committed denominator cell that requires pre-migration web storage to be visible after migration (for example Open Recent showing pre-migration files); or a primary receipt showing a system engine can open the Electron session store directly, making import nearly free.",
+   "reversible": "Yes, as long as the new invariant holds (Electron session data untouched). After users create new state under Keld, a later import becomes a merge rather than a copy.",
+   "missing_evidence": "None needed for the decision. For a future C: the KEL-79 origin decision and a bridge-release schedule. Separately, the file:// localStorage persistence observable on WKWebView for the first-proof fixture.",
+   "next_action": "Orchestrator marks F07-A6 (#406) resolved as A with the corrected premise, adds the migrate-report wording requirement to the keld-migrate ticket, and routes the file:// localStorage persistence unknown to the first-proof renderer fixture. First completion check: #406 reads 'resolved: empty first launch, labelled divergence; import parked behind bridge-release scheduling'.",
+   "owner": "KEL-135 for persistent store identity (Linear, fetched 2026-10-06: In Progress, Amisha Ramani); KEL-79 for origin (Backlog, unassigned); KEL-177 for migration friction (In Progress, unassigned). No live Linear issue owns the keld migrate report (KEL-17 is a Done RFC); that gap is for the orchestrator to route.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F07-E1",
+   "decision": "What does process.env contain inside a preload or page on Keld: nothing, a declared subset, or a copy of a real process environment?",
+   "classification": "decided",
+   "milestone": "next",
+   "facts": [
+    "FACT (Linear, fetched live 2026-10-06, read-only): KEL-75 In Progress, unassigned; KEL-72 Done; KEL-142 Done (2026-10-01); KEL-97 Backlog; KEL-80 Backlog, unassigned. A KELD search for 'preload' returned 12 issues (complete page), none owning an @keld/electron renderer shim.",
+    "FACT (cached pinned doc docs/api/process.md v44.4.5, lines 11-27): the sandboxed-renderer process subset includes env.",
+    "FACT (corpus zettlr@e6c7fd8 source/common/modules/preload/index.ts:83-92, re-read): the preload exposes process to the main world with env: Object.assign({}, process.env).",
+    "FACT (zettlr renderer consumers, grep of source/): win-about/Debug-Tab.vue:85 copies the whole env and :93-95 reads PANDOC_VERSION, QUARTO_VERSION, GIT_VERSION; win-preferences/schema/advanced.ts:91-92 reads ZETTLR_IS_TRAY_SUPPORTED and ZETTLR_TRAY_ERROR. All five are written by the main process at runtime (source/app/util/environment-check.ts:94-152, source/app/lifecycle.ts:94).",
+    "FACT (corpus drawio-desktop@2edf9fb src/main/electron-preload.js:15, 127-128): the preload reads process.argv, process.type and process.versions only; no process.env. No NODE_ENV read exists in zettlr/source or drawio src/main (grep, 0 hits).",
+    "FACT (crates/keld-runtime/src/role.rs prepare; docs/architecture/02-ipc.md:36-47): the Bun child inherits the host environment (no env_clear; only configured removals/additions) plus KELD_APP_LINK = '<endpoint>#<64 hex>', which 'carries only endpoint plus possession secret'.",
+    "FACT (packages/@keld/api/src/app.ts:73; grep of packages for deletions): production code reads KELD_APP_LINK from process.env and does not remove it; only tests delete it.",
+    "FACT (docs/architecture/03-security.md §1): the webview principal is untrusted and host-derived."
+   ],
+   "inferences": [
+    "INFERENCE: Zettlr uses the environment as a main-to-renderer data channel (main sets values at runtime, later-spawned renderers inherit them). The faithful source would be the main role's environment at window creation, not the host's, so a host-side 'NODE_ENV only' list serves neither corpus app.",
+    "INFERENCE: copying the main role's environment into the page would hand the app-link possession secret and the user's shell environment to an untrusted webview principal.",
+    "INFERENCE (not executed): with env absent or empty, Zettlr's preload does not throw (Object.assign skips an undefined source); its Debug tab shows 'not available' and the tray preference loses its disabled state."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether pinned Electron 44.4.5 sandboxed renderers see main-process environment mutations made after app start (snapshot at renderer spawn versus at launch).",
+    "UNKNOWN: whether any committed Zettlr denominator cell will depend on the five names (no Zettlr denominator exists).",
+    "UNKNOWN: whether the legacy profile will change environment inheritance for the Bun role."
+   ],
+   "alternatives": [
+    {
+     "option": "A. process.env is an empty object in every preload; the migrate report lists each renderer-side environment read with the names read.",
+     "cost": "Zettlr: three version strings read 'not available' and the tray-preference state is wrong (declared divergence). No new mechanism.",
+     "new_invariant": "No environment value crosses into a webview principal.",
+     "invariant_at_risk": "None for Keld; must be reported, not silent (KEL-127 direction item 4)."
+    },
+    {
+     "option": "B. Declared name allow-list (compat config); values snapshotted from the main role's environment at window creation and delivered with the host-synthesized process descriptor; KELD_* names excluded unconditionally.",
+     "cost": "New compat config key (public-API gate), a descriptor field, an exclusion rule with a negative control, approved spec.",
+     "new_invariant": "Only declared names flow, only from the app's own main role to its own windows, never KELD_*.",
+     "invariant_at_risk": "One-owner rule (information-flow policy declared outside the permissions manifest); possession-secret leak if the exclusion fails."
+    },
+    {
+     "option": "C. Copy the whole environment (Electron parity).",
+     "cost": "None to build.",
+     "new_invariant": "Untrusted pages can read the role's bootstrap secret and the user's environment.",
+     "invariant_at_risk": "arch 03 principal model; app-link possession-secret confidentiality."
+    },
+    {
+     "option": "D. Fixed built-in list such as NODE_ENV only.",
+     "cost": "Hard-coded policy in the shim with no corpus consumer.",
+     "new_invariant": "A host-chosen environment vocabulary.",
+     "invariant_at_risk": "YAGNI; one policy owner."
+    }
+   ],
+   "recommendation": "Decided: A. The evidence that determines it: the first-proof app never reads process.env in its preload; no corpus renderer reads NODE_ENV; the only real consumer (Zettlr) degrades without throwing; and the role environment verifiably contains the app-link possession secret. Reject C and D. Specify B only when a committed Zettlr cell reads one of the five names, and then source values from the main role (not the host) with unconditional KELD_* exclusion and a negative control. The first-proof renderer shim should define process.env as an empty object so the field exists.",
+   "falsifier": "A corpus preload or page that throws or fails a scored cell when process.env is empty; or a pinned-Electron run showing sandboxed renderers do not see main's runtime environment writes (then Zettlr's own flow differs from the inference and B's source rule must change).",
+   "reversible": "Yes. Widening from empty to a declared allow-list is additive; starting from C and narrowing later would not be.",
+   "missing_evidence": "None for A. For B: a pinned Electron 44.4.5 fixture (main sets a variable after ready, opens a window, preload reads it) and a committed Zettlr denominator.",
+   "next_action": "Orchestrator marks F07-E1 (#407) resolved as A, records the KELD_APP_LINK exposure fact and the five Zettlr names, and adds 'process.env is an empty object; renderer-side reads are reported' to the renderer shim ticket and the migrate report wording. First completion check: #407 reads 'resolved: empty env; allow-list parked behind a Zettlr denominator cell'.",
+   "owner": "No live Linear issue owns the @keld/electron renderer shim (KEL-72 Done, KEL-142 Done; search 'preload' 2026-10-06). The nearest live owner is KEL-75 (In Progress, unassigned) for the role bootstrap variable and environment contract; arch 04 §3 layer 3 is the spec home. The orchestrator must route the missing shim owner; this subagent creates nothing.",
+   "prompt_tracker_node": ""
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "PANEL-D21": {
+   "status": "decided",
+   "resolution": "Adopt A and close the world question. Carry the relay shape into the KEL-142 revision as option A's world-scoped handler, with C recorded as the rejected alternative. Keep Side B's conditions as F07-T1 acceptance: re-run the KEL-142 negative tests with draw.io's real preload installed, add the adversarial-preload case as a named test, and record the per-call cost as a diagnostic.",
+   "milestone": "first-proof"
+  },
+  "F07-A6": {
+   "status": "decided",
+   "resolution": "Decided: A. The evidence that determines it: keld migrate is not live; the first proof is a fresh install with no pre-existing state; the KEL-135 spec excludes store migration and Apple owns the physical store; and the engine change means origin preservation alone carries nothing. Reject B. Record C as the only import shape worth specifying, and only when an in-place upgrade (the arch 04 bridge release) is actually scheduled. Correct the ticket text so it no longer attributes the loss to the origin change alone.",
+   "milestone": "parked"
+  },
+  "F07-E1": {
+   "status": "decided",
+   "resolution": "Decided: A. The evidence that determines it: the first-proof app never reads process.env in its preload; no corpus renderer reads NODE_ENV; the only real consumer (Zettlr) degrades without throwing; and the role environment verifiably contains the app-link possession secret. Reject C and D. Specify B only when a committed Zettlr cell reads one of the five names, and then source values from the main role (not the host) with unconditional KELD_* exclusion and a negative control. The first-proof renderer shim should define process.env as an empty object so the field exists.",
+   "milestone": "next"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "[fact] Family = Electron `webviewTag` element: 113 members (65 methods, 35 events, 13 attributes), renderer-only, not exported, carrying Electron's own \"we recommend not to use the webview tag\" warning. [fact] Corpus demand for the tag itself is zero: draw.io's 7 \"webview\" hits are six `webviewTag: false` and one `will-attach-webview` → `event.preventDefault()`; Zettlr and electron-quick-start contain no `<webview>`. What the corpus actually needs from this unit is the renderer-side compat user-script: `contextBridge.exposeInMainWorld` (draw.io 2, Zettlr 5), `ipcRenderer.send/on/once/removeListener/removeAllListeners` (draw.io), `ipcRenderer.invoke` (Zettlr 187 sites) and `sendSync` (Zettlr 6, synchronous `config.get` inside preload-exposed functions), `ipcRenderer.setMaxListeners(100)`, `process.type/versions/platform/env/argv` re-exposed to the page, `webPreferences.additionalArguments` read as `process.argv` in preload, `webUtils.getPathForFile`, and an isolated-world `window.navigation` listener that only works because page code cannot reach preload objects. [fact] Keld live state: macOS-only `window.keld.invoke` installed as a `WKContentWorld.defaultClientWorld` document-start user script plus a frozen pageWorld facade (channel 1 only, 4096 B, one pending invoke, host-minted document nonce, `KELD-WV-011`); WebView2 injects no bridge at all (wry's 96–109 ms blocking injection was deliberately removed); WebKitGTK is wry scaffold with no isolated world; no preload loading, no `@keld/web` package, no renderer `@keld/electron` shim, no custom scheme, no window registry beyond `LifecycleSession` window counting; devtools: WebView2 debug-on/release-off until guard owns `web.devtools`, wry open/close elsewhere. Recommended sequencing: (1) Tier-1 renderer user-script over `window.keld` (requires lifting the KEL-142 floor: multiple pending invokes, string channels, structured-clone codec, host→renderer events) with isolation claimed only on WebKit engines and a documented ▲ page-world emulation on WebView2; (2) `webviewTag:false`/`will-attach-webview` zero-webview semantics as a conformance cell now; (3) `<webview>` → host-owned child webview stays Tier 3 and is not on the draw.io/Zettlr path. Two design atoms need prototypes before any spec: `sendSync` feasibility on system engines (no synchronous native bridge exists on any of the three; only a synchronous XHR to a host scheme could block), and whether WebView2's page-world emulation of `contextBridge` leaks preload internals.",
+  "decisions": [
+   {
+    "id": "F07-A1",
+    "question": "What from this family must ship first for the draw.io/Zettlr/quick-start exit, and does the <webview> tag gate anything?",
+    "proposed_answer": "[fact] No corpus app embeds <webview>; draw.io sets webviewTag:false and uses will-attach-webview only to preventDefault. Ship now, as Tier-1 cells: (a) `webviewTag` accepted in webPreferences and defaulted false, `<webview>` left as an unknown element, `will-attach-webview` registrable and never firing; (b) the renderer compat user-script: contextBridge.exposeInMainWorld, ipcRenderer (EventEmitter-complete: on/once/off/removeAllListeners/setMaxListeners, send, invoke, sendSync, postMessage), synthesized `process` subset (type='renderer', sandboxed=true, contextIsolated=true, per-window argv from additionalArguments, versions), webUtils.getPathForFile, webFrame zoom/insertCSS subset. Keep <webview>→multi-webview at Tier 3 with the Electron 'not recommended' warning cited; record it as ✘(tracked) on the scoreboard rather than scaffolding an iframe shim that would pass L0 and lie at L2.",
+    "evidence": [
+     "corpus grep: drawio-desktop 'webview' = webviewTag:false ×6 + will-attach-webview preventDefault; zettlr/quick-start: none",
+     "drawio/zettlr usage.json members_top: ipcRenderer.send 15/84, once 15/18, invoke 187, sendSync 6, contextBridge.exposeInMainWorld 2/5",
+     "web-preferences.md: webviewTag 'Defaults to false'",
+     "web-embeds.md: WebViews 'not explicitly supported by Electron'",
+     "arch 04 §4 Tier 1 includes ipcRenderer/contextBridge; Tier 3 includes <webview>"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "Implementing <webview> as a plain iframe behind a custom element (fails separate-process, partition, preload and ipc-message semantics; would be a silent downgrade forbidden by KEL-127). Deferring the renderer user-script until BrowserWindow lands (corpus apps load preload at first window; nothing runs without it).",
+    "unknowns": "Zettlr's two sandbox:false preloads (splash, onboarding): whether they require Node modules beyond the sandboxed polyfill map — if yes they are ✘ diagnostics, not shim work.",
+    "blocked_by": []
+   },
+   {
+    "id": "F07-A2",
+    "question": "Where does preload + compat user-script execute per engine, and what isolation claim can Keld honestly make?",
+    "proposed_answer": "macOS: append preload and compat script to the existing MacRendererBridge WKUserContentController in WKContentWorld.defaultClientWorld (AtDocumentStart, main-frame-only) — real isolation, same as Electron's world 999 model; contextBridge.exposeInMainWorld = isolated→page proxy installed by the pageWorld facade pattern already used for window.keld (✔). Linux: WebKitGTK webkit_user_script_new_for_world + register_script_message_handler(name, world_name) (both UI-process APIs, 2.22/2.40+) — real isolation (✔) but requires replacing the wry scaffold's init-script path. Windows: WebView2 exposes no isolated-world API in its reference and WebView2Feedback has no tracked request; the only hook is AddScriptToExecuteOnDocumentCreated in the page realm, all frames, async. Therefore WebView2 contextBridge is a documented ▲ emulation (closure-scoped, frozen, non-configurable, runs before page scripts, self-gated to `window === window.top`), with the rule that preload must contain no secrets or authority — which Keld's host-minted document nonce already guarantees. The security claim 'page cannot access preload realm' (KEL-142 acceptance) is true on WebKit engines only and must be stated per engine on the scoreboard.",
+    "evidence": [
+     "macos_bridge.rs install(): defaultClientWorld + pageWorld scripts, forMainFrameOnly=true, macOS<11 fail-closed",
+     "WKContentWorld.json: namespace isolation; DOM shared across worlds",
+     "webkitgtk.org UserScript.new_for_world (2.22) and register_script_message_handler world_name (2.40); ScriptWorld 'access to the DOM but not to other variables or functions created by the page'",
+     "learn.microsoft.com ICoreWebView2: AddScriptToExecuteOnDocumentCreated 'all top-level document and child frame page navigations'; no isolated/content world member; gh search WebView2Feedback 'isolated world' → []",
+     "context-bridge.md: exposeInIsolatedWorld worldId 999 = Electron contextIsolation world",
+     "research 186 row 5: isolated world ≠ permission boundary"
+    ],
+    "confidence": "medium",
+    "type": "prototype",
+    "alternatives_rejected": "Treating a WebView2 page-world script as 'isolated' (false claim; KEL-142 §5.1 rejects raw page bridges as evidence). Using AddHostObjectToScript as the bridge (documented security risk; exposes host objects to page). Pinned CEF for Windows to get Chromium isolated worlds (violates system-webview default, KEL-127). Blocking on the WebView2 completion handler synchronously as wry did (96–109 ms UI stall, KEL-65).",
+    "unknowns": "[unknown] Whether any WebView2 API (incl. ICoreWebView2Frame / ExecuteScriptWithResult) can execute in a non-page world — reference and feedback search are negative evidence only. [unknown] Whether the GTK isolated world can be driven without a WebKitWebProcessExtension for message replies (user scripts + handlers are UI-process; ScriptWorld object itself is web-process).",
+    "blocked_by": [
+     "F07-P1 prototype",
+     "KEL-79 for CSP interaction with injected scripts"
+    ]
+   },
+   {
+    "id": "F07-A3",
+    "question": "How is `require('electron')` (and Node globals) resolved inside a preload on Keld?",
+    "proposed_answer": "Mirror Electron's own sandboxed-preload contract exactly: `keld build`/`keld migrate` bundles each preload (Electron already forbids CommonJS splitting under sandbox) and provides a polyfilled `require` whose loadable map is precisely {contextBridge, crashReporter(map), ipcRenderer, nativeImage(subset), webFrame(subset), webUtils, events, timers, url, node:events, node:timers, node:url} plus globals Buffer, process (synthesized subset), setImmediate/clearImmediate. Preload bytes are resolved by the host from the verified app bundle (ExpectedAppIdentity), never from an app-supplied absolute path; `file:`/`asar:` paths are rewritten at migrate time. Any preload importing outside that map (i.e. relying on sandbox:false / nodeIntegration) is a static-analysis ✘ with an exact diagnostic naming the module; no legacy-profile auto-downgrade.",
+    "evidence": [
+     "sandbox.md: exact module list and 'you will not be able to use CommonJS modules to separate your preload script into multiple files'",
+     "process.md: sandboxed process property subset",
+     "webview-tag.md: preload 'must be file:' and Node-globals deletion semantics",
+     "arch 03 §4.2: legacy profile is explicit; 'Electron sandbox ... never select or auto-downgrade into legacy'",
+     "corpus: draw.io preload uses only contextBridge, ipcRenderer, process; Zettlr preload uses contextBridge, ipcRenderer, webUtils, process; both bundle-able"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "Running preload in a Bun role (preload must share the DOM/window with the page — a Bun process has no DOM; would invent a second renderer model). Allowing `require` of arbitrary app files from preload (needs filesystem authority inside the webview principal).",
+    "unknowns": "crashReporter and nativeImage subsets available in preload are owned by other units; exact mapping here is only 'present in the loadable map'.",
+    "blocked_by": [
+     "keld build/migrate not live (KELD-CLI-045 reserved)"
+    ]
+   },
+   {
+    "id": "F07-A4",
+    "question": "Can ipcRenderer.sendSync keep its blocking caller contract on system engines, and through which lane?",
+    "proposed_answer": "[fact] None of WKScriptMessageHandler (async reply), WebView2 postMessage (one-way JSON), or WebKitGTK message handlers block the calling JS. The only engine-neutral primitive that blocks the main thread with a reply is a synchronous XMLHttpRequest to a host-owned scheme/origin (the arch 02 §3 bulk lane). Proposed: sendSync = synchronous XHR POST to `keld://c/el-sync/{channel}` carrying the host-minted document nonce header, host enforces deadline + rate limit, dev build logs a warning per call (KEL-127 wording); response body is the SCV-encoded returnValue. Promise-returning emulation is rejected (changes caller contract; Zettlr's exposed `config.get` must return synchronously). If the prototype shows sync XHR is blocked by CSP/COEP or by engine policy on custom schemes, sendSync becomes a documented ✘ with per-call diagnostics.",
+    "evidence": [
+     "ipc-renderer.md: 'block the whole renderer process until the reply is received'",
+     "research 06 bridge table: no binary/sync path; custom scheme streaming on all three (GTK 2.40+)",
+     "arch 02 §3: bulk rides keld://c/{channel}; postMessage control-only",
+     "briefing KEL-127: sendSync replacement must stay blocking CALL with deadline, rate-limited, dev-warned",
+     "Zettlr preload: sendSync inside synchronous exposed functions (config.get/set, citation)"
+    ],
+    "confidence": "medium",
+    "type": "prototype",
+    "alternatives_rejected": "Atomics.wait on SharedArrayBuffer (main thread cannot block on Atomics.wait in browsers; requires COOP/COEP and a worker relay). Busy-wait on a flag set by an async reply (freezes the event loop that must deliver the reply — deadlock). Async Promise shim with a quirks flag (violates KEL-127; breaks Zettlr synchronously).",
+    "unknowns": "[unknown] Whether WKURLSchemeHandler serves synchronous XHR on the main thread without deadlock when the handler's reply is produced on the host UI thread (WKURLSchemeHandler callbacks arrive on the main thread; a round trip to Bun must not block that thread — KEL-142 §6 rule). [unknown] WebView2 WebResourceRequested deferral semantics under sync XHR. [unknown] Chromium/WebKit timelines for removing synchronous XHR entirely.",
+    "blocked_by": [
+     "KEL-79 (custom scheme/resource transport)",
+     "F07-P2 prototype"
+    ]
+   },
+   {
+    "id": "F07-A5",
+    "question": "What must change in the KEL-142 window.keld floor before an Electron renderer shim can sit on it without a second protocol?",
+    "proposed_answer": "Lift, in place, four frozen floor rules via a KEL-142 successor spec (candidate owner KEL-80): (1) pending set > 1 with host-enforced credit (Zettlr fires concurrent invokes from 65 files); (2) string channel names mapped through a host-declared compat namespace (`el:*`, arch 02 §5) onto u16 ids, with undeclared channels failing KELD-WV-011 — the manifest, not the page, declares channels; (3) payload > 4096 B via the bulk lane reference, not a larger inline bound; (4) host→renderer push (`window.keld.on`/EVENT) for ipcRenderer.on and webContents.send. All stay on the one wv-link decoder, one app-link, one document nonce. The Electron shim imports `@keld/web` (to be created) and never a native handler. Until these land, the shim's scoreboard cells are SCAFFOLDED, not PARTIAL.",
+    "evidence": [
+     "kel142 §4.1: channel 1 only, 4096 B, one pending, no send/on/stream/meta; §11 non-goals; §12 'If any step requires ... a second app-link transport ... stop and revise this spec'",
+     "arch 02 §5: el:* namespace, SCV codec, webContents.send ⇄ host-routed EVENT",
+     "arch 05 §2: @keld/web wraps window.keld; @keld/electron renderer shim implements ipcRenderer/contextBridge over it",
+     "virtual_port.rs: MAX_PORT_MESSAGE_LEN 4096 reused as the inline bound",
+     "KEL-80 Linear: 'Separate browser-native MessagePort semantics from Keld virtual channels'; '4 KiB is the present virtual-port inline ceiling'"
+    ],
+    "confidence": "high",
+    "type": "grilling",
+    "alternatives_rejected": "A separate `window.electron`/`window.ipc` native handler for the shim (second renderer-routing protocol; forbidden by KEL-142 Independence). Raising the inline bound to e.g. 1 MiB (unmeasured; violates KEL-80 '1 MiB/16 MiB arms belong only to protocols that actually admit them').",
+    "unknowns": "Who owns the successor spec (KEL-80 vs a new KEL ticket) — Linear is at its issue cap; GitHub issue is the publishing surface per briefing.",
+    "blocked_by": [
+     "KEL-80 producer/queue ownership ledger"
+    ]
+   },
+   {
+    "id": "F07-A6",
+    "question": "When <webview> ships (Tier 3), is it a host-owned child webview or an iframe emulation, and which attributes map to which Keld owners?",
+    "proposed_answer": "Host-owned child webview: a second WebviewId principal created by the host, parented to the embedder's window and positioned from an embedder-reported rect (ResizeObserver/IntersectionObserver → host set_bounds), with its own navigation generation, its own preload (same A2/A3 rules), partition→KEL-135 store identity (`persist:`=identity-bound, else memory-only), src/loadURL→host navigate under the KEL-79 navigation allow-list, allowpopups→deny unless granted (KEL-168 handler), useragent→per-view engine UA, nodeintegration/disablewebsecurity/plugins/enable|disableblinkfeatures→never (refused at attach with a code), embedder↔guest ipc (send/sendToHost/ipc-message)→KEL-75 T3 virtual-port pair bound to both generations, executeJavaScript/insertCSS/print/printToPDF/capturePage/openDevTools from the embedder→host-mediated calls evaluated as the embedder principal against explicit grants. getWebContentsId returns a host-minted opaque id. This preserves the 'separate process, asynchronous interaction' semantics Electron documents; an iframe emulation cannot.",
+    "evidence": [
+     "webview-tag.md: 'the webview runs in a separate process than your app ... all interactions ... will be asynchronous'; OOPIF + shadow-DOM iframe; partition only before first navigation",
+     "arch 05 §1: 'multi-webview composition with native surfaces (Electrobun's OOPIF direction)' is a stated keld-wv requirement",
+     "arch 03 §1: webview principal = host WebView id + navigation generation",
+     "KEL-135 spec: one identifier-addressed WKWebsiteDataStore per view; KEL-168: WebView2 popups escape the guard",
+     "virtual_port.rs host-minted pairs, one-shot transfer, generation revocation"
+    ],
+    "confidence": "medium",
+    "type": "research",
+    "alternatives_rejected": "iframe emulation (shares process, cannot honor partition/preload/nodeintegration-off semantics; CSP of the embedder leaks in; would score L0/L1 and fail L2). BrowserView/WebContentsView-style main-process API as the only path (Electron itself recommends it, but corpus apps that do use <webview> keep the DOM element contract).",
+    "unknowns": "[unknown] Compositor jank of rect round-trips on each engine (needs F07-P4); [unknown] WKWebView supports `inspectElement`-style devtools only via Safari Web Inspector (no programmatic open without private API); [unknown] whether WebView2 child views can share one environment with distinct user-data folders for `partition` without separate browser processes.",
+    "blocked_by": [
+     "KEL-79",
+     "KEL-135",
+     "KEL-168",
+     "keld-core window/webview registry (TARGET)"
+    ]
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "<webview nodeintegration> / webPreferences.nodeIntegration:true / nodeIntegrationInWorker / nodeintegrationinsubframes",
+    "rationale": "Renderer Node integration is the briefing never-list item; Electron itself documents it disables the sandbox (sandbox.md) and escalates XSS to RCE (security.md item 2). Keld webviews have no ambient OS authority by construction."
+   },
+   {
+    "surface": "disablewebsecurity / webSecurity:false / allowRunningInsecureContent",
+    "rationale": "Disables same-origin policy (security.md item 6, 8); Keld's webview principal/origin model (arch 03 §1) and CSP injection depend on SOP."
+   },
+   {
+    "surface": "enableblinkfeatures / disableblinkfeatures / experimentalFeatures / webpreferences feature strings beyond the allowlisted subset",
+    "rationale": "Arbitrary Chromium/Blink flags are on the briefing never-list; they are meaningless on WebKit engines and would make behavior engine-divergent and unmeasurable."
+   },
+   {
+    "surface": "plugins attribute",
+    "rationale": "Browser plugins (PPAPI) have no equivalent on any system engine and widen attack surface; documented-never."
+   },
+   {
+    "surface": "inspectServiceWorker / inspectSharedWorker / any CDP-backed webview method in production",
+    "rationale": "Full Chrome DevTools Protocol in production webviews is on the never list (briefing; research 13); only WebView2 even has CDP."
+   },
+   {
+    "surface": "sendInputEvent from a renderer (embedder) into a guest",
+    "rationale": "Synthetic OS-level input injection is authority a webview principal must not hold; at most legacy-profile with explicit grant, never default."
+   },
+   {
+    "surface": "Exposing raw ipcRenderer / ipcRenderer.on / Node globals via contextBridge in Keld-authored shims",
+    "rationale": "Electron's own guidance (context-bridge.md 'security footgun'; security.md item 20); Keld's shim exposes only the typed facade, and corpus apps that do this get their own code's behavior, not a Keld-provided escape hatch."
+   },
+   {
+    "surface": "A second renderer-native handler (`window.ipc`, `window.electron` native object) beside window.keld",
+    "rationale": "KEL-142 Independence and §12 forbid a second renderer-routing protocol; one wv-link decoder, one document nonce, one app-link."
+   },
+   {
+    "surface": "process.env passthrough of the real host environment to preload/page",
+    "rationale": "Zettlr copies process.env into the page; on Keld the host environment is authority-bearing material (app-link tokens live in the host) — only a declared allowlist is exposed."
+   },
+   {
+    "surface": "enableWebSQL / WebSQL",
+    "rationale": "Removed from modern WebKit and Chromium; cannot be polyfilled honestly; documented-✘."
+   }
+  ],
+  "open_unknowns": [
+   "[unknown] Exact Electron error (type/message) when calling <webview> methods before did-attach or after 'destroyed' — not stated in v44.4.5 docs; needs a pinned-oracle run before the Tier-3 conformance entry.",
+   "[unknown] Exact Electron error string when ipcRenderer.invoke targets a channel with no ipcMain.handle (lives in lib/browser/api/web-contents.ts '-ipc-invoke' path; not fetched verbatim) — needed for the invoke rejection cell.",
+   "[unknown] Whether any WebView2 interface (ICoreWebView2Frame, ExecuteScriptWithResult, future ICoreWebView2_N) can execute scripts in a non-page world; current evidence is negative (reference has no such member; WebView2Feedback search returned []).",
+   "[unknown] Whether WKWebView or WebKitGTK expose a dropped File's filesystem path to any native hook (webUtils.getPathForFile; Zettlr import depends on it).",
+   "[unknown] Whether Zettlr's splash/onboarding preloads (sandbox:false) import Node modules outside the sandboxed polyfill map — determines ✘ vs ✔ for those two windows.",
+   "[unknown] Synchronous XHR to a custom scheme: deadlock behavior on WKURLSchemeHandler/WebResourceRequested when the reply depends on an off-thread Bun call; engine deprecation timelines.",
+   "[unknown] WKWebView render-process termination exposes no reason; mapping to Electron's reason enum will be ▲ — exact WebView2 COREWEBVIEW2_PROCESS_FAILED_KIND and WebKitGTK termination-reason mappings not yet tabulated.",
+   "[unknown] Definition and contents of the 'polyfill pack' and `web.baseline: \"2024\"` — no spec or package exists; KEL-14 status not fetched.",
+   "[unknown] Interaction between Keld's planned default CSP injection (arch 03) and injected preload/compat scripts (user scripts are exempt from page CSP on WebKit; WebView2 notes CSP/sandbox 'affects the script that runs').",
+   "[unknown] WebGPU / File System Access / OffscreenCanvas availability matrix per minimum OS/engine version for the compat baseline.",
+   "[unknown] Whether the GTK isolated-world handler path can be driven without a WebKitWebProcessExtension library for reply delivery (user scripts + world-scoped handlers are UI-process APIs; reply mechanism via evaluate-in-world needs verification).",
+   "[unknown] Ownership for the KEL-142 successor spec (multiple pending, string channels, push events) — Linear is at its issue cap; GitHub issue publishing is the orchestrator's call."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

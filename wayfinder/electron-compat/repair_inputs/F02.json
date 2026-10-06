@@ -1,0 +1,1451 @@
+{
+ "unit": "F02",
+ "name": "windowing",
+ "published": {
+  "epic": {
+   "key": "F02-EPIC",
+   "title": "compat(window): BaseWindow/BrowserWindow over the host window registry — identity, cancelable close, ready-to-show, chrome options",
+   "body": "## Scope\n32 entities / 606 raw members: `BaseWindow` (187) and `BrowserWindow` (204, 126 inherited), constructor option structures (52 + 2 fields), `WebPreferences` (46 fields), `View`/`WebContentsView`/`BrowserView`/`ImageView`, 11 TouchBar classes (macOS), JumpList/Thumbar structures (Windows). Live today: the host owns exactly one primary window per session, created after the authenticated HELLO before Bun code runs; close is uncancelable; no window id crosses kipc; no chrome options exist; the destination window registry is TARGET.\n\n## Corpus demand\nConstructor + `show:false` + `ready-to-show` + `backgroundColor` (Zettlr 14 sites, draw.io), cancelable `close` with async veto then explicit `destroy()` (both apps), `closed` bookkeeping, `isDestroyed`, `getAllWindows/getFocusedWindow/fromWebContents`, maximize/minimize/fullscreen state + events, macOS `hiddenInset` + `trafficLightPosition`, Windows/Linux `frame:false` + `titleBarOverlay` (Zettlr), parent/modal (Zettlr), `setWindowOpenHandler` with `overrideBrowserWindowOptions` (draw.io).\n\n## Maturity ladder\n- L0: `BrowserWindow` class exists; unsupported options throw typed errors (privilege-escalating `webPreferences` fail loudly; engine-only flags are ignored with a diagnostic).\n- L1: electron-quick-start runs unmodified on macOS (`new BrowserWindow`, `loadFile`, `getAllWindows`, close → closed).\n- L2: two-phase close, tombstone-before-`closed`, `show:false`/`ready-to-show`, state events pass conformance entries citing the pinned `browser-window.md`/`base-window.md` sentences; the window-state mirror is proven coherent under a 10k-event stream.\n- L3: draw.io and Zettlr window workflows pass under `keld dev` with KEL-74 records.\n\n## Linear owners consumed\nKEL-139/KEL-142 (host-created primary window, bridge), KEL-143 (window survives Bun generation loss), KEL-75 (WindowGeneration minting, window-bound roles), KEL-135 (profiles), KEL-132 (GPU/media), KEL-98 (contract codegen is NOT general — a window channel needs its own contract owner), KEL-64 (double-rAF technique for paint oracle).\n\n## Design facts fixed by research (two refuters)\n- The host mints opaque `(WindowId, WindowGeneration)`; the facade keeps a synchronous mirror updated by ordered host events before any user listener runs. `getAllWindows()` ordering is Keld-stronger than Electron (documented ▲-stronger).\n- The host already creates the primary window before Bun runs; the first `new BrowserWindow()` adopts it (explicitly recorded) until Ready is re-based (F01-T2).\n- Two-phase close owned by the host: `CloseRequested{window, generation, seq}` → facade emits `close` synchronously → `CloseAllow`/veto reply. The host waits indefinitely while the owning Bun generation is alive (Electron's delegate returns NO and waits); it closes on its own only when the generation is revoked. No host auto-close on timeout.\n- Tombstone flips before `closed`; later member access throws the exact `Object has been destroyed` text; `destroy()` skips `close` and guarantees `closed`.\n- `WebPreferences` triage: privilege-escalating fields (nodeIntegration, contextIsolation:false, webSecurity:false, allowRunningInsecureContent, enableBlinkFeatures, experimentalFeatures) fail loudly ✘; engine-flag fields such as `disableBlinkFeatures` (draw.io sets it on every window) are ignored with a diagnostic ▲; `sandbox:false` is ▲ ignored-with-diagnostic and never selects a Keld profile.\n- One `BaseWindow` implementation; `BrowserWindow = BaseWindow + exactly one host-created content view`; View tree, BrowserView and multi-view are Tier 3.\n\n## Platform lanes\nmacOS first (titleBarStyle/trafficLightPosition via public NSWindow API; vibrancy is Tier 2 ▲), Windows (frame:false + titleBarOverlay needs the WebView2 non-client receipt — open research F02-A6), Linux (GTK CSD).\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F02-T1",
+    "title": "conformance(window): pinned v44.4.5 entries for close/closed/destroy/tombstone, ready-to-show, state events and identity",
+    "kind": "conformance",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Land Keld-owned conformance entries (red until implemented): `close` before DOM `beforeunload`/`unload`, `preventDefault` cancels; `destroy()` skips `close` and guarantees `closed`; `isDestroyed()` is true inside a `closed` listener; property access after destruction throws `Object has been destroyed`; `ready-to-show` fires once when the hidden page has rendered; `maximize/unmaximize/minimize/restore/enter-full-screen/leave-full-screen/focus/blur/move/resize` sequences; `getAllWindows/getFocusedWindow/fromId` synchronous results.",
+    "acceptance_criteria": [
+     "Every entry cites the pinned doc sentence and names its ordered observable",
+     "Each entry has one negative control (reorder/delete) that fails",
+     "No entry compares wall-clock timing"
+    ],
+    "negative_controls": [
+     "Emitting closed before the tombstone flips fails the isDestroyed-inside-closed entry"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-237 corpus manifest (reuse)"
+    ],
+    "linear_owner": "KEL-237",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "close",
+     "closed",
+     "destroy",
+     "isDestroyed",
+     "ready-to-show",
+     "show",
+     "hide",
+     "focus",
+     "blur",
+     "maximize",
+     "unmaximize",
+     "minimize",
+     "restore",
+     "enter-full-screen",
+     "leave-full-screen",
+     "move",
+     "resize",
+     "getAllWindows",
+     "getFocusedWindow",
+     "fromId",
+     "fromWebContents"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** conformance\n\n**Current behavior:** No BrowserWindow facade or window conformance entries exist.\n\n**Desired behavior:** Land Keld-owned conformance entries (red until implemented): `close` before DOM `beforeunload`/`unload`, `preventDefault` cancels; `destroy()` skips `close` and guarantees `closed`; `isDestroyed()` is true inside a `closed` listener; property access after destruction throws `Object has been destroyed`; `ready-to-show` fires once when the hidden page has rendered; `maximize/unmaximize/minimize/restore/enter-full-screen/leave-full-screen/focus/blur/move/resize` sequences; `getAllWindows/getFocusedWindow/fromId` synchronous results.\n\n**Key interfaces:** KEL-237 manifest cells; `@keld/electron` fixtures.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementation.",
+    "out_of_scope": "Implementation.",
+    "notes": ""
+   },
+   {
+    "key": "F02-T2",
+    "title": "feat(window): host window registry with host-minted (WindowId, WindowGeneration) and a facade mirror for synchronous getters",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Make the host window registry live for app-created windows: mint `(WindowId, WindowGeneration)` per native window, emit ordered window-state events (created, bounds, focus, maximized, fullscreen, destroyed) over the app link, and give `@keld/api` a synchronous mirror consumed by `BrowserWindow.getAllWindows/getFocusedWindow/fromId/getBounds/isMaximized/...`. The first `new BrowserWindow()` adopts the host-created primary window until F01-T2 lands. Setters are write-through Calls confirmed by the host event.",
+    "acceptance_criteria": [
+     "`new BrowserWindow({show:false})` creates a native window on the host and returns an object whose `id` is host-minted",
+     "`getFocusedWindow()` reflects the last host-delivered focus event with zero kipc traffic per read",
+     "Mirror coherence: under a 10k-event/s synthetic stream no read observes an order inversion; zero steady-state allocation per read",
+     "A stale generation (after Bun recovery) cannot address a window from the previous generation (typed error)"
+    ],
+    "negative_controls": [
+     "Minting ids in the facade fails the host-identity negative test",
+     "Delivering a state event after the user listener fails the ordering entry"
+    ],
+    "blocked_by_keys": [
+     "F02-T1",
+     "PANEL-D19"
+    ],
+    "blocked_by_external": [
+     "KEL-75 WindowGeneration",
+     "KEL-143 same-window recovery",
+     "window channel contract owner (open: KEL-98 is echo-only)"
+    ],
+    "linear_owner": "KEL-139 / KEL-143 / KEL-75",
+    "review_gates": [
+     "wire protocol",
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "constructor",
+     "id",
+     "getAllWindows",
+     "getFocusedWindow",
+     "fromId",
+     "getBounds",
+     "getSize",
+     "getPosition",
+     "setBounds",
+     "setSize",
+     "setPosition",
+     "isMaximized",
+     "isMinimized",
+     "isFullScreen",
+     "isFocused",
+     "isVisible",
+     "show",
+     "hide",
+     "focus",
+     "blur",
+     "maximize",
+     "unmaximize",
+     "minimize",
+     "restore",
+     "setFullScreen",
+     "setTitle",
+     "getTitle"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** One host-created primary window; no id crosses kipc; the registry is TARGET.\n\n**Desired behavior:** Make the host window registry live for app-created windows: mint `(WindowId, WindowGeneration)` per native window, emit ordered window-state events (created, bounds, focus, maximized, fullscreen, destroyed) over the app link, and give `@keld/api` a synchronous mirror consumed by `BrowserWindow.getAllWindows/getFocusedWindow/fromId/getBounds/isMaximized/...`. The first `new BrowserWindow()` adopts the host-created primary window until F01-T2 lands. Setters are write-through Calls confirmed by the host event.\n\n**Key interfaces:** keld-core window registry; a generated `window.*` channel contract (owner to be named); `@keld/api` window mirror; `@keld/electron` BrowserWindow/BaseWindow classes.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Cancelable close (F02-T3); chrome options (F02-T5); multi-view (Tier 3).",
+    "out_of_scope": "Cancelable close (F02-T3); chrome options (F02-T5); multi-view (Tier 3).",
+    "notes": ""
+   },
+   {
+    "key": "F02-T3",
+    "title": "feat(window): two-phase cancelable close, destroy and tombstone-before-closed with host-side AppKit/Win32/GTK veto hooks",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Implement the close protocol: native close request → host emits `CloseRequested{window, generation, seq}` without closing (AppKit `windowShouldClose:` returns NO; Win32 `WM_CLOSE` deferred; GTK `delete-event` handled) → facade emits `close` synchronously → reply allow/veto → on allow the host runs page unload, destroys the webview before the window, emits destroyed → facade flips the tombstone, then emits `closed`. `destroy()` skips `close`. The host waits while the owning generation is alive; it closes on its own only when the generation is revoked, with a diagnostic.",
+    "acceptance_criteria": [
+     "draw.io close dance (preventDefault every close → renderer isModified → decision → destroy) completes without data loss and without timeouts",
+     "`isDestroyed()` is true inside the `closed` listener; later `getBounds()` throws `Object has been destroyed`",
+     "Close requested while Bun is parked keeps the window open; when the generation is revoked the host closes and `window-all-closed` policy applies",
+     "`close()` twice is idempotent; `destroy()` after a vetoed close still emits `closed` exactly once"
+    ],
+    "negative_controls": [
+     "Host auto-closing on a timeout fails the data-loss negative test",
+     "Emitting closed before destruction completes fails the tombstone entry"
+    ],
+    "blocked_by_keys": [
+     "F02-T2",
+     "PANEL-P2"
+    ],
+    "blocked_by_external": [
+     "KEL-143 generation revocation",
+     "KEL-139 T1b no fabricated completion"
+    ],
+    "linear_owner": "KEL-139 / KEL-143",
+    "review_gates": [
+     "wire protocol"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "close",
+     "closed",
+     "destroy",
+     "isDestroyed",
+     "closable",
+     "setClosable",
+     "window-all-closed"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Close is uncancelable: the engine close request becomes LastWindowClosed immediately.\n\n**Desired behavior:** Implement the close protocol: native close request → host emits `CloseRequested{window, generation, seq}` without closing (AppKit `windowShouldClose:` returns NO; Win32 `WM_CLOSE` deferred; GTK `delete-event` handled) → facade emits `close` synchronously → reply allow/veto → on allow the host runs page unload, destroys the webview before the window, emits destroyed → facade flips the tombstone, then emits `closed`. `destroy()` skips `close`. The host waits while the owning generation is alive; it closes on its own only when the generation is revoked, with a diagnostic.\n\n**Key interfaces:** keld-wv per-backend close veto hooks; window registry close state machine; facade `close` event with preventDefault.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Renderer `beforeunload` (0 corpus demand; documented ▲ until KEL-79 provides a primitive).",
+    "out_of_scope": "Renderer `beforeunload` (0 corpus demand; documented ▲ until KEL-79 provides a primitive).",
+    "notes": ""
+   },
+   {
+    "key": "F02-T4",
+    "title": "feat(window): WebPreferences triage — privilege-escalating fields fail loudly, engine flags are ignored with a diagnostic, sandbox:false never selects a profile",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Classify all 46 `WebPreferences` fields: privilege-escalating (nodeIntegration*, contextIsolation:false, webSecurity:false, allowRunningInsecureContent, enableBlinkFeatures, experimentalFeatures, enableRemoteModule, offscreen) → typed `KELD-COMPAT` error at construction (window not created) unless the per-window `keld.compat.ts` quirk explicitly accepts the forfeit; engine-flag fields (`disableBlinkFeatures`, `spellcheck` toggles, `v8CacheOptions`, …) → ignored with one diagnostic ▲; policy fields (`preload`, `additionalArguments`, `partition`, `session`, `devTools`, `zoomFactor`, `backgroundThrottling`) → mapped or ▲ per F03/F05; `sandbox:false` → ▲ ignored-with-diagnostic (never a Keld profile selector).",
+    "acceptance_criteria": [
+     "draw.io windows (which set `disableBlinkFeatures`) are created; the diagnostic appears once",
+     "A window with `nodeIntegration:true` is not created and the error text names the fix and the migrate report row",
+     "`keld migrate` reports every weak-isolation field per call site in the security section",
+     "Scoreboard rows exist for all 46 fields"
+    ],
+    "negative_controls": [
+     "Honoring nodeIntegration:true silently fails the never-list negative test",
+     "Refusing disableBlinkFeatures fails the draw.io activation entry"
+    ],
+    "blocked_by_keys": [
+     "F02-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-78 (sandbox is not a profile key)",
+     "X04 security mapping"
+    ],
+    "linear_owner": "KEL-78",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "webPreferences (46 fields)",
+     "BrowserWindowConstructorOptions"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No WebPreferences handling exists.\n\n**Desired behavior:** Classify all 46 `WebPreferences` fields: privilege-escalating (nodeIntegration*, contextIsolation:false, webSecurity:false, allowRunningInsecureContent, enableBlinkFeatures, experimentalFeatures, enableRemoteModule, offscreen) → typed `KELD-COMPAT` error at construction (window not created) unless the per-window `keld.compat.ts` quirk explicitly accepts the forfeit; engine-flag fields (`disableBlinkFeatures`, `spellcheck` toggles, `v8CacheOptions`, …) → ignored with one diagnostic ▲; policy fields (`preload`, `additionalArguments`, `partition`, `session`, `devTools`, `zoomFactor`, `backgroundThrottling`) → mapped or ▲ per F03/F05; `sandbox:false` → ▲ ignored-with-diagnostic (never a Keld profile selector).\n\n**Key interfaces:** `BrowserWindow` constructor option validation; `keld.compat.ts` per-window quirks; migrate security report.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Preload injection itself (F07).",
+    "out_of_scope": "Preload injection itself (F07).",
+    "notes": ""
+   },
+   {
+    "key": "F02-T5",
+    "title": "feat(window): Tier-1 chrome options on macOS (titleBarStyle hidden/hiddenInset, trafficLightPosition, frame:false, transparent, alwaysOnTop, skipTaskbar, closable/resizable/minimizable/maximizable, fullscreenable)",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Map the chrome options the corpus uses onto public NSWindow API on macOS (fullSizeContentView + titlebarAppearsTransparent + titleVisibility hidden; traffic-light positioning), plus the boolean capability flags; vibrancy/visualEffectState stay Tier 2 ▲; Windows/Linux `titleBarOverlay` waits on F02-A6.",
+    "acceptance_criteria": [
+     "Zettlr primary window renders with hiddenInset and custom traffic-light position on macOS",
+     "`setTitleBarOverlay` at runtime on Windows/Linux is either implemented or a typed ▲ naming F02-A6",
+     "Each option has a scoreboard row (✔/▲/✘) with a conformance entry"
+    ],
+    "negative_controls": [
+     "Removing the titlebar mapping fails the Zettlr chrome entry"
+    ],
+    "blocked_by_keys": [
+     "F02-T2"
+    ],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-139",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux after F02-A6",
+    "electron_members_covered": [
+     "titleBarStyle",
+     "trafficLightPosition",
+     "frame",
+     "transparent",
+     "alwaysOnTop",
+     "skipTaskbar",
+     "closable",
+     "resizable",
+     "minimizable",
+     "maximizable",
+     "fullscreenable",
+     "backgroundColor",
+     "vibrancy",
+     "visualEffectState",
+     "titleBarOverlay",
+     "setTitleBarOverlay"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No chrome options exist in any backend.\n\n**Desired behavior:** Map the chrome options the corpus uses onto public NSWindow API on macOS (fullSizeContentView + titlebarAppearsTransparent + titleVisibility hidden; traffic-light positioning), plus the boolean capability flags; vibrancy/visualEffectState stay Tier 2 ▲; Windows/Linux `titleBarOverlay` waits on F02-A6.\n\n**Key interfaces:** keld-wv window creation options; BrowserWindow constructor option mapping.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** TouchBar, JumpList, Thumbar (Tier 2, platform epics later).",
+    "out_of_scope": "TouchBar, JumpList, Thumbar (Tier 2, platform epics later).",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F02-A3",
+    "title": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+    "type": "prototype",
+    "question": "Electron fires `ready-to-show` when the renderer first renders while hidden. Keld must create the native window unmapped and derive ready-to-show from a host-owned isolated-world double-rAF reporter per engine (the KEL-64 technique, not its benchmark instrument). WebView2 stops rendering when the controller is invisible (receipt needed). Cheapest experiment: in the existing hello, create the window without ordering it front on each OS and observe whether the first paint beacon fires while hidden; record per-engine ✔/▲.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F02-A6",
+    "title": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+    "type": "research",
+    "question": "Zettlr relies on `titleBarOverlay{color,symbolColor,height}` on Windows and Linux and switches it at runtime. Settle with receipts: WebView2 `ICoreWebView2Settings9.IsNonClientRegionSupportEnabled` (runtime/SDK minimums, frameless HWND behaviour), GTK CSD behaviour, and whether host-drawn caption controls are required; then tier the options.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "nodeIntegration / contextIsolation:false / webSecurity:false / allowRunningInsecureContent / enableBlinkFeatures / experimentalFeatures (privilege-escalating; fail loudly)",
+   "offscreen rendering on system webviews (no OSR) — draw.io export window uses it: tracked ✘ with a fix-it",
+   "BrowserView (deprecated) beyond a Tier-3 mapping note"
+  ],
+  "out_of_scope": [
+   "TouchBar (11 classes, macOS) until a corpus app needs it",
+   "JumpList/Thumbar/Task structures (Windows) until a corpus app needs it",
+   "multi-view (View/WebContentsView tree) — Tier 3"
+  ],
+  "not_yet_specified": [
+   "Window-bound role lifecycle (KEL-75 T4) interaction with window close",
+   "Parent/modal semantics on each engine (Zettlr modals; draw.io hidden export child)",
+   "Window-state persistence (`WindowStatePersistence`) mapping"
+  ],
+  "issue_numbers": {
+   "F02-A3": 394,
+   "F02-A6": 395,
+   "F02-EPIC": 447,
+   "F02-T1": 448,
+   "F02-T2": 449,
+   "F02-T3": 450,
+   "F02-T4": 455,
+   "F02-T5": 456
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "app event 'web-contents-created' (and 'browser-window-created')",
+    "problem": "Zero mentions in any issue body. draw.io registers will-navigate, setWindowOpenHandler and will-attach-webview only inside app.on('web-contents-created') (electron.js:2189-2226); if the facade never emits it, F03-T3/F03-T4/F07-T2 acceptance criteria are unreachable. 'browser-window-created' is what electron-context-menu is believed to hook (INFERENCE: no node_modules in the clone).",
+    "suggested_unit": "F02-T2 (emit on window/webContents creation) with a conformance entry in F02-T1."
+   },
+   {
+    "entity": "webContents 'before-input-event', webContents.pasteAndMatchStyle, BrowserWindow option `icon`, app.name, app.disableHardwareAcceleration",
+    "problem": "Called or registered on the draw.io window-creation path (electron.js:808-816, :720, :2020, :166) but covered only by fog lines or a decision ticket (F08-D6). Registration must not throw; behaviour needs a recorded ▲.",
+    "suggested_unit": "F02-T2 / F03-T2 member lists (L0 typed members with scoreboard rows)."
+   },
+   {
+    "entity": "F02 structures: BaseWindowConstructorOptions, Point, Rectangle, WindowSessionEndEvent, ScrubberItem, SegmentedControlSegment, JumpListCategory, JumpListItem, ThumbarButton; classes TouchBarButton, TouchBarColorPicker, TouchBarGroup, TouchBarLabel, TouchBarOtherItemsProxy, TouchBarPopover, TouchBarScrubber, TouchBarSegmentedControl, TouchBarSlider, TouchBarSpacer",
+    "problem": "Not named in any issue. TouchBar*/JumpList*/Thumbar* are covered only by a class-level out-of-scope sentence ('TouchBar (11 classes)', 'JumpList/Thumbar/Task structures'); Point/Rectangle/BaseWindowConstructorOptions/WindowSessionEndEvent have no disposition, and Rectangle is the return shape of getBounds/workArea used by draw.io.",
+    "suggested_unit": "F02-T2 (Rectangle/Point/constructor options as member shapes); the rest enumerated in F02-EPIC out-of-scope."
+   }
+  ],
+  "duplicates": [
+   {
+    "keys": [
+     "F02-T4",
+     "F07-T2",
+     "X04-T1"
+    ],
+    "problem": "WebPreferences handling has three claimants: F02-T4 classifies all 46 fields (which include webviewTag), F07-T2 separately 'accepts webPreferences.webviewTag', X04-T1 specs 'weak-isolation webPreferences'.",
+    "fix": "F02-T4 owns option triage including webviewTag; F07-T2 keeps only the will-attach-webview registrable/never-fires contract; X04-T1 references F02-T4's table."
+   },
+   {
+    "keys": [
+     "F02-T2",
+     "F06-T5",
+     "PANEL-D18",
+     "X05-EPIC"
+    ],
+    "problem": "The host-pushed synchronous mirror is specified four times (window mirror in F02-T2, display/theme/clipboard mirrors in F06-T5, policy in PANEL-D18, 'per-window state generation' in X05-EPIC) with no single owner of the mirror primitive.",
+    "fix": "F02-T2 owns the @keld/api mirror primitive (ordering, staleness, no per-read traffic); F06-T5 consumes it — add edge F06-T5 ← F02-T2."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F06-T2",
+    "problem": "Missing gate: AC4 and the build text depend on 'PANEL-P1 decides the blocking transport', but there is no edge. Over-gate: F06-D1 (dialog-minted FsBroker scopes) blocks the whole ticket although draw.io's main reads/writes with node:fs (electron.js:1-2) under legacy, so the dialog broker slice does not consume F06-D1. External predecessor KEL-140 is Backlog.",
+    "fix": "Split: dialog broker (edges F06-T1, F02-T2, PANEL-P1) vs dialog-minted scopes (edges F06-D1, KEL-140 artifact) — the latter is `next`."
+   },
+   {
+    "key": "F02-T2",
+    "problem": "PANEL-D19 (close-veto deadline-expiry semantics) gates the registry/mirror ticket, which has no deadline behaviour; the atom belongs to F02-T3. The edge also consumes nothing concrete: PANEL-D5 already resolved the outcome; what remains open in D19 is only the unhealthy-role diagnostic shape.",
+    "fix": "Move the edge to F02-T3 and narrow PANEL-D19 to 'unhealthy-role signal shape and threshold'."
+   },
+   {
+    "key": "F02-T3",
+    "problem": "Missing gate: AC3 ('close requested while Bun is parked keeps the window open') can only be constructed once a parking transport exists (PANEL-P1). External predecessor 'KEL-143 generation revocation' is Backlog and itself blocked by KEL-140 (Backlog) and KEL-118 (In Progress) — Linear, fetched 2026-10-06.",
+    "fix": "Add F02-T3 ← PANEL-P1 for AC3 or move AC3 to the transport ticket; restate the revocation AC against what is live in keld-core today and classify the KEL-143 dependency as a named blocker."
+   },
+   {
+    "key": "F07-T1",
+    "problem": "Near-cycle and non-gate: AC1 ('window.electron.request round-trips through F04') needs F04-T3 and F04-T4, while F04-T4 needs F07-T1's runtime. The F04-T2 edge is not consumed by injection, require map or process polyfill. Predecessor 'KEL-142 spec revision (third world/relay)' — KEL-142 is Done and no revision task exists.",
+    "fix": "Move the round-trip AC to F04-T4; F07-T1 ← PANEL-D21 only (plus F02-T2 for per-view registration); name who owns the kel142 spec amendment."
+   },
+   {
+    "key": "X05-T2",
+    "problem": "Declared 'serial step 0 before family fan-out' but no ticket is blocked by it — the gate is fictional. Per-family reserved id ranges also conflict with F04-EPIC's 'one fixed control channel, no runtime-minted ids' design.",
+    "fix": "Either add it as a predecessor of every ticket that introduces a kipc channel (F02-T2, F04-T2/T3, F06-T2/T4/T5, F08-T1) or drop the 'step 0' claim; cut reserved family ranges."
+   },
+   {
+    "key": "PANEL-P3",
+    "problem": "No ticket depends on it although it decides the descriptor set, the denominator and config-only vs config+N. Decisions with zero dependents that are cited in ticket prose as conditions: F02-A6 (F02-T5), F06-D3 (F06-T4/T5/T6 use app.system tokens), F07-E1 (F07-T1 'env per the open decision'), F08-D6 (F08-T2), X01-A5 (X01-T2 normalisers), X04-D3 (F05-T4).",
+    "fix": "Add the edges named above so each prose condition is a graph edge consuming a named output."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F02-T4",
+    "violation": "Authority-widening quirk and never-list breach: privilege-escalating fields (nodeIntegration*, contextIsolation:false, webSecurity:false, enableRemoteModule, ...) fail 'unless the per-window keld.compat.ts quirk explicitly accepts the forfeit'. The MAP's own rule is that a quirk 'may narrow but never widen authority and the guard never reads', and PANEL-D10 lists these fields as never. Also a `feat` with a permission-model gate labelled ready-for-agent — features require an approved spec.",
+    "fix": "Delete the quirk escape: these fields are ✘ at construction with no opt-in. Relabel needs-spec."
+   },
+   {
+    "key": "F01-T1, F02-T1, F03-T1, F04-T1, F05-T1, F06-T1",
+    "violation": "'Entries may fail (red) until the implementing tickets land; they must not be skipped or retried' collides with the verification floor (reported passing workspace tests; merge admission enforced — KEL-128 Done) and with 'MUST NOT weaken tests / skip gates'. No mechanism is named that lets a red entry coexist with a green required gate.",
+    "fix": "State the mechanism as a contract: entries are KEL-74 cells recorded with an explicit expected status (fail/unknown) asserted by the runner, flipped to pass in the implementing PR; a silently red or ignored test is not allowed."
+   },
+   {
+    "key": "F02-T2",
+    "violation": "Unattributed performance acceptance: 'zero steady-state allocation per read' and '10k-event/s' are asserted as ACs with no metric id, census, clock or allocation oracle (AGENTS: performance decompositions must separate census/work/queue/clock/statistic/artifact). The 'no steady-state allocation' rule applies to hot kipc/event-loop/guard paths in Rust; a JS facade getter has no observable for it.",
+    "fix": "Keep the ordering AC (no inversion) as a sequence test; move allocation/throughput to X05 with a registered metric or delete."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F02-T3",
+    "problem": "AC1 'draw.io close dance ... completes without data loss and without timeouts' is not binary (no observable for data loss; 'without timeouts' bans a mechanism) and, for a modified document, is unsatisfiable while F06-T2 AC4 makes showMessageBoxSync throw. Negative control 'host auto-closing on a timeout fails the data-loss test' needs a time source — unspecified, and sleeps are banned.",
+    "fix": "Two ACs: (a) unmodified document: close → isModified → destroy → exactly one `closed`; (b) modified document: prompt shown, Save path writes the file then destroys — explicitly gated on the PANEL-P1 outcome. Negative control: inject the host timer through a controllable clock."
+   },
+   {
+    "key": "F02-T5, F03-T2, F04-T4, F06-T6",
+    "problem": "Disjunctive ACs that cannot fail: 'either implemented or a typed ▲' (F02-T5 AC2), 'either pass the same entries or carry an explicit per-engine ▲' (F03-T2 AC4), '✔ or ▲' (F04-T4 AC4), 'round-trips once the broker lands; until then the typed error' (F06-T6 AC2).",
+    "fix": "Choose the branch per platform in the ticket and assert that one."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F02-T1",
+    "milestone": "first-proof",
+    "reason": "Conformance-first for close/preventDefault/destroy/closed/isDestroyed, which the unsaved-prompt step exercises (:904-969). Slice: those entries; park ready-to-show (draw.io never passes show:false) and move/blur/restore sequences."
+   },
+   {
+    "key": "F02-T2",
+    "milestone": "first-proof",
+    "reason": "new BrowserWindow (:748), getFocusedWindow for dialog parenting (:4193, :4214), getSize/getPosition/isMaximized/isFullScreen at close (:830), maximize/setFullScreen (:753-758). Park the 10k-event/s and allocation ACs."
+   },
+   {
+    "key": "F02-T3",
+    "milestone": "first-proof",
+    "reason": "The close-with-unsaved-prompt step itself: 'close' with preventDefault on every close (:947-963), then destroy() after the renderer answers (:904, :921, :931, :943), 'closed' bookkeeping (:969). Park Win32/GTK hooks."
+   },
+   {
+    "key": "F02-T4",
+    "milestone": "first-proof",
+    "reason": "Slice only: every draw.io window sets disableBlinkFeatures:'Auxclick', spellcheck, additionalArguments, webviewTag:false (:721-731) — these must be accepted/ignored-with-diagnostic or the window is not created. Park the 46-field classification and migrate reporting."
+   },
+   {
+    "key": "F02-T5",
+    "milestone": "next",
+    "reason": "Its ACs are Zettlr's hiddenInset/trafficLightPosition/titleBarOverlay; draw.io's main window sets none of these chrome options (:714-733)."
+   },
+   {
+    "key": "F07-T2",
+    "milestone": "first-proof",
+    "reason": "Slice only, and it folds into F02-T4/F02-T2: webviewTag:false accepted (:728) and will-attach-webview registrable (:2223). The browser-quirk ledger is parked."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "PANEL-D5 vs PANEL-D19 (MAP)",
+    "claim": "MAP lists 'Close and quit vetoes are async AppKit hooks; deadline expiry keeps the window open' under Decisions so far (resolved) while PANEL-D19 'CONTESTED: close-veto deadline expiry semantics' is open and gates F02-T2.",
+    "problem": "The same atom is simultaneously resolved and contested. D19's own text says the judges settled the outcome and only the unhealthy-role signal remains open.",
+    "fix": "D5: RESOLVED — on no reply the window stays open; host closes only on generation revocation. D19 retitled 'UNKNOWN: unhealthy-role diagnostic shape and threshold when a close-veto reply never arrives'."
+   },
+   {
+    "key": "F02-EPIC",
+    "claim": "'The host waits indefinitely while the owning Bun generation is alive (Electron's delegate returns NO and waits).'",
+    "problem": "The receipt in PANEL-D5 supports only 'windowShouldClose: notifies and returns NO'. Electron does not wait on anything — the 'close' emit is synchronous on the browser UI thread and the window simply stays open (the F02 semantics refuter refuted the earlier deadline clause on exactly this point). 'and waits' is an inference about a pending state Electron does not have.",
+    "fix": "FACT (v44.4.5 electron_ns_window_delegate.mm, as receipted in PANEL-D5): windowShouldClose: calls NotifyWindowCloseButtonClicked and returns NO; the close decision is made synchronously in the main process. INFERENCE: Keld's asynchronous equivalent is to keep the window open with no host timer."
+   },
+   {
+    "key": "F02-T3 / F02-EPIC",
+    "claim": "'draw.io close dance (preventDefault every close → renderer isModified → decision → destroy) completes'.",
+    "problem": "The 'decision' step is dialog.showMessageBoxSync (:876), which the plan elsewhere scaffolds as a typed throw; whether it can work at all is the open PANEL-P1 kill condition. The AC reads as an achievable fact.",
+    "fix": "FACT: for an unmodified document the dance has no dialog (:941-944). UNKNOWN (PANEL-P1): the modified-document branch; outcome is either a blocking transport or 'config + 1 edit'."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "F02-T3",
+     "F06-T2",
+     "PANEL-P1",
+     "X02-T4"
+    ],
+    "coupling": "The unsaved-prompt cell couples three atoms with no edges between them. draw.io sets modifiedModalOpen=true (:866) and then calls showMessageBoxSync (:876) inside an async ipcMain listener; if F06-T2's SCAFFOLDED throw fires, the flag is never cleared and every later close is ignored by the guard at :853 — the window can never close. F02-T3 AC1 and F06-T2 AC4 are mutually exclusive for a modified document.",
+    "fix": "New atom 'blocking host CALL from a Bun role' (transport ticket) with edges PANEL-P1 → transport → F06-T2(sync) → X02-T4(close cell); F02-T3 AC1 split into unmodified/modified. If P1 fails, a recorded decision 'draw.io = config + 1 edit'."
+   },
+   {
+    "keys": [
+     "F01-T2",
+     "F02-T2",
+     "KEL-143"
+    ],
+    "coupling": "Ready re-base ↔ recovery ↔ window adoption. Ready is emitted on NavigationReady today and is already replayed to a recovered generation; F02-T2 adds a transitional 'first new BrowserWindow() adopts the host-created primary window until F01-T2 lands'. Changing the emission point silently changes what the replayed Ready means in generation ≥2 (a window exists) and makes the adoption shim dead or wrong; F01-T2's AC1/AC3 already contradict each other on this.",
+    "fix": "One atom 'who creates window #1 and what Ready means per generation', owned by F01-T2; edge F02-T2 ← F01-T2 and delete the adoption shim from F02-T2 (two mechanisms for one fact)."
+   },
+   {
+    "keys": [
+     "F04-A4",
+     "F04-T3",
+     "F03-T2",
+     "F02-T2",
+     "X05-EPIC"
+    ],
+    "coupling": "At least four 'generation' notions are used interchangeably: Bun role generation (tombstones, stale-generation errors in F02-T2), WindowGeneration (F02-T2), bridge navigation_generation u64 rotated on navigation start (keld-wv macos_bridge.rs:335), guard Principal::Webview.generation (0 in live backends per the refuter), plus X05's 'per-window state generation' for the mirror. F04-T3's reply/senderFrame semantics depend on the unification but only F03-T2 is gated by F04-A4.",
+    "fix": "F04-A4's resolution names each generation, its minting owner and rotation point; add edge F04-T3 ← F04-A4; forbid the bare word 'generation' in ticket ACs."
+   },
+   {
+    "keys": [
+     "F06-T4",
+     "F02-T3",
+     "F01-T3"
+    ],
+    "coupling": "F06-T4 executes menu `role` items host-side 'without a round trip'. draw.io's menu has role 'close' (:2047) and role 'quit' (:2042); executed natively they would bypass the cancelable close/quit protocol that F02-T3/F01-T3 exist to provide.",
+    "fix": "AC in F06-T4: role close/quit enter the same CloseRequested/quit-request path as the window button and Cmd+Q; edge F06-T4 ← F02-T3."
+   },
+   {
+    "keys": [
+     "F02-T2",
+     "F06-T5",
+     "PANEL-P1"
+    ],
+    "coupling": "Host-pushed mirrors (window bounds/focus, displays, theme) write events toward a role that may be parked in a sync dialog; the link stalls at 8 KiB (measured probe). Mirror event volume ('move'/'resize') therefore changes whether the blocking transport is safe, and a parked role reads stale mirror values on wake.",
+    "fix": "PANEL-P1 arm B adds a mirror-event flood during the park; F02-T2 states the staleness contract (ordered replay before the sync call returns)."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "PANEL-P2",
+    "why_now": "Takeable now; gates F02-T3 and the F01-T3 quit slice. Supplies the Electron transcript for close → preventDefault → isModified → dialog → destroy and Cmd+Q ordering with two windows.",
+    "consumes": "Electron 44.4.5 binary on the same Mac; an objc2 AppKit harness; receipts already in PANEL-D5 (windowShouldClose:/applicationShouldTerminate:). Produces: diffed transcript + ✔/▲ marks."
+   },
+   {
+    "key": "F02-T1",
+    "why_now": "Takeable now; close/preventDefault/destroy/closed/isDestroyed entries precede F02-T3.",
+    "consumes": "KEL-237 manifest/runner; pinned browser-window.md/base-window.md; PANEL-D6 tombstone contract."
+   },
+   {
+    "key": "F02-T2",
+    "why_now": "Next: after F02-T1, F01-T2 and X05-T2 (the PANEL-D19 edge is not a real gate).",
+    "consumes": "F02-T1 entries; KEL-75 WindowGeneration spec; generated channel constants; a named window-channel contract owner (open — KEL-98 is echo-only)."
+   },
+   {
+    "key": "F07-T1",
+    "why_now": "Next: after PANEL-D21 and F02-T2 (per-view script registration).",
+    "consumes": "PANEL-D21 result; KEL-142 injection seam; corpus electron-preload.js."
+   },
+   {
+    "key": "F03-T2",
+    "why_now": "Next: after F03-T1, F02-T2, F04-A4 — macOS slice (loadURL file://, did-finish-load, did-navigate, destroyed, zoom members).",
+    "consumes": "Existing page-load-finished observable in keld-wv; generation owner; F02-T2 webview identity."
+   },
+   {
+    "key": "F02-T4",
+    "why_now": "Next: after F02-T2; accept/ignore slice for draw.io's webPreferences (quirk escape removed).",
+    "consumes": "F02-T2 constructor path; draw.io option set (electron.js:714-733)."
+   },
+   {
+    "key": "F02-T3",
+    "why_now": "Next: after F02-T2 and PANEL-P2; the modified-document branch additionally waits on the PANEL-P1 outcome.",
+    "consumes": "PANEL-P2 transcript; F02-T1 entries; PANEL-D5 resolution."
+   },
+   {
+    "key": "F01-T3",
+    "why_now": "Next: after F02-T3 — only the slice 'host-initiated quit enters the per-window veto'.",
+    "consumes": "F02-T3 close protocol; PANEL-P2 Cmd+Q transcript; KEL-139 AC6 single quit owner."
+   },
+   {
+    "key": "F06-T5",
+    "why_now": "Next: after F06-T1 and F02-T2's mirror primitive — screen workArea + nativeTheme.shouldUseDarkColors only.",
+    "consumes": "F02-T2 mirror primitive; KEL-102 admission path (In Progress) for new host channels."
+   },
+   {
+    "key": "F06-T4",
+    "why_now": "Next: after F06-T1, F02-T2, F02-T3 — application menu with host-side roles only.",
+    "consumes": "F06-T1 role entries; close/quit protocol so roles 'close'/'quit' are cancelable."
+   },
+   {
+    "key": "F06-T2",
+    "why_now": "Next: after F06-T1 and F02-T2 — open/save/message dialogs returning paths (no scope minting); sync variant per PANEL-P1 outcome.",
+    "consumes": "F06-T1 dialog entries; F02-T2 window identity for parenting; PANEL-P1 decision."
+   },
+   {
+    "key": "F07-T2",
+    "why_now": "Next and trivial: fold webviewTag acceptance into F02-T4; keep will-attach-webview registrable.",
+    "consumes": "F02-T4 option triage; F02-T2 webContents emitter."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny never defaulted to allow; no Electron-isms in keld-core/keld-ipc; no parallel owner; reuse of KEL-75/76/77/78/79/80/53/74/102/135/139-144; measured performance; spec+Linear gate; #312/#313/#319/#322/#323/#325 and KEL-127). Verified against origin/main d150a14, wry 0.56.1 and tao 0.37.0 registry sources.",
+   "verdicts": [
+    {
+     "decision_id": "F02-A1",
+     "verdict": "survives",
+     "reason": "Host minting of window identity is required by existing owners, not invented here: KEL-75 spec stores an opaque WindowGeneration per window incarnation with 'the app-session registry ... owns the monotonic generation counter' and 'Window affinity is not a reusable native window number'; arch 01 line 56 forbids reusable window handles; kel139 ownership table row 'Native window | KEL-96 / core + wv | Host remains sole owner'. A Bun-local mirror fed by app-link EVENT frames is consistent with the existing LifecycleLink demux and with arch 02 line 336-337 which tolerates blocking CALL only for sendSync, so the rejected per-call sync RPC is correctly rejected. Generic naming in keld-core keeps Electron-isms out of core.",
+     "evidence": "docs/specs/kel75-principalized-bun-child-roles.md:131-137; docs/architecture/01-overview.md:56,106,141; docs/specs/kel139-macos-product-spine.md:246; docs/architecture/02-ipc.md:336-337; crates/keld-core/src/lifecycle.rs:132-150 (count only, no id). Caveat: WindowGeneration exists only in the spec (grep of crates/ and packages/ returns nothing) and no window-registry spec exists under docs/specs/, so the whole atom is spec-gated, as the object already states.",
+     "correction": "Record explicitly that the host already creates the primary window after the authenticated HELLO and before any Bun code runs (arch 01 line 215: 'the window is created only after the authenticated HELLO'); the facade must either adopt that host window as the first new BrowserWindow() or the boot sequence must change. This is a KEL-96/KEL-139 boundary decision, not an 'unknown' footnote."
+    },
+    {
+     "decision_id": "F02-A2",
+     "verdict": "survives",
+     "reason": "Today's uncancelable close is a Keld handling choice, not a platform limit: tao 0.37.0 `WindowEvent::CloseRequested` is only a notification ('The window has been requested to close') and the three backends choose to drop the View immediately (wkwebview/mod.rs:385-401, webkitgtk/mod.rs:467-474, webview2/mod.rs:2155-2173 close_requested_view). A host-held veto with a Bun round-trip is therefore implementable in the existing AppWindowEvent/AppWindowCommand seam without a parallel owner. The view-before-window drop order is a real crate invariant (view_drop_order.rs). The quit ordering the object attributes to KEL-143 appears in repo text as 'Quit reply then quiesce, revoke, link close, terminate/reap, event-loop exit'.",
+     "evidence": "~/.cargo/registry/src/*/tao-0.37.0/src/event.rs:282-283; crates/keld-wv/src/wkwebview/mod.rs:385-401; crates/keld-wv/src/webkitgtk/mod.rs:467-474; crates/keld-wv/src/webview2/mod.rs:2155-2180; crates/keld-wv/src/view_drop_order.rs:1-10; docs/research/library/execution-governance/222-kel96-ready-frontier.md:147,375; crates/keld-core/src/app_session.rs:3893-3901.",
+     "correction": "The dead-Bun deadline rule collides with KEL-143's goal (same native window survives Bun generation loss): if the host honors a user close while no Bun generation is live, the window count can reach zero and LastWindowClosed has no listener generation. State the rule as its own atom: a close during generation loss either (a) is honored and the next generation receives a synthetic LastWindowClosed on admission, or (b) is parked until the admission deadline. Pick one in the registry spec; do not leave it as 'medium confidence'. Engine beforeunload support remains [unknown] on all three engines; no repo evidence exists."
+    },
+    {
+     "decision_id": "F02-A3",
+     "verdict": "refuted",
+     "reason": "The reuse claim is wrong on mechanism. The KEL-64 'double-rAF beacon' is an external benchmark instrument on a pre-spawn monotonic clock emitted by a fixture page to an external harness, not a host-injected script: keld-wv AGENTS.md calls it the 'KEL-64 external double-rAF image beacon', startup.rs:231 says 'KEL-64 first paint is external beacon, not this trace', and learnings 2026-08-17 scores it 'on untraced arms only'. There is no 'host pre-load script' seam shared across engines: the only shipped injection is the macOS-only KEL-142 WKContentWorld bridge (macos_bridge.rs:525-556), the WebView2 backend deliberately refuses AddScriptToExecuteOnDocumentCreated because wry's injection cost a measured 96-109 ms (webview2/mod.rs:11-16), and keld-wv has no WebKitGTK UserContentManager injection at all. Also no backend creates a hidden window today: all three use WindowBuilder::new().with_inner_size(...) with no with_visible(false) (wkwebview/mod.rs:460, webkitgtk/mod.rs:511, webview2/mod.rs:2734), so (a) is new work, not reuse.",
+     "evidence": "crates/keld-wv/AGENTS.md:32-37; crates/keld-wv/src/startup.rs:4,231; docs/agents/learnings.md:79; crates/keld-wv/src/wkwebview/macos_bridge.rs:525-556; crates/keld-wv/src/webview2/mod.rs:8-20; grep for WKUserScript/AddScriptToExecuteOnDocumentCreated/user_content_manager in crates/keld-wv/src returns only the macOS bridge and the WebView2 refusal comment; grep with_visible returns nothing.",
+     "correction": "Rewrite (b): the reusable asset is the double-rAF technique, not the KEL-64 instrument. The oracle needs a host-owned isolated-world script per engine: macOS extends the KEL-142 isolated bridge; Windows requires a measured decision because the backend already rejected document-created injection on startup-cost grounds (arch 01 §5 budget, >5% regression waiver rule); Linux requires a new WebKitGTK UserContentManager seam. Keep the prototype gate, but prototype P1 must also measure the injection cost against the 300 ms first-paint budget and define what 'first paint' means for a show:false window (the budget clock currently targets the host-created visible window)."
+    },
+    {
+     "decision_id": "F02-A4",
+     "verdict": "refuted",
+     "reason": "The 'LEGACY-PROFILE ONLY: sandbox:false' classification contradicts the approved KEL-78 spec, which states 'Electron `sandbox` / `appSandbox` is not this key and MUST NOT be read as `legacy` or `strict`' and treats a leftover Electron sandbox option under a Strict request as UnexpectedGrant (do not start); research 213 carries the matching fail-closed test row 'legacy_declaration_comes_only_from_the_keld_profile_key_never_electron_sandbox_options'. The legacy profile is a Bun-role OS-containment state (keld-guard admit.rs ProfileState::{Unverified,Legacy,Strict}), not a renderer de-sandbox, and a system webview's renderer cannot be de-sandboxed by Keld at all. Separately, Electron preload 'will always have access to node APIs' (R8) while Keld's preload is a webview user script (arch 04 §3 layer 3), so filing preload under POLICY without a ▲ for Node access hides the largest semantic divergence in the field. The NEVER list, devTools→web.devtools, and the default-deny stance are consistent with arch 03 §3 and research 13.",
+     "evidence": "docs/specs/kel78-strict-profile-sandbox.md:560-570; docs/research/library/quality-evidence/213-test-ladder-every-surface.md:774; crates/keld-guard/src/admit.rs:87-92,553-558; docs/architecture/04-electron-compat.md:74-77; docs/architecture/03-security.md:242-245; docs/research/library/compatibility-competitors/13-electron-api-usage.md:42-49; docs/specs/kel135-persistent-profile-identity.md has no Electron session/partition mapping text (grep 'partition' empty).",
+     "correction": "Reclassify sandbox:false as ▲ ignored-with-diagnostic: the renderer stays engine-sandboxed, Keld emits a KELD-COMPAT diagnostic and a `keld migrate` report line, and it never selects or gates a Keld profile. Any preload `require`/Node usage is ✘ (or routed through the F03/F04 contextBridge/ipcRenderer facade), and the preload row must carry ▲ 'no Node access'. Mark session/partition→KEL-135 as a required KEL-135 spec extension (app-named store selection is currently outside its host-validated identity model), not as an existing mapping."
+    },
+    {
+     "decision_id": "F02-A5",
+     "verdict": "survives",
+     "reason": "One BaseWindow implementation with BrowserWindow = BaseWindow + exactly one host-created content view matches the live substrate (engine.rs:77 'v0 is one window-filling webview per window'; no HostHooks/Anchor per engine.rs:16 and arch 05 lines 41-42), matches arch 04 §4 placing BrowserView mapping in Tier 3, and the corpus has zero BaseWindow/View/WebContentsView/BrowserView call sites, so DRY and demand agree. Keeping view composition ✘ until keld-wv ships set_bounds+Anchor avoids a parallel window model.",
+     "evidence": "crates/keld-wv/src/engine.rs:16,77-88,138-176; docs/architecture/05-webview-and-native.md:14,24-29,41-42,243; docs/architecture/04-electron-compat.md:135-142; crates/keld-wv/src/view_drop_order.rs.",
+     "correction": "The 'KEL-98 echo-codegen owner, no new IDL' clause is not supported by the KEL-98 spec as approved: its non-goals say it is 'a bootstrap for the existing echo vertical slice, not Keld's general contract authoring model', with 'no general Rust parser, derive/proc macro, IDL, or arbitrary schema generator', and the destination @keld/schema / keld gen is 'separately specified as TypeScript-native' (arch 01:128, arch 02 §4). Generating a window.* channel therefore needs a KEL-98 scope amendment or the @keld/schema spec, and the object must name that as a blocker. Also soften the trap claim that leaking a detached webContents is 'impossible' on system engines: WKWebView is an NSView that can be detached and re-added and WebView2 exposes put_ParentWindow; destroying view-with-window is a Keld ownership choice (▲), not an engine impossibility."
+    },
+    {
+     "decision_id": "F02-A6",
+     "verdict": "unresolved",
+     "reason": "The macOS titleBarStyle/trafficLightPosition mapping to public NSWindow API, vibrancy as Tier 2 ▲ (arch 04 line 24 already lists 'BrowserWindow.vibrancy (macOS-only effect)'), the entitlement-clean transparency rule (research 06 line 35), and transparent as Tier 3 are consistent with repo sources. But the Tier 1 assertion for Windows/Linux frame:false + titleBarOverlay + `app-region: drag` has no receipt on any engine: `app-region` is a Chromium CSS property with no WebKit implementation, so WKWebView and WebKitGTK cannot report draggable regions to the host without a page-side hook that Electron apps do not ship; WebView2's non-client-region support is cited only as [lead]; and host-drawn caption controls over a child-HWND WebView2 or a GTK webview have no design or measurement in the repo. Zettlr's primary workflow depends on exactly this combination, so Tier 1 cannot be asserted until prototypes P3/P4 produce evidence.",
+     "evidence": "docs/architecture/04-electron-compat.md:24,53; docs/research/library/host-platforms/06-webview-reality.md:33-36; crates/keld-wv/AGENTS.md:9 (NVIDIA/Wayland dmabuf); grep of crates/keld-wv/src for titlebar/vibrancy/transparent/with_decorations returns nothing (no chrome code exists); no receipt for WebView2 IsNonClientRegionSupportEnabled or for any WebKit app-region support in the object or repo.",
+     "correction": "Cheapest settling evidence: (1) fetch and pin the WebView2 ICoreWebView2Settings9.IsNonClientRegionSupportEnabled reference page (SDK/runtime minimums, frameless-HWND behavior, which CSS it honors) and record it as a receipt; (2) a WebKit source/bugzilla receipt that `app-region`/`-webkit-app-region` is unimplemented, which downgrades macOS/Linux drag to host-side emulation requiring an injected hit-test script (same seam problem as A3); (3) prototype P3 must include a Windows cell where host-drawn caption buttons coexist with a WebView2 child HWND and a Linux cell using gtk_window_begin_move_drag. Until then tier titleBarOverlay/app-region as PARTIAL with Zettlr's primary workflow flagged at risk, not Tier 1."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Host-pre-created primary window vs new BrowserWindow(): the host creates the one primary window after the authenticated HELLO and before Bun user code runs (KEL-96/KEL-139 boot), while every corpus app calls new BrowserWindow() inside whenReady. Without an adoption rule the facade either creates a second window or must defer host window creation, which changes the KEL-64/arch 01 §5 first-paint clock (measured spawn→PAINT-OPPORTUNITY on that host window) and the KEL-139 'same native window identity' invariant. This is a boundary decision owned by KEL-96/KEL-139/KEL-143, not an A1 footnote.",
+     "severity": "high",
+     "evidence": "docs/architecture/01-overview.md:215 ('the window is created only after the authenticated HELLO'); docs/specs/kel139-macos-product-spine.md:170,246; crates/keld-core/src/hello.rs:136-150 (config read for title/renderer/entry only)."
+    },
+    {
+     "finding": "Identity conflation in reuse_points: keld-guard Principal::Webview.generation is 'Bumped on navigation so stale grants cannot carry over', whereas KEL-75's WindowGeneration is minted per window incarnation and the spec says 'Navigation generation and document nonce rotate independently inside that window and are not part of the role principal'. Treating Principal::Webview{id,generation} as 'the per-window principal' would tombstone window-bound roles on every navigation or let a navigation-stale grant survive a window swap. The registry spec must mint and carry two distinct generations.",
+     "severity": "medium",
+     "evidence": "crates/keld-guard/src/lib.rs:105-116; docs/specs/kel75-principalized-bun-child-roles.md:131-134."
+    },
+    {
+     "finding": "Popup default-deny on macOS/Linux is an engine/wry default, not a Keld-evaluated decision: keld-wv sets no wry new_window_req_handler, and wry 0.56.1's WKUIDelegate returns None (no popup) when the handler is absent while WebKitGTK's `create` signal is simply not connected. keld-wv AGENTS.md already warns for Linux that this fallback 'is not proof Keld evaluated the right principal/manifest'. The object's reuse point names only the WebView2 deny-all handler; setWindowOpenHandler routing needs host-owned handlers on all three engines or the macOS/Linux cells cannot claim default-deny provenance.",
+     "severity": "medium",
+     "evidence": "~/.cargo/registry/src/*/wry-0.56.1/src/wkwebview/class/wry_web_view_ui_delegate.rs:180-290; wry-0.56.1/src/webkitgtk/mod.rs:491-493; crates/keld-wv/AGENTS.md:24-26; grep of crates/keld-wv/src/{wkwebview,webkitgtk} for new_window_req returns nothing."
+    },
+    {
+     "finding": "Windows injection seam contradicts a measured decision: the WebView2 backend exists as direct COM precisely because wry's AddScriptToExecuteOnDocumentCreated bridge injection cost 96-109 ms during renderer boot. Any ready-to-show beacon, preload, or contextBridge user-script on Windows reintroduces that path and must be re-measured against the 300 ms first-paint budget with a waiver if >5% regression; 'same injection seam as KEL-142' is macOS-only today.",
+     "severity": "medium",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs:11-16; docs/architecture/01-overview.md:185; AGENTS.md verification floor (>5% regression needs waiver)."
+    },
+    {
+     "finding": "KEL-98 echo-codegen cannot own window.* generation under its approved scope ('not Keld's general contract authoring model'; 'no general Rust parser, derive/proc macro, IDL'); the destination @keld/schema / keld gen is TypeScript-native and separately specified. The object's A5 and reuse_points rely on KEL-127's 'existing echo-codegen owner' direction, which now conflicts with the KEL-98 spec text; one of them must be amended before a window channel can be generated.",
+     "severity": "medium",
+     "evidence": "docs/specs/kel98-echo-codegen.md:11-30; docs/architecture/01-overview.md:128; docs/architecture/02-ipc.md:310-316."
+    },
+    {
+     "finding": "Guard gating of window commands: manifest `windows.<name>` grants are parsed-and-ignored today (guard lib.rs:565 'Unknown top-level keys ($schema, windows, audit) are ignored') and v0 evaluate denies every non-AppProcess principal (KELD-GUARD006). AppProcess-owned window ops can ship, but any window operation originating from a webview principal (window.open allow, child windows, webContents-initiated close) is hard-denied until KEL-102 window grants land; the security_mapping should state that dependency per row rather than only in A1/A4 blocked_by.",
+     "severity": "medium",
+     "evidence": "crates/keld-guard/src/lib.rs:297-322,565; docs/architecture/03-security.md:96-98,258-263; docs/specs/kel102-host-guard-enforcement.md:139,565."
+    },
+    {
+     "finding": "Hidden-window creation changes what the first-paint budget measures: arch 01 §5 scores spawn→PAINT-OPPORTUNITY beacon on the host window; a show:false window that paints while unmapped produces a beacon with no visible paint, so corpus-app first-paint rows need a separate document class (visible-first-paint vs ready-to-show) or the budget scoreboard will pool incomparable samples.",
+     "severity": "medium",
+     "evidence": "docs/architecture/01-overview.md:215-216 (fresh-process/warm-cache classes MUST NOT be pooled); crates/keld-wv/AGENTS.md:32-37."
+    },
+    {
+     "finding": "Minor misattribution: product-status.tsv says 'destination registry ... remain absent' only on the crate.keld-host row; the crate.keld-core row says 'full named-role and privileged dispatch remain absent'. keld-core/src/lib.rs:3 still claims to own 'the window/webview registries', which per AGENTS.md code/spec-mismatch rule is a drift to fix in the same PR that introduces the registry.",
+     "severity": "low",
+     "evidence": "docs/engineering/product-status.tsv:3,12; crates/keld-core/src/lib.rs:3."
+    },
+    {
+     "finding": "A2's 'close precedes DOM beforeunload' ordering plus a Bun round-trip means every native close request blocks on kipc before the engine sees it; with per-listener try/catch isolation already a ▲ in the facade (compat-scoreboard row 101), a throwing 'close' listener must be defined as allow or veto. Electron propagates the throw from emit (window stays open); Keld's isolated emit would fall through to CloseAllow unless specified. Add a negative-control cell.",
+     "severity": "low",
+     "evidence": "docs/engineering/compat-scoreboard.md:101; packages/@keld/electron/src/app.ts (per-listener isolation)."
+    }
+   ]
+  },
+  {
+   "lens": "Electron v44.4.5 semantics accuracy + corpus demand + sequencing/sizing (F02 windowing). Sources read: pinned docs saved under <scratchpad>/notes/f02-refute/ (browser-window, base-window, base-window-options, browser-window-options, web-preferences, web-contents, view, web-contents-view, browser-view, app, window-open-handler-response, custom-title-bar, custom-window-styles) plus Electron v44.4.5 source (lib/browser/api/web-contents.ts, browser-window.ts, base-window.ts, shell/common/gin_helper/trackable_object.h, shell/common/key_weak_map.h, shell/browser/api/electron_api_base_window.cc, shell/browser/native_window.cc, shell/browser/ui/cocoa/electron_ns_window_delegate.mm); corpus clones drawio-desktop/zettlr/electron-quick-start and *.usage.json; Keld repo at d150a14.",
+   "verdicts": [
+    {
+     "decision_id": "F02-A1",
+     "verdict": "survives",
+     "reason": "Host-minted opaque identity + synchronous facade-local mirror is consistent with every cited Electron contract and Keld invariant. Electron's getAllWindows/getFocusedWindow/fromId are synchronous (base-window.md:393-405; browser-window.ts:109-131 filters BaseWindow.getAllWindows()). Corpus sites verified: drawio electron.js:484 `getFocusedWindow() || getAllWindows()[0]`, Zettlr windows/index.ts:646-680 showAnyWindow/getFirstMainWindow, quick-start main.js activate handler. KEL-75 spec lines 131-134 ('Window affinity is not a reusable native window number'), arch 01 line 56, lifecycle.rs:132-150 counters all match. Blockers are real: product-status.tsv rows crate.keld-core/crate.keld-host say the destination registry is absent; no window-registry Linear id exists.",
+     "evidence": "trackable_object.h:39 `weak_map_id_ = ++next_id_` (ids are a single counter shared by ALL TrackableObject types, so Electron window ids are not dense per window — the facade's own monotonic counter is a legitimate implementation of 'unique among all BaseWindow instances'). key_weak_map.h:73 `std::unordered_map<K, Mapped> map_` + Values() iterates it: Electron's getAllWindows() order is UNSPECIFIED, not creation order. browser-window.ts:120-125: BrowserWindow.getFocusedWindow() also returns a window whose DevTools is focused (`webContents.isDevToolsFocused()`).",
+     "correction": "Two labelling fixes, not a redesign: (1) the semantic-trap oracle 'getAllWindows() ids strictly increasing in creation order' is a Keld-stronger guarantee than Electron (unordered_map order) — record it as ▲-stronger, never as parity; (2) getFocusedWindow must also return the window whose DevTools pane is focused, so the mirror needs devtools-focus truth from the host or a documented ▲. Also note fromWebContents is blocked by the F03 webContents handle (only A5 lists F03)."
+    },
+    {
+     "decision_id": "F02-A2",
+     "verdict": "refuted",
+     "reason": "The two-phase protocol shape (host CloseRequested -> facade 'close' with preventDefault -> CloseAllow -> unload -> destroy webview before window -> Closed; destroy() skips close but guarantees closed; destroyed-object fence) is confirmed by docs and source. But the deadline clause is justified by a false Electron fact: 'Electron's observable user can always close wins over a dead veto'. In Electron the 'close' emit is synchronous on the browser-process UI thread (electron_ns_window_delegate.mm:411-414 `windowShouldClose` calls NotifyWindowCloseButtonClicked and returns NO; native_window.cc:548-555 observers_.Notify(WillCloseWindow,&prevent_default); electron_api_base_window.cc:165-169 `if (Emit(\"close\")) *prevent_default = true`). A blocked or slow main process therefore keeps the window OPEN in Electron; the user cannot 'always close'. As written, a slow-but-alive Bun (drawio's close handler ALWAYS preventDefaults then awaits an async renderer round-trip, electron.js:947-966, with destroy() only after 'saveAndClose-result'/'draftRemoved', :893-945) would have the host close the window on deadline and lose unsaved work — the exact failure the protocol exists to prevent.",
+     "evidence": "browser-window.md:186-194 ('close' before beforeunload/unload; preventDefault cancels); base-window.md:578-588 (destroy skips close/unload, guarantees closed; close() same as clicking the button); base-window.md:602-607 isDestroyed note; drawio electron.js:947-975 and 893-945; Zettlr windows/index.ts:357-410 (preventDefault then askUserToCloseWindow().then(window.close()); app.quit() from inside 'close' on win/linux last window); keld-wv wkwebview/mod.rs:387-402 and webkitgtk/mod.rs:469-474 and webview2/mod.rs:2594-2605 (CloseRequested removes views, emits LastWindowClosed, no veto); view_drop_order.rs:3-5.",
+     "correction": "Keep the protocol; replace the deadline clause with: the host waits for CloseAllow/CloseVeto indefinitely while the owning Bun generation is alive (matches Electron's observable: a non-answering main keeps the window open), and releases the pending close ONLY on supervisor-confirmed generation death (KEL-143 seam), recorded as a Keld ▲ policy, not Electron parity. Add: a CloseRequested that arrives while a previous one is still unanswered for the same WindowGeneration must coalesce (Electron re-emits 'close' per attempt; drawio keys each attempt with a fresh uniqueIsModifiedId, so re-emission per native attempt is the parity behaviour — but CloseAllow must carry the seq it answers). Keep DOM-beforeunload engine support as the stated unknown."
+    },
+    {
+     "decision_id": "F02-A3",
+     "verdict": "unresolved",
+     "reason": "The Electron side is accurately quoted (browser-window.md:35-55 and 267-273: ready-to-show when the renderer has rendered the page the first time while hidden; implies hidden paint; never fires with paintWhenInitiallyHidden:false; browser-window-options.md confirms default true and the visibilityState interaction). Corpus demand is confirmed: Zettlr 14 ready-to-show sites across 14 create-*/splash/onboarding files with 15 `show: false`; drawio progress-bar.js:44-59 same pattern; drawio electron.js:717 backgroundColor to avoid white flash. The Keld-side premise is also confirmed (NavigationReady is emitted from wry PageLoadEvent::Finished only: wkwebview/mod.rs:719-723, webkitgtk/mod.rs:528-532, webview2/mod.rs:1985; learnings.md:79 and keld-wv AGENTS.md:32-35). What is missing is the decisive fact: whether WKWebView, WebView2 and WebKitGTK run requestAnimationFrame / composite while their window is unmapped. No receipt exists either way, and the fallback ('navigation finished + DOMContentLoaded' with ▲) changes the observable contract for all 14 Zettlr sites.",
+     "evidence": "Missing evidence: (a) WKWebView not-in-window / ordered-out visibility semantics (WebKit treats a view with no window as not visible and suspends the display-refresh-driven rAF — this is a [lead], not a receipt); (b) WebView2 `ICoreWebView2Controller.IsVisible` docs state the WebView stops rendering when not visible — need the exact Microsoft Learn receipt and whether a hidden parent HWND with IsVisible=true still paints; (c) WebKitGTK unrealized GtkWindow behaviour. Also a labelling slip: the KEL-64 double-rAF beacon is an EXTERNAL bench image beacon on a pre-spawn clock (keld-wv AGENTS.md:32-35), not a host-injected pre-load script; the host-injection seam is KEL-142's WKContentWorld bridge (macOS only today).",
+     "correction": "Cheapest settling experiment (prototype P1, one afternoon per OS): in the existing keld-wv hello, create the native window without ordering it front (macOS: skip orderFront/makeKeyAndOrderFront; Windows: omit SW_SHOW; Linux: gtk_widget_realize without show), load a page whose first rAF callback calls window.keld.invoke('beacon'); record whether the beacon arrives within 2s, then show the window and screenshot for the white-flash negative control. Publish the three cells before committing to either oracle. Until then A3 stays prototype-gated and the ▲ fallback text must say 'fires at load-finished, before first composited frame'."
+    },
+    {
+     "decision_id": "F02-A4",
+     "verdict": "refuted",
+     "reason": "The triage is incomplete and one bucket contradicts the corpus it cites. (1) `disableBlinkFeatures` is placed in NEVER ('fail loudly, scoreboard ✘, no quirks flag'), yet drawio's PRIMARY main window sets `disableBlinkFeatures: 'Auxclick'` (electron.js:730, and again in the export window :3089). Fail-loud would make drawio's main window constructor throw — contradicting the decision's own claim that 'corpus apps need no never-listed field for primary workflow except drawio's offscreen export path'. (2) Only 44 of the 46 WebPreferences fields are triaged: `zoomMode` (web-preferences.md:42-44, new in 44) and `safeDialogsMessage` (:130) are missing. (3) `sandbox:false` as LEGACY-PROFILE ONLY ('refused in strict/release') would refuse Zettlr's startup splash screen (splash-screen.ts:65) and onboarding window (onboarding-window.ts:72) — both on the startup path — although on Keld the flag grants nothing (no Node exists in any renderer under any flag); the thing to refuse is a preload that imports Node, which `keld migrate` detects, not the flag. (4) `devTools` default is TRUE in Electron (web-preferences.md:3); Keld's 'off in release unless web.devtools' is a ▲ divergence the decision presents as policy without marking it.",
+     "evidence": "web-preferences.md field list (46 bullets: lines 3-166) vs the decision's 14 NEVER + 1 LEGACY + 8 POLICY + 21 ENGINE = 44. drawio electron.js:722-732 main-window webPreferences {spellcheck, contextIsolation:true, nodeIntegration:false, webviewTag:false, webSecurity:true, disableBlinkFeatures:'Auxclick', additionalArguments}; :3081-3098 export window {preload, backgroundThrottling:false, disableBlinkFeatures, offscreen:{deviceScaleFactor:2}, show:false, frame:false, enableLargerThanScreen, transparent (png+no bg), parent}. Zettlr splash-screen.ts:55-80 and onboarding-window.ts:72 sandbox:false with contextIsolation:true + preload. Electron defaults confirmed: nodeIntegration false, contextIsolation true, sandbox true since 20 and auto-disabled by nodeIntegration, webviewTag false (web-preferences.md:4-28,104-124).",
+     "correction": "Split NEVER into two buckets with different failure modes: (a) privilege-escalating -> fail loudly, no quirks flag: nodeIntegration:true, nodeIntegrationInWorker, nodeIntegrationInSubFrames, contextIsolation:false, webSecurity:false, allowRunningInsecureContent:true; (b) Chromium/V8-engine-only knobs -> accept, ignore, emit one KELD-COMPAT diagnostic, scoreboard ▲ (not ✘-fatal): enableBlinkFeatures, disableBlinkFeatures, experimentalFeatures, v8CacheOptions, enableWebSQL, enableDeprecatedPaste, plugins; `offscreen` -> ✘ with diagnostic (capturePage on a hidden non-OSR window is the stated unknown for drawio export). Reclassify sandbox:false as 'ignored + diagnostic' because the flag is a no-op on Keld; gate the legacy profile on detected Node use in the preload instead. Add zoomMode (engine toggle) and safeDialogsMessage (host dialog policy). Mark devTools default-true vs release-off as ▲."
+    },
+    {
+     "decision_id": "F02-A5",
+     "verdict": "survives",
+     "reason": "Every Electron claim checks out and the corpus has zero demand for the deferred surfaces. base-window.md:1-14 and 67-71 (compose multiple web views; BrowserWindow simpler for one full-size view; closing a BaseWindow does not destroy a WebContentsView's webContents), web-contents-view.md:44 ('A WebContents may only be presented in one WebContentsView at a time'), browser-view.md:12/33 deprecated in favour of WebContentsView, view.md:7 and web-contents-view.md:7 cannot be used before ready. Corpus tally: no BaseWindow/View/WebContentsView/BrowserView call sites in drawio, Zettlr or quick-start (only drawio's 7 `<webview>` disable hits, F07). Keld side: engine.rs:77 'v0 is one window-filling webview per window'; arch 05 lines 22-45 name HostHooks/Anchor/destroy as destination API landing only with a live backend; arch 04 line 142 puts BrowserView mapping in Tier 3. DRY argument (126 shared methods once) is sound.",
+     "evidence": "Member counts verified from families/F02-windowing.json: BaseWindow 187, BrowserWindow 204, View 12, WebContentsView 2, BrowserView 6, total 606 across 32 entities. BrowserWindow-only additions confirmed in browser-window.md (webContents prop :510, loadURL :1264, loadFile :1321, capturePage :1253, focusOnWebView/blurWebView :1249-1251, showDefinitionForSelection :1533, six deprecated BrowserView methods :1762-1810, fromWebContents :476, fromBrowserView :483).",
+     "correction": "None required. Optional precision: state that the ownership ▲ ('webContents destroyed with window' for BaseWindow+WebContentsView) is only reachable once Tier 3 ships; until then the row is ✘, not ▲."
+    },
+    {
+     "decision_id": "F02-A6",
+     "verdict": "survives",
+     "reason": "Tiering matches Zettlr's actual chrome code and the Electron docs, with two receipt errors and two omissions that change Tier 1 membership. Zettlr set-window-chrome.ts: macOS -> titleBarStyle 'hiddenInset' + vibrancy 'under-window' + visualEffectState 'followWindow' (backgroundColor only when vibrancy off — corpus comment, correctly labelled inference); win32 and Linux-non-native -> frame:false + titleBarStyle 'hidden' + titleBarOverlay {color '#00000000', symbolColor, height}. Electron constraints confirmed: custom-title-bar.md:148-149 titleBarOverlay requires titleBarStyle != default; custom-window-styles.md transparent limitations (no click-through, not resizable, DevTools disables, Windows no maximize, macOS no shadow); base-window-options.md: titleBarStyle default 'default', titleBarOverlay default false, vibrancy values, backgroundMaterial auto/none/mica/acrylic/tabbed, roundedCorners Win11 22000+. drawio's transparent use is confined to the hidden export window (electron.js:3096), so Tier 3 for transparent is defensible.",
+     "evidence": "Receipt error: R13/A6 say titleBarOverlay.symbolColor is 'Windows only'; v44.4.5 base-window-options.md:100-101 tags BOTH `color` and `symbolColor` as _Windows_ _Linux_, and custom-title-bar.md:153 says 'color (Windows Linux)'. Zettlr applies titleBarOverlay on Linux (non-native appearance) so Linux symbolColor is live demand. Omissions: Zettlr calls the runtime setter `setTitleBarOverlay` from its appearance provider on theme change (1 site), and the splash screen uses alwaysOnTop:true, fullscreenable:false, skipTaskbar:true, frame:false, titleBarStyle:'hidden' (splash-screen.ts:55-60) — none of which A6 lists in Tier 1 (they appear only in security_mapping). Prototype P3/P4 gating for app-region drag and vibrancy-over-non-opaque-WKWebView remains correct: no receipts exist.",
+     "correction": "Fix R13 to 'color/symbolColor: Windows and Linux'. Add to Tier 1: win.setTitleBarOverlay(options) runtime setter (Zettlr theme switch), alwaysOnTop, skipTaskbar, fullscreenable:false, closable/resizable/minimizable/maximizable:false (drawio progress-bar.js:40-45). Keep transparent/vibrancy/WCO parity as prototype-gated ▲."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "app.quit() / Cmd+Q sweep must run the same cancelable per-window 'close' protocol as a user close, and must tolerate app.quit() being called synchronously from inside a 'close' listener. KEL-143's quit ordering ('reply -> quiesce/drain -> revoke/close -> terminate/reap -> UI exit') treats window close as unconditional; the F02 object only says the sweep must suppress window-all-closed. drawio's 'close' handler preventDefaults unconditionally (so an unvetoable quit sweep would bypass its save prompt), and Zettlr calls app.quit() from inside the last window's 'close' handler while that close is still pending (reentrancy).",
+     "evidence": "app.md:50-59 (quit closes windows first, then will-quit); base-window.md:584-588 (close() == button click, page may cancel); drawio electron.js:947-966; Zettlr source/app/service-providers/windows/index.ts:357-382; keld_state cites KEL-143 ordering as reply->quiesce->revoke/close."
+    },
+    {
+     "severity": "medium",
+     "finding": "Sequencing: the object names six atoms but no tracer-bullet slice, and marks A2 blocked_by A1 (multi-window registry, no Linear id, destination registry absent). The two highest-demand behaviours (cancelable close + closed/isDestroyed fence; ready-to-show) are testable on today's single primary window by extending AppWindowEvent with CloseRequested{seq} and AppWindowCommand with CloseAllow/Destroy over the existing LIFECYCLE channel and app_session::coordinate_window_events. A fresh agent could finish that slice (one window, one backend, one conformance cell) without the registry; the registry then generalises it. Recommend naming this as slice 1 and demoting A1 from blocker to successor for A2.",
+     "evidence": "crates/keld-wv/src/engine.rs:89-105 (AppWindowCommand {Quit,Fatal}; AppWindowEvent {NavigationReady,LastWindowClosed}); crates/keld-core/src/app_session.rs:3893-3905 coordinate_window_events; crates/keld-core/src/lifecycle.rs:132-150; product-status.tsv rows 3 and 12 (destination registry absent)."
+    },
+    {
+     "severity": "medium",
+     "finding": "Electron's no-handler popup default is ALLOW (confirmed from source, not docs): _callWindowOpenHandler returns a non-prevented defaultResponse and openGuestWindow runs. Keld's macOS/Linux backends today do not deny popups by policy — they simply have no wry new-window handler, so window.open is silently dropped by the engine default. That is an implicit, unlogged divergence, weaker than the WebView2 deny-all (webview2/mod.rs:1936-1946). The object's 'must stay deny + explicit ▲' is right, but the current-state claim should say 'implicitly dropped (no handler), not explicitly denied' for wkwebview/webkitgtk, and the slice must add an explicit deny + diagnostic there.",
+     "evidence": "lib/browser/api/web-contents.ts:397-412 and 630-648 (v44.4.5); grep of crates/keld-wv/src for NewWindowRequested/new_window/create handlers hits only webview2/mod.rs and media.rs."
+    },
+    {
+     "severity": "medium",
+     "finding": "WebView2 hidden-window painting is a concrete, receipt-less lead that decides A3 on Windows: ICoreWebView2Controller.IsVisible documents that an invisible controller stops rendering, and the interaction with a hidden parent HWND (SW_HIDE) is undocumented in the object. The A3 prototype must record IsVisible state explicitly; a Keld host that keeps IsVisible=true under a hidden HWND may be the only way to emulate paintWhenInitiallyHidden, and that must be measured, not assumed.",
+     "evidence": "A3 unknowns list engine rAF behaviour generically; no Microsoft Learn receipt is cited for IsVisible; the only WebView2 facts in the object are NewWindowRequested and put_DefaultBackgroundColor."
+    },
+    {
+     "severity": "low",
+     "finding": "Reuse-point mislabel: the 'KEL-64 external double-rAF first-paint beacon' is a bench-side image beacon on a pre-spawn monotonic clock, not a host-injected pre-load script; only the KEL-142 WKContentWorld bridge (macOS) is a host injection seam, and it is renderer->host->Bun invoke, not an engine paint signal. A ready-to-show oracle built on it is a new renderer-side user script, not a reuse of KEL-64 code.",
+     "evidence": "crates/keld-wv/AGENTS.md:32-35; docs/agents/learnings.md:79; briefing KEL-142 description (window.keld.invoke, WKContentWorld-isolated bridge)."
+    },
+    {
+     "severity": "low",
+     "finding": "Corpus baseline mismatch worth stating in the scoreboard: Zettlr pins electron ^43.6.0 while the oracle is v44.4.5; the two new-in-44 BaseWindowConstructorOptions (`name`, `windowStatePersistence`) and `zoomMode` have zero corpus demand and should be explicitly deferred rather than counted toward the 606-member denominator as Tier 1.",
+     "evidence": "corpus/zettlr/package.json:195; base-window-options.md:45-46; web-preferences.md:42-44; families/F02-windowing.json totals (606 across 32 entities confirmed)."
+    },
+    {
+     "severity": "low",
+     "finding": "Trap list omission: `closable:false` + programmatic close is covered, but Electron's `enableLargerThanScreen` (drawio export window) and `fullscreenable:false` (drawio popup override, Zettlr splash) are used by both corpus apps and appear nowhere in the tiering.",
+     "evidence": "drawio electron.js:3095 enableLargerThanScreen:true, :2203 fullscreenable:false; Zettlr splash-screen.ts:56 fullscreenable:false."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "PANEL-P2",
+   "decision": "Which Electron 44.4.5 close and quit transcript the Keld macOS host must reproduce: specifically whether main-process JavaScript runs while a window-parented showMessageBoxSync is open (deciding a pass mark versus a recorded divergence for 'sync dialogs are non-reentrant'), and whether quit with two vetoing windows needs serialized close requests.",
+   "classification": "needs-experiment",
+   "milestone": "first-proof",
+   "facts": [
+    "FACT (Linear availability): Linear team KELD was reachable read-only in this session on 2026-10-06; statuses below were fetched live.",
+    "FACT (Electron v44.4.5 shell/browser/ui/cocoa/electron_ns_window_delegate.mm:411-414, fetched 2026-10-06): windowShouldClose: calls shell_->NotifyWindowCloseButtonClicked() and returns NO.",
+    "FACT (Electron v44.4.5 shell/browser/api/electron_api_base_window.cc:166,182,184, fetched 2026-10-06): Emit(\"close\") decides prevention; MarkDestroyed() runs before Emit(\"closed\").",
+    "FACT (Electron v44.4.5 shell/browser/ui/message_box_mac.mm:113-135, fetched 2026-10-06): ShowMessageBoxSync with a visible parent window calls beginSheetModalForWindow and then [NSApp runModalForWindow:window]; without a visible parent it calls [alert runModal]. A grep of that file for ScopedAllow or Nestable returns no hits.",
+    "FACT (Electron v44.4.5 docs/api/dialog.md:326, fetched 2026-10-06): 'Shows a message box, it will block the process until the message box is closed.'",
+    "FACT (Electron v44.4.5 docs/api/app.md:57, fetched 2026-10-06): on app.quit() 'Electron will first try to close all the windows and then emit the will-quit event'.",
+    "FACT (Electron v44.4.5 docs/api/browser-window.md:519,660-662, fetched 2026-10-06): reading a destroyed window 'throws Object has been destroyed'; destroy() skips unload/beforeunload 'but it guarantees the closed event will be emitted'.",
+    "FACT (scratch copy of Electron v44.4.5 shell/common/node_bindings.cc:1174-1176): NodeBindings::WakeupMainThread posts UvRunOnce to the UI task runner, so libuv work reaches the main thread only as a posted Chromium task.",
+    "FACT (keld@b4b907c3 crates/keld-wv/Cargo.toml:38 and tao 0.35.3 src/platform_impl/macos/window_delegate.rs:326-331): the host's windowing dependency is tao 0.35.3, whose windowShouldClose: emits WindowEvent::CloseRequested and returns NO.",
+    "FACT (tao 0.35.3 src/platform_impl/macos/app_delegate.rs:63-64 and a grep over tao's src): tao registers applicationWillTerminate: only; applicationShouldTerminate has zero occurrences.",
+    "FACT (keld@b4b907c3 crates/keld-wv/src/wkwebview/mod.rs:385-403): on CloseRequested the macOS loop destroys the renderer bridge and removes the view unconditionally, then emits LastWindowClosed when no views remain. There is no veto path today.",
+    "FACT (corpus drawio-desktop@2edf9fb src/main/electron.js:947-963, 849-943, 2106-2124): every 'close' calls preventDefault and sends 'isModified'; the result handler is guarded by modifiedModalOpen and opens showMessageBoxSync(mainWindow, ...); Save sends 'saveAndClose' and destroys on success; 'before-quit' sets cmdQPressed and 'window-all-closed' quits on macOS only when cmdQPressed is set.",
+    "FACT (keld@b4b907c3 docs/specs/kel139-macos-product-spine.md:195-199): AC6 fixes quit order as accept/attribute, reply, quiesce/drain, revoke/close, terminate/reap, UI exit.",
+    "FACT (Linear, fetched 2026-10-06): KEL-139 Done; KEL-142 Done; KEL-143 Backlog; KEL-237 In Progress with no assignee; KEL-17 Done; KEL-72 Done.",
+    "FACT (keld@b4b907c3 crates/keld-compat/tests/lifecycle_corpus.rs:158): the lifecycle corpus pins Electron 44.3.0, not the map's v44.4.5.",
+    "FACT (publish_plan.json): F02-T3 (#450, two-phase cancelable close) lists PANEL-P2 in blocked_by_keys; PANEL-D22 (#442) is the open re-entrancy decision."
+   ],
+   "inferences": [
+    "INFERENCE: Node timers and ipcMain handlers probably do not run during the modal on macOS, because they arrive as posted application tasks and Chromium defers those inside a nested native run loop unless code explicitly allows them, and the mac message-box source shows no such allowance. This is a source reading, not an observation, and must not be published as an Electron behaviour sentence.",
+    "INFERENCE: the panel statement 'neither AppKit primitive exists in keld-wv/keld-core' is half right. The close-veto primitive already exists through tao (windowShouldClose returns NO); what is missing is host policy (do not drop the view until Bun allows) and any applicationShouldTerminate hook.",
+    "INFERENCE: a raw objc2 harness for the Cmd+W arm would test a delegate the host does not run. The Keld-side harness should use tao 0.35.3.",
+    "INFERENCE: the two-dirty-window quit ordering and the quitAndInstall inversion are not on the 4-step workflow (open, edit, save, close-with-unsaved-prompt), so they belong to the next milestone.",
+    "INFERENCE: the re-entrancy mark only matters if PANEL-P1 arm B passes; if sync emulation is a fail cell, the mark is moot."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether any main-process JavaScript (a setTimeout callback, an ipcMain listener, a second window's 'close') runs between dialog open and dialog return in Electron 44.4.5 on macOS.",
+    "UNKNOWN: whether draw.io's modifiedModalOpen guard exists because of re-entry during the dialog or only for the asynchronous save interval after it.",
+    "UNKNOWN: what the Keld host does today on Cmd+Q, given tao registers no applicationShouldTerminate.",
+    "UNKNOWN: AppKit interleaving with two vetoing windows under a delayed terminate reply.",
+    "UNKNOWN: whether the first proof's step 4 is defined as close button or Cmd+W only, or also includes Cmd+Q; the denominator drafted under PANEL-P3 fixes this."
+   ],
+   "alternatives": [
+    {
+     "option": "Trimmed oracle now: an Electron 44.4.5 fixture records the single-window close transcript and the re-entrancy observation; a tao 0.35.3 harness confirms the veto path the host would use. Move two-window quit ordering and quitAndInstall to the next milestone.",
+     "cost": "Under a day on a real Mac desktop session; an Electron 44.4.5 binary download.",
+     "new_invariant": "The close-veto conformance entry cites an observed transcript at the pinned version.",
+     "invariant_at_risk": "None; scratch only."
+    },
+    {
+     "option": "Run the ticket as written: objc2 harness, E3 re-entrancy, E5 two dirty windows, quitAndInstall inversion.",
+     "cost": "More harness work on a delegate path the host does not use, plus an applicationShouldTerminate design question that tao does not support today.",
+     "new_invariant": "A terminate-later contract would be sketched before any owner has a spec for it.",
+     "invariant_at_risk": "YAGNI for the first proof; KEL-139 AC6 'quit has one ordered owner' if the sketch drifts into design."
+    },
+    {
+     "option": "Skip the fixture and record 'sync dialogs are non-reentrant' as a divergence from source reading alone.",
+     "cost": "Free, but it publishes an Electron behaviour sentence without an observation.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "The map's forbidden-claims rule and the conformance-entry-first rule."
+    },
+    {
+     "option": "Defer the whole ticket until PANEL-P1 reports.",
+     "cost": "F02-T3 (#450) stays blocked although the transcript recording does not depend on P1.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None; it only costs time."
+    }
+   ],
+   "recommendation": "Run the trimmed oracle. Record the Electron side with an append-only timestamped log and let an external reader inspect the log while the dialog is still open, so no click automation or Accessibility permission is needed: tick lines from a main-process timer, a renderer-driven ipc tick, or a second window's close request appearing between 'dialog-open' and 'dialog-returned' mean re-entrant. Build the Keld-side harness on tao 0.35.3, not raw objc2, because that is the delegate the host runs. Run the Electron recording in parallel with PANEL-P1; apply the re-entrancy mark only after P1's arm B verdict. Move two-dirty-window quit ordering and the quitAndInstall inversion to the next milestone, unless the P3 denominator puts Cmd+Q into step 4.",
+   "falsifier": "The Electron log shows any main-process callback between dialog open and return (the expected pass mark becomes a recorded divergence with a sequence test). The trimming is wrong if the single-window transcript shows an ordering the tao veto path cannot produce, or if the first-proof step 4 is defined to include Cmd+Q.",
+   "reversible": "Yes. It is a scratch fixture and a recorded transcript; a later re-recording at another Electron pin replaces it without touching product code.",
+   "missing_evidence": "The Electron 44.4.5 transcript for close, preventDefault, isModified round trip, parented showMessageBoxSync, destroy and closed; the re-entrancy observation; the tao harness observation that a window stays open when the view is retained; PANEL-P1's arm B verdict.",
+   "next_action": "Owner: the orchestrator. Action: add the node below at prompts/NEW/os/macos/05-electron-compat-s1-close-veto-oracle.md and dispatch it on the real Mac desktop session. First observable completion check: s1-close-veto.json exists and its Electron transcript contains both 'dialog-open' and 'dialog-returned' lines with a stated count of main-process callbacks between them.",
+   "owner": "Crate keld-wv (macOS loop over tao 0.35.3) for the host close path, governed by the KEL-139 spec (Linear, fetched 2026-10-06: Done) AC6; KEL-143 (Backlog) is the live lifecycle and recovery issue under it; KEL-237 (In Progress, no assignee) owns the lifecycle compatibility corpus the conformance entries would join; KEL-17 (Electron compat RFC) is Done. The downstream consumer is map ticket F02-T3 (#450). No Linear issue currently owns a host close-veto or terminate-later hook.",
+   "prompt_tracker_node": "MODEL: Claude Fable 5.1 (claude-fable-5-1)\nEFFORT: medium\nHARNESS: direct Claude Code session on the real Mac desktop; single session, no subagents\nGRAPH_NODE: new-os-macos-05-electron-compat-s1-close-veto-oracle\nGRAPH_ROLE: inspect\nSESSION: NEW\nOS: macos / real Mac desktop session with a window server (a headless shell cannot show the sheet)\nLINEAR: KEL-237 (read-only research; do not change status), KEL-143, KEL-139 (coordination only)\nPIN: keld=b4b907c3ef0e08854f24827cf08283ee625146e1; Electron v44.4.5 (docs and sources at the tag); tao 0.35.3; drawio-desktop=2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e\nSOURCE: prompts/NEW/os/macos/05-electron-compat-s1-close-veto-oracle.md\nREADS: root AGENTS.md; crates/keld-wv/AGENTS.md; docs/specs/kel139-macos-product-spine.md AC6; the macOS CloseRequested arm of the keld-wv loop; tao 0.35.3 macOS window and app delegates; Electron v44.4.5 message_box_mac.mm, electron_ns_window_delegate.mm, electron_api_base_window.cc, docs/api/{dialog,app,browser-window}.md; draw.io's close handler; gyldlab/keld#391, #419, #442, #450\nWRITES: one scratch directory outside every repository; no Keld, Linear or GitHub writes\nSINGLE_WRITER_KEYS: none\nREQUIRES_ARTIFACTS: none to record the transcript; s0-link-drain.json (arm B verdict) before assigning the re-entrancy mark\nPRODUCES_ARTIFACTS: s1-close-veto.json (keld.execution-artifact/v1), the fixture sources, the raw Electron log, the tao harness log\nAFTER: none for recording; new-ipc-38-electron-compat-s0-link-drain-gate for the mark\nNEXT: map ticket F02-T3 (#450) consumes the transcript\nDO_NOT_RUN_WITH: any other GUI fixture on the same desktop session\n\nRole: Record an oracle. You do not design the Keld close path and you do not write conformance tests into the repository.\n\nGoal: An observed Electron 44.4.5 macOS transcript for the single-window close-with-unsaved-prompt path, including whether main-process JavaScript runs while the parented showMessageBoxSync is open, and a matching observation of the tao veto path.\n\nSuccess criteria:\n- Electron fixture (electron@44.4.5 exactly): one window; 'close' calls preventDefault and sends a channel to the renderer; the reply handler opens dialog.showMessageBoxSync(win, ...) and then calls win.destroy(). Before opening the dialog, arm three probes: a main-process setInterval, a renderer setInterval that calls ipcRenderer.send, and a second window whose renderer calls window.close(). Every callback appends a monotonic-timestamped line to a log file with a synchronous write.\n- While the dialog is still open, read the log from a separate shell. Count probe lines after 'dialog-open'. Then dismiss the dialog by hand and record 'dialog-returned', 'destroy', the value of isDestroyed() inside the 'closed' listener, and 'window-all-closed'.\n- State the result as an observation with the count, for each probe separately. Do not generalize beyond macOS and v44.4.5.\n- tao 0.35.3 harness: one window; on CloseRequested keep the window; close it programmatically after a simulated allow. Record that the window stayed open in between, and what Cmd+Q does with no terminate hook.\n- Out of scope here, record as not run: two dirty windows on quit, quitAndInstall ordering, any applicationShouldTerminate design.\n\nPrerequisites: network access to fetch electron@44.4.5; a logged-in desktop session; a person available to click the dialog once per run.\n\nResources: the scratch directory only.\n\nDelegation: none.\n\nVerification: negative control, run the same three probes with the asynchronous dialog.showMessageBox and confirm probe lines DO appear while it is open; if they do not, the probes are broken and the sync result is not evidence. Repeat the sync run three times and report all three counts.\n\nOutput: s1-close-veto.json with the ordered transcript, per-probe counts for the sync and async runs, the tao observations, and a proposed mark for 'sync dialogs are non-reentrant' (pass or recorded divergence) that is explicitly conditional on the S0 arm B verdict. Findings go to the orchestrator, who alone posts.\n\nStop rules: electron@44.4.5 cannot be fetched or reports a different version; no desktop session; the async control shows no probe lines; any step would need Accessibility permission or a write outside the scratch directory."
+  },
+  {
+   "key": "PANEL-D19",
+   "decision": "When a host close (or quit) request to the owning Bun role gets no allow/veto reply, the host leaves the request pending and the window open, never completes it on a timer, and signals only through existing mechanisms; the host closes windows on its own only at terminal session end, not on a recoverable generation loss.",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "FACT: kipc has no outstanding-CALL reply deadline to expire; the only clocks are the frame-wide stall clock and the 5 s writer SO_SNDTIMEO, both surfacing as KELD-IPC-006 (docs/architecture/02-ipc.md section 7, read at origin/main b4b907c3 on 2026-10-06).",
+    "FACT: the KEL-142 pending-call mapping 'cannot fabricate a native completion/effect result' (docs/specs/kel139-macos-product-spine.md, T1b entry, read 2026-10-06).",
+    "FACT: KEL-139 AC5 is titled 'recovery keeps the same window and document' and requires that every affected pending call 'gets exactly one terminal caller outcome; none may hang indefinitely or be silently replayed into the successor generation' (same spec, read 2026-10-06).",
+    "FACT: KEL-139 AC6 fixes quit order as accept/attribute -> reply -> quiesce/drain -> revoke/close -> terminate/reap -> UI exit (same spec).",
+    "FACT: published ticket F02-T3 (GitHub #450) says 'when the generation is revoked the host closes and window-all-closed policy applies', and PANEL-D5 (#425) says the host closes a window on its own 'only when the Bun generation is revoked' (publish_plan.json).",
+    "FACT: F02-T2 (#449, host window registry) lists PANEL-D19 in blocked_by; F02-T3 lists PANEL-P2 (publish_plan.json).",
+    "FACT: draw.io's close listener calls event.preventDefault() synchronously on every close and only then sends 'isModified'; the showMessageBoxSync call sits in the later 'isModified-result' handler, not in the close listener (corpus drawio-desktop @2edf9fb, src/main/electron.js close listener and isModified-result handler, read 2026-10-06).",
+    "FACT: Electron v44.4.5 windowShouldClose: calls NotifyWindowCloseButtonClicked and returns NO unconditionally; a close-event preventDefault ends the attempt with no timer (electron_ns_window_delegate.mm and native_window.cc at tag v44.4.5, fetched 2026-10-06 into scratchpad/prototypes/panel-contested-receipts).",
+    "FACT: 02-ipc section 7 already defines the dead-role signal: the host emits a role-qualified runtime-crashed event, in-flight calls reject with a role-qualified KELD-* error, and the role restarts per policy.",
+    "FACT: no windowShouldClose / applicationShouldTerminate / performClose / runModal call exists under crates/ or packages/ (grep at b4b907c3, 2026-10-06; the single NSAlert hit is a doc comment in the WebKit profile module).",
+    "FACT: park-probe re-run by this agent on Bun 1.4.2, 2026-10-06: a parked client saw 0 bytes, the server stalled at exactly 8,192 accepted bytes, and the client drained 8,192 after the park; net.local.stream.sendspace = 8192.",
+    "FACT (Linear, fetched 2026-10-06): KEL-139 Done (completed 2026-09-29); KEL-143 Backlog, unassigned, blocked by KEL-142/140/134/133/118/139; KEL-75 In Progress, unassigned; KEL-96 In Progress, assignee GYLDLAB."
+   ],
+   "inferences": [
+    "INFERENCE: spike arm C (renderer never answers isModified) involves no outstanding host request, because the veto reply was already delivered synchronously. Electron leaves that window open forever in the same case, so the host must not flag the role and no experiment is needed for that arm.",
+    "INFERENCE: the clause 'host closes when the Bun generation is revoked' contradicts KEL-139 AC5 for a recoverable generation loss. The consistent reading is that a recoverable loss gives the pending close request one terminal outcome (not replayed to the successor) and keeps the window, and the host closes windows itself only inside the ordered Quit sequence or when no successor will be provisioned.",
+    "INFERENCE: in the scripted 4-step workflow no close request goes unanswered, because the veto is answered before Bun parks in the dialog and a window with an attached sheet does not accept a second close.",
+    "INFERENCE: with a worker-owned transport (S0 arm B) the socket keeps draining while Bun's main thread is parked, so KELD-IPC-006 never fires and a hung-but-alive role has no clock at all. Electron's equivalent state is an OS 'not responding' app; Keld's host stays responsive, so the OS gives no such signal."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether a hung-but-alive role with a pending close should get a user-visible host affordance (force close or restart the role). This is product-owned and not needed by the first proof.",
+    "UNKNOWN: what the host does with its native sheet when the role dies while the modal is up (S0 arm E and KEL-143 own this; both unrun).",
+    "UNKNOWN: whether AppKit delivers a second windowShouldClose: for a window that has a host-presented sheet attached (not observed on a Keld host; Electron ends sheets before performClose)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Stay pending and fail closed: no timer-driven completion; role death uses the existing runtime-crashed event and typed rejection; a repeated native close request for a window whose earlier request is still unanswered emits one bounded host diagnostic; no UI. Windows are closed by the host only in ordered Quit or when no successor generation will exist.",
+     "cost": "A hung-but-alive role leaves a window that will not close until the role is killed; the user sees no OS 'not responding' state.",
+     "new_invariant": "A close request has exactly three exits: role reply, generation-loss terminal outcome, or terminal session end.",
+     "invariant_at_risk": "None identified; it restates KEL-139 T1b, AC5 and AC6."
+    },
+    {
+     "option": "B. Host proceeds with the close on timeout and records a divergence mark (round-1 Side B).",
+     "cost": "Loses unsaved work in draw.io's close flow whenever Bun is parked in the unsaved-changes dialog; needs a new timeout constant.",
+     "new_invariant": "The host may complete an app-owned veto decision by itself.",
+     "invariant_at_risk": "KEL-139 T1b 'cannot fabricate a native completion/effect result'; the F02-T3 negative control 'host auto-closing on a timeout fails the data-loss test'."
+    },
+    {
+     "option": "C. New role-health state machine with a threshold, an 'unhealthy' flag and a host force-close sheet.",
+     "cost": "New timer constant, new host UI, new lifecycle state and a policy owner question for KEL-75; nothing in the first proof exercises it.",
+     "new_invariant": "The host can offer the user destruction of a window whose role is alive.",
+     "invariant_at_risk": "One quit/close owner (KEL-139 AC6); YAGNI for the current milestone."
+    },
+    {
+     "option": "D. Keep the published wording 'host closes when the generation is revoked' as written.",
+     "cost": "A Bun crash during an unsaved-changes prompt closes the document window, which KEL-143 is specified to preserve.",
+     "new_invariant": "Generation loss destroys windows that have a pending close.",
+     "invariant_at_risk": "KEL-139 AC5 same window and document across recovery."
+    }
+   ],
+   "recommendation": "Adopt A and close the ticket as decided. Correct the F02-T3 and PANEL-D5 wording from 'closes when the generation is revoked' to 'closes only in ordered Quit or when no successor generation will be provisioned; a recoverable generation loss gives the pending close one terminal outcome and keeps the window'. Drop spike arm C as source-determined. Leave arm D to S0 arm E and KEL-143. Park the user-visible affordance. This discharges the F02-T2 dependency on PANEL-D19.",
+   "falsifier": "A fixture or spec sentence showing that, in Electron 44.4.5, a close request left unanswered by a live main process still closes the window, or an approved Keld spec sentence that makes generation loss close windows (which would overrule the AC5 reading).",
+   "reversible": "Yes. Option A adds no timer, state or UI, so a later affordance (option C) can be layered on without changing the close protocol. Option B would not be reversible for users who lost data.",
+   "missing_evidence": "The one remaining owner question, parked: should a hung-but-alive role with a pending close get a user-visible force-close/restart affordance, or stay diagnostic-only? Arm D (role killed while the modal is up) has not been observed on a real host.",
+   "next_action": "Owner: map orchestrator (single writer). Post this decision on GitHub #439, edit the revocation clause in #450 and #425, and remove PANEL-D19 from the blocked-by list of #449. First check: #449 shows no open blocker named PANEL-D19 and #450 no longer says the host closes on generation revocation without the 'no successor' qualifier.",
+   "owner": "Spec owner KEL-139 (Linear: Done, completed 2026-09-29) for AC5/AC6; recovery behaviour KEL-143 (Linear: Backlog, unassigned, fetched 2026-10-06); role lifecycle KEL-75 (Linear: In Progress, unassigned). Map tickets F02-T2/F02-T3 consume it.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "PANEL-D22",
+   "decision": "Whether Electron 44.4.5 runs main-process JavaScript (timers, renderer IPC, native window events) while dialog.showMessageBoxSync is open on macOS, which fixes whether Keld's parked, replay-after-return model is recorded as matching or as a divergence.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "FACT: dialog.md at v44.4.5 says showMessageBoxSync 'Shows a message box, it will block the process until the message box is closed' and that the window argument attaches the dialog to a parent window, 'making it modal' (raw.githubusercontent.com electron v44.4.5 docs/api/dialog.md, fetched 2026-10-06).",
+    "FACT: at v44.4.5 ShowMessageBoxSync with a visible parent calls beginSheetModalForWindow and then [NSApp runModalForWindow:window], stopping the modal from the sheet's completion handler; with no parent or a hidden parent it returns [alert runModal]. The file contains no scope that allows application tasks in a nested loop (shell/browser/ui/message_box_mac.mm at v44.4.5, fetched 2026-10-06, receipt in scratchpad/prototypes/panel-contested-receipts).",
+    "FACT: Apple documents that during runModal(for:) the app 'does not respond to any other events (including mouse, keyboard, or window-close events) unless they are associated with the window. It also does not perform any tasks (such as firing timers) that are not associated with the modal run loop' (developer.apple.com NSApplication runModal(for:), JSON endpoint fetched 2026-10-06).",
+    "FACT: Chromium's thread controller sets task_execution_allowed to false while a task runs ('Execute the task and assume the worst: it is probably not reentrant') and returns early from DoWork when application tasks are disallowed (base/task/sequence_manager/thread_controller_with_message_pump_impl.cc, chromium main branch, fetched 2026-10-06; not pinned to Electron 44's Chromium revision).",
+    "FACT: draw.io calls showMessageBoxSync inside an ipcMain handler, guards re-entry with its own modifiedModalOpen flag, and after the call uses only the returned button index (corpus drawio-desktop @2edf9fb, src/main/electron.js).",
+    "FACT (Linear, fetched 2026-10-06): KEL-237 In Progress (active owner of the lifecycle compatibility corpus); KEL-74 Done; KEL-80 Backlog."
+   ],
+   "inferences": [
+    "INFERENCE: work delivered as Chromium application tasks (renderer IPC to ipcMain, libuv timers and I/O posted by Electron's Node bindings) does not run during the modal and resumes in order after it returns. This follows from the three sources above; the Node bindings file and the pinned Chromium revision were not read.",
+    "INFERENCE: events that AppKit delivers synchronously to window or app delegates (move, resize, focus, blur, app activation) may still emit into JavaScript inside the modal loop, because they do not pass through the task queue.",
+    "INFERENCE: the first-proof workflow does not depend on the answer. Keld's implementation is the same either way, and draw.io's handler does not read anything that an in-modal event could change within the single-window 4-step path. Only the scoreboard mark for the row depends on it."
+   ],
+   "unknowns": [
+    "UNKNOWN: observed behaviour on Electron 44.4.5 on this Mac; no fixture has been run.",
+    "UNKNOWN: whether native delegate events emit JS during the modal.",
+    "UNKNOWN: whether the parentless [alert runModal] variant differs."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Run the E3 fixture before marking the row; ship the first proof with the row recorded as unknown.",
+     "cost": "About half a day; needs the Electron 44.4.5 binary and a way to dismiss the dialog from outside the process.",
+     "new_invariant": "The sync-dialog row is marked only from a recorded transcript.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "B. Mark the row as matching now, from the doc sentence and the source reading.",
+     "cost": "Presents an inference as verified; wrong if delegate events re-enter.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Claim rule: conformance marks need a test, not prose."
+    },
+    {
+     "option": "C. Make E3 a first-proof gate inside PANEL-P2.",
+     "cost": "Delays F02-T3 for a result that does not change what is built.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "YAGNI for the current milestone."
+    }
+   ],
+   "recommendation": "Adopt A. Smallest experiment, on the same Mac with Electron 44.4.5: one visible window; on a renderer-triggered ipcMain handler, write sequence-numbered lines with synchronous file writes, arm a zero-delay timer and an interval, have the renderer send a ping every 100 ms from its own timer, then call showMessageBoxSync with the window as parent and write 'returned'. Dismiss the dialog from outside the process after at least 2 s. Arms: (a) timers, (b) renderer IPC, (c) parent window moved or resized externally during the modal, (d) parentless variant. Negative control: the same fixture using async showMessageBox must show interleaved lines. Exit: no timer/ping line between 'open' and 'returned' in arms a and b means the parked model matches for task-delivered work; any line in arm c means the row is a divergence scoped to native window events, with a sequence test. Split E3 out of PANEL-P2's exit criteria so F02-T3 does not wait on it.",
+   "falsifier": "Any timer or ping line recorded between 'open' and 'returned' in arms a or b would disprove the source-derived expectation and make Keld's parked model a divergence for ordinary app code.",
+   "reversible": "Yes. The outcome only sets a scoreboard mark and a test; the transport design does not change with it.",
+   "missing_evidence": "The Electron 44.4.5 transcript for arms a to d; Electron's Node bindings source and the Chromium revision pinned by Electron 44.4.5 as corroborating receipts.",
+   "next_action": "Owner: map orchestrator. Edit GitHub #442 with the four arms, the negative control and the exit criteria above, and edit #419 to move the re-entrancy arm out of its first-proof exit. First check: #419's exit criteria no longer mention re-entrancy and #442 lists arm c.",
+   "owner": "Conformance evidence owner KEL-237 (Linear: In Progress, unassigned, fetched 2026-10-06), scoreboard rules from KEL-74 (Linear: Done); crate owner keld-compat. Map ticket PANEL-P2 (#419) currently carries E3.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "PANEL-D23",
+   "decision": "How a quit request (Cmd+Q, app.quit, quitAndInstall) is sequenced against per-window close vetoes so that before-quit, per-window close, window-all-closed and will-quit match Electron 44.4.5 with two vetoing windows, and which AppKit termination reply the host uses to do it.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "FACT: Electron v44.4.5 overrides NSApplication terminate: and calls Browser::Quit(); the code comment says termination proceeds if all windows close and a cancelled window close aborts it (shell/browser/mac/electron_application.mm at v44.4.5, fetched 2026-10-06).",
+    "FACT: neither electron_application.mm nor electron_application_delegate.mm at v44.4.5 contains applicationShouldTerminate or any NSTerminate reply (grep of the fetched files, 2026-10-06).",
+    "FACT: Browser::Quit sets is_quitting_ from the before-quit result, then calls NotifyAndShutdown if there are no windows, otherwise WindowList::CloseAllWindows (shell/browser/browser.cc at v44.4.5).",
+    "FACT: CloseAllWindows snapshots the window list, reverses it on macOS, and calls Close() on every window without re-checking the quitting flag (shell/browser/window_list.cc at v44.4.5).",
+    "FACT: a close-event preventDefault calls WindowList::WindowCloseCancelled, and Browser::OnWindowCloseCancelled then sets is_quitting_ to false (native_window.cc and browser.cc at v44.4.5).",
+    "FACT: Browser::OnWindowAllClosed emits will-quit via NotifyAndShutdown when quitting, and otherwise emits window-all-closed (browser.cc at v44.4.5); app.md says that after Cmd+Q or app.quit the window-all-closed event 'would not be emitted'.",
+    "FACT: AutoUpdater::QuitAndInstall emits before-quit-for-update and calls CloseAllWindows directly, without Browser::Quit (shell/browser/api/electron_api_auto_updater.cc at v44.4.5).",
+    "FACT: Apple documents that returning terminateLater 'causes Cocoa to run the run loop in the NSModalPanelRunLoopMode until your app subsequently calls reply(toApplicationShouldTerminate:)' (developer.apple.com NSApplication.TerminateReply.terminateLater, JSON endpoint fetched 2026-10-06).",
+    "FACT: draw.io sets cmdQPressed in before-quit on macOS and calls app.quit() from window-all-closed when that flag is set; it clears the flag when the user cancels the unsaved-changes dialog (corpus drawio-desktop @2edf9fb, src/main/electron.js).",
+    "FACT: KEL-139 AC6 requires one ordered quit owner; no AppKit termination hook exists in the Keld host today (spec read and grep at b4b907c3, 2026-10-06).",
+    "FACT: F01-T3 (GitHub #451, two-phase quit) is blocked by F01-T1 and F02-T3; the first-proof denominator is install, activation and a 4-step workflow ending in a single-window close (publish_plan.json; panel synthesis).",
+    "FACT (Linear, fetched 2026-10-06): KEL-139 Done; KEL-96 In Progress, assignee GYLDLAB; KEL-143 Backlog."
+   ],
+   "inferences": [
+    "INFERENCE (from source, no fixture run): Cmd+Q with two dirty draw.io windows in Electron 44.4.5 yields before-quit, then close on the newer window, then close on the older window (both vetoed, which cancels the quit), then the unsaved-changes dialogs, then closed for each window as the app destroys it, then window-all-closed (because the quit was cancelled), then draw.io's own app.quit, a second before-quit, will-quit and quit.",
+    "INFERENCE: this whole state machine (quitting flag, cancellation on any close veto, reverse-order close, window-all-closed suppressed while quitting) can live in the facade, because it needs only a host 'quit requested' event, the per-window close protocol and the existing ordered Quit call.",
+    "INFERENCE: Electron does not use a delayed termination reply at all, so matching it does not require NSTerminateLater. A host that returns terminateLater sits in the modal-panel run-loop mode until it replies, which may starve host work scheduled only in the default mode. This is new primary evidence against the 'later reply' mechanism clause in PANEL-D5.",
+    "INFERENCE: the first proof does not exercise quit, so it can ship without this decision."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether the Keld host keeps servicing Bun replies, web view callbacks and sheet presentation while AppKit holds it in the modal-panel run-loop mode after terminateLater.",
+    "UNKNOWN: behaviour on logout, restart and shutdown, where cancelling termination aborts the system action.",
+    "UNKNOWN: the recorded Electron transcript; the ordering above is source-derived only."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Mirror Electron: the host cancels the native terminate request and emits one quit-requested event; the facade runs Electron's quit state machine; process exit happens only through the existing ordered Quit call.",
+     "cost": "The facade must reproduce the quitting flag and its cancellation rule exactly; logout/shutdown handling needs its own decision.",
+     "new_invariant": "A native terminate request never terminates the host directly; only the ordered Quit call does.",
+     "invariant_at_risk": "None identified; consistent with KEL-139 AC6 one quit owner."
+    },
+    {
+     "option": "B. Host returns terminateLater and replies after the per-window close sequence (PANEL-D5's current mechanism).",
+     "cost": "The host runs in the modal-panel run-loop mode for the whole unsaved-changes interaction; Electron does not do this, so interleaving has no oracle.",
+     "new_invariant": "The host may hold a pending AppKit termination across app-owned dialogs.",
+     "invariant_at_risk": "KEL-142 rule that no UI thread blocks on Bun, if default-mode work stalls in that run-loop mode."
+    },
+    {
+     "option": "C. Host serializes close requests per app and delivers them after any modal returns, recorded as a divergence (the panel's fallback).",
+     "cost": "Event order differs from Electron when two windows veto; draw.io's second dialog timing changes.",
+     "new_invariant": "Close events are serialized across a blocking dialog.",
+     "invariant_at_risk": "Electron ordering conformance for quit."
+    }
+   ],
+   "recommendation": "Prefer A, and settle the A-versus-B host mechanism with a reduced harness when F01-T3 is scheduled: (1) an Electron 44.4.5 fixture with two windows that veto close, driven through Cmd+Q, app.quit and quitAndInstall, recording the event transcript to confirm the source-derived order; (2) a small objc2 host harness with two arms, terminateCancel plus later programmatic terminate versus terminateLater plus reply, each recording whether a default-mode run-loop source, a web view script callback and a window sheet are serviced while termination is pending. Exit: arm chosen where all three are serviced and the facade transcript equals the Electron transcript; if neither host arm can match, fall back to C with a sequence test. Keep this out of the first proof.",
+   "falsifier": "An Electron 44.4.5 transcript that differs from the source-derived order (for example, window-all-closed not emitted after a vetoed Cmd+Q), or a harness run showing terminateCancel cannot be re-driven to a clean ordered Quit.",
+   "reversible": "Yes before F01-T3 lands; the choice is host-internal. After conformance entries for quit ordering land, changing the mechanism means re-recording them.",
+   "missing_evidence": "The Electron transcript for the three quit entry points with two vetoing windows; host observations under terminateLater; the logout/shutdown path.",
+   "next_action": "Owner: map orchestrator. Post the source-derived Electron quit state machine and the two-arm harness on GitHub #443, add the terminateLater doc sentence to #425 as new evidence against its 'later reply' clause, and mark #443 as not blocking the first proof. First check: #443 lists both host arms and their three observables, and #451 references it instead of PANEL-P2 for quit ordering.",
+   "owner": "Quit ordering owner KEL-139 AC6 (Linear: Done, completed 2026-09-29) with KEL-96 (Linear: In Progress, assignee GYLDLAB, fetched 2026-10-06) for the existing ordered Quit; map tickets F01-T3 (#451) and PANEL-P2 (#419) consume it.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F02-A3",
+   "decision": "Whether `ready-to-show` on a `show:false` window can be a true first-frame signal on WKWebView (a host-owned isolated-world double-rAF reporter) or must be a documented divergence that fires at load-finished.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "FACT: Electron emits ready-to-show 'when the renderer process has rendered the page for the first time if the window has not been shown yet', states that the renderer 'will be considered \"visible\" and paint even though `show` is false', and notes the event is usually after did-finish-load but 'may be emitted before' it for pages with many remote resources. Source: https://raw.githubusercontent.com/electron/electron/v44.4.5/docs/api/browser-window.md lines 35-55, retrieved 2026-10-06.",
+    "FACT: draw.io's main window does not use show:false or ready-to-show. It is created visible with `backgroundColor`. ready-to-show appears only in the update-download progress bar; the other show:false windows (CLI export, vsdx import, export3) are never shown. Source: corpus/drawio-desktop@2edf9fb src/main/electron.js lines 714-717, 1085, 1402, 3093; src/main/progress-bar.js lines 44-59.",
+    "FACT: Zettlr has 14 ready-to-show sites and 15 files with `show: false`. Source: grep of corpus/zettlr/source, 2026-10-06.",
+    "FACT: All three keld-wv backends build the window with no hidden-creation option, and the macOS backend emits NavigationReady from navigation finish only. Source: <keld repo>/crates/keld-wv/src/wkwebview/mod.rs lines 460 and 716-723; grep for with_visible returns nothing.",
+    "FACT: The KEL-64 double-rAF beacon is an external benchmark instrument, not a host-injected script. The only host injection seam is the macOS isolated-world user script from KEL-142. Source: crates/keld-wv/AGENTS.md first-paint rule; crates/keld-wv/src/wkwebview/macos_bridge.rs lines 510-536.",
+    "FACT: The WebView2 backend avoids document-created script injection because it measured 96-109 ms during renderer boot. Source: crates/keld-wv/src/webview2/mod.rs module header.",
+    "FACT: WebView2: 'If `IsVisible` is set to `FALSE`, the WebView2 is transparent and is not rendered.' Source: https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller (ms.date 2026-08-24), retrieved 2026-10-06.",
+    "FACT: KEL-142 (macOS renderer bridge) and KEL-139 (macOS spine spec) are Done; KEL-25 (hello window on every OS) is In Progress, assignee GYLDLAB; KEL-28 (Linux WebKitGTK window) is Backlog. Source: Linear, fetched 2026-10-06."
+   ],
+   "inferences": [
+    "INFERENCE: The first proof does not need this decision: no step of install, activation, open, edit, save or close waits on ready-to-show, and the updater path is a recorded no-op.",
+    "INFERENCE: Zettlr on macOS does need it: every Zettlr window is created hidden and shown from the ready-to-show listener, so a missing event means no window ever appears.",
+    "INFERENCE: On Windows the host would have to keep the WebView2 controller visible inside a hidden parent window; whether that paints is not stated by the Microsoft page.",
+    "INFERENCE: draw.io's `backgroundColor` on a visible window is a plain native-background mapping (F02-T5 scope) and is independent of the hidden-paint question."
+   ],
+   "unknowns": [
+    "UNKNOWN: Whether WKWebView runs requestAnimationFrame and composites while its NSWindow has never been ordered front.",
+    "UNKNOWN: What `document.visibilityState` reports in that state.",
+    "UNKNOWN: The same two questions for WebView2 (hidden parent window, controller visible) and WebKitGTK (realized but unmapped window).",
+    "UNKNOWN: The injection cost of a reporter script on Windows against the 300 ms first-paint budget."
+   ],
+   "alternatives": [
+    {
+     "option": "First-frame oracle: host-owned isolated-world double-rAF reporter per engine",
+     "cost": "macOS extends the KEL-142 seam; Windows needs a measured injection decision; Linux needs a new user-content seam. Each backend needs a hidden-creation path.",
+     "new_invariant": "ready-to-show fires only after a composited frame exists while the window is still hidden.",
+     "invariant_at_risk": "The Windows first-paint budget (a regression above 5% needs a waiver); first-paint scoreboard classes must not pool hidden-window samples with visible ones."
+    },
+    {
+     "option": "Documented divergence: emit ready-to-show at load-finished",
+     "cost": "Possible white flash on show; the event order differs from Electron for pages with many remote resources (Electron may fire before did-finish-load).",
+     "new_invariant": "ready-to-show is a navigation signal, recorded as a scoreboard divergence.",
+     "invariant_at_risk": "The conformance entry citing Electron's 'rendered the page for the first time' sentence cannot be marked passing."
+    },
+    {
+     "option": "Show briefly or off-screen to force a paint",
+     "cost": "Visible artefacts and focus or Mission Control side effects; breaks windows that must stay hidden.",
+     "new_invariant": "None worth keeping.",
+     "invariant_at_risk": "`show:false` semantics for hidden export and modal windows."
+    }
+   ],
+   "recommendation": "Run one macOS-only experiment before choosing; do not spend on Windows or Linux cells until those lanes open. Harness: a throwaway AppKit program outside the repo using only public API, with a WKWebView loading a local page that posts three messages to a script message handler: a timer beacon (liveness), a double-rAF beacon, and `document.visibilityState`. Arms: A, window ordered front (positive control: the rAF beacon must arrive); A-neg, the same with the rAF script removed (negative control: no rAF beacon); B, window created and never ordered front; B-then-show, arm B ordered front after the bounded wait, recording whether the rAF beacon arrives then. Twenty runs per arm, each ended by the beacon event or by a fixed deadline measured from navigation finish (no sleeps as synchronisation). Exit: B gets the rAF beacon within 2 s in 20 of 20 runs, so choose the first-frame oracle on macOS. B gets the timer beacon but no rAF beacon in 20 of 20 while A passes, so rAF is suspended when hidden: record the load-finished divergence for macOS and stop designing the reporter. Mixed results: report the counts and keep the ticket open.",
+   "falsifier": "The recommendation (that one cheap macOS experiment settles it) is wrong if arm B's result differs between macOS versions in the support range, or if the in-harness result does not reproduce inside the real keld-wv window because of its guardian or window configuration.",
+   "reversible": "Yes. The outcome only selects which event source feeds the facade's ready-to-show; the facade API is unchanged either way.",
+   "missing_evidence": "The macOS arm B observation (rAF beacon, timer beacon, visibilityState) on a real Mac with the OS version recorded. Later, on real devices: the Windows hidden-parent arm and the WebKitGTK unmapped arm.",
+   "next_action": "Owner: the agent or session that takes the Zettlr-on-macOS window lane under epic #447, on a real macOS arm64 machine. Build the four-arm harness in a scratch directory and attach a results table (arm, runs, rAF beacons, timer beacons, visibilityState, macOS version) to gyldlab/keld#394. First check: arm A shows 20 of 20 rAF beacons and A-neg shows 0, which proves the harness before arm B is read. Not on the first-proof path, so no Prompt Tracker node is issued now.",
+   "owner": "Crate keld-wv (crates/keld-wv/AGENTS.md). No live Linear issue owns ready-to-show: KEL-142, which owns the macOS injection seam, and KEL-139 are Done; KEL-25 (In Progress, GYLDLAB) is the nearest active windowing issue (Linear fetched 2026-10-06). Tracking sits on GitHub #394 under epic #447 until the owner names a Linear home."
+  },
+  {
+   "key": "F02-A6",
+   "decision": "Which Windows and Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay, app-region drag) are Tier 1 and whether they need host-drawn caption controls.",
+   "classification": "needs-primary-doc",
+   "milestone": "parked",
+   "facts": [
+    "FACT: WebView2 `IsNonClientRegionSupportEnabled` 'enables web pages to use the `app-region` CSS style', 'takes effect after the next navigation', 'Defaults to `FALSE`'; drag regions 'will be treated like the window's title bar', with the system menu on right click and maximise or restore on double click. Introduced in WebView2 Win32 SDK 1.0.2420.47 (prerelease 1.0.2415). Source: https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2settings9 (ms.date 2026-08-24), retrieved 2026-10-06.",
+    "FACT: That page does not state a minimum Runtime version, says nothing about frameless parent windows, and does not mention caption buttons or a Window Controls Overlay. Source: same page, retrieved 2026-10-06.",
+    "FACT: WebKit's CSS property registry contains no `app-region` property (0 matches, case-insensitive, in a 689,866-byte file). Source: https://raw.githubusercontent.com/WebKit/WebKit/main/Source/WebCore/css/CSSProperties.json at commit 3770dac1 dated 2026-10-06, retrieved 2026-10-06.",
+    "FACT: Electron on Windows and Linux: `titleBarStyle: 'hidden'` combined with `titleBarOverlay` 'will activate the Window Controls Overlay', exposing JavaScript APIs and CSS environment variables; `titleBarOverlay` requires a titleBarStyle other than default. Source: Electron v44.4.5 docs/api/structures/base-window-options.md lines 91-101 and docs/tutorial/custom-title-bar.md lines 143-150, retrieved 2026-10-06.",
+    "FACT: Electron's own documents disagree on symbolColor: the options structure tags it Windows and Linux, the tutorial says 'symbol colors (_Windows_)'. Source: the same two files, base-window-options.md line 101 and custom-title-bar.md line 154.",
+    "FACT: Zettlr sets titleBarOverlay in its window-chrome helper for Windows and non-native Linux and calls setTitleBarOverlay once on theme change. draw.io uses frame:false only on a hidden export window. Source: corpus/zettlr/source/app/service-providers/windows/set-window-chrome.ts line 59 and appearance/index.ts line 152; corpus/drawio-desktop src/main/electron.js line 3094.",
+    "FACT: The first proof is macOS only; Windows and Linux migration proofs are out of its scope. Source: panel/synthesis.md lines 64 and 153.",
+    "FACT: KEL-27 (Windows via WebView2) is Done; KEL-28 (Linux via WebKitGTK) is Backlog, assignee GYLDLAB. Source: Linear, fetched 2026-10-06."
+   ],
+   "inferences": [
+    "INFERENCE: On Windows, CSS drag regions are available from the engine once the setting is on, so drag does not need a page-side hook there.",
+    "INFERENCE: On WKWebView and WebKitGTK the engine will not report drag regions, so drag needs host-side emulation with an injected hit-test script, the same seam question as F02-A3.",
+    "INFERENCE: Neither engine documentation offers the Window Controls Overlay that Electron activates, so caption buttons would have to be host-drawn and the overlay JavaScript and CSS variables emulated; this is unconfirmed until the receipts below are gathered.",
+    "INFERENCE: No Windows or Linux chrome option can be called Tier 1 today; the honest tier is partial, with Zettlr's Windows and Linux chrome flagged at risk."
+   ],
+   "unknowns": [
+    "UNKNOWN: The minimum WebView2 Runtime version that pairs with SDK 1.0.2420.47.",
+    "UNKNOWN: How `app-region` drag behaves when the WebView2 is a child of a frameless parent window, and whether resize borders still work.",
+    "UNKNOWN: Whether WebView2 exposes any Window Controls Overlay to a Win32 host.",
+    "UNKNOWN: Which GTK mechanism (client-side decorations with a header bar, or begin-move-drag from the host) coexists correctly with a WebKitGTK view on Wayland and X11."
+   ],
+   "alternatives": [
+    {
+     "option": "Park the tiering until a Windows or Linux lane opens; gather the three remaining receipts first when it does",
+     "cost": "Zettlr's Windows and Linux chrome stays a typed divergence naming this ticket.",
+     "new_invariant": "No Tier 1 claim for a chrome option without an engine receipt and a device cell.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "Assert Tier 1 now with host-drawn caption controls",
+     "cost": "A design for host-drawn buttons over a child WebView2 and a GTK webview, with no measurement or receipt, for a platform outside the current and next milestones.",
+     "new_invariant": "Host owns caption controls and overlay geometry on Windows and Linux.",
+     "invariant_at_risk": "YAGNI; the 'no claim without evidence' rule; possible private-API or compositor issues recorded in keld-wv rules for transparency."
+    },
+    {
+     "option": "Promise Window Controls Overlay parity",
+     "cost": "Not achievable on non-Chromium engines per the WebKit receipt.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Honest scoreboard: silent downgrade."
+    }
+   ],
+   "recommendation": "Park. Record the two receipts gathered here on the ticket (WebView2 setting semantics and SDK version; `app-region` absent from WebKit). Keep titleBarOverlay and setTitleBarOverlay on Windows and Linux as a typed divergence in F02-T5. When the lane opens, fetch the three named pages before any prototype.",
+   "falsifier": "The owner pulls a Windows or Linux migration proof ahead of Zettlr-on-macOS, or a committed first-proof cell turns out to need frameless chrome on macOS that depends on this ticket (it does not today: macOS chrome is F02-T5).",
+   "reversible": "Yes. Parking changes nothing in code or contract.",
+   "missing_evidence": "Exact pages to fetch when un-parked: (1) the WebView2 release-notes archive entry for SDK 1.0.2420.47 on learn.microsoft.com (microsoft-edge/webview2/release-notes/archive), for the minimum Runtime version; the archive URL returned only an index stub on 2026-10-06. (2) The Microsoft Learn WebView2 page on non-client region support and draggable regions for windowed hosting, for frameless-window behaviour. (3) GTK 3 reference for gtk_window_set_titlebar and gtk_window_begin_move_drag. After those, a real Windows 11 and a real Linux Wayland device cell.",
+   "next_action": "Owner: the map orchestrator. Post the two receipts and the 'parked, partial tier' status on gyldlab/keld#395 and confirm #456 keeps Windows and Linux titleBarOverlay as a typed divergence naming #395. First check: #395 shows the WebView2 SDK version 1.0.2420.47 and the WebKit commit 3770dac1 as recorded receipts.",
+   "owner": "Crate keld-wv. Linear: KEL-27 (Windows via WebView2) is Done and KEL-28 (Linux via WebKitGTK) is Backlog, assignee GYLDLAB (fetched 2026-10-06); no live issue owns Windows or Linux chrome, so tracking stays on GitHub #395 under epic #447."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "PANEL-D19": {
+   "status": "decided",
+   "resolution": "Adopt A and close the ticket as decided. Correct the F02-T3 and PANEL-D5 wording from 'closes when the generation is revoked' to 'closes only in ordered Quit or when no successor generation will be provisioned; a recoverable generation loss gives the pending close one terminal outcome and keeps the window'. Drop spike arm C as source-determined. Leave arm D to S0 arm E and KEL-143. Park the user-visible affordance. This discharges the F02-T2 dependency on PANEL-D19.",
+   "milestone": "first-proof"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "F02 covers 32 entities / 606 raw members (BaseWindow 187, BrowserWindow 204 incl. the 126 inherited methods, View/WebContentsView/BrowserView/ImageView, 11 TouchBar classes, 2 option structs with 52+2 fields, WebPreferences 46 fields, JumpList/Task/Thumbar structs). [fact] Keld today has NO BrowserWindow facade: the host owns exactly one primary window per app session (keld-wv v0 WebviewSpec = title+size+initial; one window-filling webview per window), keld-core LifecycleSession only counts windows and emits Ready/LastWindowClosed, close is uncancelable (tao CloseRequested -> LastWindowClosed), no window id crosses kipc, no chrome options (titleBarStyle/vibrancy/frame/transparent) exist in any backend, and the destination keld-core window registry is TARGET per product-status/arch 01. Corpus demand ranks: (1) constructor + show:false/ready-to-show + backgroundColor (Zettlr 14 sites, drawio, progress-bar), (2) cancelable 'close' with async veto then explicit destroy()/close() (drawio + Zettlr both), 'closed' bookkeeping, isDestroyed, (3) getAllWindows/getFocusedWindow/fromWebContents, (4) maximize/minimize/fullscreen state + their events, (5) mac hiddenInset+vibrancy, win/linux frame:false+titleBarStyle hidden+titleBarOverlay (Zettlr), (6) parent/modal (Zettlr modals, drawio hidden export child), (7) setWindowOpenHandler with overrideBrowserWindowOptions (drawio). Six decision atoms: host-owned window identity mirrored in the facade; a two-phase host<->Bun close protocol (close veto, destroy, destroyed-object fence); ready-to-show from a hidden-window paint oracle (prototype-gated, highest risk); WebPreferences triage (policy vs engine-toggle vs never); BrowserWindow implemented once as BaseWindow+one WebContentsView with multi-view/BrowserView deferred to Tier 3; window chrome option tiering per engine. Key invariant consequences: missing setWindowOpenHandler must stay deny (Keld) and be an explicit divergence from Electron; nodeIntegration/contextIsolation:false/sandbox:false/webSecurity:false/offscreen/getNativeWindowHandle/hookWindowMessage are never or legacy-profile only; JumpList `program` must be pinned to the app's own executable.",
+  "decisions": [
+   {
+    "id": "F02-A1",
+    "question": "Who mints window identity and where do getAllWindows/fromId/getFocusedWindow/fromWebContents/win.id resolve?",
+    "proposed_answer": "[inference, evidence-backed] The host (keld-core registry, TARGET) mints an opaque (WindowId, WindowGeneration) per native window exactly as KEL-75 already requires for window-bound roles; the Bun-side @keld/api holds a facade-local mirror (Map<WindowId, handle>) updated by host events on the app-link before any user listener runs, so BrowserWindow.getAllWindows()/fromId()/getFocusedWindow() are synchronous local lookups (Electron's are synchronous, and quick-start's `getAllWindows().length === 0` in the `activate` handler must be answerable without an await). `win.id` is a facade-local monotonic positive integer (Electron: 'unique among all BaseWindow instances'), never the host WindowId, which stays opaque and is not reusable after destruction. Keld-core keeps generic names (window registry, no Electron-isms); Electron naming lives in @keld/electron.",
+    "evidence": [
+     "Electron base-window.md: 'win.id ... unique among all BaseWindow instances'; getAllWindows/getFocusedWindow/fromId return synchronously (receipt R6)",
+     "electron-quick-start main.js: app.on('activate') checks BrowserWindow.getAllWindows().length === 0 synchronously (corpus usage.json)",
+     "Zettlr windows/index.ts:646-680 uses getFocusedWindow()/getAllWindows() synchronously inside showAnyWindow/getFirstMainWindow; drawio electron.js:484 getFocusedWindow() || getAllWindows()[0]",
+     "docs/specs/kel75-principalized-bun-child-roles.md: 'window-bound declaration stores the exact opaque WindowGeneration minted for one window incarnation ... Window affinity is not a reusable native window number'",
+     "docs/architecture/01-overview.md: 'capability-scoped ids, never reusable file/window/process handles'",
+     "crates/keld-core/src/lifecycle.rs window_opened/window_closed already count host-owned windows; no id crosses kipc today"
+    ],
+    "confidence": "high on host minting (binds existing invariants); medium on facade mirror vs per-call RPC (needs the registry spec)",
+    "type": "grilling",
+    "alternatives_rejected": "Bun-owned registry where new BrowserWindow() allocates ids and the host obeys (violates host sole ownership, arch 01; a crashed Bun would orphan windows). Per-call synchronous RPC for getAllWindows (sendSync-style blocking in the Bun loop; KEL-127 only tolerates blocking CALL for sendSync with deadline/rate limit). Exposing host WindowId as win.id (leaks reusable identity).",
+    "unknowns": "No approved spec for the keld-core window registry exists; whether a window created by the host from keld.config.ts `windows.main` before Bun admission appears in the facade registry (and with which id) is undecided. getAllWindows ordering is undocumented in Electron.",
+    "blocked_by": [
+     "keld-core window registry spec (no Linear id found)",
+     "KEL-75 WindowGeneration"
+    ]
+   },
+   {
+    "id": "F02-A2",
+    "question": "How are close/closed/destroy/'Object has been destroyed' reproduced when the host owns the window and app code runs in a separate Bun process?",
+    "proposed_answer": "[inference, evidence-backed] Two-phase close owned by the host: (1) native close request (button, Cmd+W, app.quit sweep, parent close) -> host emits CloseRequested{window, generation, seq} and does NOT close; (2) facade emits 'close' synchronously to listeners; if no listener called preventDefault, facade replies CloseAllow(seq); host then runs page unload, destroys the webview before the window (view_drop_order invariant), decrements the lifecycle window count, and emits Closed; (3) `win.destroy()` is a separate unconditional Destroy call that skips 'close' but guarantees 'closed' (Electron contract); (4) after Closed the facade fences the handle: every method/property except isDestroyed() throws Error('Object has been destroyed'). Deadline: if the Bun generation is dead or does not answer within the admission deadline, the host honors the user's close (window closes) — Electron's observable 'user can always close' wins over a dead veto; this is an explicit ▲ to record. 'close' must precede DOM beforeunload (Electron order), so the host must not start unload before CloseAllow.",
+    "evidence": [
+     "browser-window.md 'close': 'Emitted when the window is going to be closed. It's emitted before the beforeunload and unload event of the DOM. Calling event.preventDefault() will cancel the close' (R2)",
+     "base-window.md destroy: 'Force closing the window, the unload and beforeunload event won't be emitted ... close event will also not be emitted ... but it guarantees the closed event will be emitted' (R3)",
+     "browser-window.md: 'Reading this property throws Object has been destroyed once the window has been destroyed'; isDestroyed note (R4)",
+     "drawio electron.js:947-975: 'close' handler calls event.preventDefault() unconditionally, sends 'isModified' to renderer, later calls mainWindow.destroy() guarded by !isDestroyed(); 'closed' splices windowsRegistry",
+     "Zettlr windows/index.ts:357-410: 'close' -> event.preventDefault() then async askUserToCloseWindow().then(window.close()); 'closed' deletes map entry; also app.quit() from inside 'close' on win/linux last window",
+     "crates/keld-wv/src/view_drop_order.rs: 'Platform bindings require the webview to release before the host window closes'",
+     "KEL-143 acceptance: 'Quit ordering is reply -> quiesce/drain -> revoke/close -> terminate/reap -> UI exit'; same native window survives Bun death"
+    ],
+    "confidence": "high on protocol shape; medium on dead-Bun deadline policy",
+    "type": "grilling",
+    "alternatives_rejected": "Host closes immediately and facade emits 'close' after the fact (breaks preventDefault, breaks drawio/Zettlr unsaved-changes flows). Facade-only 'virtual close' that hides the window instead of closing (window-all-closed/LastWindowClosed count would diverge; hidden windows still count as open in Electron). Implementing beforeunload veto in the host without the Bun round-trip (loses 'close' ordering).",
+    "unknowns": "Engine support for DOM beforeunload cancel on host-initiated close: WKWebView (WKUIDelegate run-before-unload panel availability for host close) [unknown], WebView2 (`WindowCloseRequested` covers page-initiated window.close only) [lead], WebKitGTK [unknown]. Exact deadline value and whether a pending close veto survives a Bun generation swap (KEL-143).",
+    "blocked_by": [
+     "F02-A1",
+     "KEL-143"
+    ]
+   },
+   {
+    "id": "F02-A3",
+    "question": "Can `show:false` + `ready-to-show` + `backgroundColor` (the dominant corpus pattern) be honored on system webviews?",
+    "proposed_answer": "[inference; prototype-gated] Electron fires ready-to-show when the renderer has rendered the page for the first time while the window is hidden, and documents that this depends on painting while hidden (paintWhenInitiallyHidden). Keld must (a) create the native window unmapped when show:false (NSWindow not ordered front / HWND without SW_SHOW / GtkWindow unrealized-but-created), (b) derive ready-to-show from a renderer-side first-frame oracle (the KEL-64 double-rAF beacon already used for first-paint, injected via the host pre-load script, not wry PageLoadEvent::Finished which learnings prove is navigation completion only), and (c) if an engine does not run rAF while unmapped, fall back to 'navigation finished + DOMContentLoaded' and record ▲ 'ready-to-show fires before first composited frame'. backgroundColor maps to native window background + engine default background (WebView2 put_DefaultBackgroundColor; WKWebView/WebKitGTK background color) and must be applied before first navigation to kill the white flash drawio guards against.",
+    "evidence": [
+     "browser-window.md: 'the ready-to-show event will be emitted when the renderer process has rendered the page for the first time if the window has not been shown yet ... using this event implies that the renderer will be considered visible and paint even though show is false. This event will never fire if you use paintWhenInitiallyHidden: false' (R1)",
+     "browser-window-options.md paintWhenInitiallyHidden default true: 'Setting this to false will cause the ready-to-show event to not fire' (R7)",
+     "Zettlr: 14 ready-to-show sites, every create-*-window.ts uses show:false then window.once('ready-to-show', show); drawio progress-bar.js:44-59 same pattern; drawio createWindow sets backgroundColor to avoid white flash",
+     "docs/agents/learnings.md 2026-08-17: 'wry PageLoadEvent::Finished is navigation completion, not composited first paint'; keld-wv AGENTS.md: first paint = KEL-64 external double-rAF beacon",
+     "crates/keld-wv backends emit AppWindowEvent::NavigationReady from load-finished only (wkwebview/mod.rs:723, webkitgtk/mod.rs:532, webview2/mod.rs:1985)"
+    ],
+    "confidence": "low until prototyped; the risk is an app that never shows its window",
+    "type": "prototype",
+    "alternatives_rejected": "Mapping ready-to-show to NavigationReady unconditionally (fires before paint; white flash; silently diverges). Showing the window regardless of show:false (breaks modals/hidden export windows: drawio export3 window and progress bar rely on hidden creation). Ignoring ready-to-show (Zettlr never calls show()).",
+    "unknowns": "Whether WKWebView, WebView2 and WebKitGTK execute requestAnimationFrame / composite while their window is unmapped or ordered out; whether document.visibilityState reports 'visible' while hidden (Electron notes the paintWhenInitiallyHidden interaction).",
+    "blocked_by": [
+     "prototype P1"
+    ]
+   },
+   {
+    "id": "F02-A4",
+    "question": "Which of the 46 WebPreferences fields are guard policy, which are engine toggles, and which are never?",
+    "proposed_answer": "[inference bound to briefing invariants] NEVER (fail loudly, scoreboard ✘, no quirks flag): nodeIntegration:true, nodeIntegrationInWorker, nodeIntegrationInSubFrames, contextIsolation:false, webSecurity:false, allowRunningInsecureContent:true, experimentalFeatures, enableBlinkFeatures, disableBlinkFeatures (Chromium flags; nonexistent on WebKit), plugins, offscreen (no OSR on system webviews), enableWebSQL, v8CacheOptions, enableDeprecatedPaste. LEGACY-PROFILE ONLY (visibly labeled, refused in strict/release): sandbox:false (Zettlr has 2 sites, drawio 0). POLICY (guard/manifest/host-owned): preload (host-injected pre-load script; path must resolve inside the app bundle; same injection seam as KEL-142 window.keld), devTools (manifest `web.devtools`, off in release), session/partition (host-selected KEL-135 profile identity; `persist:<name>` -> named per-app store, non-persist -> ephemeral; cannot name another app's store), webviewTag (F07; default false matches Electron), additionalArguments (no renderer argv; map to per-window init data readable via window.keld.meta ▲), safeDialogs/disableDialogs (host dialog policy). ENGINE TOGGLES (▲ where engine lacks it, honest per-engine matrix): zoomFactor, javascript, images, imageAnimationPolicy, textAreasAreResizable, webgl, scrollBounce (mac), defaultFontFamily/defaultFontSize/defaultMonospaceFontSize/minimumFontSize, defaultEncoding, backgroundThrottling, spellcheck, autoplayPolicy, disableHtmlFullscreenWindowResize, accessibleTitle, navigateOnDragDrop, enablePreferredSizeMode, transparent (webview background), focusOnNavigation. Defaults that already match Electron 44 and cost nothing: nodeIntegration=false, contextIsolation=true, sandbox=true, webviewTag=false.",
+    "evidence": [
+     "web-preferences.md defaults: nodeIntegration false; contextIsolation true; sandbox true since Electron 20 and 'automatically disabled when nodeIntegration is set to true'; webviewTag false; preload 'must be an absolute file path ... will always have access to node APIs' (R8)",
+     "security.md checklist 2/3/4/6/8/9/10 and defaults since 5.0/12.0/20.0 (R9)",
+     "Briefing never-list: nodeIntegration:true in renderer, arbitrary Chromium/V8 flags, full CDP in production webviews; research 13 'Never' table",
+     "research 186 row 5: `sandbox_disabled_by_default = node_integration_ || node_integration_in_worker_` — the Node escape hatch; Keld must make strict isolation non-optional",
+     "drawio: contextIsolation:true, nodeIntegration:false, webviewTag:false, webSecurity:true, disableBlinkFeatures:'Auxclick', additionalArguments, spellcheck, offscreen:{deviceScaleFactor:2} (export window only); Zettlr: sandbox:true everywhere except 2 sandbox:false sites; corpus apps need no never-listed field for primary workflow except drawio's offscreen export path",
+     "docs/architecture/03-security.md §3 'Webview hardening (always on)': devtools off in release unless web.devtools; docs/specs/kel135: engine creation requires host-validated profile identity"
+    ],
+    "confidence": "high for never/policy; medium for exact engine-toggle availability per backend",
+    "type": "grilling",
+    "alternatives_rejected": "Treating WebPreferences as a pass-through bag (would let app code select session store, preload path or flags — authority selection by payload, KEL-102 D4 forbids). A quirks flag that re-enables nodeIntegration or disables contextIsolation (briefing invariant 2/10).",
+    "unknowns": "drawio's PNG export depends on offscreen rendering + transparent window + capturePage; whether a non-OSR hidden-window capturePage path on WKWebView/WebView2 (takeSnapshot / CapturePreview) yields equivalent output is unverified; this is a primary_workflow cell at risk for drawio.",
+    "blocked_by": [
+     "KEL-135 (session/partition)",
+     "KEL-102 window grants"
+    ]
+   },
+   {
+    "id": "F02-A5",
+    "question": "How should BaseWindow/BrowserWindow inheritance, View/WebContentsView and the deprecated BrowserView be implemented without a parallel window model?",
+    "proposed_answer": "[inference] Implement the 126 shared methods once on a BaseWindow facade over a single generated `window.*` kipc channel (KEL-98 echo-codegen owner, no new IDL); BrowserWindow = BaseWindow + exactly one host-created content WebContentsView whose `webContents` is the F03 handle, so `win.webContents`, loadURL/loadFile, ready-to-show, page-title-updated compose instead of duplicating. View tree methods (addChildView/removeChildView/setBounds/children) and multiple WebContentsViews per window are Tier 3 and stay ✘ until keld-wv ships multi-view composition (`set_bounds` + Anchor + HostHooks in the arch 05 sketch; v0 is explicitly one webview per window). BrowserView (deprecated upstream) is a thin adapter over WebContentsView, never a third model. Ownership divergence to encode: Electron destroys a BrowserWindow's webContents/renderer with the window but does NOT destroy a WebContentsView's webContents when a BaseWindow closes; Keld's host always owns both and should destroy view-before-window (view_drop_order) — expose that as ▲ for BaseWindow+WebContentsView users.",
+    "evidence": [
+     "base-window.md intro: 'BaseWindow provides a flexible way to compose multiple web views in a single window. For windows with only a single, full-size web view, the BrowserWindow class may be a simpler option' (R5)",
+     "base-window.md resource management: adding a WebContentsView to BaseWindow, 'closing the window does not automatically destroy the webContents' (R5)",
+     "process-model.md: 'When a BrowserWindow instance is destroyed, its corresponding renderer process gets terminated as well' (R10)",
+     "browser-view.md: 'The BrowserView class is deprecated, and replaced by the new WebContentsView class' (R11); web-contents-view.md: 'A WebContents may only be presented in one WebContentsView at a time' (R12)",
+     "crates/keld-wv/src/engine.rs docs: 'v0 is one window-filling webview per window'; set_bounds without Anchor; arch 05 §1 sketch names Anchor/HostHooks for multi-webview composition",
+     "Corpus: zero BaseWindow/View/WebContentsView/BrowserView call sites in drawio, Zettlr or quick-start (only `<webview>` in drawio, 7 hits, F07); arch 04 §4 puts BrowserView mapping in Tier 3"
+    ],
+    "confidence": "high (DRY + corpus demand agree)",
+    "type": "task",
+    "alternatives_rejected": "Separate BrowserWindow and BaseWindow implementations (duplicated 126 methods, two lifecycle owners). Emulating BrowserView via a second native window (breaks z-order/bounds semantics, doubles RSS). Shipping View tree APIs as no-ops (silent divergence).",
+    "unknowns": "Whether WebView2 (single CoreWebView2Controller per HWND region) and WebKitGTK can host several webviews with host-owned bounds without the OOPIF direction arch 05 cites; measured cost per extra webview on each engine.",
+    "blocked_by": [
+     "keld-wv multi-view (arch 05 §1 Anchor/HostHooks)",
+     "F03 webContents handle"
+    ]
+   },
+   {
+    "id": "F02-A6",
+    "question": "Which window chrome options (frame, titleBarStyle, titleBarOverlay, trafficLightPosition, vibrancy/visualEffectState, backgroundMaterial, transparent, roundedCorners, hasShadow) are Tier 1 and how do they tier per engine?",
+    "proposed_answer": "[inference] Tier 1 (needed by Zettlr primary workflow): macOS titleBarStyle hidden/hiddenInset/customButtonsOnHover + trafficLightPosition (NSWindow fullSizeContentView + titlebarAppearsTransparent + titleVisibility hidden; entitlement-clean), Windows/Linux frame:false + titleBarStyle:'hidden' + titleBarOverlay{color,symbolColor,height} (host-drawn caption controls; Electron's Chromium WCO/`navigator.windowControlsOverlay`/CSS env vars have no WebView2/WebKitGTK equivalent -> ▲ documented emulation), `app-region: drag` support per engine (Windows: WebView2 non-client region support [lead]; macOS: host-side mouseDown passthrough; Linux: GTK drag via host), backgroundColor, hasShadow, minimum/maximum sizes. Tier 2 ▲: vibrancy/visualEffectState (NSVisualEffectView behind a non-opaque WKWebView — must avoid private drawsBackground API; arch 04 already marks vibrancy as a ▲ behavior note), backgroundMaterial mica/acrylic (DWM system backdrop, Win11 22H2+), roundedCorners. Tier 3/✘: transparent (Electron itself documents non-resizable, no click-through, DevTools disables it, no mac shadow, no Windows maximize; Linux NVIDIA/Wayland breakage per keld-wv AGENTS), setShape, thickFrame nuances, native macOS tabs.",
+    "evidence": [
+     "custom-title-bar.md: hidden/hiddenInset/customButtonsOnHover semantics; 'titleBarOverlay requires the titleBarStyle param ... to have a value other than default'; overlay color/symbolColor(Windows)/height (R13)",
+     "custom-window-styles.md transparent limitations list (R14); custom-window-interactions.md app-region drag/no-drag and setIgnoreMouseEvents forward (macOS/Windows) (R15)",
+     "base-window-options.md: titleBarStyle default 'default', titleBarOverlay default false, vibrancy values, backgroundMaterial auto/none/mica/acrylic/tabbed, roundedCorners Windows 11 22000+, alwaysOnTop not on Wayland (R6b)",
+     "Zettlr set-window-chrome.ts: mac -> titleBarStyle 'hiddenInset' + vibrancy 'under-window' + visualEffectState 'followWindow' (and comment that backgroundColor nullifies vibrancy [inference from corpus, not Electron doc]); win32/linux non-native -> frame:false, titleBarStyle 'hidden', titleBarOverlay {color transparent, symbolColor, height}",
+     "docs/architecture/04-electron-compat.md §1 sample report '▲ behavior notes: BrowserWindow.vibrancy (macOS-only effect)'; §2 keld.config.ts sketch uses titleBarStyle 'hiddenInset'",
+     "docs/research/library/host-platforms/06-webview-reality.md:35 'window transparency has historically leaned on private API flags (App Store risk — Keld's transparency path must stay entitlement-clean)'; keld-wv AGENTS.md NVIDIA/Wayland dmabuf transparency breakage"
+    ],
+    "confidence": "medium (platform API availability is well known, WCO/app-region on WebView2/WebKitGTK needs receipts)",
+    "type": "prototype",
+    "alternatives_rejected": "Promising WCO parity (navigator.windowControlsOverlay) on non-Chromium engines. Using private WebKit drawsBackground flags for vibrancy. Treating transparent as Tier 1 because drawio uses it (drawio uses it only on a hidden export window).",
+    "unknowns": "WebView2 `IsNonClientRegionSupportEnabled`/app-region support exact SDK/runtime version and behavior with frameless HWND [lead, no receipt]; WebKitGTK path for app-region drag; whether a transparent WKWebView over NSVisualEffectView is achievable without private API on macOS 12-15.",
+    "blocked_by": [
+     "prototype P3",
+     "prototype P4"
+    ]
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "webPreferences.nodeIntegration / nodeIntegrationInWorker / nodeIntegrationInSubFrames = true",
+    "rationale": "Briefing invariant 10 and research 13/214: renderer Node access is incompatible with host-enforced default-deny; Electron itself documents it disables the sandbox (R8)."
+   },
+   {
+    "surface": "webPreferences.contextIsolation:false",
+    "rationale": "Breaks the isolated-world bridge contract (KEL-142 AC: page cannot access the preload realm); Electron default true since 12 (R9)."
+   },
+   {
+    "surface": "webPreferences.webSecurity:false, allowRunningInsecureContent:true",
+    "rationale": "Disables same-origin policy inside a host-mediated resource model (KEL-79); security checklist items 6/8 (R9)."
+   },
+   {
+    "surface": "webPreferences.experimentalFeatures, enableBlinkFeatures, disableBlinkFeatures, plugins, v8CacheOptions, enableWebSQL",
+    "rationale": "Arbitrary Chromium/V8 feature flags; nonexistent on WebKit engines; briefing never-list 'arbitrary Chromium/V8 flags'."
+   },
+   {
+    "surface": "webPreferences.offscreen (OSR), setShape(initially)",
+    "rationale": "No offscreen rendering on system webviews; a fake would be a silent downgrade (KEL-127 no silent downgrade). Tracked ✘, not quirk-flagged."
+   },
+   {
+    "surface": "getNativeWindowHandle, hookWindowMessage family, raw NSView/HWND/X11 Window exposure",
+    "rationale": "Arch 01: handles never cross kipc; raw window message hooks give a Bun role in-process UI authority."
+   },
+   {
+    "surface": "JumpListItem/Task `program` naming any executable other than the app's own signed identity",
+    "rationale": "Jump List tasks launch programs with args from the shell; only the ExpectedAppIdentity executable is permitted (raw process launch from strict roles is on the briefing never-list)."
+   },
+   {
+    "surface": "A missing setWindowOpenHandler becoming 'allow'",
+    "rationale": "Briefing invariant 2: a missing Electron permission handler must not become allow; Keld default-denies popups and records the divergence."
+   },
+   {
+    "surface": "webPreferences.session/partition pointing at app-chosen on-disk paths or another app's profile",
+    "rationale": "KEL-135: engine creation requires host-validated profile identity; page/Bun input cannot choose another store."
+   },
+   {
+    "surface": "BrowserView as a third window model",
+    "rationale": "Deprecated upstream (R11); Keld maps it onto WebContentsView to keep one view model (one rule, one owner)."
+   }
+  ],
+  "open_unknowns": [
+   "No approved spec or Linear ticket for the keld-core destination window registry (ids, generations, command queue, focus/bounds events) was found; F02-A1/A2 cannot be sequenced until one exists (likely KEL-15/KEL-102 adjacent; owner unknown).",
+   "Electron v44.4.5 web-contents.md does not state the behavior when no setWindowOpenHandler is registered; a source-level receipt (shell/browser/api/electron_api_web_contents.cc) is needed before scoring the ▲ 'Keld denies by default' row.",
+   "Whether WKWebView, WebView2 and WebKitGTK run rAF/composite while their window is unmapped (ready-to-show feasibility) — prototype P1.",
+   "DOM beforeunload cancellation of a host-initiated close on each engine (WKUIDelegate before-unload panel, WebView2 WindowCloseRequested scope, WebKitGTK) — needed for exact 'close' -> beforeunload ordering.",
+   "WebView2 non-client region / app-region drag support (API name, SDK/runtime version) and WebKitGTK equivalent — no primary receipt gathered.",
+   "Entitlement-clean vibrancy behind WKWebView (non-opaque webview without private API) on macOS 12-15.",
+   "Close-veto policy when the Bun generation is dead or slow (deadline value; interaction with KEL-143 same-window continuity and KEL-75 window-bound role tombstones).",
+   "Guard grant shape for dynamically created windows (no `windows.<name>` entry) and for the overlay-class combination (transparent+alwaysOnTop+ignoreMouseEvents) — proposals only.",
+   "Per-extra-webview cost (RSS, first paint) on each engine for the Tier 3 multi-view/BaseWindow composition.",
+   "drawio PNG export via hidden transparent window + capturePage without OSR — output equivalence unmeasured.",
+   "getAllWindows() ordering is undocumented in Electron; creation order is assumed.",
+   "Zettlr's claim that backgroundColor nullifies vibrancy is a corpus comment, not an Electron doc fact; needs an Electron source or macOS receipt before encoding as a trap.",
+   "Linux cells: Wayland positioning, X11 lane and non-Debian distros remain unverified for any window behavior (product-status surface.no-flag-linux)."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

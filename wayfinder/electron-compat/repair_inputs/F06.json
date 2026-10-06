@@ -1,0 +1,1466 @@
+{
+ "unit": "F06",
+ "name": "native-desktop",
+ "published": {
+  "epic": {
+   "key": "F06-EPIC",
+   "title": "compat(native): dialog, shell, Menu/Tray, clipboard, screen, nativeTheme, nativeImage, Notification, safeStorage and power/shortcut brokers behind generated grants",
+   "body": "## Scope\n38 entities / 350 members, all main-process: Menu (13), MenuItem (21), Tray (36), dialog (8), Notification (30), clipboard/ClipboardItem (11), shell (7), screen/Display (31), globalShortcut (7), powerMonitor (16), powerSaveBlocker (3), nativeTheme (9), nativeImage/NativeImage (24), systemPreferences (28), safeStorage (8), pushNotifications/inAppPurchase (mac), desktopCapturer (Tier 3), ShareMenu. Live today: keld-native ships only the retained FsBroker (fs.read/fs.write) and a MODULES name list (`capture` is missing from it: code/spec gap); no F06 channel is reachable until KEL-102/T3 admission; `@keld/electron` exports only `app`.\n\n## Corpus demand\ndialog (draw.io showMessageBox ×7 incl. one `showMessageBoxSync` on the close path, open/save ×4 each; Zettlr showMessageBox 24, dialog in 21 files) > shell (openExternal, openPath, showItemInFolder, trashItem) > Menu (both: buildFromTemplate + setApplicationMenu; 13 roles in draw.io; 45 accelerators per Zettlr platform menu; popup) > screen > clipboard (draw.io uses the W3C promise shape with ClipboardItem; Zettlr sync readText) > nativeTheme (themeSource, `updated`) > nativeImage (createFromDataURL().toPNG(), createFromPath) > Tray/Notification (Zettlr) > systemPreferences (accent colour, theme-changed notification). Zero use of globalShortcut, powerMonitor, powerSaveBlocker, safeStorage, pushNotifications, inAppPurchase, ShareMenu, desktopCapturer.\n\n## Maturity ladder\n- L0: every module exists; unsupported members throw typed errors; `capture` added to MODULES or named as intentionally absent.\n- L1: dialog/shell/Menu/screen/clipboard/nativeTheme/nativeImage work for draw.io and Zettlr on macOS through guarded brokers.\n- L2: dialog-minted scopes, menu role execution host-side, accelerator semantics, theme `updated` event, clipboard shapes pass pinned entries on each OS.\n- L3: corpus workflows pass under `keld dev` with KEL-74 records and `app.system` grants recorded.\n\n## Linear owners consumed\nKEL-130 (FsBroker retained scopes — dialog grants extend the same set), KEL-102 (broker admission; the guard's accepted operation set is hard-coded to fs.read/fs.write today), KEL-89 (secrets/auth), KEL-78 (strict: no keychain reach from the child), KEL-132, KEL-208/KEL-209 (URL-scope authority rule), KEL-19/KEL-103 (Windows AppUserModelId, bundle metadata).\n\n## Design facts from research (NOT yet independently refuted — batch 2 refutes; decisions below stay open)\n- Host-owned UI handles: every Menu/MenuItem/Tray/Notification/popup is a host main-thread resource with a host-assigned `(generation, id)`; facade proxies are write-through; clicks arrive as host→Bun messages; `role` items execute host-side without a round trip (Electron ignores `click` when `role` is set).\n- Resource-less capabilities keep the arch 03 §2 literal shape `app.system: [\"clipboard.read\", …]` evaluated with the existing matcher (operation=system, path=literal) — no guard schema change.\n- NativeImage is a Bun-side immutable value object (bytes + sniffed format + size + representations); decode/encode happens host-side only at consumption; clipboard baseline is the v44.4.5 W3C shape.\n- safeStorage is a thin facade over a host `secrets` module; Linux `basic_text` plaintext degradation is reported, never emulated.\n- Blocking dialogs (`showMessageBoxSync`, draw.io close path) depend on the panel's S0 link-drain gate; until then they are SCAFFOLDED (typed throw + fix-it) or served through the worker-owned transport once approved.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F06-T1",
+    "title": "conformance(native): pinned entries for dialog results, menu role/accelerator semantics, nativeTheme updated, clipboard shapes, screen displays and nativeImage conversions",
+    "kind": "conformance",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Land red-until-implemented entries citing dialog.md/menu.md/menu-item.md/native-theme.md/clipboard.md/screen.md/native-image.md: dialog cancel vs selection results; `role` ignores `click`; accelerator normalisation per platform; `nativeTheme.themeSource` writes and `updated`; clipboard write/read text + W3C `ClipboardItem`; `screen.getPrimaryDisplay().workArea`; `createFromDataURL().toPNG()` byte equality for PNG input.",
+    "acceptance_criteria": [
+     "Each entry cites the doc sentence with a negative control",
+     "Platform-tagged members carry per-OS entries or explicit gaps"
+    ],
+    "negative_controls": [
+     "Executing a role item through the facade click path fails the role entry"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-237 manifest reuse"
+    ],
+    "linear_owner": "KEL-237",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "dialog.showOpenDialog",
+     "dialog.showSaveDialog",
+     "dialog.showMessageBox",
+     "dialog.showErrorBox",
+     "Menu.buildFromTemplate",
+     "Menu.setApplicationMenu",
+     "Menu.popup",
+     "MenuItem",
+     "nativeTheme.themeSource",
+     "nativeTheme.updated",
+     "clipboard.readText",
+     "clipboard.writeText",
+     "clipboard.write",
+     "ClipboardItem",
+     "screen.getPrimaryDisplay",
+     "screen.getAllDisplays",
+     "nativeImage.createFromDataURL",
+     "NativeImage.toPNG",
+     "NativeImage.resize"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** conformance\n\n**Current behavior:** None exist.\n\n**Desired behavior:** Land red-until-implemented entries citing dialog.md/menu.md/menu-item.md/native-theme.md/clipboard.md/screen.md/native-image.md: dialog cancel vs selection results; `role` ignores `click`; accelerator normalisation per platform; `nativeTheme.themeSource` writes and `updated`; clipboard write/read text + W3C `ClipboardItem`; `screen.getPrimaryDisplay().workArea`; `createFromDataURL().toPNG()` byte equality for PNG input.\n\n**Key interfaces:** KEL-237 cells; fixtures.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementation.",
+    "out_of_scope": "Implementation.",
+    "notes": ""
+   },
+   {
+    "key": "F06-T2",
+    "title": "feat(native): guarded dialog broker (open/save/message/error) parented to host windows, with dialog-minted generation-bound fs scopes",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Implement a keld-native `dialog` broker: NSOpen/NSSave/NSAlert on macOS (Win32/GTK/portal later), parented to the host window the facade names; chosen paths are returned AND registered as generation-bound retained scopes in the same FsBroker set KEL-130 built (open → read leaf, save → write leaf plus a declared sibling pattern for draw.io's `.bkp`), revoked on generation death, never persisted; `showMessageBox` async first; `showMessageBoxSync` SCAFFOLDED until PANEL-P1 decides the blocking transport.",
+    "acceptance_criteria": [
+     "draw.io open → edit → save completes through the broker with no manifest widening",
+     "A path chosen in the dialog is readable by the app; a sibling outside the declared pattern is denied with `KELD-GUARD` text",
+     "After a Bun generation restart the previous dialog grants are gone (typed deny)",
+     "`showMessageBoxSync` throws the typed SCAFFOLDED error naming the invoke-style fix-it until the transport decision lands"
+    ],
+    "negative_controls": [
+     "Persisting dialog grants across generations fails the revocation negative test"
+    ],
+    "blocked_by_keys": [
+     "F06-T1",
+     "F06-D1",
+     "F02-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-130 FsBroker",
+     "KEL-102/T3 admission",
+     "KEL-140 first guarded fs op"
+    ],
+    "linear_owner": "KEL-130 / KEL-102",
+    "review_gates": [
+     "permission model",
+     "wire protocol"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "dialog.showOpenDialog",
+     "dialog.showOpenDialogSync",
+     "dialog.showSaveDialog",
+     "dialog.showSaveDialogSync",
+     "dialog.showMessageBox",
+     "dialog.showMessageBoxSync",
+     "dialog.showErrorBox",
+     "dialog.showCertificateTrustDialog",
+     "FileFilter"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Only fs.read/fs.write brokers exist; no dialog.\n\n**Desired behavior:** Implement a keld-native `dialog` broker: NSOpen/NSSave/NSAlert on macOS (Win32/GTK/portal later), parented to the host window the facade names; chosen paths are returned AND registered as generation-bound retained scopes in the same FsBroker set KEL-130 built (open → read leaf, save → write leaf plus a declared sibling pattern for draw.io's `.bkp`), revoked on generation death, never persisted; `showMessageBox` async first; `showMessageBoxSync` SCAFFOLDED until PANEL-P1 decides the blocking transport.\n\n**Key interfaces:** keld-native dialog broker; FsBroker retained-scope mint; facade dialog module.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Blocking transport (PANEL-P1); certificate trust dialog (▲).",
+    "out_of_scope": "Blocking transport (PANEL-P1); certificate trust dialog (▲).",
+    "notes": ""
+   },
+   {
+    "key": "F06-T3",
+    "title": "feat(native): shell broker (openExternal with a confirm-per-scheme grant, openPath, showItemInFolder, trashItem, beep) under app.shell grants",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Implement `shell.openExternal` as a guarded operation whose broker canonicalises the URL and evaluates exact literals plus a confirm-class grant (host-rendered confirmation showing the full URL for `https:`/`mailto:`/`tel:` when no literal scope matches; `file:`/`javascript:`/executable launchers never); `openPath`/`showItemInFolder`/`trashItem` require fs scopes for the target; Windows 2081-char limit enforced; renderer-triggered calls carry the webview principal.",
+    "acceptance_criteria": [
+     "draw.io/Zettlr help links open after confirmation; an `https://docs.example/**` literal opens silently",
+     "`openExternal(\"file:///…\")` is refused with a typed error",
+     "`trashItem` outside any fs scope is denied with the manifest patch text"
+    ],
+    "negative_controls": [
+     "Removing the scheme canonicalisation lets `HTTPS://evil` bypass the literal match — negative test fails"
+    ],
+    "blocked_by_keys": [
+     "F06-T1",
+     "X04-D4"
+    ],
+    "blocked_by_external": [
+     "KEL-208/KEL-209 authority rule"
+    ],
+    "linear_owner": "KEL-102",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "shell.openExternal",
+     "shell.openPath",
+     "shell.showItemInFolder",
+     "shell.trashItem",
+     "shell.beep",
+     "shell.readShortcutLink",
+     "shell.writeShortcutLink"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No shell broker.\n\n**Desired behavior:** Implement `shell.openExternal` as a guarded operation whose broker canonicalises the URL and evaluates exact literals plus a confirm-class grant (host-rendered confirmation showing the full URL for `https:`/`mailto:`/`tel:` when no literal scope matches; `file:`/`javascript:`/executable launchers never); `openPath`/`showItemInFolder`/`trashItem` require fs scopes for the target; Windows 2081-char limit enforced; renderer-triggered calls carry the webview principal.\n\n**Key interfaces:** keld-native shell broker; keld-guard `app.shell.open` grant evaluation (spelling decided by X04-D4).\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Windows shortcut link APIs beyond ▲.",
+    "out_of_scope": "Windows shortcut link APIs beyond ▲.",
+    "notes": ""
+   },
+   {
+    "key": "F06-T4",
+    "title": "feat(native): Menu/MenuItem/Tray as host-owned handles — template submission, host-side role execution, accelerators, popup, Tray click events",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Submit one bounded menu tree per `setApplicationMenu`/`popup`/`Tray.setContextMenu`; the host assigns command ids, executes `role` items host-side, normalises accelerators per platform, emits click events with `(commandId, focusedWindowId, KeyboardEvent)`; Tray icon/tooltip/menu with click/right-click/double-click events; `app.system: [\"tray\"]` grant.",
+    "acceptance_criteria": [
+     "draw.io application menu (13 roles) and Zettlr platform menus (45 accelerators) build and respond on macOS",
+     "`Menu.popup({window})` shows at the cursor and resolves `callback` after close",
+     "Tray click delivers the Electron event shape; a Tray without the `tray` grant is denied typed"
+    ],
+    "negative_controls": [
+     "Executing `role` items via Bun fails the host-side role entry"
+    ],
+    "blocked_by_keys": [
+     "F06-T1",
+     "F02-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-102 admission"
+    ],
+    "linear_owner": "KEL-102",
+    "review_gates": [
+     "permission model",
+     "wire protocol"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "Menu",
+     "MenuItem",
+     "Menu.buildFromTemplate",
+     "Menu.setApplicationMenu",
+     "Menu.getApplicationMenu",
+     "Menu.popup",
+     "Menu.closePopup",
+     "Tray",
+     "Tray.setContextMenu",
+     "Tray.setToolTip",
+     "Tray.setImage",
+     "MenuItemBadge"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No menu or tray broker.\n\n**Desired behavior:** Submit one bounded menu tree per `setApplicationMenu`/`popup`/`Tray.setContextMenu`; the host assigns command ids, executes `role` items host-side, normalises accelerators per platform, emits click events with `(commandId, focusedWindowId, KeyboardEvent)`; Tray icon/tooltip/menu with click/right-click/double-click events; `app.system: [\"tray\"]` grant.\n\n**Key interfaces:** keld-native menu/tray brokers; facade proxies with host ids.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** ShareMenu, TouchBar (Tier 2).",
+    "out_of_scope": "ShareMenu, TouchBar (Tier 2).",
+    "notes": ""
+   },
+   {
+    "key": "F06-T5",
+    "title": "feat(native): screen, nativeTheme, clipboard and nativeImage facades (host-pushed mirrors for displays/theme; W3C clipboard shape; Bun-side NativeImage value object)",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "`screen.getPrimaryDisplay/getAllDisplays/getDisplayMatching/getCursorScreenPoint` from a host-pushed display mirror with `display-added/removed/metrics-changed`; `nativeTheme.shouldUseDarkColors/themeSource` mirror with `updated`; clipboard read/write text/html/image via a broker under `app.system` clipboard grants (W3C promise shape baseline; sync `readText` served from a changeCount-refreshed mirror ▲); NativeImage as an immutable Bun value object with host-side decode only at consumption.",
+    "acceptance_criteria": [
+     "draw.io reads `nativeTheme.shouldUseDarkColors` synchronously at window construction and receives `updated` on OS theme change",
+     "`clipboard.writeText` then `readText` round-trips under the grant; without the grant denied typed",
+     "`nativeImage.createFromDataURL(png).toPNG()` returns the input bytes; `createFromPath` uses one fs.read"
+    ],
+    "negative_controls": [
+     "Serving displays by a per-read host CALL fails the zero-traffic mirror entry"
+    ],
+    "blocked_by_keys": [
+     "F06-T1"
+    ],
+    "blocked_by_external": [
+     "KEL-102 admission"
+    ],
+    "linear_owner": "KEL-102",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "screen.getPrimaryDisplay",
+     "screen.getAllDisplays",
+     "screen.getDisplayMatching",
+     "screen.getCursorScreenPoint",
+     "Display",
+     "nativeTheme.shouldUseDarkColors",
+     "nativeTheme.themeSource",
+     "nativeTheme.updated",
+     "clipboard.readText",
+     "clipboard.writeText",
+     "clipboard.readHTML",
+     "clipboard.writeHTML",
+     "clipboard.readImage",
+     "clipboard.writeImage",
+     "clipboard.clear",
+     "clipboard.write",
+     "clipboard.read",
+     "ClipboardItem",
+     "nativeImage.createFromDataURL",
+     "nativeImage.createFromPath",
+     "nativeImage.createEmpty",
+     "NativeImage.toPNG",
+     "NativeImage.toJPEG",
+     "NativeImage.toDataURL",
+     "NativeImage.getSize",
+     "NativeImage.resize",
+     "NativeImage.isEmpty"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** None exist.\n\n**Desired behavior:** `screen.getPrimaryDisplay/getAllDisplays/getDisplayMatching/getCursorScreenPoint` from a host-pushed display mirror with `display-added/removed/metrics-changed`; `nativeTheme.shouldUseDarkColors/themeSource` mirror with `updated`; clipboard read/write text/html/image via a broker under `app.system` clipboard grants (W3C promise shape baseline; sync `readText` served from a changeCount-refreshed mirror ▲); NativeImage as an immutable Bun value object with host-side decode only at consumption.\n\n**Key interfaces:** keld-native screen/clipboard brokers; host-pushed mirrors; facade value objects.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Clipboard change polling beyond ▲; bookmark APIs.",
+    "out_of_scope": "Clipboard change polling beyond ▲; bookmark APIs.",
+    "notes": ""
+   },
+   {
+    "key": "F06-T6",
+    "title": "task(native): Notification, safeStorage (secrets broker), globalShortcut, powerMonitor/powerSaveBlocker, systemPreferences, pushNotifications/inAppPurchase/ShareMenu/desktopCapturer rows and tiering",
+    "kind": "task",
+    "tier": "Tier 2",
+    "maturity_target": "L0",
+    "what_to_build": "Publish rows and typed facades: Notification via a host notify broker (macOS UNUserNotification; Windows toast; libnotify) under the `notifications` grant; safeStorage over a host `secrets` module (Linux `basic_text` reported, never emulated); globalShortcut with conflict detection; powerMonitor/powerSaveBlocker; systemPreferences accent colour + theme notification subset; pushNotifications/inAppPurchase (MAS) ✘-tracked; ShareMenu ▲; desktopCapturer Tier 3; add `capture` to the native module list or document its absence.",
+    "acceptance_criteria": [
+     "Every F06 entity has a scoreboard row with status and tracking",
+     "Zettlr Notification click round-trips on macOS once the broker lands; until then the typed error names this ticket",
+     "`capture` code/spec mismatch is closed in one PR"
+    ],
+    "negative_controls": [
+     "Emulating safeStorage with plaintext fails the never-list negative test"
+    ],
+    "blocked_by_keys": [
+     "F06-T1"
+    ],
+    "blocked_by_external": [
+     "KEL-89 secrets",
+     "KEL-78"
+    ],
+    "linear_owner": "KEL-89 / KEL-78",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "Notification",
+     "NotificationAction",
+     "safeStorage",
+     "globalShortcut",
+     "powerMonitor",
+     "powerSaveBlocker",
+     "systemPreferences",
+     "pushNotifications",
+     "inAppPurchase",
+     "ShareMenu",
+     "desktopCapturer"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** task\n\n**Current behavior:** None exist.\n\n**Desired behavior:** Publish rows and typed facades: Notification via a host notify broker (macOS UNUserNotification; Windows toast; libnotify) under the `notifications` grant; safeStorage over a host `secrets` module (Linux `basic_text` reported, never emulated); globalShortcut with conflict detection; powerMonitor/powerSaveBlocker; systemPreferences accent colour + theme notification subset; pushNotifications/inAppPurchase (MAS) ✘-tracked; ShareMenu ▲; desktopCapturer Tier 3; add `capture` to the native module list or document its absence.\n\n**Key interfaces:** Scoreboard; facade throws; native module list.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementations beyond Notification and safeStorage facades.",
+    "out_of_scope": "Implementations beyond Notification and safeStorage facades.",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F06-D1",
+    "title": "Dialog-minted filesystem scopes: generation-bound session grants in the FsBroker retained set (sibling pattern for draw.io .bkp) — approve the permission-model shape",
+    "type": "grilling",
+    "question": "Proposed (unrefuted): the host dialog returns paths and registers each as a generation-bound fs scope into KEL-130's retained set (open → read leaf, save → write leaf + declared sibling pattern), revoked on generation death, never persisted. Needs an independent refutation (batch 2) and a permission-model review; the user-granted-roots-survive-restart question is a separate KEL-79/KEL-130 spec gap.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F06-D3",
+    "title": "Resource-less capability grants (clipboard, notifications, tray, shortcuts, power): keep `app.system` literals evaluated with the existing matcher?",
+    "type": "grilling",
+    "question": "Proposed (unrefuted): evaluate `app.system` literals as operation=system, path=literal with the existing matcher — zero guard schema change. The guard's accepted operation set is hard-coded to fs.read/fs.write today, so admission for new operations is a KEL-102 change; confirm with the owner.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F06-D4",
+    "title": "shell.openExternal confirm-per-scheme grant (`confirm:https`) vs exact literals only — permission-model decision (joint with X04-D4)",
+    "type": "grilling",
+    "question": "Median apps open arbitrary https/mailto/tel links; scheme-wide globs are inert by the KEL-208 authority rule. Proposed: a confirm-class grant (host-rendered confirmation showing the full URL) alongside literal scopes; `file:`/`javascript:` never. Needs KEL-208 owner ruling on spelling; the broker must canonicalise before matching.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "renderer-process direct clipboard/shell access (webview principal)",
+   "scheme-wide `shell.open` globs",
+   "safeStorage plaintext emulation",
+   "systemPreferences post*Notification",
+   "Notification.toastXml raw XML",
+   "auto-prompting macOS accessibility trust",
+   "app-chosen Tray GUID / AppUserModelID strings"
+  ],
+  "out_of_scope": [
+   "TouchBar (macOS) and JumpList/Thumbar (Windows) until demand appears",
+   "inAppPurchase (MAS) and pushNotifications beyond ✘ rows"
+  ],
+  "not_yet_specified": [
+   "Windows and Linux dialog backends (Win32 common dialogs; XDG portals) and portal-first behaviour for sandboxed formats",
+   "Menu accelerator conflict handling with globalShortcut"
+  ],
+  "issue_numbers": {
+   "F06-D1": 403,
+   "F06-D3": 404,
+   "F06-D4": 405,
+   "F06-EPIC": 476,
+   "F06-T1": 477,
+   "F06-T2": 478,
+   "F06-T3": 479,
+   "F06-T4": 480,
+   "F06-T5": 481,
+   "F06-T6": 482
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "(no key) worker-owned single-link blocking transport for @keld/kipc",
+    "problem": "The only mechanism that lets dialog.showMessageBoxSync (drawio electron.js:876, on the close path) work has no implementation ticket: it appears in PANEL-P1 (experiment), PANEL-D4 (decision), MAP 'Not yet specified', X05 fog and F06-EPIC prose. The first proof's fourth step cannot pass config-only without it.",
+    "suggested_unit": "New ticket under X05 or F04 (owner KEL-80/KEL-97 per PANEL-P1), gated by PANEL-P1 arm B; or an explicit recorded outcome 'draw.io = config + 1 edit' if P1 fails."
+   },
+   {
+    "entity": "ecosystem packages loaded at draw.io module top level: electron-store, electron-log, electron-context-menu, electron-updater",
+    "problem": "Their Electron member requirements are owned only by a decision (X03-A6), an inventory line in X03-T2 and PANEL-P3. contextMenu({...}) (electron.js:169) and autoUpdater.logger.transports.* (:82-83) execute unguarded at import; any missing member aborts module evaluation.",
+    "suggested_unit": "PANEL-P3 output becomes a named artifact consumed by F01-T4, F06-T4, F09-T1 and X03-T1 (add edges)."
+   },
+   {
+    "entity": "F06 structures: ActivationArguments, ClipboardBookmark, DesktopCapturerSource, NotificationResponse, PaymentDiscount, ProductDiscount, ProductSubscriptionPeriod, Product, SharingItem, ShortcutDetails, Transaction, UserDefaultTypes",
+    "problem": "Covered only by F06-T6 AC1's blanket row promise ('Product' matches only an unrelated word in X01-EPIC). All have zero corpus demand.",
+    "suggested_unit": "Enumerate in F06-T6 or F06-EPIC out-of-scope."
+   }
+  ],
+  "duplicates": [
+   {
+    "keys": [
+     "F06-D4",
+     "X04-D4"
+    ],
+    "problem": "The same permission-model decision (shell.open scheme-class grant spelling) is published twice ('joint with X04-D4'); F06-T3 is gated only by X04-D4. Both wait on a 'KEL-208 owner ruling' — KEL-208 is Done and KEL-209 Duplicate (Linear, fetched 2026-10-06).",
+    "fix": "Close F06-D4 as a duplicate of X04-D4; name the live owner (arch 03 §2 grammar under KEL-102, In Progress) and attach a decision packet (options a/b, consequences, recommendation)."
+   },
+   {
+    "keys": [
+     "F04-A5",
+     "PANEL-D8",
+     "F04-T1",
+     "PANEL-P1",
+     "F06-T2"
+    ],
+    "problem": "Synchronous-call emulation is spread over five units with no implementation owner: renderer sendSync mechanism (F04-A5), its policy (PANEL-D8), a sendSync conformance entry that must stay red indefinitely (F04-T1), main-side blocking transport (PANEL-P1) and the showMessageBoxSync scaffold (F06-T2). Renderer-side blocking (WKWebView sync XHR) and main-side blocking (parked Bun) are different atoms that the plan repeatedly discusses together.",
+    "fix": "Two atoms, two owners: (1) main-side blocking CALL = PANEL-P1 → new transport ticket (first-proof critical); (2) renderer sendSync = F04-A5 (Zettlr-gated, next). Move the sendSync entry out of F04-T1 into the F04-A5 follow-up."
+   },
+   {
+    "keys": [
+     "F02-T2",
+     "F06-T5",
+     "PANEL-D18",
+     "X05-EPIC"
+    ],
+    "problem": "The host-pushed synchronous mirror is specified four times (window mirror in F02-T2, display/theme/clipboard mirrors in F06-T5, policy in PANEL-D18, 'per-window state generation' in X05-EPIC) with no single owner of the mirror primitive.",
+    "fix": "F02-T2 owns the @keld/api mirror primitive (ordering, staleness, no per-read traffic); F06-T5 consumes it — add edge F06-T5 ← F02-T2."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F06-T2",
+    "problem": "Missing gate: AC4 and the build text depend on 'PANEL-P1 decides the blocking transport', but there is no edge. Over-gate: F06-D1 (dialog-minted FsBroker scopes) blocks the whole ticket although draw.io's main reads/writes with node:fs (electron.js:1-2) under legacy, so the dialog broker slice does not consume F06-D1. External predecessor KEL-140 is Backlog.",
+    "fix": "Split: dialog broker (edges F06-T1, F02-T2, PANEL-P1) vs dialog-minted scopes (edges F06-D1, KEL-140 artifact) — the latter is `next`."
+   },
+   {
+    "key": "X05-T2",
+    "problem": "Declared 'serial step 0 before family fan-out' but no ticket is blocked by it — the gate is fictional. Per-family reserved id ranges also conflict with F04-EPIC's 'one fixed control channel, no runtime-minted ids' design.",
+    "fix": "Either add it as a predecessor of every ticket that introduces a kipc channel (F02-T2, F04-T2/T3, F06-T2/T4/T5, F08-T1) or drop the 'step 0' claim; cut reserved family ranges."
+   },
+   {
+    "key": "PANEL-P3",
+    "problem": "No ticket depends on it although it decides the descriptor set, the denominator and config-only vs config+N. Decisions with zero dependents that are cited in ticket prose as conditions: F02-A6 (F02-T5), F06-D3 (F06-T4/T5/T6 use app.system tokens), F07-E1 (F07-T1 'env per the open decision'), F08-D6 (F08-T2), X01-A5 (X01-T2 normalisers), X04-D3 (F05-T4).",
+    "fix": "Add the edges named above so each prose condition is a graph edge consuming a named output."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F06-T3",
+    "violation": "Title and build text commit to a 'confirm-per-scheme grant' while the governing permission-model decision (X04-D4) is open and F06-EPIC's never list contains 'scheme-wide shell.open globs'. A confirm-class token is a scheme-wide allow mediated by a click — a new authorization source for generated default-deny that needs an approved spec before it appears as a build instruction.",
+    "fix": "Retitle to 'shell broker under the grant shape decided in X04-D4'; move the confirm flow into the decision packet."
+   },
+   {
+    "key": "F06-T2",
+    "violation": "Runtime-minted grants: dialog-chosen paths 'registered as generation-bound retained scopes' add a grant source outside the generated manifest (unique #4: generated, host-enforced default-deny). The ticket embeds the unapproved shape (F06-D1 is 'proposed (unrefuted)') as its build and AC.",
+    "fix": "Keep the shape only in F06-D1 until an approved spec exists; the first-proof slice returns paths only (legacy ambient fs, forfeit already printed)."
+   },
+   {
+    "key": "F01-T1, F02-T1, F03-T1, F04-T1, F05-T1, F06-T1",
+    "violation": "'Entries may fail (red) until the implementing tickets land; they must not be skipped or retried' collides with the verification floor (reported passing workspace tests; merge admission enforced — KEL-128 Done) and with 'MUST NOT weaken tests / skip gates'. No mechanism is named that lets a red entry coexist with a green required gate.",
+    "fix": "State the mechanism as a contract: entries are KEL-74 cells recorded with an explicit expected status (fail/unknown) asserted by the runner, flipped to pass in the implementing PR; a silently red or ignored test is not allowed."
+   },
+   {
+    "key": "F05-T6, F06-T6, F08-T2",
+    "violation": "Features without a spec: labelled ready-for-agent 'task' with Review gates none/permission-model, yet they add implementation — net.fetch event-ordering facade and a new keld-native net row (F05-T6); Notification broker + secrets module + typed facades for eleven modules (F06-T6); app.getAppMetrics as a new host Call (F08-T2). Also 'one concern per PR'.",
+    "fix": "Reduce each to publishing scoreboard rows; any broker/Call/facade becomes its own needs-spec ticket when a corpus call site demands it."
+   },
+   {
+    "key": "F06-T1, F06-T6, X03-T2, X05-T1",
+    "violation": "Doctrine §11/§14: marked ready-for-agent although their epics state the research is 'NOT yet independently refuted — batch 2' (swarm.json holds 0 refuter verdicts for F06, X03, X05).",
+    "fix": "Hold at needs-triage until the batch-2 verdicts are applied; then relabel."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F02-T3",
+    "problem": "AC1 'draw.io close dance ... completes without data loss and without timeouts' is not binary (no observable for data loss; 'without timeouts' bans a mechanism) and, for a modified document, is unsatisfiable while F06-T2 AC4 makes showMessageBoxSync throw. Negative control 'host auto-closing on a timeout fails the data-loss test' needs a time source — unspecified, and sleeps are banned.",
+    "fix": "Two ACs: (a) unmodified document: close → isModified → destroy → exactly one `closed`; (b) modified document: prompt shown, Save path writes the file then destroys — explicitly gated on the PANEL-P1 outcome. Negative control: inject the host timer through a controllable clock."
+   },
+   {
+    "key": "F02-T5, F03-T2, F04-T4, F06-T6",
+    "problem": "Disjunctive ACs that cannot fail: 'either implemented or a typed ▲' (F02-T5 AC2), 'either pass the same entries or carry an explicit per-engine ▲' (F03-T2 AC4), '✔ or ▲' (F04-T4 AC4), 'round-trips once the broker lands; until then the typed error' (F06-T6 AC2).",
+    "fix": "Choose the branch per platform in the ticket and assert that one."
+   },
+   {
+    "key": "F04-T3, F03-T3, F03-T4, F06-T3, F06-T4",
+    "problem": "First-proof-relevant tickets carry Zettlr acceptance criteria (e.g. F04-T3 AC2 'Zettlr invoke/handle with 186 sites completes mount', F06-T4 '45 accelerators'), so they cannot close at the draw.io milestone.",
+    "fix": "Move Zettlr ACs to follow-up tickets labelled next."
+   },
+   {
+    "key": "F06-T2, F06-T4, F06-T5, F06-T6, F01-T5, F09-T1",
+    "problem": "Oversized: F06-T2 (4 dialog kinds × sync variants + scope minting + parenting, two review gates), F06-T4 (Menu + Tray), F06-T5 (4 modules, 27 members), F06-T6 (11 modules), F01-T5 (lock + second-instance + open-file + open-url + protocol client), F09-T1 (KEL-53 state machine + guarded calls + two facades).",
+    "fix": "Split along the first-proof slices named in the yagni rows; each slice one concern, one review gate set."
+   },
+   {
+    "key": "F06-T6",
+    "problem": "AC3 ('`capture` code/spec mismatch is closed in one PR') is a keld-native module-list defect discovered here, not part of an Electron rows ticket.",
+    "fix": "Park it as its own issue on the keld-native owner (doctrine §13: discovered here ≠ must change here)."
+   },
+   {
+    "key": "F01-A4, F03-D4, F04-A1, F04-A4, X02-A1, F06-D1, X04-D4",
+    "problem": "Filed as 'open (not resolvable from current evidence)' with body '_No evidence-backed resolution yet; see the unit research note_' — the doctrine's banned 'needs discussion'. Most are ownership choices with a stated recommendation (X02-A1 even contains one), not evidence gaps.",
+    "fix": "Each gets a decision packet in the issue body: options, cost, new invariant, falsifier, recommendation, the one remaining question; resolve the ones evidence already determines (X02-A1, F04-A4)."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F06-T1",
+    "milestone": "first-proof",
+    "reason": "Slice only: dialog result shapes and menu role semantics precede the dialog/menu slices. Park clipboard/nativeImage/screen entries beyond workArea."
+   },
+   {
+    "key": "F06-T2",
+    "milestone": "first-proof",
+    "reason": "open and save go through dialog.showOpenDialog/showSaveDialog parented to the focused window (:4191-4230) and the unsaved prompt is dialog.showMessageBoxSync (:876). Park dialog-minted FsBroker scopes: the main process uses node:fs (:1-2) under the legacy profile, so they serve only strict."
+   },
+   {
+    "key": "F06-T3",
+    "milestone": "next",
+    "reason": "shell.openExternal is reached from Help menu items and the window-open handler (:2024, :2028, :4355), none of them on the four steps; openPath/trashItem are Zettlr demand."
+   },
+   {
+    "key": "F06-T4",
+    "milestone": "first-proof",
+    "reason": "Slice only: Menu.buildFromTemplate + setApplicationMenu with host-side roles run at ready on macOS (:2017-2069); undo/cut/copy/paste/close/quit roles (:2042-2059) back the edit and close steps. Park Tray (Zettlr) and popup."
+   },
+   {
+    "key": "F06-T5",
+    "milestone": "first-proof",
+    "reason": "Slice only: synchronous screen.getAllDisplays()/getPrimaryDisplay().workArea and nativeTheme.shouldUseDarkColors at window construction (:717, :740-741). Park clipboard and nativeImage (:4282-4291, off the four steps)."
+   },
+   {
+    "key": "F06-T6",
+    "milestone": "next",
+    "reason": "Notification and systemPreferences have Zettlr call sites; F06-EPIC records zero use of globalShortcut, powerMonitor, powerSaveBlocker, safeStorage, pushNotifications, inAppPurchase, ShareMenu, desktopCapturer — those parts are parked."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "F06-T2",
+    "claim": "AC1 'draw.io open → edit → save completes through the broker with no manifest widening'; AC2 'a sibling outside the declared pattern is denied'.",
+    "problem": "draw.io's main process reads and writes files with node:fs (imports at electron.js:1-2; saveFile/readFile actions at :4441-4493). Under the legacy profile those bytes never traverse the FsBroker — only the dialog does — so AC2 is false for draw.io (ambient fs reads the sibling) and AC1 overstates what the broker mediates. The MAP itself says keld-native brokers only fs.read/fs.write and strict-profile draw.io is out of scope.",
+    "fix": "FACT: under LegacySandboxOff the dialog broker returns paths; file I/O is ambient node:fs and is recorded as forfeited containment. The scope-minting ACs apply to an @keld/api fixture and to the later strict-profile spec, not to draw.io."
+   },
+   {
+    "key": "F06-T6 / F06-EPIC",
+    "claim": "'safeStorage over a host `secrets` module' with predecessor 'KEL-89 secrets' / 'KEL-89 (secrets/auth)'.",
+    "problem": "KEL-89 is 'spec: keld-auth — OS-broker authentication capability (WAM / ASWebAuthenticationSession / xdg-portal, loopback+PKCE fallback)' (Linear, fetched 2026-10-06). It is not a secret-storage owner; no secrets module owner was found.",
+    "fix": "UNKNOWN: owner of a host secrets module (none identified; KEL-89 is authentication). Zero corpus demand for safeStorage — park."
+   },
+   {
+    "key": "X04-D4, F06-D4, F06-T3",
+    "claim": "'Needs the KEL-208 owner ruling' / predecessor 'KEL-208/KEL-209 authority rule'.",
+    "problem": "KEL-208 is Done and KEL-209 is closed as Duplicate (Linear, fetched 2026-10-06). A completed bug fix has no owner waiting to rule; the open question is a grammar decision for arch 03 §2.",
+    "fix": "FACT: the authority-boundary fix landed under KEL-208. DECISION OWNER: the permission-model owner for arch 03 §2 (KEL-102 is the live In-Progress guard spec issue). Provide the decision packet."
+   },
+   {
+    "key": "X05-EPIC, F06-EPIC, X03-EPIC",
+    "claim": "Sections titled 'Design facts' for units with zero refuter verdicts ('NOT yet independently refuted — batch 2').",
+    "problem": "The headings disclose it, but the child tickets (F06-T1, F06-T6, X03-T2, X05-T1) are labelled ready-for-agent and restate the same statements without the caveat.",
+    "fix": "Retitle 'Proposed (unrefuted)'; carry the label into each child ticket until batch-2 verdicts are applied."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "F02-T3",
+     "F06-T2",
+     "PANEL-P1",
+     "X02-T4"
+    ],
+    "coupling": "The unsaved-prompt cell couples three atoms with no edges between them. draw.io sets modifiedModalOpen=true (:866) and then calls showMessageBoxSync (:876) inside an async ipcMain listener; if F06-T2's SCAFFOLDED throw fires, the flag is never cleared and every later close is ignored by the guard at :853 — the window can never close. F02-T3 AC1 and F06-T2 AC4 are mutually exclusive for a modified document.",
+    "fix": "New atom 'blocking host CALL from a Bun role' (transport ticket) with edges PANEL-P1 → transport → F06-T2(sync) → X02-T4(close cell); F02-T3 AC1 split into unmodified/modified. If P1 fails, a recorded decision 'draw.io = config + 1 edit'."
+   },
+   {
+    "keys": [
+     "F06-T4",
+     "F02-T3",
+     "F01-T3"
+    ],
+    "coupling": "F06-T4 executes menu `role` items host-side 'without a round trip'. draw.io's menu has role 'close' (:2047) and role 'quit' (:2042); executed natively they would bypass the cancelable close/quit protocol that F02-T3/F01-T3 exist to provide.",
+    "fix": "AC in F06-T4: role close/quit enter the same CloseRequested/quit-request path as the window button and Cmd+Q; edge F06-T4 ← F02-T3."
+   },
+   {
+    "keys": [
+     "F02-T2",
+     "F06-T5",
+     "PANEL-P1"
+    ],
+    "coupling": "Host-pushed mirrors (window bounds/focus, displays, theme) write events toward a role that may be parked in a sync dialog; the link stalls at 8 KiB (measured probe). Mirror event volume ('move'/'resize') therefore changes whether the blocking transport is safe, and a parked role reads stale mirror values on wake.",
+    "fix": "PANEL-P1 arm B adds a mirror-event flood during the park; F02-T2 states the staleness contract (ordered replay before the sync call returns)."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "F06-T1",
+    "why_now": "Takeable after batch-2 refutation of F06 is applied; dialog result and menu-role entries only.",
+    "consumes": "KEL-237 manifest/runner; pinned dialog.md, menu.md, menu-item.md."
+   },
+   {
+    "key": "F06-T5",
+    "why_now": "Next: after F06-T1 and F02-T2's mirror primitive — screen workArea + nativeTheme.shouldUseDarkColors only.",
+    "consumes": "F02-T2 mirror primitive; KEL-102 admission path (In Progress) for new host channels."
+   },
+   {
+    "key": "F06-T4",
+    "why_now": "Next: after F06-T1, F02-T2, F02-T3 — application menu with host-side roles only.",
+    "consumes": "F06-T1 role entries; close/quit protocol so roles 'close'/'quit' are cancelable."
+   },
+   {
+    "key": "F06-T2",
+    "why_now": "Next: after F06-T1 and F02-T2 — open/save/message dialogs returning paths (no scope minting); sync variant per PANEL-P1 outcome.",
+    "consumes": "F06-T1 dialog entries; F02-T2 window identity for parenting; PANEL-P1 decision."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [],
+ "refuter_verdicts_batch2": [
+  {
+   "unit": "F06",
+   "lens": "invariants",
+   "verdict": {
+    "lens": "Keld invariants, ownership and reuse (four uniques; default-deny; no Electron-isms in keld-core/keld-ipc; one evaluator/parser/policy owner; live Linear owners; unmeasured perf decides nothing; spec+Linear gate; KEL-127 direction). Linear team KELD was live and readable in this session (2026-10-06): KEL-15, 16, 17, 78, 80, 89, 102, 103, 127, 130, 208, 209, 212 fetched read-only; nothing written.",
+    "verdicts": [
+     {
+      "decision_id": "F06-D1",
+      "verdict": "refuted",
+      "reason": "The need is real, but the proposed mechanism fails on three independent atoms. (1) OWNER: it registers dialog paths 'into the same FsBroker retained-scope set', but FsBroker never decides Allow. FsBroker::read/write call dispatch_privileged, which calls evaluate(manifest,...) and lends a ScopePermit whose grant_index selects the retained grant; 'Only the guard can mint a permit' and it names a manifest grant. A dialog path absent from the manifest is denied by evaluate before the broker runs. So the mint is either a keld-guard API/permission-model change (not named, and in tension with the approved KEL-102 'immutable-host-session-snapshot' model and D9 'no manifest-schema change') or a second policy owner in keld-native (forbidden by KEL-102-D5 and the spec's Reuse rule). The stated unknown ('re-preparation cost') misclassifies an ownership question as a performance one. (2) ORACLE: the sibling pattern `<name>.*` (prototype: `file.bkp`) does not match draw.io. Its drafts and backups are prefix-named in the same directory: `.$<basename><unique>.dtmp`, `.$<basename>.bkp`, plus legacy `~$` forms. (3) LIFECYCLE: 'never persisted' and 'dialog only' contradict the same oracle. draw.io persists blessedPaths (cap 500) so Open Recent works after restart, and it also blesses paths from file association (open-file) and command-line argv. Separately, the first proof runs under LegacySandboxOff where Bun has ambient fs, so this decision is not needed for that milestone.",
+      "evidence": "FACT crates/keld-native/src/fs.rs:345-349 (prepare stores verified digest), :370/:411 (dispatch_privileged), :800 (retained grant found by permit.grant_index()). FACT crates/keld-guard/src/lib.rs:151-166 (ScopePermit: only the guard mints; names the manifest grant), :707-736 (evaluate). FACT docs/architecture/03-security.md §1 ('native code cannot mint a permit or choose a grant index'). FACT docs/specs/kel102-host-guard-enforcement.md:79 (permission_model approved:immutable-host-session-snapshot), :88 (D5 sole evaluator), :92 (D9 no manifest-schema change), :220-221 (no per-native-module policy check). FACT docs/specs/kel130-retained-filesystem.md:69 (non-goal 'dialog grant'). FACT corpus drawio-desktop@2edf9fb src/main/electron.js:3433-3438 (DRAFT_PREFEX '.$', BKP_PREFEX '.$', OLD '~$', '.dtmp', '.bkp'), :3876, :4024, :213-222 (persisted across sessions for Open Recent), :1754/:1803 (argv), :2151 (open-file). FACT arch 05 §3 fs+ row ('raw access only in an explicit sandbox-off legacy tier'). FACT Linear fetched 2026-10-06: KEL-130 Done (2026-09-21); KEL-102 In Progress.",
+      "correction": "Keep the question open and restate the answer as: (a) the session-grant set is owned and evaluated by keld-guard inside dispatch_privileged (host-minted, generation-bound, distinguishable from manifest grants in the permit and in deny text); FsBroker only retains handles for what the guard selected. This needs an approved spec amending KEL-102-D5/D9 and the KEL-130 non-goal, with permission-model and public-API gates; live owner KEL-102 (In Progress). (b) No host-hardcoded sibling glob: sibling authority is a declared per-app rule (manifest or keld.compat.ts) whose draw.io instance is the prefix form `.$<basename>*` / `~$<basename>*` in the chosen file's directory; the prototype must assert `.$file.bkp` allowed and `file.bkp` denied. (c) Enumerate every user-intent mint (dialog, open-file/file association, argv, drag-drop, tray drop-files) and decide persistence for recents inside this decision rather than deferring it. (d) Park for the first proof: under LegacySandboxOff no mint is needed, so F06-T2 must not be blocked by F06-D1."
+     },
+     {
+      "decision_id": "F06-D2",
+      "verdict": "survives",
+      "reason": "Host-main-thread ownership with host-assigned (generation, id) handles, one bounded template submission, host-side role execution and generation-bound lifetime is consistent with every invariant I could test. AppKit objects must live on the host main thread; a Bun-owned menu would be a second owner of UI state; generation-bound release matches the KEL-75 revocation model; one host-side accelerator parser is the single-owner shape. The pinned oracle supports the role/click rule and the 'properties can still be dynamically modified' rule. The latency number is correctly labelled unmeasured and decides nothing. Four amendments are needed, none of which overturn the decision (see correction).",
+      "evidence": "FACT docs/architecture/01-overview.md:140 ('Host main thread = platform UI thread'). FACT electron-api.json v44.4.5 MenuItem role ('when specified the `click` property will be ignored') and Menu.getApplicationMenu note. FACT docs/architecture/05-webview-and-native.md §3 menu row ('role items') and tray row place these in keld-native. FACT docs/architecture/02-ipc.md:117 (EVENT frame kind) and :213 (host already sends Ready/LastWindowClosed Events). FACT docs/specs/kel102-host-guard-enforcement.md:685-697 (T3 scope is the fs vertical plus admission coordinator/quiesce/drain; no event or push channel). FACT Zettlr serialises appMenu.items and reads item.checked (research receipt, not reopened by me).",
+      "correction": "(1) blocked_by 'KEL-102 T3 event/push channel admission' is misattributed: T3 owns privileged-channel admission/drain only; host-to-Bun EVENT frames already exist. The real dependency is T3 admission plus a new native-events channel contract that has no Linear owner yet. (2) Sync getters (item.checked, menu.items) force a Bun-side mirror, so state it honestly as 'host authoritative, Bun mirror updated by write-through and by click events before the handler runs'; rejected alternative (a) is not fully avoided. (3) Name the owner of the default menu and the Electron role vocabulary: the Electron-shaped default menu should be a facade-submitted template at ready (no Electron default in Rust), and role strings map to generic keld-native actions; neither may live in keld-core or keld-ipc. (4) quit/close roles are not 'no round trip': they enter the resolved async close/quit veto path."
+     },
+     {
+      "decision_id": "F06-D3",
+      "verdict": "survives",
+      "reason": "Mechanically verified against current code: evaluate(manifest, AppProcess, \"system\", \"clipboard.read\") resolves grant_node to app.system, requires a non-empty all-string array, rejects only a literal `..` segment, and path_in_scope returns exact-string equality for a pattern without `/**`, so it Allows with zero guard change. Non-AppProcess principals are denied first; dispatch_privileged applies the fs grammar only to fs.read/fs.write. Deny text is correct and followable ('Append \"clipboard.read\" to `/app/system`'). The shape is the one the owning spec already shows. No accidental wildcard exists (`/**` or `**` entries do not match a capability literal). It stays a proposal because making `system` live is a manifest-semantics change that KEL-102-D9 routes to its own review gate.",
+      "evidence": "FACT crates/keld-guard/src/lib.rs:707-736, :1109-1120, :1199-1216, :348-362 (fix text), :583-593 (json_pointer_for). FACT crates/keld-ipc/src/guard_dispatch.rs:73-76. FACT docs/architecture/03-security.md:87 (`\"system\": [\"clipboard.read\", ...]`). FACT docs/specs/kel102-host-guard-enforcement.md:88, :92, :215. FACT crates/keld-cli/src/verb.rs:24,75 and main.rs:105 (`migrate` reserved, not live). FACT crates/keld-guard/src/lib.rs:1907-1937 and crates/keld-wv/src/media.rs:130 (existing resource-less precedent: operation=`web.camera`, resource sentinel `*`). FACT Linear fetched 2026-10-06: KEL-16 Done (completed 2026-07-10), KEL-15 Done (2026-07-10), KEL-17 Done, KEL-102 In Progress.",
+      "correction": "(1) blocked_by names closed owners: KEL-16 and KEL-15 are Done RFCs and cannot confirm or carry a schema update. The live owner is KEL-102 (D9: any schema delta needs its own explicit permission-model gate) plus the keld-guard crate rules. (2) 'the usage scanner already classifies modules' is not a Keld component: `keld migrate` is reserved/not live and the scanner is scratchpad tooling whose output the briefing calls leads, not facts. (3) The published wording 'the guard's accepted operation set is hard-coded to fs.read/fs.write' is imprecise: evaluate has no operation allowlist; what is limited is which channels are registered. (4) Record the unconsidered alternative already in the guard tests (capability as operation with sentinel resource `*`, e.g. app.clipboard.read: [\"*\"]) and why the arch 03 literal list wins. (5) Resolve the contradiction with the unit's own security_mapping rows that say 'no grant'/'implicit' (see extra findings)."
+     },
+     {
+      "decision_id": "F06-D4",
+      "verdict": "refuted",
+      "reason": "The conflict is real and verified (scheme-only globs are inert by the live KEL-208 rule; draw.io opens any http(s)/mailto/tel/callto URL). The proposed answer is wrong on two concrete points. (1) GRAMMAR OWNER: `confirm:https` placed inside the `shell.open` scope array is a second grammar in one field. Under the single live matcher it is an exact-match scope for the literal resource \"confirm:https\", so permission-explain (which keeps literal evaluate semantics per KEL-102-D5) would misread it, and making it mean something needs a new evaluate arm. That is exactly what this unit rejects in D3 alternative (a). A zero-grammar spelling exists using D3's own technique. (2) SCORING: a host confirmation prompt is behaviour Electron never exhibits (research 186 row 3: 'no application allowlist or origin/prompt check'), so calling the refusal path 'check-shaped' parity is false; KEL-127 direction forbids silently replacing observable behaviour. Also: runtime user consent is a new authority-mint mechanism that arch 03 does not contain (no prompt/confirm concept; KEL-16's 'runtime prompting' item never landed in the spec), so it needs an approved spec, not a grant spelling; and the scheme list omits draw.io's `callto`. Not needed for the first proof workflow (open, edit, save, close prompt).",
+      "evidence": "FACT crates/keld-guard/src/lib.rs:1177-1216 (names_no_destination; non-`/**` pattern is path == pattern). FACT docs/architecture/03-security.md:104-123, :144-146 ('No glob grants any host for a multi-character scheme'; inert grant noted under KEL-212). FACT corpus drawio electron.js:4348 `allowedUrls = /^(?:https?|mailto|tel|callto):/i`, :4350-4358, :2024/:2028 literal hosts. FACT docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md:59. FACT electron-api.json v44.4.5 shell.openExternal returns Promise<void>, 'Max 2081 characters on Windows'. FACT Linear fetched 2026-10-06: KEL-208 Done (completed 2026-09-09), KEL-209 Duplicate, KEL-212 In Progress (inert-grant deny text and doctor), KEL-16 Done, KEL-102 In Progress; KEL-127 decision 4 ('does not justify ... silently replacing observable behavior').",
+      "correction": "Restate as a decision packet for the permission-model owner (KEL-102 live; KEL-212 for deny text/doctor): Option A exact literal origins only (draw.io/Zettlr arbitrary links denied, declared divergence, zero new mechanism). Option B confirmation class spelled as its own capability node, e.g. app.shell.confirm: [\"https\",\"mailto\",\"tel\",\"callto\"], evaluated by the existing matcher as operation=shell.confirm, resource=<canonical scheme>; the host shell broker asks the guard twice (literal, then confirm) and renders the prompt; scored as a declared divergence, never a match. Option C legacy profile only. Recommendation B, gated on an approved spec that defines user consent as an authority mint (who renders, what is shown, replay/rate limits, no persistence) with permission-model and public-API gates. Remove 'KEL-208 owner ruling' and 'KEL-16' as blockers (both closed). Park behind the first proof."
+     },
+     {
+      "decision_id": "F06-D5",
+      "verdict": "refuted",
+      "reason": "Two load-bearing parts fail; the baseline survives. SURVIVES: the v44.4.5 W3C promise shape as the scored baseline (pinned model has only Promise-returning read/write methods and no writeImage; draw.io on ^44.2.0 uses it) and host-side codecs (arch 04 §3 item 4). REFUTED (1) `clipboardLegacySync`: it 'reuses the KEL-127 blocking CALL primitive', but no such primitive exists for Bun main to host. KEL-127 contains no deadline/rate-limit/dev-warn rule (that sentence is arch 02 and is about renderer sendSync); the panel's resolved fact is that the Bun kipc client cannot block and a parked main thread stalls the only link after 8,192 bytes, far below a multi-MiB image reply. The only candidate is a KEL-80-owned worker transport needing a spec plus wire/public-API gates; D5's blocked_by omits it. The 43-era methods are also absent from the pinned oracle, so no conformance entry can cite a pinned doc sentence without pinning a second Electron version (a second source of truth). It is Zettlr-only, so YAGNI-parked. REFUTED (2) 'createFromDataURL(png).toPNG() is a local byte pass-through': pinned Electron decodes the PNG into an ImageSkia at creation and keeps no PNG bytes, so toPNG returns a re-encode. Pass-through would preserve ancillary chunks and accept corrupt PNGs as non-empty where Electron does not. The same hidden coupling applies to sync createFromPath and non-PNG toPNG under strict (sync results that need the host).",
+      "evidence": "FACT electron-api.json v44.4.5 clipboard: readText/writeText/read/write/has return Promise, clear void, no writeImage. FACT corpus drawio electron.js:4282-4291 and package.json `^44.2.0`; zettlr package.json `^43.6.0`. FACT Electron v44.4.5 shell/common/api/electron_api_native_image.cc (raw.githubusercontent.com, retrieved 2026-10-06): CreateFromDataURL -> CreateFromPNG -> AddImageSkiaRepFromPNG -> gfx::Image(image_skia) (lines 469-474, 580-591); ToPNG uses image_.As1xPNGBytes() else PNGCodec::EncodeBGRASkBitmap (256-276). INFERENCE: output bytes differ from input (Chromium gfx::Image::As1xPNGBytes not fetched). FACT docs/architecture/02-ipc.md:336-337 (sendSync blocking CALL text lives here). FACT Linear fetched 2026-10-06: KEL-127 Todo, unassigned, direction item 5 ('Async-first native APIs do not authorize pretending asynchronous calls preserve synchronous Electron semantics') and no blocking-CALL rule; KEL-80 Backlog, unassigned. FACT panel/synthesis.md:44-48 (cannot block; 8,192-byte stall; worker-owned single link is KEL-80-owned).",
+      "correction": "Split the decision. Keep: W3C baseline scored as match; NativeImage codecs host-side. Change: (a) delete `clipboardLegacySync` from the design and record 43-shape sync clipboard as unsupported with a typed fix-it, to be revisited only if Zettlr is still on 43 when it is scheduled and the KEL-80 transport spec exists; correct the citation from KEL-127 to arch 02. (b) Replace 'byte pass-through' with one of two declared contracts: host decode and re-encode (pixel-equivalent, sync result therefore blocked on the same transport), or Bun pass-through scored as a declared divergence. Cheapest discriminating experiment: on pinned Electron 44.4.5 run createFromDataURL(pngWithTextChunk).toPNG(), then compare bytes and chunk list with the input, and repeat with a truncated PNG for isEmpty(). Change F06-T1's 'byte equality' entry to whatever that run shows. (c) Add the sync-result coupling (createFromPath, toPNG/toJPEG from non-PNG, resize/crop then getSize) as an explicit blocked_by on the transport decision; ceilings stay proposals until measured."
+     },
+     {
+      "decision_id": "F06-D6",
+      "verdict": "survives",
+      "reason": "Every supporting claim reopened and held: strict children are denied keychain/secrets, so brokering in the host is forced; the keld-auth spec names durable custody via a `secrets` module as a fast-follow tier with its own spec; arch 05 maps `secrets` to safeStorage; the pinned doc says basic_text is 'unprotected ... hardcoded plaintext password', so failing closed is the default-deny-consistent choice; corpus use is zero in all three apps, so Tier 2 parking is correct. Rejected alternative (b) is right (key material must not cross kipc into the strict child). Two gaps must be added before this is used to write a ticket.",
+      "evidence": "FACT docs/specs/kel78-strict-profile-sandbox.md:227 ('Secrets / keychain / credential tokens | deny'). FACT docs/specs/keld-auth.md:150-152, :1128-1131, :1274 (D5). FACT docs/architecture/05-webview-and-native.md:258; docs/architecture/03-security.md:88 (`secrets: [\"keychain:myapp/**\"]`, which the live matcher treats as a named destination). FACT electron-api.json v44.4.5 safeStorage: encryptString returns Buffer and decryptString returns String (synchronous), isEncryptionAvailable boolean, getSelectedStorageBackend string, plus Async variants; basic_text text confirmed. FACT corpus grep: 0 files reference safeStorage in drawio-desktop, zettlr, electron-quick-start. FACT Linear fetched 2026-10-06: KEL-89 In Progress (description never mentions a secrets spec), KEL-78 In Progress, KEL-103 In Progress, KEL-135 In Progress; a KELD search for 'secrets' returned no secrets-module issue in the first 30 results (hasNextPage true).",
+      "correction": "(1) Hidden coupling: encryptString, decryptString, isEncryptionAvailable and getSelectedStorageBackend are synchronous in the pinned API. With host-side crypto they need the same unbuilt blocking transport as every other sync main-process call (KEL-80-owned), or the two status getters become boot-static values. Only the *Async members are deliverable on today's link; say so and add the blocker. (2) Owner gap: 'KEL-89 D5 secrets spec' is not an owned work item. KEL-89 names the tier but no Linear issue owns the `secrets` module spec; record that as a missing owner for the orchestrator to route (do not create it from a subagent). (3) State that the key namespace is derived by the host from authenticated app identity (KEL-135), never from the manifest's `keychain:<name>` string."
+     }
+    ],
+    "extra_findings": [
+     {
+      "severity": "high",
+      "finding": "F06-T2 (the dialog broker the first proof needs for open, save and the close prompt) is blocked by F06-D1 and by KEL-102/T3 and KEL-140, all of which exist only for strict-profile fs authority. The first proof is resolved as LegacySandboxOff, where Bun has ambient fs and no dialog-minted grant is needed. As published, the first-proof path waits on an open permission-model decision and two unstarted spine items for no milestone benefit.",
+      "evidence": "FACT swarm.json F06-T2 blocked_by_keys [F06-T1, F06-D1, F02-T2], blocked_by_external [KEL-130 FsBroker, KEL-102/T3 admission, KEL-140]; acceptance 'draw.io open, edit, save completes through the broker with no manifest widening'. FACT arch 05 §3 fs+ row (raw access in sandbox-off legacy tier). FACT panel/synthesis.md:64 (first proof under legacy profile, 4-step workflow). FACT Linear fetched 2026-10-06: KEL-140 Backlog, KEL-102 In Progress. Suggested correction: split T2 into (a) dialog broker returning paths and message-box results under the legacy profile, and (b) strict-profile session grants blocked by F06-D1."
+     },
+     {
+      "severity": "high",
+      "finding": "Several owners the unit cites as blockers or rulers are closed in live Linear, and the live sequencing owner forbids this work before G2. KEL-16, KEL-15 and KEL-17 are Done RFCs; KEL-208 is Done and KEL-209 is Duplicate (F06-T3 lists 'KEL-208/KEL-209 authority rule' as an external blocker and F06-D4 asks for a 'KEL-208 owner ruling'). KEL-127 (Todo, unassigned) lists as a non-goal 'broad Electron API expansion, additional native-module names ... before G2', and the G2/G3 items KEL-140, KEL-141, KEL-143, KEL-144 are all Backlog. No F06 ticket carries that gate.",
+      "evidence": "FACT Linear, fetched 2026-10-06: KEL-16 Done (completed 2026-07-10); KEL-15 Done (2026-07-10); KEL-17 Done; KEL-208 Done (2026-09-09); KEL-209 Duplicate; KEL-212 In Progress; KEL-127 Todo with the quoted Non-goals line and 'Future native-role, generic schema or compatibility expansion is not a prerequisite for this spine'; KEL-139 Done, KEL-142 Done, KEL-140/141/143/144 Backlog; KEL-80 Backlog and unassigned. Suggested correction: replace closed ids with KEL-102 and KEL-212 as live guard owners, and add the KEL-127 G2 gate to every F06 implementation ticket except the first-proof slice the map explicitly carves out."
+     },
+     {
+      "severity": "medium",
+      "finding": "Default-deny inconsistency inside the unit: D3 rejects 'implicit allow for low-risk UI via a hardcoded allowlist in keld-native', yet security_mapping marks showMessageBox/showErrorBox, shell.beep, screen, nativeTheme, powerMonitor and possibly Menu as 'no grant' or 'implicit' for AppProcess. The guard crate rule is 'unknown cap/channel/scope -> Deny. No interim allow'. An ungated native channel is only legitimate as a declared channel whose capability set is empty in the schema layer, decided by the guard/schema owner, never as a native-side allowlist.",
+      "evidence": "FACT crates/keld-guard/AGENTS.md ('Default-deny: unknown cap/channel/scope, missing manifest -> Deny. No interim allow'). FACT docs/architecture/03-security.md:172-173 (a channel's declared capability set must be a subset of the caller's grants). FACT swarm.json F06 security_mapping rows and D3 alternatives_rejected (c)."
+     },
+     {
+      "severity": "medium",
+      "finding": "The published ticket and the decision disagree on the sync clipboard mechanism. D5 says a quirk flag over a blocking CALL; F06-T5 says 'sync readText served from a changeCount-refreshed mirror'. A mirror means the host reads the pasteboard on every change and pushes contents to the app with no per-read guard evaluation, which changes what the clipboard.read grant means. Whether macOS pasteboard-privacy alerts fire for such programmatic reads is UNKNOWN and needs an Apple primary receipt before either mechanism is chosen.",
+      "evidence": "FACT swarm.json F06-T5 what_to_build versus F06-D5 proposed_answer. UNKNOWN: macOS NSPasteboard programmatic-read alert behaviour (not fetched)."
+     },
+     {
+      "severity": "medium",
+      "finding": "F06-T1's conformance entry '`createFromDataURL().toPNG()` byte equality for PNG input' is likely to be falsified by the oracle it must cite, and would then encode Keld's pass-through shortcut as the expected value (an oracle sharing the implementation's mistake).",
+      "evidence": "FACT Electron v44.4.5 shell/common/api/electron_api_native_image.cc lines 469-474, 580-591, 256-276 (decode to ImageSkia on create; toPNG returns As1xPNGBytes or a PNGCodec encode), retrieved 2026-10-06. INFERENCE that the bytes differ; experiment given under F06-D5."
+     },
+     {
+      "severity": "medium",
+      "finding": "Synchronous main-process members are a hidden cross-cutting dependency for F06 beyond showMessageBoxSync: safeStorage.encryptString/decryptString/isEncryptionAvailable, nativeImage.createFromPath and toPNG/toJPEG on non-PNG input, and any sync clipboard. Each needs either boot-static/mirrored values or the unbuilt KEL-80 worker-owned transport. Only F06-T2 names that gate today.",
+      "evidence": "FACT electron-api.json v44.4.5 return types (Buffer/String/boolean for the safeStorage members). FACT panel/synthesis.md:44-48. FACT Linear fetched 2026-10-06: KEL-80 Backlog, unassigned."
+     },
+     {
+      "severity": "low",
+      "finding": "Evidence attributions to fix in the research note: (a) 'KEL-127: sync replacement must stay a blocking CALL with deadline, rate limited, dev-warned' is not in KEL-127; the text is docs/architecture/02-ipc.md:336-337 and concerns renderer sendSync. (b) D1's prototype asserts `file.bkp`, which draw.io never writes. (c) D4's scheme list omits `callto`. (d) The summary's MODULES list omits `window` and `fs`, which are present in code.",
+      "evidence": "FACT Linear KEL-127 description fetched 2026-10-06; FACT docs/architecture/02-ipc.md:336-337; FACT drawio electron.js:3433-3438, :4348; FACT crates/keld-native/src/lib.rs:16-32."
+     },
+     {
+      "severity": "low",
+      "finding": "Confirmed code/spec mismatch the unit reported: arch 05 §3 lists a `capture (Tier 3)` module row that is absent from keld-native MODULES and is not covered by the sentence naming intentionally absent rows (process, pty, auth). Root AGENTS.md treats this as a bug to fix in one PR; it is a discovered item, not part of the first proof.",
+      "evidence": "FACT docs/architecture/05-webview-and-native.md:237-241 and :263; FACT crates/keld-native/src/lib.rs:16-32."
+     },
+     {
+      "severity": "info",
+      "finding": "Linear availability for the swarm: the Linear connector (team KELD) was reachable and readable throughout this run; get_issue with relations and list_issues both returned live data with no failures. No F06-specific Linear owner exists: a KELD search for 'dialog' returned 14 issues (complete page), none a dialog/menu/tray/shell broker. The mempalace MCP server failed to connect (executable not found) and was not used.",
+      "evidence": "FACT Linear fetched 2026-10-06 (13 issues read by id; searches 'dialog', 'secrets', 'macOS')."
+     }
+    ]
+   }
+  },
+  {
+   "unit": "F06",
+   "lens": "semantics",
+   "verdict": {
+    "lens": "Electron semantics accuracy and corpus demand (pinned Electron v44.4.5 docs + lib/ and shell/ sources, retrieved 2026-10-06 from raw.githubusercontent.com/electron/electron/v44.4.5; resolved call sites in corpus clones drawio-desktop@2edf9fb, zettlr@e6c7fd8, electron-quick-start@82dbb35; Keld HEAD b4b907c3; Linear read live 2026-10-06). Linear availability: CONFIRMED AVAILABLE in this session - 7 read-only get_issue calls succeeded (KEL-127, KEL-130, KEL-102, KEL-89, KEL-16, KEL-78, KEL-80); no writes made. Result: 1 refuted on its mint shape (D1), 1 refuted on four sub-claims (D5), 1 unresolved (D4), 3 survive with corrections (D2, D3, D6). Fetched docs/sources are cached at <scratchpad>/refute-f06-lens-sem/docs; two small probes at .../scratchpad/prototypes/f06-sem/.",
+    "verdicts": [
+     {
+      "decision_id": "F06-D1",
+      "verdict": "refuted",
+      "reason": "The direction (host-minted dynamic grants flowing into the FsBroker scope set; arch 05 dialog row 'scoped-path grants flow into fs scopes') stands, and the Electron return shapes are correct. But the specific mint shape is contradicted by the very drawio oracle the decision cites, on four points. (1) 'open -> fs.read leaf' is wrong: drawio blesses every open-dialog path and its write gate accepts any blessed path, so File>Open then Save writes back to the opened path with no save dialog. A read-only open grant fails F06-T2's own acceptance criterion 'draw.io open -> edit -> save completes'. (2) The sibling pattern '<name>.*' matches none of drawio's siblings: they are prefix-named ('.$' + basename + optional counter + '.dtmp', '.$' + basename + '.bkp', legacy '~$' prefix) and matched by startsWith. The trap's test oracle 'write <path>.bkp' is therefore also wrong. (3) 'revoked on generation death and never persisted' breaks Open Recent: drawio persists its blessed set (cap 500) in electron-store specifically so Open Recent works across launches, and it also blesses paths that never came from a dialog (argv, second-instance, macOS open-file). (4) Leaf grants do not cover Zettlr's directory picks (openDirectory + createDirectory), which need subtree read+write and are persisted as workspace roots. Sequencing: the first proof runs drawio under the explicit legacy profile (ambient fs), so D1 is not on the first-proof path and should be parked as a decision ticket, not designed in detail now.",
+      "evidence": "FACT corpus drawio-desktop/src/main/electron.js: lines 213-221 comment 'Persisted across sessions via electron-store so drawio's \"Open Recent\" ... still works', BLESSED_PATHS_KEY/BLESSED_PATHS_MAX=500 (221-248); showOpenDialog blesses each filePaths entry (4193-4208); assertWritablePath returns for blessedPaths.has(realpath) or isDraftOrBkpOfBlessed (3787-3822); DRAFT_PREFEX='.$', OLD_DRAFT_PREFEX='~$', DRAFT_EXT='.dtmp', BKP_PREFEX='.$', BKP_EXT='.bkp' (3433-3438); isDraftOrBkpOfBlessed uses base.startsWith(PREFIX + blessedBase) (3687-3705); bkpPath = dirname + BKP_PREFEX + basename + BKP_EXT (4024); non-dialog blessing at 1754 (second-instance CLI/file association), 1803 (argv), 2151 (app 'open-file'). FACT corpus zettlr/source/app/service-providers/windows/dialog/ask-directory.ts:34-52 properties ['openDirectory','createDirectory']. FACT dialog.md v44.4.5 lines 143-145, 269-271 (canceled/filePaths/bookmarks; filePath/bookmark) and line 57 securityScopedBookmarks macOS mas. FACT Keld docs/specs/kel130-retained-filesystem.md:69 excludes 'dialog grant'; docs/architecture/05-webview-and-native.md:248. FACT Linear fetched 2026-10-06: KEL-130 Done (assignee Amisha Ramani); KEL-102 In Progress, unassigned.",
+      "correction": "Rewrite the D1 packet as: (a) a dialog mint grants read+write on the chosen node for both open and save, and a subtree when the dialog was an openDirectory pick; (b) derivative-sibling authority is an app-declared manifest rule expressed as prefix/suffix around the granted basename (drawio needs prefixes '.$' and '~$' with suffixes '.dtmp'/'.bkp'), never a host-hard-coded '<name>.*'; (c) add the other OS-delivered path mints as explicit atoms (open-file, argv, second-instance) because they carry the same user intent with no dialog; (d) persistence across launches is an explicit owner decision with two options - session-only (Open Recent and workspace restore become a declared divergence that re-prompts) or host-persisted grants bound to app identity (the macOS analogue is the security-scoped bookmark the pinned dialog doc already exposes); (e) fix the trap oracle to write '.$<basename>.bkp' and '.$<basename>.dtmp', with '<dirname>/other.txt' as the negative control; (f) park behind the first proof (legacy profile). Also note every guard denial surfaced as a promise rejection inherits the unhandled-rejection hazard listed in extra findings."
+     },
+     {
+      "decision_id": "F06-D2",
+      "verdict": "survives",
+      "reason": "Host ownership of UI handles, host-to-Bun click dispatch with (commandId, focused window, KeyboardEvent), one shared accelerator parser, and host-side role execution all match Electron's own structure: one StringToAccelerator used by menu and globalShortcut; on macOS role items are wired to native selectors; click receives (event, focusedWindow, focusedWebContents). The doc quotes are exact. Four corrections do not overturn it. (1) The 'unknown' popup ordering is determinable from source for macOS: menu-will-close fires first, then the item click, then the popup callback (the close callback is deliberately posted async 'so that itemSelected runs before the close callback'). Zettlr's comment says the same. The F06 trap oracle 'click then will-close then callback' is wrong. (2) 'Electron ignores click when role is set' is the doc sentence, but the implementation falls back to the user click when role execution returns false (macOS-native roles in JS, or a window/webContents role with nothing focused), and quit/close roles run app.quit()/window.close(), which emit vetoable events - so 'without a round trip' is false for those two. (3) Item properties (checked, enabled, label, menu.items) are synchronous getters and the checkbox flip happens in JS on click, so Bun must hold the authoritative item state with the host as projection; the rejected alternative (a) 'two sources of truth' is partly unavoidable and the ticket should say which side is authoritative. (4) The default menu is a JS Menu built from five role items at will-finish-launching and is visible through Menu.getApplicationMenu(); building it 'host-side' only would make getApplicationMenu() return null where Electron returns a Menu - build it in the facade through the normal setApplicationMenu path and delete the special case. Sizing: first-proof demand is the application menu only (drawio: buildFromTemplate + setApplicationMenu with role items and a few click items; setApplicationMenu(null) off-mac). Tray, Notification and popup have Zettlr-only demand (one site each family); globalShortcut and powerSaveBlocker have zero resolved call sites. Split D2 so only the application-menu slice is on the first-proof path.",
+      "evidence": "FACT shell/browser/ui/cocoa/electron_menu_controller.mm v44.4.5 menuDidClose: 'model_->MenuWillClose(); // Post async task so that itemSelected runs before the close callback' then PostTask(popupCloseCallback). FACT corpus zettlr/source/app/service-providers/menu/index.ts:285-291 'this event unfortunately is emitted *before* the item click is triggered. See electron/electron#28719' with setTimeout 100. FACT lib/browser/api/menu-item.ts v44.4.5: 'if (!roles.execute(this.role, focusedWindow, focusedWebContents)) { if (typeof click === \"function\") { click(this, focusedWindow, event); } ... }' and checkbox flip 'this.checked = !this.checked' in click. FACT lib/browser/api/menu-item-roles.ts: canExecuteRole 'macOS handles all roles natively except for a few'; close: windowMethod w.close(). FACT lib/browser/default-menu.ts + lib/browser/init.ts:181 app.once('will-finish-launching', setDefaultApplicationMenu) building appMenu/fileMenu/editMenu/viewMenu/windowMenu. FACT menu.md v44.4.5 getApplicationMenu note and popup options; menu-item.md click(menuItem, window: BaseWindow | undefined, event); tutorial/tray.md:58 GC comment; structures/keyboard-event.md. FACT shell/browser/ui/accelerator_util.cc: invalid accelerator strings LOG and return false (no throw). FACT corpus: drawio electron.js:2068-2073; Zettlr tray/index.ts:158-180, show-notification.ts:43; fixed-string grep for globalShortcut., powerSaveBlocker., safeStorage. returns zero sites in all three clones.",
+      "correction": "Keep the decision; amend the ticket text: record macOS order will-close -> click -> callback as the pinned oracle (Windows/Linux order remains unknown: read the views menu runner or run a fixture); state that Bun-side item state is authoritative for getters and the host is a projection; build the default menu in the facade; add a conformance cell for the role+click fallback when no window is focused; route quit/close roles through the existing veto path; split the task so the application-menu slice is the only first-proof work and Tray/Notification/popup/shortcut/power are parked."
+     },
+     {
+      "decision_id": "F06-D3",
+      "verdict": "survives",
+      "reason": "Re-opened the owning code rather than the claim: evaluate(manifest, AppProcess, \"system\", \"clipboard.read\") resolves app.system as an array of strings and path_in_scope does an exact string match when the scope has no '/**' suffix, so the arch 03 literal list is evaluable today with no evaluator change; non-AppProcess principals are denied first; the dispatch wrapper skips the filesystem path grammar for non-fs operations. Nothing in Electron semantics contradicts a flat literal set. Three notes, none fatal. (1) The literal set in arch 03 (clipboard.read/write, notifications, tray, global-shortcuts) covers little of first-proof demand; drawio needs dialog, menu, screen, nativeTheme and shell decisions, and the decision both rejects implicit allow (alternative c) and leaves 'menu/screen implicit?' open in its unknowns - that contradiction must be resolved before the first proof, since the guard still applies under the legacy profile. (2) The blocker 'KEL-16/KEL-102 owner confirmation' names a closed RFC: KEL-16 is Done; the live owner is KEL-102 (In Progress, unassigned). (3) The pinned ClipboardItem doc calls MIME keys 'a capability surface' (text/uri-list places and reveals real file paths; osclipboard raw formats), which a flat clipboard.read/clipboard.write pair does not distinguish.",
+      "evidence": "FACT <keld repo>/crates/keld-guard/src/lib.rs at b4b907c3: evaluate (707-736), grant_node (1109-1120), path_in_scope 'let Some(prefix) = pattern.strip_suffix(\"/**\") else { return path == pattern; }' (1199-1202). FACT crates/keld-ipc/src/guard_dispatch.rs:73-76 filesystem_dispatch_path_is_valid returns true unless operation is fs.read/fs.write. FACT docs/architecture/03-security.md:87 '\"system\": [\"clipboard.read\", \"clipboard.write\", \"notifications\", \"tray\", \"global-shortcuts\"]'. FACT clipboard-item.md v44.4.5 warning 'The MIME keys are a capability surface'. FACT Linear fetched 2026-10-06: KEL-16 'RFC: Security and permission model' Done; KEL-102 In Progress, unassigned.",
+      "correction": "Keep. Repoint the blocker from KEL-16 to KEL-102; add to the decision packet the one remaining question 'which first-proof modules (dialog, menu, screen, nativeTheme) are literals in app.system versus un-gated' with a recommendation, and a follow-up atom for clipboard MIME classes (text/uri-list, raw OS formats)."
+     },
+     {
+      "decision_id": "F06-D4",
+      "verdict": "unresolved",
+      "reason": "The conflict is real and correctly evidenced: the guard refuses scheme-wide scopes by design, while drawio opens any http(s)/mailto/tel/callto URL and Zettlr opens arbitrary navigation targets. The confirm-grant kind is a policy proposal no Electron source can settle. Two parts of the proposed answer do not hold as written. (1) 'A user Don't open resolves as rejection ... check-shaped' is unsafe for the first-proof app: all three drawio openExternal call sites drop the promise, and a stock Bun process exits with code 1 on an unhandled rejection, whereas Electron's main process installs a 'Don't quit on fatal error' handler and keeps running. A decline or a manifest denial would therefore take down the main role where Electron shows an error box. No handler exists in the @keld/electron source today. (2) The listed confirm kinds (https, mailto, tel) omit http and callto, both in drawio's allow-regex. Separately, one listed unknown is already answered by source: activate maps to NSWorkspaceOpenConfiguration.activates. Not on the first-proof 4-step workflow unless link-open is one of the steps.",
+      "evidence": "FACT corpus drawio-desktop/src/main/electron.js:4348 'const allowedUrls = /^(?:https?|mailto|tel|callto):/i', 4355 'shell.openExternal(url);' (promise dropped), 2024 and 2028 click() { shell.openExternal(...) } (promise dropped). FACT corpus zettlr attach-app-navigation-handlers.ts:39 shell.openExternal(url).catch(...). FACT experiment 2026-10-06, Bun 1.4.2 macOS arm64, <scratchpad>/prototypes/f06-sem/unhandled.js: un-awaited Promise.reject -> 'error: user declined', exit=1, the 100 ms timer never ran. FACT lib/browser/init.ts v44.4.5:17-33 '// Don't quit on fatal error. process.on(\"uncaughtException\", ...)' showing dialog.showErrorBox. FACT grep of <keld repo>/packages (excluding node_modules) finds uncaughtException/unhandledRejection only in the fixture packages/@keld/electron/fixtures/app_ready.ts. FACT shell/common/platform_util_mac.mm v44.4.5:115-148: rejects with 'Invalid URL', 'No application found to open URL', 'Failed to open URL'; 'configuration.activates = options.activate'. FACT shell.md v44.4.5: 'Returns Promise<void>', 'Max 2081 characters on Windows'. FACT docs/architecture/03-security.md 'A grant must name a destination'. UNKNOWN: whether a confirmation prompt per in-diagram link click is acceptable UX (owner decision).",
+      "correction": "Missing evidence: (a) the behaviour of an un-awaited rejecting facade promise under the real @keld/electron bootstrap, and (b) the owner's UX call on prompting. Cheapest discriminating experiment for (a): a fixture main that calls a facade method which rejects and drops the promise, run under the Keld Bun role; observable = role stays alive and a recorded error event is emitted (negative control: remove the handler and the role exits 1). Then choose: install an Electron-equivalent 'do not quit on uncaught' handler in the compat bootstrap (cross-cutting, belongs to the lifecycle unit) or make user-decline resolve void and reserve rejection for OS failure. Whichever is chosen, add http and callto to the confirm kinds, and move the activate mapping from unknown to fact."
+     },
+     {
+      "decision_id": "F06-D5",
+      "verdict": "refuted",
+      "reason": "What survives: the v44.4.5 W3C clipboard shape as baseline (drawio's one clipboard path uses exactly it), a single host call per write for atomicity, and the 16 MiB / 8 MiB ceilings as real constants. Four sub-claims are contradicted by primary sources. (1) NativeImage is not immutable: setTemplateImage, addRepresentation and the writable isMacTemplateImage property mutate it. (2) createFromPath is not 'one FsBroker fs.read': it returns synchronously and, for a name without a DPI suffix, reads the base file plus eleven suffixed siblings (@2x, @3x, @1x, @4x, ...), through an asar-aware reader. (3) createFromDataURL(png).toPNG() is not a byte pass-through in Electron: the PNG is decoded into a Skia representation and toPNG re-encodes, so ancillary chunks are dropped and an invalid payload yields an empty image and an empty buffer. F06-T1's criterion 'toPNG() byte equality for PNG input' is therefore not a valid oracle in either direction. (4) The sync mechanism is misattributed and unavailable: Linear KEL-127 is the program issue 'post-audit convergence and Mac no-Rust product proof' and contains no blocking-CALL primitive; the 'blocking CALL with a deadline, rate-limited, dev-warned' rule is arch 02 text about renderer sendSync. The map's resolved fact is that the Bun kipc client cannot block, so 'Zettlr is runnable with a config-only change' is false until the worker-owned transport exists. The same gap covers NativeImage's synchronous transforms that Zettlr uses (resize, toJPEG(100), toDataURL, getAspectRatio), which D5 leaves host-side. Demand and sizing: Zettlr's resolved legacy clipboard demand is two call sites (one synchronous readText, one fire-and-forget writeImage); readImage, writeText and availableFormats have zero call sites, and Zettlr is the second corpus, so the quirk flag is not first-proof work. Also unevaluated: Bun 1.4.2 ships a built-in Bun.Image codec (system backend), which makes rejected alternative (b) 'pure-TS decode' a strawman - though it is Promise-only, so it does not by itself satisfy the sync contract.",
+      "evidence": "FACT native-image.md v44.4.5: image.setTemplateImage(option), image.addRepresentation(options), nativeImage.isMacTemplateImage property; toPNG/toJPEG 'Returns Buffer', resize/crop 'Returns NativeImage', createFromPath 'Returns NativeImage' (all synchronous). FACT shell/common/skia_util.cc v44.4.5 PopulateImageSkiaRepsFromPath: AddImageSkiaRepFromPath(path, 1.0f) then a loop over kScaleFactorPairs inserting each suffix; AddImageSkiaRepFromPath uses ScopedAllowBlockingForElectron + asar::ReadFileToString. FACT shell/common/api/electron_api_native_image.cc v44.4.5: CreateFromPNG -> AddImageSkiaRepFromPNG(&image_skia, data, 1.0); ToPNG -> image_.As1xPNGBytes() or PNGCodec::EncodeBGRASkBitmap, NewEmptyBuffer on failure; CreateFromDataURL returns CreateEmpty for anything but image/png or image/jpeg. FACT Linear KEL-127 fetched 2026-10-06: title 'Program: post-audit convergence and Mac no-Rust product proof', Todo, unassigned; body says async-first APIs 'do not authorize pretending asynchronous calls preserve synchronous Electron semantics' and contains no deadline/rate-limit primitive. FACT <keld repo>/docs/architecture/02-ipc.md:336-337 'sync sendSync supported but rate-limited + dev-warned (it's a blocking CALL with a deadline ...)'. FACT corpus Zettlr: source/app/service-providers/commands/save-image-from-clipboard.ts:71 'const text = clipboard.readText()', :90 getSize()/getAspectRatio(), :142 resize, :148 toPNG(), :150 toJPEG(100); commands/index.ts:157-160 createFromPath + clipboard.writeImage(img); fetch-link-preview.ts:100-110 resize + toDataURL; a regex scan for clipboard.<method>( excluding navigator.clipboard returns only those two clipboard sites. FACT corpus drawio electron.js:4278-4296 (writeText, readText, write([new ClipboardItem({'image/png': new Blob([nativeImage.createFromDataURL(...).toPNG()]), 'text/html': ...})])) - its only nativeImage use. FACT clipboard.md / clipboard-item.md / breaking-changes.md (44.0) v44.4.5: promise shape; removed helpers include readImage/writeImage/availableFormats. FACT experiment 2026-10-06 Bun 1.4.2: typeof Bun.Image === 'function', backend 'system', png()/jpeg()/resize() present, bytes()/toBuffer()/metadata()/dataurl() all return Promise (prototypes/f06-sem/bunimage*.js). FACT keld-ipc MAX_FRAME_LEN = 16 MiB, keld-native MAX_FS_CONTENT_BYTES = 8 MiB.",
+      "correction": "Restate D5 as: (a) NativeImage is a Bun-side mutable value (template flag, representation list) with no host handle; (b) createFromPath is a synchronous multi-file probe (base + DPI siblings) - served by ambient fs under the legacy profile for the first proof, and under strict it needs either a scope that covers the suffixed siblings plus a blocking read or an explicit scaffolded gap; (c) replace the T1 byte-equality oracle with 'output decodes to the same dimensions and pixels as the input' plus a negative control 'invalid PNG data URL -> isEmpty() true and toPNG().length === 0', and record pass-through as a declared divergence because it retains ancillary chunks Electron strips; (d) cite arch 02 (not KEL-127) for the blocking-CALL rule and state that every synchronous Bun-main member (legacy clipboard.readText, NativeImage resize/toJPEG/toDataURL on non-pass-through input) is SCAFFOLDED behind the PANEL-P1 worker-owned transport decision, or reopen the Bun-side codec alternative with Bun.Image named as the existing facility and its Promise-only shape as the blocker; (e) shrink the quirk to the two demanded members (sync readText, writeImage), note writeImage needs no blocking call, and park the whole quirk until Zettlr is the active corpus; (f) first-proof scope is exactly drawio's writeText/readText/write([ClipboardItem]) with PNG pass-through."
+     },
+     {
+      "decision_id": "F06-D6",
+      "verdict": "survives",
+      "reason": "Brokering through a host secrets module, Tier 2 placement and gating on the keld-auth D5 fast-follow all hold: zero safeStorage call sites exist in the three corpus clones, the pinned doc is quoted accurately, the strict-profile spec denies keychain reach, and the keld-auth spec names the secrets fast-follow. Two corrections. (1) The 'declared divergence' on Linux basic_text is mis-scored. In v44.4.5 source, with the basic_text backend isEncryptionAvailable() is false and encryptString throws 'Encryption is not available' by default; plaintext only happens after the app opts in with setUsePlainTextEncryption(true). Keld's fail-closed behaviour therefore matches Electron's default, and the only divergence is refusing that opt-in. The F06 trap oracle 'Electron oracle returns basic_text + encrypts' is wrong for the default path. (2) The answer does not separate the two API generations: encryptString/decryptString/isEncryptionAvailable are synchronous and 'host performs encrypt/decrypt' cannot serve them while the Bun client cannot block; the v44.4.5 doc recommends the async API and says the sync one may be deprecated. The baseline should be the async trio, with the sync trio scaffolded.",
+      "evidence": "FACT shell/browser/api/electron_api_safe_storage.cc v44.4.5:147-157 IsEncryptionAvailable: 'return OSCrypt::IsEncryptionAvailable() || (use_password_v10_ && ...linux_storage_backend() == \"basic_text\")'; 203-213 EncryptString throws 'safeStorage cannot be used before app is ready' / 'Encryption is not available.'; 194-199 GetSelectedLinuxBackend returns 'unknown' before ready. FACT patches/chromium/revert_oscrypt_remove_sync_backend.patch v44.4.5 (components/os_crypt/sync/os_crypt_linux.cc): 'IsEncryptionAvailable() actually means \"is real encryption backed by the system secret store available\", which here means a v11 key is available, as opposed to the hardcoded v10 obfuscation key'. FACT safe-storage.md v44.4.5: 'We recommend using the asynchronous API ... The synchronous API may be deprecated'; basic_text sentence; setUsePlainTextEncryption; decryptStringAsync {shouldReEncrypt, result}; macOS code-signing note. FACT corpus: fixed-string grep 'safeStorage.' returns zero sites in drawio-desktop/src, zettlr/source, electron-quick-start. FACT <keld repo>/docs/specs/kel78-strict-profile-sandbox.md:227 'Secrets / keychain / credential tokens | deny'; docs/specs/keld-auth.md:150-152, 1274 (D5 secrets fast-follow); docs/architecture/05-webview-and-native.md:258. FACT Linear fetched 2026-10-06: KEL-89 In Progress, unassigned; KEL-78 In Progress (GYLDLAB). Not fetched this session (ASSUMPTION as listed): KEL-103, KEL-135 status.",
+      "correction": "Keep the decision and its sequencing. Re-score: basic_text default path is a match, not a divergence; the divergence is setUsePlainTextEncryption(true) being a recorded refusal. Fix the trap oracle to: Linux without a secret store -> Electron and Keld both report isEncryptionAvailable() false and encryptString throws; with setUsePlainTextEncryption(true) Electron encrypts with the v10 key and Keld refuses. State the async trio (isAsyncEncryptionAvailable, encryptStringAsync, decryptStringAsync) as the baseline and the sync trio as scaffolded behind the blocking-transport decision."
+     }
+    ],
+    "extra_findings": [
+     {
+      "severity": "high",
+      "finding": "Unhandled-rejection divergence affects every F06 denial path and is on the first-proof path. Electron's main process survives an uncaught error (shows an error box and continues); a stock Bun process exits 1 on an unhandled promise rejection. drawio drops the promise at all three shell.openExternal sites, so any facade rejection there (user decline under D4, manifest denial, OS failure) would kill the main role. No equivalent handler exists in the @keld/electron source. This is a lifecycle-unit concern discovered here, not an F06 design item: route it to the lifecycle/bootstrap epic as its own conformance cell.",
+      "evidence": "FACT lib/browser/init.ts v44.4.5:17-33 ('Don't quit on fatal error'). FACT experiment Bun 1.4.2 macOS arm64, prototypes/f06-sem/unhandled.js: exit=1, timer never fired. FACT corpus drawio electron.js:2024, 2028, 4355. FACT grep of <keld repo>/packages excluding node_modules: only fixtures/app_ready.ts mentions unhandledRejection (for whenReady)."
+     },
+     {
+      "severity": "medium",
+      "finding": "F06 semantic trap 'Menu.popup options / menu-will-show / menu-will-close' encodes the wrong order. On macOS the order is menu-will-close, then click, then the popup callback. A Keld oracle written as 'click then will-close' would be a false contract and would break the Zettlr promise race it is meant to protect.",
+      "evidence": "FACT shell/browser/ui/cocoa/electron_menu_controller.mm v44.4.5 menuDidClose (MenuWillClose synchronously; close callback posted 'so that itemSelected runs before the close callback'). FACT zettlr menu/index.ts:285-291. UNKNOWN for Windows/Linux (not read)."
+     },
+     {
+      "severity": "medium",
+      "finding": "F06-T1 acceptance 'createFromDataURL().toPNG() byte equality for PNG input' is not a property Electron has; Electron decodes and re-encodes. Land it as pixel/dimension equality plus an invalid-input negative control.",
+      "evidence": "FACT shell/common/api/electron_api_native_image.cc v44.4.5 CreateFromPNG and ToPNG (quoted in D5)."
+     },
+     {
+      "severity": "medium",
+      "finding": "KEL-127 is cited across F06 (D5 evidence, epic summary 'KEL-127 blocking CALL primitive') as the owner of a deadline-bounded, rate-limited blocking CALL. Linear shows KEL-127 is the program issue and holds no such primitive; the rule lives in arch 02 and is about renderer sendSync. Any ticket that names KEL-127 as the owner of sync emulation has the wrong owner.",
+      "evidence": "FACT Linear KEL-127 fetched 2026-10-06 (title, Todo, unassigned, full description read). FACT <keld repo>/docs/architecture/02-ipc.md:336-337."
+     },
+     {
+      "severity": "medium",
+      "finding": "F06 semantic trap 'safeStorage Linux basic_text' states the Electron oracle 'returns basic_text + encrypts'. Source shows the default is unavailable-and-throw; plaintext requires setUsePlainTextEncryption(true).",
+      "evidence": "FACT electron_api_safe_storage.cc v44.4.5:147-157, 203-213; revert_oscrypt_remove_sync_backend.patch os_crypt_linux.cc IsEncryptionAvailable comment."
+     },
+     {
+      "severity": "medium",
+      "finding": "F06-T2 is internally inconsistent: it specifies 'open -> read leaf' and also requires 'draw.io open -> edit -> save completes through the broker with no manifest widening'. Both cannot hold; and its sibling rule names drawio's '.bkp' as a suffix when the real name is a '.$' prefix plus '.bkp' suffix.",
+      "evidence": "FACT swarm.json unit F06 ticket F06-T2 text; drawio electron.js:3433-3438, 3787-3822, 4024."
+     },
+     {
+      "severity": "low",
+      "finding": "Renderer clipboard access is removed in Electron 44.0, not merely deprecated; the F06 never-list and D5 evidence say 'deprecated'. No corpus impact (both apps call clipboard only from main).",
+      "evidence": "FACT breaking-changes.md v44.4.5 '## Breaking API Changes (44.0) ... ### Removed: clipboard module is no longer available in the renderer process'; clipboard.md 'Process: Main'. FACT corpus imports: drawio electron.js:5-6; zettlr commands/index.ts:51, save-image-from-clipboard.ts:21."
+     },
+     {
+      "severity": "low",
+      "finding": "Three items listed as unknown in F06 are answerable from pinned source now: openExternal activate maps to NSWorkspaceOpenConfiguration.activates; invalid menu accelerator strings are logged and ignored rather than thrown; safeStorage before ready throws 'safeStorage cannot be used before app is ready' (encrypt/decrypt) and returns false/'unknown' for the availability and backend getters.",
+      "evidence": "FACT shell/common/platform_util_mac.mm:131-133; shell/browser/ui/accelerator_util.cc:23-24, 65; electron_api_safe_storage.cc:147-149, 194-196, 203-208 (all v44.4.5)."
+     },
+     {
+      "severity": "low",
+      "finding": "Bun 1.4.2 exposes Bun.Image with static fromClipboard / hasClipboardImage / clipboardChangeCount. That is an in-runtime path to the OS clipboard that does not pass through the host guard. Under the legacy profile this is ambient by definition; whether the strict profile's OS containment blocks it is UNKNOWN and should be a negative control in the strict-profile owner's suite, not an F06 design item.",
+      "evidence": "FACT experiment 2026-10-06 Bun 1.4.2: Object.getOwnPropertyNames(Bun.Image) = length,name,backend,clipboardChangeCount,fromClipboard,hasClipboardImage,prototype; backend 'system'. UNKNOWN: strict-profile behaviour (not tested); the Bun version Keld pins for shipped roles (bun-types 1.4.0 seen in packages/@keld/electron/node_modules, pin file not located)."
+     },
+     {
+      "severity": "info",
+      "finding": "Linear availability for the swarm: connected and readable in this session. Live states that differ from or sharpen the briefing snapshot: KEL-130 Done (Amisha Ramani), blocks KEL-140; KEL-102 In Progress, unassigned; KEL-89 In Progress, unassigned; KEL-78 In Progress (GYLDLAB); KEL-16 Done (so it cannot be a pending 'owner confirmation' blocker for D3/D4 - the live owner is KEL-102); KEL-80 Backlog, unassigned (D5 lists it as a blocker for multi-frame payloads); KEL-127 Todo, unassigned, updated 2026-10-06. Not fetched here: KEL-103, KEL-135, KEL-15, KEL-19, KEL-140, KEL-208/209 - treat their states as assumptions.",
+      "evidence": "FACT Linear get_issue x7, fetched 2026-10-06, read-only; no Linear, GitHub or Keld-repo writes were made. Scratchpad writes only: refute-f06-lens-sem/docs/* (fetched sources) and prototypes/f06-sem/{unhandled.js,bunimage.js,bunimage2.js}."
+     }
+    ]
+   }
+  }
+ ],
+ "decision_packets": [
+  {
+   "key": "PANEL-P1",
+   "decision": "Whether @keld/kipc may keep its single authenticated link inside a Bun Worker for the whole session (SharedArrayBuffer/Atomics mailbox, in-order EVENT replay after wake) so the Bun main thread can park for showMessageBoxSync-class calls, or whether synchronous main-process emulation is a scored fail cell and draw.io is published as 'config + 1 edit'.",
+   "classification": "needs-experiment",
+   "milestone": "first-proof",
+   "facts": [
+    "FACT (Linear availability): Linear team KELD was reachable read-only in this session; get_issue, list_comments and list_issues all succeeded on 2026-10-06. The MemPalace MCP server failed to connect (ENOENT mempalace-mcp) and was not used.",
+    "FACT (re-run by me 2026-10-06, Bun 1.4.2, macOS 26.5.1, probe wayfinder/electron-compat/probes/park-probe/main.ts): main thread parked in Atomics.wait for 1511 ms saw 0 bytes; the server stalled after 9 writes at exactly 8192 accepted bytes; 8192 bytes arrived only after the park ended.",
+    "FACT (sysctl, 2026-10-06): net.local.stream.sendspace=8192 and recvspace=8192 on this Mac.",
+    "FACT (re-run by me, sync-probe): Atomics.wait on the Bun main thread returns 'ok' with value 42 after 53.55 ms when a Worker stores and notifies; main-thread parking with a worker wake works in Bun 1.4.2.",
+    "FACT (keld@b4b907c3 packages/@keld/kipc/src/transport.ts): the transport is a Bun.connect event-loop client (lines 953/958) with 'async receive' (764); a grep for Atomics, SharedArrayBuffer, 'new Worker' and readSync in that file returns no hits.",
+    "FACT (keld@b4b907c3 docs/architecture/02-ipc.md:378-389): APP_LINK_IO_DEADLINE is a 5 s SO_RCVTIMEO/SO_SNDTIMEO applied on writes, expiry is KELD-IPC-006, and 'the readiness-driven reader (and credit windows) remain later work'. Lines 248-257 label credit windows in GRANT frames as destination work.",
+    "FACT (keld@b4b907c3 crates/keld-ipc/src/frame.rs:46-47): FrameKind::Grant = 9 exists ('Grants flow-control credit on a channel'); the only other use found in crates/keld-ipc/src is a header-validation test (receive.rs:857).",
+    "FACT (crates/keld-ipc/src/link.rs tests): reader-side stall tests exist (interruptible_read_stalled_mid_header_is_ipc_006, plain_validated_read_closes_the_byte_trickle_gap); my grep found no test that drives the host WRITER against a non-draining peer.",
+    "FACT (corpus drawio-desktop@2edf9fb src/main/electron.js:851-876): the only close path with unsaved changes calls dialog.showMessageBoxSync(mainWindow, ...) inside the 'isModified-result' handler, with the source comment 'Can't use async function here because it crashes on Linux when win.destroy is called'.",
+    "FACT (Linear KEL-80, fetched 2026-10-06): status Backlog, priority High, no assignee, no blockers. Owner comment by GYLDLAB dated 2026-08-20: 'post-v0 / YAGNI until KEL-75 T3 ... has an approved spec that reuses kipc — do not pick up'. Comment dated 2026-09-26 narrows a product-spine slice that KEL-142 may consume. Its acceptance already lists host-enforced credits, slow-consumer and zero-credit cases.",
+    "FACT (Linear KEL-97, fetched 2026-10-06): status Backlog, blocked by KEL-75 (In Progress) and KEL-133 (Done); its scope is binding the host-owned app-link to a RoleRegistry-minted principal, not TypeScript transport ownership.",
+    "FACT (Linear KEL-136, fetched 2026-10-06): Done, assignee Amisha Ramani; it landed the canonical TypeScript app-link transport (product-status.tsv row package.keld-kipc cites KEL-98, KEL-136).",
+    "FACT (publish_plan.json): F06-T2 (#478), F06-EPIC (#476), X02-EPIC (#496) and PANEL-D18 (#438) reference this gate; no ticket lists PANEL-P1 in blocked_by_keys."
+   ],
+   "inferences": [
+    "INFERENCE: a parked Bun role would make the Rust host writer return KELD-IPC-006 after about 5 s once 8 KiB is queued. The stall is measured, but the probe server was Bun; the host-side expiry has not been observed against the Rust writer.",
+    "INFERENCE: host credit frames (arm C) cannot decide the first proof, because credits stop the writer from dying but cannot deliver a REPLY to a parked reader; and if arm B passes the worker keeps draining, so the writer never stalls. Arm C belongs to KEL-80's existing credit acceptance.",
+    "INFERENCE: arm B moves the bound rather than removing it. A worker that drains during a multi-minute modal must buffer EVENTs somewhere; an unbounded buffer contradicts KEL-80's 'one authoritative budget for pending bytes and calls'.",
+    "INFERENCE: the ticket's 'sync RTT <= 2x raw' is a diagnostic only; 1,000 calls in one session is below the architecture 01 section 5.1 floor for a publishable figure."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether a Bun 1.4.2 Worker can own the Bun.connect socket for the whole session with no frame loss, and hand REPLY bytes to a parked main thread through a SharedArrayBuffer ring.",
+    "UNKNOWN: whether 10,000 EVENTs buffered during a park replay to main-thread listeners in order with zero drops or duplicates.",
+    "UNKNOWN: what the Rust host writer actually returns, and after how long, when the peer stops draining.",
+    "UNKNOWN: the EVENT byte rate toward a role during a real modal (window move, resize, focus mirrors) and therefore the buffer bound and overflow behaviour arm B needs.",
+    "UNKNOWN: whether a generation retire or link close issued during a park wakes main with a typed error inside the deadline and without a fabricated 'closed'.",
+    "UNKNOWN (owner routing): which Linear issue would host the follow-on transport spec. KEL-80 carries a 'do not pick up' owner comment and KEL-97's scope is host-side principal binding, so the ticket's 'KEL-80/KEL-97 spec' sentence has no confirmed owner."
+   ],
+   "alternatives": [
+    {
+     "option": "Run a trimmed S0 now: arm A as negative control against the Rust host writer, arm B (worker-owned single link) as the discriminating arm, arm E (revoke or link close during park). Park arm C on KEL-80.",
+     "cost": "About one to two days of scratch prototyping; no repository writes.",
+     "new_invariant": "None yet. If B passes, the follow-on spec would add: exactly one kipc link per role generation, owned by a Worker for the whole session, with a bounded ordered mailbox.",
+     "invariant_at_risk": "None in the experiment. The follow-on spec touches the wire-protocol and public-API review gates."
+    },
+    {
+     "option": "Run the ticket as written, including arm C host credit frames through FrameKind::Grant in a keld-ipc test.",
+     "cost": "Adds Rust-side credit semantics work that the first proof does not need and that KEL-80 already owns as acceptance.",
+     "new_invariant": "Credit-0 behaviour on the host writer would be defined by a prototype instead of its owner's spec.",
+     "invariant_at_risk": "One rule, one owner (KEL-80 credit semantics); YAGNI for the first proof."
+    },
+    {
+     "option": "Skip the experiment; record showMessageBoxSync as a fail cell and publish draw.io as 'config + 1 edit' (async showMessageBox in the isModified-result handler).",
+     "cost": "Gives up the config-only claim for the first proof without evidence that it is unreachable; Zettlr's six sendSync sites stay unresolved.",
+     "new_invariant": "Sync main-process APIs are documented-never until a later spec.",
+     "invariant_at_risk": "Architecture 02 section 5 says blocking sync calls must exist; the scoreboard would carry a tracked fail cell."
+    },
+    {
+     "option": "Inverse ownership as a fallback arm only if B fails: keep the transport on the Bun main thread and evaluate the app's main module in a Worker that parks.",
+     "cost": "No transport-ownership change, but app code sees isMainThread=false and worker-specific process semantics; compatibility hazards for electron-store, electron-log and any native module.",
+     "new_invariant": "App main code never runs on the role's main thread.",
+     "invariant_at_risk": "Boot-static synchronous-at-import contract and Node-compat expectations of corpus dependencies."
+    },
+    {
+     "option": "Second authenticated kipc link owned by a Worker.",
+     "cost": "Refused on the map already: it mints a second principal for the same role generation.",
+     "new_invariant": "Two links per role generation.",
+     "invariant_at_risk": "KEL-75 one-link-one-generation binding; principal minting is architecture."
+    }
+   ],
+   "recommendation": "Run the trimmed S0 (arms A, B, E) now and park arm C on KEL-80. Pass means, under a 10 s main-thread park with the host writing 100 x 64-byte EVENTs per second plus one 10,000-EVENT burst: the writer accepts every byte with no timeout, a sync CALL issued before the park returns its REPLY value while parked, the 10,000 EVENTs replay in sequence order with zero drops or duplicates, and a link close during the park wakes main with a typed error inside the deadline. Arm A under the same load must reproduce the 8,192-byte stall, and removing the worker's Atomics.notify must make the sync CALL time out, so the oracle is proven to bite. If B fails, test the inverse-ownership arm once before scoring the cell as a fail and re-scoring draw.io as 'config + 1 edit'. Treat the buffer bound and overflow behaviour as a required output, not an afterthought.",
+   "falsifier": "Arm B shows any writer stall or KELD-IPC-006, any dropped, duplicated or reordered EVENT, a REPLY that cannot reach the parked main thread, or a need for a second socket. Separately, parking arm C is wrong if arm B's buffer cannot be bounded without host-side credit.",
+   "reversible": "Yes. The experiment is scratch-only and writes nothing to Keld. The decision it feeds (a worker-owned transport spec) is expensive to reverse once landed, which is why the gate comes first.",
+   "missing_evidence": "Per-arm results against real @keld/kipc frames and the Rust host writer; the measured EVENT byte rate during a modal; the buffer bound and overflow outcome; a named Linear owner for the follow-on spec.",
+   "next_action": "Owner: the orchestrator (single writer for the map). Action: add the node below to the Prompt Tracker at prompts/NEW/ipc/38-electron-compat-s0-link-drain-gate.md and dispatch it on the Mac. First observable completion check: an artifact s0-link-drain.json exists with one row per arm (A, B, E), and arm A's row shows stalled_at_bytes=8192, which proves the negative control reproduced before B is read.",
+   "owner": "KEL-80 'Bridge: bounded virtual channels and traffic-replay conformance' (Linear, fetched 2026-10-06: Backlog, High, no assignee, owner comment 'do not pick up' until a KEL-75 T3 spec) for backpressure and transport contract; KEL-97 (Backlog, blocked by KEL-75 In Progress and KEL-133 Done) for link-to-principal binding; KEL-75 (In Progress) for principal semantics. Code owners: packages/@keld/kipc (landed under KEL-136, Done) and crate keld-ipc. No owner is confirmed for the follow-on transport spec.",
+   "prompt_tracker_node": "MODEL: GPT-5.6 Sol / Codex\nEFFORT: high\nHARNESS: direct Codex, single session, disposable no-push Keld checkout; no subagents\nGRAPH_NODE: new-ipc-38-electron-compat-s0-link-drain-gate\nGRAPH_ROLE: inspect\nSESSION: NEW\nOS: macos / real Mac (AF_UNIX stream buffer sizes are OS-specific; the result is macOS-only evidence)\nLINEAR: KEL-80 (read-only research; do not change or reopen status), KEL-97, KEL-75 (coordination only)\nPIN: keld=b4b907c3ef0e08854f24827cf08283ee625146e1; refetch origin/main and stop if packages/@keld/kipc/src/transport.ts or crates/keld-ipc/src/link.rs changed; Bun 1.4.2\nSOURCE: prompts/NEW/ipc/38-electron-compat-s0-link-drain-gate.md\nREADS: root AGENTS.md; crates/keld-ipc/AGENTS.md; docs/architecture/02-ipc.md sections 5 and 7; docs/specs/kel75-principalized-bun-child-roles.md; packages/@keld/kipc/src/transport.ts; KEL-80 and KEL-97 with comments; gyldlab/keld#391 and #418; park-probe and sync-probe on branch research/electron-compat-map\nWRITES: one scratch prototype directory outside every repository; no Keld, Linear or GitHub writes\nSINGLE_WRITER_KEYS: none\nREQUIRES_ARTIFACTS: park-probe/main.ts and sync-probe/{main,worker}.ts from research/electron-compat-map\nPRODUCES_ARTIFACTS: s0-link-drain.json (keld.execution-artifact/v1) plus the prototype sources and raw per-arm logs\nAFTER: none\nNEXT: new-os-macos-05-electron-compat-s1-close-veto-oracle\nDO_NOT_RUN_WITH: none\n\nRole: Prototype evidence for one question. You do not design the transport, write a spec, or touch product code.\n\nGoal: Decide with measurements whether a single kipc link owned by a Bun Worker for the whole session lets the Bun main thread park without stalling the link, and still deliver a sync REPLY and replay EVENTs in order.\n\nSuccess criteria:\n- Arm A (control, socket on main thread): under a 10 s Atomics.wait park, with the peer writing 100 x 64-byte EVENT frames per second, record bytes accepted before the writer stalls (expected 8192) and the Rust host writer's exact error and elapsed time (expected KELD-IPC-006 near the 5 s APP_LINK_IO_DEADLINE). State which entry point drove the Rust writer; if none exposes the write deadline publicly, report that instead of copying code.\n- Arm B (socket in a Worker, SharedArrayBuffer ring, Atomics.notify): same load plus one 10,000-EVENT burst. Pass = every byte accepted, no writer timeout, a sync CALL issued before the park returns its REPLY value while parked, and all 10,000 EVENTs reach main-thread listeners in sequence order with zero drops or duplicates.\n- Arm E: the host closes the link (or retires the generation) mid-park. Pass = main wakes with a typed error inside the deadline and no 'closed' event is fabricated.\n- Report the ring/buffer bound you used, the EVENT bytes buffered during the park, and what happens at overflow.\n- Sync round-trip p50/p99 over 1,000 calls is recorded as a diagnostic only, never as a claim.\n- Every frame is a real @keld/kipc frame; one link only. A second socket for the role is a fail, not a design.\n\nPrerequisites: Bun 1.4.2; a Rust toolchain; the pinned Keld checkout read-only. No approval is needed for scratch work; none is granted for product writes.\n\nResources: the scratch directory only. Unix socket paths must stay under the 104-byte limit.\n\nDelegation: none.\n\nVerification: negative control 1, arm A must show the stall (if it does not, the load is wrong; stop). Negative control 2, remove the worker's Atomics.notify and confirm the sync CALL times out. Negative control 3, drop one EVENT in the replay path and confirm the order check fails. No sleeps as synchronization.\n\nOutput: s0-link-drain.json with one acceptance row per arm (status passed or failed, observation, command, exit code), the three negative-control rows, the buffer-bound finding, and a one-paragraph verdict: 'B passes', 'B fails: reason', or 'undetermined: missing fact'. Findings go to the orchestrator, who alone posts to Linear or GitHub.\n\nStop rules: pinned files changed on origin/main; Bun is not 1.4.2; arm A does not reproduce the stall; the same arm fails for the same reason twice (preserve the evidence and stop); any step would need a write outside the scratch directory."
+  },
+  {
+   "key": "F06-D1",
+   "decision": "Under the strict profile, which owner turns a user-chosen path (dialog, file association, argv, drag-drop) into filesystem authority for the Bun main role, with what sibling rule and what lifetime, without a second policy owner or a widened manifest?",
+   "classification": "needs-human",
+   "milestone": "parked",
+   "facts": [
+    "FACT (Linear availability, fetched live 2026-10-06 in this session, read-only, zero failures): team KELD is reachable. KEL-102 In Progress, unassigned; KEL-130 Done (completed 2026-09-21, assignee Amisha Ramani); KEL-140 Backlog, unassigned; KEL-127 Todo, unassigned; KEL-78 In Progress. The mempalace MCP server failed to connect (executable not found) and was not used.",
+    "FACT (Linear KEL-102 comments cde25f5e and 264b4e6c, 2026-10-05, fetched 2026-10-06): KEL-102/T3 is PASSED and LANDED at main 66ccbbc (PR #357, CI run 37313738834); the KEL-140 predecessor gate is satisfied and KEL-140 is unclaimed. The published F06 blocker 'KEL-102 T3 admission so FsBroker is reachable from the host' is therefore stale. A 2026-10-06 comment on KEL-102 records that kel102/kel130/kel139 specs and arch 03/05 still say 'not landed' (known doc drift, docs-only PR pending).",
+    "FACT (crates/keld-guard/src/lib.rs:153-166, 707-736, re-read at HEAD b4b907c3): only the guard mints a ScopePermit, and evaluate() resolves it from a manifest grant array index. A path absent from the manifest is denied before the broker runs, so 'register into the FsBroker retained set' cannot by itself produce an Allow.",
+    "FACT (docs/specs/kel102-host-guard-enforcement.md:79, :88, :92): permission model approved as immutable-host-session-snapshot; D5 makes dispatch_privileged the sole production caller of evaluate; D9 authorizes no manifest-schema change without its own review gate.",
+    "FACT (docs/specs/kel130-retained-filesystem.md:69): 'dialog grant' is an explicit non-goal of the retained-filesystem spec.",
+    "FACT (corpus drawio-desktop@2edf9fb src/main/electron.js:3433-3438, re-read): draft/backup siblings are prefix-named: DRAFT_PREFEX '.$', OLD '~$', DRAFT_EXT '.dtmp', BKP_PREFEX '.$', BKP_EXT '.bkp'. The published sibling pattern '<name>.*' matches none of them.",
+    "FACT (scratchpad prototypes/f06-guard-probe run against the live keld-guard crate, 2026-10-06): a grant '/Users/u/Documents/a.drawio.*' denies both 'a.drawio.bkp' and '.$a.drawio.bkp' (KELD-GUARD002). A lone '*' is a literal in the live matcher, so the proposed sibling glob is not expressible today at all.",
+    "FACT (drawio electron.js:217-222, 251-253): the blessed-path set is persisted across sessions (cap 500) so Open Recent works after restart.",
+    "FACT (docs/specs/kel78-strict-profile-sandbox.md:172-177): the legacy profile is 'authenticated + guarded, unsandboxed'. The Bun role keeps ambient filesystem access, so no mint is needed for the first proof.",
+    "FACT (Linear search 'dialog', team KELD, 14 results, complete page, 2026-10-06): no issue owns a dialog/menu/tray/shell broker."
+   ],
+   "inferences": [
+    "INFERENCE: the mint must be a keld-guard-owned, host-minted session-grant set evaluated inside dispatch_privileged and distinguishable from manifest grants in the permit and deny text. The alternative (keld-native deciding) is a second policy owner forbidden by KEL-102-D5.",
+    "INFERENCE: sibling authority must be an app-declared rule (prefix/suffix around the granted basename), not a host-hardcoded glob, because the only corpus oracle uses prefix names that a generic suffix rule cannot express.",
+    "INFERENCE: 'never persisted' makes draw.io Open Recent a declared divergence under strict; 'dialog only' misses file-association, argv and second-instance mints that draw.io also blesses (refuter receipts at electron.js 1754/1803/2151, not re-opened by me)."
+   ],
+   "unknowns": [
+    "UNKNOWN: what fraction of draw.io's fs rows during install + activation + the 4-step workflow are scopable to a user-intent mint at all (panel experiment E1/S2 has not reported).",
+    "UNKNOWN: Linux portal choosers may return document-portal paths; macOS security-scoped bookmarks have no Keld packaging target.",
+    "UNKNOWN: whether a durable user-granted-roots store can be bound to KEL-135 authenticated identity without a new trust root (no spec text exists)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. No mint: strict-profile dialog-to-fs flows stay unsupported with a typed diagnostic; dialogs return paths and the app uses ambient fs only under the explicit legacy profile.",
+     "cost": "Zero mechanism now; strict draw.io/Zettlr cannot open user files at all.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Program-level honesty risk already recorded by the panel: legacy becomes the de-facto profile for every document app."
+    },
+    {
+     "option": "B. Guard-owned session grants: host mints on a user-intent event, keld-guard evaluates them in dispatch_privileged, generation-bound, never persisted; open and save both grant read+write on the chosen node; openDirectory grants a subtree; derivative siblings via an app-declared rule.",
+     "cost": "Approved spec amending KEL-102-D5/D9 and the KEL-130 non-goal; permission-model and public-API gates; Open Recent across restart becomes a declared divergence.",
+     "new_invariant": "Authority can exist in a session without being in the verified manifest snapshot, but only when minted by the host from a user-intent event and bound to one generation.",
+     "invariant_at_risk": "KEL-102 'immutable-host-session-snapshot' model; one-evaluator rule if the set is evaluated anywhere but the guard."
+    },
+    {
+     "option": "C. B plus persisted user-granted roots (host-owned, identity-bound, capped store).",
+     "cost": "Durable authority store, tamper resistance, revocation surface, per-OS bookmark analogues.",
+     "new_invariant": "Authority outlives the session and is not in the reviewed manifest.",
+     "invariant_at_risk": "Default-deny reviewability ('the manifest is the authority lockfile'); KEL-135 identity binding becomes security-critical for fs."
+    },
+    {
+     "option": "D. Static manifest directory grants only (e.g. documents subtree).",
+     "cost": "No new mechanism; grants far wider than the user's choice; cannot express 'any file the user picked'.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Default-deny intent (wide standing grants)."
+    }
+   ],
+   "recommendation": "Park. For the first proof take A (legacy profile, no mint) and remove F06-D1 and the stale 'KEL-102 T3 admission' edge from the first-proof slice of F06-T2 (#478). When strict draw.io is scheduled, propose B as a spec amendment under KEL-102, written only after the E1 authority trace reports; do not adopt C without the owner's answer. The published mechanism (FsBroker registration, '<name>.*' sibling glob, dialog-only, never persisted) is refuted by code and corpus and must not be carried forward. The one remaining owner question: may host-minted user-intent filesystem authority persist across app launches (required for Open Recent under strict), or must every launch re-mint from a fresh user action?",
+   "falsifier": "The E1 trace shows the 4-step workflow under legacy needs a host-mediated fs call (A is insufficient for the first proof), or it shows most draw.io fs rows are unscopable by any user-intent mint (B does not deliver strict draw.io and a different model is needed).",
+   "reversible": "Yes. A adds nothing; B is additive and generation-bound. C is not cheaply reversible once users hold persisted grants.",
+   "missing_evidence": "E1/S2 authority trace classification of draw.io fs rows; an approved spec text for a guard-owned session-grant set; the owner's answer on persistence.",
+   "next_action": "Orchestrator (single writer) edits F06-D1 (#403) and F06-T2 (#478): replace the proposed mechanism with options A-D, drop the T3 blocker citing the KEL-102 terminal artifact, and split T2 into a legacy dialog broker (first proof) and strict session grants (blocked by this decision). First completion check: #478 no longer lists F06-D1 or 'KEL-102/T3 admission' as blockers for its first-proof slice.",
+   "owner": "keld-guard crate under KEL-102 (Linear, fetched 2026-10-06: In Progress, unassigned; T3 landed 2026-10-05). KEL-130 (Done) is the closed FsBroker owner and cannot carry the amendment. No Linear issue owns a dialog broker (search 2026-10-06); the orchestrator must route that gap, not this subagent.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F06-D3",
+   "decision": "Are resource-less native capabilities granted as literals in the existing app.system array and evaluated by the existing matcher as operation 'system' with the capability literal as the resource, with no new evaluator arm?",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "FACT (Linear, fetched live 2026-10-06, read-only): KEL-16 Done (completed 2026-07-10) and KEL-15 Done (2026-07-10). Both are closed RFCs and cannot 'confirm' or carry a schema update, so the published blockers naming them are stale. KEL-102 In Progress, unassigned, with T3 landed 2026-10-05 (comment cde25f5e). KEL-212 In Progress (Amisha Ramani).",
+    "FACT (prototypes/f06-guard-probe executed 2026-10-06 against the live keld-guard crate): manifest app.system ['clipboard.read','tray'] gives ALLOW for (system, clipboard.read); DENY KELD-GUARD002 for (system, clipboard.write) with fix text 'Widen /app/system ... so it includes clipboard.write'; an empty manifest gives DENY KELD-GUARD001 'Append \"tray\" to /app/system'. Entries '**', '/**', '*', 'clipboard/**', 'clipboard.**' do not allow clipboard.read or notifications.",
+    "FACT (crates/keld-guard/src/lib.rs:707-736, 1109-1120, 1199-1216, re-read): evaluate has no operation allowlist. It resolves a grant node by dotted capability, requires a non-empty all-string array, denies non-AppProcess principals first, and matches exactly unless the pattern ends in '/**'.",
+    "FACT (crates/keld-ipc/src/guard_dispatch.rs:73-76): the fs path grammar check applies only to fs.read/fs.write and other operations pass through. The published sentence 'the guard's accepted operation set is hard-coded to fs.read/fs.write' is imprecise: what is limited is which channels are registered.",
+    "FACT (docs/architecture/03-security.md:87): the owning spec already shows system: ['clipboard.read','clipboard.write','notifications','tray','global-shortcuts'].",
+    "FACT (crates/keld-guard/src/lib.rs:1905-1937): a second live resource-less precedent exists: operation web.camera with sentinel resource '*', granted as app.web.camera: ['*'].",
+    "FACT (docs/specs/kel102-host-guard-enforcement.md:88, :92): D5 one evaluator; D9 any manifest-schema delta needs its own permission-model review gate.",
+    "FACT (crates/keld-guard/AGENTS.md:7; docs/specs/kel78-strict-profile-sandbox.md:175): unknown capability or channel is Deny with no interim allow, and the legacy profile is still 'authenticated + guarded'. The first-proof dialog and menu brokers therefore need a grant spelling even under legacy.",
+    "FACT (docs/architecture/04-electron-compat.md:115; crates/keld-cli reserved verb): keld migrate is not live, and the 'usage scanner' cited in the proposal is scratchpad tooling, not a Keld component."
+   ],
+   "inferences": [
+    "INFERENCE: because a '/**' pattern also matches its own prefix node, a system entry 'tray/**' allows the literal 'tray'. If any capability literal ever contained '/', 'family/**' would become a family wildcard. Capability literals must stay dot-separated with no '/'.",
+    "INFERENCE: the first proof needs only the literals its 4-step workflow exercises (dialog and menu). arch 03's example list does not contain them, so the vocabulary addition is part of the spec amendment. Clipboard, notifications, tray, shortcuts and power are not on the first-proof path.",
+    "INFERENCE: the unit's own security_mapping rows marking showMessageBox, screen, nativeTheme and powerMonitor as 'no grant'/'implicit' contradict default-deny unless the guard/schema owner declares those channels with an empty capability set. A native-side allowlist is not available."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether permission-explain tooling renders a /app/system denial usefully (the deny capability reads 'system', the requested value carries the literal).",
+    "UNKNOWN: whether menu and screen should be gated literals or declared channels with an empty capability set. Guard-owner call inside the spec amendment.",
+    "UNKNOWN: whether globalShortcut needs a per-accelerator resource (would make it a scoped node rather than a literal)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Literal list in app.system, evaluated as (system, <literal>) by the existing matcher.",
+     "cost": "Zero guard code; one spec amendment listing the literal vocabulary; permission-model review gate under KEL-102-D9.",
+     "new_invariant": "Capability literals are dot-separated and never contain '/'; the literal vocabulary is closed and owned by the guard spec.",
+     "invariant_at_risk": "None found; audit granularity is coarser (capability 'system')."
+    },
+    {
+     "option": "B. Sentinel-resource nodes (app.clipboard.read: ['*']), matching the live web.camera precedent.",
+     "cost": "Zero guard code, but diverges from the arch 03 example; deny text points at /app/clipboard/read with requested '*'; one node per capability.",
+     "new_invariant": "'*' is a reserved sentinel for every resource-less capability.",
+     "invariant_at_risk": "Code/spec agreement (arch 03 would have to be rewritten)."
+    },
+    {
+     "option": "C. Boolean nodes (app.clipboard.read: true).",
+     "cost": "New evaluate arm and schema: a second grant grammar.",
+     "new_invariant": "Two grant grammars in one manifest.",
+     "invariant_at_risk": "KEL-102-D5 single evaluator; one-parser rule."
+    },
+    {
+     "option": "D. Implicit allow for 'low-risk' UI via a keld-native allowlist.",
+     "cost": "No manifest entries.",
+     "new_invariant": "Policy outside the manifest.",
+     "invariant_at_risk": "Default-deny ('no interim allow'); one policy owner."
+    }
+   ],
+   "recommendation": "Adopt A. Current evidence determines it: the owning spec already shows the shape, the live matcher allows and denies it correctly with followable fix text and no accidental wildcard (probe), and D5 forbids C and D. Record B as the considered alternative and keep the web.* sentinel for webview-principal media only. For the first proof, add only the dialog and menu literals and register only those channels; everything else in the ticket title is parked. Replace the stale blockers (KEL-16, KEL-15) with KEL-102 and its D9 permission-model gate.",
+   "falsifier": "A capability in the set needs a per-call resource the literal cannot carry; or a spec-reviewed literal must contain '/'; or the probe's deny text is shown to be unfollowable in keld doctor / permission-explain output; or the guard owner rules that dialog/menu are empty-capability channels (then the first proof needs no system literal).",
+   "reversible": "Yes while keld migrate is not live and no shipped manifest uses app.system; changing the spelling later costs only a spec edit and fixtures. It hardens once a migrated manifest ships.",
+   "missing_evidence": "An approved spec amendment (under KEL-102) naming the closed literal vocabulary and the dialog/menu ruling; a permission-explain rendering of a /app/system denial.",
+   "next_action": "Orchestrator updates F06-D3 (#404) to 'resolved: A' with the probe output, corrects the 'hard-coded operation set' wording, swaps blockers to KEL-102/D9, and attaches the dialog/menu literal question to the first-proof dialog broker ticket (#478). First completion check: #404 shows the resolved shape and lists KEL-102 (not KEL-15/KEL-16) as the gate.",
+   "owner": "keld-guard crate rules plus KEL-102 (Linear, fetched 2026-10-06: In Progress, unassigned; D9 routes any schema delta to its own permission-model gate). KEL-16 and KEL-15 are Done and are not owners.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F06-D4",
+   "decision": "May shell.openExternal open a destination the manifest did not name after a host-rendered user confirmation, or is it limited to exact literal origins with every other link denied as a declared divergence?",
+   "classification": "needs-human",
+   "milestone": "parked",
+   "facts": [
+    "FACT (Linear, fetched live 2026-10-06, read-only): KEL-208 Done (completed 2026-09-09). It was a matcher bug fix and there is no pending 'owner ruling' to request. KEL-212 In Progress (Amisha Ramani) owns inert-grant deny text and doctor. KEL-16 Done. KEL-102 In Progress, unassigned. KEL-127 Todo; its direction item 4 says compatibility 'does not justify ... silently replacing observable behavior'.",
+    "FACT (prototypes/f06-guard-probe executed 2026-10-06 on the live matcher): with shell.open ['https://docs.myapp.com/**','confirm:https','https://**'], (shell.open, https://evil.test/x) is DENY, so the scheme glob is inert; (shell.open, 'confirm:https') is ALLOW, so the proposed token is an exact-match resource in the same namespace as URLs, a grammar collision; (shell.open, 'HTTPS://docs.myapp.com/guide') is DENY, so the broker must canonicalise before matching.",
+    "FACT (docs/architecture/03-security.md:104-123, 144-146): a grant must name a destination; no glob grants any host; inert grants load silently today (KEL-212). arch 03 contains no prompt or consent concept.",
+    "FACT (corpus drawio electron.js:4348-4355, 2024, 2028, 4515, re-read): allowedUrls = /^(?:https?|mailto|tel|callto):/i, then shell.openExternal(url) for any host; two literal hosts in the Help menu. The published scheme list omits callto.",
+    "FACT (docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md:59): Electron's binding 'has no application allowlist or origin/prompt check'. A Keld confirmation is behaviour Electron never exhibits and cannot be scored as a match.",
+    "FACT (cached pinned doc docs/api/shell.md v44.4.5, lines 46-60): openExternal(url[, options]); 'Max 2081 characters on Windows'.",
+    "FACT: the first-proof workflow (open, edit, save, close prompt; panel synthesis line 64) contains no link-opening step."
+   ],
+   "inferences": [
+    "INFERENCE: runtime user consent is a new authority-mint mechanism, not a grant spelling; it needs an approved spec (who renders, what is shown, replay and rate limits, no persistence) with permission-model and public-API gates.",
+    "INFERENCE: if consent is admitted, the zero-new-grammar spelling is a separate capability node (operation shell.confirm, resource = canonical scheme literal) evaluated by the existing matcher, with the host asking the guard twice (literal first, then confirm class).",
+    "INFERENCE: a 'legacy only' option does not exist as a clean path: brokers stay guarded under legacy, and having the facade spawn the OS opener from Bun would be a second policy path."
+   ],
+   "unknowns": [
+    "UNKNOWN: how often draw.io/Zettlr users click arbitrary links (prompt frequency).",
+    "UNKNOWN: how the host attributes a user gesture when the call arrives from the Bun main role.",
+    "UNKNOWN: activate:false / workingDirectory mapping per OS.",
+    "UNKNOWN: whether any committed denominator cell will require opening a non-enumerable URL (no Zettlr or draw.io link cell is committed)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Exact literal origins only; every other URL is a KELD-GUARD002 rejection reported as a declared divergence.",
+     "cost": "Zero new mechanism. draw.io Help-menu links work once listed; in-diagram links and Zettlr navigation targets are denied.",
+     "new_invariant": "None (existing 'name the origins' rule).",
+     "invariant_at_risk": "None; compatibility score carries a permanent divergence for arbitrary links."
+    },
+    {
+     "option": "B. Consent class as its own capability node (app.shell.confirm: ['https','mailto','tel','callto']): host-rendered confirmation showing the full canonical URL mints one-shot authority; scored as divergence, never match.",
+     "cost": "Approved spec for user consent as an authority mint; host prompt UI on three OSes; gesture provenance; two guard evaluations per call.",
+     "new_invariant": "A user decision at call time can authorize a destination the reviewed manifest did not name.",
+     "invariant_at_risk": "Manifest-as-lockfile reviewability; prompt fatigue as a security control; arch 03 has no consent owner today."
+    },
+    {
+     "option": "C. 'confirm:https' tokens inside the shell.open scope array (the published proposal).",
+     "cost": "Second grammar in one field; needs a new evaluate arm.",
+     "new_invariant": "Scope arrays carry non-destination control tokens.",
+     "invariant_at_risk": "KEL-102-D5 literal semantics for permission-explain; the probe shows the token is itself an allowed resource string."
+    },
+    {
+     "option": "D. Allow scheme-wide globs.",
+     "cost": "Reverses the KEL-208 fix.",
+     "new_invariant": "A grant may delegate the authority to the caller.",
+     "invariant_at_risk": "'A grant must name a destination' (arch 03); phishing and local-handler abuse."
+    }
+   ],
+   "recommendation": "Park. Adopt A as the standing behaviour now (it is the existing rule, needs nothing new, and is reversible), and reject C and D outright on the probe and KEL-208 evidence. B is the only way to serve arbitrary links, but it creates a new invariant and is owner-owned. Remove 'KEL-208 owner ruling' and 'KEL-16' as blockers (both closed); the live owners are KEL-102 (permission model) and KEL-212 (deny text). The one remaining owner question: is a host-rendered, per-call user confirmation an admissible authority mint in Keld's permission model? Yes means spec B under KEL-102 when a scored cell needs it; no means A is permanent and arbitrary link opening is a declared divergence for every migrated app. Decide jointly with X04-D4 (#416).",
+   "falsifier": "A committed denominator cell for the first proof or the Zettlr proof requires opening a non-enumerable URL (A then fails a scored cell and B must be specified); for B, evidence that apps treat the rejection on 'Don't open' as a fatal error, or that gesture provenance cannot be established host-side.",
+   "reversible": "Yes for A (adding B later is additive). B is hard to withdraw once apps rely on it.",
+   "missing_evidence": "The owner's answer on consent-as-mint; a committed denominator showing whether any link-opening cell is scored; a per-OS receipt for gesture attribution if B is chosen.",
+   "next_action": "Orchestrator rewrites F06-D4 (#405) as the A/B packet with the single question above, removes the closed blockers and adds callto. First completion check: #405 names KEL-102 and KEL-212 as live owners and contains no 'confirm:https' spelling.",
+   "owner": "keld-guard permission model under KEL-102 (Linear, fetched 2026-10-06: In Progress, unassigned); KEL-212 (In Progress, Amisha Ramani) for inert-grant deny text. KEL-208 (Done) and KEL-16 (Done) are closed and are not owners.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "X04-D4",
+   "decision": "Whether a Keld manifest may grant 'open any URL of a given scheme in the OS default handler' without naming origins, and if so how that grant is spelled so that the shared matcher and URL scope lists keep their current meaning.",
+   "classification": "needs-human",
+   "milestone": "next",
+   "facts": [
+    "KEL-208 is Done (completed 2026-09-09, assignee GYLDLAB; landed as squash fa1bfd7); KEL-209 is closed as its duplicate. The ticket's premise that a KEL-208 owner ruling is pending names a closed issue (Linear, fetched 2026-10-06).",
+    "KEL-208's eight comments record no ruling on a scheme-class spelling. They record the chosen rule (a grant must name a destination), and reject a capability-kind registry because none exists; URL normalisation is deferred to 'its own spec' once a URL-valued capability goes live (Linear, fetched 2026-10-06).",
+    "Live matcher on main b4b907c3: a pattern without a `/**` suffix is compared by exact string equality; the destination-less check runs only after a `/**` suffix is stripped. A bare `https:` entry therefore matches only a resource that is literally `https:` (keld-guard, read 2026-10-06; not executed by me).",
+    "Architecture 03 section 2: 'No glob grants \"any host\" for a multi-character scheme — name the origins'; `**` is the only wildcard; path and URL scopes share one matcher.",
+    "KEL-102's reuse rule, quoted in KEL-208: there must be exactly one matcher and no per-native-module policy check (Linear, fetched 2026-10-06). KEL-102 is In Progress, unassigned.",
+    "KEL-208's description states that net.connect and shell.open are not wired through evaluate; keld-native has no shell broker on main.",
+    "KEL-212 is In Progress (assignee Amisha Ramani): it will add a distinct deny reason for a grant that can never match and make `keld doctor` report a destination-less grant as a finding (Linear, fetched 2026-10-06).",
+    "draw.io opens external URLs after testing them against a scheme allowlist of http, https, mailto, tel and callto; the call is reached from two fixed Help-menu links, the window-open handler and a renderer request (drawio-desktop@2edf9fb, read 2026-10-06). None of these is in the first-proof workflow (open, edit, save, close-with-unsaved-prompt).",
+    "The published plan holds the same decision twice: X04-D4 (#416) and F06-D4 (#405, 'joint with X04-D4'). F06-T3 (#479) is blocked by X04-D4 and already describes a confirm-per-scheme grant with a host-rendered confirmation as what to build."
+   ],
+   "inferences": [
+    "If a bare `scheme:` entry inside the `app.shell.open` list were given 'any destination' meaning, the same spelling would be 'inert, reported by doctor' in every other URL list once KEL-212 lands: one spelling with two meanings in one shared vocabulary.",
+    "Electron itself applies no filter or prompt to shell.openExternal called from main (refuter receipts for the pinned shell and session pages, not re-fetched by me), so any Keld rule here is a new control and any confirmation dialog is a parity difference.",
+    "A host-rendered confirmation flow has no existing owner, spec or UI surface in Keld."
+   ],
+   "unknowns": [
+    "The owner's answer on scheme-class authority.",
+    "How a user gesture would be attributed across the IPC hop for renderer-triggered opens; no Keld mechanism exists. This is a separate atom and is not needed to answer the spelling question.",
+    "Linux portal behavior for mailto and tel.",
+    "Whether a guard test pinning 'bare scheme matches no URL' exists; I did not find or run one."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Exact origins only (status quo)",
+     "cost": "User-authored links in draw.io and Zettlr cannot open; both score a documented refusal for that member. Fixed Help links still work when named.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "B. Bare `scheme:` literal inside `app.shell.open`, evaluated by the shell broker as an exact literal after canonicalising the URL into a scheme token and an origin",
+     "cost": "No matcher change; an architecture 03 amendment and permission-model gate; KEL-212's doctor and deny text need a carve-out for this one list.",
+     "new_invariant": "Under shell.open only, a bare scheme entry authorises any destination of that scheme.",
+     "invariant_at_risk": "One spelling, one meaning across URL lists; 'name the origins'; risk that a later net broker copies the canonicalisation and widens net.connect."
+    },
+    {
+     "option": "C. A distinct capability for scheme class (for example a separate key beside `open` holding scheme names), exact literals through the same evaluate call; `shell.open` stays origin-only (recommended if the answer is yes)",
+     "cost": "One new capability name (allocated under the X05-T2 naming rule), an architecture 03 amendment, permission-model gate, a loud doctor line, migrate seeding from literal scheme allowlists.",
+     "new_invariant": "Scheme-class open authority is its own named, reviewable grant; no URL list ever means 'any host'.",
+     "invariant_at_risk": "Default-deny is preserved; the operator still hands the OS handler arbitrary destinations for the named schemes, which is the authority being asked for."
+    },
+    {
+     "option": "D. A confirm-class token with a host-rendered confirmation dialog per call",
+     "cost": "New host UI flow on three operating systems, new per-call state, no owner or spec; differs from Electron, which does not prompt.",
+     "new_invariant": "A user click at run time substitutes for an operator grant.",
+     "invariant_at_risk": "Generated, reviewed default-deny (authority decided in the manifest); YAGNI for the current and next milestone."
+    }
+   ],
+   "recommendation": "Ask the owner one question and default to A until answered. If yes: adopt C, with `file:`, `javascript:` and unlisted schemes always denied, and no change to the shared matcher. Reject B because it gives one spelling two meanings against KEL-212. Park D and the gesture rule as separate, unowned atoms. Close F06-D4 (#405) into X04-D4 (#416) and rewrite F06-T3 (#479) so it no longer presupposes the confirmation dialog. Re-point the ticket from KEL-208 (Done) to KEL-102 and the architecture 03 section 2 owner.",
+   "falsifier": "An executed guard test showing a bare `https:` entry already authorises an https URL (the 'inert today' premise would be false); or KEL-212 landing with a rule that treats a bare scheme entry as valid; or the owner recording that scheme-class authority is never allowed, which fixes option A.",
+   "reversible": "Partly. Option A is fully reversible. B, C and D each add public manifest vocabulary; once apps ship manifests using it, removal is a breaking permission-model change.",
+   "missing_evidence": "The owner's yes or no. Optional and cheap: a guard negative-control test asserting that `shell.open: [\"https:\"]` matches no https URL today, to pin the premise before any spec.",
+   "next_action": "Orchestrator posts this packet on #416 and closes #405 as its duplicate; the owner (@0monish) answers the one question: may a manifest grant opening any URL of a named scheme in the OS default handler without naming origins, yes or no. First completion check: the answer recorded on #416 and F06-T3 (#479) reworded to match.",
+   "owner": "KEL-102 (In Progress, unassigned) for guard wiring of URL-valued capabilities; KEL-212 (In Progress, Amisha Ramani) for inert-grant diagnostics that the spelling must not contradict; KEL-208 is Done and is not a live owner. Linear, fetched 2026-10-06."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F06-D3": {
+   "status": "decided",
+   "resolution": "Adopt A. Current evidence determines it: the owning spec already shows the shape, the live matcher allows and denies it correctly with followable fix text and no accidental wildcard (probe), and D5 forbids C and D. Record B as the considered alternative and keep the web.* sentinel for webview-principal media only. For the first proof, add only the dialog and menu literals and register only those channels; everything else in the ticket title is parked. Replace the stale blockers (KEL-16, KEL-15) with KEL-102 and its D9 permission-model gate.",
+   "milestone": "first-proof"
+  },
+  "F06-D1": {
+   "status": "owner-decision-delegated",
+   "resolution": "Park. First proof takes option A (legacy profile, dialogs return paths, no scope minting). The published FsBroker-registration mechanism, the <name>.* sibling glob and the dialog-only/never-persisted lifetime are refuted and withdrawn. Reopen when strict-profile draw.io is scheduled: propose guard-owned session grants as a KEL-102 spec amendment after the boot/authority trace; persistence across launches stays an owner question.",
+   "milestone": "parked"
+  },
+  "F06-D4": {
+   "status": "duplicate-of-X04-D4",
+   "resolution": "Option A is the standing behaviour: exact literal origins only; every other URL is a typed refusal recorded as a declared divergence. A confirm-class token and scheme-wide globs are rejected. If a scored cell ever needs scheme-class opening, specify option C (a distinct capability key for scheme classes) under KEL-102 with a permission-model gate; consent-as-authority-mint stays rejected until an approved spec says otherwise.",
+   "milestone": "parked"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "[fact] F06 covers 38 entities / 350 members of the v44.4.5 model; every module is main-process only (nativeImage/shell/clipboard renderer use is deprecated or non-sandboxed only), so every call maps to Principal::AppProcess over kipc into a keld-native module that does not exist yet. [fact] Keld state: keld-native ships only the retained FsBroker (fs.read/fs.write, KEL-130, Done) and a MODULES name list (menu, tray, dialog, notify, clipboard, shortcut, screen, power, shell, secrets, deeplink, autostart, dock; 'capture' from arch 05 §3 is absent from MODULES — a code/spec gap); no F06 channel is reachable from the shipping host until KEL-102/T3 admission; @keld/electron exports only `app`. Corpus demand ranks dialog (drawio showMessageBox x7, open/save x4 each; Zettlr showMessageBox 24, dialog in 21 files) > shell (openExternal 3/7, openPath, showItemInFolder, trashItem) > Menu (both apps: buildFromTemplate + setApplicationMenu, 13 roles in drawio, 45 accelerators per Zettlr platform menu, popup with frame) > screen (workArea/getDisplayMatching) > clipboard (drawio uses the 44 W3C promise shape with ClipboardItem; Zettlr on ^43.6.0 uses sync readText and the removed writeImage) > nativeTheme (themeSource writes, 'updated') > nativeImage (createFromDataURL().toPNG(), createFromPath for icons) > Tray/Notification (Zettlr only) > systemPreferences (getAccentColor, subscribeNotification AppleInterfaceThemeChangedNotification). Zero corpus use of globalShortcut, powerMonitor, powerSaveBlocker, safeStorage, desktopCapturer, ShareMenu, pushNotifications, inAppPurchase — Tier 2/3 as arch 04 §4 already says. Six decision atoms change design or sequencing: (1) dialog-chosen paths must become host-minted, session-bound fs grants consumed by the existing FsBroker (drawio's blessPath/realpath/sibling-draft pattern is the oracle) — KEL-130 explicitly excluded dialog grants and binds scopes to an immutable manifest digest; (2) all F06 UI objects are host-main-thread handles with host-assigned ids and write-through property setters, click/event dispatch host→Bun; (3) guard grant shape for resource-less capabilities: the arch 03 `system: [...]` flat list is evaluable today as operation=\"system\", path=\"<capability>\" with zero guard changes; (4) shell.openExternal: the guard refuses scheme-wide grants by design while the median app's legitimate policy is 'any http(s)/mailto/tel URL the user clicked' — needs a host confirmation grant kind, not a wider glob; (5) binary payload/NativeImage model: Bun-side immutable value object + host decode at consumption, bounded by MAX_FRAME_LEN 16 MiB / 8 MiB content ceilings, with a `clipboardLegacySync` quirks flag reusing the KEL-127 blocking CALL primitive for 43-shape apps; (6) safeStorage is a host secrets broker (KEL-78 denies keychain to strict children), fail-closed where Electron Linux falls back to plaintext basic_text — blocked on the KEL-89 D5 secrets fast-follow spec. Notifications are gated by packaging identity (Windows AppUserModelID + Start Menu shortcut; macOS code signing) and so sequence behind KEL-19/KEL-103, not behind kipc work.",
+  "decisions": [
+   {
+    "id": "F06-D1",
+    "question": "How do dialog-chosen paths become filesystem authority for a strict-profile Bun main without a second policy owner or a widened manifest?",
+    "proposed_answer": "Add one host-owned 'session grant' mint: the host dialog (AppProcess principal) returns paths AND registers each as a generation-bound fs scope (open → fs.read leaf; save → fs.write leaf) into the same FsBroker retained-scope set that KEL-130 built, revoked on Bun generation death and never persisted. Sibling policy is explicit: a dialog grant covers the chosen leaf plus a declared sibling pattern (`<name>.*` in the same directory) because the drawio oracle writes `.bkp`/draft siblings; anything wider requires a manifest grant. `keld migrate` seeds static dirs (arch 03 §3) but never seeds `$HOME/**`. Electron parity point: apps see identical return shapes; the difference is that out-of-grant fs calls from the node:fs facade fail with KELD-GUARD002 instead of succeeding — recorded ✔ for the dialog cell and ▲ for the 'ambient fs after dialog' cell.",
+    "evidence": [
+     "[fact] dialog.md v44.4.5: showOpenDialog returns {canceled, filePaths, bookmarks}; app does fs itself",
+     "[fact] corpus drawio blessPath/assertWritablePath: realpath canonicalisation + blessed set + sibling draft/backup writes; userData denial",
+     "[fact] KEL-130 spec §1 non-goals: 'dialog grant' excluded; FsBroker::prepare consumes one VerifiedManifest and binds the digest per call (arch 05 §3)",
+     "[fact] KEL-78 table: files outside a reviewed role-private container → deny for the strict child",
+     "[fact] arch 03 §3: `keld migrate` seeds 'dialog → fs read of chosen paths'; arch 05 §3 dialog row: 'scoped-path grants flow into fs scopes'",
+     "[fact] keld-auth D5/custody: 'policy snapshot is immutable per session (grant change ⇒ teardown)' — a dynamic grant must be additive-in-session, not a manifest change"
+    ],
+    "confidence": "medium — necessity is proven by spec/corpus facts; the exact mint shape (leaf+sibling vs parent dir, revocation on navigation/generation) is the open design",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Parent-directory grant per dialog: wider than the user's choice, violates default-deny intent. (b) Manifest-only static grants: breaks drawio/Zettlr 'open any file' flows; `$HOME/**` is a glob the guard lints loudly. (c) Legacy sandbox-off profile as the only path: makes Tier 1 dialog support a labeled downgrade for every median app. (d) Bun-side path blessing (copying drawio): policy in the child, bypasses keld-guard — rejected by invariant 2.",
+    "blocked_by": [
+     "KEL-102 T3 admission so FsBroker is reachable from the host",
+     "window registry (TARGET) for the `window` argument / sheet attachment",
+     "Linux portal path semantics (open unknown)"
+    ],
+    "unknowns": "Whether FsBroker's retained-root model (roots live for one verified snapshot) can accept additive scopes without re-preparation cost on the hot path; Linux portal choosers may return document-portal paths; macOS MAS securityScopedBookmarks have no Keld packaging target yet."
+   },
+   {
+    "id": "F06-D2",
+    "question": "What is the object/identity model for host-owned UI handles (Menu, MenuItem, Tray, Notification, popup) across the Bun/host process boundary?",
+    "proposed_answer": "Every F06 object is a host-main-thread resource with a host-assigned (generation, id) pair; the facade holds a proxy whose property setters are write-through kipc calls and whose events/clicks are host→Bun messages carrying (commandId, focusedWindowId, KeyboardEvent). Menu templates are submitted as one bounded tree per setApplicationMenu/popup (host builds, assigns commandIds, executes `role` items host-side without a round trip, exactly as Electron ignores `click` when `role` is set). The default menu is built host-side when the app never sets one. Lifetime: handles die with their Bun generation (tray icons, popups, notifications, power assertions are released) — a deliberate ▲ versus Electron's GC-driven Tray lifetime. Accelerator normalization is one host-side parser shared by menu and globalShortcut.",
+    "evidence": [
+     "[fact] arch 01 §threading: host main thread = platform UI thread; keld-wv requires MainThreadMarker for AppKit objects",
+     "[fact] menu.md v44.4.5: getApplicationMenu 'doesn't support dynamic addition or removal of menu items. Instance properties can still be dynamically modified'; default menu auto-created",
+     "[fact] menu-item.md v44.4.5: role → 'click property will be ignored'; click(menuItem, window: BaseWindow|undefined, event: KeyboardEvent)",
+     "[fact] Zettlr menu/index.ts mutates item.checked and serialises appMenu.items; tray/index.ts keeps `this._tray` and calls setContextMenu/setToolTip",
+     "[fact] tutorial/tray.md: 'save a reference to the Tray object globally to avoid garbage collection'",
+     "[fact] briefing invariant 4: no parallel process model; KEL-75 host-owned roles/ports — same pattern for UI handles"
+    ],
+    "confidence": "high on host ownership and write-through (it is the only model consistent with the four uniques); medium on lifetime rule and click latency budget (unmeasured)",
+    "type": "task",
+    "alternatives_rejected": "(a) Bun-side menu state with host re-sync on each change (diff/patch): two sources of truth, order bugs on rapid toggles. (b) Executing `role` actions in Bun via facade: needs first-responder/webContents access the facade lacks; Electron does them natively. (c) GC-driven lifetime via FinalizationRegistry: non-deterministic in Bun; Electron's own docs treat it as a trap.",
+    "blocked_by": [
+     "window registry (TARGET) for focused-window identity",
+     "KEL-102 T3 event/push channel admission (host→Bun ordered events)"
+    ],
+    "unknowns": "Exact Electron ordering of click → menu-will-close → popup callback (needs a pinned fixture run per 214); whether Bun-side accelerator validation must mirror Electron's throw-vs-ignore behavior for invalid strings; click→Bun→UI round-trip latency vs the kipc p99 100 µs budget (menu clicks are cold, but Zettlr's popup promise race assumes <100 ms)."
+   },
+   {
+    "id": "F06-D3",
+    "question": "What manifest/grant shape do resource-less capabilities (clipboard, notifications, tray, global shortcuts, power blockers) use, given `evaluate(operation, path)` is scope-based?",
+    "proposed_answer": "Keep the arch 03 §2 literal shape `app.system: [\"clipboard.read\", \"clipboard.write\", \"notifications\", \"tray\", \"global-shortcuts\"]` and evaluate it with the existing matcher as operation=\"system\", path=\"<capability literal>\" — exact-string match already Allows, non-AppProcess principals are already denied first, and `dispatch_privileged` already skips the fs path grammar for non-fs operations, so zero guard code changes are needed; deny text names `/app/system`. Resource-bearing F06 operations stay dotted-and-scoped: `shell.open` (URL scopes), `fs.read`/`fs.write` (paths via FsBroker), `secrets` (`keychain:<app>/**`). `keld migrate` emits these literals from static Electron API detection (the usage scanner already classifies modules).",
+    "evidence": [
+     "[fact] crates/keld-guard/src/lib.rs evaluate: grant_node(operation) → array → `path_in_scope(path, scope)` exact match or `/**`; `..` denied; non-AppProcess denied before lookup",
+     "[fact] crates/keld-ipc/src/guard_dispatch.rs filesystem_dispatch_path_is_valid returns true for non-`fs.read`/`fs.write` operations",
+     "[fact] arch 03 §2 manifest example already uses `system: [...]` and `secrets: [\"keychain:myapp/**\"]`",
+     "[fact] KEL-102 D5: keld_guard is the one evaluator; keld-core never adds a second authorization check — adding a boolean-capability evaluator would be a second rule owner",
+     "[fact] arch 03 §3: `keld migrate` seeds the manifest from static analysis of Electron API usage"
+    ],
+    "confidence": "medium — mechanically verified against current code; whether the guard owner accepts 'system' as a pseudo-operation (deny text/pointer ergonomics, explain tooling) is a grilling question",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Dotted boolean nodes `app.clipboard.read: true`: requires a new evaluate arm and schema (second grant grammar). (b) Per-module objects with scopes for everything: clipboard has no resource, invents fake scopes. (c) Implicit allow for 'low-risk' UI (menus) via a hardcoded allowlist in keld-native: policy outside the manifest — rejected by invariant 2.",
+    "blocked_by": [
+     "KEL-16/KEL-102 owner confirmation",
+     "KEL-15 config schema update for `system` literal set"
+    ],
+    "unknowns": "Whether 'menu' and 'screen' should be grant-gated at all (fingerprinting/DoS) or implicit; whether the permission-explain tooling renders `/app/system` denials usefully."
+   },
+   {
+    "id": "F06-D4",
+    "question": "How does shell.openExternal reconcile the guard's refusal of scheme-wide grants with the median app's legitimate policy of 'open any http(s)/mailto/tel link the user clicked'?",
+    "proposed_answer": "Introduce one new grant kind owned by keld-guard — `shell.open` entries of the form `confirm:https`, `confirm:mailto`, `confirm:tel` — meaning: the host may open URLs of that scheme only after a host-rendered confirmation that shows the full URL (user gesture is the authority mint), while literal `https://host/**` scopes open silently. `file:`, `javascript:`, and any scheme that launches local executables are never. The host also enforces Windows' 2081-char limit and canonicalizes before matching. Electron parity: openExternal still resolves void on success; a user 'Don't open' resolves as rejection (Electron rejects on failure, so this is ✔-shaped) — denied-by-manifest is a KELD-GUARD002 rejection (▲ documented). `keld migrate` seeds `confirm:*` from detected openExternal call sites and literal hosts from string-literal arguments (drawio: drawio.com, github.com).",
+    "evidence": [
+     "[fact] crates/keld-guard/src/lib.rs + arch 03 §2: 'A grant must name a destination' — `https://**` matches nothing by design",
+     "[fact] drawio electron.js:4348 `allowedUrls = /^(?:https?|mailto|tel|callto):/i` then shell.openExternal(url) for any host (diagram links); Zettlr attach-app-navigation-handlers.ts opens arbitrary navigation targets with `.catch`",
+     "[fact] research 186 row 3: Electron's openExternal 'has no application allowlist or origin/prompt check'; Keld 'requires a guarded operation, caller identity, URL scheme/host policy, and user-gesture/confirmation semantics owned by the host policy'",
+     "[fact] shell.md v44.4.5: openExternal returns Promise<void>; 'Max 2081 characters on Windows'; activate/workingDirectory/logUsage options",
+     "[fact] briefing never-list and KEL-127: unsupported combos need explicit diagnostics + visibly labeled legacy profile, no silent downgrade"
+    ],
+    "confidence": "medium — the conflict is proven; the confirm grant kind is a proposal that changes guard grammar and needs security-owner review and UX validation on three OSes",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Allow `https://**` globs: contradicts the guard's destination rule and arch 03 §2; opens phishing/local-handler abuse. (b) Require host enumeration: breaks drawio/Zettlr link opening entirely (▲ for every click). (c) Bun-side URL allowlist (copy drawio's regex): policy in the child. (d) Legacy profile only: labels every median app as downgraded.",
+    "blocked_by": [
+     "KEL-16/KEL-102 grant-grammar ownership",
+     "host dialog primitive (shares D2 UI-handle plumbing)"
+    ],
+    "unknowns": "Whether a confirmation prompt is acceptable UX for in-diagram link clicks (frequency); how `activate:false` maps on macOS (NSWorkspace options) and whether workingDirectory is honored on Windows for non-exe targets; renderer-originated vs main-originated calls — the facade only sees AppProcess, so 'user gesture' provenance must come from the host's own input tracking [inference]."
+   },
+   {
+    "id": "F06-D5",
+    "question": "Where do NativeImage values and clipboard payloads live, how do they cross kipc, and which clipboard API shape is the baseline?",
+    "proposed_answer": "NativeImage is a Bun-side immutable value object (bytes + sniffed format + header-parsed size + scale representations + template flag) with no host handle; decode/encode happens host-side only at consumption (tray/menu/notification icon, clipboard write, toPNG from non-PNG input) — so `createFromDataURL(png).toPNG()` (drawio) is a local byte pass-through and `createFromPath` is one FsBroker fs.read. Clipboard baseline is the v44.4.5 W3C shape (promise methods, ClipboardItem with string|Blob|Promise values, bookmark exception) scored ✔; a `clipboardLegacySync` quirks flag adds the 43-era sync `readText/writeText/readImage/writeImage/availableFormats` using the KEL-127 blocking CALL (deadline, rate limit, dev warning), scored ▲, so Zettlr (^43.6.0) is runnable with a config-only change. Payloads are bounded by MAX_FRAME_LEN (16 MiB) and a declared clipboard ceiling (proposal 8 MiB, matching fs content) with a typed size error; write([item]) is one host call that performs the OS set atomically.",
+    "evidence": [
+     "[fact] clipboard.md / clipboard-item.md v44.4.5: all methods Promise-returning; write(ClipboardItem[]) 'atomically'; renderer use deprecated; model lists 7 clipboard members and no writeImage",
+     "[fact] drawio electron.js:4275-4296 comment 'Electron 44 aligned the clipboard module with the W3C Clipboard API' and uses new ClipboardItem({'image/png': new Blob([nativeImage.createFromDataURL(d).toPNG()]), 'text/html': ...})",
+     "[fact] Zettlr save-image-from-clipboard.ts:71 `const text = clipboard.readText()` (sync) and commands/index.ts:160 `clipboard.writeImage(img)`; Zettlr electron dep ^43.6.0",
+     "[fact] native-image.md v44.4.5: PNG/JPEG (+ICO Windows); createFromPath returns empty on failure; DPI suffixes; Template filename rule",
+     "[fact] keld-ipc MAX_FRAME_LEN 16 MiB; keld-native MAX_FS_CONTENT_BYTES 8 MiB; arch 04 §3 item 4 places 'nativeImage codecs' in host-side keld-compat emulation",
+     "[fact] KEL-127: sync replacement must stay a blocking CALL with deadline, rate-limited, dev-warned"
+    ],
+    "confidence": "medium-high on value-object placement and baseline shape (corpus + docs); medium on ceilings (unmeasured copy counts)",
+    "type": "task",
+    "alternatives_rejected": "(a) Host-owned image handles: every getSize/isEmpty is a round trip, lifetime/GC problems, and bytes still cross for toPNG. (b) Full image codec in Bun (pure-TS decode): duplicates host codecs, violates one-owner, hurts the 90 MiB RSS budget. (c) Shipping only the 43 sync shape: diverges from the pinned baseline that drawio (first candidate) needs. (d) Making sync methods async silently: changes caller contract (KEL-127 forbids).",
+    "blocked_by": [
+     "KEL-102 T3 for a bounded binary CALL channel",
+     "KEL-80 backpressure for multi-frame payloads if the ceiling exceeds one frame"
+    ],
+    "unknowns": "Whether `nativeImage.createThumbnailFromPath`, `crop`, `resize`, `addRepresentation` stay host-side only; exact copy count Blob→kipc→OS clipboard (measure in prototype P3); whether Zettlr will have upgraded to 44 by migration time, making the quirk unnecessary."
+   },
+   {
+    "id": "F06-D6",
+    "question": "How does safeStorage map onto a Keld `secrets` broker, and what happens where Electron degrades to plaintext?",
+    "proposed_answer": "safeStorage is a thin facade over a keld-native `secrets` module (keychain/DPAPI/libsecret per arch 05 §3) that the host owns; the per-app encryption key lives under the app's authenticated identity in the OS store, the host performs encrypt/decrypt, and ciphertext is returned to Bun (Electron contract preserved: app stores ciphertext itself). The strict Bun child never reaches the keychain (KEL-78 deny). Where Electron's Linux selects `basic_text` (hardcoded plaintext password), Keld reports isEncryptionAvailable=false, getSelectedStorageBackend='basic_text'-equivalent diagnostic, and encryptString throws — a declared ▲ (fail closed). Sequencing: Tier 2 and gated on the KEL-89 D5 `secrets` fast-follow spec, which also gives keld-auth durable refresh custody — one module, two consumers.",
+    "evidence": [
+     "[fact] safe-storage.md v44.4.5: Keychain/DPAPI/kwallet|libsecret; basic_text 'unprotected as they are encrypted via hardcoded plaintext password'; isEncryptionAvailable ready semantics; encryptString throws on failure; decryptStringAsync {shouldReEncrypt,result}",
+     "[fact] KEL-78 authority table: 'Secrets / keychain / credential tokens | deny (cannot impersonate the user)'",
+     "[fact] keld-auth.md D5: durable custody 'via a secrets module is the named fast-follow tier ... with its own spec'; arch 03 §2 `secrets: [\"keychain:myapp/**\"]`",
+     "[fact] arch 05 §3 secrets row: keychain/DPAPI/libsecret → safeStorage facade",
+     "[fact] corpus: zero safeStorage call sites in drawio/Zettlr/quick-start — Tier 2 placement (arch 04 §4) holds"
+    ],
+    "confidence": "high on brokering necessity and sequencing; low on key custody details (per-app key vs per-secret items, rotation → shouldReEncrypt mapping) until the secrets spec exists",
+    "type": "research",
+    "alternatives_rejected": "(a) Mimic basic_text plaintext for parity: makes the `secrets` grant a false promise. (b) Bun-side crypto with a key fetched from the host: key material crosses kipc into the strict child. (c) keytar-style arbitrary keychain item CRUD as the primary API: Electron's safeStorage contract is encrypt-bytes, and arbitrary item access is a wider authority — keep for a later `secrets.item.*` surface.",
+    "blocked_by": [
+     "KEL-89 D5 secrets spec",
+     "KEL-103 signed macOS host identity (Keychain ACL continuity across updates)",
+     "KEL-135 persistent profile identity for the per-app key namespace"
+    ],
+    "unknowns": "macOS Keychain prompt behavior when the host binary updates (Electron docs cite code-signing need); Windows DPAPI 'same-userspace apps can read' — whether Keld adds entropy bound to app identity; Linux Secret Service availability detection in portal-first mode."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "Renderer-process (webview principal) direct clipboard/shell/nativeImage/screen calls",
+    "rationale": "Electron deprecates renderer clipboard (v44.4.5 front matter) and shell 'will not function in a sandboxed renderer'; Keld's evaluate denies any non-AppProcess principal before grant lookup (KELD-GUARD006). Apps route via ipcMain → main facade."
+   },
+   {
+    "surface": "shell.openExternal / openPath targets that launch local executables (file:, app bundles, .exe/.lnk, javascript:)",
+    "rationale": "Research 186 row 3: unfiltered platform dispatch; no user-gesture confirmation makes this arbitrary code execution from the strict role."
+   },
+   {
+    "surface": "Scheme-wide `shell.open` globs (`https://**`)",
+    "rationale": "arch 03 §2 and keld-guard: 'A grant must name a destination'; use the confirm grant kind (D4) instead."
+   },
+   {
+    "surface": "safeStorage basic_text plaintext emulation",
+    "rationale": "Would make the `secrets` grant protect nothing; Keld fails closed and declares ▲."
+   },
+   {
+    "surface": "systemPreferences.postNotification/postLocalNotification/postWorkspaceNotification and arbitrary setUserDefault/registerDefaults from strict roles",
+    "rationale": "Cross-application signalling and host-process NSUserDefaults writes can alter host/WebKit behavior; legacy profile or key allowlist only."
+   },
+   {
+    "surface": "Notification.toastXml raw XML",
+    "rationale": "Arbitrary toast XML can embed activation protocols/arguments outside the typed action model; ✘ or legacy profile."
+   },
+   {
+    "surface": "Auto-prompting for macOS trusted accessibility (media-key shortcuts) or Screen Recording without a grant",
+    "rationale": "KEL-132 oracle: no OS prompt without an evaluated grant; prompts are user-visible authority mints."
+   },
+   {
+    "surface": "App-chosen Tray GUID / AppUserModelID strings",
+    "rationale": "These bind OS identity; the host derives them from the authenticated app identity (KEL-135/keld-pack), never from app input."
+   }
+  ],
+  "open_unknowns": [
+   "[unknown] Exact Electron failure mode (throw vs. empty result vs. silent) for screen/globalShortcut/Tray/powerMonitor use before `ready` — docs say 'cannot be used'; a pinned fixture run is required before writing Keld's ready-gating oracle (214 rule).",
+   "[unknown] Exact Electron event order for popup: click handler vs 'menu-will-close' vs popup callback — Zettlr's promise race depends on it.",
+   "[unknown] Whether Zettlr will target Electron 44 at migration time (removing the need for the `clipboardLegacySync` quirk) — its package.json pins ^43.6.0 today.",
+   "[unknown] Linux portal file-chooser path semantics (document portal vs real path) under the arch 05 portal-first commitment — affects D1 realpath canonicalisation and drawio's symlink/network-drive handling.",
+   "[unknown] How system webviews reflect nativeTheme.themeSource overrides: WKWebView via window NSAppearance, WebView2 via profile PreferredColorScheme, WebKitGTK via GTK theme — all [inference], none verified on this SHA.",
+   "[unknown] Whether the guard owner accepts `system` as a pseudo-operation (D3) or wants a boolean-capability grammar; permission-explain rendering of `/app/system` denials.",
+   "[unknown] Copy count and latency for 7-16 MiB clipboard/nativeImage payloads across kipc (prototype P3); whether a clipboard ceiling of 8 MiB is acceptable for image-heavy apps.",
+   "[unknown] Windows toast attribution/behavior in `keld dev` without an AUMID shortcut (prototype P5) and whether keld-pack can emit the shortcut/CLSID for non-Squirrel installers (KEL-53 full-package activation).",
+   "[unknown] macOS Keychain ACL continuity for the `secrets` key across host updates with KEL-103 signing; DPAPI extra-entropy design.",
+   "[unknown] Whether 'menu', 'screen', and 'power.block' should be grant-gated or implicit for AppProcess (fingerprinting/DoS vs. zero-config feel).",
+   "[unknown] A deeper Linear page may hold an F06-specific owner; two 50-item pages returned none (hasNextPage=true).",
+   "[fact-gap] arch 05 §3 lists a `capture (Tier 3)` module row absent from keld-native MODULES and not named in the 'does not yet include' sentence — code/spec mismatch to resolve in one PR per root AGENTS.md."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

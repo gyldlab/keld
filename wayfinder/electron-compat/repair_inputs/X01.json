@@ -1,0 +1,749 @@
+{
+ "unit": "X01",
+ "name": "conformance-oracle-harness",
+ "published": {
+  "epic": {
+   "key": "X01-EPIC",
+   "title": "program(conformance): differential oracle harness — pinned Electron recorder, Keld replayer, comparator, canonical bytes, CI lanes, maturity ladder",
+   "body": "## Scope\nThe measurement machine behind every compat claim: Arm A records Keld-owned fixture apps under the pinned Electron 44.4.5 binary (npm dist shasum recorded; tag → commit 694f45852a0f1726cd23bfd379854de489cccb65) into line-oriented transcripts; Arm B replays the same unmodified fixtures under `@keld/electron`; a Rust comparator in keld-compat normalises declared nondeterministic fields, diffs ordered sequences, and emits one KEL-74 evidence record per cell. The pinned doc sentence is the oracle; the golden transcript is evidence-of-record (observed-only cells cap at BEHAVIOR_MATCH, recorded `unknown` with the oracle id naming the unspecified path).\n\n## Maturity ladder (this is the ladder every family uses)\nBEHAVIOR_MATCH (Keld transcript == golden under normalisers, ≥1 OS, legacy_sandbox_off) → CONFORMANCE_PASS (cited doc sentence + Keld-owned test independent of the diff + named negative control + all three OS lanes or explicit ▲) → CORPUS_VERIFIED (same observable matched in a real corpus app through migrate + dev smoke, panel product once a product corpus id is committed, authority profile printed).\n\n## Linear owners consumed\nKEL-74 (schema/scorer; shared Manifest/exact-bytes helpers must be promoted out of test-local code), KEL-237 (lifecycle corpus; canonical-bytes rule already live there), KEL-77 (two-arm harness shape; fixture-set digest algorithm §4.3), KEL-81 (CI routing), KEL-78 (authority profile truth), product-corpus owner (none today — DOCUMENTED_COMMITTED_PRODUCT list is empty).\n\n## Design facts fixed by research (two refuters)\n- Fixture family: `main.js` (ESM, type:module) + `preload.cjs` (CJS) + `index.html`, markers via synchronous stdout writes; the Electron binary is never committed and never runs in the PR lane.\n- Canonical bytes: manifest exact committed bytes (sha256 asserted with a one-byte mutation control — live in the lifecycle corpus test); fixture-set digest per KEL-77 §4.3; each golden is its own immutable blob; the spec must state which digest `artifact.sha256` carries.\n- Lanes: PR lane replays committed goldens inside the keld-compat test target on the existing three-OS matrix (offline, deterministic); a weekly recorder lane (TARGET: no scheduled workflow exists) re-records at the same pin to detect oracle nondeterminism and needs its own failure sink or \"regression = P1\" is unenforced.\n- Comparison is strict within one process's sequence space plus explicit causal edges; timing never compared in conformance cells.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "X01-T1",
+    "title": "spec(conformance): differential oracle harness spec — recorder, replayer, comparator, canonical bytes, normalisers, lanes, ladder, authority-profile truth",
+    "kind": "spec",
+    "tier": "Tier 1",
+    "maturity_target": "L0",
+    "what_to_build": "Write the approved spec (docs/agents/spec-template.md) for the two-arm harness: fixture packaging, Electron pin and digest fields, transcript row shape, per-cell normalisers, strict ordered comparison with causal edges, observed-only tagging, lanes (PR replay; weekly recorder with a failure sink), the maturity ladder and panel/authority-profile rules; promote the manifest/exact-bytes helpers out of test-local code into keld-compat.",
+    "acceptance_criteria": [
+     "Spec approved by a human with every section filled; rejected alternatives recorded (Electron spec/ tree; timing comparison; re-recording from the Keld arm)",
+     "Canonical-bytes and digest fields are unambiguous (which digest `artifact.sha256` carries)",
+     "Observed-only cells cannot exceed BEHAVIOR_MATCH by construction"
+    ],
+    "negative_controls": [
+     "A spec that lets a golden re-record from the Keld arm is rejected at review"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-74",
+     "KEL-237",
+     "KEL-77 §4.3"
+    ],
+    "linear_owner": "KEL-74 / KEL-237",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** spec\n\n**Current behavior:** KEL-74 scorer and a 3-cell lifecycle corpus exist; no recorder/replayer/comparator.\n\n**Desired behavior:** Write the approved spec (docs/agents/spec-template.md) for the two-arm harness: fixture packaging, Electron pin and digest fields, transcript row shape, per-cell normalisers, strict ordered comparison with causal edges, observed-only tagging, lanes (PR replay; weekly recorder with a failure sink), the maturity ladder and panel/authority-profile rules; promote the manifest/exact-bytes helpers out of test-local code into keld-compat.\n\n**Key interfaces:** keld-compat evidence/denominator/scorer; lifecycle corpus runner pattern.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Running any Electron binary in CI.",
+    "out_of_scope": "Running any Electron binary in CI.",
+    "notes": ""
+   },
+   {
+    "key": "X01-T2",
+    "title": "feat(conformance): recorder + replayer + comparator for the app-lifecycle family (first end-to-end cells) with the committed goldens",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Implement the harness for the F01 fixtures first: record goldens under electron@44.4.5 on macOS (weekly lane or developer command), commit goldens + manifest with exact-bytes digests, replay under `@keld/electron` in the keld-compat test target, emit KEL-74 records, and prove the one-byte mutation and reordering negative controls.",
+    "acceptance_criteria": [
+     "`cargo test -p keld-compat` replays the committed lifecycle goldens offline on all three OS lanes",
+     "A reordered golden line fails the comparator; a one-byte manifest change fails the digest assertion",
+     "Records carry authority_profile legacy_sandbox_off and the engine identity"
+    ],
+    "negative_controls": [
+     "Removing the normaliser declaration makes a pid-bearing row flake — the design test must fail deterministically instead"
+    ],
+    "blocked_by_keys": [
+     "X01-T1",
+     "F01-T1"
+    ],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-237",
+    "review_gates": [
+     "dependency"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** None.\n\n**Desired behavior:** Implement the harness for the F01 fixtures first: record goldens under electron@44.4.5 on macOS (weekly lane or developer command), commit goldens + manifest with exact-bytes digests, replay under `@keld/electron` in the keld-compat test target, emit KEL-74 records, and prove the one-byte mutation and reordering negative controls.\n\n**Key interfaces:** keld-compat harness crate module; fixtures directory; corpus manifest.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Corpus apps (X02-T4).",
+    "out_of_scope": "Corpus apps (X02-T4).",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "X01-A5",
+    "title": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+    "type": "prototype",
+    "question": "Run the quit-order fixture under `npx electron@44.4.5` ten times on macOS and diff transcripts; derive the normaliser set (pid, window id, paths, Error.stack) and the strict-ordering rule within a process plus causal edges. No CI or Keld change.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "running or translating Electron spec/ under Bun",
+   "fetching electron latest/main",
+   "committing the Electron binary",
+   "re-recording goldens from the Keld arm",
+   "retries/reruns/todoIf(isCI)",
+   "percentages without a committed denominator",
+   "labelling the harness strict_bun"
+  ],
+  "out_of_scope": [],
+  "not_yet_specified": [
+   "Weekly recorder lane home and failure sink (no scheduled workflow exists today)",
+   "Product corpus id ownership (DOCUMENTED_COMMITTED_PRODUCT list is empty; GH #313 chose draw.io but nobody owns adding it)"
+  ],
+  "issue_numbers": {
+   "X01-A5": 411,
+   "X01-EPIC": 493,
+   "X01-T1": 494,
+   "X01-T2": 495
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "F06 structures: ActivationArguments, ClipboardBookmark, DesktopCapturerSource, NotificationResponse, PaymentDiscount, ProductDiscount, ProductSubscriptionPeriod, Product, SharingItem, ShortcutDetails, Transaction, UserDefaultTypes",
+    "problem": "Covered only by F06-T6 AC1's blanket row promise ('Product' matches only an unrelated word in X01-EPIC). All have zero corpus demand.",
+    "suggested_unit": "Enumerate in F06-T6 or F06-EPIC out-of-scope."
+   }
+  ],
+  "duplicates": [
+   {
+    "keys": [
+     "F04-T5",
+     "X01-T1"
+    ],
+    "problem": "F04-T5 resolves 'Electron oracle pin drift' for the F04 family only, while X01-T1 owns 'Electron pin and digest fields' for the harness. A per-family pin is a second owner of a program-wide rule.",
+    "fix": "Move the pin/drift record to X01-T1; F04-T5 keeps only the deferred/never rows."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "PANEL-P3",
+    "problem": "No ticket depends on it although it decides the descriptor set, the denominator and config-only vs config+N. Decisions with zero dependents that are cited in ticket prose as conditions: F02-A6 (F02-T5), F06-D3 (F06-T4/T5/T6 use app.system tokens), F07-E1 (F07-T1 'env per the open decision'), F08-D6 (F08-T2), X01-A5 (X01-T2 normalisers), X04-D3 (F05-T4).",
+    "fix": "Add the edges named above so each prose condition is a graph edge consuming a named output."
+   }
+  ],
+  "invariant_violations": [],
+  "quality_problems": [
+   {
+    "key": "X01-T1, X02-T1, X04-T1",
+    "problem": "'Spec approved by a human' is not an agent-verifiable binary criterion, and the negative controls ('a spec that ... is rejected at review', 'a row whose negative test cannot fail is rejected') are reviewer opinions — they cannot fail mechanically.",
+    "fix": "ACs as checkable properties of the document (every section of the template filled; every mapping row names a test id and an owner; lint for '%' output); approval is the PR gate, not an AC."
+   },
+   {
+    "key": "X01-T2",
+    "problem": "Negative control 'removing the normaliser declaration makes a pid-bearing row flake — the design test must fail deterministically instead' is self-contradictory. AC1 demands replay 'on all three OS lanes' for goldens recorded on macOS only.",
+    "fix": "Negative control: a golden containing an un-normalised pid field fails the comparator with a named 'undeclared nondeterministic field' error. Scope AC1 to the lanes that have goldens."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "X01-T1",
+    "milestone": "next",
+    "reason": "The proof's cells can be recorded with the existing KEL-74 schema and KEL-237 runner pattern; a two-arm recorder/replayer spec is needed when conformance must be diffed against recorded Electron goldens at scale (Zettlr, strict)."
+   },
+   {
+    "key": "X01-T2",
+    "milestone": "next",
+    "reason": "Lifecycle-family recorder + replayer + comparator; the first proof's product cells do not consume recorded lifecycle goldens (the X02-T4 edge to it is not a real gate)."
+   }
+  ],
+  "ambiguity_laundering": [],
+  "hidden_coupling": [],
+  "first_proof_frontier": []
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny; no Electron-isms in keld-core/keld-ipc; one rule one owner; reuse of KEL-74/77/78/237 owners; measured perf; spec+Linear gate; prior decisions #312/#313/#319/#322/#323/#325 and KEL-127). Verified against <keld repo> at d150a14, Linear (KEL-237/KEL-77/KEL-74 read 2026-10-06), raw Electron v44.4.5 docs/workflow, and one local Bun 1.4.2 probe.",
+   "verdicts": [
+    {
+     "decision_id": "X01-A1",
+     "verdict": "survives",
+     "reason": "The oracle principle is confirmed by three independent owners: crates/keld-compat/AGENTS.md ('Electron documented behavior = oracle. Conformance entry (citing doc/fixture) *before* implementation'), docs/specs/kel77-bun-child-process-differential.md §4.1 ('Rejected: using the Node arm's live output as the oracle — a mirror, not an oracle'), and .agents/testing.md ('Every test MUST use an independent oracle ... upstream behavior'). A pinned recorded transcript is admissible as 'upstream behavior' evidence but cannot be the record's oracle. Two things in the proposed answer are not reuse-clean and must be corrected before it is implemented.",
+     "evidence": "crates/keld-compat/AGENTS.md line 5; kel77 spec §4.1 'Failure' bullet (three states pass/fail/unknown; 'Collapsing unknown into pass would manufacture a compatibility claim'); crates/keld-compat/tests/lifecycle_corpus.rs Manifest/CorpusCell structs are #[serde(deny_unknown_fields)] with fields {operation_id, oracle_id, expected_verdict, test_path, test_name, negative_control, intentional_divergence}; crates/keld-compat/src/evidence.rs parse_verdict accepts only pass|fail|unknown|waived.",
+     "correction": "(1) State the ledger mapping explicitly: an observed-only cell (golden, no doc_blob_oid) is recorded `result: unknown` with oracle.id naming the unspecified path, per KEL-77 §4.1's three-state rule; it is never `pass`. BEHAVIOR_MATCH/CONFORMANCE_PASS/CORPUS_VERIFIED are report vocabulary, not a second verdict set. (2) Do not introduce a new cell shape; extend the live KEL-237 manifest cell with optional {doc_blob_oid, doc_sentence_sha256, golden_sha256, normalizers} after extracting that struct to a shared owner (see extra findings), keeping expected_verdict/test_path/test_name so lifecycle_corpus.rs's execution-admission checks still apply."
+    },
+    {
+     "decision_id": "X01-A2",
+     "verdict": "survives",
+     "reason": "Both named falsifiers were settled by primary evidence: Electron v44.4.5 docs/tutorial/esm.md states ESM main-process entry is supported since electron@28.0.0 when 'The nearest parent package.json has \"type\": \"module\"' or the file ends in .mjs; and a local probe shows Bun 1.4.2 applies tsconfig `paths` to a plain .js `import { app } from \"electron\"` (resolved to packages/@keld/electron/src/index.ts, process.type=browser, versions.electron=0.0.1, exit 0). Never committing the Electron binary matches docs/architecture/04-electron-compat.md §6 ('separate repo, gitignored fixtures') and the dependency-review gate in ci.yml. The CI router already treats packages/@keld/electron/fixtures as part of the parent package and re-routes keld-compat Rust tests on fixture changes (tools/ci_changes.sh lines 276-300, 645-650), so the proposed fixture placement does not create a skipped-green path.",
+     "evidence": "Probe: <scratchpad>/probe/js-alias/main.js under Bun 1.4.2 printed 'RESOLVED file://<keld repo>/packages/@keld/electron/src/index.ts' and 'TYPE browser VER 0.0.1 function'. esm.md v44.4.5 quotes above. packages/@keld/electron/fixtures/package.json already has \"type\": \"module\". tools/ci_changes.sh comments: 'a nested fixture manifest (packages/@keld/electron/fixtures) is part of its parent package's contract' and 'crates/keld-compat spawns the @keld/electron fixtures ... a shim change must still re-run that crate's conformance tests'.",
+     "correction": "Add two constraints the object omits: (a) esm.md: 'ES Modules are loaded asynchronously ... only side effects from the main process entry point's imports will execute before the ready event ... your app may be ready before your code executes' — fixtures MUST register `ready`/lifecycle listeners synchronously at top level before any `await` (the live lifecycle.ts pattern), and the 'APIs before ready' trap cell must be designed knowing `ready` may already have fired in the Electron arm; (b) the Electron arm's npm install (node_modules, lockfile) MUST live outside the fixture directory or KEL-77 §4.3 artifact.sha256 will differ between arms for the same fixture set, firing A3's falsifier spuriously."
+    },
+    {
+     "decision_id": "X01-A3",
+     "verdict": "survives",
+     "reason": "The three reuse claims check out: lifecycle_corpus.rs asserts denominator.corpus_sha256 == sha256(exact include_bytes! manifest) and flips one byte as a negative control; KEL-77 §4.3 defines the path||0x00||u64_le(len)||bytes digest with the learnings-recorded ('ab','c')/('a','bc') collision control; evidence.rs validates `sha256:<64 hex>` digests and evidence_uri pins, and keld-compat's Cargo.toml carries sha2 as a dev-dependency only. Using the Electron commit (not version string) as oracle revision matches the live record format `electron-v44.3.0@07e46071...`. The rejected alternatives (RFC 8785, hand-rolled hashing) are correctly rejected under AGENTS.md §2/§3.",
+     "evidence": "crates/keld-compat/tests/lifecycle_corpus.rs lifecycle_corpus_denominator_matches_exact_manifest_bytes (mutated[index]=b'E' control); docs/specs/kel77-bun-child-process-differential.md §4.3; docs/agents/learnings.md line 118; crates/keld-compat/Cargo.toml [dev-dependencies] sha2; crates/keld-compat/fixtures/lifecycle-corpus/evidence/macos-aarch64--app-when-ready-host-ready-gate.json oracle.revision.",
+     "correction": "'Reuse, do not invent' is only true if the code is actually shared. Today both primitives are test-local: the Manifest struct and exact-bytes check live only in crates/keld-compat/tests/lifecycle_corpus.rs, and the §4.3 directory digest is a private `fn corpus_digest(dir: &Path)` at crates/keld-runtime/tests/child_process_differential.rs:288. A second corpus that copies either is the duplicate-policy defect AGENTS.md §3 forbids. The X01 spec MUST name one owner (e.g. a keld-compat test-support module or a cold `keld_compat::corpus` module behind the existing sha2 dev-dependency) and migrate KEL-237/KEL-77 callers to it in the same PR series. Also note the live KEL-237 convention sets artifact.sha256 = the manifest digest, while X01 proposes artifact.sha256 = the fixture-set digest; both are valid per corpus but the manifest must declare which, since score() refuses percent when contributing records disagree on artifact digest."
+    },
+    {
+     "decision_id": "X01-A4",
+     "verdict": "survives",
+     "reason": "The PR-lane contract is real: ci.yml 'clippy + test' runs on [ubuntu-latest, macos-latest, windows-latest] with oven-sh/setup-bun 1.4.2 on all three, so `cargo test -p keld-compat` can spawn the Bun arm offline; .agents/ci.md requires job-level routing and says 'CI required ... rejects missing, cancelled, failed, or selected-as-skipped evidence' and forbids 'continue-on-error ... retries, skips'; the router fails closed on unknown paths and routes both crates/* and packages/@keld/electron/fixtures changes to the keld-compat lane. The Electron workflow facts are confirmed verbatim (DISPLAY ':99.0', `xvfb-run script/actions/run-tests.sh`, `--enableRerun=3`). Expected-verdict flip detection is already the live pattern (KEL-237's fail cell is a passing test that asserts the divergence).",
+     "evidence": ".github/workflows/ci.yml lines 99-109, 158-160; .agents/ci.md 'Required workflow and routing' and 'Failure preservation'; tools/ci_changes.sh lines 492, 619-650; raw.githubusercontent.com/electron/electron/v44.4.5/.github/workflows/pipeline-segment-electron-test.yml lines quoted; crates/keld-compat/fixtures/lifecycle-corpus/corpus.json cell app.quit.return-contract.",
+     "correction": "The weekly lane is TARGET, not an existing home: the Keld repo has only ci.yml and keldbot.yml, neither with `schedule:`/`workflow_dispatch`, and `CI required` only aggregates PR/push jobs, so a weekly drift failure cannot by itself block merges. The object must (a) label the weekly recorder/corpus-smoke lane as a new workflow (corpus repo per arch 04 §6, or a Keld scheduled workflow landing in its own CI-routing PR per .agents/ci.md), and (b) state that drift findings enter the gate only via a reviewed PR that flips cells to `unknown`/updates goldens+receipts — otherwise 'regression = P1' is enforced only for the Keld arm replay."
+    },
+    {
+     "decision_id": "X01-A5",
+     "verdict": "unresolved",
+     "reason": "Every principle cited is confirmed (.agents/testing.md: no sleeps, timeout is only a kill switch, child-process for lifetime with stdout/stderr/exit/signal assertions; AGENTS.md perf decomposition separating clock/statistic; electron_lifecycle.rs LineLog.wait_contains/drain_queued; KEL-72 ▲ for per-listener isolation on the scoreboard). But the decision's own observable contract — a negative-control mutation flips the cell under declared normalizers — cannot be exercised today: there is no comparator, no golden, and the Keld arm has no renderer/preload (no window registry symbol in crates/*/src; arch 01 lists it as keld-core responsibility, TARGET). Whether Electron 44.4.5 main-process ordering is stable enough for strict comparison without normalizers, and whether routing renderer rows through ipcRenderer.send perturbs the order under test, are empirical and unmeasured.",
+     "evidence": ".agents/testing.md 'Cases and test shape' and taxonomy row 'Crash, teardown, restart, or lifetime'; crates/keld-compat/tests/electron_lifecycle.rs LineLog (recv_timeout 8s then panic); grep for WindowRegistry/headless in crates/*/src returns nothing; docs/architecture/01-overview.md line 106.",
+     "correction": "Cheapest settling experiment (no CI, no Keld change): in the scratchpad, run the quit-order fixture under `npx electron@44.4.5 .` 10x on macOS and diff transcripts (A5 prototype 2); then add a renderer that emits markers via ipcRenderer.send and compare main-only vs main+renderer orderings (prototype 3). Until that runs, restrict A5's claim to main-process rows. Also fix a reaping gap carried from the live pattern: LineLog's timeout panics without killing the child (std::process::Child is not killed on drop), so 'Rust test owns and reaps each arm' needs an explicit kill-on-drop guard — critical for the Electron arm, which would otherwise hold the xvfb display."
+    },
+    {
+     "decision_id": "X01-A6",
+     "verdict": "survives",
+     "reason": "Confirmed against the owners: KEL-77 §4.5 ('authority_profile is deliberately not strict_bun ... would claim the measurement was taken under Keld's zero-ambient-authority profile, which is false'); report.md records legacy_sandbox_off and 'not a product/median-app Electron compatibility percentage'; evidence.rs DOCUMENTED_COMMITTED_PRODUCT_CORPORA is `&[]`, score() omits percent for uncommitted product ids and refuses complete/percent when contributing records disagree on digest/profile/engine (mixed_artifact_identity_refuses_complete_and_percent); the claim shape is formatted exactly as `{passed}/{n} of {panel} corpus {id}@{digest} ({kind})` at evidence.rs:814. Linear confirms KEL-74 Done, KEL-237 In Progress ('do not create a second scoreboard, denominator model ... or compatibility percentage authority').",
+     "evidence": "docs/specs/kel77-bun-child-process-differential.md §4.5; crates/keld-compat/fixtures/lifecycle-corpus/report.md; crates/keld-compat/src/evidence.rs lines 814-817, 973-980, 1414-1429; Linear KEL-74/KEL-237 descriptions read 2026-10-06.",
+     "correction": "The CORPUS_VERIFIED rung ('strict_bun (KEL-78) or explicitly labeled legacy') omits the state `keld dev` is actually in. docs/specs/kel78-strict-profile-sandbox.md defines profile states `unverified | legacy | strict`, says '`unverified` is the live state of macOS, Windows, and Linux on this SHA', '`strict` cannot be reported from documentation', and 'Electron-compat apps do not silently start `legacy`. If they need it, they declare the Keld profile key'. The KEL-74 closed set has no `unverified` value. So a corpus-app run under today's `keld dev` has no honest authority_profile unless the fixture/corpus app carries the explicit Keld `legacy` declaration (then `legacy_sandbox_off` is truthful, matching KEL-127's visibly labeled legacy profile). State that rule and name the vocabulary gap as a KEL-74/KEL-78 reconciliation item rather than assuming strict_bun rows will appear. Also fix the engine string in the manifest per corpus: the object writes `headless-conformance@<commit>` while live records use `headless-lifecycle-conformance@<commit>`; score() refuses percent when contributing records disagree on engine."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Shared-owner gap: the two primitives the object says it 'reuses' are test-local. The manifest struct + exact-bytes digest check exist only inside crates/keld-compat/tests/lifecycle_corpus.rs; the KEL-77 §4.3 directory digest is a private `fn corpus_digest(dir: &Path)` at crates/keld-runtime/tests/child_process_differential.rs:288. A second corpus (X01) cannot call either without copying it, which is the duplicate-policy defect AGENTS.md §3 forbids. The X01 spec must create one owner and migrate KEL-237 and KEL-77 callers to it.",
+     "severity": "high",
+     "evidence": "grep -rn 'fn corpus_digest' crates/ → only crates/keld-runtime/tests/child_process_differential.rs:288; lifecycle_corpus.rs defines Manifest/CorpusCell locally with deny_unknown_fields; crates/keld-compat/src has only evidence.rs (no corpus/manifest module)."
+    },
+    {
+     "finding": "The maturity ladder (BEHAVIOR_MATCH → CONFORMANCE_PASS → CORPUS_VERIFIED) has no representation in the only verdict owner. evidence.rs accepts exactly pass|fail|unknown|waived and KEL-237's scope forbids a second scoreboard/percentage authority. Unless the object fixes the mapping (observed-only → `unknown`; doc-cited → `pass`/`fail`; CORPUS_VERIFIED = a distinct product-panel corpus, not a verdict), the ladder becomes a parallel scoring vocabulary.",
+     "severity": "high",
+     "evidence": "crates/keld-compat/src/evidence.rs parse_verdict lines 1007-1012; Linear KEL-237 scope sentence; kel77 §4.1 three-state rule."
+    },
+    {
+     "finding": "KEL-78 / KEL-74 vocabulary mismatch blocks honest labeling of any `keld dev` run today: KEL-78 states `unverified` is the live state on all three OS and forbids inferring `legacy` from Electron facade options; the evidence schema has no `unverified` value. Only an explicit Keld `legacy` declaration makes `legacy_sandbox_off` truthful for corpus-app rows.",
+     "severity": "medium",
+     "evidence": "docs/specs/kel78-strict-profile-sandbox.md 'Profile states' table and rules; evidence.rs parse_authority closed set."
+    },
+    {
+     "finding": "No weekly lane exists anywhere in the Keld repo (.github/workflows has only ci.yml and keldbot.yml; no schedule/workflow_dispatch). `CI required` aggregates only PR/push jobs. The object presents the weekly recorder/drift lane as design rather than TARGET and does not name the CI-routing PR (.agents/ci.md: routing lands in its own Linear-scoped PR) or the corpus-repo workflow that would host it.",
+     "severity": "medium",
+     "evidence": "ls .github/workflows; grep schedule/workflow_dispatch/cron returns nothing; .agents/ci.md 'CI routing ... lands in its own Linear-scoped PR'."
+    },
+    {
+     "finding": "Electron ESM async-loading changes two trap cells. esm.md v44.4.5: 'only side effects from the main process entry point's imports will execute before the ready event ... your app may be ready before your code executes.' A fixture that registers `ready` listeners after a top-level await will miss `ready` in the Electron arm while Keld's whenReady still resolves; and the 'BrowserWindow before ready' cell may not throw in ESM if `ready` already fired. Fixtures must register listeners synchronously before any await, and the before-ready cell needs a CJS or .mjs-with-synchronous-body design.",
+     "severity": "medium",
+     "evidence": "https://raw.githubusercontent.com/electron/electron/v44.4.5/docs/tutorial/esm.md retrieved 2026-10-06; packages/@keld/electron/fixtures/lifecycle.ts registers listeners before `await app.whenReady()`."
+    },
+    {
+     "finding": "@keld/electron exports only `app` (plus isCallError). A plain-ESM fixture with `import { BrowserWindow, ipcMain } from 'electron'` fails at ESM link time in the Keld arm, so every cell in that fixture fails together and lifecycle cells in the same file are masked. Fixtures must be partitioned per family, and a link failure must be recorded as `fail` with a KELD code (not `unknown`, not a skipped fixture).",
+     "severity": "medium",
+     "evidence": "packages/@keld/electron/src/index.ts exports {app, isCallError, KeldCallError, default}; research 214 Finding: 'Adding fake named exports just to load unrelated tests would be a false oracle'."
+    },
+    {
+     "finding": "The window-all-closed-during-quit trap is real but its owner is ambiguous and touches keld-core: LifecycleSession tracks only `windows: u32` and `ready: bool` (no quit-in-progress state), so a host-initiated quit that closes windows will emit LastWindowClosed. The fix must be a generic host lifecycle state (quitting) in keld-core, not an Electron-ism; it needs its own spec item naming keld-core as owner, otherwise the facade will paper over it in @keld/electron.",
+     "severity": "medium",
+     "evidence": "crates/keld-core/src/lifecycle.rs struct fields lines 35-39 and window_closed() lines 138-149; crates/keld-compat/AGENTS.md 'No Electron-isms in keld-core/keld-ipc'."
+    },
+    {
+     "finding": "Spec + ticket owner for X01 itself is unnamed. KEL-237 is scoped to the existing lifecycle slice ('No new Electron API implementation, no compatibility-surface expansion'); KEL-77 in Linear is the VS Code extension-host showcase lane (the harness *shape* lives in its spec doc, but the issue says 'Extract package-agnostic Bun semantic fixtures into the general runtime suite'); KEL-74 is Done. A differential Electron recorder/comparator is a new feature under AGENTS.md's spec+Linear gate (GitHub issue bridge per briefing) and the object should name that gate as its first blocker.",
+     "severity": "medium",
+     "evidence": "Linear KEL-237 Non-goals; Linear KEL-77 title and 'Deliberate showcase boundary'; AGENTS.md 'Features require an approved docs/agents/spec-template.md spec plus Linear'."
+    },
+    {
+     "finding": "Live harness reaping gap inherited by both arms: LineLog.wait_contains panics on an 8s timeout but never kills the spawned child (std::process::Child is not killed on drop), contradicting 'Rust test owns and reaps each arm'. For the Electron arm a leaked process also pins the xvfb display and can serialize later cells.",
+     "severity": "low",
+     "evidence": "crates/keld-compat/tests/electron_lifecycle.rs LineLog::wait_contains and spawn_fixture (no kill-on-drop guard)."
+    },
+    {
+     "finding": "Fixture-set digest divergence hazard: if the Electron arm installs `electron@44.4.5` into the fixture directory (node_modules/package-lock), KEL-77 §4.3 artifact.sha256 differs between arms for the same fixtures and A3's 'first falsifier' fires on every run. Install outside the digested tree and record the install path in the receipt.",
+     "severity": "low",
+     "evidence": "kel77 §4.3 digests every file under the corpus directory ordered by relative path."
+    },
+    {
+     "finding": "Pin inconsistency is live, not hypothetical: the committed lifecycle corpus is Electron 44.3.0 @07e46071 while X01 baselines 44.4.5 @694f4585 and the briefing notes 44.5.1 is latest stable. Two corpora with different oracle revisions is permitted per corpus id, but score() will refuse percent if their records are ever merged into one denominator; the program-wide vs per-corpus pin rule must be decided in the X01 spec, not deferred.",
+     "severity": "low",
+     "evidence": "crates/keld-compat/fixtures/lifecycle-corpus/corpus.json upstream block; evidence.rs line 1414-1416 identity agreement check."
+    }
+   ]
+  },
+  {
+   "lens": "Electron semantics accuracy and corpus demand (pinned v44.4.5 docs fetched; scratchpad corpus scans and clones re-counted; Keld repo at d150a14 read; Bun 1.4.2 probe run)",
+   "verdicts": [
+    {
+     "decision_id": "X01-A1",
+     "verdict": "survives",
+     "reason": "Every cited rule is real: crates/keld-compat/AGENTS.md:5 'Electron documented behavior = oracle. Conformance entry (citing doc/fixture) before implementation'; KEL-77 §4.1 rejects the live-arm mirror oracle verbatim; .agents/testing.md:18-20 requires an independent oracle and says reimplementing the algorithm is not independent; research 214 Table 3 fixes selection before results. The doc-silence claims also check out against the pinned blobs: ipc-main.md has no duplicate-handle text, ipc-renderer.md:196-199 says only that invoke rejects and the Error 'will not be the same', web-contents.md never mentions ERR_ABORTED, browser-window.md:35-70/267-273 never orders ready-to-show against did-finish-load. One correction is needed for the BEHAVIOR_MATCH rung to be expressible without inflating a percent.",
+     "evidence": "crates/keld-compat/AGENTS.md:5; docs/specs/kel77-bun-child-process-differential.md §4.1 ('a mirror, not an oracle'); .agents/testing.md:18-20; scratchpad ipc-main.v44.4.5.md:97-160, ipc-renderer.v44.4.5.md:190-232, web-contents.v44.4.5.md:118-160,1097-1122, browser-window.v44.4.5.md:35-70,267-273; crates/keld-compat/src/evidence.rs:838-849 (RawEvidence deny_unknown_fields, result string), :1009-1011 (pass|fail|unknown only), :870-880 (operation.oracle.{id,revision} required).",
+     "correction": "evidence/v1 has no BEHAVIOR_MATCH/observed-only field (deny_unknown_fields; Verdict is pass|fail|unknown; oracle id+revision are mandatory). An observed-only cell MUST therefore be emitted as result `unknown` (KEL-77 §4.1: 'the path is documented as unspecified ... unknown') or be kept out of the denominator entirely; it MUST NOT be a `pass` record with the golden's digest as oracle id, because score() would count it toward the showcase percent. Put the ladder rung in the manifest cell (test-local schema), not in the record."
+    },
+    {
+     "decision_id": "X01-A2",
+     "verdict": "refuted",
+     "reason": "The main-process half survives and two unknowns are now facts: docs/tutorial/esm.md (v44.4.5) states ESM main is supported since electron@28 when 'the nearest parent package.json has \"type\": \"module\"', and a Bun 1.4.2 probe shows tsconfig `paths` does remap `import 'electron'` from a plain .js ESM file (output `X01_JS_ALIAS object function 0.0.1 browser`, exit 0; .mjs identical; node control fails with ERR_MODULE_NOT_FOUND). But the packaging as written (preload.js inside a type:module package) is wrong per the same doc: 'Preload scripts will ignore \"type\": \"module\" fields, so you must use the .mjs file extension in your ESM preload scripts' and 'Sandboxed preload scripts are run as plain JavaScript without an ESM context ... Loading the electron API is still done via require(\"electron\")'. A preload.js with `import` would fail under Electron's default sandbox, and a preload.js with `require` is a plain script in Electron but ESM in Bun/Node, so the 'same unmodified file' has arm-dependent module semantics. The binary-pin description is also incomplete: electron@44.4.5's npm package.json has NO scripts (no postinstall); index.js downloads lazily on first require/cli run via install.js, which verifies against the bundled checksums.json. The npm shasum therefore pins the binary only transitively, and a recorder that just runs `npx electron .` performs a network download at record time.",
+     "evidence": "scratchpad/x01docs/tutorial_esm.md (Main process section; 'ESM preload scripts must have the .mjs extension'; 'Sandboxed preload scripts can't use ESM imports'); scratchpad/probe/x01-js-alias/{package.json,tsconfig.json,main.js} run with bun 1.4.2; scratchpad/x01docs/package/package.json keys (no `scripts`), package/index.js getElectronPath()->downloadElectron(), package/install.js checksums: require('./checksums.json'), ELECTRON_OVERRIDE_DIST_PATH; registry shasum 0be094f8e783febba75d591106f5c61c1e511b70 matches local tarball; checksums.json darwin-arm64 a212eee6..., linux-x64 04586a0e..., win32-x64 11c39582... equal to release SHASUMS256.txt.",
+     "correction": "(1) Fixture family = main.js (ESM, type:module) + preload.cjs (CJS, `const { contextBridge, ipcRenderer } = require('electron')`) + index.html; never preload.js/.mjs. (2) Recorder setup step: download the per-OS/arch zip, verify sha256 against the pinned SHASUMS256.txt line recorded in the receipt (darwin-arm64 a212eee63ba2..., linux-x64 04586a0ec46c..., win32-x64 11c395820a5a...), extract, and run with ELECTRON_OVERRIDE_DIST_PATH pointing at it; or run `node node_modules/electron/install.js` explicitly before recording and fail hard if dist/version != 44.4.5. Receipts bind npm shasum + zip sha256 + tag commit 694f4585, not the npm shasum alone. (3) Today the Keld arm has no preload/renderer/BrowserWindow at all, so the first tracer-bullet fixture MUST be main-only (quit-order / app.exit / before-ready) or it has no second arm."
+    },
+    {
+     "decision_id": "X01-A3",
+     "verdict": "survives",
+     "reason": "The exact-bytes manifest rule and mutation control are live exactly as claimed (lifecycle_corpus.rs:99-148: corpus_sha256 == sha256(CORPUS_JSON), one-byte 'e'->'E' mutation asserted to mismatch); KEL-77 §4.3 digest and the learnings 2026-08-19 ('ab','c') collision control are real; sha2 is dev-only in keld-compat/Cargo.toml; KEL-237 records use `electron-v44.3.0@<commit>` as oracle revision. One ownership defect needs recording: `artifact.sha256` already has two live meanings and the proposal silently picks one while claiming to mirror the other.",
+     "evidence": "crates/keld-compat/tests/lifecycle_corpus.rs:99-148; docs/specs/kel77-bun-child-process-differential.md §4.3, §4.5 ('artifact.sha256 = corpus digest per §4.3'); docs/agents/learnings.md:118; crates/keld-compat/Cargo.toml [dev-dependencies] sha2; crates/keld-compat/fixtures/lifecycle-corpus/evidence/macos-aarch64--app-quit-return-contract.json artifact.sha256 == denominator.json corpus_sha256 (sha256:badc0aaf...), i.e. KEL-237 sets artifact.sha256 to the MANIFEST digest, whereas KEL-77 §4.5 sets it to the FIXTURE-DIR digest; KEL-74 spec §4 'the caller owns ... artifact prefix' and classify_artifact by magic bytes implies a third reading (shipped artifact).",
+     "correction": "The X01 spec MUST state which digest `artifact.sha256` carries for harness records and record the other as the rejected alternative; recommended: KEL-77 §4.3 fixture-set digest (shared by both arms, the property A3's falsifier needs) and keep the manifest digest only in denominator.corpus_sha256 and receipts.corpus.sha256. Add a receipt field for the Electron binary zip sha256 per OS/arch (see A2) since the oracle binary's identity is not the tag commit."
+    },
+    {
+     "decision_id": "X01-A4",
+     "verdict": "survives",
+     "reason": "Lane placement matches the repo: ci.yml check job matrix [ubuntu-latest, macos-latest, windows-latest]; the router already routes packages/@keld/electron/fixtures and crates/keld-compat/fixtures changes to the keld-compat Rust lane (tools/ci_changes.sh:276-297, 559-575, 619-649), and .agents/ci.md:10-15,40-41 makes `CI required` reject skipped-as-success; .agents/testing.md:116 defines the Weekly tier. Electron's pinned workflow does run Linux under `xvfb-run` with DISPLAY ':99.0' (pipeline-segment-electron-test.yml:321,391,396). Three evidence facts need correcting so the weekly lane is sized honestly: `--enableRerun=3` is on every non-ASAN lane (mac/win line 369, Linux x11 line 396), not only Wayland; macOS needs non-display prep that the object omits (lines 132-147: `defaults write com.github.Electron ApplePersistenceIgnoreState YES` because after enough abnormal exits AppKit's reopen-windows alert 'hangs app.whenReady() forever', electron#51462, plus CrashReporter DialogType server and TCC rows); and .github/workflows has no scheduled workflow at all, so the weekly recorder lane is new infrastructure outside `CI required`.",
+     "evidence": ".github/workflows/ci.yml:99-109,640-680; tools/ci_changes.sh:276-297,555-575,615-649; .agents/ci.md:10-15,40-41; .agents/testing.md:105-117; scratchpad/x01docs/pipeline-test.yml:95-147,321,369,391-396; `grep -ln schedule .github/workflows/*.yml` -> none.",
+     "correction": "State that `CI required` gates PRs only; the weekly recorder lane needs its own sink (auto-filed issue or failing scheduled badge) or 'regression = P1' is unenforced for drift. Copy Electron's macOS prep (ApplePersistenceIgnoreState YES, CrashReporter DialogType server) as cited facts, since a recorder that kills Electron children on timeout produces exactly the abnormal exits that trigger #51462. Size the 10-run stability prototype expecting upstream-level flake (Electron reruns its own suite up to 3x on all platforms)."
+    },
+    {
+     "decision_id": "X01-A5",
+     "verdict": "survives",
+     "reason": "Every rule cited exists: .agents/testing.md:35 (no sleeps; timeout is a kill switch), AGENTS.md perf decomposition (census/work/queue/clock/statistic/artifact), LineLog.wait_contains with an 8 s recv_timeout kill switch (electron_lifecycle.rs:61-72), and ipc-main.md:136-139 'only the message property from the original error is provided to the renderer'. The declared-normalizer + negative-control design satisfies the independent-oracle rule. The author's own unknown (renderer rows hop through ipcRenderer.send) is the real risk and must shape the comparator, not be left to the prototype alone.",
+     "evidence": ".agents/testing.md:35; AGENTS.md 'Performance decompositions MUST separate census, work, queue/copy, clock, statistic and artifact'; crates/keld-compat/tests/electron_lifecycle.rs:61-72,141; scratchpad/ipc-main.v44.4.5.md:136-139; docs/tutorial/esm.md 'Unsandboxed ESM preload scripts will run after page load on pages with no content' (preload/page races are documented, so cross-process order is not generally deterministic).",
+     "correction": "Compare strictly only within one process's seq space plus explicit causal edges (main row observed after the IPC message that carried the renderer row); a merged main+renderer total order will flake in Electron itself. Record that renderer/preload rows have no Keld arm until F02/F04 facades land, so the first comparator cells are main-only."
+    },
+    {
+     "decision_id": "X01-A6",
+     "verdict": "survives",
+     "reason": "AuthorityProfile parses `strict_bun`, `sandboxed_addon_worker`, `legacy_sandbox_off`, `user_approved_tool_child` (evidence.rs:255-266,975-977); DOCUMENTED_COMMITTED_PRODUCT_CORPORA is empty (:1422) so product percent/complete are impossible today; KEL-74 AC 11 and score() refuse `complete` when records disagree on artifact digest, authority profile or engine; KEL-77 §4.5 states the strict_bun labelling prohibition verbatim; KEL-237 receipts/evidence carry legacy_sandbox_off and engine `headless-lifecycle-conformance@<commit>`; scoreboard rule text matches. The KEL-77 §4.5 engine-as-arm-identity convention also means Electron-arm and Keld-arm records can never be mixed in one score, which is the property A6 relies on.",
+     "evidence": "crates/keld-compat/src/evidence.rs:255-266,743-833,975-977,1422-1430; docs/specs/kel74-compat-evidence-schema.md:90-92; docs/specs/kel77-bun-child-process-differential.md §4.5; crates/keld-compat/fixtures/lifecycle-corpus/{receipts/macos-aarch64.json,evidence/*.json}; docs/engineering/compat-scoreboard.md:82-101.",
+     "correction": "None required; name the product-corpus owner before any panel:product row (GH #313 decided draw.io first but nobody owns adding its id to DOCUMENTED_COMMITTED_PRODUCT_CORPORA)."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Observed-only / BEHAVIOR_MATCH cells can silently inflate the showcase percent: evidence/v1 is deny_unknown_fields with result pass|fail|unknown and mandatory oracle id/revision, so a comparator that emits `pass` for a golden-only cell makes score() count a mirror-oracle match as conformance.",
+     "severity": "high",
+     "evidence": "crates/keld-compat/src/evidence.rs:838-880,1009-1011,757-833; KEL-77 §4.1 taxonomy ('documented as unspecified ... unknown')."
+    },
+    {
+     "finding": "Electron binary identity is not what the object pins. electron@44.4.5 package.json has no scripts; the binary is lazily downloaded by index.js->install.js on first run and verified against the bundled checksums.json. Receipts must bind the per-OS/arch zip sha256 (darwin-arm64 a212eee63ba2f45f..., linux-x64 04586a0ec46c3283..., win32-x64 11c395820a5aaa8e...) and the recorder must pre-install (install.js or ELECTRON_OVERRIDE_DIST_PATH) so record-time has no network dependency.",
+     "severity": "high",
+     "evidence": "scratchpad/x01docs/package/{package.json,index.js,install.js,checksums.json}; https://github.com/electron/electron/releases/download/v44.4.5/SHASUMS256.txt; registry shasum verified locally 0be094f8e783febba75d591106f5c61c1e511b70."
+    },
+    {
+     "finding": "Fixture preload must be `preload.cjs` with require('electron'); `preload.js` in a type:module package is a plain script in Electron (sandboxed default, type:module ignored) but ESM in Bun, so the 'same unmodified file' has arm-dependent module semantics.",
+     "severity": "medium",
+     "evidence": "docs/tutorial/esm.md v44.4.5: 'Preload scripts will ignore \"type\": \"module\" fields'; 'Sandboxed preload scripts are run as plain JavaScript without an ESM context ... require(\"electron\")'."
+    },
+    {
+     "finding": "`artifact.sha256` already has two live meanings (KEL-237: manifest digest; KEL-77 §4.5: fixture-dir digest) and the proposal mirrors KEL-237's layout while adopting KEL-77's digest without saying so — a one-rule-one-owner defect that the spec must resolve explicitly.",
+     "severity": "medium",
+     "evidence": "crates/keld-compat/fixtures/lifecycle-corpus/evidence/macos-aarch64--app-quit-return-contract.json artifact.sha256 == denominator.json corpus_sha256; docs/specs/kel77-bun-child-process-differential.md §4.5 row 'artifact.sha256 | corpus digest per §4.3'."
+    },
+    {
+     "finding": "macOS recorder hazard omitted: Electron's own CI must set `defaults write com.github.Electron ApplePersistenceIgnoreState YES` because repeated abnormal exits (exactly what a timeout-killing recorder produces) make AppKit's reopen-windows alert hang app.whenReady() forever (electron#51462); also CrashReporter DialogType server. The object lists macOS as 'runs on hosted runners' with no prep.",
+     "severity": "medium",
+     "evidence": "scratchpad/x01docs/pipeline-test.yml:132-147 (retrieved from v44.4.5 tag)."
+    },
+    {
+     "finding": "`--enableRerun=3` is on every non-ASAN Electron test lane (macOS/Windows line 369, Linux x11 line 396), not only Wayland; the object's receipt understates upstream flake, which sizes the 'stable across 10 runs' prototype and the weekly drift lane.",
+     "severity": "low",
+     "evidence": "scratchpad/x01docs/pipeline-test.yml:369,391-396."
+    },
+    {
+     "finding": "No scheduled workflow exists in .github/workflows (ci.yml, keldbot.yml only), and `CI required` gates PRs only; the weekly recorder lane is new infrastructure and 'drift marks the cell unknown' has no owner/sink, so regression-as-P1 is unenforced for the oracle-drift path.",
+     "severity": "medium",
+     "evidence": "`grep -ln schedule .github/workflows/*.yml` -> none; .github/workflows/ci.yml:640-680."
+    },
+    {
+     "finding": "Sequencing/sizing: the Keld arm has no BrowserWindow, preload, renderer, ipcMain or window registry (WindowRegistry 0 hits; `keld dev --headless` not live), so every F02/F04/F05 cell in the proposal has one arm only. A fresh agent can finish exactly one tracer bullet: main-only quit-order/app.exit/before-ready fixtures recorded under Electron and replayed over LifecycleSession, which also exposes the real keld_core defect that window_closed() emits LastWindowClosed with no quit-in-progress state (lifecycle.rs:132-149) against app.md 'window-all-closed would not be emitted' during app.quit().",
+     "severity": "medium",
+     "evidence": "crates/keld-core/src/lifecycle.rs:132-149; grep WindowRegistry -> 0; crates/keld-cli/src/verb.rs:21-50 (migrate reserved, KELD-CLI-045); x01docs/api_app.md:50-59,528-533."
+    },
+    {
+     "finding": "Corpus demand confirms the lifecycle traps and adds app.exit as high-demand: drawio app.exit 7 sites, Zettlr 14; drawio did-finish-load 7-8 hits (object says x5), render-process-gone 2, before-quit 1, second-instance 1, BrowserWindow.destroy 10; Zettlr sendSync 6-7, ready-to-show 14, on('close') 19, destroy 10, ipcMain.handle 25-26, invoke 187. Zettlr's only `versions.electron` consumer is a Debug tab display, and no corpus clone has node_modules, so the proposed 'grep corpus deps for versions.electron' needs an install step first.",
+     "severity": "low",
+     "evidence": "scratchpad/corpus/{drawio-desktop,zettlr}.usage.json members_top/signals; grep counts over corpus/drawio-desktop/src and corpus/zettlr/source; zettlr/source/win-about/Debug-Tab.vue:23."
+    },
+    {
+     "finding": "The object repeats a stale claim the briefing already corrected: 'drawio uses <webview> 7x'. All 7 hits are `webviewTag: false` or a `will-attach-webview` preventDefault; there is no webview-tag demand in draw.io, so no observed-only will-attach-webview recorder cell is motivated by corpus demand.",
+     "severity": "low",
+     "evidence": "corpus/drawio-desktop/src/main/electron.js:728,1090,1407,2210,2223,3087; briefing.md corpus demand (corrected 2026-10-06 by unit F07)."
+    },
+    {
+     "finding": "Minor factual slip: 'no `headless` in crates/*/src' is literally false (3 test/comment hits in keld-runtime/src/lib.rs:5514, keld-wv/src/webkitgtk/mod.rs:719, keld-wv/src/hello/mod.rs:105); the accurate statement is that no `--headless` flag or verb exists in keld-cli.",
+     "severity": "low",
+     "evidence": "grep -rn headless crates/*/src."
+    },
+    {
+     "finding": "Usage-scan over-attribution: the scanner credits generic event names to every entity that declares them (Zettlr 'error' 86 on both ClientRequest and UtilityProcess; drawio 'close' on BrowserWindow, Notification, MessagePortMain, BaseWindow with identical counts), so any demand ranking built from events_top must be deduplicated by receiver type before it drives cell priority.",
+     "severity": "low",
+     "evidence": "scratchpad/corpus/*.usage.json events_top entries with identical count/file_count across entities."
+    },
+    {
+     "finding": "Version pin coherence: corpus apps declare electron ^44.2.0 (drawio), ^44.4.3 (quick-start) and ^43.6.0 (Zettlr); a 44.4.5 Electron arm is outside Zettlr's declared range, so a CORPUS_VERIFIED Zettlr row either runs Zettlr under a version it does not declare or needs a second pin — the open 'per-corpus-id vs program-wide pin' unknown has a concrete consequence.",
+     "severity": "low",
+     "evidence": "corpus/{drawio-desktop,electron-quick-start,zettlr}/package.json electron fields."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "X01-A5",
+   "decision": "Is the main-process quit-order transcript of Electron 44.4.5 on macOS identical across repeated runs, and what is the minimal declared normaliser set and ordering rule (strict within one process, causal edges across processes) that a comparator may use.",
+   "classification": "needs-experiment",
+   "milestone": "first-proof",
+   "facts": [
+    "Linear (team KELD) was reachable read-only in this session on 2026-10-06; every call succeeded. KEL-237 'Open-source: publish measurable lifecycle compatibility corpus and report' is In Progress, unassigned, updated 2026-10-06T16:54Z. KEL-74 is Done (2026-08-19, GYLDLAB). KEL-77 is In Progress, unassigned. Source: Linear get_issue, fetched 2026-10-06.",
+    "KEL-237's latest comment (c13866bd, 2026-10-06) records that the harness epic #493 and spec #494 reuse its corpus schema and runner, and that the lifecycle corpus pins Electron 44.3.0 while the map pins v44.4.5. The repo confirms the pin: crates/keld-compat/fixtures/lifecycle-corpus/corpus.json has electron_version 44.3.0. Source: Linear list_comments KEL-237; repo at origin/main cb7d8e9e.",
+    "The experiment has not been run: the scratchpad prototypes and notes directories contain no quit-order fixture or Electron transcript, and the repo has no recorder, comparator or golden (crates/keld-compat/fixtures holds only lifecycle-corpus; packages/@keld/electron/fixtures are Keld-arm TypeScript fixtures). Source: directory listings, 2026-10-06.",
+    "The pinned documentation states the order the fixture must show: 'before-quit' is 'Emitted before the application starts closing its windows'; 'will-quit' is 'Emitted when all windows have been closed and the application will quit'; and for app.quit() or Cmd+Q 'the window-all-closed event would not be emitted'. Source: electron v44.4.5 docs/api/app.md lines 50-58, 61-67, 80-86, 516-518, retrieved 2026-10-06.",
+    "The pin is verifiable: npm electron@44.4.5 has dist.shasum 0be094f8e783febba75d591106f5c61c1e511b70; the release SHASUMS256.txt lists electron-v44.4.5-darwin-arm64.zip as a212eee63ba2f45fd83bd28f77a3e3313a336ad17a4c25adf617942eef5e0e2c; tag v44.4.5 peels to commit 694f45852a0f1726cd23bfd379854de489cccb65. Source: npm view, GitHub release asset, git ls-remote, 2026-10-06.",
+    "The map already resolved that the pinned doc sentence is the oracle and a recorded transcript is evidence-of-record only; keld-compat's rules say 'Electron documented behavior = oracle' and 'Event ordering tested (sequences, not just outcomes)'. Source: wayfinder notes/X01.md decision X01-A1; crates/keld-compat/AGENTS.md.",
+    "A first-proof gating experiment consumes Electron transcripts: PANEL-P2 (#419) is 'S1 close/quit veto oracle: objc2 harness ... diffed against Electron 44.4.5 fixtures'. The harness spec X01-T1 (#494) must define per-cell normalisers and causal edges. Source: publish_plan.json; panel/synthesis.md:102.",
+    "The existing Keld-arm pattern waits on stdout markers with an 8-second receive timeout used as a kill switch. Source: crates/keld-compat/tests/electron_lifecycle.rs:67-69.",
+    "A known environment trap for harness runs inside agent shells: with CLAUDECODE=1, Bun 1.4.2 hides passing test names. Source: Linear KEL-237 comment 6964244b (GYLDLAB, 2026-10-02).",
+    "This machine is macOS 26.5.1 arm64 with Bun 1.4.2 and Node v26.10.0. Source: sw_vers, uname, tool versions, 2026-10-06.",
+    "GitHub gyldlab/keld#411 is open with zero comments. Source: gh issue view, 2026-10-06."
+   ],
+   "inferences": [
+    "Electron emits app and window lifecycle events on the browser main thread, so a main-only fixture is expected to be order-stable. Nobody has observed this.",
+    "The first BrowserWindow id is probably the same on every fresh process, so a window-id normaliser may be unnecessary, and an unnecessary normaliser can hide a divergence.",
+    "Ten identical runs bound the per-run flip rate only below roughly 26% at 95% confidence; thirty bound it below roughly 10%. Ten runs alone is weak evidence of determinism.",
+    "A single merged order of main and renderer rows will vary in Electron itself (the X01 semantics refuter's finding), so cross-process comparison needs explicit causal edges.",
+    "It is first-proof because #419's diff against an unreplicated Electron transcript cannot tell a Keld divergence from Electron's own run-to-run variance. Only the main-process, macOS part is first-proof; the renderer ordering rule belongs to the X01-T1 spec and is next."
+   ],
+   "unknowns": [
+    "Whether the ordered main-process sequence is identical across runs.",
+    "Which raw fields actually vary (pid, monotonic time, absolute paths, Error.stack, window id).",
+    "Whether rows that originate in the renderer interleave stably with main rows.",
+    "Whether the Cmd+Q route (AppKit terminate) orders events like app.quit(). Out of scope here; #419 owns it.",
+    "The X01 invariants refuter reported that the LineLog timeout panics without killing the child process. Not re-checked here."
+   ],
+   "alternatives": [
+    {
+     "option": "1. Run a four-arm scratch experiment now. Arm A: one-window fixture that calls app.quit() from did-finish-load, 10 cold runs. Arm B: the same fixture, 20 runs under CPU contention. Arm C: control variant that calls win.close() with a window-all-closed listener, 10 runs, to prove the recorder can see the event arm A asserts absent. Arm D (report-only): arm A plus a preload and renderer sending two IPC markers, 10 runs. Start with an empty normaliser set and add one only for a field with an observed raw diff. Exit: DETERMINISTIC if the 30 A+B sequences share one SHA-256, otherwise list each distinct sequence with its count and first differing row pair.",
+     "cost": "One to two hours on one Mac with a GUI session; about 250 MB download; no repo, CI or Linear writes.",
+     "new_invariant": "A normaliser exists only if an observed raw diff justifies it; event name, kind, order, Error.message and exit code are never normalised; order is strict within one process and cross-process only through declared causal edges.",
+     "invariant_at_risk": "None in the repo. The risk is over-reading 30 clean runs as proof of determinism."
+    },
+    {
+     "option": "2. Skip the experiment and predeclare normalisers (pid, window id, paths, Error.stack) in the X01-T1 spec from prose.",
+     "cost": "Nothing now.",
+     "new_invariant": "Normalisers by assumption.",
+     "invariant_at_risk": "The independent-oracle rule in .agents/testing.md: an over-broad normaliser can hide a real divergence, and #419's diff is not admissible."
+    },
+    {
+     "option": "3. Use doc sentences only; record no Electron transcript for the first proof.",
+     "cost": "Loses the observed-only facts that the docs do not state and #419 needs (re-entrancy during the modal, tombstone order).",
+     "new_invariant": "None.",
+     "invariant_at_risk": "The close-with-unsaved-prompt step would be designed from inference."
+    },
+    {
+     "option": "4. Build the recorder and comparator in keld-compat first (X01-T2), then measure.",
+     "cost": "A large feature and its spec before knowing whether strict comparison is viable.",
+     "new_invariant": "A comparator contract fixed before its premise is tested.",
+     "invariant_at_risk": "The YAGNI rule; the spec-plus-Linear gate."
+    }
+   ],
+   "recommendation": "Run alternative 1 as a scratch-only experiment before #419 records its transcripts and before #494 fixes its normaliser section. Run the binary from the SHA-256-verified zip, not through npx. Adopt the three rules it tests: normaliser set empty by default, strict order within one process, causal edges across processes. Treat arm D as a lead for #494, not a decision.",
+   "falsifier": "Two or more distinct normalised main-process sequences among the 30 arm A and B runs (strict comparison is then wrong for that row pair, which becomes a partial order or an 'unknown' cell); or an arm A run that contradicts a quoted app.md sentence (the doc oracle and Electron disagree, so the contradiction is recorded and the cell cannot be a conformance pass); or arm C not showing window-all-closed (the recorder is blind and the experiment is invalid).",
+   "reversible": "Yes. The experiment writes only to a scratch directory, and its normaliser list feeds a spec (#494) that is not yet approved.",
+   "missing_evidence": "The transcripts: 30 runs of the quit fixture, 10 of the control and 10 of the renderer variant on macOS arm64 at zip SHA-256 a212eee6...e0e2c.",
+   "next_action": "Dispatcher runs the Prompt Tracker node below on a macOS arm64 machine with a logged-in GUI session, under KEL-237 as a read-only research assignment, and posts the result on gyldlab/keld#411. First check: the receipt's per-run hash table has 30 rows for the quit fixture with the count of distinct SHA-256 values, and records Electron --version v44.4.5 with the matching zip digest.",
+   "owner": "KEL-237 (In Progress, unassigned; Linear fetched 2026-10-06), owner of the lifecycle compatibility corpus the harness reuses; crate owner keld-compat. KEL-74 (Done) owns the evidence schema and is consumed, not changed.",
+   "prompt_tracker_node": "Proposed path: prompts/NEW/testing/13-kel237-electron-quit-order-determinism.md (confirm 13 is unused on tracker main and unmerged branches before allocating)\n\nMODEL: claude-sonnet-5-5 (requested exact id; served identity UNKNOWN until observed; listed by docs/04-model-routing.md refresh 2026-10-06 as a trial candidate for small settled work; if unavailable, stop and report, do not substitute)\nEFFORT: high\nHARNESS: direct - one Claude Code session on the target machine; no subagents\nGRAPH_NODE: new-testing-13-kel237-electron-quit-order-determinism\nGRAPH_ROLE: inspect\nSESSION: NEW\nOS: real macOS arm64 with a logged-in GUI session. No CI, no virtual display, no other OS. Record sw_vers and uname -m.\nLINEAR: KEL-237 (read-only research assignment; do not change status, assignee, relations or comments)\nPIN: keld origin/main cb7d8e9e (refetch first); Electron v44.4.5 = tag commit 694f45852a0f1726cd23bfd379854de489cccb65; npm electron@44.4.5 dist.shasum 0be094f8e783febba75d591106f5c61c1e511b70; electron-v44.4.5-darwin-arm64.zip sha256 a212eee63ba2f45fd83bd28f77a3e3313a336ad17a4c25adf617942eef5e0e2c (release SHASUMS256.txt); tracker main f1d631a\nSOURCE: prompts/NEW/testing/13-kel237-electron-quit-order-determinism.md\nREADS: gyldlab/keld#411 (this decision), #419 (consumer: close/quit veto oracle), #494 (consumer: harness spec), #445 (app-family ordering cells); Electron v44.4.5 docs/api/app.md sections window-all-closed, before-quit, will-quit, quit and app.quit(); Electron v44.4.5 docs/tutorial/esm.md; keld .agents/testing.md; crates/keld-compat/AGENTS.md; crates/keld-compat/tests/electron_lifecycle.rs (marker pattern only)\nWRITES: one new empty scratch directory outside every git checkout (fixture, Electron dist, transcripts, receipt). Nothing in the keld repo, the tracker, CI, GitHub or Linear.\nSINGLE_WRITER_KEYS: none\nREQUIRES_ARTIFACTS: none\nPRODUCES_ARTIFACTS: a receipt directory (RECEIPT.txt, SHA256SUMS, raw and normalised transcripts, per-run hash table, diff table) and one keld.execution-artifact/v1 JSON returned to the dispatcher, who posts the result on gyldlab/keld#411\nAFTER: none | independent\nNEXT: the #419 close/quit veto oracle node and the #494 harness spec consume the receipt\nDO_NOT_RUN_WITH: any node that launches Electron or drives the GUI session on the same machine (focus and activation events would contaminate the transcripts)\n\n1. Role\nRun one bounded determinism experiment on the pinned Electron binary and report observations. You do not own the harness design, the comparator, any Keld code, any golden file or the decision text.\n\n2. Goal\nA receipt stating, for Electron 44.4.5 on macOS arm64, whether the main-process quit-order transcript is identical across repeated runs, and the minimal set of fields that had to be normalised to make it so.\n\n3. Success criteria\n- SC1: every arm A and B run exits 0 with a complete transcript ending in the quit row and the process exit code. A killed or incomplete run is reported, never retried silently.\n- SC2: verdict DETERMINISTIC only if all 30 arm A and B normalised sequences share one SHA-256. Otherwise NONDETERMINISTIC, listing each distinct sequence, its count and the first differing row pair. State the bound: zero flips in 30 runs bounds the per-run flip rate only below about 10% at 95% confidence.\n- SC3: doc cross-check, quoting the app.md sentences in the receipt. In every arm A and B run, before-quit precedes the first window close, will-quit follows the last window closed, quit is last, and window-all-closed is absent. In every arm C run, window-all-closed is present. A violation is a finding, not something to normalise.\n- SC4: the normaliser list is minimal. Each entry names one field path and cites the observed raw diff that requires it. A candidate with no observed variance (for example the window id) is listed as not needed.\n- SC5: negative controls. Swapping two rows in a copy of one transcript changes its hash; changing one event name changes the hash after normalisation; arm C shows the event arm A asserts absent.\n- All evidence is real-OS (macOS arm64). Nothing here is a Keld conformance claim.\n\n4. Prerequisites\n- Network access to GitHub releases; about 250 MB free disk; a logged-in GUI session.\n- No approval is needed: there are no repo, GitHub or Linear writes.\n- Read KEL-237 and its comments first. If an unexpired claim there covers Electron recorder work, stop.\n\n5. Resources\n- Fixture directory: package.json with type module and main main.js; main.js (ESM); index.html (static). For arm D only add preload.cjs (CommonJS, require('electron')).\n- Register every listener synchronously at top level before any await (esm.md: the app may be ready before the entry point finishes).\n- Emit one line per event with fs.writeSync(1, ...): seq (process-local counter), proc, kind, name, args as JSON, plus raw pid, monotonic time, window id and any paths.\n- Log: will-finish-launching, ready, browser-window-created, did-finish-load, before-quit, window close, window closed, window-all-closed, will-quit, quit with its exit code.\n- Trigger: call app.quit() inside the did-finish-load handler. No timers, no sleeps.\n- Electron: download the darwin-arm64 zip, verify its sha256 against the PIN, extract it outside the fixture directory and run the binary directly with the fixture path. Do not use npx (it downloads lazily at record time). Keep ELECTRON_RUN_AS_NODE unset and record the environment.\n- Each run is a child process with stdout, stderr and exit code captured and a 60-second kill switch.\n- Arms: A = 10 cold sequential runs on an idle machine. B = 20 runs under CPU contention (one busy process per logical core, started before and stopped after; a perturbation, not a synchronisation aid). C = 10 runs of the control variant that calls win.close() and has a window-all-closed listener that logs and then quits. D (report-only) = 10 runs of arm A plus a renderer that sends two ipcRenderer.send markers which main logs on receipt.\n- Normalisation: start with an empty set. Hash the ordered rows (proc, kind, name, args) per run. For each field that differs between runs, add one named normaliser for that exact field path and re-hash. Never normalise event name, kind, order, Error.message or exit code.\n\n6. Delegation\nNone.\n\n7. Verification\n- Electron --version prints v44.4.5 and the zip digest equals the PIN.\n- SHA256SUMS over the receipt verifies.\n- The per-run hash table and the three negative-control outputs are pasted into RECEIPT.txt.\n\n8. Output\nOne keld.execution-artifact/v1 JSON with status passed, findings, os-unavailable or hard-failure. Evidence rows: the verdict, the distinct-sequence table, the normaliser list with justifications, the arm C control, the arm D observation (stable or unstable interleave and which rows), machine identity and every command with its exit code. The dispatcher posts the result on gyldlab/keld#411; #419 and #494 consume it.\n\n9. Stop rules\n- Zip digest mismatch: stop, hard-failure.\n- No GUI session: stop, os-unavailable.\n- A run that needs a sleep or a retry to complete: stop and report.\n- The same step failing after two attempts: stop and report.\n- Any need to edit the keld repo, or to normalise order or event names to reach one hash: stop and report as a finding.\n- A claim conflict on KEL-237: stop."
+  }
+ ],
+ "adopted_decisions_now_closed": {},
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "Design: a two-arm differential harness shaped like KEL-77 (Rust test owns and reaps each arm; hard failure when a binary is missing; exact arm revision in every record). Arm A (recorder) runs Keld-owned fixture apps under the pinned npm electron@44.4.5 binary (dist shasum 0be094f8e783febba75d591106f5c61c1e511b70; tag v44.4.5 -> commit 694f45852a0f1726cd23bfd379854de489cccb65) and emits a line-oriented transcript (seq, process, event, canonical args, monotonic delta). Arm B (replayer) runs the SAME unmodified fixture files with `electron` resolved to @keld/electron (today: tsconfig paths + `bun` child spawned by crates/keld-compat/tests/electron_lifecycle.rs against keld_core::LifecycleSession; TARGET: `keld dev --headless --smoke`, which is reserved/not live). A Rust comparator in keld-compat normalizes declared nondeterministic fields, diffs ordered sequences, and emits one keld.compat.evidence/v1 record per cell. The golden transcript is evidence-of-record, not the oracle: per AGENTS.md and KEL-77 §4.1 the oracle is the pinned Electron doc sentence (blob at commit 694f4585); a cell with no doc sentence can reach BEHAVIOR_MATCH only. Ladder: BEHAVIOR_MATCH (Keld transcript == golden under normalizers, >=1 OS, legacy_sandbox_off) -> CONFORMANCE_PASS (cited doc sentence + Keld-owned test independent of the diff + named negative control + pass on all 3 OS lanes, or explicit intentional_divergence ▲) -> CORPUS_VERIFIED (same observable matched in a real corpus app run through migrate+dev smoke on both arms, panel:product once a product corpus id is committed, authority profile strict_bun or visibly labeled legacy). Reuse: KEL-237's exact-bytes rule (denominator.corpus_sha256 == sha256 of committed manifest bytes, with mutation negative control) closes research 214's \"canonical bytes UNPROVEN\"; KEL-77 §4.3 digest for the fixture-set artifact.sha256; KEL-74 score() for all percentages. Placement: fixtures in packages/@keld/electron/fixtures/<family>/ (plain ESM JS runnable in both arms), goldens/manifest/denominator/evidence/receipts in crates/keld-compat/fixtures/<corpus-id>/ mirroring lifecycle-corpus, comparator tests in crates/keld-compat/tests/, corpus apps (draw.io, Zettlr) in the separate corpus repo (arch 04 §6). CI: PR lane = replay only on the existing 3-OS matrix (deterministic, no Electron download); weekly lane = recorder drift re-run at the same pin (Linux via xvfb-run as Electron's own CI does) + corpus-app smoke; regression P1 = `CI required` fails when any committed cell flips pass->fail/unknown or expected-fail->pass, with no retries, skips, or isCI gating (research 214 Table 4). Electron docs are silent on several order/error details (ready-to-show vs did-finish-load, duplicate ipcMain.handle, invoke no-handler text); those are recorded as observed-only cells, not conformance claims.",
+  "decisions": [
+   {
+    "id": "X01-A1",
+    "question": "What is the oracle: the recorded Electron 44.4.5 golden transcript, or the pinned Electron documentation sentence?",
+    "proposed_answer": "The pinned doc sentence (blob at commit 694f45852a0f1726cd23bfd379854de489cccb65) is the oracle for any CONFORMANCE_PASS cell; the golden transcript is immutable evidence-of-record that makes BEHAVIOR_MATCH falsifiable and exposes undocumented order/timing. A cell whose behavior the docs do not state (e.g. ready-to-show vs did-finish-load order) is tagged `observed-only` and can never exceed BEHAVIOR_MATCH; it is reported as a lead, not a compatibility claim. Owner: keld-compat comparator; boundary: manifest cell {operation_id, oracle_id, doc_blob_oid, doc_sentence_sha256, golden_sha256, normalizers[], negative_control}; failure mode: a transcript diff passing while the documented contract is violated (mirror oracle); observable contract: deleting the doc-cited Keld test or inverting the asserted sentence fails the cell independently of the transcript diff; first falsifier: a cell with a golden but no doc_blob_oid that is scored CONFORMANCE_PASS.",
+    "evidence": [
+     "AGENTS.md crates/keld-compat: 'Electron documented behavior = oracle. Conformance entry (citing doc/fixture) before implementation' [fact]",
+     "docs/specs/kel77-bun-child-process-differential.md §4.1: 'Rejected: using the Node arm's live output as the oracle — a mirror, not an oracle: it cannot distinguish Bun is wrong from Node changed' [fact]",
+     ".agents/testing.md: every test MUST use an independent oracle; reimplementing the algorithm is not independent [fact]",
+     "research 214 Table 3: selection must be fixed before results ('Tests that pass cannot define N after results exist') [fact]"
+    ],
+    "confidence": "high",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Golden transcript as sole oracle — mirror oracle; cannot tell Electron drift/flake from Keld defect; rejected by KEL-77 §4.1 precedent. (b) Electron spec/ tree as oracle — REFUSED by research 214. (c) Doc sentences only, no recorder — cannot falsify ordering/timing/destroyed-object details that docs omit, and gives no denominator-backed evidence of what 44.4.5 actually does.",
+    "unknowns": "How many Tier-1 observables have no doc sentence (observed-only share) is unmeasured until the recorder runs once; the docs are silent on duplicate ipcMain.handle error text, invoke no-handler text, ERR_ABORTED on superseded load, and ready-to-show/did-finish-load order."
+   },
+   {
+    "id": "X01-A2",
+    "question": "Which fixture language/packaging lets one unmodified fixture run under real Electron and under @keld/electron, and where does the Electron binary live?",
+    "proposed_answer": "Fixtures are plain ESM JavaScript (`\"type\":\"module\"`, main.js + preload.js + renderer html) under packages/@keld/electron/fixtures/<family>/; they emit markers with writeSync(1) (current KEL-72 pattern) so neither arm block-buffers. The Electron arm never runs in the PR lane and the Electron binary is never committed: the recorder runs in the weekly lane / corpus repo with network, pins electron@44.4.5 by npm dist shasum 0be094f8e783febba75d591106f5c61c1e511b70 (sha512 integrity recorded) and tag commit 694f4585…, and goldens are copied into crates/keld-compat/fixtures/<corpus-id>/golden/ as reviewed immutable bytes with receipts. Owner: @keld/electron fixtures (apps) + keld-compat (goldens/receipts); failure mode: a .ts fixture Electron cannot execute, or a fixture that silently diverges between arms (two copies); observable contract: `sha256(fixture dir)` per KEL-77 §4.3 is identical in both arms' records (`artifact.sha256`); first falsifier: Electron 44.4.5 refuses the ESM main entry or Bun fails to resolve `import 'electron'` for a .js file via tsconfig paths.",
+    "evidence": [
+     "crates/keld-compat/tests/electron_lifecycle.rs spawn_fixture: `bun ./<script>` with tsconfig.json paths alias asserted present [fact]",
+     "packages/@keld/electron/fixtures/*.ts are TypeScript today; Electron's main runs 'in a Node.js environment' (process-model.md) — TS is not a documented Electron entry format [fact]",
+     "docs/architecture/04-electron-compat.md §6: corpus/ is a separate repo with gitignored fixtures [fact]",
+     "research 214 Table 4 'Pin before run … Never fetch main' and 'No CI hiding' [fact]",
+     "KEL-77 §4.3 fixture digest algorithm (path||0x00||u64_le(len)||bytes) [fact]"
+    ],
+    "confidence": "medium",
+    "type": "prototype",
+    "alternatives_rejected": "(a) TS fixtures + a transpile step for the Electron arm — two artifacts, digest no longer shared, violates one-source rule. (b) Playwright `_electron.launch` driver — adds a CDP dependency and a third process owner; the tutorial's stdio-ipc custom driver or plain stdout markers suffice. (c) Download Electron in the PR lane — network-dependent, slow, and makes PR evidence depend on a 100MB+ artifact; the replay-only PR lane keeps the Keld arm deterministic.",
+    "unknowns": "[lead] Electron ESM main-entry support in 44.4.5 (docs/tutorial/esm.md not fetched here); [unknown] whether Bun applies tsconfig `paths` to plain .js imports at runtime (learnings 2026-08-18 verified .ts only); [unknown] whether a reproducible run of electron@44.4.5 is possible without npm `postinstall` network access on all three runners."
+   },
+   {
+    "id": "X01-A3",
+    "question": "What are the canonical-bytes and digest rules for the manifest, the fixture set and the goldens, and who owns them?",
+    "proposed_answer": "Reuse, do not invent: (1) manifest canonical bytes = the exact committed manifest file bytes; denominator.corpus_sha256 == sha256(those bytes), asserted by a test with a one-byte mutation negative control — this is already live in lifecycle_corpus.rs and closes research 214 Table 3's 'UNPROVEN canonical bytes' item; (2) fixture-set artifact.sha256 = KEL-77 §4.3 algorithm over the fixture directory (shared by both arms); (3) each golden transcript file is its own immutable blob, referenced from the manifest by sha256 and from each record as evidence_uri `sha256:<hex>` of the raw run report (KEL-77 §4.5 pattern); (4) oracle revision = Electron commit 694f4585… (not the version string; 214: 'a version string alone is not a pin'). Owner: keld-compat (evidence.rs validates URI/digest format; tests compute digests with the workspace sha2 dev-dependency). Failure mode: two digest algorithms for the same artifact; observable contract: flipping any byte of manifest, fixture or golden fails before any assertion executes; first falsifier: a record whose artifact.sha256 differs between the Electron arm and the Keld arm for the same fixture dir.",
+    "evidence": [
+     "crates/keld-compat/tests/lifecycle_corpus.rs:100-148 asserts corpus_sha256 == sha256(CORPUS_JSON) and that a mutated manifest no longer matches [fact]",
+     "research 214 Table 3: KEL-74 'does not prescribe canonical manifest bytes, so that algorithm is UNPROVEN and a future spec must fix it' [fact]",
+     "docs/specs/kel77-bun-child-process-differential.md §4.3 digest; learnings 2026-08-19: dropping path-NUL-length framing collides on ('ab','c') vs ('a','bc') [fact]",
+     "crates/keld-compat/Cargo.toml: sha2 is a dev-dependency only (test-only digest) [fact]"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "JSON-canonicalization (RFC 8785) of the manifest — a second algorithm with its own implementation risk when exact committed bytes already work and are tested; hand-rolled hashing — forbidden duplicate of a primitive (KEL-77 §4.1).",
+    "unknowns": "Whether the corpus repo (arch 04 §6) and the keld repo must share one manifest format or the corpus repo only ships goldens+receipts consumed by keld-compat — propose the latter; needs the KEL-19/KEL-17 CLI owner's agreement."
+   },
+   {
+    "id": "X01-A4",
+    "question": "Where does each lane run, and how does 'regression = P1' become a CI contract rather than a slogan?",
+    "proposed_answer": "PR lane (existing ubuntu/macos/windows matrix): Keld-arm replay against committed goldens inside `cargo test -p keld-compat`; deterministic, offline, each OS scored separately (as KEL-237 receipts already do). Weekly lane: (a) Electron recorder re-run at the SAME pin on all three OS (Linux under `xvfb-run`, DISPLAY :99.0, as Electron's own test workflow does) to detect oracle nondeterminism — any diff marks the cell `unknown` and proposes a normalizer, never silently re-records; (b) corpus-app smoke (draw.io, Zettlr) once migrate/dev --headless exist. Regression contract: the committed manifest carries `expected_verdict` per cell (live in corpus.json); `CI required` fails when a pass cell yields fail/unknown OR an expected-fail cell passes (forces manifest update); no `todoIf(isCI)`, bare skip, retry, or rerun (Electron's own `--enableRerun=3` is explicitly NOT copied). Re-recording goldens or bumping the Electron pin is a reviewed PR that touches manifest+goldens+receipts together. Owner: .agents/ci.md routing + keld-compat tests; failure mode: a skipped-green lane; observable contract: removing the Bun/Electron invocation fails the lane's own contract (214 Table 4 'CI home'); first falsifier: a job-level `if` that lets the compat lane report skipped while a Rust change touched keld-compat.",
+    "evidence": [
+     ".github/workflows/ci.yml:99-109 clippy+test matrix os [ubuntu-latest, macos-latest, windows-latest] [fact]",
+     ".agents/ci.md: required workflows route at job boundaries; CI required rejects missing/cancelled/skipped evidence [fact]",
+     ".agents/testing.md CI tiers: PR = changed packages; nightly = fuzz; weekly = broader OS matrix + real webview/transport smoke [fact]",
+     "Electron v44.4.5 .github/workflows/pipeline-segment-electron-test.yml: `xvfb-run script/actions/run-tests.sh …`, DISPLAY ':99.0', and `--enableRerun=3` on the Wayland lane (retrieved 2026-10-06) [fact]",
+     "research 214 Table 4: stage-only-passers, test.failing for known gaps, no CI hiding [fact]",
+     "docs/architecture/04-electron-compat.md §6: 'A compat regression is a P1' [fact]"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "(a) Electron recorder in the PR lane — network + runner cost, and makes PR verdicts depend on Electron availability rather than on Keld. (b) Flake retries — forbidden by .agents/testing.md and research 214. (c) Revision-keyed baseline tables — KEL-77 deliberately did not build one; the pin is exact.",
+    "unknowns": "Runner-minute cost of a weekly 3-OS Electron recorder is unmeasured; whether hosted Windows/macOS runners need any display setup for Electron (Electron's workflow shows none needed, but Keld has not run it) — label unverified until the first weekly run."
+   },
+   {
+    "id": "X01-A5",
+    "question": "How are transcripts normalized and compared so that ordering is strict, timing does not create flakes, and 'no sleeps' holds?",
+    "proposed_answer": "Transcript row = {seq, proc: main|preload|renderer, kind: event|call|error|exit, name, args: canonical JSON after per-cell normalizers, t_ns: monotonic delta}. Comparison is strict on the ordered (proc, kind, name, normalized args) sequence per cell; t_ns is never compared in conformance cells — it feeds separate budget cells (KEL-90/KEL-129) so clock and statistic stay separate atoms. Normalizers are declared in the manifest per cell (e.g. redact pid, window id, file paths, Error.stack; keep Error.message and code), never inferred. Both arms wait only on observable markers (LineLog pattern) with a timeout that is a kill switch; each arm is a child process whose exit code/signal is part of the transcript (subprocess rule for lifetime). Owner: keld-compat comparator; failure mode: a normalizer so broad it hides a divergence (e.g. redacting the whole args object); observable contract: a negative-control mutation in the Keld arm (swap two event emissions, change an error message) flips the cell to fail; first falsifier: a cell whose normalizers reduce args to `{}` while still scoring pass.",
+    "evidence": [
+     ".agents/testing.md: no sleeps; timeout only a kill switch; crash/lifetime in a child process with stdout/stderr/exit/signal assertions [fact]",
+     "AGENTS.md: performance decompositions MUST separate census, work, queue/copy, clock, statistic and artifact [fact]",
+     "crates/keld-compat/tests/electron_lifecycle.rs LineLog.wait_contains + learnings 2026-08-18 (drain rx before asserting absence) [fact]",
+     "Electron docs: 'Errors thrown through handle … only the message property … is provided to the renderer' (ipc-main.md) — message is the comparable field, stack is not [fact]"
+    ],
+    "confidence": "medium",
+    "type": "prototype",
+    "alternatives_rejected": "(a) Comparing wall-clock timings in conformance cells — Electron and Keld have different cold-start profiles; would make every cell a benchmark. (b) Free-form snapshot testing of console output — no declared normalizers, no negative control, violates independent-oracle rule. (c) Comparing only final state — loses event ORDERING, which AGENTS.md requires to be tested.",
+    "unknowns": "Whether Electron 44.4.5 preload/renderer markers can be emitted to the main-process stdout without an IPC hop that itself perturbs ordering (the recorder must route renderer rows through ipcRenderer.send to main for stdout; that hop is part of the system under observation). Prototype decides whether renderer rows carry a separate seq space."
+   },
+   {
+    "id": "X01-A6",
+    "question": "What authority profile and panel can each ladder rung claim, so that a harness result never becomes a 'median-app compatibility' or 'strict profile' claim it did not measure?",
+    "proposed_answer": "BEHAVIOR_MATCH and CONFORMANCE_PASS records carry authority_profile `legacy_sandbox_off` (the comparator is an ordinary test process, exactly as KEL-237 and KEL-77 record) and panel `showcase` with corpus ids like `electron-44.4.5-<family>-v1`. CORPUS_VERIFIED requires a corpus-app run under `keld dev` with authority_profile `strict_bun` (KEL-78) or an explicitly labeled legacy profile (KEL-127 'visibly labeled legacy profile'), on panel `product` only after a product corpus id is documented as committed (KEL-74: today none, so `unweighted_percent` is omitted and `complete` is false). Claims use only `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`. Owner: evidence.rs score() + manifest panel field; failure mode: a legacy_sandbox_off showcase number quoted as product compatibility; observable contract: score() on a product denominator with uncommitted id yields no percent; first falsifier: any published percent whose contributing records disagree on authority_profile or engine.",
+    "evidence": [
+     "docs/specs/kel77 §4.5: 'authority_profile is deliberately not strict_bun … labelling it strict_bun would claim the measurement was taken under Keld's zero-ambient-authority profile, which is false' [fact]",
+     "crates/keld-compat/fixtures/lifecycle-corpus/report.md: authority profile legacy_sandbox_off; engine `headless-lifecycle-conformance@…`; 'not a product/median-app Electron compatibility percentage' [fact]",
+     "docs/engineering/compat-scoreboard.md rules 2-4 and evidence.rs product committed-id list empty [fact]",
+     "briefing KEL-127: unsupported combos need explicit diagnostics + visibly labeled legacy profile [fact]"
+    ],
+    "confidence": "medium",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Labeling the Rust-test harness strict_bun because it uses kipc — false per KEL-77 §4.5. (b) Promoting a showcase corpus to product when it passes — forbidden by KEL-74 (showcase cannot redefine product tiers). (c) Publishing a 'Tier-1 %' from fixture cells — fixture cells are not median-app workflows; only CORPUS_VERIFIED rows feed a product denominator.",
+    "unknowns": "Which issue owns committing the first product corpus id (draw.io Desktop per GH #313) — the ledger lists none; the orchestrator must name the owner before any product-panel row can exist."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "Running or mechanically translating Electron's spec/ tree (spec/index.js, Mocha runner) under Bun",
+    "rationale": "research 214 verdict REFUSE; bakes in Chromium processes, broad fixtures, ambient authority"
+   },
+   {
+    "surface": "Fetching electron `latest`/`main`, or recording goldens from an unpinned Electron",
+    "rationale": "214 Table 4 'Pin before run; never fetch main'; a version string alone is not a pin"
+   },
+   {
+    "surface": "Electron binary in the PR lane or committed to the keld repo",
+    "rationale": "arch 04 §6 corpus repo is separate/gitignored; PR evidence must be deterministic and offline"
+   },
+   {
+    "surface": "Re-recording goldens from the Keld arm or auto-updating goldens on diff",
+    "rationale": "mirror oracle (KEL-77 §4.1); hides regressions; re-record only via reviewed Electron-pin PR"
+   },
+   {
+    "surface": "Retries, reruns (`--enableRerun`), `todoIf(isCI)`, bare skips, or sleeps in harness cells",
+    "rationale": ".agents/testing.md and research 214 'No CI hiding'; timeout is only a kill switch"
+   },
+   {
+    "surface": "Any percentage or 'compatible' claim without a committed denominator; product panel before a documented product corpus id",
+    "rationale": "KEL-74 score() rules; compat-scoreboard rule 4"
+   },
+   {
+    "surface": "Labeling the test-process harness `strict_bun`",
+    "rationale": "KEL-77 §4.5: false claim about authority profile"
+   },
+   {
+    "surface": "Fixtures using nodeIntegration:true, remote, child_process/exec, custom-scheme privileges, or network",
+    "rationale": "briefing never list; 214 Table 5 documented-✘; renderer never inherits app grants"
+   },
+   {
+    "surface": "Comparing wall-clock timings as conformance verdicts",
+    "rationale": "clock/statistic are separate atoms (AGENTS perf decomposition); timing belongs to budget scoreboard"
+   }
+  ],
+  "open_unknowns": [
+   "[unknown] Electron 44.4.5 ESM main-entry support receipt (docs/tutorial/esm.md not fetched) — first action: fetch it before A2 prototype",
+   "[unknown] Whether Bun 1.4.2 applies tsconfig `paths` to plain .js runtime imports (verified only for .ts in learnings 2026-08-18)",
+   "[unknown] Exact rejection text for ipcRenderer.invoke with no handler and for a second ipcMain.handle on the same channel — docs silent; recorder observed-only cells",
+   "[unknown] Documented order of ready-to-show vs dom-ready vs did-finish-load — docs silent; observed-only",
+   "[unknown] ERR_ABORTED behavior when a load is superseded — not quoted from v44.4.5 docs",
+   "[unknown] Owner and timing of `keld dev --headless --smoke` and `keld migrate` (KELD-CLI-045 reserved) — CORPUS_VERIFIED is blocked until they exist; the Rust-test LifecycleSession stand-in covers only lifecycle cells",
+   "[unknown] Who commits the first product corpus id (draw.io Desktop per GH #313) so panel:product rows can exist",
+   "[unknown] Pin policy: existing lifecycle corpus is Electron 44.3.0 @07e46071 while this map baselines 44.4.5 @694f4585 (latest stable 44.5.1) — need one rule for per-corpus-id pins vs a program-wide pin",
+   "[unknown] Weekly recorder lane runner cost and hosted-runner display requirements on Windows/macOS (unmeasured)",
+   "[unknown] Whether renderer-side markers routed through ipcRenderer.send to main perturb the very ordering under test (A5 prototype)",
+   "[inference] electron-updater/electron-log/electron-context-menu semver-gate on process.versions.electron — grep the corpus deps before deciding a quirks flag",
+   "[unknown] keld-core window registry does not exist (no WindowRegistry symbol) — BrowserWindow cells beyond lifecycle have no Keld arm until the F02 owner lands host windows"
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

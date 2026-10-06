@@ -1,0 +1,936 @@
+{
+ "unit": "X04",
+ "name": "security-mapping",
+ "published": {
+  "epic": {
+   "key": "X04-EPIC",
+   "title": "program(security): every Electron security surface mapped onto keld-guard, the KEL-142 bridge, principalized roles and the host-owned signed feed — with negative tests",
+   "body": "## Scope\nPermission request/check handlers, weak-isolation webPreferences, protocol privileges + CSP, shell.openExternal grants, single-instance/open-file intents, autoUpdater/fuses/ASAR trust, device permissions, media, devtools-in-release. Live today: `/app` grants for AppProcess only; a minted webview principal is `KELD-GUARD006` until window-level grants ship (KEL-102/T4); media callbacks evaluate resource `*` (wry exposes no origin); `windows`, `audit`, `roles` manifest sections parse-and-ignore.\n\n## Design facts fixed by research (two refuters + panel)\n- One guard decision, two Electron views: `windows.<w>.web.<permission>` evaluated as the webview principal; a missing handler is a deny; handlers only narrow; permission vocabulary is engine-hook-dependent (three columns).\n- Weak-isolation webPreferences: privilege-escalating fields fail loudly; `disableBlinkFeatures` and engine flags are ignored with a diagnostic (draw.io sets it on every window); `sandbox:false` ▲ ignored, never a profile key.\n- Scheme privileges are host declarations; `bypassCSP` never; `allowServiceWorkers` ▲ per engine; the CSP profile must admit draw.io's `'wasm-unsafe-eval'` and its style/img/connect sources (prototype P2 scope).\n- OS-delivered intents (second-instance, open-file) are untrusted data admitted by the host; the file path becomes a host-scoped one-shot intent, not an ambient grant (corrected by the semantics refuter).\n- Feed trust is host-only; fuses: draw.io flips RunAsNode=false, EnableCookieEncryption=true, NodeOptions=false, OnlyLoadAppFromAsar=true, EmbeddedAsarIntegrityValidation=false (resolved from its build script); nine fuses incl. wasmTrapHandlers dispositioned.\n- Device permissions (HID/USB/serial/Bluetooth): documented-unsupported, not legacy.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "X04-T1",
+    "title": "spec(security): the Electron→keld-guard mapping table with grant shapes (no new schema), the legacy-profile list, and the negative test per mapping (research 186 gaps 1–7)",
+    "kind": "spec",
+    "tier": "Tier 1",
+    "maturity_target": "L0",
+    "what_to_build": "Write the mapping spec: every Electron security surface → owning Keld mechanism (guard grant shape under arch 03 §2, bridge, roles, signed feed) with its never/▲/legacy classification, the per-engine permission-hook table, the CSP profile shape, and one negative test per mapping (custom-scheme privilege minting, second-instance argv, openExternal matrix, missing handler, IPC sender confusion/error redaction, utilityProcess env/ports, artifact trust chain). Revise the `el:*` example in arch 03 §3 in the same PR.",
+    "acceptance_criteria": [
+     "Spec approved; every row names its test and its owner",
+     "No mapping defaults to allow; no new manifest schema is introduced",
+     "The CSP profile admits draw.io's declared sources and is linted"
+    ],
+    "negative_controls": [
+     "A row whose negative test cannot fail is rejected"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-102/T4 window grants",
+     "KEL-78",
+     "KEL-208/KEL-209",
+     "KEL-53"
+    ],
+    "linear_owner": "KEL-102 / KEL-78",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** spec\n\n**Current behavior:** Mapping exists only in research notes.\n\n**Desired behavior:** Write the mapping spec: every Electron security surface → owning Keld mechanism (guard grant shape under arch 03 §2, bridge, roles, signed feed) with its never/▲/legacy classification, the per-engine permission-hook table, the CSP profile shape, and one negative test per mapping (custom-scheme privilege minting, second-instance argv, openExternal matrix, missing handler, IPC sender confusion/error redaction, utilityProcess env/ports, artifact trust chain). Revise the `el:*` example in arch 03 §3 in the same PR.\n\n**Key interfaces:** arch 03 §2 grant vocabulary; keld-guard evaluate; migrate security report.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementing brokers.",
+    "out_of_scope": "Implementing brokers.",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "X04-D3",
+    "title": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+    "type": "prototype",
+    "question": "Build the falsifiable matrix: privilege declaration timing, standard/secure/CSP/CORS/fetch/service-worker combinations, malformed and encoded traversal URLs, and the CSP profile with draw.io's exact directives; also the missing spec for user-granted persisted filesystem roots under a frozen manifest (KEL-79/KEL-130 gap).",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "X04-D4",
+    "title": "shell.open grant spelling for scheme classes: KEL-208 owner ruling (bare `https:` is inert today; a distinct confirm-class token vs exact literals)",
+    "type": "grilling",
+    "question": "The proposed bare-scheme literal rests on a wrong reading of the live matcher. Options: (a) literal origins only + host confirmation flow for everything else; (b) a distinct confirm-class token (`confirm:https`). Needs the KEL-208 owner ruling; the broker canonicalises the URL into two resources evaluated as exact literals either way.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "remote / enableRemoteModule",
+   "nodeIntegration:true / contextIsolation:false / webSecurity:false / allowRunningInsecureContent / experimentalFeatures / enableBlinkFeatures",
+   "protocol privileges minted at runtime (bypassCSP)",
+   "app-selected updater feed / headers / servers",
+   "certificate-error callback(true) in strict",
+   "utilityProcess env/cwd/execArgv/stdio-inherit",
+   "permission handlers returning true after a guard deny",
+   "Electron sandbox:false as a Keld profile selector",
+   "full CDP in production"
+  ],
+  "out_of_scope": [],
+  "not_yet_specified": [
+   "Window-level grants (KEL-102/T4) timing — every webview-principal row depends on it"
+  ],
+  "issue_numbers": {
+   "X04-D3": 415,
+   "X04-D4": 416,
+   "X04-EPIC": 504,
+   "X04-T1": 505
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [],
+  "duplicates": [
+   {
+    "keys": [
+     "F05-T3",
+     "X04-T1"
+    ],
+    "problem": "Two owners of the permission-handler mapping and the per-engine permission-hook table (F05-T3 'publish the permission-string table'; X04-T1 'the per-engine permission-hook table ... missing handler'). F05-T3's body blocks on {{X04-D1}}, a key that was never published.",
+    "fix": "X04-T1 (spec) owns the table; F05-T3 implements it. Replace {{X04-D1}} with an edge F05-T3 ← X04-T1 and remove the table from F05-T3."
+   },
+   {
+    "keys": [
+     "F06-D4",
+     "X04-D4"
+    ],
+    "problem": "The same permission-model decision (shell.open scheme-class grant spelling) is published twice ('joint with X04-D4'); F06-T3 is gated only by X04-D4. Both wait on a 'KEL-208 owner ruling' — KEL-208 is Done and KEL-209 Duplicate (Linear, fetched 2026-10-06).",
+    "fix": "Close F06-D4 as a duplicate of X04-D4; name the live owner (arch 03 §2 grammar under KEL-102, In Progress) and attach a decision packet (options a/b, consequences, recommendation)."
+   },
+   {
+    "keys": [
+     "F02-T4",
+     "F07-T2",
+     "X04-T1"
+    ],
+    "problem": "WebPreferences handling has three claimants: F02-T4 classifies all 46 fields (which include webviewTag), F07-T2 separately 'accepts webPreferences.webviewTag', X04-T1 specs 'weak-isolation webPreferences'.",
+    "fix": "F02-T4 owns option triage including webviewTag; F07-T2 keeps only the will-attach-webview registrable/never-fires contract; X04-T1 references F02-T4's table."
+   },
+   {
+    "keys": [
+     "F04-A1",
+     "X04-T1",
+     "MAP"
+    ],
+    "problem": "Three units each claim the arch 03 §3 `el:*` example fix 'in the same PR' (F04-A1 question text, X04-T1 'Revise the el:* example', MAP kill-condition fallback). FACT: docs/architecture/03-security.md:97 still shows \"el:*\" at b4b907c3.",
+    "fix": "F04-A1's resolution PR owns the spec amendment and the example fix; delete the claim from X04-T1."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "F05-T3",
+    "problem": "Unresolvable key: the body's Blocked-by lists {{X04-D1}}, which is not among the 118 published issues, and blocked_by_keys carries only F05-T1 (body/edge mismatch).",
+    "fix": "Replace with F05-T3 ← X04-T1 (the spec that owns the permission table) in both body and edge list."
+   },
+   {
+    "key": "F05-T4",
+    "problem": "Missing gate: AC2 requires a generated CSP that admits draw.io's sources ('wasm-unsafe-eval', img/style/connect lists at electron.js:994-1007) — exactly prototype X04-D3, which gates nothing. Sole predecessor KEL-79 is Backlog with no spec file and no assignee.",
+    "fix": "Add F05-T4 ← X04-D3; record KEL-79 as a blocker class 'missing owner artifact' with the first action (approved spec slice for file:// read-root + CSP injection)."
+   },
+   {
+    "key": "PANEL-P3",
+    "problem": "No ticket depends on it although it decides the descriptor set, the denominator and config-only vs config+N. Decisions with zero dependents that are cited in ticket prose as conditions: F02-A6 (F02-T5), F06-D3 (F06-T4/T5/T6 use app.system tokens), F07-E1 (F07-T1 'env per the open decision'), F08-D6 (F08-T2), X01-A5 (X01-T2 normalisers), X04-D3 (F05-T4).",
+    "fix": "Add the edges named above so each prose condition is a graph edge consuming a named output."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F06-T3",
+    "violation": "Title and build text commit to a 'confirm-per-scheme grant' while the governing permission-model decision (X04-D4) is open and F06-EPIC's never list contains 'scheme-wide shell.open globs'. A confirm-class token is a scheme-wide allow mediated by a click — a new authorization source for generated default-deny that needs an approved spec before it appears as a build instruction.",
+    "fix": "Retitle to 'shell broker under the grant shape decided in X04-D4'; move the confirm flow into the decision packet."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "X01-T1, X02-T1, X04-T1",
+    "problem": "'Spec approved by a human' is not an agent-verifiable binary criterion, and the negative controls ('a spec that ... is rejected at review', 'a row whose negative test cannot fail is rejected') are reviewer opinions — they cannot fail mechanically.",
+    "fix": "ACs as checkable properties of the document (every section of the template filled; every mapping row names a test id and an owner; lint for '%' output); approval is the PR gate, not an AC."
+   },
+   {
+    "key": "F01-A4, F03-D4, F04-A1, F04-A4, X02-A1, F06-D1, X04-D4",
+    "problem": "Filed as 'open (not resolvable from current evidence)' with body '_No evidence-backed resolution yet; see the unit research note_' — the doctrine's banned 'needs discussion'. Most are ownership choices with a stated recommendation (X02-A1 even contains one), not evidence gaps.",
+    "fix": "Each gets a decision packet in the issue body: options, cost, new invariant, falsifier, recommendation, the one remaining question; resolve the ones evidence already determines (X02-A1, F04-A4)."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "X04-T1",
+    "milestone": "next",
+    "reason": "A whole-surface security mapping spec serves the strict profile; the two pieces the legacy proof needs are already owned elsewhere (channel grant shape by F04-A1, CSP profile by X04-D3/F05-T4)."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "X04-D4, F06-D4, F06-T3",
+    "claim": "'Needs the KEL-208 owner ruling' / predecessor 'KEL-208/KEL-209 authority rule'.",
+    "problem": "KEL-208 is Done and KEL-209 is closed as Duplicate (Linear, fetched 2026-10-06). A completed bug fix has no owner waiting to rule; the open question is a grammar decision for arch 03 §2.",
+    "fix": "FACT: the authority-boundary fix landed under KEL-208. DECISION OWNER: the permission-model owner for arch 03 §2 (KEL-102 is the live In-Progress guard spec issue). Provide the decision packet."
+   }
+  ],
+  "hidden_coupling": [],
+  "first_proof_frontier": [
+   {
+    "key": "X04-D3",
+    "why_now": "Takeable now; the CSP profile that F05-T4 must inject (edge missing today).",
+    "consumes": "draw.io's CSP string and file:// filter (electron.js:994-1022); a WKWebView fixture. Produces: CSP profile that admits draw.io + the outside-codeDir negative probe list."
+   },
+   {
+    "key": "F05-T4",
+    "why_now": "Next: after F05-T1 and X04-D3; macOS only.",
+    "consumes": "X04-D3 CSP profile + probe list; KEL-79 has no artifact (Backlog) — the spec slice for file:// read-root must be produced here and recorded on KEL-79."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse: four uniques only; default-deny never bypassed or defaulted to allow; no Electron-isms in keld-core/keld-ipc; no parallel process model/transport/schema/parser/policy owner; reuse of existing owners (KEL-75/76/77/78/79/80/53/74/102/135/139-144); performance claims must be measured; spec+Linear gate; prior decisions #312/#313/#319/#322/#323/#325 and KEL-127 delegated direction. Verified by reading crates/keld-guard/src/lib.rs, crates/keld-wv/src/media.rs, crates/keld-runtime/src/role.rs, docs/architecture/02,03,04,05,06, docs/specs/kel78/kel102/kel130/kel132/kel135/kel142/kel75, research 186/13, and the scratchpad corpus (draw.io electron.js, build/fuses.mjs, electron-builder-*.json; Zettlr custom-protocols.ts, attach-app-navigation-handlers.ts, splash-screen.ts, onboarding-window.ts, main.ts, forge.config.js, source/common/modules/preload/index.ts). Not verified by me: Electron v44.4.5 doc receipts (no network fetch in this headless session) and Linear live state.",
+   "verdicts": [
+    {
+     "decision_id": "X04-D1",
+     "verdict": "survives",
+     "reason": "The inversion (one guard decision; Electron request+check handlers only narrow; missing handler = deny) is consistent with every live source: keld-guard evaluate() denies any non-AppProcess principal before grant lookup (lib.rs:704-706), empty manifest default-denies web.camera/web.microphone (lib.rs:1896-1936), media.rs routes a minted Principal::Webview into evaluate with the `*` sentinel (media.rs:124-133, 59), arch 03 §4(3) states the GUARD006/GUARD007 rules verbatim, research 186 row 4 records the two independent allow-by-default paths, and neither corpus app registers setPermissionRequestHandler/CheckHandler (grep over drawio electron.js and Zettlr source/ + forge.config.js is empty). Alternatives (a)-(d) are correctly rejected by briefing invariant 2 and the GUARD007 rule. Two secondary claims are wrong and must be corrected before this becomes a ticket.",
+     "evidence": "crates/keld-guard/src/lib.rs:704-706 (`if principal != Principal::AppProcess { return Deny(NotAppProcess) }`); lib.rs:1896-1936 tests; crates/keld-wv/src/media.rs:29-36,59,124-133; docs/architecture/03-security.md:239-263; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md row 4; corpus grep for setPermission*Handler: no matches in either app.",
+     "correction": "(1) blocked_by names 'KEL-102/T4 window-level grants' but KEL-102/T4 explicitly 'Preserve[s] default denial until a separately approved window-grant slice exists' (kel102-host-guard-enforcement.md:698-700) and KEL-102-D9 says the spec 'authorizes no ... manifest-schema change' (line 92). The `windows.<w>.web.*` evaluator has NO owner; the decision must name it as unowned new spec work (permission-model + manifest-schema gate), not as a KEL-102/T4 deliverable. The summary's 'none of which needs a new schema' is therefore overstated: keld-guard today parses and ignores `windows` (lib.rs:563-569) and must grow a `windows` reader. (2) 'Permission-name vocabulary = Electron's documented list 1:1 ... unknown names deny' has no owner either: keld-guard has no capability registry — evaluate() allows any `app.<g>.<a>` string array that matches (lib.rs:707-725), so 'unknown names deny' would be implemented in the facade, making it a second policy owner. Put the closed capability vocabulary in the generated schema/keld-guard, and schema-reject any `web.<name>` that has no host broker (today only camera/microphone)."
+    },
+    {
+     "decision_id": "X04-D2",
+     "verdict": "refuted",
+     "reason": "The classification of `disableBlinkFeatures` as ✘ with construction-time refusal would prevent every draw.io window from being created: all four BrowserWindow sites in draw.io set `disableBlinkFeatures: 'Auxclick'` (electron.js:730, 1092, 1409, 3089). The author's evidence citation stopped at line 729 and missed line 730. Under the briefing destination (#313: draw.io runs with config-only changes) this is a direct contradiction. Separately, the stated unknown about Zettlr's two sandbox:false windows is resolvable from the corpus and resolves the opposite way from the author's inference: all 14 Zettlr windows share ONE preload (forge.config.js:74-83 → source/common/modules/preload/index.ts) whose only imports are `contextBridge, ipcRenderer, webUtils` from 'electron' plus a type import (index.ts:17-18); 13 windows already run that identical preload with sandbox:true. The preload needs no Node, so sandbox:false is inert (▲), not a ✘ requiring a code change. The remaining content (nodeIntegration/contextIsolation/webSecurity ✘, KEL-78 'sandbox is a different column', devTools gating under debug_assertions at media.rs:334-335, process.sandboxed === true) is confirmed.",
+     "evidence": "corpus drawio-desktop/src/main/electron.js:730,1092,1409,3089 `disableBlinkFeatures: 'Auxclick'`; corpus zettlr/forge.config.js:74-83 (single preload for every renderer entrypoint, 14 entries at lines 272-285); zettlr/source/common/modules/preload/index.ts:17-18 imports; docs/specs/kel78-strict-profile-sandbox.md:566-570,580; crates/keld-wv/src/media.rs:334-335; crates/keld-wv/src/webview2/mod.rs:2784 ('off in release until keld-guard owns web.devtools').",
+     "correction": "Split the Blink-flag row: `enableBlinkFeatures`/`experimentalFeatures` remain ✘ (widening; arbitrary engine flags are on the never list, research 13), but `disableBlinkFeatures` is a narrowing request with no Keld equivalent and must be ▲ (ignored with a per-site migrate diagnostic; construction proceeds). Re-run the classification against all four draw.io sites and assert the window count is 4/4 in the conformance fixture. Record Zettlr splash/onboarding as ▲ (sandbox:false inert because the shared preload is sandbox-compatible) and delete the 'needs Node' inference. Also: `KELD-COMPAT-001..009` are owned by crates/keld-compat/src/evidence.rs (evidence-parse errors); new facade construction errors need codes allocated in that same registry, not a parallel TS list."
+    },
+    {
+     "decision_id": "X04-D3",
+     "verdict": "unresolved",
+     "reason": "Ownership (host declares scheme privileges before first navigation; bytes flow only through guard-then-broker; initiatorOrigin from the host registry) matches arch 03 §4(3), arch 05's resource-path destination contract ('guard before bytes', navigation-bound capability) and research 186 row 1, and the Zettlr facts are confirmed (protocol.handle('safe-file') decodes any absolute path and fs.readFile's it, custom-protocols.ts:58-91; no registerSchemesAsPrivileged anywhere). But the decision asserts that Zettlr's workspace-root reads are covered by 'dialog-derived scopes' as if that mechanism existed. KEL-130's approved contract is 'absolute-utf8-literal-only; exact-or-terminal-glob; max-64-per-capability' with the FsBroker 'retain[ing] roots for one snapshot' (kel130-retained-filesystem.md:48 scope/scope_anchor fields, 396, 920); there is no runtime scope insertion, the dev recorder (arch 03 §3) is not live, and `keld build --frozen-permissions` fails on manifest drift (03-security.md:216-217). Zettlr roots are user-chosen at runtime (dialog, argv via roots-add, drag) and persisted across sessions in its config, so a frozen release manifest cannot name them. The same gap is correctly listed as a blocker in D5 but silently assumed available here.",
+     "evidence": "docs/specs/kel130-retained-filesystem.md:48 (scope, scope_anchor), 381, 396, 663, 920; docs/architecture/03-security.md:201-217 (recorder is a destination; frozen-permissions fails on drift); docs/architecture/05-webview-and-native.md:152-158, 246 (dialog row); corpus zettlr/source/app/util/custom-protocols.ts:58-91; zettlr/source/main.ts:139-160 (roots-add from argv); corpus drawio electron.js:994-1008 CSP header (includes `style-src 'self' 'unsafe-inline'`, omitted from the object's quote).",
+     "correction": "Missing evidence: a spec (none in docs/specs; KEL-79 has no file) for user-granted, persisted filesystem roots that survive restart under a frozen manifest — a security-scoped grant store owned by the host, bound to the KEL-130 snapshot model, with revocation. Cheapest experiment: enumerate every Zettlr root-add path (dialog, second-instance argv, open-file, config restore at boot) and every draw.io blessPath/recent-file path, then check each against KEL-130's snapshot-bound 64-literal scope set; any path that cannot be named at build time is a ✘ for the primary_workflow cell until that spec exists. Mark D3's fs-scope sentence as depending on that unowned atom, not on the dialog row. For the CSP prototype (P2) add `style-src 'unsafe-inline'` to the draw.io requirement list alongside 'wasm-unsafe-eval' and `img-src * data:`."
+    },
+    {
+     "decision_id": "X04-D4",
+     "verdict": "refuted",
+     "reason": "The proposed spelling rests on a wrong reading of the live matcher. The author states a bare `\"https:\"` grant 'the authority rule already treats as names no destination and so is currently inert'. In keld-guard, `names_no_destination` is only consulted after `pattern.strip_suffix(\"/**\")` succeeds (lib.rs:1191-1200); a pattern without `/**` takes the exact-match branch `path == pattern`. So `\"https:\"` is inert only because no URL literally equals `https:`; the authority rule never sees it. Promoting that literal to 'any destination of this scheme' is not 'vocabulary, not schema': it is a new wildcard semantics in the ONE shared path/URL matcher, which arch 03 §2 forbids as written: '`**` is the only wildcard a path or URL scope has; a lone `*` matches literally' and 'No glob grants any host for a multi-character scheme — name the origins' (03-security.md:120-123). Because `evaluate` uses the same `path_in_scope` for fs.read, net.connect and shell.open, a scheme-class special case in the matcher would silently also make `net.connect: [\"https:\"]` grant any host — a hidden coupling between atoms. The corpus demand is confirmed (draw.io allowedUrls regex at 4348 and renderer ipc 'openExternal' at 4515-4516; Zettlr will-navigate → openExternal/openPath at attach-app-navigation-handlers.ts:25-43), so the need is real, but the proposed mechanism and its 'currently inert via authority rule' justification are incorrect.",
+     "evidence": "crates/keld-guard/src/lib.rs:1136-1210 (`names_no_destination`, `path_in_scope`: exact-match branch when no `/**`); docs/architecture/03-security.md:104-123 (`**` only wildcard; lone `*` literal; name the origins); docs/architecture/05-webview-and-native.md:250 (shell broker row, not live); corpus drawio electron.js:4348-4360, 4515-4516; zettlr attach-app-navigation-handlers.ts:25-43.",
+     "correction": "Do not touch the shared matcher. Define `shell.open` as a capability whose broker canonicalizes the URL into two resources and evaluates both as exact literals with today's matcher: first the scheme token (`https:`, `mailto:`, `tel:`) against the grant list (exact match already works: `path_in_scope(\"https:\", \"https:\")` is true), then, if a scheme is not class-granted, the origin against `https://host/**` entries. This keeps `**`-only wildcard semantics intact, confines the scheme-class policy to the shell broker, and still requires an arch 03 §2 amendment recording that a bare `scheme:` literal under `app.shell.open` (and only there) means 'any destination of that scheme' — a permission-model review gate plus a `keld doctor` loud-wildcard warning. `openPath`/`showItemInFolder`→fs.read, `trashItem`→fs.write, and the user-gesture rule remain open as stated (no Keld gesture mechanism exists; name it as unowned)."
+    },
+    {
+     "decision_id": "X04-D5",
+     "verdict": "survives",
+     "reason": "Host ownership of the single-instance primitive and argv/cwd handoff matches arch 05's `deeplink` broker row ('protocol registration + single-instance handoff'), research 186 row 2/NEW gap 2, and the strict-role facts: Linux strict preparation refuses `current_dir` with 'strict roles use the fixed /app working directory; remove current_dir' (role.rs:689-693) and the environment is the exact configured list plus KELD_APP_LINK (role.rs:700-708). Corpus facts confirmed: draw.io lock → second-instance → createWindow → `commandLine.pop()` → statSafe → blessPath → send('args-obj') (electron.js:1718-1760); Zettlr `app.exit(0)` on lock failure and `extractFilesFromArgv(argv)` → roots-add (main.ts:35-43, 139-160). The one-shot fs.read scope is correctly disclosed as unspecified and blocked on KEL-130 (scopes are snapshot-bound literals, no runtime insertion). No alternative reintroduces a second authority root.",
+     "evidence": "docs/architecture/05-webview-and-native.md:255 (deeplink row); crates/keld-runtime/src/role.rs:689-708; docs/specs/kel130-retained-filesystem.md:48 (scope_anchor 'one-ambient-open-selects-explicit-root-object'), 920; corpus drawio electron.js:1718-1760; zettlr main.ts:35-43,139-160; research 186 row 2.",
+     "correction": "Two observables to add, not changes of direction: (a) because the host decides single-instance before spawning Bun, `app.requestSingleInstanceLock()` in the facade always returns true in the primary and a second Bun never exists — Zettlr's top-level `app.exit(0)` branch (main.ts:35-43, executed synchronously before ready) is dead under Keld; record `hasSingleInstanceLock`/`releaseSingleInstanceLock` as ▲ and test that the second OS launch exits with no Bun spawn and exactly one `second-instance` in the primary. (b) The one-shot scope and Zettlr's persisted roots-add collide with the same unowned 'persisted user-granted roots' atom named in D3; cross-reference them so one spec owns both instead of two tickets inventing parallel scope-insertion paths."
+    },
+    {
+     "decision_id": "X04-D6",
+     "verdict": "survives",
+     "reason": "Host-only feed trust matches arch 06 §4a exactly: detached ed25519 `.sig` over raw manifest bytes, key 'compiled into the host binary at build time (never fetched from the feed)', `app.id`/`channel`/`target` must match fail-closed after signature verification, deterministic highest-release selection, and the v0 manifest has no `releaseNotes`/`releaseName` field (so the ▲ is right). Fuses-as-no-runtime-equivalent matches research 186 rows 8-9 and the fuse sub-ledger; `runAsNode`/`nodeOptions`/`nodeCliInspect` → exact env (role.rs:700-708) + strict admission is the correct owner mapping; ASAR integrity → signed package + ExpectedAppIdentity (KEL-19/254) is consistent with 06 §4a line 873. Zettlr forge fuses confirmed (forge.config.js:293-301). The author's [unknown] on where draw.io applies fuses is resolvable: `build/fuses.mjs` via electron-builder `afterPack` (electron-builder-linux-mac.json:85).",
+     "evidence": "docs/architecture/06-runtime-and-tooling.md:620-720, 868-875; crates/keld-runtime/src/role.rs:700-708; research 186 rows 8-10 + fuse sub-ledger; corpus drawio build/fuses.mjs:31-46 (RunAsNode=false, EnableCookieEncryption=true, NodeOptions=false, NodeCliInspect=false, OnlyLoadAppFromAsar=true, EmbeddedAsarIntegrityValidation=false, LoadBrowserProcessSpecificV8Snapshot=false); drawio electron-builder-linux-mac.json:85 `\"afterPack\": \"build/fuses.mjs\"`; zettlr forge.config.js:293-301; drawio electron.js:2078-2083.",
+     "correction": "(1) Replace the corpus [unknown]: draw.io flips fuses in build/fuses.mjs (afterPack) with OnlyLoadAppFromAsar=true but EmbeddedAsarIntegrityValidation=false (TODO comment), so draw.io today has ASAR-only lookup without integrity — exactly the two-control split research 186 row 9 warns about; the migrate report should say that Keld's signed package supersedes both. (2) draw.io's `autoUpdater` is `electron-updater` (npm package with its own HTTP client, GitHub-API provider, download and installer spawn), not Electron's `autoUpdater` module; aliasing `electron` → `@keld/electron` does not intercept it, and under a strict role its Node net/child_process calls fail. The decision must state that migrate replaces the `electron-updater` dependency with a Keld-owned facade of electron-updater's observable API (events, `autoDownload`, `downloadUpdate`, `quitAndInstall`), or scores ✘ — a distinct facade target from Electron's autoUpdater, with the same host-only feed rule."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Window-level grants (`windows.<w>.web.*` evaluation in keld-guard) have no owner anywhere in the repo; the object attributes them to KEL-102/T4 in both keld_state and D1 blocked_by. Any ticket waiting on KEL-102/T4 for this will wait forever.",
+     "evidence": "docs/specs/kel102-host-guard-enforcement.md:698-700 ('Preserve default denial until a separately approved window-grant slice exists'), line 92 (KEL-102-D9: 'authorizes no ... manifest-schema change'), line 136-141 (AC5: 'Until window grants ship, a loaded manifest still does not allow webview media through /app grants'); crates/keld-guard/src/lib.rs:563-569 (`windows` parsed-and-ignored)."
+    },
+    {
+     "severity": "high",
+     "finding": "Both corpus apps' primary workflows require filesystem roots chosen by the user at runtime and persisted across restarts (Zettlr roots-add via dialog/argv/open-file stored in config; draw.io blessPath/recent files). No live or specified Keld mechanism can express that under a frozen release manifest: KEL-130 scopes are build-time literals bound to one snapshot (max 64), the dev recorder is a destination, and `keld build --frozen-permissions` fails on drift. This is the real strict-profile blocker for the primary_workflow cell and is not named as a design atom in the unit; D3 assumes it exists, D5 lists it only as a one-shot.",
+     "evidence": "docs/specs/kel130-retained-filesystem.md:48 scope/scope_anchor, 920; docs/architecture/03-security.md:201-217; corpus zettlr/source/main.ts:139-160 (roots-add from argv), zettlr custom-protocols.ts:58-91 (reads any path); drawio electron.js:1744-1752 (blessPath)."
+    },
+    {
+     "severity": "high",
+     "finding": "D2's construction-time refusal for `disableBlinkFeatures` blocks all four draw.io BrowserWindow sites, contradicting the #313 config-only destination. The author's own line-range citation (721-729) ends one line before the flag on every site.",
+     "evidence": "corpus drawio-desktop/src/main/electron.js:730, 1092, 1409, 3089 (`disableBlinkFeatures: 'Auxclick'`)."
+    },
+    {
+     "severity": "medium",
+     "finding": "keld-guard has no closed capability vocabulary: `evaluate` allows any `app.<group>.<action>` string array whose scope matches. If a facade ever calls evaluate with an Electron-derived name (e.g. `web.hid`, `web.usb`), a manifest key with that name would Allow with no broker behind it. 'Unknown names deny' therefore cannot be implemented in the facade without making it a second policy owner; the closed list must live in the generated schema / keld-guard and reject unknown keys at manifest load.",
+     "evidence": "crates/keld-guard/src/lib.rs:707-725 (grant_node lookup by dotted capability, no registry check); docs/architecture/03-security.md:120-123 (channel grants 'not-yet-live vocabulary'); crates/keld-guard/AGENTS.md:7 ('unknown cap/channel/scope → Deny' is the intent, not the current evaluator behaviour for unknown-but-granted names)."
+    },
+    {
+     "severity": "medium",
+     "finding": "Zettlr's two `sandbox:false` windows are a documented-▲, not a ✘ needing a preload audit: every Zettlr window shares one preload whose only Electron imports are `contextBridge, ipcRenderer, webUtils` (all in Electron's sandboxed-preload module map per the object's own sandbox.md receipt), and 13 windows already run it sandboxed. The object's inference 'appear to need Node' is wrong; the source comment is stale.",
+     "evidence": "corpus zettlr/forge.config.js:74-83 (single preload for all entrypoints), 272-285 (14 entrypoints incl. splash_screen and onboarding); zettlr/source/common/modules/preload/index.ts:17-18; splash-screen.ts:61-67; onboarding-window.ts:68-74."
+    },
+    {
+     "severity": "medium",
+     "finding": "draw.io's updater is `electron-updater` (npm), not Electron's `autoUpdater`; aliasing `electron` does not intercept it, and under a strict role its own HTTP/GitHub-API/installer-spawn paths fail. The unit's D6 treats it as a setFeedURL translation; it is a separate third-party facade target or a ✘ for the install/activation cell.",
+     "evidence": "corpus drawio electron.js:2078-2083 (`autoUpdater.setFeedURL({provider:'github', ...})` is electron-updater's provider API); briefing line 86 lists `electron-updater (autoUpdater)` as a dependency."
+    },
+    {
+     "severity": "medium",
+     "finding": "D4's scheme-class spelling would be implemented in the single shared path/URL matcher used by fs.read, net.connect and shell.open; a special case there silently widens `net.connect: [\"https:\"]` to any host. The matcher's `names_no_destination` is only consulted for `/**` patterns, so the author's 'already inert via the authority rule' justification is factually wrong (inert via exact-match instead).",
+     "evidence": "crates/keld-guard/src/lib.rs:1191-1210 (`path_in_scope`: `strip_suffix(\"/**\")` else exact match), 1176-1189 (`names_no_destination`); docs/architecture/03-security.md:120-123."
+    },
+    {
+     "severity": "low",
+     "finding": "Production wry media builders still construct `PermissionsManifest::default()`, so on macOS/Linux media is evaluated against an EMPTY manifest regardless of the app's file; the object's 'live today: /app grants for AppProcess only' understates this (even an `app.web.camera` grant is not consulted on those backends). KEL-102/T4 owns removing the three default constructions. A debug-only `profile-test-hooks` seed-allow path (env `KELD_PROFILE_TEST_MEDIA_SEED_PROMPT`) exists but is cfg-gated to debug_assertions+feature+macOS — not a release risk, worth listing in the unit's state.",
+     "evidence": "crates/keld-wv/src/media.rs:327-343 (`PermissionsManifest::default()` in guarded_default_media_builder), 376-396 (cfg-gated seed allow); docs/specs/kel102-host-guard-enforcement.md:425-427 ('T4 must remove all three production backend constructions of PermissionsManifest::default()')."
+    },
+    {
+     "severity": "low",
+     "finding": "draw.io's header CSP includes `style-src 'self' 'unsafe-inline'` (and Google Fonts hosts when enabled); the object's quote elides it. The `web.csp: default` admissibility question must include inline styles, not only 'wasm-unsafe-eval' and `img-src * data:`.",
+     "evidence": "corpus drawio electron.js:1002-1004."
+    },
+    {
+     "severity": "low",
+     "finding": "`KELD-COMPAT-001..009` are already allocated to keld-compat's evidence parser (Rust). Facade-side `KELD-COMPAT-*` codes proposed in D2/D3 need allocation in that same registry (one owner for the code namespace), else TS and Rust diverge.",
+     "evidence": "crates/keld-compat/src/evidence.rs:70-82; crates/keld-runtime/tests/child_process_differential.rs:884-889 (KELD-COMPAT-005 already used cross-crate)."
+    },
+    {
+     "severity": "low",
+     "finding": "Electron-side receipts (v44.4.5 docs) and Linear live state were not re-verified by this refuter (headless session; no network fetch attempted). Keld-side claims were all checked against the working tree at origin/main d150a14; corpus claims against the scratchpad clones. Treat Electron doc quotes as the author's claims until an oracle run pins them."
+    }
+   ]
+  },
+  {
+   "lens": "Electron v44.4.5 semantics accuracy and corpus demand (draw.io Desktop, Zettlr, electron-quick-start) for X04 security-mapping; sequencing/sizing checked against live Keld owners",
+   "verdicts": [
+    {
+     "decision_id": "X04-D1",
+     "verdict": "survives",
+     "reason": "The inversion (missing handler => guard deny, handler may only narrow) and its evidence hold: security.md v44.4.5 line 283 reads verbatim 'By default, Electron will automatically approve all permission requests unless the developer has manually configured a custom handler'; session.md 1094-1097 (check handler returns boolean, 'Most web APIs do a permission check and then make a permission request if the check is denied') confirms two paths; keld-guard lib.rs:705 returns NotAppProcess (GUARD006) before any grant lookup, tests at lib.rs:1897-1936 default-deny web.camera/web.microphone on {} and deny https://evil.example under a `*` grant; media.rs:29-36,57-59 keeps the `*` sentinel; neither clone registers setPermissionRequestHandler/CheckHandler (grep over drawio-desktop/src and zettlr/source empty). KEL-102/T4 'webview media injection' is a real named task (kel102 spec D6 freezes T2->T3->T4->T5), so the blocker is genuine and the slice (fan one Electron permission onto the existing guard call) is a finishable tracer bullet.",
+     "evidence": "edocs: tutorial_security.md:283; api_session.md:958-1016,1031-1097; structures/media-access-permission-request.md ('mediaTypes string[] ... video or audio'). Keld: crates/keld-guard/src/lib.rs:699-711,1897-1936; crates/keld-wv/src/media.rs:25-60,647; docs/specs/kel102-host-guard-enforcement.md:89,136-137. Corpus: grep for *PermissionHandler in both clones = 0 hits.",
+     "correction": "The sentence 'Permission-name vocabulary = Electron's documented list mapped 1:1 onto web.<name> literals' is false for the only permission Keld has: Electron's name is `media` (session.md 958ff), with `details.mediaTypes` ['video','audio'] on request and `details.mediaType` on check; there is no `camera`/`microphone` permission name. The facade must fan `media` out to `web.camera` and/or `web.microphone` per mediaTypes and allow only if every requested type is granted; the check handler receives one mediaType at a time. Second, corpus demand is not handler-free: Zettlr's renderer calls navigator.clipboard.read() (copy-paste-cut.ts:34, paste-image path), readText() (snippets.ts:382) and writeText() (9 sites), which Electron routes through `clipboard-read` / `clipboard-sanitized-write` and auto-approves; under 'unknown names deny' Zettlr's paste workflow breaks, so those two names need a stated disposition (engine-gated ▲ or web.clipboard-* grant). draw.io's renderer source is absent from the clone (drawio/ submodule empty), so its renderer permission demand is [unknown], not 'none'."
+    },
+    {
+     "decision_id": "X04-D2",
+     "verdict": "refuted",
+     "reason": "D2 classifies `disableBlinkFeatures` with `enableBlinkFeatures` as migrate ✘ plus a typed throw at BrowserWindow construction (window not created) unless a dev-only quirks flag. draw.io sets `disableBlinkFeatures: 'Auxclick'` at every one of its four BrowserWindow sites (electron.js:730, 1092, 1409, 3089), so under D2 the first corpus app creates zero windows in release. Semantically the classification is wrong: security.md's recommendation #10 (line 484) targets only enableBlinkFeatures; web-preferences.md lists disableBlinkFeatures as a feature-removal list, i.e. narrowing, and Keld's system webviews expose no Blink feature switches at all, so the honest score is ▲ no-op, not refusal. The rest of D2's defaults are confirmed (nodeIntegration false l.4-5; contextIsolation true l.104-106; sandbox 'Default is true since Electron 20' l.26 with 'automatically be disabled when nodeIntegration is set to true' l.27; webSecurity true l.46-49; allowRunningInsecureContent false l.50-51; devTools true l.3; webviewTag false l.117-118; enableRemoteModule 0 hits; process.sandboxed/contextIsolated in process.md:31-32,82-87; KEL-78 'MUST NOT be read as legacy or strict' and 'Renderer sandbox is a different column' at kel78 spec 566-583).",
+     "evidence": "Corpus: drawio-desktop/src/main/electron.js:730,1092,1409,3089 (`disableBlinkFeatures: 'Auxclick'`); electron-preload.js:14-15 reads `process.argv.find(a => a.startsWith('--initial-adaptive-colors='))` seeded from webPreferences.additionalArguments (electron.js:706-710). Zettlr: forge.config.js:74-83 `generateRendererEntrypoint` gives all 14 windows the same preload `./source/common/modules/preload/index.ts`, whose only runtime import is `{ contextBridge, ipcRenderer, webUtils } from 'electron'` (line 17). edocs: tutorial_security.md:484 (#10 enableBlinkFeatures only); api_structures_web-preferences.md:62-66,22-27; tutorial_sandbox.md:17-20,51-58.",
+     "correction": "(1) Split the class: enableBlinkFeatures / experimentalFeatures / nodeIntegration / contextIsolation:false / webSecurity:false / allowRunningInsecureContent / enableRemoteModule stay ✘-refuse; `disableBlinkFeatures` becomes ▲ (accepted, ignored, logged once) because it only removes capability. (2) The Zettlr [inference] is now settled: both sandbox:false windows (splash-screen.ts:65, onboarding-window.ts:72) load the shared preload that requires only `electron` modules inside Electron's sandboxed-preload module map, so the comment 'Preload scripts have access to Node modules' is stale and the cell is ▲, not ✘; no preload audit ticket is needed. (3) Add a missing semantic trap: `webPreferences.additionalArguments` → preload `process.argv` (draw.io's adaptive-colors seed). A host-injected isolated-world user script has no process.argv; the preload shim must synthesize `process.argv` from additionalArguments or draw.io's first paint uses the wrong theme. (4) Receipt nit: the quote 'Default is true since Electron 20' lives in structures/web-preferences.md:26, not sandbox.md; sandbox.md's wording is '_disables the sandbox_' (l.19), so the receipt text labelled verbatim is a paraphrase."
+    },
+    {
+     "decision_id": "X04-D3",
+     "verdict": "survives",
+     "reason": "Every Electron claim checks out verbatim: protocol.md 77-78 ('can only be used before the `ready` event ... and can be called only once'), 135-139 (`request.initiatorOrigin` ... 'it is not controlled by the requesting page'), register*/intercept*Protocol all tagged _Deprecated_ (209-539). Corpus facts are exact: Zettlr custom-protocols.ts:58-100 decodes pathname, strips the Windows drive slash, maps `//share` to /Volumes on macOS, then fs.access + fs.readFile on any absolute path; grep for registerSchemesAsPrivileged over zettlr/source is empty; draw.io electron.js:994-1008 header CSP and 1010-1022 file:// onBeforeRequest filter match the quoted text. Keld side: arch 03:200-201 CSP default/static-only/'Opt-out is a named, linted grant'; arch 05:155-158 'A Service Worker is optional machinery, not the authorization boundary' + navigation-bound capability; docs/specs has no KEL-79 file. Ownership (host declares schemes, broker loads bytes, Bun handler never gets fs authority) is consistent with the strict-role facts and is the right prototype shape.",
+     "evidence": "edocs: api_protocol.md:77-78,91,135-139,209-539. Corpus: zettlr/source/app/util/custom-protocols.ts:55-100; zettlr.usage.json signals 'custom scheme app://':23, 'file://':48; drawio electron.js:994-1022. Keld: docs/architecture/03-security.md:200-201; docs/architecture/05-webview-and-native.md:152-158; `ls docs/specs | grep 79` empty.",
+     "correction": "Two scope additions for prototype P2, not a redesign. (a) draw.io's CSP needs more than `'wasm-unsafe-eval'` and `img-src * data:`: it also carries `style-src 'self' 'unsafe-inline'`, `media-src *`, `font-src * data:`, optional `connect-src https://fonts.googleapis.com https://fonts.gstatic.com`, and `child-src 'self'`; the open question is whether `default` admits inline styles and wildcard media/font sources, and P2 cannot run until the drawio renderer submodule is checked out (empty in the clone). (b) State the Zettlr divergence explicitly: `safe-file://` today renders images at any absolute path a markdown file names (e.g. ~/Pictures); under dialog-derived root scopes those loads fail, so the Zettlr primary-workflow cell is ▲ with visible breakage outside workspace roots, and dialog-derived scope durability (roots persist across sessions via config.addPath, root-open.ts:140) is unspecified in arch 03/05 — see D5."
+    },
+    {
+     "decision_id": "X04-D4",
+     "verdict": "unresolved",
+     "reason": "The Electron facts survive: shell.md:18 ('will not function in a sandboxed renderer'), :60 ('Max 2081 characters on Windows'), :62-67 (activate/workingDirectory/logUsage, Promise<void>); security.md:696-697 ('When openExternal is used with untrusted content, it can be leveraged to execute arbitrary commands'); session.md lists `openExternal` as a permission name. Corpus is exact: draw.io electron.js:4348-4360 `/^(?:https?|mailto|tel|callto):/i` then shell.openExternal, reached from setWindowOpenHandler (2216) and ipc case 'openExternal' (4515-4516); Zettlr attach-app-navigation-handlers.ts:25-44 routes any non-safe-file URL to openExternal and decoded safe-file paths to openPath. But the decision's core — promoting a bare `\"https:\"` literal to 'any destination of this scheme' — contradicts the published rule in arch 03:120-121: 'No glob grants \"any host\" for a multi-character scheme — name the origins', and the guard matcher's doc (lib.rs:684-694,1136-1168) enumerates exactly which spellings are refused. The author correctly labels this a user-owned permission-model gate; no evidence in the repo settles it, so it cannot 'survive' and cannot be refuted on semantics.",
+     "evidence": "edocs: api_shell.md:18,60-67; tutorial_security.md:686-697; api_session.md:999 (`openExternal`); structures/open-external-permission-request.md (`externalURL`). Keld: docs/architecture/03-security.md:103-125; crates/keld-guard/src/lib.rs:684-694,1136-1168,1511-1631 (`url_scope_glob_must_not_delegate_the_authority`). Corpus: drawio electron.js:4348-4360,2216,4515-4516; zettlr attach-app-navigation-handlers.ts:25-44; zettlr.usage.json members: shell.openPath count 16 (9 files) vs openExternal 7 (3 files).",
+     "correction": "Missing evidence: (1) a KEL-208 owner ruling on whether a bare-scheme literal may mean scheme-class allow, or an alternative spelling (e.g. a distinct `scheme:` key under app.shell) that keeps URL scopes origin-only; (2) how user activation is attributed across the kipc hop (WKWebView/WebView2 navigator.userActivation vs host-side gesture timing). Cheapest experiment: add a keld-guard negative-control test asserting `{\"app\":{\"shell\":{\"open\":[\"https:\"]}}}` matches no https URL today (pins the current inertness the proposal relies on), then put the spelling choice to the owner with the draw.io regex as the demand receipt. Also correct one over-read: Electron's `openExternal` permission (OpenExternalPermissionRequest.externalURL) gates the page's own navigation to an external protocol, not `shell.openExternal` calls from main; it supports the webview-origin rule but Electron does not 'already model' main-process openExternal as a permission. Demand note: Zettlr's dominant shell member is openPath (16 sites), so the `app.fs.read`-covers-path rule for openPath/showItemInFolder carries more corpus weight than the scheme-class question."
+    },
+    {
+     "decision_id": "X04-D5",
+     "verdict": "refuted",
+     "reason": "Host ownership of the single-instance primitive and the Electron facts survive (app.md:494-506 argv reordering/augmentation and different-user omission verbatim; :1096-1099 'On macOS and Linux ... limited to 32 MB. Larger messages are dropped'; open-file/open-url are _macOS_-tagged at :110,:129; role.rs:689-693 refuses current_dir for strict roles). The specific mechanism — 'the host mints a one-shot `fs.read` scope for the exact file the OS named' — is contradicted by the second corpus app: Zettlr's second-instance handler (main.ts:139-160) runs `roots-add` → root-open.ts handleAddRoots → `this._app.config.addPath(absPath)` (line 140) for files AND directories (`openWorkspaces`, line 135), persisting them so the next launch reopens those roots with no OS event and no dialog. A one-shot exact-file grant cannot carry a directory root nor survive to the next session, and dialog-derived scopes (arch 05:246) have no stated durability either (grep persist/durable/one-shot over arch 03/05 finds only webview-profile persistence). KEL-130's FsBroker is manifest-snapshot-bound (fs.rs:452 verify_snapshot, :695 path_scopes(verified.manifest())) with 'scope: absolute-utf8-literal-only ... max-64-per-capability', so dynamic scope insertion is a real blocker, as the author says.",
+     "evidence": "edocs: api_app.md:476-506,1073-1099,110,129. Keld: crates/keld-runtime/src/role.rs:689-693; crates/keld-native/src/fs.rs:452,695; docs/architecture/05-webview-and-native.md:246,257; docs/specs/kel130-retained-filesystem.md:48 (scope rule). Corpus: zettlr/source/main.ts:35-45,139-160; zettlr/source/app/service-providers/commands/root-open.ts:40-49,135-167; drawio electron.js:1718-1760 (`commandLine.pop()` → statSafe → blessPath), 2144 (open-file).",
+     "correction": "Keep the host-owned `deeplink` admission point and opaque argv/cwd/additionalData. Replace 'one-shot `fs.read` for the exact file' with: OS-delivered intent (second-instance path token, open-file, open-url) mints a *path scope* (regular file or directory) in the same grant class as dialog-derived scopes, and that class needs its own contract — durability (session-only vs host-owned persisted grant store), revocation, and audit — specified as a KEL-130 extension before either corpus app's file-association flow can be scored above ▲. draw.io's single-file open fits a session-scoped grant; Zettlr's persisted roots do not. Also note draw.io pops the LAST argv token, which app.md says Chromium may append to; the facade must deliver argv in the shape Electron does (file tokens last, Chromium switches filtered) or draw.io reads the wrong token."
+    },
+    {
+     "decision_id": "X04-D6",
+     "verdict": "survives",
+     "reason": "Trust-chain mapping and all Electron facts verify: auto-updater.md:13-14 ('only macOS and Windows are supported. There is no built-in support for auto-updater on Linux'), :30 ('Your application must be signed'), :150-153 (headers/serverType macOS, allowAnyVersion Windows MSIX), events :80-119 incl. update-downloaded(releaseNotes, releaseName, releaseDate, updateURL); fuses.md defaults exactly as listed (runAsNode/nodeOptions/nodeCliInspect/grantFileProtocolExtraPrivileges/wasmTrapHandlers Enabled; cookieEncryption/embeddedAsarIntegrityValidation/onlyLoadAppFromAsar/loadBrowserProcessSpecificV8Snapshot Disabled); asar-integrity.md:15-16 (macOS >=16, Windows >=30), :50 ('forcefully terminate'), :55-58,69-70 (both fuses). arch 06:870-873 'ed25519 public key compiled into the host binary at build time (never fetched ...)', :698-699 app.id/channel/target MUST match; KEL-53 spec :544 'Command line, environment, cwd, caller paths and feed bytes convey no authority.' Zettlr forge.config.js:295-301 fuse flips confirmed (production only).",
+     "evidence": "edocs: api_auto-updater.md:13-14,30,80-119,150-153; tutorial_fuses.md:26-153; tutorial_asar-integrity.md:15-16,50-70. Keld: docs/architecture/06-runtime-and-tooling.md:698-699,870-873; docs/specs/kel53-full-package-activation.md:544; docs/architecture/04-electron-compat.md:197-200 (bridge release recipe is prose, not implemented). Corpus: drawio-desktop/build/fuses.mjs:31-42; drawio electron.js:17-18 (`import elecUpPkg from 'electron-updater'; const {autoUpdater} = elecUpPkg`), :84-86,2078-2083,2279,2329-2360,2389; zettlr/source/app/service-providers/updates/index.ts:26,297,551,644-649; zettlr forge.config.js:293-301.",
+     "correction": "(1) The draw.io fuse [unknown] is resolved: build/fuses.mjs:31-42 flips RunAsNode=false, EnableCookieEncryption=true, EnableNodeOptionsEnvironmentVariable=false, EnableNodeCliInspectArguments=false, OnlyLoadAppFromAsar=true, EnableEmbeddedAsarIntegrityValidation=false (TODO), LoadBrowserProcessSpecificV8Snapshot=false. (2) Demand/surface correction: draw.io never touches Electron's `autoUpdater`; it imports `electron-updater` (AppUpdater) and uses autoDownload, autoInstallOnAppQuit, downloadUpdate(), download-progress, update-downloaded(info), checkForUpdates, quitAndInstall, setFeedURL({provider,owner,repo,channel}) — a different API shape with 20 signal hits. Zettlr uses no updater module at all: net.request → createWriteStream → shell.openPath(installer) → app.quit. Corpus demand for `electron.autoUpdater` is therefore zero; the facade slice should be an electron-updater-shaped adapter (module alias, electron-updater event/info shapes) over keld-update plus an explicit ✘/▲ for Zettlr's net+fs-write+openPath updater under the strict role, and the §4a bridge should translate electron-updater's GitHub provider, which the object already names. The `autoUpdater.setFeedURL` check-only rule stays correct for both API shapes."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Electron permission name for camera/microphone is `media`, not `camera`/`microphone`; D1's 1:1 `web.<name>` mapping breaks on Keld's only live permission. Request carries details.mediaTypes (array), check carries details.mediaType (scalar), so request-side allow must require every requested type to be granted while check is evaluated per type.",
+     "evidence": "api_session.md:958ff (`media` - Request access to media devices such as camera, microphone and speakers); structures/media-access-permission-request.md (`mediaTypes string[] ... video or audio`); api_session.md check details `mediaType string (optional) - video, audio or unknown`; keld-wv media.rs:52-55 WEB_CAMERA/WEB_MICROPHONE."
+    },
+    {
+     "severity": "high",
+     "finding": "Renderer-side permission demand exists in the corpus and is unaddressed: Zettlr's editor paste path calls navigator.clipboard.read() and readText(), and nine sites call writeText(); Electron maps these to `clipboard-read` / `clipboard-sanitized-write` and auto-approves with no handler. Under D1's 'unknown names deny' the paste-image workflow is dead unless the vocabulary names these two permissions (engine-gated ▲ or a web.clipboard-* grant tied to app.system clipboard.*).",
+     "evidence": "zettlr/source/common/modules/markdown-editor/util/copy-paste-cut.ts:34; snippets.ts:382; win-main/*.vue and file-manager util: 9 writeText sites; api_session.md permission list entries clipboard-read, clipboard-sanitized-write; arch 03:88 app.system [\"clipboard.read\",\"clipboard.write\"] is an AppProcess grant, not a webview one."
+    },
+    {
+     "severity": "medium",
+     "finding": "Missing semantic trap: webPreferences.additionalArguments → preload process.argv. draw.io seeds `--initial-adaptive-colors=` through additionalArguments and reads it with process.argv.find in the preload. A host-injected isolated-world user script (KEL-142) has no `process`, so the preload shim must synthesize process.argv from additionalArguments or draw.io's theme bootstrap fails on first paint.",
+     "evidence": "drawio electron.js:706-710 (additionalArguments push), electron-preload.js:8-15 (`process.argv.find(a => a.startsWith(flagPrefix))`); kel142 spec §5.1 two worlds, page-world facade is only window.keld.invoke."
+    },
+    {
+     "severity": "medium",
+     "finding": "Dialog-derived and OS-delivered fs scopes have no durability/revocation contract anywhere in arch 03/05 or KEL-130, yet Zettlr persists both kinds (config.addPath) and reopens them on the next launch without any user event. This gap sits under D3 (safe-file reads), D5 (second-instance roots) and the dialog broker row; it needs one owner (KEL-130 extension) before any Zettlr fs cell can be scored above ▲.",
+     "evidence": "zettlr root-open.ts:135-167 (config.addPath/removePath, openWorkspaces); arch 05:246 'scoped-path grants flow into fs scopes' with no persistence text; grep persist|durable|one-shot over arch 03/05 hits only webview profile storage; kel130 spec scope rule 'absolute-utf8-literal-only;...;no-cwd-or-unexpanded-vars' and fs.rs:452 verify_snapshot."
+    },
+    {
+     "severity": "medium",
+     "finding": "Zettlr's updater is a hand-rolled downloader (electron `net` request → fs createWriteStream → shell.openPath(installer) → app.quit), not autoUpdater/electron-updater. Under a strict role it needs net.connect to GitHub, an fs.write scope for the download target, and shell.openPath on an executable — the last of which D4's rule would deny. It must get its own scoreboard cell (likely ✘ documented, with the §4a bridge as the migration path) rather than being folded into D6.",
+     "evidence": "zettlr/source/app/service-providers/updates/index.ts:26 (import { net }), :297 (net.online), :551 (createWriteStream), :644-649 (shell.openPath on the downloaded file, then app.quit)."
+    },
+    {
+     "severity": "medium",
+     "finding": "Zettlr's `safe-file://` handler serves any absolute path the markdown names (images in ~/Pictures, network shares via /Volumes), i.e. renderer-named locators become reads today. D3's root-scoped broker is correct but will visibly break image rendering outside workspace roots; this must be recorded as a ▲ divergence in the Zettlr primary-workflow cell, and the traversal/encoding matrix (research 186 gap 1) must include the Windows drive-slash strip and the `//share` → /Volumes rewrite as test vectors.",
+     "evidence": "zettlr custom-protocols.ts:58-78 (decodeURIComponent, /^\\/[A-Z]:/ strip, `//` → `/Volumes/...`), :82-86 (fs.access + fs.readFile)."
+    },
+    {
+     "severity": "medium",
+     "finding": "D4 over-reads Electron's `openExternal` session permission: per OpenExternalPermissionRequest it gates the page navigating to an external protocol URL (externalURL), not shell.openExternal() calls from main. Zettlr's will-navigate → shell.openExternal path is exactly a main-process relay that bypasses that permission in Electron; the Keld gesture rule is therefore a new control, not parity, and should be scored ▲ with an oracle that records Electron opening without any permission prompt.",
+     "evidence": "api_session.md:1003 (`openExternal` - Request to open links in external applications); structures/open-external-permission-request.md (`externalURL string (optional) - The url of the openExternal request`); api_shell.md has no permission/gesture text; zettlr attach-app-navigation-handlers.ts:25-44."
+    },
+    {
+     "severity": "low",
+     "finding": "draw.io's renderer source is not in the corpus clone (drawio/ submodule directory is empty), so renderer-side claims for draw.io (CSP violations, permission demand, navigation listeners beyond the preload) are unverifiable from the scratchpad. Prototype P2 (CSP profile) and the D1 test oracle for draw.io both require `git submodule update --init drawio` or a pinned drawio release tarball before a fresh agent can finish them.",
+     "evidence": "`ls drawio-desktop/drawio` prints nothing; drawio-desktop.usage.json files_scanned covers src/main only; electron-preload.js:41-48 is the only renderer-side code present."
+    },
+    {
+     "severity": "low",
+     "finding": "Receipt attribution nits: 'Default is true since Electron 20' and 'The sandbox will automatically be disabled when nodeIntegration is set to true' are in docs/api/structures/web-preferences.md (lines 26-27), not docs/tutorial/sandbox.md, whose wording is 'Enabling Node.js integration ... _disables the sandbox_' (line 19). The semantic_traps receipt quotes them as sandbox.md verbatim. Harmless to the decision, but the object's receipts are meant to be citable.",
+     "evidence": "edocs/api_structures_web-preferences.md:22-27; edocs/tutorial_sandbox.md:15-20."
+    },
+    {
+     "severity": "low",
+     "finding": "D2's quirks flag `ignoreWeakWebPreferences` as proposed would also be the only way draw.io runs if disableBlinkFeatures stays in the ✘ class, which would make the first corpus app depend on a dev-only, release-refused flag — contradicting the briefing's 'config-only changes' destination. Fixing the classification (D2 correction) removes the dependency; no quirks flag is then needed for either corpus app's webPreferences.",
+     "evidence": "drawio electron.js:721-731,1086-1093,1403-1410,3082-3090 (all four windows: contextIsolation true, nodeIntegration false, webviewTag false, webSecurity true, disableBlinkFeatures 'Auxclick'); briefing.md:8-9 (config-only changes)."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "F06-D4",
+   "decision": "May shell.openExternal open a destination the manifest did not name after a host-rendered user confirmation, or is it limited to exact literal origins with every other link denied as a declared divergence?",
+   "classification": "needs-human",
+   "milestone": "parked",
+   "facts": [
+    "FACT (Linear, fetched live 2026-10-06, read-only): KEL-208 Done (completed 2026-09-09). It was a matcher bug fix and there is no pending 'owner ruling' to request. KEL-212 In Progress (Amisha Ramani) owns inert-grant deny text and doctor. KEL-16 Done. KEL-102 In Progress, unassigned. KEL-127 Todo; its direction item 4 says compatibility 'does not justify ... silently replacing observable behavior'.",
+    "FACT (prototypes/f06-guard-probe executed 2026-10-06 on the live matcher): with shell.open ['https://docs.myapp.com/**','confirm:https','https://**'], (shell.open, https://evil.test/x) is DENY, so the scheme glob is inert; (shell.open, 'confirm:https') is ALLOW, so the proposed token is an exact-match resource in the same namespace as URLs, a grammar collision; (shell.open, 'HTTPS://docs.myapp.com/guide') is DENY, so the broker must canonicalise before matching.",
+    "FACT (docs/architecture/03-security.md:104-123, 144-146): a grant must name a destination; no glob grants any host; inert grants load silently today (KEL-212). arch 03 contains no prompt or consent concept.",
+    "FACT (corpus drawio electron.js:4348-4355, 2024, 2028, 4515, re-read): allowedUrls = /^(?:https?|mailto|tel|callto):/i, then shell.openExternal(url) for any host; two literal hosts in the Help menu. The published scheme list omits callto.",
+    "FACT (docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md:59): Electron's binding 'has no application allowlist or origin/prompt check'. A Keld confirmation is behaviour Electron never exhibits and cannot be scored as a match.",
+    "FACT (cached pinned doc docs/api/shell.md v44.4.5, lines 46-60): openExternal(url[, options]); 'Max 2081 characters on Windows'.",
+    "FACT: the first-proof workflow (open, edit, save, close prompt; panel synthesis line 64) contains no link-opening step."
+   ],
+   "inferences": [
+    "INFERENCE: runtime user consent is a new authority-mint mechanism, not a grant spelling; it needs an approved spec (who renders, what is shown, replay and rate limits, no persistence) with permission-model and public-API gates.",
+    "INFERENCE: if consent is admitted, the zero-new-grammar spelling is a separate capability node (operation shell.confirm, resource = canonical scheme literal) evaluated by the existing matcher, with the host asking the guard twice (literal first, then confirm class).",
+    "INFERENCE: a 'legacy only' option does not exist as a clean path: brokers stay guarded under legacy, and having the facade spawn the OS opener from Bun would be a second policy path."
+   ],
+   "unknowns": [
+    "UNKNOWN: how often draw.io/Zettlr users click arbitrary links (prompt frequency).",
+    "UNKNOWN: how the host attributes a user gesture when the call arrives from the Bun main role.",
+    "UNKNOWN: activate:false / workingDirectory mapping per OS.",
+    "UNKNOWN: whether any committed denominator cell will require opening a non-enumerable URL (no Zettlr or draw.io link cell is committed)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Exact literal origins only; every other URL is a KELD-GUARD002 rejection reported as a declared divergence.",
+     "cost": "Zero new mechanism. draw.io Help-menu links work once listed; in-diagram links and Zettlr navigation targets are denied.",
+     "new_invariant": "None (existing 'name the origins' rule).",
+     "invariant_at_risk": "None; compatibility score carries a permanent divergence for arbitrary links."
+    },
+    {
+     "option": "B. Consent class as its own capability node (app.shell.confirm: ['https','mailto','tel','callto']): host-rendered confirmation showing the full canonical URL mints one-shot authority; scored as divergence, never match.",
+     "cost": "Approved spec for user consent as an authority mint; host prompt UI on three OSes; gesture provenance; two guard evaluations per call.",
+     "new_invariant": "A user decision at call time can authorize a destination the reviewed manifest did not name.",
+     "invariant_at_risk": "Manifest-as-lockfile reviewability; prompt fatigue as a security control; arch 03 has no consent owner today."
+    },
+    {
+     "option": "C. 'confirm:https' tokens inside the shell.open scope array (the published proposal).",
+     "cost": "Second grammar in one field; needs a new evaluate arm.",
+     "new_invariant": "Scope arrays carry non-destination control tokens.",
+     "invariant_at_risk": "KEL-102-D5 literal semantics for permission-explain; the probe shows the token is itself an allowed resource string."
+    },
+    {
+     "option": "D. Allow scheme-wide globs.",
+     "cost": "Reverses the KEL-208 fix.",
+     "new_invariant": "A grant may delegate the authority to the caller.",
+     "invariant_at_risk": "'A grant must name a destination' (arch 03); phishing and local-handler abuse."
+    }
+   ],
+   "recommendation": "Park. Adopt A as the standing behaviour now (it is the existing rule, needs nothing new, and is reversible), and reject C and D outright on the probe and KEL-208 evidence. B is the only way to serve arbitrary links, but it creates a new invariant and is owner-owned. Remove 'KEL-208 owner ruling' and 'KEL-16' as blockers (both closed); the live owners are KEL-102 (permission model) and KEL-212 (deny text). The one remaining owner question: is a host-rendered, per-call user confirmation an admissible authority mint in Keld's permission model? Yes means spec B under KEL-102 when a scored cell needs it; no means A is permanent and arbitrary link opening is a declared divergence for every migrated app. Decide jointly with X04-D4 (#416).",
+   "falsifier": "A committed denominator cell for the first proof or the Zettlr proof requires opening a non-enumerable URL (A then fails a scored cell and B must be specified); for B, evidence that apps treat the rejection on 'Don't open' as a fatal error, or that gesture provenance cannot be established host-side.",
+   "reversible": "Yes for A (adding B later is additive). B is hard to withdraw once apps rely on it.",
+   "missing_evidence": "The owner's answer on consent-as-mint; a committed denominator showing whether any link-opening cell is scored; a per-OS receipt for gesture attribution if B is chosen.",
+   "next_action": "Orchestrator rewrites F06-D4 (#405) as the A/B packet with the single question above, removes the closed blockers and adds callto. First completion check: #405 names KEL-102 and KEL-212 as live owners and contains no 'confirm:https' spelling.",
+   "owner": "keld-guard permission model under KEL-102 (Linear, fetched 2026-10-06: In Progress, unassigned); KEL-212 (In Progress, Amisha Ramani) for inert-grant deny text. KEL-208 (Done) and KEL-16 (Done) are closed and are not owners.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "X04-D3",
+   "decision": "Which host mechanism loads draw.io's multi-file renderer on WKWebView with a content security policy at least as strict as draw.io's own and with reads confined to the app code directory; and, separately, how custom-scheme privileges and user-granted persisted filesystem roots are owned.",
+   "classification": "needs-experiment",
+   "milestone": "first-proof",
+   "facts": [
+    "Linear was live and readable for this run (see X03-A5 packet for the call list); KEL-79 is Backlog, unassigned, with no spec file in docs/specs; KEL-130 is Done; KEL-142 is Done; KEL-102 is In Progress (Linear, fetched 2026-10-06).",
+    "No content-security-policy code exists in any Keld crate or package on main b4b907c3 (grep finds only third-party type files). Architecture 03 section 2 states CSP injection by default with `default` = self + keld:// + declared net hosts and `static-only`, and says opt-out is a named, linted grant; it gives no directive-level definition of `default`.",
+    "The live host hands the engine either an HTML string or a URL; the no-flag boot spec has the host load renderer bytes for the initial navigation (KEL-96 spec; keld-core app session). There is no file-URL read root and no host resource scheme in keld-wv or keld-host (grep on main).",
+    "draw.io loads its renderer by file URL from a code directory inside its drawio submodule and opens further file-URL pages (importer, export) from the same directory (drawio-desktop@2edf9fb main source, read 2026-10-06).",
+    "draw.io sets one header policy on every response: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' (plus Google Fonts hosts when enabled); img-src * data:; media-src *; font-src * data:; frame-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; child-src 'self'; object-src 'none'. Its source comment says the renderer also carries a more permissive meta policy and that the WASM directive is required for the inlined edge router (same source, read 2026-10-06).",
+    "draw.io cancels any file-URL request that does not start with its code directory URL (same source). draw.io calls no protocol.handle or registerSchemesAsPrivileged (grep, empty).",
+    "The drawio renderer submodule directory is empty in the scratchpad clone, so the renderer's meta policy and entry page were not read.",
+    "Map decision PANEL-D17 (#437) already makes host file containment plus always-on CSP injection, with a negative control, the precondition for treating draw.io's two webRequest listeners as recorded no-ops; F05-T4 (#473) is the feature ticket, labelled needs-spec, naming KEL-79 as consumed owner.",
+    "The first-proof workflow is open, edit, save, close-with-unsaved-prompt (PANEL-D12, #432)."
+   ],
+   "inferences": [
+    "WKWebView offers no response-header hook for file-URL loads, so a host policy for a file-loaded app can arrive only as an injected meta policy or by serving the files through a host-owned scheme handler that sets the header. From platform knowledge, not receipted in this run.",
+    "Custom-scheme privilege mapping (Zettlr safe-file) and persisted user-granted roots are not needed by draw.io under the legacy profile: draw.io registers no scheme, and legacy keeps ambient filesystem access in the Bun main.",
+    "Earlier refuter finding that KEL-130 scopes are build-time literals bound to one snapshot with no runtime insertion is taken from the spec reading by that refuter; I confirmed only that KEL-130 is Done."
+   ],
+   "unknowns": [
+    "Whether draw.io's renderer boots and reaches an editable canvas in WKWebView from a file-URL load at all.",
+    "Whether 'self' in a policy matches sibling file URLs for a file-loaded document in WebKit, and whether WebKit honours 'wasm-unsafe-eval' for the inlined router.",
+    "Whether a meta policy inserted by a document-start user script is enforced before the page's first script and subresource loads.",
+    "Whether a host scheme handler changes the renderer's origin-dependent behavior (storage, workers, relative URLs).",
+    "Electron's failure mode when registerSchemesAsPrivileged is called after ready (not quoted in the pinned docs, per the research note).",
+    "Who owns user-granted, persisted filesystem roots under a frozen manifest; no spec exists."
+   ],
+   "alternatives": [
+    {
+     "option": "Run the three-arm WKWebView probe now, then write the F05-T4 spec from its result (recommended)",
+     "cost": "About one day in a scratch harness on macOS; needs the drawio submodule at the gitlink pinned by drawio-desktop@2edf9fb.",
+     "new_invariant": "None yet; the probe selects the mechanism the spec will state.",
+     "invariant_at_risk": "None; no Keld code or contract changes."
+    },
+    {
+     "option": "Specify file-URL load plus injected meta policy without measuring",
+     "cost": "Risk of a spec that the engine does not enforce; the PANEL-D17 negative control would then fail late.",
+     "new_invariant": "Host policy is delivered by script injection.",
+     "invariant_at_risk": "Proof rule: a policy that is not shown to be enforced is not a control; the webRequest no-op would silently drop draw.io's own protection."
+    },
+    {
+     "option": "Specify a host-owned resource scheme for all app content now",
+     "cost": "Pulls a slice of KEL-79 (Backlog, three-engine contract, no spec) into the first proof.",
+     "new_invariant": "App bytes reach the webview only through the host resource adapter.",
+     "invariant_at_risk": "Sequencing; KEL-79 is scoped as a three-engine contract, so a macOS-only slice needs an explicit owner decision."
+    },
+    {
+     "option": "Accept draw.io's listeners as no-ops with no host policy for the first proof",
+     "cost": "None to build.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Violates resolved map decision PANEL-D17 and always-on webview hardening in architecture 03 section 4."
+    }
+   ],
+   "recommendation": "Split the ticket into three atoms and act only on the first. (1) First proof: run the probe in the node below to choose between injected meta policy over a contained file-URL load and a host scheme handler with a header policy, and to list the exact directives the draw.io profile must admit. (2) Next: the custom-scheme privilege and traversal matrix belongs to F05-T2 with Zettlr as the demand. (3) Parked until a strict-profile app spec: persisted user-granted roots need one owner as a KEL-130 follow-on; cross-reference X04-D5 so one spec owns both.",
+   "falsifier": "If arm A (file-URL load, renderer's own meta policy only) already refuses outside-directory reads and blocks an injected inline script, the host adds nothing and the mechanism question is moot. If no arm reaches an editable canvas, the first proof is blocked on the engine and the map's first-proof choice must be revisited.",
+   "reversible": "Yes. The probe writes only scratch files and a result note; the mechanism is fixed later in the F05-T4 spec.",
+   "missing_evidence": "The probe result: per arm, boot outcome, violation events, containment refusals and negative-control outcomes; the renderer's own meta policy text from the checked-out submodule; an Electron 44.4.5 oracle run of the same steps showing zero policy violations.",
+   "next_action": "Orchestrator files the node below in the Prompt Tracker and runs it on a macOS machine; first completion check is a result table with one row per arm (A, B, C) and each negative control marked fired or not fired, attached to #415.",
+   "owner": "KEL-79 (Backlog, unassigned, no spec) is the named resource-transport owner and F05-T4 (#473) the map ticket; KEL-102 (In Progress) owns guard wiring for any broker; KEL-130 (Done) owns retained filesystem scopes as landed. Linear, fetched 2026-10-06.",
+   "prompt_tracker_node": "Proposed path: prompts/NEW/webview/05-electron-compat-drawio-csp-transport-probe.md\n\nMODEL: GPT-5.6 Sol / Codex (incumbent admitted route; gpt-6.1-sol only after task-specific qualification per docs/04 refresh 2026-10-06)\nEFFORT: high\nHARNESS: direct (one session, no subagents)\nGRAPH_NODE: new-webview-05-drawio-csp-transport-probe\nGRAPH_ROLE: inspect\nSESSION: NEW\nOS: macOS (real machine; WKWebView from the installed system; record OS build and WebKit version from the machine)\nLINEAR: KEL-79 (read only; no claim, no status change) / GitHub gyldlab/keld#415 (X04-D3), feeds #473 (F05-T4) and #437 (PANEL-D17)\nPIN: refetch Keld origin/main, KEL-79 and KEL-102 state, and issues #415/#473 before starting; stop on any change that already answers the question\nPINS: keld=b4b907c3; drawio-desktop=2edf9fb with its drawio submodule at the recorded gitlink; electron=v44.4.5\nSOURCE: prompts/NEW/webview/05-electron-compat-drawio-csp-transport-probe.md\nREADS: Keld architecture 03 sections 2 and 4, architecture 05 resource-path contract, KEL-96 boot spec; drawio-desktop main source (policy header and file-URL filter); pinned Electron docs web-request and protocol pages\nWRITES: a scratch harness directory outside the Keld repo and one result note for the research branch; no Keld, GitHub or Linear writes\nSINGLE_WRITER_KEYS: research-note:x04-d3-csp-transport-probe\nREQUIRES_ARTIFACTS: none\nPRODUCES_ARTIFACTS: keld.execution-artifact/v1 with node_id=new-webview-05-drawio-csp-transport-probe, the per-arm result table, raw violation logs, harness source hash\nAFTER: none | independent\nNEXT: F05-T4 spec node (not yet filed)\nDO_NOT_RUN_WITH: none\nLANE: research\n\nRole: Prototype inspector. Builds a minimal WKWebView harness that uses no Keld code. Does not design the Keld resource transport, does not write a spec, does not touch custom-scheme privileges for Zettlr or filesystem-root persistence.\n\nGoal: One result table that says, for draw.io's renderer on WKWebView, which delivery mechanism both boots the editor and enforces a host policy equal to draw.io's header policy with reads confined to the app code directory.\n\nSuccess criteria (all real-OS, none CI-only):\n- Oracle arm O: unmodified drawio-desktop on Electron 44.4.5 reaches an editable canvas, inserts one shape, initialises the WASM edge router; record the count of securitypolicyviolation events (expected zero) and the renderer's own meta policy text.\n- Arm A: file-URL load with read access limited to the code directory, no host policy. Record boot outcome and violations.\n- Arm B: arm A plus a document-start user script that inserts a meta policy equal to draw.io's header string.\n- Arm C: a host scheme handler serving the code directory with that string as a response header.\n- For each of A, B, C record: editable canvas reached (yes/no), shape insert (yes/no), WASM router initialised (yes/no), every violation event with directive and blocked URI.\n- Negative controls, each must be reported as fired or not fired per arm: (1) removing 'wasm-unsafe-eval' makes the router compile raise a violation; (2) an inline script element injected after load is blocked; (3) fetch and image loads of a file outside the code directory are refused before bytes arrive; (4) in arm C, dot-dot, percent-encoded dot-dot and encoded-slash paths are refused by the handler.\n- A control that does not fire in an arm disqualifies that arm as a host control.\n\nPrerequisites: macOS machine with Xcode command-line tools; drawio submodule checked out at the pinned gitlink; Electron 44.4.5 available for arm O. No approvals needed; no repository writes.\n\nResources: scratch directory only. The harness may be Swift or Rust with objc2; record its source hash.\n\nDelegation: none.\n\nVerification: run each arm three times from a fresh process; results must agree. Collect violations through a page-side securitypolicyviolation listener forwarded by a script message handler, not by reading console text. No sleeps: wait on the editor-ready signal and on explicit message receipt, with a stated deadline that reports timeout as failure.\n\nOutput: the result table, the raw logs, OS build and WebKit version, harness hash, and one paragraph naming which arm F05-T4 should specify or naming the blocker. Label every statement FACT, INFERENCE or UNKNOWN.\n\nStop rules: stop and report if arm O itself shows violations (the oracle premise is wrong); if no arm reaches an editable canvas after two distinct legitimate attempts, report the kill condition with the failing directive or load error and do not add permissive workarounds; stop if Keld main has landed a file read root or policy injection since the pin; never weaken a negative control to obtain a pass; no Windows or Linux claims."
+  },
+  {
+   "key": "X04-D4",
+   "decision": "Whether a Keld manifest may grant 'open any URL of a given scheme in the OS default handler' without naming origins, and if so how that grant is spelled so that the shared matcher and URL scope lists keep their current meaning.",
+   "classification": "needs-human",
+   "milestone": "next",
+   "facts": [
+    "KEL-208 is Done (completed 2026-09-09, assignee GYLDLAB; landed as squash fa1bfd7); KEL-209 is closed as its duplicate. The ticket's premise that a KEL-208 owner ruling is pending names a closed issue (Linear, fetched 2026-10-06).",
+    "KEL-208's eight comments record no ruling on a scheme-class spelling. They record the chosen rule (a grant must name a destination), and reject a capability-kind registry because none exists; URL normalisation is deferred to 'its own spec' once a URL-valued capability goes live (Linear, fetched 2026-10-06).",
+    "Live matcher on main b4b907c3: a pattern without a `/**` suffix is compared by exact string equality; the destination-less check runs only after a `/**` suffix is stripped. A bare `https:` entry therefore matches only a resource that is literally `https:` (keld-guard, read 2026-10-06; not executed by me).",
+    "Architecture 03 section 2: 'No glob grants \"any host\" for a multi-character scheme — name the origins'; `**` is the only wildcard; path and URL scopes share one matcher.",
+    "KEL-102's reuse rule, quoted in KEL-208: there must be exactly one matcher and no per-native-module policy check (Linear, fetched 2026-10-06). KEL-102 is In Progress, unassigned.",
+    "KEL-208's description states that net.connect and shell.open are not wired through evaluate; keld-native has no shell broker on main.",
+    "KEL-212 is In Progress (assignee Amisha Ramani): it will add a distinct deny reason for a grant that can never match and make `keld doctor` report a destination-less grant as a finding (Linear, fetched 2026-10-06).",
+    "draw.io opens external URLs after testing them against a scheme allowlist of http, https, mailto, tel and callto; the call is reached from two fixed Help-menu links, the window-open handler and a renderer request (drawio-desktop@2edf9fb, read 2026-10-06). None of these is in the first-proof workflow (open, edit, save, close-with-unsaved-prompt).",
+    "The published plan holds the same decision twice: X04-D4 (#416) and F06-D4 (#405, 'joint with X04-D4'). F06-T3 (#479) is blocked by X04-D4 and already describes a confirm-per-scheme grant with a host-rendered confirmation as what to build."
+   ],
+   "inferences": [
+    "If a bare `scheme:` entry inside the `app.shell.open` list were given 'any destination' meaning, the same spelling would be 'inert, reported by doctor' in every other URL list once KEL-212 lands: one spelling with two meanings in one shared vocabulary.",
+    "Electron itself applies no filter or prompt to shell.openExternal called from main (refuter receipts for the pinned shell and session pages, not re-fetched by me), so any Keld rule here is a new control and any confirmation dialog is a parity difference.",
+    "A host-rendered confirmation flow has no existing owner, spec or UI surface in Keld."
+   ],
+   "unknowns": [
+    "The owner's answer on scheme-class authority.",
+    "How a user gesture would be attributed across the IPC hop for renderer-triggered opens; no Keld mechanism exists. This is a separate atom and is not needed to answer the spelling question.",
+    "Linux portal behavior for mailto and tel.",
+    "Whether a guard test pinning 'bare scheme matches no URL' exists; I did not find or run one."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Exact origins only (status quo)",
+     "cost": "User-authored links in draw.io and Zettlr cannot open; both score a documented refusal for that member. Fixed Help links still work when named.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "B. Bare `scheme:` literal inside `app.shell.open`, evaluated by the shell broker as an exact literal after canonicalising the URL into a scheme token and an origin",
+     "cost": "No matcher change; an architecture 03 amendment and permission-model gate; KEL-212's doctor and deny text need a carve-out for this one list.",
+     "new_invariant": "Under shell.open only, a bare scheme entry authorises any destination of that scheme.",
+     "invariant_at_risk": "One spelling, one meaning across URL lists; 'name the origins'; risk that a later net broker copies the canonicalisation and widens net.connect."
+    },
+    {
+     "option": "C. A distinct capability for scheme class (for example a separate key beside `open` holding scheme names), exact literals through the same evaluate call; `shell.open` stays origin-only (recommended if the answer is yes)",
+     "cost": "One new capability name (allocated under the X05-T2 naming rule), an architecture 03 amendment, permission-model gate, a loud doctor line, migrate seeding from literal scheme allowlists.",
+     "new_invariant": "Scheme-class open authority is its own named, reviewable grant; no URL list ever means 'any host'.",
+     "invariant_at_risk": "Default-deny is preserved; the operator still hands the OS handler arbitrary destinations for the named schemes, which is the authority being asked for."
+    },
+    {
+     "option": "D. A confirm-class token with a host-rendered confirmation dialog per call",
+     "cost": "New host UI flow on three operating systems, new per-call state, no owner or spec; differs from Electron, which does not prompt.",
+     "new_invariant": "A user click at run time substitutes for an operator grant.",
+     "invariant_at_risk": "Generated, reviewed default-deny (authority decided in the manifest); YAGNI for the current and next milestone."
+    }
+   ],
+   "recommendation": "Ask the owner one question and default to A until answered. If yes: adopt C, with `file:`, `javascript:` and unlisted schemes always denied, and no change to the shared matcher. Reject B because it gives one spelling two meanings against KEL-212. Park D and the gesture rule as separate, unowned atoms. Close F06-D4 (#405) into X04-D4 (#416) and rewrite F06-T3 (#479) so it no longer presupposes the confirmation dialog. Re-point the ticket from KEL-208 (Done) to KEL-102 and the architecture 03 section 2 owner.",
+   "falsifier": "An executed guard test showing a bare `https:` entry already authorises an https URL (the 'inert today' premise would be false); or KEL-212 landing with a rule that treats a bare scheme entry as valid; or the owner recording that scheme-class authority is never allowed, which fixes option A.",
+   "reversible": "Partly. Option A is fully reversible. B, C and D each add public manifest vocabulary; once apps ship manifests using it, removal is a breaking permission-model change.",
+   "missing_evidence": "The owner's yes or no. Optional and cheap: a guard negative-control test asserting that `shell.open: [\"https:\"]` matches no https URL today, to pin the premise before any spec.",
+   "next_action": "Orchestrator posts this packet on #416 and closes #405 as its duplicate; the owner (@0monish) answers the one question: may a manifest grant opening any URL of a named scheme in the OS default handler without naming origins, yes or no. First completion check: the answer recorded on #416 and F06-T3 (#479) reworded to match.",
+   "owner": "KEL-102 (In Progress, unassigned) for guard wiring of URL-valued capabilities; KEL-212 (In Progress, Amisha Ramani) for inert-grant diagnostics that the spelling must not contradict; KEL-208 is Done and is not a live owner. Linear, fetched 2026-10-06."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "X04-D4": {
+   "status": "owner-decision-delegated",
+   "resolution": "Option A is the standing behaviour: exact literal origins only; every other URL is a typed refusal recorded as a declared divergence. A confirm-class token and scheme-wide globs are rejected. If a scored cell ever needs scheme-class opening, specify option C (a distinct capability key for scheme classes) under KEL-102 with a permission-model gate; consent-as-authority-mint stays rejected until an approved spec says otherwise.",
+   "milestone": "next"
+  },
+  "F06-D4": {
+   "status": "duplicate-of-X04-D4",
+   "resolution": "Option A is the standing behaviour: exact literal origins only; every other URL is a typed refusal recorded as a declared divergence. A confirm-class token and scheme-wide globs are rejected. If a scored cell ever needs scheme-class opening, specify option C (a distinct capability key for scheme classes) under KEL-102 with a permission-model gate; consent-as-authority-mint stays rejected until an approved spec says otherwise.",
+   "milestone": "parked"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "Every Electron security surface in scope collapses onto four existing Keld owners, none of which needs a new schema: (1) keld-guard `evaluate(manifest, Principal, capability, resource)` with the arch 03 §2 grant shapes (`app.{fs,net,shell,system,secrets,auth}` and `windows.<w>.{channels, web.*}`), (2) the KEL-142 isolated-world bridge (`window.keld.invoke`) in place of preload/contextBridge/ipcRenderer, (3) KEL-75/78 principalized strict roles in place of utilityProcess/fuses, and (4) the arch 06 §4a host-owned signed feed in place of autoUpdater/ASAR. The decisive inversion is Electron's two independent allow-by-default permission paths (request + check) becoming one guard decision where a missing Electron handler is a `KELD-GUARD001` deny and a registered handler can only narrow, never widen. Live today: `/app` grants for `AppProcess` only; a minted `Principal::Webview` is `KELD-GUARD006` until window-level grants ship (KEL-102/T4), and the media callbacks evaluate resource `*` because wry exposes no origin. Three design atoms are genuinely open and need grilling, not more research: the `shell.open` scheme-class grant spelling (draw.io/Zettlr open arbitrary https/mailto URLs and `https://**` is inert by the KEL-208 authority rule), the CSP profile that must admit draw.io's `'wasm-unsafe-eval'`, and the host-minted one-shot `fs.read` grant for OS-delivered file paths (second-instance/open-file). Device permissions (HID/USB/serial/Bluetooth) have no broker, no principal and no spec: documented-unsupported, not legacy. Nothing in this unit auto-selects `legacy`; KEL-78 fixes that Electron `sandbox:false` is not the legacy key and renderer sandbox is a different column, so Zettlr's two `sandbox:false` windows are a scoreboard ✘/▲ requiring a verified preload audit, not a profile downgrade.",
+  "decisions": [
+   {
+    "id": "X04-D1",
+    "question": "How do Electron's session.setPermissionRequestHandler / setPermissionCheckHandler (and <webview> permission-request) map onto Keld without reintroducing allow-by-default?",
+    "proposed_answer": "One guard decision, two Electron views of it. The host evaluates `windows.<w>.web.<permission>` (same array-of-scopes shape already used by live `app.web.camera`/`app.web.microphone`, moved under `windows` as arch 03 §2/§4 already names) as `Principal::Webview{id, generation}` from the host registry. The facade's request handler and check handler are both invoked AFTER the guard allows and may only narrow (callback(false)/return false => deny); a handler return of true when the guard denied is ignored and emits a dev-warned `KELD-GUARD001` deny with the exact manifest fix. No handler registered => guard decision stands (deny on empty manifest). Check and request return the same value for the same (principal, permission, origin) tuple. Permission-name vocabulary = Electron's documented list mapped 1:1 onto `web.<name>` literals; unknown names deny. Origin scopes use the live KEL-208 authority matcher; until a platform callback supplies the requesting origin (WebView2 `Uri` does; wry does not) the resource stays the `*` sentinel and an origin-shaped grant must not match (already tested in keld-wv `origin_looking_grant_does_not_match_sentinel`).",
+    "evidence": [
+     "[fact] security.md: 'By default, Electron will automatically approve all permission requests unless the developer has manually configured a custom handler.'",
+     "[fact] research 186 row 4: request and check are independently allow-by-default paths with different exceptions (geolocation switch, deprecated sync clipboard read).",
+     "[fact] keld-guard lib.rs:705 denies any non-AppProcess principal (GUARD006); lib.rs:1899-1936 tests default-deny `web.camera`/`web.microphone` on an empty manifest and deny `https://evil.example` under a `*` grant.",
+     "[fact] keld-wv media.rs:29-36,57-59: platform callbacks pass no origin; resource is `*`; origin grants unenforceable.",
+     "[fact] arch 03 §4(3): 'Missing identity and AppProcess fail closed (KELD-GUARD007)… A minted webview principal is still KELD-GUARD006 until window-level grants exist.'",
+     "[fact] KEL-132 §3: REVOKE requires navigation generation rotation; SAVED-GRANT (KEL-135 §7.1): a persisted engine Allow cannot bypass the next session's denying policy.",
+     "[fact] corpus: neither draw.io nor Zettlr registers setPermissionRequestHandler/CheckHandler (grep over src/main/electron.js and source/app/**) — so under Electron they run with auto-approve; under Keld they get deny with fix-it text."
+    ],
+    "confidence": "high on the inversion and shape; medium on vocabulary breadth (which of Electron's ~46 permission names Keld will ever expose; most have no host broker)",
+    "type": "task",
+    "alternatives_rejected": "(a) Honor Electron default (allow when no handler) — violates briefing invariant 2. (b) Let a facade handler returning true grant beyond the manifest — moves authority into Bun, breaks one-owner rule. (c) New per-permission schema block — arch 03 §2 already has `windows.<w>.web.*`; a new block would be a duplicate policy surface. (d) Evaluate as AppProcess with `/app/web/*` — the `/app` grants must never apply to a webview (GUARD007 rule).",
+    "unknowns": "Exact Keld behavior of saved engine permission preferences on Windows/macOS (KEL-135 SAVED-GRANT awaiting); whether wry will ever surface origin; which subset of permission names gets a host broker in Tier 1/2 (only media exists).",
+    "blocked_by": [
+     "KEL-102/T4 window-level grants + registry-derived webview principal",
+     "KEL-132 T1 Windows kind/origin evidence",
+     "KEL-79 origin policy context"
+    ]
+   },
+   {
+    "id": "X04-D2",
+    "question": "What does `keld migrate` + the BrowserWindow facade do with webPreferences that weaken isolation (nodeIntegration, contextIsolation:false, sandbox:false, webSecurity:false, allowRunningInsecureContent, experimentalFeatures/enableBlinkFeatures, webviewTag, enableRemoteModule, devTools)?",
+    "proposed_answer": "Compile-time classification in migrate + runtime refusal in the facade, never silent honoring. nodeIntegration:true, contextIsolation:false, webSecurity:false, allowRunningInsecureContent:true, experimentalFeatures, enableBlinkFeatures/disableBlinkFeatures, enableRemoteModule => migrate ✘ with per-call-site diagnostic; at runtime the facade throws a typed `KELD-COMPAT-*` error at BrowserWindow construction (window not created) unless `keld.compat.ts` sets the per-window quirks flag `ignoreWeakWebPreferences` which creates the window with Keld's forced values and logs ▲. sandbox:false => ▲ only: Keld always runs the preload as a host-injected isolated-world user script without Node; if the preload needs `require` of anything outside Electron's own sandboxed-preload module map, that is a code change, not a profile (KEL-78: Electron `sandbox`/`appSandbox` MUST NOT be read as `legacy`; renderer sandbox is a different column). devTools:false => honored (narrowing); devTools absent/true => `windows.<w>.web.devtools: true` is required in release, else `openDevTools()` is a `KELD-*` error (arch 03 §4 'devtools off in release unless web.devtools: true'). webviewTag:true => Tier 3 ✘ now. `process.sandboxed === true` and `process.contextIsolated === true` always in the renderer shim.",
+    "evidence": [
+     "[fact] web-preferences.md v44.4.5: nodeIntegration default false; contextIsolation default true; sandbox 'Default is true since Electron 20'; webSecurity true; allowRunningInsecureContent false; devTools true; webviewTag false; enableRemoteModule absent.",
+     "[fact] sandbox.md: 'Setting nodeIntegration: true automatically disables sandboxing for that renderer process'; sandboxed preload `require` is a polyfill limited to electron (contextBridge, crashReporter, ipcRenderer, nativeImage, webFrame, webUtils) + events, timers, url.",
+     "[fact] KEL-78 spec: 'Electron `sandbox` / `appSandbox` is not this key and MUST NOT be read as `legacy` or `strict`'; 'Renderer sandbox is a different column.'",
+     "[fact] corpus: draw.io sets contextIsolation:true, nodeIntegration:false, webviewTag:false, webSecurity:true on every window (electron.js:721-729,1086-1091,1403-1408,3082-3088) and restates them in setWindowOpenHandler overrides (2207-2212); `app.enableSandbox()` commented out (690-691); filters `--no-sandbox` from argv (1231-1234). Zettlr: sandbox:true + preload on 13 windows; sandbox:false on splash-screen.ts:65 and onboarding-window.ts:72. quick-start: preload only, defaults.",
+     "[fact] research 13 never-list: `nodeIntegration: true` in renderer 'Incompatible with default-deny model'.",
+     "[fact] keld-wv media.rs:334-335 compiles `with_devtools(true)` only under `#[cfg(debug_assertions)]`."
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "(a) Silently coerce all weak preferences to Keld values — violates 'divergence must be explicit'. (b) Treat sandbox:false as a legacy-profile trigger — forbidden by KEL-78 and would downgrade the Bun role for a renderer concern. (c) Emulate nodeIntegration via a Node-shaped bridge — a fifth unique / parallel authority path.",
+    "unknowns": "[inference] Zettlr's two sandbox:false preloads appear to need Node (comment 'Preload scripts have access to…'); not verified by reading the preload bundles — a 10-minute grep decides ▲ vs ✘ for Zettlr install cell. Whether `ignoreWeakWebPreferences` should exist at all or only ✘ (recommend: exists, dev-only, refused in release).",
+    "blocked_by": [
+     "BrowserWindow facade (F02) and preload injection (F04/F07) design"
+    ]
+   },
+   {
+    "id": "X04-D3",
+    "question": "How do `protocol.registerSchemesAsPrivileged` + `protocol.handle` (Zettlr `safe-file://`) and `webRequest.onHeadersReceived` CSP (draw.io) map onto KEL-79 resource transport and `windows.<w>.web.csp` without letting a renderer turn a locator into filesystem authority?",
+    "proposed_answer": "Privilege bits are host declarations, not runtime calls: scheme names and {standard, secure, supportFetchAPI, corsEnabled, stream, codeCache} are declared in `keld.config.ts web.schemes` and registered by the host before first navigation; `registerSchemesAsPrivileged` in app code becomes a no-op-with-check (must equal the declaration, else `KELD-COMPAT` error before `ready`). `bypassCSP` is never. `allowServiceWorkers` is ▲ platform-scored (WKWebView lacks SW on custom schemes). `protocol.handle(scheme, fn)` runs the app's handler in the Bun role but its bytes come only through brokers: a `Response` built from app memory is forwarded; any file read inside the handler is an ordinary `fs.read` guarded by `app.fs.read` scopes, which for Zettlr's workspace roots are dialog-derived scopes (arch 05 dialog row 'scoped-path grants flow into fs scopes'), not `$HOME/**`. The handler receives `request.initiatorOrigin` from the host registry, never from the page. CSP: Keld injects `windows.<w>.web.csp` (`default` | `static-only` | named opt-out); migrate translates draw.io's header-injected CSP into a reviewed named profile; whether `default` must admit `'wasm-unsafe-eval'` and `img-src * data:` is the open sub-question (prototype P2).",
+    "evidence": [
+     "[fact] protocol.md v44.4.5: registerSchemesAsPrivileged 'can only be used before the ready event… and can be called only once'; privileges standard/secure/bypassCSP/allowServiceWorkers/supportFetchAPI/corsEnabled/stream/codeCache; `request.initiatorOrigin` 'is not controlled by the requesting page'; register*/intercept*Protocol deprecated in favor of protocol.handle.",
+     "[fact] research 186 row 1 + NEW gap 1: custom schemes mint privileges; registry does not canonicalize a resource path; need traversal/encoding matrix.",
+     "[fact] corpus Zettlr custom-protocols.ts:55-100: `protocol.handle('safe-file', …)` decodes pathname, strips Windows drive slash, maps `//share` to `/Volumes/…` on macOS, `fs.access` + `fs.readFile` any absolute path; NO registerSchemesAsPrivileged call anywhere in source (grep empty) — so the scheme is non-standard/insecure under Electron too.",
+     "[fact] corpus draw.io electron.js:994-1008: header CSP `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; … img-src * data:; media-src *; font-src * data:; … object-src 'none'`; 1010-1022 `onBeforeRequest({urls:['file://*']})` blocks file loads outside app dir.",
+     "[fact] arch 03 §2: 'CSP injection by default on every webview (default = self + keld:// + declared net hosts; static-only = no script eval, no net). Opt-out is a named, linted grant.'",
+     "[fact] arch 05: adapter MUST bind an unguessable capability to one active WebView/navigation generation; guard before bytes; 'A Service Worker is optional machinery, not the authorization boundary.'",
+     "[fact] briefing: WKWebView lacks Service Worker on custom schemes (WebKit 206741); WebView2 virtual-host SW limits."
+    ],
+    "confidence": "medium-high on ownership (host declares, broker loads); medium on whether a third CSP level is needed",
+    "type": "prototype",
+    "alternatives_rejected": "(a) Let Bun's handler read files directly (Node fs) — strict profile has no fs authority; would need legacy. (b) Translate `safe-file://` to `file://` — file:// is itself on the migrate-discouraged list (security.md #18) and keld:// isolation already exists. (c) Allow `bypassCSP` under a quirks flag — a quirks flag may not widen authority.",
+    "unknowns": "Whether `web.csp` accepts a reviewed custom string (arch 03 says 'named' only); WebKitGTK custom-scheme + SW behavior; exact Keld behavior when registerSchemesAsPrivileged is called after ready (Electron's own failure mode is not quoted in the docs — [unknown]).",
+    "blocked_by": [
+     "KEL-79 spec (none in docs/specs yet)",
+     "KEL-135 profile identity for per-scheme storage partitioning"
+    ]
+   },
+   {
+    "id": "X04-D4",
+    "question": "What grant does `shell.openExternal` (and openPath/showItemInFolder/trashItem) need when real apps open arbitrary https/mailto/tel URLs and the renderer can trigger it?",
+    "proposed_answer": "Reuse `app.shell.open: [...]` (arch 03 §2 shape) with two additions that are vocabulary, not schema: (1) a scheme-class literal spelled so it cannot be confused with the inert `https://**` form — proposal `\"https:\"`, `\"mailto:\"`, `\"tel:\"` (bare scheme + colon, which the authority rule already treats as 'names no destination' and so is currently inert; promoting it to 'any destination of this scheme' is an explicit permission-model review gate), alongside exact-origin entries; (2) a caller-identity rule: an `openExternal` whose causal chain starts in a webview (ipc from `el:*`, will-navigate, window-open handler) requires a user gesture recorded by the host for that webview principal within a bounded window, else `KELD-GUARD001`; main-process-originated calls need only the scope. `file:`, `smb:`, `javascript:`, custom app schemes and anything not in the list deny. `openPath`/`showItemInFolder`/`trashItem` require an `app.fs.read` (reveal/open) or `app.fs.write` (trash) scope covering the path; `writeShortcutLink` is `fs.write`. Migrate seeds `shell.open` from static regex/allowlists (draw.io's `allowedUrls` literally yields `https:`,`http:`,`mailto:`,`tel:`,`callto:`) and from literal URLs in menus.",
+    "evidence": [
+     "[fact] shell.md v44.4.5: openExternal 'Returns Promise<void>'; options activate (macOS), workingDirectory/logUsage (Windows); URL limited to 2081 chars on Windows; shell 'will not function in a sandboxed renderer'.",
+     "[fact] security.md #15: 'When openExternal is used with untrusted content, it can be leveraged to execute arbitrary commands.'",
+     "[fact] session.md permission list includes `openExternal` as a requestable permission name (so Electron already models it as a webview-origin permission).",
+     "[fact] research 186 row 3 + NEW gap 3: no allowlist/origin/prompt check in Electron's binding; Keld needs origin, scheme, host, user gesture, confirmation and denied-handler matrix.",
+     "[fact] arch 03 §2: `\"https://**\"` 'matches nothing' (authority rule); 'No glob grants any host for a multi-character scheme — name the origins.'",
+     "[fact] corpus draw.io electron.js:4348-4360: `allowedUrls = /^(?:https?|mailto|tel|callto):/i` then `shell.openExternal(url)`; invoked from setWindowOpenHandler (2216) and renderer ipc `case 'openExternal'` (4515-4516). Zettlr attach-app-navigation-handlers.ts:25-44: any non-`safe-file://` will-navigate URL → `shell.openExternal(url)`; `safe-file://` → `shell.openPath(realPath)` for any decoded path; menus open fixed https URLs."
+    ],
+    "confidence": "medium — the scheme-class spelling is a user-owned permission-model choice",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Require explicit origins only — breaks the config-only promise for both first corpus apps (they open user-authored links). (b) Grant via `system: [\"shell.open-any\"]` — duplicates the shell block and hides the scheme policy. (c) Host confirmation dialog on every call — Electron parity loss, and dialogs are not authorization. (d) Keep `https://**` inert and add nothing — forces every app into ✘.",
+    "unknowns": "Whether the authority-rule owner (KEL-208) accepts a bare-scheme literal as 'scheme-class allow' or wants a different spelling; how the host attributes user gesture across the kipc hop (WKWebView/WebView2 user-activation APIs vs. host-side timing); Linux portal (xdg-open) behavior for mailto/tel.",
+    "blocked_by": [
+     "permission-model review gate",
+     "shell broker (arch 05 table) not live"
+    ]
+   },
+   {
+    "id": "X04-D5",
+    "question": "How are `requestSingleInstanceLock` / `second-instance(argv, cwd, additionalData)` / `open-file` / `open-url` delivered without handing OS-derived argv to a privileged handler, given draw.io reads the file named by argv?",
+    "proposed_answer": "Host-owned `deeplink` module (arch 05 table) is the single admission point: the host (not Bun) holds the OS single-instance primitive, parses the second launch's argv/cwd/additionalData as untrusted data, enforces exactly-once delivery and the 32 MB bound, and emits a typed event; the facade surfaces Electron's `(event, argv, workingDirectory, additionalData)` with argv as opaque strings. `workingDirectory` is the second instance's cwd as data; it never changes the strict role's fixed `/app` cwd. Because the strict role has no ambient fs authority, draw.io's `statSafe(commandLine.pop())`/read pattern requires the host to mint a one-shot `fs.read` scope for the exact file the OS named (same mechanism as dialog-derived scopes: user intent via OS open-with/file association is the gesture), recorded in the deny/allow audit; a path that was not OS-delivered gets `KELD-GUARD002`. `setAsDefaultProtocolClient` becomes a `keld.config.ts` declaration packaged by keld-pack (macOS Info.plist at build time), with runtime calls check-only.",
+    "evidence": [
+     "[fact] app.md v44.4.5 second-instance: 'argv will not be exactly the same list of arguments as those passed to the second instance. The order might change and additional arguments might be appended.'; 'If the second instance is started by a different user than the first, the argv array will not include the arguments.'; 'Extra command line arguments might be added by Chromium, such as --original-process-start-time.'; requestSingleInstanceLock: on macOS/Linux a single message 'limited to 32 MB. Larger messages are dropped.'",
+     "[fact] research 186 row 2 + NEW gap 2: every handoff field is external input; need cold/warm activation tests proving exactly-once delivery/typed rejection.",
+     "[fact] keld-runtime role.rs:689-693: strict roles refuse `current_dir` ('fixed /app working directory'); env is the exact configured list + KELD_APP_LINK.",
+     "[fact] corpus draw.io electron.js:1718-1760: lock → on second-instance createWindow, then `commandLine.pop()` → `statSafe` → `blessPath` → `webContents.send('args-obj')`; `open-file` at 2144. Zettlr main.ts:35-45,139-160: lock else `app.exit(0)`; second-instance → `extractFilesFromArgv(argv)` → `roots-add`; open-file handler 162.",
+     "[fact] arch 05 broker table: `deeplink` = 'protocol registration + single-instance handoff' → `app.setAsDefaultProtocolClient`; `dialog`: 'scoped-path grants flow into fs scopes'."
+    ],
+    "confidence": "high on host ownership; medium on the one-shot grant mechanism (not yet specified anywhere)",
+    "type": "task",
+    "alternatives_rejected": "(a) Let the Bun role own the single-instance lock (socket/lockfile) — a second authority root and racy with host lifecycle. (b) Grant `$HOME/**` read to make argv files readable — wildcard authority the operator never named. (c) Drop argv entirely and expose only additionalData — breaks both corpus apps' file-association flows.",
+    "unknowns": "Whether OS-delivered open-file intent is accepted as a gesture equivalent to a dialog selection (permission-model gate); Windows single-instance primitive choice (named mutex vs. pipe) and its interaction with KEL-101 DACLs; how `additionalData` is bounded/validated (postcard size cap).",
+    "blocked_by": [
+     "deeplink broker spec",
+     "KEL-130 FsBroker dynamic scope insertion (today scopes are manifest-only, snapshot-verified)"
+    ]
+   },
+   {
+    "id": "X04-D6",
+    "question": "What do `autoUpdater.setFeedURL`, electron-updater provider configs, Electron fuses and ASAR integrity become under Keld's host-owned trust chain?",
+    "proposed_answer": "Feed trust is host-only: `keld.build.ts` declares the feed base; the facade's `setFeedURL(opts)` is check-only — a URL/provider that does not resolve to the declared feed base is a `KELD-UPDATE-*` error with no network, and `checkForUpdates`/`quitAndInstall`/events map onto keld-update's manifest fetch, floor filtering and KEL-53 activation (▲ for `releaseNotes`/`releaseName` fields the manifest may not carry). Migrate translates electron-updater `provider: 'github'` (draw.io) and Forge publishers into the §4a feed layout + the arch 04 §7 bridge release. Fuses have no runtime equivalent and migrate reports each: `runAsNode`/`nodeOptions`/`nodeCliInspect` → covered by exact role env + no CLI flags (strict admission KEL-78); `cookieEncryption` → KEL-135 per-app profile store (encryption-at-rest status [unknown] per engine); `embeddedAsarIntegrityValidation` + `onlyLoadAppFromAsar` → signed package + ExpectedAppIdentity (KEL-19/KEL-254) verified before launch, no loose-directory fallback; `grantFileProtocolExtraPrivileges` → not applicable (keld:// isolation, file:// discouraged); `loadBrowserProcessSpecificV8Snapshot`/`wasmTrapHandlers` → N/A (no V8 in host). A fuse setting is never an input to Keld authority.",
+    "evidence": [
+     "[fact] auto-updater.md v44.4.5: 'Your application must be signed for automatic updates on macOS'; Linux 'no built-in support'; setFeedURL {url, headers (macOS), serverType json|default (macOS), allowAnyVersion (MSIX)}; events error/checking-for-update/update-available/update-not-available/update-downloaded(releaseNotes, releaseName, releaseDate, updateURL)/before-quit-for-update.",
+     "[fact] fuses.md: defaults runAsNode on, cookieEncryption off, nodeOptions on, nodeCliInspect on, embeddedAsarIntegrityValidation off, onlyLoadAppFromAsar off, loadBrowserProcessSpecificV8Snapshot off, grantFileProtocolExtraPrivileges on, wasmTrapHandlers on; flipped at package time before signing.",
+     "[fact] asar-integrity.md: macOS (16+) and Windows (30+) only; 'If no hash is present or if there is a mismatch in the hashes, the app will forcefully terminate'; needs both EnableEmbeddedAsarIntegrityValidation and OnlyLoadAppFromAsar.",
+     "[fact] research 186 rows 8-10 + NEW gap 7: ASAR-only lookup and integrity are separate controls; Squirrel/MSIX delegation is not a Keld manifest/signature/rollback contract.",
+     "[fact] arch 06 §4a: detached ed25519 `.sig` over `updates.json`, key 'compiled into the host binary at build time (never fetched from the feed)', `app.id`/`channel`/`target` must match compiled-in identity, monotonic floor, deterministic release selection; KEL-53 §3: 'Command line, environment, cwd, caller paths and feed bytes convey no authority.'",
+     "[fact] corpus draw.io electron.js:2078-2083 `autoUpdater.setFeedURL({provider:'github', repo:'drawio-desktop', owner:'jgraph', channel})` (electron-updater), autoDownload false, autoInstallOnAppQuit; Zettlr forge.config.js:295-301 flips RunAsNode false, EnableCookieEncryption true, NodeOptions false, NodeCliInspect false, GrantFileProtocolExtraPrivileges true; draw.io package.json lists @electron/fuses (briefing) but no fuse config in electron-builder-*.json (grep empty — [unknown] where it is applied)."
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "(a) Accept app-supplied feed URL with HTTPS-only check — briefing never-list item; the key must not be feed-adjacent. (b) Emulate fuses as `keld.compat.ts` switches — a fuse that 'turns on' would be a permission without an owner. (c) Ship an ASAR reader for compatibility — a second package format with no integrity story on Linux.",
+    "unknowns": "Whether electron-updater's GitHub-releases JSON can be bridged by a static generator into §4a layout (arch 04 §7 says a recipe exists, not implemented); engine-level cookie encryption at rest per platform (WebView2 UDF vs WKWebsiteDataStore vs WebKitGTK); `releaseNotes` carriage in the manifest.",
+    "blocked_by": [
+     "KEL-53 activation (In Progress)",
+     "keld build/migrate not live (KELD-CLI-045 reserved)"
+    ]
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "remote module / enableRemoteModule",
+    "rationale": "Removed upstream; research 13 never table; synchronous object proxying across the trust boundary is incompatible with host-minted principals."
+   },
+   {
+    "surface": "webPreferences.nodeIntegration:true (renderer, worker, subframes) and <webview nodeintegration>",
+    "rationale": "Briefing invariant 10 / research 13: incompatible with default-deny; would put ambient Bun/Node authority in an untrusted webview."
+   },
+   {
+    "surface": "contextIsolation:false",
+    "rationale": "KEL-142 §5.1: page world may never reach the native handler; the isolated-world bridge is the only renderer authority path."
+   },
+   {
+    "surface": "webSecurity:false, allowRunningInsecureContent:true, <webview disablewebsecurity>, <webview allowpopups>",
+    "rationale": "security.md #6/#8/#11; removes same-origin policy the host navigation/CSP model depends on."
+   },
+   {
+    "surface": "experimentalFeatures, enableBlinkFeatures/disableBlinkFeatures, app.commandLine.appendSwitch/appendArgument, --no-sandbox, WebView2 additional browser arguments",
+    "rationale": "Arbitrary Chromium/V8/engine flags undermine engine policy (research 13, briefing invariant 10); Keld has no engine flag surface and system engines are not Keld's to configure per app."
+   },
+   {
+    "surface": "protocol privileges minted at runtime (bypassCSP in any form; registerSchemesAsPrivileged honored from app code)",
+    "rationale": "Research 186 row 1: custom schemes mint privileges; only a host declaration before first navigation may define scheme properties, and CSP bypass has no owner that can be reviewed."
+   },
+   {
+    "surface": "App-selected autoUpdater feed URL / headers / serverType flowing into the privileged updater",
+    "rationale": "Briefing invariant 10; arch 06 §4a: trust root is the compiled-in key and declared feed base, never feed- or app-supplied."
+   },
+   {
+    "surface": "certificate-error callback(true) / setCertificateVerifyProc accepting / 'login' credential injection in release",
+    "rationale": "TLS trust belongs to the host and OS store (arch 03 §1 trust table); a Bun role must not be able to pin or bypass certificates for the host's connections. Dev-only diagnostics may exist under `keld dev` only."
+   },
+   {
+    "surface": "utilityProcess.fork env/cwd/execArgv/stdio-inherit forwarded to a role; PID or kill() as authority",
+    "rationale": "KEL-75 'Electron facade boundary'; role.rs refuses current_dir; env is exact; PID is diagnostic only."
+   },
+   {
+    "surface": "Permission handler (request/check/device) returning true beyond the manifest; absence of a handler treated as allow",
+    "rationale": "Briefing invariant 2; guard is the sole default-deny owner; handlers may only narrow."
+   },
+   {
+    "surface": "Electron `sandbox:false` / `appSandbox:\"off\"` as a selector of Keld `legacy` profile",
+    "rationale": "KEL-78: not the key; renderer sandbox is a different column; no auto-downgrade."
+   },
+   {
+    "surface": "Full Chrome DevTools Protocol / inspector in production webviews without `web.devtools`",
+    "rationale": "Research 13 never table; arch 03 §4 'devtools off in release unless web.devtools: true'."
+   },
+   {
+    "surface": "`https://**`-style any-host grants as a way to satisfy openExternal/net",
+    "rationale": "Arch 03 §2 authority rule: such a grant is inert by design; widening it would hand over an authority the operator never named — the scheme-class spelling must be its own reviewed literal (X04-D4)."
+   }
+  ],
+  "open_unknowns": [
+   "Live Linear state of KEL-79, KEL-102/T4, KEL-132 T1, KEL-135 T2-T4, KEL-75 T5, KEL-53 — not queried (headless session); briefing/spec recorded state used.",
+   "Whether `windows.<w>.web.csp` will accept a reviewed custom policy string or only named profiles; whether a third named level is needed for draw.io's 'wasm-unsafe-eval' + 'img-src * data:' (prototype P2 decides).",
+   "Spelling and review outcome of a scheme-class `shell.open` literal (X04-D4); user-gesture attribution across the kipc hop on WKWebView/WebView2/WebKitGTK.",
+   "Whether OS-delivered file intents (second-instance/open-file/open-url) may mint a one-shot `fs.read` scope the way dialog selections do, and how KEL-130's snapshot-verified FsBroker admits a dynamic scope.",
+   "Zettlr splash/onboarding preloads with sandbox:false: do they `require` Node modules outside Electron's sandboxed-preload map? (decides ▲ vs ✘ for Zettlr's install/activation cells; one grep of the preload sources).",
+   "Where draw.io applies @electron/fuses (package.json dependency per briefing; no config found in electron-builder-*.json) — affects migrate's fuse report fixture.",
+   "Electron's failure behavior for registerSchemesAsPrivileged after ready or twice (docs state the constraint, not the error) — pin from an oracle run.",
+   "Exact Electron renderer-side Error text for a thrown ipcMain.handle (prefix wording) — pin from an oracle run.",
+   "Engine persistence of permission grants per profile (SAVED-GRANT) on Windows/macOS and whether KEL-135 revocation makes Keld's deny win after a prior engine Allow.",
+   "wry exposing the requesting origin in permission callbacks (upstream) — gates origin-scoped `windows.<w>.web.*` grants on macOS/Linux; WebView2 adapter currently ignores `Uri`.",
+   "Cookie/profile encryption at rest per engine (WebView2 UDF, WKWebsiteDataStore, WebKitGTK) as the Keld analogue of the `cookieEncryption` fuse.",
+   "Device permission vocabulary (hid/usb/serial/bluetooth): no broker, principal or spec; documented-✘ until an approved spec; whether any corpus app needs it (neither first two do).",
+   "Whether `app.setLoginItemSettings`/autostart and `app.setAsDefaultProtocolClient` need `system` literals (`autostart`, `deeplink`) — arch 03 §2's `system` list does not name them.",
+   "Windows single-instance primitive and its interaction with KEL-101 named-pipe DACLs and KEL-210 LPAC (host-side only)."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

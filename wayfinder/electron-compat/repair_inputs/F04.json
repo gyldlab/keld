@@ -1,0 +1,1451 @@
+{
+ "unit": "F04",
+ "name": "ipc-bridge",
+ "published": {
+  "epic": {
+   "key": "F04-EPIC",
+   "title": "compat(ipc): ipcMain/ipcRenderer/contextBridge over host-routed el:<channel> frames, enumerated guard grants and a lifted renderer floor",
+   "body": "## Scope\n15 entities / 77 members: `ipcMain` (9), `ipcRenderer` (11), `contextBridge` (3), `MessageChannelMain`/`MessagePortMain`, `utilityProcess`/`UtilityProcess`/`parentPort` (→ KEL-75 roles), `IpcMainServiceWorker` (never), `webUtils.getPathForFile`, event structures. Live today: one macOS page-world `window.keld.invoke` (channel 1 only, 4096-byte payload, one pending invoke per WebView, host-minted correlation, isolated-world relay) → `@keld/api` echo handler; no ipcMain, no preload injection, no renderer shim; the Unix VirtualPortRegistry (64-message queue, 4 KiB inline, one-shot transfer) has no renderer route.\n\n## Corpus demand (resolved call sites)\ndraw.io: `ipcRenderer.send`/`on`/`once` + `ipcMain.on` + `event.reply` (15 replies) via one `rendererReq` channel multiplexed by `reqId`; `contextBridge.exposeInMainWorld` (2 keys); `event.senderFrame.url` read by `validateSender`; `webContents.send` 9. Zettlr: `ipcRenderer.invoke` 186 / `ipcMain.handle` 25, `send` 35, `sendSync` 6 (config store construction), `webContents.send` 49, `event.sender` as a WebContents handle, `webUtils.getPathForFile`, `setMaxListeners(100)`. Zero demand for MessageChannelMain/MessagePortMain/utilityProcess/parentPort/IpcMainServiceWorker.\n\n## Maturity ladder\n- L0: all 15 entities exist; never/deferred rows published with denominator honesty.\n- L1: draw.io's send/on/once/reply pattern and Zettlr's invoke/handle pattern run on macOS over the lifted floor.\n- L2: ordering per channel, error envelope (message-only to the renderer, typed code on the wire), `senderFrame` null-after-navigation, stale-generation reply drop, bounded credit/backpressure pass pinned conformance entries.\n- L3: corpus apps' IPC workflows pass under `keld dev` with facade-overhead measured (X05).\n\n## Linear owners consumed\nKEL-80 (bounded virtual channels: N-pending credit window, host→renderer events — the floor v2), KEL-142 (bridge seam), KEL-136 (transport), KEL-75 (virtual ports, roles), KEL-102 (guard dispatch), SCV codec owner (F03-D4, open), `windows.<w>.channels` grant vocabulary spec (open, no owner today).\n\n## Design facts fixed by research (two refuters + panel)\n- Carriage: one fixed, generated kipc control channel per direction for the compat namespace; the Electron channel string, a kind discriminator (event | invoke | sync | ports) and the SCV bytes are payload fields; the host matches the channel string against the per-window enumerated `el:<channel>` grant (`KELD-GUARD003` on miss) and forwards opaque bytes. No runtime-minted u16 ids.\n- The renderer→main authorization boundary is the enumerated per-window channel grant, not the preload (both corpus preloads expose arbitrary-channel send/invoke to the page); `keld migrate` emits enumerated grants from static analysis and refuses `el:*`.\n- The live KEL-142 floor cannot carry either corpus app; floor v2 (KEL-80 slice) = (a) N pending invokes per WebView under a host-enforced credit window, (b) `window.keld.send` + `window.keld.on` host→renderer events, (c) payload bound raised by measurement (draw.io ships base64 PNG exports through IPC).\n- `event.sender` = facade WebContents keyed by host webview id; `event.senderFrame.url` host-minted and null after navigation; `event.reply` binds to the sender document generation (survives same-document hash changes, as Electron keys on the frame host); stale replies are dropped silently like Electron.\n- `ipcMain.handle` errors reach the renderer as the message only; the typed `KELD-*` code stays on the wire and in diagnostics.\n- `sendSync` must remain a blocking CALL with deadline, rate limit and dev warning (arch 02 §5, KEL-127); it is SCAFFOLDED (typed throw + fix-it to invoke) until the WKWebView synchronous-XHR experiment passes (Zettlr-gated, 0 draw.io sites).\n- MessageChannelMain/MessagePortMain/utilityProcess/parentPort are deferred behind zero demand and KEL-75 AC7 (pinned-oracle fixture first); IpcMainServiceWorker/exposeInIsolatedWorld/executeInMainWorld are documented ✘.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F04-T1",
+    "title": "conformance(ipc): pinned entries for invoke/handle, send/on ordering, reply/senderFrame semantics, error envelope and sendSync contract",
+    "kind": "conformance",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Land red-until-implemented entries citing `ipc-main.md`, `ipc-renderer.md`, `ipc-main-event.md`, `context-bridge.md`: invoke round trip; handler throw → message-only error; per-channel ordering of send/on; `event.reply` bound to the sender frame; `senderFrame` null after navigation; `sendSync` blocks and `returnValue` assignment replies; structured-clone throws on Function/Promise/Symbol/WeakMap/WeakSet; `contextBridge` value table (functions proxied, prototypes dropped, Symbol unsupported).",
+    "acceptance_criteria": [
+     "Each entry cites the doc sentence and has a negative control",
+     "Entries are engine-tagged; observed-only behaviour stays BEHAVIOR_MATCH-capped",
+     "No timing comparisons"
+    ],
+    "negative_controls": [
+     "Deleting the ordering guarantee makes the send/on sequence entry fail"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-237 manifest reuse"
+    ],
+    "linear_owner": "KEL-237",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "ipcMain.on",
+     "ipcMain.once",
+     "ipcMain.handle",
+     "ipcMain.handleOnce",
+     "ipcMain.removeHandler",
+     "ipcRenderer.send",
+     "ipcRenderer.on",
+     "ipcRenderer.once",
+     "ipcRenderer.invoke",
+     "ipcRenderer.sendSync",
+     "IpcMainEvent.reply",
+     "IpcMainEvent.sender",
+     "IpcMainEvent.senderFrame",
+     "IpcMainEvent.returnValue",
+     "contextBridge.exposeInMainWorld"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** conformance\n\n**Current behavior:** No IPC conformance entries exist.\n\n**Desired behavior:** Land red-until-implemented entries citing `ipc-main.md`, `ipc-renderer.md`, `ipc-main-event.md`, `context-bridge.md`: invoke round trip; handler throw → message-only error; per-channel ordering of send/on; `event.reply` bound to the sender frame; `senderFrame` null after navigation; `sendSync` blocks and `returnValue` assignment replies; structured-clone throws on Function/Promise/Symbol/WeakMap/WeakSet; `contextBridge` value table (functions proxied, prototypes dropped, Symbol unsupported).\n\n**Key interfaces:** KEL-237 manifest cells; fixtures main.js + preload.cjs + index.html.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementation.",
+    "out_of_scope": "Implementation.",
+    "notes": ""
+   },
+   {
+    "key": "F04-T2",
+    "title": "feat(bridge): renderer floor v2 — N pending invokes under a host credit window, window.keld.send/on events, measured payload bound (KEL-80 product-spine slice)",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Lift the KEL-142 floor as the first KEL-80 slice: host-enforced credit window for N pending renderer calls per WebView (slow consumer gets a typed error, never an unbounded queue), host→renderer event fan-out (`window.keld.on`), fire-and-forget `window.keld.send`, and a payload bound chosen by measurement of draw.io export payloads; keep one HELLO, one principal per link, host-minted correlation.",
+    "acceptance_criteria": [
+     "Two overlapping invokes from one page both complete (today the second fails immediately)",
+     "A page exceeding the credit window receives a typed `KELD-WV`/`KELD-IPC` error and the link stays healthy",
+     "Host→renderer event delivery preserves per-channel order under 10k events",
+     "Stale-generation (post-navigation) replies are rejected before dispatch"
+    ],
+    "negative_controls": [
+     "Removing the credit window turns the overflow test into an unbounded queue (test fails on memory/ordering assertion)"
+    ],
+    "blocked_by_keys": [
+     "F04-T1"
+    ],
+    "blocked_by_external": [
+     "KEL-80 (owner; product-spine subset per GitHub #323)",
+     "KEL-142 bridge"
+    ],
+    "linear_owner": "KEL-80 / KEL-142",
+    "review_gates": [
+     "wire protocol",
+     "public API"
+    ],
+    "platforms": "macOS first (WKContentWorld); WebView2/WebKitGTK follow",
+    "electron_members_covered": [
+     "window.keld.invoke",
+     "window.keld.send",
+     "window.keld.on"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** invoke only, channel 1 only, 4096 bytes, one pending call per WebView.\n\n**Desired behavior:** Lift the KEL-142 floor as the first KEL-80 slice: host-enforced credit window for N pending renderer calls per WebView (slow consumer gets a typed error, never an unbounded queue), host→renderer event fan-out (`window.keld.on`), fire-and-forget `window.keld.send`, and a payload bound chosen by measurement of draw.io export payloads; keep one HELLO, one principal per link, host-minted correlation.\n\n**Key interfaces:** keld-wv bridge envelope (wv-link v1 → v2); host credit accounting; `@keld/api` renderer client.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Electron facade on top (F04-T3/T4).",
+    "out_of_scope": "Electron facade on top (F04-T3/T4).",
+    "notes": ""
+   },
+   {
+    "key": "F04-T3",
+    "title": "feat(ipc): ipcMain + webContents.send + event.sender/senderFrame/reply over the el:<channel> control channel with enumerated per-window grants",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Implement the main-process side: `ipcMain.on/once/handle/handleOnce/removeHandler`, `webContents.send` routed to one webview principal, `event.sender` (facade WebContents), `event.senderFrame` (host-minted url/origin, null after navigation), `event.reply` bound to the sender document generation, message-only error envelope; the host evaluates `windows.<w>.channels` (enumerated `el:<channel>`) before forwarding.",
+    "acceptance_criteria": [
+     "draw.io `rendererReq`/`mainResp` multiplexing works unmodified; `validateSender` sees a real `senderFrame.url`",
+     "Zettlr `invoke`/`handle` with 186 sites completes mount without `KELD-WV` floor errors",
+     "An ungranted channel is refused with `KELD-GUARD003` naming the manifest patch; `el:*` is refused by migrate",
+     "Handler throw reaches the renderer as message-only; the wire carries the typed code"
+    ],
+    "negative_controls": [
+     "Removing the grant check lets an ungranted channel through — the negative test fails",
+     "Keying reply to the webview id instead of the document generation makes the stale-reply entry fail"
+    ],
+    "blocked_by_keys": [
+     "F04-T1",
+     "F04-T2",
+     "F03-D4",
+     "F04-A1"
+    ],
+    "blocked_by_external": [
+     "windows.<w>.channels grant spec (open, no owner)",
+     "KEL-102 guard dispatch"
+    ],
+    "linear_owner": "KEL-80 / KEL-102",
+    "review_gates": [
+     "permission model",
+     "wire protocol",
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "ipcMain.on",
+     "ipcMain.once",
+     "ipcMain.handle",
+     "ipcMain.handleOnce",
+     "ipcMain.removeHandler",
+     "ipcMain.removeListener",
+     "webContents.send",
+     "IpcMainEvent.sender",
+     "IpcMainEvent.senderFrame",
+     "IpcMainEvent.reply",
+     "IpcMainInvokeEvent"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No ipcMain; `@keld/api` has one echo channel handler.\n\n**Desired behavior:** Implement the main-process side: `ipcMain.on/once/handle/handleOnce/removeHandler`, `webContents.send` routed to one webview principal, `event.sender` (facade WebContents), `event.senderFrame` (host-minted url/origin, null after navigation), `event.reply` bound to the sender document generation, message-only error envelope; the host evaluates `windows.<w>.channels` (enumerated `el:<channel>`) before forwarding.\n\n**Key interfaces:** Generated `el` control channel structs (contract owner to be named); keld-guard channel grants; facade EventEmitter semantics.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Renderer shim (F07); sendSync (F04-A5); ports (F04-T5).",
+    "out_of_scope": "Renderer shim (F07); sendSync (F04-A5); ports (F04-T5).",
+    "notes": ""
+   },
+   {
+    "key": "F04-T4",
+    "title": "feat(ipc): contextBridge.exposeInMainWorld and ipcRenderer facade in the app preload world (value table, proxied functions, per-engine isolation claim)",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Implement `contextBridge.exposeInMainWorld` once in the renderer runtime: values copied and frozen, functions proxied by id, prototypes dropped, Symbols unsupported, Promise returns supported; `ipcRenderer.send/on/once/invoke/removeListener/removeAllListeners/setMaxListeners`; real isolation on WKWebView/WebKitGTK worlds, labelled page-world emulation ▲ on WebView2 if no isolated world exists; the preload realm is decided by PANEL-D21.",
+    "acceptance_criteria": [
+     "draw.io preload runs unmodified and `window.electron.request/registerMsgListener/sendMessage/listenOnce` behave as under Electron",
+     "Exposed function returning a Promise resolves in the page; a Symbol argument throws like Electron",
+     "KEL-142 isolation negative tests still pass with the app preload installed (raw handler/nonce absent from the page)",
+     "Per-engine isolation claim recorded as ✔ (WK/WebKitGTK) or ▲ (WebView2)"
+    ],
+    "negative_controls": [
+     "Running the preload in the page world passes functionality but fails the isolation negative test — must fail"
+    ],
+    "blocked_by_keys": [
+     "F04-T2",
+     "PANEL-D21",
+     "F04-A3"
+    ],
+    "blocked_by_external": [
+     "KEL-142 §AC isolation tests",
+     "KEL-79 for WebView2 isolated worlds"
+    ],
+    "linear_owner": "KEL-142",
+    "review_gates": [
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "contextBridge.exposeInMainWorld",
+     "contextBridge.exposeInIsolatedWorld",
+     "ipcRenderer.send",
+     "ipcRenderer.on",
+     "ipcRenderer.once",
+     "ipcRenderer.invoke",
+     "ipcRenderer.removeListener",
+     "ipcRenderer.removeAllListeners",
+     "ipcRenderer.postMessage",
+     "webUtils.getPathForFile"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No renderer shim exists.\n\n**Desired behavior:** Implement `contextBridge.exposeInMainWorld` once in the renderer runtime: values copied and frozen, functions proxied by id, prototypes dropped, Symbols unsupported, Promise returns supported; `ipcRenderer.send/on/once/invoke/removeListener/removeAllListeners/setMaxListeners`; real isolation on WKWebView/WebKitGTK worlds, labelled page-world emulation ▲ on WebView2 if no isolated world exists; the preload realm is decided by PANEL-D21.\n\n**Key interfaces:** Renderer compat user-script (F07-T1 runtime); cross-world relay; engine world APIs.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** sendSync (open); preload bundling (F07-T2).",
+    "out_of_scope": "sendSync (open); preload bundling (F07-T2).",
+    "notes": ""
+   },
+   {
+    "key": "F04-T5",
+    "title": "task(ipc): publish deferred/never rows for MessageChannelMain, MessagePortMain, utilityProcess, parentPort, IpcMainServiceWorker and pin one Electron oracle for all F04 cells",
+    "kind": "task",
+    "tier": "Tier 2",
+    "maturity_target": "L0",
+    "what_to_build": "Publish ✘-tracked cells with denominator honesty for MessageChannelMain/MessagePortMain (deferred behind KEL-75 AC7: pinned-oracle fixture first), utilityProcess/UtilityProcess/parentPort (host-declared roles only; PID diagnostic), and documented-never for IpcMainServiceWorker/exposeInIsolatedWorld/executeInMainWorld; resolve the Electron oracle pin drift (lifecycle corpus 44.3.0 vs KEL-75 snapshot vs this map v44.4.5) by recording one pin for all F04 cells.",
+    "acceptance_criteria": [
+     "Scoreboard rows exist for every entity with status and tracking issue",
+     "One oracle pin (v44.4.5 tag commit) is recorded for the family and the drift is documented",
+     "`utilityProcess.fork` throws a typed error naming the role declaration path"
+    ],
+    "negative_controls": [
+     "Returning a fake UtilityProcess object fails the honesty entry"
+    ],
+    "blocked_by_keys": [
+     "F04-T1"
+    ],
+    "blocked_by_external": [
+     "KEL-75 T5/T6"
+    ],
+    "linear_owner": "KEL-75",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "MessageChannelMain",
+     "MessagePortMain",
+     "utilityProcess.fork",
+     "UtilityProcess",
+     "parentPort",
+     "IpcMainServiceWorker"
+    ],
+    "size": "S",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** task\n\n**Current behavior:** None exist.\n\n**Desired behavior:** Publish ✘-tracked cells with denominator honesty for MessageChannelMain/MessagePortMain (deferred behind KEL-75 AC7: pinned-oracle fixture first), utilityProcess/UtilityProcess/parentPort (host-declared roles only; PID diagnostic), and documented-never for IpcMainServiceWorker/exposeInIsolatedWorld/executeInMainWorld; resolve the Electron oracle pin drift (lifecycle corpus 44.3.0 vs KEL-75 snapshot vs this map v44.4.5) by recording one pin for all F04 cells.\n\n**Key interfaces:** Scoreboard rows; facade throws.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Port facade implementation (KEL-75 T5).",
+    "out_of_scope": "Port facade implementation (KEL-75 T5).",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F04-A1",
+    "title": "Who owns the `windows.<w>.channels` grant vocabulary and its evaluator (no live evaluator exists; KEL-102 and KEL-80 do not own it)?",
+    "type": "grilling",
+    "question": "The per-window enumerated `el:<channel>` grant is the renderer→main authorization boundary (panel consensus), but `evaluate` reads only `manifest.app` today and the MCP explain tool refuses `channel`. An approved arch 03 §2 amendment with a named owner is required; the `el:*` example in arch 03 §3 must be revised in the same PR (code/spec mismatch rule).",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F04-A3",
+    "title": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+    "type": "prototype",
+    "question": "Zettlr exposes functions whose page-visible return is produced synchronously (config.get via sendSync wrapper). Both worlds share the DOM, so a shared-DOM relay is a lead; unverified. Measure a cross-world relay (per-call cost, sync return feasibility) in the KEL-142 fixture; fallback is async-only exposure (▲) which keeps draw.io config-only.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F04-A4",
+    "title": "One navigation-generation owner: unify the bridge counter and the guard webview generation",
+    "type": "grilling",
+    "question": "Two generation counters exist today (bridge navigation generation rotated on navigation start; guard Principal::Webview.generation). senderFrame/reply/stale-reply semantics need exactly one owner minted by the host window registry. Decide the owner and the rotation point (navigation commit vs start).",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F04-A5",
+    "title": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+    "type": "prototype",
+    "question": "Arch 02 §5 and KEL-127 require sendSync to exist as a blocking CALL with deadline, rate limit and dev warning; no engine-portable blocking primitive is known on WKWebView. Experiment: page issues a synchronous XMLHttpRequest to a WKURLSchemeHandler-backed scheme that forwards to a stub reply; record thread behaviour, stall, RTT and deadline; derive the rate limit. Zettlr-gated (6 sites); draw.io has 0.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "IpcMainServiceWorker / exposeInIsolatedWorld / executeInMainWorld",
+   "utilityProcess as raw spawn; PID as identity; inherited env/cwd",
+   "runtime-minted kipc channel ids for Electron string channels",
+   "wildcard `el:*` channel grants"
+  ],
+  "out_of_scope": [
+   "MessagePortMain facade implementation (KEL-75 T5, after a pinned-oracle fixture)"
+  ],
+  "not_yet_specified": [
+   "SCV codec v0 domain and bulk-lane refs for large export payloads (draw.io ≥ 30 Mpx PNG base64)",
+   "WebView2 isolated-world availability for the preload runtime"
+  ],
+  "issue_numbers": {
+   "F04-A1": 398,
+   "F04-A3": 399,
+   "F04-A4": 400,
+   "F04-A5": 401,
+   "F04-EPIC": 463,
+   "F04-T1": 464,
+   "F04-T2": 465,
+   "F04-T3": 466,
+   "F04-T4": 467,
+   "F04-T5": 468
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "F04: IpcRendererEvent, IpcMainServiceWorkerEvent, IpcMainServiceWorkerInvokeEvent",
+    "problem": "Covered only by F04-T5's blanket 'rows exist for every entity'. IpcRendererEvent is the first argument of every ipcRenderer.on listener in the draw.io preload (first-proof surface) and belongs with the implementation, not a parked rows ticket.",
+    "suggested_unit": "IpcRendererEvent → F04-T4; the two ServiceWorker events stay in F04-T5."
+   },
+   {
+    "entity": "EPIC-scope-only entities: BrowserView, ImageView, View, WebContentsView, Task, WindowStatePersistence, Debugger, NavigationHistory, sharedTexture, WebFrameMain, OffscreenSharedTexture, Cookies, WebRequest",
+    "problem": "Covered by epic scope / never / fog lines only — acceptable as dispositions except WindowStatePersistence (fog, undecided) and WebFrameMain: IpcMainEvent.senderFrame returns a WebFrameMain whose `.url` draw.io reads on every IPC (electron.js:694-700), so the first-proof needs a WebFrameMain subset that the epic marks out of scope 'beyond senderFrame' without a ticket member.",
+    "suggested_unit": "F04-T3 member list: WebFrameMain {url, origin} subset."
+   }
+  ],
+  "duplicates": [
+   {
+    "keys": [
+     "F04-T4",
+     "F07-T1"
+    ],
+    "problem": "Preload runtime has two owners. Both claim 'draw.io preload runs unmodified' and 'window.electron.request round-trips', both carry the KEL-142 isolation negative tests, both list webUtils.getPathForFile, both are gated by PANEL-D21. F04-T4 says it consumes the 'F07-T1 runtime' but has no edge to it; F07-T1's AC1 needs F04-T3/T4 but is gated only by F04-T2. F04-T4's out-of-scope cites 'preload bundling (F07-T2)' — F07-T2 is the disabled-<webview> ticket.",
+    "fix": "F07-T1 owns world placement, injection order, require map, process polyfill and the isolation re-run. F04-T4 owns contextBridge value table + ipcRenderer semantics and the round-trip AC. Add edge F04-T4 ← F07-T1; delete the duplicated ACs from F07-T1; correct the F07-T2 reference."
+   },
+   {
+    "keys": [
+     "F04-A5",
+     "PANEL-D8",
+     "F04-T1",
+     "PANEL-P1",
+     "F06-T2"
+    ],
+    "problem": "Synchronous-call emulation is spread over five units with no implementation owner: renderer sendSync mechanism (F04-A5), its policy (PANEL-D8), a sendSync conformance entry that must stay red indefinitely (F04-T1), main-side blocking transport (PANEL-P1) and the showMessageBoxSync scaffold (F06-T2). Renderer-side blocking (WKWebView sync XHR) and main-side blocking (parked Bun) are different atoms that the plan repeatedly discusses together.",
+    "fix": "Two atoms, two owners: (1) main-side blocking CALL = PANEL-P1 → new transport ticket (first-proof critical); (2) renderer sendSync = F04-A5 (Zettlr-gated, next). Move the sendSync entry out of F04-T1 into the F04-A5 follow-up."
+   },
+   {
+    "keys": [
+     "F04-A1",
+     "X04-T1",
+     "MAP"
+    ],
+    "problem": "Three units each claim the arch 03 §3 `el:*` example fix 'in the same PR' (F04-A1 question text, X04-T1 'Revise the el:* example', MAP kill-condition fallback). FACT: docs/architecture/03-security.md:97 still shows \"el:*\" at b4b907c3.",
+    "fix": "F04-A1's resolution PR owns the spec amendment and the example fix; delete the claim from X04-T1."
+   },
+   {
+    "keys": [
+     "F04-T5",
+     "X01-T1"
+    ],
+    "problem": "F04-T5 resolves 'Electron oracle pin drift' for the F04 family only, while X01-T1 owns 'Electron pin and digest fields' for the harness. A per-family pin is a second owner of a program-wide rule.",
+    "fix": "Move the pin/drift record to X01-T1; F04-T5 keeps only the deferred/never rows."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F04-T4",
+    "problem": "Over-gate: F04-A3 (synchronous cross-world return) is Zettlr-only — its own text says the async fallback 'keeps draw.io config-only', and draw.io's exposed functions return nothing (results flow through page-supplied callbacks, electron-preload.js:91-126). Missing gate: no edge to F07-T1 whose runtime it consumes.",
+    "fix": "Remove F04-T4 ← F04-A3 (attach it to a Zettlr sync-return follow-up); add F04-T4 ← F07-T1."
+   },
+   {
+    "key": "F04-T3",
+    "problem": "Missing gate: its negative control ('keying reply to the webview id instead of the document generation') and senderFrame-null-after-navigation depend on the one-generation-owner decision F04-A4, which gates only F03-T2. External predecessor 'windows.<w>.channels grant spec (open, no owner)' is a non-artifact.",
+    "fix": "Add F04-T3 ← F04-A4; the grant spec becomes the named output of F04-A1."
+   },
+   {
+    "key": "F07-T1",
+    "problem": "Near-cycle and non-gate: AC1 ('window.electron.request round-trips through F04') needs F04-T3 and F04-T4, while F04-T4 needs F07-T1's runtime. The F04-T2 edge is not consumed by injection, require map or process polyfill. Predecessor 'KEL-142 spec revision (third world/relay)' — KEL-142 is Done and no revision task exists.",
+    "fix": "Move the round-trip AC to F04-T4; F07-T1 ← PANEL-D21 only (plus F02-T2 for per-view registration); name who owns the kel142 spec amendment."
+   },
+   {
+    "key": "X02-T3",
+    "problem": "Missing gates: it emits keld.build.ts 'per F09-T2' (schema does not exist; F09-A6 open), enumerated `el:` channels into windows.<w>.channels (parse-and-ignore until F04-A1), and — per PANEL-D14 — DRAWIO_DISABLE_UPDATE into a host-declared role environment that is not in its five-file list.",
+    "fix": "Edges X02-T3 ← F04-A1 and ← F09-A6 (or drop keld.build.ts from the first-proof artifact); add the role-environment output and its owning schema to the ticket."
+   },
+   {
+    "key": "X05-T2",
+    "problem": "Declared 'serial step 0 before family fan-out' but no ticket is blocked by it — the gate is fictional. Per-family reserved id ranges also conflict with F04-EPIC's 'one fixed control channel, no runtime-minted ids' design.",
+    "fix": "Either add it as a predecessor of every ticket that introduces a kipc channel (F02-T2, F04-T2/T3, F06-T2/T4/T5, F08-T1) or drop the 'step 0' claim; cut reserved family ranges."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F01-T1, F02-T1, F03-T1, F04-T1, F05-T1, F06-T1",
+    "violation": "'Entries may fail (red) until the implementing tickets land; they must not be skipped or retried' collides with the verification floor (reported passing workspace tests; merge admission enforced — KEL-128 Done) and with 'MUST NOT weaken tests / skip gates'. No mechanism is named that lets a red entry coexist with a green required gate.",
+    "fix": "State the mechanism as a contract: entries are KEL-74 cells recorded with an explicit expected status (fail/unknown) asserted by the runner, flipped to pass in the implementing PR; a silently red or ignored test is not allowed."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F04-T2",
+    "problem": "Three atoms in one L ticket (wv-link v1→v2 wire change; credit window; host→renderer events + send) plus a payload bound 'chosen by measurement' with no metric. Negative control 'test fails on memory/ordering assertion' is not deterministic. The bound is justified by export payloads while the first-proof exposure is save/open (file bytes travel through rendererReq/mainResp, electron.js:4441-4447, :4493).",
+    "fix": "Split per atom; negative control = with the window removed, the (N+1)th pending call is accepted (count assertion); add an AC for a save and an open of a document larger than the current 4096-byte floor."
+   },
+   {
+    "key": "F02-T5, F03-T2, F04-T4, F06-T6",
+    "problem": "Disjunctive ACs that cannot fail: 'either implemented or a typed ▲' (F02-T5 AC2), 'either pass the same entries or carry an explicit per-engine ▲' (F03-T2 AC4), '✔ or ▲' (F04-T4 AC4), 'round-trips once the broker lands; until then the typed error' (F06-T6 AC2).",
+    "fix": "Choose the branch per platform in the ticket and assert that one."
+   },
+   {
+    "key": "F04-T3, F03-T3, F03-T4, F06-T3, F06-T4",
+    "problem": "First-proof-relevant tickets carry Zettlr acceptance criteria (e.g. F04-T3 AC2 'Zettlr invoke/handle with 186 sites completes mount', F06-T4 '45 accelerators'), so they cannot close at the draw.io milestone.",
+    "fix": "Move Zettlr ACs to follow-up tickets labelled next."
+   },
+   {
+    "key": "F01-A4, F03-D4, F04-A1, F04-A4, X02-A1, F06-D1, X04-D4",
+    "problem": "Filed as 'open (not resolvable from current evidence)' with body '_No evidence-backed resolution yet; see the unit research note_' — the doctrine's banned 'needs discussion'. Most are ownership choices with a stated recommendation (X02-A1 even contains one), not evidence gaps.",
+    "fix": "Each gets a decision packet in the issue body: options, cost, new invariant, falsifier, recommendation, the one remaining question; resolve the ones evidence already determines (X02-A1, F04-A4)."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F04-T1",
+    "milestone": "first-proof",
+    "reason": "Conformance-first for send/on ordering, event.reply, senderFrame and the contextBridge value table used by the draw.io preload. Park the sendSync entry (0 draw.io sites) and invoke/handle (0 draw.io sites; Zettlr)."
+   },
+   {
+    "key": "F04-T2",
+    "milestone": "first-proof",
+    "reason": "The live floor (invoke only, channel 1, one pending call, 4096 bytes) cannot carry ipcRenderer.send('rendererReq') + ipcRenderer.on('mainResp') (preload :59, :103) or file bytes on save/open (:4441-4447, :4493)."
+   },
+   {
+    "key": "F04-T3",
+    "milestone": "first-proof",
+    "reason": "ipcMain.on('rendererReq') multiplexer with event.reply (:4431-4541), validateSender reading event.senderFrame.url on every message (:694-700), webContents.send('isModified') on close (:960). Park the Zettlr invoke/handle AC."
+   },
+   {
+    "key": "F04-T4",
+    "milestone": "first-proof",
+    "reason": "The preload's contextBridge.exposeInMainWorld('electron', {request, registerMsgListener, sendMessage, listenOnce}) with page-supplied callback functions (:89-126) and exposeInMainWorld('process') (:128). Park exposeInIsolatedWorld, postMessage, webUtils."
+   },
+   {
+    "key": "F04-T5",
+    "milestone": "parked",
+    "reason": "F04-EPIC records zero demand in both apps for MessageChannelMain/MessagePortMain/utilityProcess/parentPort/IpcMainServiceWorker; rows exist for completeness."
+   },
+   {
+    "key": "X04-T1",
+    "milestone": "next",
+    "reason": "A whole-surface security mapping spec serves the strict profile; the two pieces the legacy proof needs are already owned elsewhere (channel grant shape by F04-A1, CSP profile by X04-D3/F05-T4)."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "F03-EPIC (also F07-T1 title, F04-T4 title)",
+    "claim": "'Design facts fixed by research: Preload runs in a dedicated app content world (third world), not the trusted KEL-142 world.'",
+    "problem": "PANEL-D21 is published as CONTESTED and open ('the world choice is open ... decide on arm G results and measured relay cost, not prose') and gates F04-T4 and F07-T1. A contested decision is presented as a fixed fact; F07-T1 even lists a 'KEL-142 spec revision (third world/relay)' predecessor.",
+    "fix": "INFERENCE (one invariants refuter): co-locating the preload with the KEL-142 handler/nonce is unsafe, so a third world is the leading candidate. UNKNOWN until PANEL-D21 arm G: same-world-with-proxy vs third world, and the relay's per-call cost."
+   },
+   {
+    "key": "MAP (census paragraph)",
+    "claim": "'draw.io Desktop ... uses app, BrowserWindow, ..., nativeTheme, `<webview>`, electron-updater ...' and 'Zettlr ... 187 `invoke` call sites'.",
+    "problem": "Contradicts the plan's own corrected facts: draw.io disables <webview> everywhere (webviewTag:false at :728/:1090/:1407/:2210/:3087; will-attach-webview preventDefault at :2223), and F04-EPIC/PANEL-D15/the briefing count 186 invoke sites. Token-scan output survived as a usage statement.",
+    "fix": "'draw.io sets webviewTag:false on every window and vetoes will-attach-webview (zero <webview> use)'; 'Zettlr: 186 ipcRenderer.invoke call sites (resolved)'."
+   },
+   {
+    "key": "F04-EPIC",
+    "claim": "'event.reply binds to the sender document generation (survives same-document hash changes, as Electron keys on the frame host); stale replies are dropped silently like Electron.'",
+    "problem": "Stated as a design fact with no v44.4.5 receipt, while the MAP's forbidden-claims list bans exactly this class of sentence ('webContents.send is dropped after navigation'). The F04 invariants refuter also showed the premise 'Keld rotates Principal::Webview.generation on navigation' is false today (live backends mint generation 0; the bridge keeps a separate u64).",
+    "fix": "FACT (doc, as cited in F04-T1): senderFrame may be null after the frame navigated or was destroyed. INFERENCE: reply-after-navigation is dropped silently in Electron — needs a source receipt or a recorded fixture. FACT: Keld has two counters today; the binding rule is undecided (F04-A4)."
+   },
+   {
+    "key": "F04-T2 (and F04-EPIC owners)",
+    "claim": "'Lift the KEL-142 floor as the first KEL-80 slice' / 'KEL-80 (owner; product-spine subset per GitHub #323)'.",
+    "problem": "KEL-80 is Backlog, unassigned, with no blockers and no sub-issues (Linear, fetched 2026-10-06). There is no KEL-80 slice definition to be 'the first' of; ownership is asserted, not recorded.",
+    "fix": "ASSUMPTION: KEL-80 is the intended owner; it is unstarted and has no task-level artifact. First action: the F04-T2 spec PR names itself as the KEL-80 slice and KEL-80 is updated by the orchestrator."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "F04-A4",
+     "F04-T3",
+     "F03-T2",
+     "F02-T2",
+     "X05-EPIC"
+    ],
+    "coupling": "At least four 'generation' notions are used interchangeably: Bun role generation (tombstones, stale-generation errors in F02-T2), WindowGeneration (F02-T2), bridge navigation_generation u64 rotated on navigation start (keld-wv macos_bridge.rs:335), guard Principal::Webview.generation (0 in live backends per the refuter), plus X05's 'per-window state generation' for the mirror. F04-T3's reply/senderFrame semantics depend on the unification but only F03-T2 is gated by F04-A4.",
+    "fix": "F04-A4's resolution names each generation, its minting owner and rotation point; add edge F04-T3 ← F04-A4; forbid the bare word 'generation' in ticket ACs."
+   },
+   {
+    "keys": [
+     "F04-A1",
+     "F04-T3",
+     "X02-T3",
+     "X02-T2"
+    ],
+    "coupling": "Channel grants ↔ migrate. The runtime boundary (enumerated el:<channel>) is only as good as the list migrate emits; F04-T3 carries a migrate AC ('el:* is refused by migrate'), X02-T3 seeds windows.<w>.channels which the guard parses and ignores today, and the list for draw.io is derivable from main-side ipcMain registrations (25 literals) but not from the preload, which forwards page-chosen names.",
+    "fix": "New explicit rule owned by F04-A1: 'grant list source = main-side literal ipcMain registrations; non-literal registration is reported unenumerable'. Edge X02-T3 ← F04-A1; move the migrate AC from F04-T3 to X02-T3."
+   },
+   {
+    "keys": [
+     "F05-T4",
+     "F04-T3",
+     "F07-A6"
+    ],
+    "coupling": "Page URL identity. draw.io authorizes every IPC with senderFrame.url.startsWith(codeUrl) (:694-700) and filters file:// loads by the same prefix (:1010-1022). If the host serves the app from any origin other than file://<codeDir> (F07-A6 contemplates replacing file:// origins; WebView2 'virtual host mapping' in F05-T4), validateSender returns false for all 25 channels and the app is silently dead.",
+    "fix": "AC in F05-T4: the document URL reported to the app (webContents.getURL, senderFrame.url) equals the file:// URL the app loaded; edge F04-T3 ← F05-T4; F07-A6 records this as a constraint."
+   },
+   {
+    "keys": [
+     "F04-T2",
+     "F03-D4",
+     "F04-T3"
+    ],
+    "coupling": "The payload bound and codec domain decide whether open and save work: file contents travel as IPC payloads (:4441-4447, :4493) and the error reply carries an Error instance (:4541). A JSON-only v0 domain or a bound below the document size turns into silent corruption or a failed save.",
+    "fix": "F03-D4 packet states v0 domain includes Error and a bulk path or explicit size ceiling with a typed failure; F04-T2 AC exercises a save above the old floor."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "PANEL-D21",
+    "why_now": "Takeable now; gates F07-T1 and F04-T4. Arm G with the real draw.io preload installed.",
+    "consumes": "Landed KEL-142 bridge (KEL-142 Done; keld-wv macOS bridge and its isolation negative tests), corpus electron-preload.js. Produces: world choice + measured relay cost."
+   },
+   {
+    "key": "F04-A4",
+    "why_now": "Takeable now as a decision packet (evidence already determines the facts); gates F03-T2 and — once the missing edge is added — F04-T3.",
+    "consumes": "keld-wv macos_bridge navigation_generation (rotates on navigation start), guard Principal::Webview.generation (0 in live backends, kel102 spec note), KEL-75 WindowGeneration spec. Produces: one named owner + rotation point."
+   },
+   {
+    "key": "F04-A1",
+    "why_now": "Takeable now; gates F04-T3 and the grant seeding in X02-T3. The renderer→main boundary has no evaluator (guard evaluate reads manifest.app only).",
+    "consumes": "arch 03 §2/§3 at b4b907c3 (03-security.md:97 still shows el:*), kel102 spec (KEL-102 In Progress), the 25 literal ipcMain channels in drawio electron.js. Produces: approved amendment naming the windows.<w>.channels owner."
+   },
+   {
+    "key": "F03-D4",
+    "why_now": "Takeable now as an ownership decision; gates F03-T5 and F04-T3.",
+    "consumes": "arch 02 §5 SCV text; draw.io value shapes (plain objects, strings, an Error instance at electron.js:4541, file contents). Produces: owner + v0 domain + size ceiling."
+   },
+   {
+    "key": "F04-T1",
+    "why_now": "Takeable now; send/on ordering, event.reply, senderFrame, contextBridge value-table entries precede F04-T2..T4 (sendSync and invoke entries deferred).",
+    "consumes": "KEL-237 manifest/runner; pinned ipc-main.md, ipc-renderer.md, ipc-main-event.md, context-bridge.md."
+   },
+   {
+    "key": "F04-T2",
+    "why_now": "Next: after F04-T1 and X05-T2; the floor that every renderer message crosses.",
+    "consumes": "F04-T1 entries; landed KEL-142 wv-link v1 envelope; KEL-80 (Backlog — the spec PR must name itself as its slice)."
+   },
+   {
+    "key": "F04-T3",
+    "why_now": "Next: after F04-T2, F04-A1, F03-D4 and F04-A4.",
+    "consumes": "Floor v2; channel-grant amendment; SCV v0 domain; generation owner."
+   },
+   {
+    "key": "F04-T4",
+    "why_now": "Next: after F07-T1 and F04-T3 (drop the F04-A3 gate for draw.io).",
+    "consumes": "F07-T1 runtime; F04-T1 value-table entries; F04-T3 routing."
+   },
+   {
+    "key": "F03-T2",
+    "why_now": "Next: after F03-T1, F02-T2, F04-A4 — macOS slice (loadURL file://, did-finish-load, did-navigate, destroyed, zoom members).",
+    "consumes": "Existing page-load-finished observable in keld-wv; generation owner; F02-T2 webview identity."
+   },
+   {
+    "key": "X02-T3",
+    "why_now": "Next: hand-authored draw.io artefact once the config keys it must contain exist (alias, channels, single-instance, role env, legacy profile).",
+    "consumes": "X02-T1 contract; X02-A1; F04-A1 grant shape; F01-T5 declaration key; PANEL-P3 channel/env findings."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny never bypassed; no Electron-isms in keld-core/keld-ipc; one owner per policy/schema/parser/transport; reuse of KEL-75/76/77/78/79/80/53/74/102/135/139-144; measured perf; spec+Linear gate; #312/#313/#319/#322/#323/#325 and KEL-127). Verified by reading origin/main d150a14: crates/keld-wv/src/wkwebview/macos_bridge.rs, crates/keld-wv/src/wv_link.rs, crates/keld-core/src/app_session.rs, crates/keld-guard/src/lib.rs, crates/keld-runtime/src/{virtual_port,role,registry}.rs, crates/keld-ipc/src/{frame,guard_dispatch,call_error}.rs, packages/@keld/{api,electron,kipc}/src, docs/architecture/02..05, docs/specs/kel142/kel139/kel102/kel75/kel98/kel133, crates/keld-compat/AGENTS.md + fixtures/lifecycle-corpus/corpus.json, docs/agents/learnings.md, docs/engineering/{compat-scoreboard.md,product-status.tsv}, docs/research/library/compatibility-competitors/186 and 214, and Linear KEL-80/KEL-142/KEL-127/KEL-97/KEL-102/KEL-79 (Linear MCP was reachable this session). NOT re-verified: Electron v44.4.5 raw docs/source receipts, Microsoft/WebKit vendor docs, scratchpad corpus usage scans.",
+   "verdicts": [
+    {
+     "decision_id": "F04-A1",
+     "verdict": "refuted",
+     "reason": "The carriage shape (fixed control channel(s), Electron string + kind + SCV bytes inside the payload, no runtime-minted u16 ids, host-side guard before forwarding) is consistent with arch 02 §2/§5 and the four-uniques floor and is not contradicted. Two load-bearing sub-claims are contradicted by the sources: (1) 'the namespace and grant shape are already written in arch 02/03' and 'Owner: ... keld-guard channel-grant vocabulary (KEL-102)'. docs/specs/kel102-host-guard-enforcement.md lines 33-36 list 'Adding roles, window grants, channel grants, manifest generation ...' as explicit NON-goals; KEL-102 Linear scope is manifest loading + privileged dispatch only; KEL-97 Linear owns role-link principal binding only. No Linear owner for windows.*.channels exists. (2) The documented channel-grant direction is not string-glob matching: docs/architecture/03-security.md line 172-173 says 'Channel grants connect to the schema layer: a channel's declared capability set (from .k.ts contracts) must be ⊆ the caller's grants', and line 121-123 says `**` is the only wildcard a scope has, 'a lone * matches literally', and channel grants are 'a separate, not-yet-live vocabulary'. The manifest example `\"el:*\"` (line 97) is therefore an illustrative string whose matching semantics are undefined by any live owner; under the existing path/URL matcher it would match the literal text `el:*`. Also keld-guard already has the deny variant for this (`DenyReason::ChannelForbidden { channel }` = KELD-GUARD003, lib.rs lines 293, 320, 361) which `evaluate()` never returns (lib.rs 699-706 denies every non-AppProcess as KELD-GUARD006 first; keld-cli permissions.rs line 64 'Unused in v0'); the object proposes new guard code without naming this existing owner.",
+     "evidence": "docs/specs/kel102-host-guard-enforcement.md:33-36 (non-goals incl. 'channel grants', 'window grants'); KEL-102-D5 line 88 (dispatch_privileged is the sole production caller of keld_guard::evaluate; keld-core 'never evaluates'); docs/architecture/03-security.md:37-38 ('Channel grants are not evaluated'), :97 (`\"el:*\"` example), :121-123 (lone `*` literal; channel grants separate not-yet-live), :172-173 (capability-set ⊆ grants from .k.ts); crates/keld-guard/src/lib.rs:293 ChannelForbidden, :320 'KELD-GUARD003', :565 '`windows` ... ignored', :705-706 NotAppProcess before grant lookup; crates/keld-ipc/src/frame.rs:16-18 ChannelId v0 hardcodes echo; docs/architecture/02-ipc.md:235 ('string names never travel per-call'), :322 (`el:*` EVENT namespace); Linear KEL-97 (role principal binding only); Linear KEL-102 (manifest load + dispatch enforcement only).",
+     "correction": "Keep the carriage shape, but rewrite the owner/vocabulary legs: (a) the `windows.<name>.channels` grant vocabulary needs its own approved spec (arch 03 §2 amendment) with a named owner — it is owned by neither KEL-102 nor KEL-97 today; name it as a new ticket blocked on KEL-102/T4-T5 (webview principal from the host registry). (b) Define the channel-name matcher as a channel-specific grammar (prefix/segment semantics for `el:`), not by extending the path/URL `/**` matcher, and reuse `DenyReason::ChannelForbidden` (KELD-GUARD003) rather than a new deny code; update `keld_permissions_explain` in the same change (learning 2026-08-14 [cli]). (c) Reconcile with arch 03 line 172: either Electron string channels are declared as a contract whose capability set is 'none beyond routing' (so ⊆ holds trivially) or the spec records the glob rule as a second, explicitly-scoped grant form. (d) The host-side match must sit in `keld_ipc::guard_dispatch` (sole evaluate caller per KEL-102-D5) and be framed as generic channel-name grants so no Electron-ism lands in keld-ipc. Lower confidence from 'medium' to 'low' on the ownership leg."
+    },
+    {
+     "decision_id": "F04-A2",
+     "verdict": "survives",
+     "reason": "Every code fact checks out and the ownership/reuse claims match their sources. macos_bridge.rs PAGE_FACADE_SCRIPT rejects channel != 1 (line 69), payload > 4096 (line 71) and a second pending invoke (line 72, 'another renderer invoke is already pending'); host-side admit_invoke enforces the same (lines 380-387); KEL-142 spec §4.1 'Exactly one renderer-originated invoke may be pending per WebView', §11 non-goals list `window.keld.send/on/stream/meta` and 'a second app-link socket, frame parser ... or WebView identity owner'. KEL-80 Linear (2026-09-20 update) is quoted accurately: 'WriteQueue has no aggregate pending-call/byte limit' and '4 KiB is the present virtual-port inline ceiling; 1 MiB/16 MiB arms belong only to protocols that actually admit them', and its 2026-08-19 acceptance already requires 'Host-enforced credits bound control requests, queued bytes and chunked logical blobs; cooperative JS backpressure is not a security control' — which is exactly the host-credit (not renderer-queue) shape A2 proposes. KEL-142 Linear 'It must not create a second renderer-routing protocol' is verbatim. arch 05 §2 destination `window.keld {invoke, send, on, stream, meta}` confirmed. The wv_link.rs envelope is a two-variant enum (Bind | Invoke) with MAX_WV_LINK_ENVELOPE_LEN 64 KiB, so 'extend the envelope kinds' is the natural seam. Caveats that do not overturn it: corpus counts are from the unverified scratchpad scan and disagree slightly with the briefing (object 186 invoke/26 handle vs briefing 187/25); KEL-80 also says 'Preserve the live 16-byte/postcard version until a measured wire review approves change', so any raised renderer bound is gated on measurement, which A2 already states.",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs:69-72, :380-387, :150-158; crates/keld-wv/src/wv_link.rs:14 (MAX_RENDERER_PAYLOAD_LEN 4096), :21 (64 KiB envelope), :42-46 (Bind|Invoke); docs/specs/kel142-macos-renderer-bridge-api.md:116-127, :296-318 (§6 'slow Bun/app-link consumer cannot grow a renderer queue'), :474-485 (§11 non-goals); docs/architecture/05-webview-and-native.md:133-146; Linear KEL-80 description (2026-08-19 and 2026-09-20 sections, quotes verbatim); Linear KEL-142 'must not create a second renderer-routing protocol'; packages/@keld/kipc/src/transport.ts:17 MAX_FRAME_LEN 16 MiB, :23 APP_LINK_IO_DEADLINE_MS 5000.",
+     "correction": "Minor: pin the corpus-scan digest the cell counts come from (object vs briefing differ by one on invoke/handle); state that the host pump in crates/keld-core/src/app_session.rs (~line 3696, single `begin_echo_call`, 'application call is unavailable or already pending') is the second place that must become multi-pending, not only the keld-wv facade."
+    },
+    {
+     "decision_id": "F04-A3",
+     "verdict": "refuted",
+     "reason": "The engine mapping (real isolation on WKWebView/WebKitGTK, documented ▲ emulation on WebView2), 'implement once', frozen-proxy semantics and the labeled-not-silent rule all survive: arch 04 §3 item 3 and KEL-139 AC2 commit to exactly that, and KEL-127 decision 4 forbids silent downgrade. What is contradicted is the stated location: 'the realm the KEL-142 ISOLATED_BRIDGE_SCRIPT already owns'. KEL-142 §5.1 defines that world as 'a trusted script plus native message handler' and lists the native message-handler object, its handler name and the host's document binding as material that app code must not reach; §5.2 item 4 'isolated script retains the nonce outside the page world'. KEL-139 AC2's 'preload realm' is Keld's own 'trusted preload/user-script', not the application's preload. The app's preload is webview-side application code (arch 03 trust table: webview = untrusted). In the live code the isolated world exposes `globalThis.__keldBridgeNativeBind` (macos_bridge.rs line 121) and `window.webkit.messageHandlers.__keld_wv_link_v1` (line 103) as globals of that world; an app preload loaded into the same WKContentWorld could redefine the bind callback to capture the host-minted document nonce and post arbitrary envelopes directly to the native handler, bypassing the facade's client-side shape checks. The host re-validates (admit_invoke), so authority does not widen, but the spec's reviewed-script trust boundary is silently redrawn — which is precisely the kind of undocumented exception root AGENTS.md 'Reject violations at the boundary' forbids. The decision also presents the WebView2 'no isolated-world API' and WebKitGTK '*_in_world' facts from vendor docs I did not re-fetch; treat them as the author's claims.",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md:215-239 (§5.1 'trusted script plus native message handler'; page must not access handler object/name/document binding), :241-259 (§5.2 nonce retained in isolated world); docs/specs/kel139-macos-product-spine.md:87-90 (AC2 'trusted preload/user-script ... no page access to the preload realm'); docs/architecture/03-security.md:19 (webview untrusted); docs/architecture/04-electron-compat.md:74-77 (item 3 real isolated-world exposure where supported, documented emulation otherwise); crates/keld-wv/src/wkwebview/macos_bridge.rs:103 (handler lookup), :121-123 (`globalThis.__keldBridgeNativeBind`), :509-512 (defaultClientWorld + pageWorld only; no third world), :525-536 (two WKUserScripts); Linear KEL-127 decision 4 (no silent downgrade; labeled legacy profile).",
+     "correction": "Decide and record the app-preload realm explicitly instead of inheriting it: preferred — a third, named content world for application preload (WKContentWorld worldWithName: on macOS; the WebKitGTK named-world variants), whose only reachable authority is the same frozen `window.keld` facade shape plus the Electron shim, relayed to the Keld relay world through a shape-restricted handoff that satisfies §5.1 ('accept no broader shape than window.keld.invoke, carry no ... document nonce'). Alternative — a KEL-142 §5.1 amendment stating that application preload shares the trusted relay world and that admit_invoke host re-validation is the only boundary, with a negative-control test (preload cannot obtain a nonce usable from a stale generation). Either way the decision's observable contract gains: 'preload cannot read the document nonce or post to the native handler directly' (or the amendment records why that is acceptable). WebView2 stays ▲ as proposed."
+    },
+    {
+     "decision_id": "F04-A4",
+     "verdict": "refuted",
+     "reason": "The target semantics (sender keyed by host webview id, senderFrame null on generation mismatch, reply silently dropped on stale generation, processId/frameId opaque, subframe IPC ✘) are consistent with arch 02 §7 ('pending replies to the old principal drop'), arch 02 §5 (PID diagnostic only), KEL-142 AC2 ('an iframe has no own window.keld') and KEL-139 AC2 (subframes receive no bridge), and I have no Keld evidence against them. The [fact]-labeled premise 'Keld rotates Principal::Webview.generation on navigation' is false today and hides a one-owner defect: the guard's `Principal::Webview { id, generation: u32 }` is minted with generation 0 by the live backends (media.rs lines 516-518, 540; KEL-102 spec line 414-415: 'Current backends use generation 0; a later navigation registry must increment it'), while the KEL-142 bridge keeps its own separate `navigation_generation: u64` in keld-wv BridgeState (macos_bridge.rs lines 293-334) that does rotate on navigation_started. Two counters with two owners and two widths exist; A4 silently assumes they are one 'host navigation generation'. A grant check (A1) evaluated against a webview principal with generation 0 while replies are routed by the bridge's u64 would let senderFrame nullability and guard revocation disagree. The object's own unknown (allocation-free snapshot of url/origin per dispatch under arch 02 §6) stands.",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs:179, :204, :228-229, :293, :301-312 (`navigation_generation: u64`, starts 0), :334 (navigation_started); crates/keld-wv/src/media.rs:450, :516-518 (`generation: 0`), :540; crates/keld-guard/src/lib.rs:109-113 (`Webview { id, generation: u32 }`); docs/specs/kel102-host-guard-enforcement.md:414-416; docs/architecture/02-ipc.md:362-363 (§7 navigation rotates principal generation; pending replies drop), :335-337 (§5 host mints principal ids); docs/specs/kel142-macos-renderer-bridge-api.md:377 (AC2 iframe); docs/specs/kel139-macos-product-spine.md:89-91; crates/keld-core/src/lib.rs:3 ('Owns ... the window/webview registries' — doc claim; app_session has one WkWebViewEngine).",
+     "correction": "Replace the premise with: 'Keld has two generation counters today (bridge `navigation_generation: u64`, guard `Principal::Webview.generation: u32 = 0`); A4 requires one owner.' Add a decision atom: the keld-core host window/webview registry (KEL-102 §'Webview policy-injection' destination, KEL-142 lineage) mints a single navigation generation that both the wv-link bridge state and `Principal::Webview` consume; the bridge's private counter becomes a view of it, not a second source. Observable contract: one navigation yields the same generation value in the KELD_KEL142_BIND log, the guard principal presented to dispatch_privileged, and the senderFrame nullability decision. Negative control: a fixture that rotates only one of the two counters must fail the conformance cell. Keep the Electron-side semantics as proposed, but note their receipts (ipc-main-event.md, web-contents.ts sendToFrame) were not re-verified in this pass."
+    },
+    {
+     "decision_id": "F04-A5",
+     "verdict": "unresolved",
+     "reason": "The contract leg is well-sourced: arch 02 §5 last bullet ('sync sendSync supported but rate-limited + dev-warned (it's a blocking CALL with a deadline ...)'), arch 04 §2 (`keld.compat.ts` owns 'sendSync policy'), and KEL-127 delegated decision 5 ('Async-first native APIs do not authorize pretending asynchronous calls preserve synchronous Electron semantics') plus decision 4 (unsupported combinations need explicit diagnostics and a visibly labeled legacy profile, 'never a silent downgrade'). The mechanism leg is unproven, as the author says, and two of the proposed candidates collide with existing owners as framed: (1) 'synchronous XMLHttpRequest to a host-served custom-scheme endpoint' is a second renderer->host path; KEL-142 Linear forbids 'a second renderer-routing protocol' and KEL-79 Linear states the resource listener 'is not used for Keld IPC' — so this candidate is admissible only if specified as a wv-link envelope kind riding the KEL-79 resource transport with both owners amended, not as an independent endpoint. (2) The rejection reason for alternative (b) is wrong for the right conclusion: Atomics.wait is not permitted on a document's main thread at all (window agents cannot block), independent of COOP/COEP; it remains rejected, but the recorded reason should be corrected (my recollection of the ECMAScript/HTML agent rules; not re-fetched this pass). Also KEL-142 §6 'no UI thread blocks on Bun, app-link I/O, or handler completion' needs an explicit statement that sendSync blocks the engine's WebContent/renderer process thread, not the host UI thread, and what happens if the engine runs the renderer in-process (none of the three do, but the spec must say it). Electron's observable when returnValue is never set is still unrecorded.",
+     "evidence": "docs/architecture/02-ipc.md:335-337; docs/architecture/04-electron-compat.md:39 (`keld.compat.ts` ... sendSync policy); Linear KEL-127 'Delegated first-principles direction — 2026-09-17' decisions 4 and 5 and 'Current-documentation receipt' ('A silent asynchronous replacement changes the caller contract'); Linear KEL-142 ('must not create a second renderer-routing protocol'); Linear KEL-79 acceptance ('Listener binds loopback port 0 ... and is not used for Keld IPC'; 'Browser-internal MessagePort/transferables are not claimed to cross the native boundary'); docs/specs/kel142-macos-renderer-bridge-api.md:318 ('no UI thread blocks ...'); crates/keld-wv/src/webkitgtk/mod.rs and webview2/mod.rs contain no script-injection/bridge code (no Linux/Windows primitive exists to prototype against in-tree).",
+     "correction": "Missing evidence: a measured per-engine prototype (RTT p50/p99, deadline enforcement, renderer-thread vs host-UI-thread behavior, behavior when WebKit refuses sync XHR e.g. during unload) and the recorded Electron oracle for 'returnValue never set'. Cheapest experiments, in order: (a) macOS: WKURLSchemeHandler-backed scheme + synchronous XHR from a test page bound to the document nonce — record whether WebKit services the request synchronously and the RTT; (b) Windows: read the ICoreWebView2 AddHostObjectToScript / `chrome.webview.hostObjects.sync` documentation and prototype one blocking call, measuring UI-thread reentrancy; (c) Electron v44.4.5 pinned fixture: listener never sets returnValue — record the renderer observable. Before any of these, write the one-line owner reconciliation: the sync path is a wv-link envelope kind (KEL-142 seam) carried over the KEL-79 resource transport only with a KEL-79/KEL-142 amendment; otherwise fall back to the ▲ 'sendSync: reject' cell with diagnostic, which KEL-127 decision 4 explicitly permits."
+    },
+    {
+     "decision_id": "F04-A6",
+     "verdict": "survives",
+     "reason": "Within the visible (truncated) text, every Keld-side anchor holds: KEL-75 spec AC7 requires facade behavior to match a pinned-oracle conformance entry ('An operation without an oracle remains unknown'), T5 is the unstarted facade task, and §'Routed virtual ports' states 'Exact Electron event/error shape is established by pinned-oracle conformance fixtures rather than assumed'; arch 02 §5 makes start/queued/close/transferable behavior 'a pinned-oracle conformance requirement'; arch 04 §3.1 and §4 place utilityProcess/MessageChannelMain in Tier 2 behind host-declared roles and host-owned ports; KEL-80 Linear ('Separate browser-native MessagePort semantics from Keld virtual channels; do not claim a browser port crosses native') and KEL-79 ('Browser-internal MessagePort/transferables are not claimed to cross the native boundary') support treating renderer-side ports as facade objects. The runtime bounds cited (DEFAULT_PORT_QUEUE_CAPACITY 64, MAX_PORT_MESSAGE_LEN 4096, KELD-RUNTIME-004..011, one-shot transfer; RoleOwner Primary/AppBound only, 'window-bound is T4 and is not admitted here') are exact. Deferral with ✘ cells and denominator honesty matches compat-scoreboard.md rules. Zero corpus demand is from the scratchpad scan (not re-run) but is consistent with the briefing's per-app module lists. Residual: IpcMainServiceWorker/exposeInIsolatedWorld/executeInMainWorld on a 'never' list extends arch 04 §4's published documented-never list (V8 flags, Chromium switches, remote module), which requires an arch 04 amendment rather than a scoreboard note alone.",
+     "evidence": "docs/specs/kel75-principalized-bun-child-roles.md:80-83 (AC7), :347-360 (Routed virtual ports), :362-370 (Electron facade boundary), :411-416 (T4/T5 unchecked); docs/architecture/02-ipc.md:327-334; docs/architecture/04-electron-compat.md:117-131 (§3.1), :135-143 (Tier 2/3 and documented-never list); crates/keld-runtime/src/virtual_port.rs:12, :15, :115, :184-219; crates/keld-runtime/src/role.rs:119-126; crates/keld-runtime/src/registry.rs:92-174; Linear KEL-80 2026-08-19 bullet 2; Linear KEL-79 'Framework-first scope' bullet 5; docs/engineering/compat-scoreboard.md rules 1-4.",
+     "correction": "Record the 'never' additions as an arch 04 §4 documented-never-list amendment (spec gate), and pick one Electron oracle pin for all F04 cells (see extra finding on pin drift) before landing the MessagePortMain fixture."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Two independent 'generation' owners exist today and the object treats them as one: keld-wv BridgeState `navigation_generation: u64` (KEL-142, rotates on navigation_started) vs keld-guard `Principal::Webview.generation: u32` (minted as 0 by live media code; KEL-102 spec says a later navigation registry must increment it). A1's guard match, A4's senderFrame nullability/reply drop and KEL-75 AC8 renderer-continuity beacons all depend on which value is authoritative. This is a one-rule-one-owner defect that must be resolved before any F04 cell is scored.",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs:293-334; crates/keld-wv/src/media.rs:516-518, :540; crates/keld-guard/src/lib.rs:109-113; docs/specs/kel102-host-guard-enforcement.md:414-416; docs/architecture/02-ipc.md:362-363"
+    },
+    {
+     "severity": "medium",
+     "finding": "Electron oracle pin drift: the live lifecycle corpus pins Electron 44.3.0 @ 07e460719c75b2ec5ee4893f7d2192ef31c7b8c2, the KEL-75 spec pins oracle snapshot electron@cbb5e25d1dca07f5001b9c2f9feec23cdd445cb6, and every F04 receipt cites v44.4.5 (while Zettlr itself declares electron ^43.6.0 and the briefing notes v44.5.1 is latest). KEL-74 cells need one oracle_id pin; the dispatch-order, error-text and 'returnValue never set' receipts must be re-cited at the chosen commit or the cells are unknown.",
+     "evidence": "crates/keld-compat/fixtures/lifecycle-corpus/corpus.json upstream.electron_commit; docs/specs/kel75-principalized-bun-child-roles.md:36; briefing lines 3-4 and 91; object receipts (all v44.4.5)"
+    },
+    {
+     "severity": "medium",
+     "finding": "KEL-142 §7 and the live @keld/api collapse every handler failure to KELD-API-001 'application channel call failed' with 'no stack or secret returned to renderer', and forbid allocating new KIPC codes for webview-local failures. The semantic trap 'invoke error text is exactly Error invoking remote method ... <error.toString()>' therefore requires a spec decision that app-handler-provided error text may cross host->renderer (Electron does this; it is app-controlled text, but it is a new disclosure path through the host). The object lists it as a trap but not as a decision atom or spec amendment; A1's 'facade rendering of CallError.message' assumes the permission already exists.",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md:327-341; packages/@keld/api/src/echo-call.ts:38-40; packages/@keld/api/src/channels.ts:29, :73; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md row 6 ('expose stable typed errors without leaking implementation messages')"
+    },
+    {
+     "severity": "medium",
+     "finding": "KEL-98's codegen is an explicitly bounded exception for the echo structs only ('no general Rust parser, derive/proc macro, IDL, or arbitrary schema generator'; the generator 'must not emit a second client method/interface whose operation name or request/response pairing is absent from its canonical Rust input'). Reuse point 9 / A1's 'generated (KEL-98-style) Rust-owned struct' for el: control frames needs a KEL-98 scope amendment; KEL-127 decision 5 names echo-codegen as the owner but does not widen its approved scope.",
+     "evidence": "docs/specs/kel98-echo-codegen.md:25-26, :44-52; Linear KEL-127 decision 5; Linear KEL-80 ('KEL-98 retains generated-contract ownership; no wire/ABI change')"
+    },
+    {
+     "severity": "medium",
+     "finding": "Misattributed owner: `RendererBridgeEndpoint`, `RendererBridgeRequest` and `RendererBridgeOutcome` are defined in crates/keld-wv/src/wkwebview/macos_bridge.rs (pub struct at line 275), not keld-core; keld-core app_session.rs only imports them and runs a polling pump thread (recv_timeout(APP_LINK_READER_POLL), single begin_echo_call, 'application call is unavailable or already pending'). For A2's floor v2 this means multi-pending/credit must be implemented in both the keld-wv facade/state and the keld-core pump, and the pump is a thread poll loop rather than the arch 02 §6 readiness-driven state machine — a perf/ownership atom A2 should name.",
+     "evidence": "crates/keld-wv/src/wkwebview/macos_bridge.rs:177, :223, :275; crates/keld-core/src/app_session.rs:98-99, :1853, :3696-3790"
+    },
+    {
+     "severity": "medium",
+     "finding": "The 'no Electron-isms in keld-core/keld-ipc' rule is written only in crates/keld-compat/AGENTS.md and the briefing; crates/keld-core/AGENTS.md and crates/keld-ipc/AGENTS.md do not mention Electron. Since KEL-102-D5 makes keld_ipc::guard_dispatch the sole production evaluate caller, the host-side `el:` string match (A1) will land in keld-ipc; the invariant that it is a generic channel-name grant (no Electron parsing/SCV decode in Rust) should be added to the owning crate AGENTS.md via `.agents/instructions.md` or it is unenforced at the boundary.",
+     "evidence": "crates/keld-compat/AGENTS.md line 'No Electron-isms in keld-core/keld-ipc'; grep -i electron crates/keld-core/AGENTS.md crates/keld-ipc/AGENTS.md returns nothing; docs/specs/kel102-host-guard-enforcement.md:88 (D5)"
+    },
+    {
+     "severity": "medium",
+     "finding": "A5's alternative candidate conflicts with KEL-79 as framed: KEL-79 acceptance requires the resource listener to be 'not used for Keld IPC', and KEL-142 forbids a second renderer-routing protocol. A sync-XHR sendSync over a host-served scheme is admissible only as a wv-link envelope kind riding the KEL-79 transport with both tickets amended; the object should state this dependency so the prototype does not become an undocumented second transport.",
+     "evidence": "Linear KEL-79 acceptance bullet 2 and 'Framework-first scope' bullet 5; Linear KEL-142 Independence section"
+    },
+    {
+     "severity": "low",
+     "finding": "No Linux/Windows renderer bridge code exists at all (webkitgtk/mod.rs and webview2/mod.rs contain no user-script injection or message handler), so every A3/A5 platform note for those engines rests on vendor docs the object cites but this pass did not re-fetch; the floor v2 spec (A2) must be engine-neutral by contract while only macOS can execute it, and cells must be labeled per engine (KEL-79: 'one engine's pass cannot stand in for another').",
+     "evidence": "crates/keld-wv/src/webkitgtk/mod.rs, crates/keld-wv/src/webview2/mod.rs (grep for UserScript/AddScriptToExecuteOnDocumentCreated/window.keld: none); docs/engineering/product-status.tsv package.keld-web 'specified ... no package is tracked'"
+    },
+    {
+     "severity": "low",
+     "finding": "Corpus demand numbers are unpinned: the object says Zettlr 186 invoke / 26 handle; the briefing says 187 / 25. The KEL-74 cell shape needs the scan artifact digest, otherwise demand ranking is a lead, not evidence (compat-scoreboard rule 6).",
+     "evidence": "briefing line 93; object summary and A2 evidence; docs/engineering/compat-scoreboard.md rule 6"
+    },
+    {
+     "severity": "low",
+     "finding": "A5 alternatives_rejected (b) gives an inaccurate reason: Atomics.wait is disallowed on a document's main thread regardless of cross-origin isolation (window agents cannot block), so the conclusion (reject) is right but the recorded reason should be corrected to keep the decision record falsifiable. Not re-fetched from the ECMAScript/HTML specs this pass; mark [inference] until cited.",
+     "evidence": "object F04-A5 alternatives_rejected (b)"
+    },
+    {
+     "severity": "low",
+     "finding": "A6/the security mapping adds IpcMainServiceWorker, exposeInIsolatedWorld, executeInMainWorld and UtilityProcess.login to a 'never' list; arch 04 §4 says the documented-never list is published and currently names only V8 flags, Chromium command-line switches and the remote module. Extending it is a spec amendment under the spec+Linear gate, not a scoreboard annotation.",
+     "evidence": "docs/architecture/04-electron-compat.md:141-143"
+    }
+   ]
+  },
+  {
+   "lens": "Electron v44.4.5 semantics accuracy (pinned docs + lib/shell sources) and corpus demand (draw.io Desktop, Zettlr, electron-quick-start clones), plus slice sizing/sequencing",
+   "verdicts": [
+    {
+     "decision_id": "F04-A1",
+     "verdict": "survives",
+     "reason": "Every load-bearing claim checks out: Electron dispatches purely on the channel string with two separate registries (EventEmitter listeners vs `_invokeHandlers` Map), kipc channels are u16 handles resolved at handshake, the `el:*` namespace and `windows.<name>.channels` grant shape are already written in arch 02 §5 / arch 03 §2 but the guard ignores the `windows` key and denies every non-AppProcess principal before grant lookup, so new guard code (not configuration) is required. The two rejected alternatives are correctly rejected (per-string u16 minting has no live channel table; a facade allowlist bypasses keld-guard). Corpus demand for runtime-registered string listeners is real (draw.io: 12 `ipcMain.once`, 5 `removeListener`, 2 `removeAllListeners` on per-export string keys).",
+     "evidence": "[fact] https://raw.githubusercontent.com/electron/electron/v44.4.5/lib/browser/ipc-main-impl.ts `_invokeHandlers: Map` separate from EventEmitter; lib/browser/ipc-dispatch.ts `targets.find(target => target._invokeHandlers.has(channel))`. [fact] docs/architecture/02 line 235 'channels are u16 handles resolved at handshake from schema names (string names never travel per-call)'; line 322 'ipcRenderer.send/on ⇄ EVENT frames on a compat channel namespace (el:*)'. [fact] docs/architecture/03 line 97 `\"main\": { \"channels\": [\"notes.*\", \"el:*\"] }`, line 123 'Channel grants are a separate, not-yet-live vocabulary'. [fact] crates/keld-guard/src/lib.rs:565 'Unknown top-level keys ($schema, windows, audit) are ignored', :706 `Deny(DenyReason::NotAppProcess)` before grant lookup; docs/agents/learnings.md line 66. [fact] corpus drawio-desktop/src/main/electron.js lines 900-3387: ipcMain.once/removeListener on 'export-finalize', 'render-finished', 'import-success', 'xml-data' etc.",
+     "correction": "Three precisions, none fatal: (1) the ungranted-channel rejection already has an owner code — `DenyReason::ChannelForbidden` renders `KELD-GUARD003: channel ... is not granted to this principal` (crates/keld-guard/src/lib.rs:293-394) — so the facade-visible rejection must be a rendering of KELD-GUARD003, not a 'KELD-WV-011-class' reason as the object says; (2) 'string names never travel per-call' (arch 02 §2) is contradicted literally by carrying the Electron string in every frame; the spec amendment must say so explicitly and the host-side glob match must be allocation-free on the receive path (root AGENTS hot-path rule), which rules out a Rust glob crate or String allocation per frame; (3) the only channel-glob grammar text in arch 03 (`**` only wildcard, lone `*` literal) is for path/URL scopes while the example uses `notes.*`/`el:*` — the channel grammar is unspecified and an `el:*` catch-all makes default-deny nominal for migrated apps unless `keld migrate` can enumerate channel strings from app source (feasibility unknown; draw.io/Zettlr channels are literal strings so static enumeration is plausible but unproven)."
+    },
+    {
+     "decision_id": "F04-A2",
+     "verdict": "survives",
+     "reason": "The live floor's three limits are code facts, and both corpus apps violate all three on their happy paths: Zettlr issues 186 `ipcRenderer.invoke` sites (any two overlapping settle the second as KELD-WV-011 busy); draw.io's preload uses only send/on/once (no invoke exists in the floor) and replies export data (`event.reply('export-success', data)` with base64 PNG/JPEG or XML) and whole-file contents (`readFile` → `mainResp`) that are not 4 KiB-bounded. arch 05 §2 already names `window.keld {invoke, send, on, stream, meta}` as the destination and `FrameKind::Grant` has no live sender, so a specified floor v2 is a genuine prerequisite, not optional polish.",
+     "evidence": "[fact] crates/keld-wv/src/wkwebview/macos_bridge.rs:69 `if (channel !== 1) return fail(...)`, :71 `payload.byteLength > 4096`, :72 `if (pending !== null) return fail(\"another renderer invoke is already pending\")`; docs/specs/kel142-macos-renderer-bridge-api.md lines 114-126. [fact] corpus grep: zettlr/source `ipcRenderer.invoke` = 186, `ipcMain.handle` = 26, `webContents.send(` = 49; drawio-desktop `ipcRenderer.invoke` = 0, `ipcRenderer.send(` 2 / `.on(` 3 / `.once(` 1 in electron-preload.js. [fact] drawio electron.js:3259/3337/3353/3380 `event.reply('export-success', data)` where `data = img.toPNG()`/`toJPEG()` optionally `.toString('base64')`; :2403 `const LARGE_IMAGE_AREA = 30000000;` (draw.io explicitly handles ≥30-megapixel exports). [fact] docs/architecture/05 lines 133-146 window.keld destination shape; docs/architecture/02 line 254 'FrameKind::Grant exists in the wire schema but has no live sender/receiver'. [fact] packages/@keld/kipc/src/transport.ts:17 MAX_FRAME_LEN = 16 MiB.",
+     "correction": "Sizing/sequencing: as written the 'first ticket' bundles four changes (host credit window for N pending, send/on, bulk sizing by measurement, el control channel) — not a tracer bullet. Split it: v2a = N-pending with host credit + `send`/`on` over the existing wv-link envelope, 4 KiB kept, falsifier 'two concurrent invokes settle; draw.io preload loads unmodified and one small rendererReq/mainResp round-trip completes'; v2b = bulk lane sized by measuring real draw.io export/readFile payloads (30 MP PNG base64 can exceed 16 MiB, so this is a STREAM/bulk-ref lane question, not a bigger inline bound). Ownership caveat: the object cites 'KEL-80 Linear acceptance (2026-09-20 additive update)' and 'KEL-142 Linear: must not create a second renderer-routing protocol'; neither is verifiable here (Linear unavailable headless; the KEL-142 spec file contains only 'no second renderer CALL is admitted'), and docs/research/library/execution-governance/236-execution-readiness-graph.md line 228 records KEL-79/KEL-80 as 'Parked by explicit owner orders (2026-08-19/20); YAGNI gates'. Publishing floor v2 under KEL-80 therefore needs an explicit unpark decision recorded, or a new owner."
+    },
+    {
+     "decision_id": "F04-A3",
+     "verdict": "refuted",
+     "reason": "The placement (preload runtime once in the isolated world; WebView2 as labeled page-world emulation) and the value semantics are correctly sourced, but the proposed call mechanism — 'function calls relayed over the existing page<->isolated postMessage channel' — is asynchronous, while Electron's contextBridge function proxies are synchronous same-isolate calls whose return values (including function-valued returns) are copied back synchronously. Under an async relay every exposed function returns a Promise. Zettlr's preload breaks at first use independent of sendSync: `window.ipc.on(channel, listener)` must synchronously return an unsubscribe *function* (a function in return position, proxied back into the page world), `getCitationCallback(db)` returns a function, `config.get()` returns a value, `process.uptime()` returns a number, `getPathForFile(file)` returns a string. draw.io's `electron.request` is void so it would survive by accident. This is therefore not a semantic unknown deferred to A5; it is a separate decision-bearing atom (cross-world synchronous call) that the design as stated fails.",
+     "evidence": "[fact] https://raw.githubusercontent.com/electron/electron/v44.4.5/shell/renderer/api/electron_api_context_bridge.cc ProxyFunctionWrapper: `maybe_return_value = func->Call(func_owning_context, recv, proxied_args.size(), proxied_args.data())` inside a `v8::TryCatch` — synchronous; promises are proxied only when the returned value `IsPromise()` (lines 243-347). [fact] docs/api/context-bridge.md lines 82, 144, 151, 158 (copied+frozen, Error custom props lost, Symbol dropped, ipcRenderer→empty object); lib/renderer/api/context-bridge.ts `checkContextIsolationEnabled`. [fact] corpus zettlr/source/common/modules/preload/index.ts:38-50 `on: (channel, listener) => { ...ipcRenderer.on(channel, callback); return () => ipcRenderer.off(channel, callback) }`, :69-78 `getCitationCallback` returns a function, :56-66 `config.get/set` return sendSync results synchronously, :96 `uptime: () => process.uptime()`, :106-114 `getPathForFile`. [fact] crates/keld-wv/src/wkwebview/macos_bridge.rs:510-540 isolated script in `WKContentWorld::defaultClientWorld`, facade in `pageWorld`, both `forMainFrameOnly=true`; page↔isolated traffic today is `window.webkit.messageHandlers.__keld_wv_link_v1` (async). [fact] https://webkitgtk.org/reference/webkit2gtk/stable/method.UserContentManager.register_script_message_handler_in_world.html 'since: 2.22'. [fact] learn.microsoft.com ICoreWebView2 reference fetched 2026-10-06: no method mentions an isolated world.",
+     "correction": "Keep 'implement once in the isolated world' but replace the relay atom: (1) add a prototype atom 'synchronous cross-world call on WKWebView and WebKitGTK' — candidate [lead, unverified]: both worlds share the DOM, so a synchronous `dispatchEvent(new CustomEvent(...))` on a hidden node runs the isolated-world listener synchronously and request/reply can ride shared DOM state (attribute/text strings), giving Electron-equivalent sync semantics without a host round trip; measure cost and confirm JS values do not leak across worlds; if it fails, the cell is ✘/▲ 'exposed functions return Promises' with a `keld.compat.ts` diagnostic, never silent; (2) on WebView2 the single world gives synchronous calls natively — its ▲ is isolation only, so split the WebView2 cell into 'synchrony ✔ / isolation ▲'; (3) add conformance vectors for function-valued return proxies in both directions (Zettlr `on()` unsubscribe, `getCitationCallback`) and for Promise-returning functions (Zettlr `invoke` passthrough); (4) only sendSync-backed exposed functions (`config.get/set`, `getCitationCallback`'s inner function) depend on A5."
+    },
+    {
+     "decision_id": "F04-A4",
+     "verdict": "survives",
+     "reason": "Electron behavior is correctly stated: `senderFrame` is documented nullable after navigation/destruction; `event.reply` is `sender.sendToFrame([processId, frameId], ...)` and `sendToFrame` returns false (no throw) when `webFrameMain.fromId` resolves no RenderFrameHost; Principal::Webview{id, generation} and arch 02 §7 'pending replies to the old principal drop' exist; KEL-142 AC 'an iframe has no own window.keld' is in the spec. Corpus demand for sender/senderFrame is exactly as described (draw.io `validateSender` null-check + `frame.url` prefix test in 25 call sites; Zettlr `BrowserWindow.fromWebContents(event.sender)`, `sender.cut/copy/paste/selectAll/inspectElement/startDrag`, `event.senderFrame ?? undefined`).",
+     "evidence": "[fact] docs/api/structures/ipc-main-event.md 'May be null if accessed after the frame has either navigated or been destroyed'. [fact] lib/browser/ipc-dispatch.ts `event.reply = (channel, ...args) => event.sender.sendToFrame([processId, frameId], channel, ...args)`; lib/browser/api/web-contents.ts:133-138 `const frame = getWebFrame(this, frameId); if (!frame) return false;`; shell/browser/api/electron_api_web_frame_main.cc FromID → `content::RenderFrameHost::FromID(...)`, returns Null when absent. [fact] crates/keld-guard/src/lib.rs:105-111 `Principal::Webview { id: u32, generation }`; docs/architecture/02 line 362. [fact] docs/specs/kel142-macos-renderer-bridge-api.md:377 'an iframe has no own window.keld'. [fact] corpus drawio electron.js:694-700 validateSender; zettlr/source/app/service-providers/windows/index.ts:157-201 and menu/index.ts:239.",
+     "correction": "Two semantic corrections and one resolved unknown: (1) Electron's reply drop is keyed to RenderFrameHost identity, which survives same-document navigations (hash/pushState) — draw.io mutates `location.hash` for file state — so Keld's generation must rotate only on cross-document navigation (the KEL-142 document nonce boundary), never on same-document URL changes, or draw.io's rendererReq/mainResp replies would be dropped where Electron delivers them; state this as the contract and add a hashchange-during-pending fixture. (2) 'silently dropped' is not the only Electron outcome: when the WebFrameMain object exists but its render frame is disposed, `frame.send` throws 'Render frame was disposed before WebFrameMain could be accessed' (electron_api_web_frame_main.cc:262-268), and `WebFrameMain::Send` throws 'Failed to serialize arguments' on unserializable args — so the facade's `event.reply` must still throw for serialization failures and the drop-vs-throw boundary should be recorded as ▲. (3) The object's unknown 'webContents.send on a destroyed WebContents (throw vs no-op)': `WebContents.prototype.send` delegates to `this.mainFrame.send`, which throws the disposed-frame error above once the frame is gone; the destroyed-WebContents `mainFrame` getter path itself was not verified in this pass."
+    },
+    {
+     "decision_id": "F04-A5",
+     "verdict": "unresolved",
+     "reason": "The contract half is correctly sourced (blocking renderer, returnValue setter sends on assignment so a listener may set it after returning, console.warn when no listener anywhere, sync throw on unserializable args) and the mechanism half is genuinely unproven for WebKit engines: WKScriptMessageHandler/WKScriptMessageHandlerWithReply and WebKitGTK script-message handlers (including `_with_reply`) are asynchronous, and no primary source for a synchronous page→host call on WKWebView/WebKitGTK was found in this pass either. Zettlr's six sendSync sites (3 in preload, 2 in pinia/config.ts via `window.ipc`, 1 passthrough) are real and sit behind synchronously-returning exposed functions, so a silent Promise rewrite would break `window.config.get()` consumers.",
+     "evidence": "[fact] docs/api/ipc-renderer.md lines 226-229 'block the whole renderer process until the reply is received ... last resort'. [fact] lib/browser/ipc-dispatch.ts `addReturnValueToEvent`: `set: (value) => event._replyChannel.sendReply(value)`; sync-path `console.warn(\"WebContents #${id} called ipcRenderer.sendSync() with '${channel}' channel without listeners.\")`. [fact] shell/renderer/api/electron_api_ipc_renderer.cc SendSync: `SerializeV8Value` failure returns with exception set (sync throw), then `MessageSync(...)` + `DeserializeV8Value(result)`. [fact] corpus zettlr preload/index.ts:37,57,63,74 and pinia/config.ts:20 `const ipcRenderer = window.ipc`, :28,:49. [fact] scratchpad prototypes/f05-wk-scheme/main.swift is a working WKURLSchemeHandler + WKScriptMessageHandler harness; prototypes/sync-probe is an Atomics.wait probe in Bun only (not in a webview).",
+     "correction": "Three upgrades to the object: (1) the 'docs silent / unknown' observable for a never-set returnValue is derivable from source: `ReplyChannel` is a cppgc wrappable with `CPPGC_USING_PRE_FINALIZER(ReplyChannel, EnsureReplySent)`; when the IpcMainEvent is garbage-collected with the callback still pending, Electron posts `SendError(..., \"reply was never sent\")`, so the blocked renderer eventually receives the plain object `{ error: 'reply was never sent' }` as sendSync's return value (no throw) after a GC-dependent, nondeterministic delay (shell/common/gin_helper/reply_channel.{h,cc}). Record that as the oracle; Keld's typed deadline error is therefore a ▲ by construction, not something to 'record before scoring'. (2) The Windows [lead] is now a [fact]: the ICoreWebView2 AddHostObjectToScript reference states host objects are exposed as `window.chrome.webview.hostObjects.sync.{name}` whose 'function runtimes or property access synchronously block running script waiting to communicate cross process for the host code to run' (learn.microsoft.com, fetched 2026-10-06); only the WebKit engines lack a primary source. (3) Cheapest settling experiment: extend prototypes/f05-wk-scheme/main.swift so page.html runs a synchronous `XMLHttpRequest` (`open(..., false)`) against the registered scheme and the `WKURLSchemeHandler` answers after a host-side hop; observe whether `start(task)` fires while the page thread is blocked, the RTT, and main-thread behavior; repeat on WebKitGTK with `webkit_web_context_register_uri_scheme`. Also note a sync-XHR lane is a second renderer→host carriage unless its request body is the same wv-link envelope and it is nonce-bound like the script-message path (KEL-142 §5)."
+    },
+    {
+     "decision_id": "F04-A6",
+     "verdict": "survives",
+     "reason": "Zero corpus demand is confirmed by direct grep (no occurrence of MessageChannelMain, MessagePortMain, utilityProcess, parentPort, IpcMainServiceWorker, exposeInIsolatedWorld, executeInMainWorld, ipcRenderer.postMessage or webContents.postMessage in zettlr/source, drawio-desktop/src or electron-quick-start), KEL-75 AC7 does require pinned-oracle facade fixtures before facade code, and the Electron semantics cited for the deferred fixtures (queue until start(), 'close' on remote disconnect, transfer only via postMessage, parentPort queues until a 'message' handler, pid undefined before spawn and after exit, fork only after ready) are all in the pinned docs/sources. The decision text in the object is truncated after 'mapped', so the remaining sequence could not be checked.",
+     "evidence": "[fact] corpus grep -rln over zettlr/source, drawio-desktop/src, electron-quick-start: no matches. [fact] docs/specs/kel75-principalized-bun-child-roles.md lines 80-83 (AC7) and 362-370 (facade boundary). [fact] docs/api/message-port-main.md 'Messages will be queued until this method is called', 'Emitted when the remote end ... becomes disconnected'; docs/tutorial/message-ports.md lines 63-65. [fact] docs/api/parent-port.md 'queued up until a handler is registered'; lib/utility/init.ts:24-34 `parentPort.on('newListener', ...) start()` / `on('removeListener', ...) pause()`. [fact] shell/browser/api/electron_api_utility_process.cc:559-561 `ThrowTypeError(\"utilityProcess cannot be created before app is ready.\")`; docs/api/utility-process.md lines 114-116 pid semantics, 106-107 SIGTERM/reap, 173 exit always emitted. [fact] docs/api/ipc-main-service-worker.md 'subtle variation of IpcMain ... for service workers'; ipc-dispatch.ts resolves it via `event.session.serviceWorkers`.",
+     "correction": "(1) Oracle pin mismatch: KEL-75 pins `competitors/electron@cbb5e25d1dca07f5001b9c2f9feec23cdd445cb6`, which GitHub resolves to a main-branch commit dated 2026-08-17 ('build: generate the Node startup snapshot on cross-arch builds too (#52874)'), not v44.4.5; a MessagePortMain/utilityProcess fixture cannot cite both — the family must name one pinned oracle per corpus manifest (research 214 canonical-bytes rule) and reconcile KEL-75 AC7 with the v44.4.5 baseline before any ✘ cell is published as 'deferred behind pinned-oracle fixtures'. (2) parentPort emulation must also *pause* delivery when the last 'message' listener is removed (lib/utility/init.ts removeListener → pause()), not only queue-until-first-handler. (3) Record the exact fork-before-ready throw: a TypeError with message 'utilityProcess cannot be created before app is ready.' (4) Electron source shows `postMessage`-carried IPC (`-ipc-ports`) does NOT emit `contents.on('ipc-message')` and does NOT attach `event.reply`, contrary to web-frame-main.md's 'send, sendSync or postMessage ... delivered in the following order' — a doc/source discrepancy the MessagePort fixture must encode from source, not docs."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Function-valued return values must cross the bridge in both directions. Zettlr's `window.ipc.on()` returns an unsubscribe function and `getCitationCallback(db)` returns a function; Electron proxies a returned Function synchronously (ProxyFunctionWrapper → PassValueToOtherContext). Any shim that only proxies functions in the exposed api graph (not in return/argument positions) or that returns Promises breaks Zettlr at its first `on()` call (`off is not a function`). Add explicit conformance cells for 'function in return position' and 'function in argument position (callbacks)'.",
+     "evidence": "corpus zettlr/source/common/modules/preload/index.ts:38-50, 69-78; https://raw.githubusercontent.com/electron/electron/v44.4.5/shell/renderer/api/electron_api_context_bridge.cc ProxyFunctionWrapper (synchronous func->Call, return value passed back via PassValueToOtherContext)"
+    },
+    {
+     "severity": "medium",
+     "finding": "Error objects travel over IPC in the corpus: draw.io replies `event.reply('mainResp', {error: true, msg: e.message, e: e, reqId})` with a live Error instance, and `event.reply('export-error', e)`. The SCV codec must encode Error (name/message/stack, custom props dropped) rather than treating it as unserializable; a facade that throws on Error breaks every draw.io error path. arch 02 §5 lists Error in the SCV domain; make it a golden vector.",
+     "evidence": "corpus drawio-desktop/src/main/electron.js:4541 and :3421; docs/api/context-bridge.md line 144 (Error copied, custom properties lost)"
+    },
+    {
+     "severity": "medium",
+     "finding": "Renderer-side drop semantics are now a [fact], not an inference: Electron's renderer wires `ipcNative.onMessage` to `sender.emit(channel, { sender, ports }, ...args)` on the ipcRenderer EventEmitter, so a main→renderer message with no listener is dropped, and `IpcRendererEvent.sender` is the ipcRenderer instance itself (not a WebContents). The shim must pass `{sender: ipcRenderer, ports}` as the first listener argument and must not queue host→renderer EVENTs for late listeners unless labeled ▲.",
+     "evidence": "https://raw.githubusercontent.com/electron/electron/v44.4.5/lib/renderer/ipc-native-setup.ts lines 9-14"
+    },
+    {
+     "severity": "medium",
+     "finding": "Payload sizing for A2 is not just 'above 4 KiB': draw.io explicitly handles exports with area ≥ LARGE_IMAGE_AREA = 30,000,000 px (base64 PNG) and returns whole file contents through `readFile` → `mainResp`. These can exceed the app-link MAX_FRAME_LEN (16 MiB), so the bulk path must be a STREAM/bulk-reference lane with chunking, not a larger inline frame bound; measure real draw.io export sizes before fixing any number.",
+     "evidence": "corpus drawio-desktop/src/main/electron.js:2403, 3239-3259, 4234-4238; packages/@keld/kipc/src/transport.ts:17 MAX_FRAME_LEN = 16 MiB"
+    },
+    {
+     "severity": "medium",
+     "finding": "`ipcMain.handle` registration semantics the trap list gets right but the owner mapping does not: Electron throws synchronously `Attempted to register a second handler for '${method}'` and `TypeError: Expected handler to be a function, but found type '...'`; @keld/api's channels.handle throws `KELD-API-001: Echo channel already has a handler` and collapses handler failures to 'application channel call failed'. The Electron facade needs its own two-registry object (listeners + invoke handlers) layered over @keld/api, with Electron's exact strings as renderings; the current single-handler-per-id rule must not be reused as the ipcMain registry.",
+     "evidence": "https://raw.githubusercontent.com/electron/electron/v44.4.5/lib/browser/ipc-main-impl.ts lines 15-22; packages/@keld/api/src/channels.ts:29,73; packages/@keld/api/src/echo-call.test.ts:81"
+    },
+    {
+     "severity": "medium",
+     "finding": "Two pinned Electron oracles are in play: this map uses v44.4.5 docs while KEL-75 (owner of utilityProcess/MessagePortMain facade conformance, AC7) pins commit cbb5e25d1dca07f5001b9c2f9feec23cdd445cb6, a 2026-08-17 main-branch commit. Conformance cells must cite exactly one pinned oracle per corpus manifest; reconcile before any F04 cell is published.",
+     "evidence": "docs/specs/kel75-principalized-bun-child-roles.md line 36; GitHub API commits/cbb5e25d... → 'build: generate the Node startup snapshot on cross-arch builds too (#52874)' 2026-08-17T01:05:15Z"
+    },
+    {
+     "severity": "medium",
+     "finding": "sendSync with no returnValue ever set: Electron does not hang forever nor throw — the cppgc pre-finalizer `ReplyChannel::EnsureReplySent` sends `{error: 'reply was never sent'}` when the event object is garbage-collected, and the renderer's sendSync returns that plain object. The oracle is nondeterministic in timing, so Keld's deadline is a documented ▲, and the fixture must assert on the eventual value shape rather than timing.",
+     "evidence": "https://raw.githubusercontent.com/electron/electron/v44.4.5/shell/common/gin_helper/reply_channel.h line 26 `CPPGC_USING_PRE_FINALIZER(ReplyChannel, EnsureReplySent)`; reply_channel.cc EnsureReplySent → SendError(..., \"reply was never sent\"); electron_api_ipc_renderer.cc SendSync returns DeserializeV8Value(result)"
+    },
+    {
+     "severity": "medium",
+     "finding": "Generation rotation granularity is a hidden coupling between A4 and the corpus: draw.io drives state through `location.hash`; if Keld rotates the webview generation on same-document navigations, in-flight `event.reply('mainResp', ...)` would be dropped where Electron (RenderFrameHost-keyed) delivers them. The contract must bind generation to the document (KEL-142 document nonce), not to URL changes, and a hashchange-during-pending fixture must be a negative control.",
+     "evidence": "lib/browser/api/web-contents.ts getWebFrame → webFrameMain.fromId(processId, frameId) → RenderFrameHost::FromID; docs/specs/kel142-macos-renderer-bridge-api.md document-nonce binding; corpus drawio-desktop app uses hash-based file state (electron.js codeUrl/validateSender prefix checks on frame.url)"
+    },
+    {
+     "severity": "low",
+     "finding": "Ownership for floor v2 (A2) rests on KEL-80, which the repo's own readiness graph records as parked by explicit owner orders (2026-08-19/20) as a YAGNI gate; the object's quoted 2026-09-20 Linear acceptance text could not be verified headless. Publishing a floor-v2 ticket under KEL-80 requires an explicit unpark record or a new owner.",
+     "evidence": "docs/research/library/execution-governance/236-execution-readiness-graph.md line 228 and line 452; Linear MCP unavailable in this session"
+    },
+    {
+     "severity": "low",
+     "finding": "`ipcMain` channel named 'error' and the EventEmitter special case are correctly captured, but the shim must also reproduce `ipcRenderer` being a full EventEmitter in the page-exposed sense only through the preload (Zettlr calls `ipcRenderer.setMaxListeners(100)` at preload load; the default max-listeners warning at 10 would otherwise print on Zettlr's multi-pane 'on' fan-out).",
+     "evidence": "corpus zettlr/source/common/modules/preload/index.ts:25; lib/browser/ipc-main-impl.ts constructor `this.on('error', () => {})`"
+    },
+    {
+     "severity": "low",
+     "finding": "Keld's current Windows backend already uses the WebView2 COM surface directly and documents why wry's blocking `AddScriptToExecuteOnDocumentCreated` injection was rejected; the F04 WebView2 preload injection must use the async completion form, and the family should record that `chrome.webview.hostObjects.sync` is the only documented synchronous page→host primitive among the three engines.",
+     "evidence": "crates/keld-wv/src/webview2/mod.rs lines 11-17; docs/agents/learnings.md line 69; learn.microsoft.com ICoreWebView2 AddHostObjectToScript text fetched 2026-10-06"
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "F04-A1",
+   "decision": "Which existing owner admits and implements the per-window `windows.<w>.channels` grant vocabulary and its evaluator for webview principals, and what is the smallest grammar the first proof needs.",
+   "classification": "needs-human",
+   "milestone": "first-proof",
+   "facts": [
+    "Linear was reachable read-only in this session: get_issue/list_comments succeeded for KEL-80, KEL-102, KEL-142, KEL-127, KEL-208, KEL-58, KEL-97, KEL-15, KEL-17, KEL-69, KEL-75, KEL-79, KEL-143 (Linear, fetched 2026-10-06). The mempalace MCP server failed to connect (ENOENT) and was not needed.",
+    "`keld_guard::evaluate` denies every non-AppProcess principal with KELD-GUARD006 before any grant lookup (crates/keld-guard/src/lib.rs evaluate, origin/main b4b907c3).",
+    "The manifest loader ignores the top-level `windows` key (crates/keld-guard/src/lib.rs doc comment: unknown top-level keys `$schema`, `windows`, `audit` are ignored).",
+    "`DenyReason::ChannelForbidden` already renders `KELD-GUARD003: channel ... is not granted to this principal` with fix text 'Add `{channel}` to this principal's channels list in keld.permissions.jsonc', and evaluate never returns it (crates/keld-guard/src/lib.rs).",
+    "keld-core constructs no `Principal::Webview` today (grep of crates/keld-core/src at b4b907c3 returns nothing).",
+    "Arch 03 manifest example grants `\"channels\": [\"notes.*\", \"el:*\"]`; the same section says `**` is the only wildcard a path/URL scope has, a lone `*` matches literally, channel grants are 'a separate, not-yet-live vocabulary', and 'Channel grants connect to the schema layer: a channel's declared capability set (from .k.ts contracts) must be a subset of the caller's grants' (docs/architecture/03-security.md lines 96-98, 121-123, 172-173).",
+    "The approved KEL-102 spec lists 'Adding roles, window grants, channel grants, manifest generation' as non-goals, while its v0/destination table puts 'Per-window grants, navigation rotation, origin context, channel grants and CSP' as the destination of the webview-principal row; KEL-102-D5 makes `keld_ipc::guard_dispatch::dispatch_privileged` the sole production caller of evaluate (docs/specs/kel102-host-guard-enforcement.md lines 27-33, 88, 565).",
+    "KEL-102 is In Progress; T3 landed at 66ccbbc on 2026-10-05 and 'KEL-102 parent remains In Progress for later task units' (Linear KEL-102 status + comment cde25f5e, fetched 2026-10-06).",
+    "The Linear workspace rejects new issues: 'this workspace currently rejects creation of another Linear issue at its issue limit' (Linear KEL-102 comment 05b55d53 dated 2026-10-05, fetched 2026-10-06).",
+    "KEL-80 is Backlog; the owner comment of 2026-08-20 says 'post-v0 / YAGNI ... do not pick up' and the 2026-09-26 comment admits only a product-spine slice; its description requires 'Authorization identity is host-bound link/WebView-generation metadata, never a caller frame field' (Linear KEL-80, fetched 2026-10-06).",
+    "KEL-97 is Backlog and scoped to RoleRegistry principal binding for the app-link only (Linear KEL-97, fetched 2026-10-06). KEL-69 is Done (Linear, fetched 2026-10-06).",
+    "KEL-58 is Done: the MCP explain tool fails closed on `channel` with KELD-MCP014 (Linear KEL-58, fetched 2026-10-06; crates/keld-cli/src/mcp/permissions.rs CHANNEL_UNSUPPORTED_CODE).",
+    "KEL-208 is Done (landed fa1bfd7): the landed rule is 'a grant must name a destination'; its description records that the single-`*` glob in the arch 03 example is not a syntax the matcher implements (Linear KEL-208 description + comment ab397ba2, fetched 2026-10-06).",
+    "KEL-15 (config-schema RFC) and KEL-17 (Electron compat RFC) are Done; KEL-15 carries no attached Linear document, so no RFC text outside the repo defines the channel grammar (Linear, fetched 2026-10-06).",
+    "draw.io main registers 27 ipcMain listeners, all 27 with a string-literal channel (25 distinct literals), and has 0 invoke/handle sites; main-to-renderer channels are also literals (3 reply, 7 webContents.send) (grep of corpus drawio-desktop@2edf9fb src/main/electron.js, 2026-10-06).",
+    "The draw.io preload exposes `sendMessage(action, args)` and `registerMsgListener(action, cb)` with a page-chosen channel name (corpus drawio-desktop@2edf9fb src/main/electron-preload.js)."
+   ],
+   "inferences": [
+    "Because every draw.io renderer-to-main channel that can have an effect is a string-literal ipcMain registration, the first-proof grant list can be derived from main-side registrations alone; exact byte-equal literals are sufficient and no wildcard grammar is needed for the first proof.",
+    "Under exact-literal matching `el:*` grants only a channel literally named `*`, which is consistent with the existing 'lone * matches literally' rule and makes the wildcard refusal structural rather than a special case.",
+    "KEL-208's 'a grant must name a destination' is a consistent precedent for enumerated channel grants; it is an analogy about URL scopes, not proof for channels.",
+    "The crate owner is determined by existing invariants (one manifest parser and matcher in keld-guard, one evaluate caller in guard_dispatch); only the spec admission is undetermined."
+   ],
+   "unknowns": [
+    "Whether the repository owner approves amending the approved KEL-102 spec (channel grants are an explicit non-goal there) or wants a separate issue once the issue cap is lifted.",
+    "Whether the draw.io webapp passes any channel to `sendMessage` that is not one of the 25 main-side literals (the webapp submodule is empty in the shallow clone); such a send would be denied with KELD-GUARD003 and have no listener under Electron either.",
+    "Whether `audit: \"all\"` logging of channel dispatch needs more than the channel string and byte length (it must not need an SCV decoder in keld-ipc).",
+    "How `keld migrate` will enumerate channels for apps with computed channel names (Zettlr-class; not needed for the first proof)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Amend the KEL-102 spec: move window/channel grants from non-goal to one new scoped task unit owned by KEL-102 (keld-guard owns vocabulary, parser and KELD-GUARD003; guard_dispatch stays the sole evaluate caller). Grammar for the first proof: exact byte-equal `el:<channel>` literals per window, no wildcard.",
+     "cost": "One approved spec amendment with permission-model and public-API review gates; arch 03 example and the 'schema layer' sentence revised in the same PR; MCP explain updated in the same change.",
+     "new_invariant": "A renderer-originated application channel dispatches only when its exact channel literal is listed in `windows.<w>.channels` for the host-minted webview principal, decided solely inside dispatch_privileged, allocation-free on the allow path.",
+     "invariant_at_risk": "KEL-102-D5 sole-caller rule (must be extended, not bypassed); 'no Electron-isms in keld-ipc' (the grant must be framed as generic channel-name grants); KEL-102 scope discipline (one more unit on an already long-running issue)."
+    },
+    {
+     "option": "B. New Linear issue and new spec dedicated to window/channel grants.",
+     "cost": "Cannot be created today (workspace at its issue cap); the first proof waits on an owner action to free capacity; F04-T3 stays blocked meanwhile.",
+     "new_invariant": "Same as A, with a separate spec file as the owner.",
+     "invariant_at_risk": "None additional; risk is a second document describing guard dispatch that drifts from the KEL-102 spec."
+    },
+    {
+     "option": "C. KEL-80 owns it as part of the bridge contract.",
+     "cost": "KEL-80 is Backlog and owner-parked except for a product-spine slice; it would mix permission policy into a transport/backpressure issue.",
+     "new_invariant": "Channel authorization defined by the bridge owner.",
+     "invariant_at_risk": "One rule, one owner: guard policy would be specified outside the guard owner; one concern per issue."
+    },
+    {
+     "option": "D. No evaluator for the first proof (treat el: traffic like today's ungated echo, or allowlist in the facade).",
+     "cost": "Zero now.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Default-deny is sacred; contradicts the resolved map decision that the enumerated per-window grant is the only renderer-to-main boundary. Rejected."
+    }
+   ],
+   "recommendation": "Option A. The crate owner is already determined by evidence (keld-guard for vocabulary/parser/deny code, guard_dispatch for evaluation), KEL-102 is the only live owner whose own destination table names per-window and channel grants, and a new issue cannot be created today. Ship the narrowest grammar: exact-literal `el:<channel>` entries only, KELD-GUARD003 on miss, `keld migrate` refuses any wildcard; revise the arch 03 example to enumerated literals and scope the 'declared capability set' sentence to schema channels in the same PR. Fold the F04-A4 generation contract into the same amendment so the webview principal is specified once. The single remaining question for the owner: do you approve amending the KEL-102 spec to admit exact-literal `windows.<w>.channels` grants for webview principals as a new KEL-102 task unit, instead of waiting for a separate issue?",
+   "falsifier": "Any of: (1) a first-proof draw.io workflow step needs a renderer-to-main channel that is not a string literal in the main source, so exact-literal grants cannot express it; (2) the channel check cannot be placed in dispatch_privileged without an allocation on the allow path or without Electron-specific knowledge in keld-ipc; (3) the owner declines the KEL-102 amendment.",
+   "reversible": "yes - the ownership record is a spec/Linear change, and exact-literal matching is strictly narrower than any later glob grammar, so widening later is additive; starting with a glob and narrowing later would break shipped manifests.",
+   "missing_evidence": "The owner's exact-content approval of the KEL-102 amendment text; a scan of the populated draw.io webapp for channel names passed to `sendMessage`/`registerMsgListener` at the pinned commit.",
+   "next_action": "Orchestrator (single Linear writer) posts this packet as a comment on KEL-102 with the one question; on a yes, the KEL-102 spec author drafts the amendment. First observable completion check: a KEL-102 comment id recording the approval, then a fixture where an ungranted channel from a page returns KELD-GUARD003 and deleting the grant check makes that fixture fail.",
+   "owner": "KEL-102 (In Progress; Linear, fetched 2026-10-06) with crates keld-guard and keld-ipc guard_dispatch; the admission itself is a repository-owner approval.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F04-A3",
+   "decision": "Whether a contextBridge-exposed function can return its value synchronously across WKWebView content worlds (and later WebKitGTK), or whether exposed functions are Promise-returning with a labelled divergence.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "Every function draw.io exposes (`request`, `registerMsgListener`, `sendMessage`, `listenOnce`) returns undefined; the second exposed key is a plain value object `{type, versions}`; page functions are passed in as arguments, including one nested inside an object (`msg.listener`) (corpus drawio-desktop@2edf9fb src/main/electron-preload.js).",
+    "draw.io has 0 `sendSync(` sites (grep of corpus drawio-desktop@2edf9fb src, 2026-10-06).",
+    "Zettlr's preload exposes functions whose return value is consumed synchronously: `ipc.on()` returns an unsubscribe function, `config.get()` returns a sendSync result, `getCitationCallback()` returns a function that itself returns a sendSync result (corpus zettlr@e6c7fd8 source/common/modules/preload/index.ts lines 28-80).",
+    "The live macOS bridge relays between the page world and an isolated content world; the published plan lists F04-A3 as a blocker of F04-T4 (publish_plan.json F04-T4 blocked_by).",
+    "KEL-142 (owner of the bridge seam) is Done as of 2026-10-01 (Linear, fetched 2026-10-06)."
+   ],
+   "inferences": [
+    "The first proof does not need a synchronous cross-world return: draw.io's exposed functions are void, so an ordered asynchronous relay with function proxies in both directions satisfies it. F04-T4's draw.io slice should not be blocked by this ticket; only the Zettlr sync-return cells are.",
+    "A shared-DOM relay is plausible because DOM event dispatch is synchronous and both worlds see the same DOM; this is unverified on WKWebView.",
+    "With an asynchronous relay, successive calls keep their order but a call followed immediately by unload could be lost where Electron would have sent it; no draw.io workflow step is known to depend on that."
+   ],
+   "unknowns": [
+    "Whether an isolated-world listener runs synchronously inside a page-world `dispatchEvent` on WKWebView.",
+    "What `CustomEvent.detail` carries across worlds (null, a clone, or a shared object) and whether any JS object identity leaks.",
+    "Per-call cost of a DOM-string relay versus the asynchronous relay.",
+    "WebKitGTK behaviour (needs a Linux machine)."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Shared-DOM synchronous relay (page dispatches a DOM event; the preload world's listener writes the serialized result to shared DOM state the page reads back).",
+     "cost": "A small WKWebView experiment, then serialization of every call through DOM strings; a second call path beside the asynchronous relay.",
+     "new_invariant": "Cross-world values travel only as serialized strings; no JS object or function identity crosses worlds.",
+     "invariant_at_risk": "KEL-142 isolation rule that the page must not reach the native handler or document nonce (the relay must carry neither)."
+    },
+    {
+     "option": "B. Asynchronous-only exposure: every exposed function returns a Promise; labelled divergence with a compat diagnostic.",
+     "cost": "Zettlr's sync-return functions break without source edits; draw.io is unaffected.",
+     "new_invariant": "Exposed functions are never synchronous on isolated-world engines.",
+     "invariant_at_risk": "KEL-127 direction 'never a silent downgrade' if the label or diagnostic is missing."
+    },
+    {
+     "option": "C. Run the app preload in the page world to get synchronous calls for free.",
+     "cost": "Gives up engine isolation that exists today.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "KEL-142/KEL-139 isolation acceptance. Rejected."
+    }
+   ],
+   "recommendation": "Park for the first proof and remove the F04-A3 edge from F04-T4's draw.io slice (asynchronous relay with void-return functions). Before any Zettlr work, run the smallest experiment on a macOS WKWebView harness with two content worlds. Arms: (1) page calls `dispatchEvent` and reads the result in the same task with no await - sync return observed or not; (2) negative control - the same assertion over a `postMessage` relay must fail; (3) leak check - an object and a function placed in `detail` must not be reachable or callable from the other world; (4) re-entrancy - a preload listener calling back into a page listener during the call preserves order; (5) cost - 10,000 calls at 64 B and 4 KiB, p50/p99 recorded as a diagnostic. Exit: arms 1, 3 and 4 pass and arm 2 fails as designed gives option A; arm 1 failing gives option B as a labelled divergence. WebKitGTK is a separate Linux observation.",
+   "falsifier": "The populated draw.io webapp reads a return value from a `window.electron.*` call or depends on a send completing before a synchronous unload; or arm 3 shows a shared object identity across worlds, which would make option A an isolation regression.",
+   "reversible": "yes - parking changes nothing in the tree; the relay is an internal detail behind `contextBridge.exposeInMainWorld`, so moving between A and B later changes only compat cells.",
+   "missing_evidence": "The experiment transcript on real WKWebView (arms 1-5); a scan of the populated draw.io webapp for uses of return values from `window.electron.*`.",
+   "next_action": "Orchestrator edits the map: drop F04-A3 from F04-T4's first-proof blockers and mark this ticket as Zettlr-gated. First observable completion check: F04-T4's blocked-by list for the draw.io slice no longer names F04-A3.",
+   "owner": "KEL-142 seam (Done; Linear, fetched 2026-10-06) under its parent bridge owner KEL-80 (Backlog; Linear, fetched 2026-10-06); crate keld-wv.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F04-A4",
+   "decision": "Which single owner mints the navigation generation consumed by the bridge, the guard webview principal and senderFrame/reply semantics, and at which point it rotates.",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "The bridge keeps a private `navigation_generation: u64` per WebView, stamps it on every admitted renderer request (documented there as the 'host-owned navigation generation that admitted this call') and settles replies only for the matching generation (crates/keld-wv/src/wkwebview/macos_bridge.rs, origin/main b4b907c3).",
+    "That counter rotates in two places: when the host calls the engine's navigate, and on wry `PageLoadEvent::Started` (crates/keld-wv/src/wkwebview/mod.rs).",
+    "wry 0.56.1 (the Cargo.lock pin) emits `PageLoadEvent::Started` from WKNavigationDelegate `webView:didCommitNavigation:` (wry-0.56.1 src/wkwebview/navigation.rs). So engine-observed rotation is at commit, not provisional start, and one host-initiated navigation rotates twice.",
+    "The guard principal is `Principal::Webview { id, generation: u32 }`; live media backends mint generation 0 (crates/keld-guard/src/lib.rs; crates/keld-wv/src/media.rs WEBVIEW_MEDIA_GENERATION).",
+    "The approved KEL-102 spec says the webview caller is 'created and rotated only by the host webview/navigation registry' and 'Current backends use generation 0; a later navigation registry must increment it before a post-navigation request can dispatch' (docs/specs/kel102-host-guard-enforcement.md lines 399, 414-416).",
+    "The KEL-142 spec binds the document nonce to `(WebviewId, navigation generation)` and requires that 'provisional/new navigation invalidates the previous nonce before the new document may dispatch' (docs/specs/kel142-macos-renderer-bridge-api.md §5.2 items 3 and 6). It does not pin an integer width.",
+    "Neither the KEL-142 nor the KEL-139 spec, nor the bridge code, mentions same-document navigation (grep for same-document/hashchange/fragment/pushState, 2026-10-06).",
+    "draw.io checks `event.senderFrame` in `validateSender` (null means reject, otherwise URL prefix match) before acting on renderer messages, and replies with `event.reply` (corpus drawio-desktop@2edf9fb src/main/electron.js).",
+    "KEL-102 is In Progress, KEL-142 is Done, KEL-143 is Backlog (Linear, fetched 2026-10-06)."
+   ],
+   "inferences": [
+    "The ticket's premise 'rotated on navigation start' is only half right: for renderer-initiated navigations the live rotation is at commit, which already matches Electron's frame-bound reply semantics and leaves a cancelled provisional navigation's document usable.",
+    "Because the first proof dispatches renderer channels under a webview principal (F04-A1), the KEL-102 sentence forbids doing so with a constant generation 0; unification is therefore a first-proof requirement, not polish.",
+    "WKWebView does not call didCommitNavigation for same-document (fragment/history) navigations, so the live code probably does not rotate on a hash change; this is unverified.",
+    "A new keld-core registry type is not needed for the first proof: one live mint already exists and already travels with each request."
+   ],
+   "unknowns": [
+    "Whether a same-document navigation on WKWebView triggers the commit callback (would drop replies Electron delivers).",
+    "Whether a host-initiated load that fails before commit leaves the previous document with an invalidated nonce and no way to re-bind.",
+    "Whether the populated draw.io webapp mutates `location.hash` during the 4-step workflow."
+   ],
+   "alternatives": [
+    {
+     "option": "A. The existing per-WebView host navigation state is the single mint; the guard webview principal for channel dispatch is built from the generation stamped on the admitted request, never from a constant. Rotation: cross-document commit, plus host-initiated load request as an earlier fail-closed invalidation; never on same-document navigation. Width follows the approved KEL-102 spec (u32) with a checked increment that fails closed on exhaustion.",
+     "cost": "A contract paragraph in the KEL-102 amendment (same unit as F04-A1), a narrowing of the bridge counter's type, and three conformance fixtures.",
+     "new_invariant": "For any dispatched renderer request, the generation that admitted it, the generation in the guard principal and the generation deciding senderFrame nullability and reply delivery are the same value from one mint.",
+     "invariant_at_risk": "KEL-142's public request accessor type changes (public-API gate on keld-wv); the media path keeps constant 0 until KEL-102's media unit adopts the same source, which must be recorded as a named residual."
+    },
+    {
+     "option": "B. Lift the counter into a new keld-core window/webview registry now and make both the bridge and the guard consume it.",
+     "cost": "A new registry type and a cross-crate callback from the engine page-load handler, built for one live WebView.",
+     "new_invariant": "keld-core owns all webview identity state.",
+     "invariant_at_risk": "YAGNI for the first proof; risk of an unexercised abstraction. This remains the destination when a second consumer (media rotation, multiple webviews) needs it."
+    },
+    {
+     "option": "C. Keep two counters and document a mapping.",
+     "cost": "None now.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "One rule, one owner; senderFrame nullability and guard revocation can disagree. Rejected."
+    },
+    {
+     "option": "D. Rotate at provisional start for all navigations.",
+     "cost": "Engine delegate work to observe provisional start.",
+     "new_invariant": "Earlier invalidation.",
+     "invariant_at_risk": "A cancelled navigation (draw.io prevents navigations) would strand the live document without a bridge; diverges from Electron, which keeps the old frame until commit. Rejected."
+    }
+   ],
+   "recommendation": "Option A, recorded in the same KEL-102 amendment as F04-A1. Evidence determines both halves: the approved specs already name the host navigation state as the only minter, the code already has exactly one rotating counter, and commit is both the live engine-observed rotation point and Electron's frame boundary. Add three conformance entries to F04-T1: stale reply after cross-document navigation is dropped; a hash change during a pending request does not drop the reply; a cancelled renderer-initiated navigation keeps the bridge usable.",
+   "falsifier": "Any of: a hash or pushState change on WKWebView rotates the generation; a cancelled provisional navigation invalidates the document nonce; a dispatch is observed where the bridge-stamped generation differs from the guard principal's generation (negative control: a mutation that rotates only one must fail the fixture).",
+   "reversible": "yes - the mint is private host state behind the request accessor; lifting it into a keld-core registry later (option B) changes no wire format or manifest.",
+   "missing_evidence": "One real-macOS observation of same-document navigation and of a failed host-initiated load against the live bridge; these are fixtures inside F04-T1, not a separate research task.",
+   "next_action": "KEL-102 spec author adds the generation contract to the F04-A1 amendment draft; F04-T1 author lands the three conformance entries. First observable completion check: a fixture shows one navigation producing the same generation in the admitted request and the guard principal, and fails when only one of the two is rotated.",
+   "owner": "KEL-102 (In Progress; Linear, fetched 2026-10-06) for the webview-principal contract; crate keld-wv for the mint (KEL-142, Done).",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F04-A5",
+   "decision": "Whether renderer `ipcRenderer.sendSync` can be implemented on WKWebView as a deadline-bounded blocking call using a synchronous XMLHttpRequest to a host scheme handler, or stays a scaffolded typed throw.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "draw.io has 0 `sendSync(` sites (grep of corpus drawio-desktop@2edf9fb src, 2026-10-06).",
+    "Zettlr's preload calls `ipcRenderer.sendSync` behind synchronously-returning exposed functions (`ipc.sendSync`, `config.get`, `config.set`, the citation callback) (corpus zettlr@e6c7fd8 source/common/modules/preload/index.ts lines 37, 57, 63, 74).",
+    "KEL-127 delegated direction 5: 'Async-first native APIs do not authorize pretending asynchronous calls preserve synchronous Electron semantics'; direction 4 requires explicit diagnostics, 'never a silent downgrade' (Linear KEL-127, status Todo, fetched 2026-10-06).",
+    "KEL-142's Linear text forbids 'a second renderer-routing protocol'; KEL-79's acceptance says its loopback listener 'is not used for Keld IPC' (Linear KEL-142 Done and KEL-79 Backlog, fetched 2026-10-06).",
+    "An existing scratch harness already registers a WKURLSchemeHandler and loads a page from it; it exercises fetch only, not synchronous XHR (scratchpad wayfinder/electron-compat/probes/f05-wk-scheme/main.swift).",
+    "The map already records sendSync as scaffolded until this experiment passes and ranks it third among program risks, Zettlr-gated (panel/synthesis.md)."
+   ],
+   "inferences": [
+    "The first proof ships without this decision: draw.io never calls sendSync, and its one blocking call (`showMessageBoxSync`) is main-process and belongs to PANEL-P1.",
+    "The experiment is independent of PANEL-P1: for renderer sendSync the Bun main is not parked; it answers an ordinary call when `returnValue` is set.",
+    "The deadline must be enforced by the host failing the scheme task, because browsers forbid setting a timeout on a synchronous XHR from a document; this is from memory of the XHR standard and needs a receipt.",
+    "A scheme-handler lane is a second renderer-to-host carriage unless its body is the same bridge envelope bound to the document nonce; admitting it needs an amendment by the bridge owner."
+   ],
+   "unknowns": [
+    "Whether WKWebView services a synchronous XHR to a WKURLSchemeHandler-backed scheme at all, and on which host thread the handler runs while the page is blocked.",
+    "Whether POST bodies reach the scheme handler intact at 64 B, 4 KiB and 64 KiB.",
+    "Whether cross-origin rules block the request from the app's page origin and which response headers are required.",
+    "Behaviour when the webview navigates or is destroyed during a blocked request.",
+    "Electron's observable when `returnValue` is never set (a refuter derived `{ error: 'reply was never sent' }` from source; not re-verified here).",
+    "WebKitGTK and WebView2 equivalents."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Synchronous XHR to a host scheme handler carrying the existing bridge envelope, nonce-bound, with a host-enforced deadline and rate limit.",
+     "cost": "The experiment, then an amendment by the bridge owner (and KEL-79 if its transport is reused) plus wire-protocol and public-API gates.",
+     "new_invariant": "Exactly one synchronous renderer-to-host lane exists; it carries the same envelope and identity checks as the asynchronous lane and always terminates by reply or deadline.",
+     "invariant_at_risk": "'No second renderer-routing protocol' (KEL-142); KEL-142's rule that no host UI thread blocks on Bun."
+    },
+    {
+     "option": "B. Keep sendSync scaffolded: typed throw with a fix-it pointing to invoke, labelled divergence.",
+     "cost": "Zettlr-class apps need source edits; no engine work.",
+     "new_invariant": "sendSync never blocks and never silently becomes asynchronous.",
+     "invariant_at_risk": "Arch 02 §5 statement that sendSync 'must exist' stays unmet for those apps."
+    },
+    {
+     "option": "C. Silent Promise rewrite or busy-wait polling.",
+     "cost": "None.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "KEL-127 directions 4 and 5. Rejected."
+    }
+   ],
+   "recommendation": "Park until Zettlr work is scheduled; keep option B as the live state. When scheduled, extend the existing scheme-handler harness with these arms: (1) immediate reply - does the synchronous XHR complete, and is the handler called on the host main thread while the page is blocked; RTT p50/p99 over 1,000 calls; (2) reply after a 50 ms host-side hop - proves the host run loop keeps running; (3) no reply, host fails the task at a deadline - page sees an exception within the deadline; (4) body integrity at 64 B, 4 KiB, 64 KiB; (5) cross-origin request from the app page origin; (6) navigate or destroy the webview mid-request - no hang or crash; (7) negative control - an asynchronous message-handler call cannot produce the value in the same task; (8) record the Electron 44.4.5 observable for a never-set `returnValue`. Exit: arms 1-4 and 6 pass gives option A as a candidate for the bridge owner's amendment, with the rate limit derived from the measured p99; any of them failing keeps option B.",
+   "falsifier": "A first-proof draw.io path that reaches `ipcRenderer.sendSync` (would move this to first-proof); or arm 1 showing WKWebView refuses or deadlocks on synchronous XHR to a custom scheme (kills option A on macOS).",
+   "reversible": "yes - parking leaves the scaffolded throw in place; adopting option A later adds a lane without changing existing asynchronous behaviour.",
+   "missing_evidence": "The experiment transcript on real macOS WKWebView (arms 1-8); primary receipts for the XHR synchronous-timeout rule and for WKURLSchemeHandler request-body delivery.",
+   "next_action": "Orchestrator marks this ticket parked (Zettlr-gated) on the map and links the harness path as the starting point. First observable completion check: the map row for F04-A5 shows 'parked - Zettlr-gated' with the eight arms listed.",
+   "owner": "KEL-80 (Backlog; Linear, fetched 2026-10-06) as bridge owner, consuming the KEL-142 seam (Done); KEL-79 (Backlog) only if its resource transport is reused; crate keld-wv.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F03-D4",
+   "decision": "Which existing owner carries the structured-clone-compatible value codec used by el:<channel> ipc, webContents.send and the executeJavaScript result envelope, and what is its minimum v0 value domain for the first proof.",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "LINEAR AVAILABILITY: Linear (team KELD) is reachable in this session; about 23 read calls (get_issue, list_issues, list_comments) succeeded with 0 failures on 2026-10-06. The mempalace MCP server failed to connect and was not used.",
+    "Arch 02 section 5 is the only place the codec is named: 'CALL/REPLY with structured-clone-compatible codec: a postcard-encoded SCV (structured-clone value) sum type covering Electron's value domain (incl. Buffer/TypedArray -> bulk lane refs, Date, Map/Set, Error)'. A git grep for SCV / structured-clone over docs/architecture, docs/specs, crates and packages at origin/main cb7d8e9e finds no other hit: no spec, no code. Source: docs/architecture/02-ipc.md.",
+    "The live renderer bridge already carries host-opaque bytes with endpoint codecs: 'invoke(channel: number, payload: Uint8Array): Promise<Uint8Array>', 'payload.byteLength <= 4096', and AppChannel exposes decodeRequest/encodeResponse. Source: docs/specs/kel142-macos-renderer-bridge-api.md section 4.1. KEL-142 is Done, completed 2026-10-01 (Linear, fetched 2026-10-06).",
+    "KEL-98 is Done (completed 2026-09-20) and is echo-only; its description carries an unchecked direction: 'Before widening beyond echo, add shared vectors for ... bytes, absent versus null ... Unsupported types must fail explicitly rather than lose data silently.' (Linear, fetched 2026-10-06).",
+    "KEL-80 is Backlog with no assignee; its text says 'KEL-98 retains generated-contract ownership' and does not mention a value codec. KEL-13 (typed IPC RFC) is Done. KEL-97 is Backlog, blocked by KEL-75 (In Progress) and KEL-133. KEL-127 (program parent) is Todo. (Linear, fetched 2026-10-06).",
+    "crates/keld-compat/AGENTS.md: 'No Electron-isms in keld-core/keld-ipc; compat pressure stays here via quirks flags.'",
+    "Electron docs/api/ipc-renderer.md v44.4.5 (retrieved 2026-10-06): 'Arguments will be serialized with the Structured Clone Algorithm, just like window.postMessage, so prototype chains will not be included. Sending Functions, Promises, Symbols, WeakMaps, or WeakSets will throw an exception.'",
+    "Electron docs/api/web-contents.md v44.4.5 (retrieved 2026-10-06): executeJavaScript 'Returns Promise<any> - A promise that resolves with the result of the executed code or is rejected if the result of the code is a rejected promise.'",
+    "drawio-desktop @2edf9fb awaits executeJavaScript at three main-process sites; the results are an array of strings and string-or-null (localStorage reads parsed with JSON.parse in main). Source: corpus clone, src/main/electron.js.",
+    "drawio-desktop @2edf9fb multiplexes renderer requests over 'rendererReq' -> 'mainResp' with {success, data, reqId} or {error, msg, e: <Error object>, reqId}; saveFile and fileStat return a Node fs.Stats object (Date-valued fields) that the renderer stores and sends back as origStat; main compares only mtimeMs. Source: corpus clone, src/main/electron.js and src/main/electron-preload.js.",
+    "The draw.io webapp at the submodule pin 24b76c2 reads only stat.mtimeMs (no .mtime Date read), and its open/save paths request readFile with 'utf-8' or 'base64' (one .vsdx path passes null). Source: jgraph/drawio ElectronApp.js at 24b76c2, fetched 2026-10-06, sha256 9527e6d4...; the submodule directory in the corpus clone is empty, so this file was fetched separately.",
+    "WebEngine::eval is fire-and-forget: 'eval takes a plain &str and returns Result instead of ScriptRef + EvalCallback: the callback plumbing belongs to the command-queue design keld-core will own.' Source: crates/keld-wv/src/engine.rs module doc at origin/main."
+   ],
+   "inferences": [
+    "The host never needs to read an Electron value: routing and authorization are by channel plus host-minted principal (the enumerated per-window el:<channel> grant), so the value payload can stay opaque bytes inside the control envelope and the codec exists only at the two JavaScript endpoints.",
+    "The arch 02 section 5 'postcard-encoded SCV' sentence is target prose with no implementation; choosing an endpoint codec makes it a code/spec mismatch that must be amended in the same PR as the F04 ipc spec.",
+    "A tagged JSON text encoding is the one shape that survives every engine return path unchanged (WebView2 ExecuteScript returns a JSON string per the refuter's Microsoft receipt, which I did not re-fetch; the KEL-142 envelope carries a byte array).",
+    "The draw.io 4-step workflow (open, edit, save, close-with-unsaved-prompt) crosses only JSON-domain values plus an fs.Stats-shaped object whose consumed field is a number, and an Error only on the failure path. This is a static read, not a runtime census.",
+    "The refuter's 'two encodings' objection (tagged JSON in page plus postcard on kipc) disappears if the same TypeScript module is the only encoder and decoder at both ends."
+   ],
+   "unknowns": [
+    "Runtime value census on the 4-step workflow: no trace has recorded which value types actually cross ipc. The PANEL-P3 E1 trace can record it.",
+    "Whether a saved diagram's XML exceeds the 4 KiB bridge payload floor. That is a payload-bound question owned by F04-T2 (renderer floor v2), an explicit edge and not part of this decision.",
+    "Electron's behaviour for a synchronous throw inside webContents.executeJavaScript (the doc names only the rejected-promise case); the conformance oracle must record it.",
+    "No Linear issue owns this slice, and the workspace is at its free issue cap (KEL-132 comment dated 2026-10-05 records 'You've exceeded the free issue limit for this workspace')."
+   ],
+   "alternatives": [
+    {
+     "option": "A. One TypeScript endpoint codec owned by @keld/electron, shared by the Bun facade, the renderer compat script and the executeJavaScript envelope; the host carries the encoded value as opaque bytes inside the generated el control envelope.",
+     "cost": "One module, shared golden vectors, hostile-input decode tests, and an arch 02 section 5 amendment (wire-protocol and public-API review gates).",
+     "new_invariant": "The host never parses Electron values; there is exactly one encoder/decoder source with shared vectors, and unsupported types throw instead of degrading.",
+     "invariant_at_risk": "One source of truth, if the in-page envelope copy is hand-written instead of built from the same module. The page-world copy is page-tamperable, so every decoder must treat bytes as hostile (bounded size and depth, no prototype writes)."
+    },
+    {
+     "option": "B. Rust postcard SCV sum type in keld-ipc/keld-core, as arch 02 section 5 literally says.",
+     "cost": "Three implementations (Rust, Bun TypeScript, renderer JavaScript) or a codegen widening well beyond KEL-98's echo scope; a host decode on every frame.",
+     "new_invariant": "The host validates value structure on every el frame.",
+     "invariant_at_risk": "'No Electron-isms in keld-core/keld-ipc'; the no-steady-state-allocation hot-path rule; YAGNI, since no named requirement needs the host to read values."
+    },
+    {
+     "option": "C. Plain JSON.stringify/parse with no tags.",
+     "cost": "Near zero.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "KEL-98's direction that unsupported types fail explicitly rather than lose data silently: Date becomes a string, undefined is dropped, Error becomes an empty object, all without a diagnostic."
+    },
+    {
+     "option": "D. keld-compat (Rust) owns a generated codec through the KEL-98 codegen, emitting TypeScript.",
+     "cost": "Codegen widening before any consumer exists; the Rust side has no reader.",
+     "new_invariant": "Value grammar generated from a Rust schema.",
+     "invariant_at_risk": "YAGNI; reopens a Done issue's scope without a current requirement."
+    }
+   ],
+   "recommendation": "Choose A. Owner: the @keld/electron package under keld-compat rules. v0 domain: the JSON domain plus undefined, Date, Error (name, message, stack) and class instances flattened to own enumerable properties with the prototype dropped, as the Electron sentence states. Functions, Promises, Symbols, WeakMaps and WeakSets throw as in Electron. Map, Set, RegExp, TypedArray/Buffer and bulk-lane refs throw a typed KELD-COMPAT error and are parked until a denominator cell needs them; add bounded inline bytes only if the E1 census shows a binary value on the workflow. Amend arch 02 section 5 in the F04 ipc spec PR to say the value codec is an endpoint codec that is opaque to the host. The exact spec text still needs its own review-gate approval; this packet determines the direction only.",
+   "falsifier": "Any one of: a named requirement in which the host must read or rewrite a value inside an el payload (for example a guard rule keyed on argument content, or bulk-lane ref substitution that envelope metadata cannot express); the E1 trace showing a Map, Set, TypedArray or ArrayBuffer crossing ipc on the 4-step workflow; or an engine return path on WKWebView that cannot carry the tagged text unchanged.",
+   "reversible": "Yes. The payload is opaque to the host, so changing the encoding touches one TypeScript module and its vectors and no kipc frame or version byte. It stops being cheap only if app code is allowed to depend on the tag grammar, so the grammar must stay private.",
+   "missing_evidence": "A runtime value-type census per el channel over install, activation and the 4-step workflow (add as a column to the PANEL-P3 E1 trace); the Linear issue that will carry the F04 ipc spec.",
+   "next_action": "Owner: map orchestrator (single writer). Update gyldlab/keld#396 to resolved with the owner line (@keld/electron endpoint codec, host-opaque), the v0 domain above and the arch 02 section 5 amendment requirement, and add 'value types per el channel' to the PANEL-P3 trace outputs. First completion check: #396 shows status resolved and F03-T5 (#462) and F04-T3 (#466) no longer list F03-D4 as an open blocker.",
+   "owner": "Package owner: packages/@keld/electron under crates/keld-compat/AGENTS.md. Linear: no live issue owns the codec slice. KEL-98 Done (2026-09-20), KEL-13 Done, KEL-80 Backlog and unassigned, program parent KEL-127 Todo (all fetched 2026-10-06). The owner is therefore unknown at issue level; first identification action: the repository owner names which existing issue carries the F04 ipc spec, because the workspace cannot create new issues."
+  },
+  {
+   "key": "X05-A4",
+   "decision": "Whether any cost model or optimisation for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) is produced before the facade exists, and which hot-path rules bind the facade now.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "Architecture 02 section 6 sets the destination: zero steady-state allocations (pooled frame buffers, arena decode), no async in the frame path, per-link single-producer queues (main b4b907c3, read 2026-10-06).",
+    "Live code allocates per frame: the TypeScript frame reader copies every chunk into a new buffer, and the Rust link read allocates a new vector per payload at several sites (@keld/kipc transport and keld-ipc link, read 2026-10-06).",
+    "The landed renderer bridge (KEL-142, Done) bounds a payload at 4096 bytes and one pending invoke per webview; the same 4096 constant bounds a virtual-port message (KEL-142 spec; keld-runtime virtual port; Linear, fetched 2026-10-06).",
+    "KEL-80 (bounded virtual channels and replay conformance) is Backlog, unassigned. Its body states the write queue has no aggregate pending bound, that 4 KiB is the present inline ceiling, and names as first next action a producer/queue ownership ledger and a bounded slow-consumer regression before any admission numbers (Linear, fetched 2026-10-06).",
+    "KEL-90 (cross-OS metric runner) is In Progress, KEL-129 (macOS achievable budgets) is In Progress, KEL-86 (multi-level bench oracles) is Backlog (Linear, fetched 2026-10-06).",
+    "Map decision PANEL-D11 (#431) already forbids any compat IPC performance sentence before registered metric ids exist and before KEL-80 lifts the one-pending / 4 KiB floor. X05-T1 (#507) owns the compat-overhead lane; F04-T2 (#465) owns the renderer floor v2 (pending invokes, events, payload bound).",
+    "draw.io's main source has 33 lines calling webContents.send or event.reply (my grep on drawio-desktop@2edf9fb); the research note attributes several to maximize/unmaximize/resize relays."
+   ],
+   "inferences": [
+    "No facade hot path exists to measure yet, so a facade cost number produced now would measure something that will be rewritten.",
+    "The correctness rules in the proposed answer (throw synchronously for non-cloneable arguments, one serialisation and one frame, no facade-side queue that reorders, typed error over the payload bound, host-side fan-out) follow from the specs and from the pinned web-contents page as quoted by the research note; I did not re-fetch that page.",
+    "If draw.io sends file contents larger than 4096 bytes over a one-way path, that is a first-proof correctness problem owned by F04-T2, not by this cost model."
+   ],
+   "unknowns": [
+    "Allocation count per one-way frame in the Bun arm and the Rust arm.",
+    "Engine cost per host-to-renderer message on WKWebView (script evaluation versus message posting, single versus batched).",
+    "Largest one-way payload draw.io sends during the 4-step workflow.",
+    "No X05 refuter verdict was available to me (swarm.json holds none for X05 and the task input was truncated)."
+   ],
+   "alternatives": [
+    {
+     "option": "Adopt the rules now as conformance obligations on the facade tickets; defer all numbers until the facade one-way path exists, then measure under the X05-T1 lane and KEL-80 (recommended)",
+     "cost": "No performance statement about compat IPC until measured; status stays 'bounded, per-frame allocating'.",
+     "new_invariant": "None; restates architecture 02 section 6 and PANEL-D11.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "Measure the live kipc path now (allocation counts in both arms) as input to KEL-80",
+     "cost": "About a day; duplicates KEL-80's own first action and its existing research on live allocation.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "One owner per measurement; KEL-80 is Backlog and unclaimed."
+    },
+    {
+     "option": "Add batching or pooled buffers in the facade before measuring",
+     "cost": "Changes delivery timing and ordering that apps observe; adds a queue.",
+     "new_invariant": "A second buffering layer beside the kipc write queue.",
+     "invariant_at_risk": "Performance is an outcome, not a design input; ordering semantics; 'baseline remains the simpler correct path until a measured gain'."
+    }
+   ],
+   "recommendation": "Park the measurement to the next milestone and open no optimisation ticket. Record the five rules on F04 tickets as conformance entries with negative controls. Route the one first-proof question (largest one-way payload in the draw.io workflow against the 4096 bound) to PANEL-P3's trace and F04-T2. When the facade path exists, run the smallest experiment: (census) a code-read ledger of serialise and copy stages per hop; (work) allocation count per frame over 100,000 one-way sends in a Bun arm and a Rust arm with a counting allocator; (engine) per-message delivery cost on WKWebView, single versus batched, in a host-only harness; each reported separately for census, work, queue/copy, clock, statistic and artifact. Exit: a per-hop table committed with raw samples; an optimisation ticket is opened only if a measured stage dominates an attributed end-to-end budget row.",
+   "falsifier": "The first-proof run or the PANEL-P3 trace shows a dropped, reordered or visibly late one-way message in draw.io's workflow attributable to per-message cost, or a one-way payload above 4096 bytes; either makes part of this first-proof work.",
+   "reversible": "Yes. Deferring writes nothing; the rules restate existing specs.",
+   "missing_evidence": "The three measurements listed in the recommendation; the draw.io maximum one-way payload size from the PANEL-P3 trace.",
+   "next_action": "Orchestrator adds the largest-one-way-payload observable to PANEL-P3 (#420) and copies the five rules into F04-T2 (#465) as conformance entries; first completion check is #420 listing that observable and #417 relabelled as parked behind the facade one-way path.",
+   "owner": "KEL-80 (Backlog, unassigned) for transport copy and queue accounting; KEL-90 (In Progress, GYLDLAB) for the metric runner; KEL-129 (In Progress, GYLDLAB) for census rules; map tickets X05-T1 (#507) and F04-T2 (#465). Linear, fetched 2026-10-06."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F04-A4": {
+   "status": "decided",
+   "resolution": "Option A, recorded in the same KEL-102 amendment as F04-A1. Evidence determines both halves: the approved specs already name the host navigation state as the only minter, the code already has exactly one rotating counter, and commit is both the live engine-observed rotation point and Electron's frame boundary. Add three conformance entries to F04-T1: stale reply after cross-document navigation is dropped; a hash change during a pending request does not drop the reply; a cancelled renderer-initiated navigation keeps the bridge usable.",
+   "milestone": "first-proof"
+  },
+  "F04-A1": {
+   "status": "owner-decision-delegated",
+   "resolution": "Option A: amend the KEL-102 spec with one scoped task unit for per-window channel grants; narrowest grammar = exact-literal el:<channel> entries, KELD-GUARD003 on miss, keld migrate refuses wildcards; fold the F04-A4 generation contract into the same amendment. Exact-content approval of the amendment text remains a separate owner step.",
+   "milestone": "first-proof"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "F04 is 15 entities / 77 members. Corpus demand ranks: (1) ipcRenderer.send/on/once + ipcMain.on + event.reply/event.senderFrame (draw.io's entire IPC is this one shape via a preload request/response multiplexer, no invoke); (2) ipcRenderer.invoke/ipcMain.handle (Zettlr: 186 invoke sites, 26 handle); (3) contextBridge.exposeInMainWorld (both apps; draw.io exposes 2 keys, Zettlr 5 incl. a raw send/sendSync/invoke/on passthrough plus process.env copy); (4) ipcRenderer.sendSync + event.returnValue (Zettlr: 6 sites on config/citeproc hot paths; draw.io 0); (5) event.sender as a WebContents handle (Zettlr: BrowserWindow.fromWebContents, sender.cut/copy/paste/startDrag/inspectElement); (6) webUtils.getPathForFile (Zettlr drop handling); (7) ipcRenderer EventEmitter surface beyond the API model (Zettlr calls ipcRenderer.setMaxListeners(100) at preload load). Zero corpus demand for MessageChannelMain/MessagePortMain/postMessage/utilityProcess/parentPort/IpcMainServiceWorker/exposeInIsolatedWorld/executeInMainWorld. Keld LIVE today: one macOS page-world facade window.keld.invoke (channel 1 only, 4096-byte payload, one pending invoke per WebView, host-minted correlation, WKContentWorld.defaultClientWorld isolated relay, KELD-WV-011 fail-closed) -> keld-core RendererBridgeEndpoint -> primary app-link CALL -> @keld/api channels.handle (echo descriptor only); @keld/electron ships app lifecycle only (no ipcMain, no preload injection, no renderer shim); keld-runtime VirtualPortRegistry (64-msg queue, 4 KiB inline, one-shot transfer, KELD-RUNTIME-004..011) is a Unix library/test surface with no renderer route; RoleRegistry has primary + app-bound only (window-bound is T4, not admitted); guard Principal::Webview{id,generation} exists but evaluate() denies every non-AppProcess principal before grant lookup and the manifest 'windows.*.channels' grant vocabulary (incl. the 'el:*' example in arch 03) is not live. TARGET per arch 02 §5: Electron string channels ride an 'el:*' compat namespace as EVENT/CALL frames with a postcard SCV codec; MessagePorts map to host-owned virtual ports; utilityProcess.fork is a request for a host-declared role with PID diagnostic-only; sendSync is a blocking CALL with deadline, rate-limited and dev-warned (KEL-127 binding). The six decision atoms below: (A1) string-channel carriage = one fixed kipc control channel pair per direction carrying the Electron channel string inside the SCV payload, guard-matched by host against 'el:' grant globs — never runtime-minted u16 ChannelIds; (A2) the current KEL-142 floor (single pending, 4 KiB, channel 1) cannot carry either corpus app and must be superseded by a specified renderer IPC floor v2 (multi-pending with host credit, send/on, bulk sized to draw.io export payloads) before any ipcRenderer facade is scored; (A3) contextBridge semantics (copied+frozen data, proxied functions, Error custom-prop loss, Symbol drop) are implemented ONCE in the isolated-world shim over the existing page/isolated relay; real isolation on WKWebView/WebKitGTK, documented ▲ emulation on WebView2 which has no isolated-world API; (A4) sender identity = host-minted (webview id, navigation generation) snapshotted at dispatch; senderFrame null on generation mismatch, event.reply silently dropped on stale generation (matches Electron sendToFrame -> false), subframe IPC ✘ because window.keld is main-frame only; (A5) sendSync needs a per-engine blocking primitive prototype before any contract claim — no primary source found for a synchronous page->host call on WKWebView/WebKitGTK; and the Electron returnValue-set-later behavior means the reply slot must stay open until set or deadline; (A6) utilityProcess/MessageChannelMain/IpcMainServiceWorker are deferred behind pinned-oracle conformance fixtures (KEL-75 AC7) with zero corpus demand; IpcMainServiceWorker and exposeInIsolatedWorld/executeInMainWorld/UtilityProcess.login go on the never/T3 list. Highest-risk semantic traps with independent oracles: on/handle are two namespaces for the same string (Zettlr registers both 'config-provider'); invoke error text is exactly \"Error invoking remote method '<ch>': <error.toString()>\" and no-handler is \"...Error: No handler registered for '<ch>'\"; duplicate handle throws synchronously; send throws synchronously on Function/Promise/Symbol/WeakMap/WeakSet while invoke rejects; dispatch order frame.ipc -> contents.ipc -> ipcMain and first-defined-wins for handle; MessagePortMain queues until start(); parentPort queues until first 'message' handler.",
+  "decisions": [
+   {
+    "id": "F04-A1",
+    "question": "How do arbitrary Electron string channels (ipcMain.on('export-finalize') registered at runtime) ride kipc, whose channels are u16 handles resolved at handshake, without minting per-string channel ids or bypassing the guard?",
+    "proposed_answer": "One fixed, generated kipc control channel per direction for the compat namespace (e.g. el.r2m for renderer->main CALL/EVENT/sync-CALL, el.m2r for host-routed EVENT to a webview generation, el.ports for virtual-port frames); the Electron channel string, kind discriminator (event | invoke | sync | ports) and SCV-encoded args are payload fields in a generated (KEL-98-style) Rust-owned struct. The host guard matches the string against the webview's windows.<name>.channels 'el:<glob>' grant before forwarding (default-deny), so the string is authorization input at the host and only a routing key in the Bun role. Owner: arch 02 §5 (spec amendment) + keld-guard channel-grant vocabulary (KEL-102) + @keld/api registry split (listeners vs invoke handlers). Observable contract: an ungranted string never reaches ipcMain; a granted one dispatches in Electron order. First falsifier: a renderer send on a string outside the glob that still invokes a Bun listener.",
+    "evidence": [
+     "[fact] arch 02 §2: 'channels are u16 handles resolved at handshake from schema names (string names never travel per-call)'; channel-table exchange is not live; ChannelId doc in frame.rs says v0 hardcodes echo.",
+     "[fact] arch 02 §5: 'ipcRenderer.send/on ⇄ EVENT frames on a compat channel namespace (el:*)'; arch 03 §2 manifest example 'channels: [\"notes.*\", \"el:*\"]' and 'Channel grants are a separate, not-yet-live vocabulary'.",
+     "[fact] Electron dispatch keys purely on the string (lib/browser/ipc-dispatch.ts targets.find(_invokeHandlers.has(channel))); draw.io registers/removes string listeners dynamically per export (electron.js ~3132-3387).",
+     "[fact] keld-guard evaluate() currently denies every non-AppProcess principal before grant lookup (learning 2026-08-14), so webview channel grants require new guard code, not configuration."
+    ],
+    "alternatives_rejected": "(a) Minting a u16 ChannelId per Electron string at runtime: unbounded allocation on a hot path, no live channel table, violates 'string names never travel per-call' only nominally while needing a per-string handshake; (b) Facade-side allowlist in @keld/electron: bypasses keld-guard (sacred default-deny); (c) JSON passthrough of args: loses SCV parity (see A4/A5 traps).",
+    "confidence": "medium — the namespace and grant shape are already written in arch 02/03; the open part is the guard vocabulary implementation and whether the host needs to decode any SCV (it should not: match on string + byte length, forward opaque bytes).",
+    "type": "grilling",
+    "unknowns": "Which Linear id owns the windows.*.channels grant vocabulary (KEL-102 vs KEL-97 vs new); whether audit:'all' logging requires a Rust SCV decoder (would pull Electron-isms into keld-ipc — arch 04 §3 forbids); glob grammar for 'el:' (reuse the '**' vetted matcher or a channel-specific one)."
+   },
+   {
+    "id": "F04-A2",
+    "question": "Can the live KEL-142 renderer floor (window.keld.invoke only, channel 1, 4096 bytes, one pending call per WebView) carry the ipcRenderer facade for the first two corpus apps, or must a renderer IPC floor v2 be specified first?",
+    "proposed_answer": "It cannot; a specified floor v2 is a prerequisite and should be the first ticket in this family's sequence. Required additions, each falsifiable: (1) N pending invokes per WebView with a host-enforced credit window (not a renderer queue) — Zettlr fires 186 invoke sites and draw.io multiplexes rendererReq with its own reqId; (2) window.keld.send (fire-and-forget EVENT) and window.keld.on (host->renderer EVENT fan-out) — draw.io's entire protocol is send/on/once; (3) a payload bound sized by measurement to draw.io export round-trips (XML/PNG data in event.reply('export-success', data)) with chunking or a bulk adapter, not 4 KiB; (4) declared channel = the el: control channel, not channel 1. Owner: KEL-80 (Backlog) bounded slice + arch 05 §2 destination shape; implementation seam = extend wv_link.rs envelope kinds and RendererBridgeEndpoint, never a second renderer protocol (KEL-142 Linear text). Observable contract: draw.io preload loads unmodified and one export round-trip completes. First falsifier: two concurrent invokes from one page both settle correctly on the v2 floor; on the v1 floor the second rejects KELD-WV-011 'another renderer invoke is already pending'.",
+    "evidence": [
+     "[fact] macos_bridge.rs PAGE_FACADE_SCRIPT: 'if (channel !== 1) return fail(...)', 'payload.byteLength > 4096', 'if (pending !== null) return fail(\"another renderer invoke is already pending\")'; KEL-142 spec §4.1 'Exactly one renderer-originated invoke may be pending per WebView'.",
+     "[fact] corpus: zettlr 186 ipcRenderer.invoke sites; drawio preload exposes request/registerMsgListener/sendMessage/listenOnce over send/on/once only; drawio main replies export data via event.reply.",
+     "[fact] arch 05 §2 destination window.keld {invoke, send, on, stream, meta}; arch 02 §2 GRANT frames exist in the schema with no live sender/receiver.",
+     "[fact] KEL-80 Linear acceptance (2026-09-20): WriteQueue has no aggregate pending-call/byte budget; '4 KiB is the present virtual-port inline ceiling; 1 MiB/16 MiB arms belong only to protocols that actually admit them'."
+    ],
+    "alternatives_rejected": "(a) Serialize all Electron traffic through the single-pending floor with a renderer-side queue: violates KEL-142 §6 'slow consumer cannot grow a renderer queue' and would deadlock draw.io's listener-then-reply patterns; (b) Build the ipcRenderer facade against JSON postMessage directly to the host without the wv-link envelope: second renderer-routing protocol, forbidden by KEL-142/KEL-80 text.",
+    "confidence": "high that v1 is insufficient (direct code facts); medium on the exact v2 numbers (need the A2 prototype measurements).",
+    "type": "task",
+    "unknowns": "Measured per-engine cost of WKScriptMessage/PostWebMessage copies at 64 KiB–4 MiB; whether draw.io export payloads exceed 16 MiB (app-link MAX_FRAME_LEN) in practice; exact credit numbers (must come from KEL-80's ownership ledger, not guessed)."
+   },
+   {
+    "id": "F04-A3",
+    "question": "Where and how is contextBridge.exposeInMainWorld implemented so that copied-and-frozen data, proxied functions, Error custom-property loss and Symbol dropping hold on three engines, given only WKWebView/WebKitGTK have isolated worlds?",
+    "proposed_answer": "Implement the preload runtime once as the isolated-world shim (the realm the KEL-142 ISOLATED_BRIDGE_SCRIPT already owns): preload executes there with a shimmed require('electron') returning {contextBridge, ipcRenderer, webUtils, webFrame-subset} (the sandbox-preload module map Electron documents); exposeInMainWorld serializes the api graph into a frozen proxy tree installed into the page world via the existing host->page evaluate-in-world path (macOS evaluate_in_world; WebKitGTK equivalent), with function calls relayed over the existing page<->isolated postMessage channel and results copied (no shared object identity). On WebView2 there is no isolated world: the same shim runs in the page world before page scripts but keeps preload state in closures and installs the identical frozen proxy tree — a documented ▲ 'isolation-emulated' cell, never silent. Owner: @keld/electron renderer shim (new package surface) + keld-wv injection; conformance cell per contextBridge row of Electron's type table. Observable contract: Object.isFrozen(window.api) on all engines; page cannot reach preload closures on WKWebView/WebKitGTK; on WebView2 the scoreboard says ▲. First falsifier: page mutates window.api.o.a and the preload observes the change.",
+    "evidence": [
+     "[fact] context-bridge.md: 'Function values are proxied to the other context and all other values are copied and frozen'; type table rows for Error/Promise/Function/Symbol/Element; 'contextBridge API can only be used when contextIsolation is enabled' (context-bridge.ts).",
+     "[fact] sandbox.md: sandboxed preload require is limited to electron {contextBridge, crashReporter, ipcRenderer, nativeImage, webFrame, webUtils}, events, timers, url.",
+     "[fact] ICoreWebView2 reference lists no isolated-world API; WKContentWorld doc (macOS 11+); WebKitGTK register_script_message_handler doc notes separate *_in_world variants.",
+     "[fact] arch 04 §3 item 3 already commits to 'mapped to real isolated-world exposure where the engine supports it, documented emulation otherwise'.",
+     "[fact] corpus: drawio preload relies on the isolated world to keep a navigation listener page scripts cannot remove; Zettlr preload exposes a raw per-method passthrough and process.env copy."
+    ],
+    "alternatives_rejected": "(a) Run preload in the page world on every engine for uniformity: downgrades macOS/Linux isolation that already exists (KEL-139 requires trusted bridge logic outside page JS); (b) Deep-clone via JSON: drops Map/Set/Date/typed arrays and Promise/Function proxies that the Electron table supports; (c) Transpile apps' preloads at migrate time to remove contextBridge: code change, violates 'config-only changes' destination.",
+    "confidence": "medium-high — engine facts are primary-sourced; the proxy design is standard but its WebView2 security posture must be labeled, not argued away.",
+    "type": "task",
+    "unknowns": "Whether WKContentWorld function proxies can be made synchronous for the page (Electron's proxied functions return promises when the target returns promises but are otherwise synchronous calls) — on Keld the page->isolated relay is postMessage (async), so synchronous return values of exposed functions (Zettlr's config.get returns sendSync result synchronously) depend on A5."
+   },
+   {
+    "id": "F04-A4",
+    "question": "What are event.sender / event.senderFrame / event.reply / processId / frameId under Keld's host-minted (webview id, navigation generation) identity, and what happens on navigation races, stale replies and subframes?",
+    "proposed_answer": "sender = a facade WebContents object keyed by the host webview id (stable across navigations, as Electron's WebContents is), with the methods the corpus calls (send, cut/copy/paste/selectAll, inspectElement, startDrag) delegated to host operations; senderFrame = a facade WebFrameMain carrying url/origin snapshotted from the host navigation registry at dispatch time and null when the dispatch-time generation differs from the live generation; event.reply = host-routed EVENT bound to (id, generation-at-dispatch); the host silently drops it when the generation rotated (Electron's sendToFrame returns false without throwing); event.sender.send targets the live main frame; processId/frameId = opaque host ids (not OS PIDs). Subframe-originated IPC is ✘ for now because window.keld is main-frame only (KEL-142 AC 'an iframe has no own window.keld'). Owner: keld-core window/webview registry (TARGET, KEL-139/KEL-142 lineage) for identity; keld-compat 'webContents routing identity' (arch 04 §3 item 4) for the facade; conformance cells cite ipc-main-event.md. Observable contract: draw.io validateSender(event.senderFrame) accepts same-origin app frames and rejects after navigation. First falsifier: a listener receives a senderFrame whose url is taken from the message payload (forged-url fixture passes).",
+    "evidence": [
+     "[fact] ipc-main-event.md: senderFrame 'May be null if accessed after the frame has either navigated or been destroyed'; reply 'will send an IPC message to the renderer frame that sent the original message'.",
+     "[fact] web-contents.ts sendToFrame: returns false when getWebFrame finds no frame belonging to the contents; ipc-dispatch.ts addReplyToEvent uses sendToFrame([processId, frameId]).",
+     "[fact] keld-guard Principal::Webview{id, generation}: 'Bumped on navigation so stale grants cannot carry over'; arch 02 §7 'pending replies to the old principal drop'.",
+     "[fact] corpus: drawio validateSender returns false on null and prefix-matches frame.url; Zettlr BrowserWindow.fromWebContents(event.sender), event.sender.cut(), event.senderFrame ?? undefined passed to Menu.popup.",
+     "[fact] KEL-142 spec acceptance: 'an iframe has no own window.keld'."
+    ],
+    "alternatives_rejected": "(a) Throw 'Object has been destroyed' from senderFrame access after navigation: Electron documents null, not throw; (b) Deliver reply to the new document after navigation: violates arch 02 §7 generation drop and Electron's frame-bound reply; (c) Expose OS PIDs as processId: PID is diagnostic-only per arch 04 §3.1.",
+    "confidence": "medium-high.",
+    "type": "task",
+    "unknowns": "Electron's behavior of webContents.send on a destroyed WebContents (throw vs no-op) was not verified from docs in this pass; whether the host registry can snapshot frame url/origin for every dispatch without allocation on the hot path (arch 02 §6)."
+   },
+   {
+    "id": "F04-A5",
+    "question": "Can ipcRenderer.sendSync be a blocking CALL with deadline (KEL-127) on system webviews that only offer asynchronous page->host messaging, and what reply semantics must it keep?",
+    "proposed_answer": "Unknown until prototyped; no primary source in this pass shows a synchronous page->host call on WKWebView or WebKitGTK. Proposed route: prototype three engine primitives — (mac/linux) synchronous XMLHttpRequest to a host-served custom-scheme endpoint bound to the document nonce; (windows) WebView2 host-object sync proxy — each measured for RTT, deadline enforcement and UI-thread behavior; then freeze sendSync as: blocking CALL on the el: sync kind, host deadline (reuse APP_LINK_IO_DEADLINE class, exact value from measurement), per-document rate limit with a dev-mode console warning, reply slot held open until returnValue is set or the deadline fires (Electron's setter sends on assignment, even after the listener returned), missing-listener -> dev warning plus deadline error. If no engine primitive proves viable, the cell is ▲ 'async-only; requires keld.compat.ts sendSync: \"reject\"' with an explicit diagnostic — never a silent async rewrite (KEL-127). Owner: arch 02 §5 sendSync bullet + keld-wv per-engine adapter + @keld/electron; corpus demand: Zettlr (config/citeproc hot paths), draw.io none. First falsifier: Zettlr's window.config.get() returns a Promise instead of a value.",
+    "evidence": [
+     "[fact] ipc-renderer.md: 'Sending a synchronous message will block the whole renderer process until the reply is received, so use this method only as a last resort'; ipc-dispatch.ts returnValue setter sends on assignment; console.warn when no listener anywhere.",
+     "[fact] briefing KEL-127: 'sendSync async replacement changes caller contract (must stay blocking CALL with deadline, rate-limited, dev-warned)'; arch 02 §5 same.",
+     "[fact] corpus zettlr: 6 sendSync sites, all behind contextBridge-exposed synchronous functions (config.get/set, getCitationCallback) whose callers expect a synchronous return.",
+     "[fact] WKContentWorld/WKScriptMessageHandler, WebKitGTK script-message-handler and WebView2 WebMessageReceived are all asynchronous post/receive APIs per their docs fetched this pass."
+    ],
+    "alternatives_rejected": "(a) Rewrite sendSync to return a Promise and patch callers at migrate time: forbidden by KEL-127 and not config-only; (b) Atomics.wait on a SharedArrayBuffer with a worker relay: requires cross-origin isolation headers on the app origin and a worker-side async channel — possible but unmeasured; park as a prototype variant; (c) Busy-wait polling: blocks the UI thread with no deadline guarantee.",
+    "confidence": "low — correct contract is known, mechanism is unproven.",
+    "type": "prototype",
+    "unknowns": "Viability of sync XHR against WKURLSchemeHandler on WKWebView; WebView2 hostObjects.sync semantics and its UI-thread reentrancy; what Electron returns when returnValue is never set (docs silent) — must be recorded from the pinned oracle before the cell is scored."
+   },
+   {
+    "id": "F04-A6",
+    "question": "When do utilityProcess/UtilityProcess/parentPort, MessageChannelMain/MessagePortMain and IpcMainServiceWorker get built, and against what oracle?",
+    "proposed_answer": "Defer all three behind (1) zero measured corpus demand (draw.io 0, Zettlr 0, quick-start 0) and (2) KEL-75 AC7's requirement that facade behavior be proven against pinned-oracle conformance fixtures first. Sequence: publish ✘ cells with denominator honesty now; land a MessagePortMain conformance fixture (queue-until-start, FIFO, close event, postMessage-only transfer) mapped onto RoleRegistry virtual ports as the first Tier-2 slice because its generic owner already exists; utilityProcess.fork follows as a thin request for an app-bound role once KEL-75 T4 window-bound roles and the role grant subset are live (window-bound is not admitted in RoleOwner today); IpcMainServiceWorker stays documented-never for v1 (SW transport unproven on WKWebView custom schemes). Divergences to pre-declare: QueueFull (64) and 4 KiB inline as ▲; PID diagnostic-only; fork options that widen authority -> scored ✘. First falsifier: a fork({env}) child observing the env, or a transferred port reaching a stale generation.",
+    "evidence": [
+     "[fact] corpus usage scans and greps: no MessageChannelMain/MessagePortMain/utilityProcess/parentPort/postMessage(transfer) hits in any of the three apps.",
+     "[fact] KEL-75 AC7: facade observable events/transfer validation/queue-start/disconnect must match a recorded pinned-oracle conformance entry; 'An operation without an oracle remains unknown'.",
+     "[fact] role.rs RoleOwner: Primary, AppBound only; 'window-bound is T4 and is not admitted here'; arch 02 §2 'T3 virtual ports remain a Unix library/test surface'.",
+     "[fact] research 186 row 7: utilityProcess forwards cwd/env/stdio/session and structured-clones arbitrary values with port disentangling; gap 6 requires strict-profile negative tests for inherited cwd/env, raw PID/kill, session/network authority, transferred ports across generations.",
+     "[fact] briefing: WKWebView lacks Service Worker on custom schemes (WebKit 206741); IpcMainServiceWorker page states it is a variation of IpcMain targeted at service workers."
+    ],
+    "alternatives_rejected": "(a) Build utilityProcess.fork now as a child_process.fork facade for Bun: a parallel process model (invariant 4 / briefing never-list 'raw child_process from strict roles'); (b) Implement MessagePortMain over DOM MessageChannel inside one Bun role without host mediation: 'Browser and Bun endpoints never connect directly' (arch 02 §5); (c) Map IpcMainServiceWorker onto the app-link: no SW substrate exists to send from.",
+    "confidence": "high for deferral and never-classification; medium on slice order.",
+    "type": "research",
+    "unknowns": "Whether the 20-app Tier-2 corpus (not yet declared) contains utilityProcess users that would reorder this; whether KEL-79's resource transport will ever admit Service Workers on any engine."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "IpcMainServiceWorker, IpcMainServiceWorkerEvent, IpcMainServiceWorkerInvokeEvent (v1)",
+    "rationale": "Requires Service Workers on the app resource transport; WKWebView lacks SW on custom schemes (WebKit 206741) and WebView2 has virtual-host SW limits; zero corpus demand; revisit only if KEL-79 proves SW transport (T3)."
+   },
+   {
+    "surface": "contextBridge.exposeInIsolatedWorld(worldId, ...) and contextBridge.executeInMainWorld",
+    "rationale": "Chromium-numeric world ids (0/999/1000+) have no engine-neutral meaning; executeInMainWorld is experimental; zero corpus demand."
+   },
+   {
+    "surface": "UtilityProcess 'login' event / respondToAuthRequestsFromMainProcess",
+    "rationale": "Network auth challenges are the KEL-89 auth broker's; a role answering HTTP auth is ambient network authority."
+   },
+   {
+    "surface": "utilityProcess.fork options as authority: env, cwd, execArgv, allowLoadingUnsignedLibraries, arbitrary modulePath outside the declared bundle",
+    "rationale": "Research 186 row 7 / KEL-75 facade boundary: 'allowLoadingUnsignedLibraries can never silently weaken a strict profile'; strict roles have no inherited env/cwd; translated to reviewed policy or scored ✘."
+   },
+   {
+    "surface": "UtilityProcess.pid as identity, reap or routing input",
+    "rationale": "arch 04 §3.1: 'A returned PID is diagnostic only, never a Keld identity or control handle.'"
+   },
+   {
+    "surface": "Raw child_process/exec facade behind utilityProcess",
+    "rationale": "Briefing never-list; parallel process model is a fifth unique."
+   },
+   {
+    "surface": "Exposing the whole ipcRenderer object over contextBridge, or ipcRenderer.send/on without a channel grant",
+    "rationale": "Electron itself yields {} for the module; the tutorial calls raw exposure 'a powerful API without any kind of argument filtering'; Keld additionally requires the el: grant at the host."
+   },
+   {
+    "surface": "Renderer-side or facade-side channel allowlists in place of keld-guard",
+    "rationale": "Default-deny is sacred; the guard is the sole owner of channel grants (arch 03 §1)."
+   },
+   {
+    "surface": "Direct renderer-to-role transport for MessagePort transfer",
+    "rationale": "arch 02 §5 / KEL-75: 'Browser and Bun endpoints never connect directly'; ports are host-owned."
+   },
+   {
+    "surface": "Silent async rewrite of sendSync",
+    "rationale": "KEL-127: caller contract must remain a blocking CALL with deadline; any deviation is an explicit quirks flag or ▲ cell."
+   },
+   {
+    "surface": "process.env / process.argv copied into the main world by preload (Zettlr pattern) under the strict profile",
+    "rationale": "Strict preload realms have no ambient env; allowed only as a visibly labeled legacy-profile cell."
+   },
+   {
+    "surface": "SCV decoding in keld-core/keld-ipc for routing",
+    "rationale": "arch 04 §3 / crates/keld-compat AGENTS: no Electron-isms in keld-core/keld-ipc; the host matches channel string + length and forwards opaque bytes."
+   }
+  ],
+  "open_unknowns": [
+   "[unknown] What a blocked ipcRenderer.sendSync receives when no listener ever sets event.returnValue (docs silent; source binds the reply to the event object's lifetime) — must be recorded from the pinned oracle before the sendSync cell is scored.",
+   "[unknown] Whether webContents.send / frame.send on a destroyed WebContents/frame throws ('Object has been destroyed') or no-ops — not verified from v44.4.5 docs in this pass; matters for draw.io's render-process-gone export path.",
+   "[inference] Main->renderer messages with no registered ipcRenderer listener are dropped (EventEmitter semantics, no queue) — needs an oracle cell; affects whether Keld's host->renderer EVENT fan-out may queue during page load.",
+   "[unknown] A synchronous page->host primitive on WKWebView/WebKitGTK (sync XHR via WKURLSchemeHandler / WebKitGTK URI scheme) and WebView2 hostObjects.sync semantics — A5 prototype.",
+   "[unknown] Which Linear issue owns the guard 'windows.*.channels' grant vocabulary (KEL-102 vs KEL-97 vs new) and its glob grammar; without it no el: grant can be enforced.",
+   "[unknown] Whether audit:'all' logging will require the host to decode SCV payloads (would conflict with 'no Electron-isms in keld-core/keld-ipc').",
+   "[unknown] Measured copy counts and cost for WKScriptMessage / PostWebMessage / WebKitGTK messages at 64 KiB–4 MiB, and whether draw.io export payloads exceed the 16 MiB app-link frame cap — A2 prototype.",
+   "[unknown] Exact KEL-80 'bounded product-spine slice' artifact (no docs/specs file exists; KEL-142 §2 states it was never a passed execution artifact) — the renderer floor v2 spec must name its own acceptance rather than cite KEL-80 completion.",
+   "[unknown] Whether the planned 20-app Tier-2 corpus contains any utilityProcess/MessageChannelMain users (would reorder A6).",
+   "[unknown] Windows and Linux renderer bridge qualification (none exists); the WebView2 isolation-emulated ▲ posture needs a security review entry before any Windows contextBridge cell can be scored.",
+   "[unknown] Whether host-mediated OS drop capture (for webUtils.getPathForFile) is feasible on all three engines without breaking native file drops into the page (WKWebView drag delegate vs WebView2 IDropTarget vs GTK DnD)."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

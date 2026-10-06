@@ -1,0 +1,1288 @@
+{
+ "unit": "F01",
+ "name": "app-lifecycle",
+ "published": {
+  "epic": {
+   "key": "F01-EPIC",
+   "title": "compat(app): Electron app lifecycle, single-instance, paths and process shim over host-owned lifecycle",
+   "body": "## Scope\nElectron `app` module (115 members: 75 methods, 30 events, 10 properties), `CommandLine` (5), `Dock` (11, macOS), `process` shim (29). Live today: `app.whenReady/isReady/quit/on/off/removeListener`, `ready` and `window-all-closed` events, `process.type='browser'`, `process.versions.electron='0.0.1'` (KEL-72). Everything else is TARGET.\n\n## Corpus demand (resolved call sites, 2026-10-06)\nwhenReady/ready, window-all-closed, quit, exit, getPath (Zettlr ~40 sites, draw.io 3), getVersion, requestSingleInstanceLock + second-instance (both apps), open-file (Zettlr), before-quit/will-quit, activate, relaunch (Zettlr), isPackaged, setAppUserModelId, disableHardwareAcceleration, process.argv/defaultApp parsing (draw.io).\n\n## Maturity ladder (exit criteria)\n- L0: every `app` member exists with a typed `KELD-COMPAT` error for unsupported calls (never a silent no-op).\n- L1: electron-quick-start and draw.io boot through `whenReady`, `activate`, `window-all-closed`, `quit` on macOS.\n- L2: ordering sequences `before-quit → per-window close → will-quit → quit` (and the `quitAndInstall` inversion) pass conformance entries citing the pinned v44.4.5 `app.md` sentences, with negative controls; `second-instance` delivered exactly once with typed argv/cwd.\n- L3: draw.io and Zettlr primary workflows exercise the family under `keld dev` (KEL-74 records, authority profile printed).\n\n## Linear owners consumed\nKEL-72 (lifecycle facade), KEL-142 (@keld/api lifecycle/channel), KEL-139/KEL-143 (Ready and generation recovery semantics), KEL-75 (role spawn facts), KEL-78 (strict child environment), KEL-19/KEL-15 (config/bundle emission), KEL-96 (keld dev exit codes).\n\n## Design facts fixed by research (two refuters)\n- Host `Ready` is emitted today on the first host-created window's navigation; Electron's `ready` fires before any window exists. Ready must be re-based to \"host initialized, window module available\" while keeping the wire enum unchanged (KEL-237 cells stay valid) and pairing the re-base with KEL-143 recovery semantics.\n- Quit is one-shot and uncancelable today; Electron's cancelable `before-quit`/`will-quit` and renderer `beforeunload` need a two-phase, host-owned protocol. `app.exit(code)` cannot be `process.exit` (the supervisor would recover the role); it is a host Call.\n- The strict Bun child receives only `KELD_APP_LINK` and log sinks, so single-instance, second-instance argv/cwd/additionalData, open-file/open-url, path roots and OS registrations are host-owned and delivered as typed events or boot facts.\n- Protocol-client and login-item registration are build-time declarations materialised by packaging; the facade reports false with a diagnostic until an emitter exists.\n- `app.commandLine.*` is a facade-local self-consistent store with a one-time dev warning (arbitrary Chromium flags are documented-never).\n\n## Platform lanes\nmacOS first (Dock, open-file/open-url, activate, Handoff APIs are macOS-tagged: 44 members); Windows (jump lists, AppUserModelId, toast activator: 20 members); Linux (badge, desktop name: 4 members). `before-quit/will-quit/quit` are not emitted on Windows shutdown — documented ▲.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "F01-T1",
+    "title": "conformance(app): pinned v44.4.5 lifecycle ordering entries before any new app facade code",
+    "kind": "conformance",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Land Keld-owned conformance entries (fixture + test citing the exact pinned `app.md` sentence) for: `ready` fires once before any window; `before-quit → close each window → will-quit → quit` ordering; `preventDefault` at `before-quit` or any window `close` cancels quit; `will-finish-launching` equals `ready` on Windows/Linux; `window-all-closed` default quit; `activate(hasVisibleWindows)` on macOS. Entries may fail (red) until the implementing tickets land; they must not be skipped or retried.",
+    "acceptance_criteria": [
+     "Each entry cites the pinned v44.4.5 doc sentence (blob at the v44.4.5 tag) and names its observable sequence",
+     "Every entry has a negative control that fails when the ordering is deleted or reversed",
+     "Entries run in the existing three-OS test matrix without sleeps; timing is never compared",
+     "The KEL-237 lifecycle corpus manifest schema is reused; no second corpus format is introduced"
+    ],
+    "negative_controls": [
+     "Reversing before-quit and will-quit in the fixture fails the ordering entry",
+     "Removing the preventDefault branch fails the cancellation entry"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-237 corpus manifest (reuse)",
+     "KEL-72 fixtures (extend, do not fork)"
+    ],
+    "linear_owner": "KEL-237 / KEL-72",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "ready",
+     "before-quit",
+     "will-quit",
+     "quit",
+     "window-all-closed",
+     "activate",
+     "will-finish-launching",
+     "whenReady",
+     "isReady"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** conformance\n\n**Current behavior:** Only `ready`, `window-all-closed` and `quit` are covered by conformance cells.\n\n**Desired behavior:** Land Keld-owned conformance entries (fixture + test citing the exact pinned `app.md` sentence) for: `ready` fires once before any window; `before-quit → close each window → will-quit → quit` ordering; `preventDefault` at `before-quit` or any window `close` cancels quit; `will-finish-launching` equals `ready` on Windows/Linux; `window-all-closed` default quit; `activate(hasVisibleWindows)` on macOS. Entries may fail (red) until the implementing tickets land; they must not be skipped or retried.\n\n**Key interfaces:** KEL-237 corpus manifest cells; the `@keld/electron` fixture runner; pinned Electron `app.md`.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementing the ordering; renderer `beforeunload`; Windows shutdown semantics beyond documenting the ▲.",
+    "out_of_scope": "Implementing the ordering; renderer `beforeunload`; Windows shutdown semantics beyond documenting the ▲.",
+    "notes": ""
+   },
+   {
+    "key": "F01-T2",
+    "title": "feat(app): re-base host Ready to \"host initialized, zero app windows\" and keep KEL-237 cells valid",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Change the host emission point of the lifecycle `Ready` event so it fires once the host is initialised and the window module is available, before any app window exists, matching Electron `ready`; keep the wire enum unchanged. Window creation moves to the facade (`new BrowserWindow`) once F02 lands; until then the host-created primary window is adopted by the facade. Pair the semantics with KEL-143 recovery (a successor generation receives Ready again with the same meaning).",
+    "acceptance_criteria": [
+     "`app.whenReady()` resolves before any window exists and exactly once per generation",
+     "The KEL-237 `app.when-ready.host-ready-gate` cell still passes (no wire change)",
+     "KEL-143 successor generation observes Ready again and can re-adopt the surviving window",
+     "A fixture that registers `ready` after the event fires still receives it (Electron semantics)"
+    ],
+    "negative_controls": [
+     "Emitting Ready on window navigation again fails the \"before any window\" entry",
+     "Dropping the successor Ready fails the KEL-143 recovery entry"
+    ],
+    "blocked_by_keys": [
+     "F01-T1"
+    ],
+    "blocked_by_external": [
+     "KEL-143 task-level artifact (recovery contract)",
+     "KEL-139 AC for Ready"
+    ],
+    "linear_owner": "KEL-139 / KEL-143",
+    "review_gates": [
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "ready",
+     "whenReady",
+     "isReady"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Ready is signalled on the first host-created window navigation.\n\n**Desired behavior:** Change the host emission point of the lifecycle `Ready` event so it fires once the host is initialised and the window module is available, before any app window exists, matching Electron `ready`; keep the wire enum unchanged. Window creation moves to the facade (`new BrowserWindow`) once F02 lands; until then the host-created primary window is adopted by the facade. Pair the semantics with KEL-143 recovery (a successor generation receives Ready again with the same meaning).\n\n**Key interfaces:** Lifecycle session Ready emission; `@keld/api` app lifecycle; the host window registry (TARGET).\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** BrowserWindow constructor (F02); two-phase quit (F01-T3).",
+    "out_of_scope": "BrowserWindow constructor (F02); two-phase quit (F01-T3).",
+    "notes": ""
+   },
+   {
+    "key": "F01-T3",
+    "title": "feat(app): two-phase host-owned quit with before-quit/will-quit cancellation and app.exit as a host Call",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "Make quit two-phase: the facade emits `before-quit` locally for facade-initiated quit, then asks the host to close all windows through the cancelable per-window close protocol (F02), then emits `will-quit`, then issues the existing Quit Call. Host-initiated quit (Cmd+Q, dock, logoff) arrives as a host event the facade handles the same way; any `preventDefault` or a window-close veto cancels and the host stays alive. `app.exit(code)` becomes a host Call that terminates the generation without supervisor recovery; the `keld dev` exit-code contract is a named prerequisite.",
+    "acceptance_criteria": [
+     "Sequence `before-quit → close(window n) … → will-quit → quit` matches the conformance entry",
+     "`preventDefault()` in `before-quit` keeps every window open and the app alive",
+     "`app.exit(7)` exits the host session with status 7 under `keld dev` (CLI contract) and never triggers a restart",
+     "`quitAndInstall` ordering is split by facade × platform as documented (see F09)"
+    ],
+    "negative_controls": [
+     "Removing the cancellation path makes the preventDefault entry fail",
+     "Implementing app.exit as process.exit triggers supervisor recovery and fails the exit entry"
+    ],
+    "blocked_by_keys": [
+     "F01-T1",
+     "F02-T3"
+    ],
+    "blocked_by_external": [
+     "KEL-96/KEL-19 keld dev exit-code propagation",
+     "KEL-139 AC6 single quit owner"
+    ],
+    "linear_owner": "KEL-139 / KEL-96",
+    "review_gates": [
+     "wire protocol",
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "quit",
+     "exit",
+     "before-quit",
+     "will-quit",
+     "relaunch"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Quit is a one-shot correlated Call with no veto; app.exit is absent.\n\n**Desired behavior:** Make quit two-phase: the facade emits `before-quit` locally for facade-initiated quit, then asks the host to close all windows through the cancelable per-window close protocol (F02), then emits `will-quit`, then issues the existing Quit Call. Host-initiated quit (Cmd+Q, dock, logoff) arrives as a host event the facade handles the same way; any `preventDefault` or a window-close veto cancels and the host stays alive. `app.exit(code)` becomes a host Call that terminates the generation without supervisor recovery; the `keld dev` exit-code contract is a named prerequisite.\n\n**Key interfaces:** Lifecycle channel Quit/Exit requests; host quit sequencing (AppKit applicationShouldTerminate delayed reply); F02 close protocol.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Window close protocol itself (F02-T3); updater-driven quit (F09).",
+    "out_of_scope": "Window close protocol itself (F02-T3); updater-driven quit (F09).",
+    "notes": ""
+   },
+   {
+    "key": "F01-T4",
+    "title": "feat(app): host-minted boot facts for synchronous pre-ready getters (getPath, getVersion, getName, isPackaged, process.resourcesPath, argv)",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Deliver host-minted boot facts to the Bun role at spawn (beside `KELD_APP_LINK`, owned by the role spawn contract) so `app.getPath(name)`, `getAppPath`, `getVersion/getName/name`, `isPackaged`, `process.resourcesPath/defaultApp/argv` are synchronous at module evaluation (draw.io constructs electron-store at top level). The facade never reads HOME/APPDATA/XDG itself. Where `userData` lives under the strict profile is decided by F01-A4 (open).",
+    "acceptance_criteria": [
+     "`app.getPath(\"userData\")` returns synchronously at import before `whenReady`",
+     "`isPackaged` is false under `keld dev` and true under an installed root",
+     "`process.argv` matches Electron: first element is the executable, app arguments follow",
+     "A role spawned without boot facts fails closed with a typed `KELD-COMPAT` error naming the missing fact"
+    ],
+    "negative_controls": [
+     "Removing the boot-fact delivery makes the import-time getPath entry throw",
+     "Reading HOME inside the facade fails the \"no environment reads\" negative test under the Linux explicit-env strict launch"
+    ],
+    "blocked_by_keys": [
+     "F01-A4"
+    ],
+    "blocked_by_external": [
+     "KEL-75 role spawn contract (boot facts beside KELD_APP_LINK)",
+     "KEL-15 config schema for name/version"
+    ],
+    "linear_owner": "KEL-75 / KEL-15",
+    "review_gates": [
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "getPath",
+     "setPath",
+     "getAppPath",
+     "getVersion",
+     "getName",
+     "name",
+     "isPackaged",
+     "getLocale",
+     "getSystemLocale",
+     "process.resourcesPath",
+     "process.defaultApp",
+     "process.argv"
+    ],
+    "size": "M",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** `@keld/electron` exposes nothing synchronous at import beyond process.type/versions.\n\n**Desired behavior:** Deliver host-minted boot facts to the Bun role at spawn (beside `KELD_APP_LINK`, owned by the role spawn contract) so `app.getPath(name)`, `getAppPath`, `getVersion/getName/name`, `isPackaged`, `process.resourcesPath/defaultApp/argv` are synchronous at module evaluation (draw.io constructs electron-store at top level). The facade never reads HOME/APPDATA/XDG itself. Where `userData` lives under the strict profile is decided by F01-A4 (open).\n\n**Key interfaces:** Role spawn bootstrap payload; `@keld/electron` app getters; `keld.config.ts` identity fields.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Granting filesystem authority over those paths (F01-A4 / KEL-78).",
+    "out_of_scope": "Granting filesystem authority over those paths (F01-A4 / KEL-78).",
+    "notes": ""
+   },
+   {
+    "key": "F01-T5",
+    "title": "feat(app): host-owned single-instance admission with exactly-once typed second-instance, open-file and open-url delivery",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L2",
+    "what_to_build": "The host owns the OS single-instance primitive (declared in `keld.config.ts`), pre-acquires it so the primary identity exists before Bun, and preserves Electron call-time semantics: `requestSingleInstanceLock()` returns the host verdict (the losing instance still runs its early CLI paths), `second-instance` delivers `(argv, workingDirectory, additionalData)` as opaque untrusted data exactly once after `ready`, and macOS `open-file`/`open-url` may precede `ready` and are queued per Electron rules. OS-delivered file intents become host-scoped one-shot read intents, never ambient grants.",
+    "acceptance_criteria": [
+     "Second launch delivers one `second-instance` event with the exact argv/cwd the OS supplied and the first instance is focused",
+     "`open-file` fired before `ready` is delivered after the listener registers (Electron queueing)",
+     "Calling `requestSingleInstanceLock()` without a config declaration yields a typed `KELD-COMPAT` diagnostic",
+     "Replayed or duplicated handoff payloads are rejected (bounded size, exactly-once)"
+    ],
+    "negative_controls": [
+     "Delivering second-instance twice fails the exactly-once entry",
+     "Forwarding argv straight to a privileged handler fails the untrusted-input negative test"
+    ],
+    "blocked_by_keys": [
+     "F01-T1",
+     "F01-T4"
+    ],
+    "blocked_by_external": [
+     "KEL-75 role spawn",
+     "KEL-78 strict environment",
+     "arch 05 §3 deeplink row"
+    ],
+    "linear_owner": "KEL-75 / KEL-78",
+    "review_gates": [
+     "permission model",
+     "wire protocol"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "requestSingleInstanceLock",
+     "hasSingleInstanceLock",
+     "releaseSingleInstanceLock",
+     "second-instance",
+     "open-file",
+     "open-url",
+     "setAsDefaultProtocolClient",
+     "isDefaultProtocolClient"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** No single-instance or deep-link concept exists; keld-native lists `deeplink` as a name only.\n\n**Desired behavior:** The host owns the OS single-instance primitive (declared in `keld.config.ts`), pre-acquires it so the primary identity exists before Bun, and preserves Electron call-time semantics: `requestSingleInstanceLock()` returns the host verdict (the losing instance still runs its early CLI paths), `second-instance` delivers `(argv, workingDirectory, additionalData)` as opaque untrusted data exactly once after `ready`, and macOS `open-file`/`open-url` may precede `ready` and are queued per Electron rules. OS-delivered file intents become host-scoped one-shot read intents, never ambient grants.\n\n**Key interfaces:** Host deeplink admission point; lifecycle-adjacent typed events; `keld.config.ts` singleInstance/protocols declarations.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Build-time protocol/login-item registration emitters (F01-T6).",
+    "out_of_scope": "Build-time protocol/login-item registration emitters (F01-T6).",
+    "notes": ""
+   },
+   {
+    "key": "F01-T6",
+    "title": "task(app): facade-local shims with honest diagnostics (commandLine, enableSandbox, protocol-client and login-item registration before the packaging emitter exists)",
+    "kind": "task",
+    "tier": "Tier 1",
+    "maturity_target": "L0",
+    "what_to_build": "`app.commandLine.*` keeps a private switch map (self-consistent append/has/get/remove) and emits one dev-only `KELD-COMPAT` warning per switch; `enableSandbox()` is a no-op that still throws after ready like Electron; `setAsDefaultProtocolClient`/`setLoginItemSettings` return false with a diagnostic naming the missing packaging emitter until keld-pack materialises declarations; `process.noAsar` is documented-never.",
+    "acceptance_criteria": [
+     "`appendSwitch(\"x\",\"1\")` then `getSwitchValue(\"x\")` returns \"1\" and the engine command line is untouched",
+     "`enableSandbox()` after ready throws the Electron error text",
+     "`setAsDefaultProtocolClient(\"drawio\")` returns false and the diagnostic names the emitter ticket",
+     "Scoreboard rows record ▲/✘ for every member in this ticket"
+    ],
+    "negative_controls": [
+     "Making setAsDefaultProtocolClient return true without an emitter fails the honesty entry"
+    ],
+    "blocked_by_keys": [
+     "F01-T1"
+    ],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-72",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "commandLine.appendSwitch",
+     "commandLine.appendArgument",
+     "commandLine.hasSwitch",
+     "commandLine.getSwitchValue",
+     "commandLine.removeSwitch",
+     "enableSandbox",
+     "setAsDefaultProtocolClient",
+     "removeAsDefaultProtocolClient",
+     "setLoginItemSettings",
+     "getLoginItemSettings",
+     "process.noAsar"
+    ],
+    "size": "S",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** task\n\n**Current behavior:** None of these members exist on the facade.\n\n**Desired behavior:** `app.commandLine.*` keeps a private switch map (self-consistent append/has/get/remove) and emits one dev-only `KELD-COMPAT` warning per switch; `enableSandbox()` is a no-op that still throws after ready like Electron; `setAsDefaultProtocolClient`/`setLoginItemSettings` return false with a diagnostic naming the missing packaging emitter until keld-pack materialises declarations; `process.noAsar` is documented-never.\n\n**Key interfaces:** `@keld/electron` app module; scoreboard rows.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Real OS registration (needs the packaging emitter: KEL-19).",
+    "out_of_scope": "Real OS registration (needs the packaging emitter: KEL-19).",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "F01-A4",
+    "title": "Where does `userData` live under the strict profile: guard grant root or KEL-78 role-private container?",
+    "type": "grilling",
+    "question": "Electron apps (electron-store, electron-log) write under `app.getPath(\"userData\")` with raw `node:fs`. Making `userData` a generated `app.fs.*` grant root contradicts KEL-78 (a guard grant is not OS containment and a JS shim cannot mediate native code). Choose one owner: (a) place `userData`/`logs` inside the KEL-78 reviewed role-private container so `node:fs` works by OS containment with no guard grant, or (b) a `node:fs`-over-FsBroker facade for strict roles. Which, and what does `keld migrate` print for apps that need the other?",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   },
+   {
+    "key": "F01-A5",
+    "title": "Which owner emits bundle declarations (Info.plist CFBundleURLTypes, .desktop, MSIX) for protocol-client and login-item registration?",
+    "type": "task",
+    "question": "Protocol-client and login-item registration are build-time declarations. keld-pack is a name-only enum today and KEL-19 may or may not include bundle emission. Confirm the owner and the `keld.config.ts` fields (KEL-15) before F01-T6 can be promoted beyond \"false with diagnostic\". This is a permission-model + KEL-15 schema gate.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "process.noAsar / original-fs (no ASAR in Keld)",
+   "arbitrary Chromium/V8 flags through commandLine (facade-local store only)",
+   "app.setAsDefaultProtocolClient claiming success without a bundle declaration",
+   "process.exit-based app.exit (supervisor would recover the role)"
+  ],
+  "out_of_scope": [
+   "Handoff/continuity macOS APIs beyond documenting ✘ (zero corpus demand)",
+   "Windows shutdown-block APIs beyond the documented ▲"
+  ],
+  "not_yet_specified": [
+   "Exact BootDescriptor field set (decided when F01-T4 lists pre-ready calls from the draw.io boot trace)",
+   "Pre-ready event queueing rules across second-instance vs open-file/open-url (Electron orders them differently)"
+  ],
+  "issue_numbers": {
+   "F01-A4": 392,
+   "F01-A5": 393,
+   "F01-EPIC": 444,
+   "F01-T1": 445,
+   "F01-T2": 446,
+   "F01-T3": 451,
+   "F01-T4": 452,
+   "F01-T5": 453,
+   "F01-T6": 454
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "ecosystem packages loaded at draw.io module top level: electron-store, electron-log, electron-context-menu, electron-updater",
+    "problem": "Their Electron member requirements are owned only by a decision (X03-A6), an inventory line in X03-T2 and PANEL-P3. contextMenu({...}) (electron.js:169) and autoUpdater.logger.transports.* (:82-83) execute unguarded at import; any missing member aborts module evaluation.",
+    "suggested_unit": "PANEL-P3 output becomes a named artifact consumed by F01-T4, F06-T4, F09-T1 and X03-T1 (add edges)."
+   },
+   {
+    "entity": "Dock (class, 11 members, macOS), CommandLine (class)",
+    "problem": "Named only in F01-EPIC scope; Dock has no ticket, no never row and no out-of-scope line although macOS is the first-proof platform. No corpus call site found for either.",
+    "suggested_unit": "F01-EPIC out-of-scope line (zero demand) — no new ticket."
+   }
+  ],
+  "duplicates": [
+   {
+    "keys": [
+     "F01-T4",
+     "X03-T1"
+    ],
+    "problem": "Both tickets build the same atom: 'deliver host-minted boot facts / bootstrap payload beside KELD_APP_LINK, read synchronously at import, fail closed typed when absent'. Both list process.resourcesPath/defaultApp and both carry the fail-closed AC. X03-T1 is blocked by F01-T4 yet restates its build.",
+    "fix": "F01-T4 is the single owner of the payload, delivery and fail-closed contract (owner KEL-75 spawn contract). Reduce X03-T1 to 'five module specifiers resolved by one alias owner + process.* field mapping consuming F01-T4' and retitle."
+   }
+  ],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F01-T4",
+    "problem": "Wrong gate and missing gate. F01-A4 ('where does userData live under STRICT') does not gate a LegacySandboxOff first proof. The artifact F01-T4 actually consumes — the pre-ready call list / descriptor field set — is produced by PANEL-P3 (MAP: 'unspecified until E1 lists the pre-ready calls'), which gates nothing. The epic also says F01-T4 itself 'lists pre-ready calls', so the producer is ambiguous.",
+    "fix": "Replace F01-T4 ← F01-A4 with F01-T4 ← PANEL-P3; keep F01-A4 as a gate only on the strict-profile follow-up. Same correction for X02-T3 ← F01-A4."
+   },
+   {
+    "key": "F01-T2",
+    "problem": "Predecessor 'KEL-143 task-level artifact (recovery contract)' does not exist: KEL-143 is Backlog (Linear, fetched 2026-10-06). Meanwhile successor-generation Ready replay is already live in keld-core (app_session.rs:5087, test at :7452), so the edge names a future artifact for behaviour that partly exists.",
+    "fix": "Consume the live recovered-generation replay contract by name and state what the re-base changes in it; list KEL-143 only for 're-adopt the surviving window'."
+   }
+  ],
+  "invariant_violations": [
+   {
+    "key": "F01-T1, F02-T1, F03-T1, F04-T1, F05-T1, F06-T1",
+    "violation": "'Entries may fail (red) until the implementing tickets land; they must not be skipped or retried' collides with the verification floor (reported passing workspace tests; merge admission enforced — KEL-128 Done) and with 'MUST NOT weaken tests / skip gates'. No mechanism is named that lets a red entry coexist with a green required gate.",
+    "fix": "State the mechanism as a contract: entries are KEL-74 cells recorded with an explicit expected status (fail/unknown) asserted by the runner, flipped to pass in the implementing PR; a silently red or ignored test is not allowed."
+   },
+   {
+    "key": "F01-T3",
+    "violation": "One concern per PR and architecture gate: two-phase quit, host-initiated quit routing, app.exit as a new host Call that 'terminates the generation without supervisor recovery' (crash/recovery ownership change — architecture by AGENTS' definition), relaunch and quitAndInstall ordering in one L ticket with only wire/public-API gates.",
+    "fix": "Split; the app.exit/no-recovery Call needs its own approved spec naming the recovery-ownership invariant."
+   }
+  ],
+  "quality_problems": [
+   {
+    "key": "F01-T2",
+    "problem": "AC1 ('resolves before any window exists and exactly once per generation') contradicts AC3 ('successor generation observes Ready again and can re-adopt the surviving window'): in generation ≥2 a window exists by design. AC2's claim that the KEL-237 cell still passes is an untested inference.",
+    "fix": "AC1 scoped to the first generation; AC3 states the successor ordering (Ready, then adopted-window snapshot) as a sequence; AC2 becomes a run of the named cell."
+   },
+   {
+    "key": "F01-T4",
+    "problem": "Negative control 2 ('reading HOME fails under the Linux explicit-env strict launch') cannot run on the first-proof platform or profile (macOS, legacy; strict admitted on no OS). AC2 'true under an installed root' needs an installed root that does not exist on macOS.",
+    "fix": "Negative control: spawn the role with HOME/XDG pointing at a decoy and assert the returned paths equal the host payload. Mark the isPackaged=true half `unknown` until KEL-141."
+   },
+   {
+    "key": "F06-T2, F06-T4, F06-T5, F06-T6, F01-T5, F09-T1",
+    "problem": "Oversized: F06-T2 (4 dialog kinds × sync variants + scope minting + parenting, two review gates), F06-T4 (Menu + Tray), F06-T5 (4 modules, 27 members), F06-T6 (11 modules), F01-T5 (lock + second-instance + open-file + open-url + protocol client), F09-T1 (KEL-53 state machine + guarded calls + two facades).",
+    "fix": "Split along the first-proof slices named in the yagni rows; each slice one concern, one review gate set."
+   },
+   {
+    "key": "F01-T1",
+    "problem": "AC3 'entries run in the existing three-OS test matrix' conflicts with 'macOS first; Windows/Linux lanes or explicit documented gap'. Mixed tiers: will-finish-launching on Windows/Linux is in a first-proof conformance ticket.",
+    "fix": "macOS entries only; other OS entries are separate cells with status `unknown`."
+   },
+   {
+    "key": "F01-A4, F03-D4, F04-A1, F04-A4, X02-A1, F06-D1, X04-D4",
+    "problem": "Filed as 'open (not resolvable from current evidence)' with body '_No evidence-backed resolution yet; see the unit research note_' — the doctrine's banned 'needs discussion'. Most are ownership choices with a stated recommendation (X02-A1 even contains one), not evidence gaps.",
+    "fix": "Each gets a decision packet in the issue body: options, cost, new invariant, falsifier, recommendation, the one remaining question; resolve the ones evidence already determines (X02-A1, F04-A4)."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "F01-T1",
+    "milestone": "first-proof",
+    "reason": "Conformance-first invariant for the lifecycle the proof exercises: ready-before-window (drawio electron.js:987 creates its window inside whenReady), window-all-closed (:2112), activate (:2127), before-quit (:2106). Slice: macOS entries for those four; park will-finish-launching on Windows/Linux."
+   },
+   {
+    "key": "F01-T2",
+    "milestone": "first-proof",
+    "reason": "draw.io computes URL/options and calls new BrowserWindow + loadURL inside whenReady (:987, :748, :777) while the host emits Ready only on NavigationReady of a host-created window (keld-core app_session.rs:3390). Without the re-base the app's first load is a second navigation of an adopted window."
+   },
+   {
+    "key": "F01-T3",
+    "milestone": "first-proof",
+    "reason": "Slice only: host-initiated quit must not bypass the per-window veto — draw.io's macOS menu has role 'quit' (:2042) and tracks Cmd+Q via before-quit (:2106) with every close vetoed (:947-963); a one-shot host quit past a dirty window is silent data loss on the scored unsaved-prompt contract. Park app.exit as a host Call (:1081/:1324/:1699 are export-mode/error paths), relaunch, quitAndInstall ordering."
+   },
+   {
+    "key": "F01-T4",
+    "milestone": "first-proof",
+    "reason": "Import-time synchronous facts: process.argv/env/platform read at module top level (:75-79, :164, :181-188), electron-store constructed at top level (:30), app.getVersion/getPath/getLocale/name used during activation (:58, :70, :767, :2020)."
+   },
+   {
+    "key": "F01-T5",
+    "milestone": "first-proof",
+    "reason": "Slice only: requestSingleInstanceLock() must return a host verdict — draw.io calls it inside whenReady and quits on false (:1718-1722) — and second-instance/open-file listeners must be registrable (:1726, :2144). Park delivery of second-instance/open-file/open-url and protocol-client members (Zettlr open-file → next)."
+   },
+   {
+    "key": "F01-T6",
+    "milestone": "parked",
+    "reason": "No resolved call site in either corpus app for commandLine.*, enableSandbox() (commented out at drawio :691), setAsDefaultProtocolClient or setLoginItemSettings (grep of both clones: zero hits)."
+   },
+   {
+    "key": "X03-T1",
+    "milestone": "first-proof",
+    "reason": "`import ... from 'electron'` must resolve in app code and inside node_modules packages (electron-log :9, electron-updater :17, electron-store :20, electron-context-menu :22). Boot-fact half duplicates F01-T4."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "PANEL-D7 (and MAP 'Decisions so far', F01-T4)",
+    "claim": "[fact] drawio electron.js:30 'store = new Store();' at top level; :58 app.getPath('userData') pre-ready — 'draw.io constructs electron-store at module top level and calls app.getPath('userData') pre-ready'.",
+    "problem": "Half wrong against the source. Line 58 is inside detectInitialAdaptiveColorsDefault(), which is invoked from inside app.whenReady().then (≈:991) — post-ready — and sits in its own try/catch. `new Store()` at :30 is wrapped in try/catch (:28-36) with `store = null` as fallback, so a failing constructor degrades silently instead of breaking boot. The only pre-ready userData dependence is inside electron-store, which the same ticket lists as [unknown].",
+    "fix": "FACT: Store is constructed at module top level inside try/catch; failure yields store=null (settings silently not persisted). FACT: the direct app.getPath('userData') call at :58 runs after ready. FACT: process.argv/env/platform are read at top level (:75-79, :164). UNKNOWN: whether electron-store/electron-log call app.getPath/getName/getVersion at construction — settled by PANEL-P3. The decision stands on the documented top-level contract plus that unknown."
+   },
+   {
+    "key": "F01-T2 / F01-EPIC",
+    "claim": "'Pair the semantics with KEL-143 recovery (a successor generation receives Ready again with the same meaning)'; 'keep KEL-237 cells valid (no wire change)'.",
+    "problem": "Presents a future KEL-143 artifact as the thing to pair with, while KEL-143 is Backlog and successor-generation Ready replay is already implemented in keld-core (app_session.rs:5087; test 'G2 Ready replay' at :7452). 'Cells stay valid' is an untested inference from 'the wire enum is unchanged'.",
+    "fix": "FACT: keld-core replays Ready to a recovered generation today. INFERENCE: re-basing the emission point keeps the when-ready cell green — verify by running it. BLOCKER (named): 're-adopt the surviving window' depends on KEL-143 (Backlog)."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "F01-T2",
+     "F02-T2",
+     "KEL-143"
+    ],
+    "coupling": "Ready re-base ↔ recovery ↔ window adoption. Ready is emitted on NavigationReady today and is already replayed to a recovered generation; F02-T2 adds a transitional 'first new BrowserWindow() adopts the host-created primary window until F01-T2 lands'. Changing the emission point silently changes what the replayed Ready means in generation ≥2 (a window exists) and makes the adoption shim dead or wrong; F01-T2's AC1/AC3 already contradict each other on this.",
+    "fix": "One atom 'who creates window #1 and what Ready means per generation', owned by F01-T2; edge F02-T2 ← F01-T2 and delete the adoption shim from F02-T2 (two mechanisms for one fact)."
+   },
+   {
+    "keys": [
+     "F06-T4",
+     "F02-T3",
+     "F01-T3"
+    ],
+    "coupling": "F06-T4 executes menu `role` items host-side 'without a round trip'. draw.io's menu has role 'close' (:2047) and role 'quit' (:2042); executed natively they would bypass the cancelable close/quit protocol that F02-T3/F01-T3 exist to provide.",
+    "fix": "AC in F06-T4: role close/quit enter the same CloseRequested/quit-request path as the window button and Cmd+Q; edge F06-T4 ← F02-T3."
+   },
+   {
+    "keys": [
+     "PANEL-D14",
+     "X02-T3",
+     "F01-T4",
+     "F09-T1"
+    ],
+    "coupling": "Updater disablement depends on an environment variable: PANEL-D14 has migrate write DRAWIO_DISABLE_UPDATE=true into 'the host-declared role environment', read at module top level (:75). That is a boot fact delivered at spawn (F01-T4 / KEL-75 no-inherited-env) and a migrate output not present in X02-T3's file list. If it is absent, the boot-time checkForUpdates runs (:2092-2100) and F09-T1's 'typed error on explicit check' fires at activation.",
+    "fix": "Name the declared-role-environment field and its schema owner; add it to X02-T3 outputs and to F01-T4's payload; F09-T1 AC covers both env-present and env-absent boots."
+   },
+   {
+    "keys": [
+     "F01-T5",
+     "X02-T3"
+    ],
+    "coupling": "F01-T5 AC3 makes requestSingleInstanceLock() without a config declaration a typed diagnostic; draw.io quits when the call returns false (:1718-1722). Whether the proof app boots therefore depends on migrate emitting the declaration, which is listed in X02-T3 but not edged.",
+    "fix": "Edge X02-T3 ← F01-T5 (declaration key) and an X02-T4 activation precondition."
+   },
+   {
+    "keys": [
+     "swarm research pin",
+     "all tickets' 'Current behavior'"
+    ],
+    "coupling": "Every 'Current behavior' line was verified by refuters at origin/main d150a14; main is now b4b907c3 (5 commits: KEL-270 S5/S8 runtime/guard, KEL-19 T1 ExpectedAppIdentity container, KEL-254). F09-A2 (feed base in ExpectedAppIdentity) and the role-spawn facts in F01-T4/X03-T1 touch code that moved.",
+    "fix": "Stamp each ticket with the verification SHA; re-verify F09-A2, F01-T4, X03-T1 at b4b907c3 before they are taken."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "PANEL-P2",
+    "why_now": "Takeable now; gates F02-T3 and the F01-T3 quit slice. Supplies the Electron transcript for close → preventDefault → isModified → dialog → destroy and Cmd+Q ordering with two windows.",
+    "consumes": "Electron 44.4.5 binary on the same Mac; an objc2 AppKit harness; receipts already in PANEL-D5 (windowShouldClose:/applicationShouldTerminate:). Produces: diffed transcript + ✔/▲ marks."
+   },
+   {
+    "key": "F01-T1",
+    "why_now": "Takeable now; conformance-first for ready/whenReady, window-all-closed, activate, before-quit on macOS — after the red-entry mechanism (expected-status cells) is stated.",
+    "consumes": "KEL-237 lifecycle corpus manifest + runner as landed in keld-compat (KEL-237 In Progress), pinned app.md v44.4.5."
+   },
+   {
+    "key": "F01-T4",
+    "why_now": "Next: unblocked once PANEL-P3 delivers the field set (replace the F01-A4 edge).",
+    "consumes": "PANEL-P3 pre-ready call list; KEL-75 role spawn contract (spec in repo; KEL-75 In Progress) re-verified at b4b907c3."
+   },
+   {
+    "key": "X03-T1",
+    "why_now": "Next: after X02-A1 and F01-T4; makes `electron` resolve inside the four node_modules packages.",
+    "consumes": "X02-A1 decision; F01-T4 payload; KEL-72 module alias (Done)."
+   },
+   {
+    "key": "F01-T2",
+    "why_now": "Next: after F01-T1; must land before the registry so no adoption shim is built.",
+    "consumes": "F01-T1 entries; the live NavigationReady→Ready emission and recovered-generation replay in keld-core; KEL-139 Ready AC (KEL-139 Done)."
+   },
+   {
+    "key": "F02-T2",
+    "why_now": "Next: after F02-T1, F01-T2 and X05-T2 (the PANEL-D19 edge is not a real gate).",
+    "consumes": "F02-T1 entries; KEL-75 WindowGeneration spec; generated channel constants; a named window-channel contract owner (open — KEL-98 is echo-only)."
+   },
+   {
+    "key": "F01-T3",
+    "why_now": "Next: after F02-T3 — only the slice 'host-initiated quit enters the per-window veto'.",
+    "consumes": "F02-T3 close protocol; PANEL-P2 Cmd+Q transcript; KEL-139 AC6 single quit owner."
+   },
+   {
+    "key": "F01-T5",
+    "why_now": "Next: after F01-T4 — lock verdict + registrable listeners only.",
+    "consumes": "F01-T4 boot payload; single-instance declaration key agreed with X02-T1."
+   },
+   {
+    "key": "X02-T3",
+    "why_now": "Next: hand-authored draw.io artefact once the config keys it must contain exist (alias, channels, single-instance, role env, legacy profile).",
+    "consumes": "X02-T1 contract; X02-A1; F04-A1 grant shape; F01-T5 declaration key; PANEL-P3 channel/env findings."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny; no Electron-isms in keld-core/keld-ipc; one owner per rule/schema/transport; reuse KEL-75/76/77/78/79/80/53/74/102/135/139-144; measured perf; spec+Linear gate; #312/#313/#319/#322/#323/#325, KEL-127). Verified against origin/main d150a14 and Electron v44.4.5 app.md fetched 2026-10-06.",
+   "verdicts": [
+    {
+     "decision_id": "F01-A1",
+     "verdict": "survives",
+     "reason": "The core fact holds: Ready is emitted on NavigationReady of a host-created window and must be re-based for app-created BrowserWindow. The wire enum's own doc already carries the Electron-compatible meaning (\"The host is ready for the app process to create windows / run\"), so changing only the emission point keeps KEL-237 cells valid. But the reuse claim names the wrong owner, the budget unknown is mis-scoped, and the type is understated.",
+     "evidence": "crates/keld-core/src/app_session.rs:3900-3901 `AppWindowEvent::NavigationReady => router.signal_ready()`; crates/keld-ipc/src/lifecycle.rs LifecycleEvent::Ready doc; docs/specs/kel96-no-flag-host-boot.md §4.4 steps 6 Authenticate -> 7 CreateInitialWindow -> 8 Ready; docs/architecture/01-overview.md §5 cold-start row: \"the window is created only after the authenticated HELLO\"; grep shows `LifecycleSession::` is constructed only in crates/keld-compat/tests/electron_lifecycle.rs, while app_session.rs:4951-4953 implements signal_last_window_closed as an AtomicBool driven by keld-wv's AppWindowEvent::LastWindowClosed (\"primary-window count transitioned from one to zero\", crates/keld-wv/src/engine.rs:100-105).",
+     "correction": "(1) Do not say the LifecycleSession.window_opened/window_closed counter 'remains the LastWindowClosed owner': the live primary router never calls it; the live count lives in the keld-wv UI backend transition. Name the keld-core window registry (TARGET) as the single count owner and retire the test-only counter or the backend-side transition — two counters is already a one-owner defect. (2) Re-scope the budget unknown: HELLO already precedes window creation in both the KEL-96 state machine and the arch 01 §5 census, so the deferred cost is Bun module evaluation + whenReady resolution + the facade `new BrowserWindow` Call roundtrip, not 'Bun start + HELLO'. Measure that delta against the existing cold-start row. (3) Type must be an amendment to approved KEL-96 §4.4/§4.5 (step 7/8 reorder) and KEL-139, not a task; also state how Ready(g2) after Bun generation recovery (KEL-143, window and document retained) satisfies 'zero app windows' — it cannot, so define adoption of surviving host windows or a ▲."
+    },
+    {
+     "decision_id": "F01-A2",
+     "verdict": "survives",
+     "reason": "Verified: Quit is a one-shot correlated Call with no veto; nonzero Bun exit below the breaker is recovered with a fresh generation and Ready re-sent; unrequested status-zero post-ready exit is KELD-RUNTIME-012; no host handler exists for applicationShouldTerminate/WM_QUERYENDSESSION/SIGTERM (only test fixtures match); Electron app.exit skips before-quit/will-quit; Zettlr will-quit preventDefault + second quit is real. So process.exit cannot implement app.exit and a veto phase is required. The exact shape has gaps the author partly admits, and one blocker is missed.",
+     "evidence": "crates/keld-ipc/src/lifecycle.rs (LifecycleRequest::Quit only; reader returns after Reply); docs/architecture/06-runtime-and-tooling.md:31-36 and :348-357; crates/keld-runtime/src/lib.rs:708-716 Supervisor doc and :170-185 KELD-RUNTIME-012 arms; grep -rl applicationShouldTerminate|WM_QUERYENDSESSION|SIGTERM crates -> only tests/fixtures; Electron app.md v44.4.5 line 533 (exit: before-quit/will-quit not emitted), lines 77/94/107 (Windows shutdown not emitted); scratchpad corpus zettlr/source/main.ts:201-217; crates/keld-cli/src/dev.rs:404,697 `if status.success()` and `run_dev` returning Result<(), DevError> — crates/keld-cli/src/main.rs maps any Err to exit 1/2, never the host's code; docs/specs/kel96-no-flag-host-boot.md §4.5 step 1 sends LastWindowClosed unconditionally on the one-to-zero transition.",
+     "correction": "(1) `Exit{code}` is blocked on more than the supervisor: `keld dev` collapses any non-success host status into a DevError and exits 1/2, so draw.io's CLI-export exit code cannot reach the shell without a KEL-19/CLI contract change and a host exit-with-code step in KEL-96 §4.5 step 4 ('exits' carries no code today). Name KEL-19 as a blocker. (2) Name the missing message: after host->app `QuitRequested` and facade `before-quit`, the host needs an explicit proceed signal (or app.quit() must itself be a `QuitBegin` Call) so the host enters a pre-Quitting state BEFORE the first window closes; otherwise 'host suppresses LastWindowClosed while a Quit is in flight' has no state to key on. KEL-96 §4.5 step 1 must be amended to gate the transition on that state. (3) Fix the evidence count: the shallow clones contain 3 `app.exit(` sites in drawio-desktop/src and 2 in zettlr/source, not 7/14. (4) will-quit preventDefault leaves the host alive with zero windows and no LastWindowClosed — state that as a required host behavior (today zero windows is the quit trigger)."
+    },
+    {
+     "decision_id": "F01-A3",
+     "verdict": "survives",
+     "reason": "Host ownership is forced by verified facts: strict child receives only KELD_APP_LINK + log sinks, direct connect/bind/socket is OS-denied, arch 05 already names a `deeplink` row for 'protocol registration + single-instance handoff', and research 186 row 2 classifies the handoff tuple as untrusted input needing one host-owned admission point. Electron quotes check out (second-instance after ready, 32 MB cap, open-file/open-url early registration). Three design gaps and one wrong constant need correction.",
+     "evidence": "docs/architecture/06-runtime-and-tooling.md:188-189; docs/specs/kel78-strict-profile-sandbox.md:228 (Network deny always) and :231 (Inherited objects none beyond app-link + log sinks); docs/architecture/05-webview-and-native.md:257; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md:58; Electron app.md v44.4.5 lines 25, 121, 142, 501, 1098; corpus drawio electron.js:1718-1760 and :2142-2150 (open-file registered inside will-finish-launching); zettlr main.ts:35-42; crates/keld-runtime/src/virtual_port.rs:15 `MAX_PORT_MESSAGE_LEN = 4096` (T3 inline port messages) vs crates/keld-ipc/src/lib.rs:92 `MAX_FRAME_LEN = 16 MiB` (app-link frames); packages/@keld/api/src/app.ts `ensureLink()` is called only from whenReady()/quit(), and @keld/electron app.on triggers it only for 'ready'.",
+     "correction": "(1) Specify the undeclared case: if keld.config.ts does not declare `app.singleInstance` but the app calls requestSingleInstanceLock(), the boot fact is absent; return must be a KELD-COMPAT diagnostic (and `keld migrate` must detect the call site and emit the declaration), never a silent true/false. Also record as ▲ that the loser's own `if (!lock) …` branch never runs because the host exits pre-spawn. (2) Replace the cap citation: the relevant limit for a lifecycle Event is keld_ipc::MAX_FRAME_LEN (16 MiB), not the virtual-port 4096-byte inline cap; a 32 MB additionalData still exceeds it, so the ▲ cap decision stands but belongs to the keld-ipc owner with the right number. (3) Ordering: the queue flush must be will-finish-launching -> open-file/open-url -> ready (Electron app.md:25 names will-finish-launching as where open-file listeners are set; draw.io's only open-file registration is inside it), so will-finish-launching is not low-demand/unknown — it is on draw.io's cold-launch path. (4) The flush 'after HELLO' cannot reach listeners unless @keld/api connects on first `app.*` touch (today the link connects lazily only from whenReady/quit); state that eager connect is required and that it does not violate KEL-142 AC3 (which forbids import-time ready, not import-time connect)."
+    },
+    {
+     "decision_id": "F01-A4",
+     "verdict": "refuted",
+     "reason": "The load-bearing mechanism — making `userData` a generated `app.fs.read`/`app.fs.write` grant root so electron-store/electron-log 'keep working' via raw node:fs — contradicts KEL-78: a guard grant is consumed by the host FsBroker over kipc and MUST NOT widen the child's OS profile; files outside the reviewed role-private container are OS-denied for the strict child regardless of any manifest grant. The test oracle's 'a node:fs write ... succeeds through the facade' implies an unnamed node:fs interception owner. Separately, `BootDescriptor` collides with an existing, differently-directed contract.",
+     "evidence": "docs/specs/kel78-strict-profile-sandbox.md:218-235: 'A guard allow MUST NOT widen the child's OS profile'; row 'Files outside a reviewed role-private container | deny'; row 'Brokers | only authenticated kipc to the host; no raw host object'; :404-410 Linux item 2 'still allow the role-private paths that role is supposed to use'. crates/keld-native/src/lib.rs + fs.rs: fs.read/fs.write are kipc-brokered. docs/specs/kel96-no-flag-host-boot.md:89-94: the existing 'boot descriptor' is keld.boot.json schema-v1 with closed fields schema/name/entry/renderer/permissions, CLI->host; crates/keld-core/src/app_session.rs:817 ParsedBoot; docs/architecture/05-webview-and-native.md:258 'reaches the host on the boot descriptor'. Sync getPath demand verified (drawio electron.js:1056-1061, zettlr main.ts:35-72).",
+     "correction": "Choose one owner and say it: (a) place `userData` (and `logs` on Win/Linux) inside the KEL-78 reviewed role-private container so node:fs works by OS containment with no guard grant involved, and document that it is role-private storage, not an `app.fs.*` scope; or (b) if interception of node:fs is intended, name KEL-77 (Bun differential) as the owner of a node:fs->FsBroker shim and treat it as a new large owner with its own spec — do not imply it through a test oracle. Rename the host->app facts Event (e.g. SessionFacts) and derive `name` from the existing T1a descriptor `name` field; `version`/`productName` do not exist in schema-v1, so adding them is a KEL-96/KEL-15 schema change (public-contract gate), not a facade detail. Keep the sync-cache design and the KEL-135 separation."
+    },
+    {
+     "decision_id": "F01-A5",
+     "verdict": "survives",
+     "reason": "Facts verified: macOS schemes must be in Info.plist (not runtime-modifiable), appx returns true while ineffective, macOS login items need signing/notarization; keld-pack is a name-only enum with no plist/MSIX/.desktop emitter; keld-native lists deeplink/autostart as names only; strict child has zero ambient OS authority. Returning false + diagnostic instead of silent true is the KEL-127 'no silent downgrade' rule. The author's type and grant-shape framing need correction.",
+     "evidence": "Electron app.md v44.4.5 lines 870, 876-879, 1485; docs/specs/keld-auth.md:533, :543, :1134-1137; crates/keld-native/src/lib.rs MODULES; docs/architecture/05-webview-and-native.md:257-260; docs/specs/kel78-strict-profile-sandbox.md containment table; crates/keld-guard/src/lib.rs:1191-1193 `path_in_scope`: a pattern without `/**` matches by exact string equality; docs/specs/keld-auth.md D3/D11 (:1272, :1287, :1346) already use exact-string literal scopes 'with zero new guard code and zero new syntax' and reject `**` at manifest load.",
+     "correction": "(1) Type cannot be 'task': new grant groups `app.deeplink.register` and `app.autostart.set` are a permission-model gate, the new Calls are a wire-protocol gate, and the new keld.config.ts fields are KEL-15 schema — this needs an approved spec, blocked by KEL-19/KEL-89 as stated. (2) Cite the reuse explicitly: literal allowlists already work through keld-guard's exact-match branch of `path_in_scope` (keld-auth D11 precedent); require `**` rejection at manifest load for scheme literals exactly as keld-auth D3 does, so no parallel matcher is introduced. (3) Linux XDG autostart is a ✔+ extension beyond Electron's mac/win tagging and must be its own scoreboard decision, not folded into the grant."
+    },
+    {
+     "decision_id": "F01-A6",
+     "verdict": "survives",
+     "reason": "commandLine as a facade-local self-consistent store with a dev warning, enableSandbox as a no-op, and noAsar as ✘ are compat-local and match the never list (arbitrary Chromium/V8 flags). The 'no boundary change' claim is false for the GPU/metrics part, and the KEL-132 mapping is asserted without evidence.",
+     "evidence": "docs/research/library/compatibility-competitors/13-electron-api-usage.md:42-47 Never table 'Arbitrary Chromium CLI flags / V8 flags'; crates/keld-compat/AGENTS.md ('No Electron-isms in keld-core/keld-ipc; compat pressure stays here via quirks flags'); docs/specs/kel132-webview-gpu-media.md:1-22, :49-53, :112-113 — the spec covers Linux GPU classification/preparation (GpuSafeMode, process re-exec) and media installation, not a runtime hardware-acceleration preference; docs/architecture/01-overview.md §5 idle-RSS row excludes engine helper processes (WebKit XPCs, WebView2, WebKitGTK) from the Keld-owned census.",
+     "correction": "Split the decision: commandLine/enableSandbox/noAsar = facade-local task, no boundary change. getGPUInfo/getGPUFeatureStatus/getAppMetrics as 'host Calls returning Keld's process census' = a new kipc Call surface (wire-protocol review gate) with a named channel owner and a census definition reconciled with arch 01 §5 (which excludes engine processes) — spec, not task. Do not write 'may map to an engine preference only through KEL-132' — KEL-132 exposes no such preference; record disableHardwareAcceleration as ▲/✘ with a diagnostic unless a KEL-132 amendment is proposed. Corpus claim 'zero app.commandLine call sites' was not re-verified here; keep it labelled as the scan's output."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Two window-count owners already coexist in keld-core: `LifecycleSession.window_opened/window_closed` (crates/keld-core/src/lifecycle.rs) and the keld-wv backend's one-to-zero transition consumed by app_session's AtomicBool `signal_last_window_closed`. The research object treats the first as the live owner; it is test-only. Any `activate(hasVisibleWindows)` or quit-suppression design built on the wrong counter will be wrong in production.",
+     "evidence": "grep `LifecycleSession::` outside lifecycle.rs -> only crates/keld-compat/tests/electron_lifecycle.rs:284,295,374; crates/keld-core/src/app_session.rs:4876,4951-4953; crates/keld-wv/src/engine.rs:100-105.",
+     "severity": "medium"
+    },
+    {
+     "finding": "Ready re-base conflicts with KEL-143 generation recovery: arch 06 says the same host, native window and router install the successor and 'send Ready again'. Under the re-based meaning ('zero app windows'), Ready(g2) is delivered to a fresh facade with an empty BrowserWindow registry while the host still owns a live window+document. Without an adoption contract (host enumerates surviving windows to g2) or a ▲, quick-start-style `activate`/`getAllWindows().length === 0` logic double-creates windows after recovery.",
+     "evidence": "docs/architecture/06-runtime-and-tooling.md:31-36; docs/specs/kel139-macos-product-spine.md AC5 (:157-165) 'recovery keeps the same window and document'.",
+     "severity": "high"
+    },
+    {
+     "finding": "The security_mapping proposes an `app.deeplink.openFile` grant that 'mints a dialog-style scoped read permit for the delivered path' (labelled inference). For Finder open-file the user intent resembles a dialog, but the same mechanism applied to second-instance argv (draw.io `commandLine.pop()` -> blessPath) mints fs authority from untrusted CLI input — exactly what research 186 row 2 forbids. The map must separate OS-user-intent sources (Finder/open-with) from argv-derived paths and deny minting for the latter.",
+     "evidence": "docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md:58 'do not send an OS-derived argv/deep link directly to a privileged handler'; corpus drawio electron.js:1740-1752; docs/architecture/05-webview-and-native.md:246 dialog row.",
+     "severity": "high"
+    },
+    {
+     "finding": "`keld dev` never propagates the host's exit code: run_dev returns Result<(), DevError>, checks only `status.success()`, and main.rs exits 1 or 2 on Err. Any app.exit(code) design that promises OS-visible exit codes is blocked on a CLI contract change (KEL-19) in addition to the supervisor classification the author names.",
+     "evidence": "crates/keld-cli/src/dev.rs:404,422,697; crates/keld-cli/src/main.rs:48-59,90.",
+     "severity": "medium"
+    },
+    {
+     "finding": "Pre-ready event delivery (open-file, open-url, second-instance queue, will-finish-launching) presupposes the app-link is connected when the host flushes, but @keld/api connects lazily (ensureLink only from whenReady()/quit(); @keld/electron triggers it only for app.on('ready')). The facade/API must connect on first app.* touch (or at import, which KEL-142 AC3 does not forbid — it forbids import-time ready). Not stated anywhere in the object.",
+     "evidence": "packages/@keld/api/src/app.ts ensureLink/whenReady/sendQuit; packages/@keld/electron/src/app.ts on(): `if (event === \"ready\") ignoreIfUnawaited(observeReady())`; docs/specs/kel142-macos-renderer-bridge-api.md AC4.",
+     "severity": "medium"
+    },
+    {
+     "finding": "KEL-96 §4.5 step 1 sends LastWindowClosed unconditionally on the one-to-zero transition; the two-phase quit's 'host suppresses LastWindowClosed while a Quit is in flight' is therefore a normative amendment to an approved spec and must be filed as such, with the state the host keys on named.",
+     "evidence": "docs/specs/kel96-no-flag-host-boot.md:433-447.",
+     "severity": "medium"
+    },
+    {
+     "finding": "Corpus demand counts in the object were not re-verified against the shallow clones: app.exit appears 3 times in drawio-desktop/src and 2 times in zettlr/source, not 7/14. Other ranks (getPath 40, focus 26, show 18) should be re-derived from the committed usage JSON before they drive tiering.",
+     "evidence": "grep -rn 'app.exit(' scratchpad/corpus/drawio-desktop/src | wc -l -> 3; zettlr/source -> 2.",
+     "severity": "low"
+    },
+    {
+     "finding": "Constant misattribution: 'VirtualPort MAX_PORT_MESSAGE_LEN=4096' governs KEL-80 T3 inline port messages (keld-runtime), not app-link lifecycle frames; the app-link frame cap is keld_ipc::MAX_FRAME_LEN = 16 MiB. Decisions about additionalData caps must cite the keld-ipc owner and number.",
+     "evidence": "crates/keld-runtime/src/virtual_port.rs:15; crates/keld-ipc/src/lib.rs:92.",
+     "severity": "low"
+    },
+    {
+     "finding": "Naming/ownership collision: 'boot descriptor' is an existing KEL-96 T1a host-input contract (keld.boot.json schema-v1, CLI->host, fields schema/name/entry/renderer/permissions, also carrying the KEL-89 `auth` field). Proposing a host->app `BootDescriptor` Event creates a second schema under one name in the opposite direction — a one-source-of-truth risk; name/version should be derived from the existing descriptor and delivered under a distinct name.",
+     "evidence": "docs/specs/kel96-no-flag-host-boot.md:89-94; crates/keld-core/src/app_session.rs:803-870; docs/architecture/05-webview-and-native.md:258.",
+     "severity": "medium"
+    }
+   ]
+  },
+  {
+   "lens": "Electron semantics accuracy and corpus demand — pinned v44.4.5 docs (downloaded to scratchpad/notes/f01-refute/), Keld origin/main d150a14 sources, and direct greps of corpus clones (not the usage.json aggregates)",
+   "verdicts": [
+    {
+     "decision_id": "F01-A1",
+     "verdict": "survives",
+     "reason": "Electron semantics confirmed: app.md 'ready' is 'Emitted once, when Electron has finished initializing' with the NOTE that it fires after the first event-loop tick and pre-ready APIs must be called synchronously at top level; windows are created inside whenReady in electron-quick-start main.js:25-26, draw.io electron.js:987, Zettlr main.ts:104. Keld fact confirmed: crates/keld-core/src/app_session.rs:3900 maps AppWindowEvent::NavigationReady -> signal_ready, and crates/keld-wv/src/engine.rs defines NavigationReady as initial renderer navigation completed — i.e. Ready today requires a navigated host window, the inverse of Electron. Wire enum unchanged (LifecycleEvent::Ready=0x00 pinned in keld-ipc lifecycle.rs tests), so KEL-237 cell app.when-ready.host-ready-gate stays valid. LifecycleSession.window_opened/window_closed counter (lifecycle.rs:133-152) is already the LastWindowClosed owner. Two corrections to the evidence block, not the decision: (1) the KEL-142 quote 'No import-time ready promise, stdout readiness, renderer readiness' is not in the spec — AC3 is the renderer->Bun roundtrip; the host-Ready gate is AC4 ('app.whenReady() does not resolve before real host Ready'), grep of the spec for 'import-time' and 'stdout readiness' returns nothing; (2) the cold-start unknown is narrower than stated: docs/architecture/01 §5 row 215 already defines the product-boot clock with 'the window is created only after the authenticated HELLO', so the unmeasured delta is HELLO -> Bun module evaluation -> first window Call, not HELLO itself. Sizing: not a standalone tracer bullet — re-basing Ready requires at least a minimal window-create Call (F02) or the facade has nothing to call inside whenReady; a fresh agent can finish it only as 'Ready-after-HELLO + one host window.create Call' spanning keld-core/keld-ipc/@keld/electron.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 31-48 (ready + NOTE); crates/keld-core/src/app_session.rs:3898-3901; crates/keld-core/src/lifecycle.rs:123-152; crates/keld-ipc/src/lifecycle.rs (Ready=0x00 pinned); docs/specs/kel142-macos-renderer-bridge-api.md:386-410 (AC3 vs AC4); docs/architecture/01-*.md:215; crates/keld-compat/fixtures/lifecycle-corpus/corpus.json cell app.when-ready.host-ready-gate",
+     "correction": "Cite KEL-142 AC4 (not AC3) for the host-Ready gate. Restate the unknown as the HELLO->module-eval->window.create delta against arch 01 §5 row 215, which already clocks the window after HELLO. Pair the Ready re-base with a minimal window.create Call in the same slice or declare F02 as a hard dependency."
+    },
+    {
+     "decision_id": "F01-A2",
+     "verdict": "survives",
+     "reason": "All cited Electron semantics verified verbatim in app.md: app.quit 'Try to close all windows. The before-quit event will be emitted first... guarantees that all beforeunload and unload event handlers are correctly executed... a window cancels the quitting by returning false in beforeunload'; app.exit 'Exits immediately with exitCode... before-quit and will-quit events will not be emitted'; window-all-closed 'If the user pressed Cmd + Q, or the developer called app.quit()... the window-all-closed event would not be emitted'; before-quit NOTE about quitAndInstall ordering and Windows shutdown/logoff non-emission. Keld facts verified: LifecycleRequest has only Quit with no veto (keld-ipc lifecycle.rs); arch 06 lines 31-36 state a recoverable nonzero Bun crash gets a fresh generation and 'send Ready again', 'Status-zero self-termination remains terminal; a status-zero exit after an accepted correlated Quit is host-authorized'; Supervisor doc (keld-runtime lib.rs:708-711) confirms nonzero -> restart, zero -> Stopped; KELD-RUNTIME-012 at lib.rs:170-181; grep of app_session.rs for applicationShouldTerminate/WM_QUERYENDSESSION/SIGTERM returns nothing. Corpus verified: Zettlr main.ts:201-217 will-quit preventDefault + async shutdownApplication + app.quit() again; draw.io app.exit sites at electron.js:1699 (export failure) and others; Zettlr app.exit(0) at main.ts:41 and app.exit(1) at main.ts:126 (direct grep: draw.io 3 sites, Zettlr 2 sites — the object's 7/14 counts are inflated, see extra findings). So process.exit cannot implement app.exit and a veto phase is required. Shape caveats (author already medium on shape): for facade-initiated app.quit() the host->app QuitRequested Event is unnecessary — the facade starts before-quit itself and asks the host to close windows; QuitRequested is only needed for OS/host-originated sources which have no host handler today. After a will-quit veto the host sits at zero windows and must not emit LastWindowClosed; the second app.quit() must then go straight to will-quit (Zettlr's shape). Type 'grilling -> approved spec amendment' is right: this changes crash ownership of an app-requested exit.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 50-108 (window-all-closed, before-quit, will-quit, quit) and 516-533 (app.quit, app.exit); docs/architecture/06-runtime-and-tooling.md:31-36, 354; crates/keld-runtime/src/lib.rs:170-181, 708-711, 1182 (accepted_shutdown); crates/keld-ipc/src/lifecycle.rs LifecycleRequest; corpus zettlr/source/main.ts:201-217, 41, 126; corpus drawio-desktop/src/main/electron.js:1699, 2106-2108",
+     "correction": "Drop QuitRequested for the facade-initiated path (facade emits before-quit locally, then issues a host 'close all windows' Call that runs renderer beforeunload, then will-quit, then the existing Quit Call); keep QuitRequested only for host/OS sources. Add to the oracle: after a vetoed will-quit with zero windows, no window-all-closed is emitted and a second app.quit() proceeds without a second before-quit->close cycle. Verify in shell/browser/browser.cc @ v44.4.5 whether the 'quit' event (with exitCode) is still emitted on app.exit — the doc only excludes before-quit/will-quit."
+    },
+    {
+     "decision_id": "F01-A3",
+     "verdict": "refuted",
+     "reason": "Two contrary facts. (1) Lock timing/ownership: Electron's lock is requested by app code at a point the app chooses, and the loser decides what to do with false. Both corpus apps run CLI exit paths BEFORE requesting the lock: draw.io handles export mode (app.exit(1) at electron.js:1699), -V/--version (app.quit at 1707) and -h/--help (1711) and only then calls requestSingleInstanceLock at 1718 — and it does so INSIDE whenReady, i.e. after ready; Zettlr calls handleExitArguments() at main.ts:30 before the lock at main.ts:35. A host that acquires the lock pre-spawn and makes 'a losing second host never show a window and exit 0' before Bun runs breaks `drawio -x file` and `drawio --version`/`zettlr --version` whenever a GUI instance is running, and breaks draw.io's post-ready lock request. The 'window flash' rationale for rejecting alternative (b) is also weak: Electron apps check the lock before creating any window, so the loser Bun creates nothing; the loser cost is Bun startup, strictly cheaper than Electron's loser (a full Chromium browser process). The doc also fixes the notify moment: second-instance is emitted 'when a second instance has been executed and calls app.requestSingleInstanceLock()' — argv/cwd/additionalData travel at call time, not at process start, and additionalData does not exist until the call. (2) Ordering: the proposal flushes SecondInstance, OpenFile, OpenUrl and Activate together 'after HELLO and before Ready'. app.md guarantees second-instance 'is guaranteed to be emitted after the ready event of app gets emitted', whereas open-file/open-url must be deliverable before ready. Delivering second-instance pre-ready is a divergence that Zettlr turns into data loss: main.ts:140-142 `if (!isAppServiceContainerReady()) return` drops the event. Everything else in A3 survives: strict child has only KELD_APP_LINK + log sinks (arch 06:188-189); KEL-78 denies connect/bind/socket (kel78 §Network line 228); research 186 row 2 classifies the handoff tuple as untrusted (186:58); macOS Finder single-instance/open-file text verified (app.md 1073-1096); 32 MB cap verified; MAX_PORT_MESSAGE_LEN=4096 verified (virtual_port.rs:15); draw.io commandLine.pop() isFile path at 1747-1756 verified; Zettlr filesBeforeOpen queue at main.ts:84-90,162-181 verified.",
+     "evidence": "corpus drawio-desktop/src/main/electron.js:1697-1718 (export/-V/-h before lock; lock inside whenReady), 1726-1760; corpus zettlr/source/main.ts:30-42, 139-158 (isAppServiceContainerReady early return); scratchpad/notes/f01-refute/app.md lines 476-507 (second-instance 'guaranteed to be emitted after the ready event'; 'when a second instance has been executed and calls app.requestSingleInstanceLock()'), 110-142 (open-file/open-url pre-ready), 1073-1096 (requestSingleInstanceLock + 32 MB NOTE); docs/architecture/06-runtime-and-tooling.md:188-189; docs/specs/kel78-strict-profile-sandbox.md:228; docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md:58; crates/keld-runtime/src/virtual_port.rs:15",
+     "correction": "Keep host-owned lock *acquisition* (the host may pre-acquire pre-spawn so the primary identity exists before Bun), but preserve Electron's call-time semantics: the loser host still spawns Bun; requestSingleInstanceLock() is a synchronous read of the host-provided boot fact {lockHeld: bool} that must be valid before and after Ready, and the Call also carries additionalData to the host, which performs the notify-primary at that moment (second-instance payload = loser's OS argv/cwd + additionalData); the loser then does whatever the app does (app.quit/app.exit/continue). Split the host queues by Electron's ordering contract: OpenFile/OpenUrl (and launch Activate) flush after HELLO and before Ready; SecondInstance is held until after Ready. Offer the 'host exits loser before Bun' behavior only as an explicit keld.config.ts opt-in scored ▲, never the default. Rewrite the test oracle: launch B with `--version` while A runs -> B prints version and exits 0 via Bun; launch B during A's boot -> A receives second-instance strictly after ready."
+    },
+    {
+     "decision_id": "F01-A4",
+     "verdict": "survives",
+     "reason": "Electron claims verified in app.md: userData 'by default is the appData directory appended with your app's name'; sessionData 'By default this points to userData' and must be overridden 'before the ready event'; getPath 'On failure, an Error is thrown'; setPath 'If the path specifies a directory that does not exist, an Error is thrown'; setAppLogsPath default '~/Library/Logs/YourAppName on macOS, and inside the userData directory on Linux and Windows'; getVersion falls back to bundle/executable version. process.md defaultApp verified verbatim including 'useful to determine how many arguments will need to be sliced off from process.argv'. Corpus verified: draw.io electron.js:1057-1061 `if (process.defaultApp != true) argv.unshift(null)`; :58 getPath('userData')/Local Storage/leveldb; :3796 userDataDir; Zettlr main.ts:55-72 setPath('userData')+setAppLogsPath under --data-dir; direct grep confirms Zettlr app.getPath 40 sites / 29 files and app.isPackaged 7. KEL-135 paths verified (kel135 spec line 379 Windows FOLDERID_LocalAppData/Keld/profiles/v1/<identity>/webview2; no Apple physical-path claim lines 41, 146, 205). Guard default-deny of out-of-scope paths is the existing keld-guard contract. The 'env in strict child' unknown is now partly answerable: on macOS/Windows RolePreparer builds the child from the host's inherited environment minus env_remove plus KELD_APP_LINK (role.rs:651-662, no env_clear), while Linux strict passes an explicit validated environment list (linux_strict.rs:206-238, 1009) — so HOME/APPDATA availability is per-OS and uncontracted, which strengthens the decision to make paths host-computed boot facts rather than Bun-derived. Rejected alternative (b) async getPath is correctly rejected (Zettlr top-level/module-scope callers). Confidence 'medium' is right because userData layout and migration of existing Electron userData are product decisions.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 604-700 (setAppLogsPath, getAppPath, getPath, setPath, getVersion); scratchpad/notes/f01-refute/process.md 'process.defaultApp'; corpus drawio-desktop/src/main/electron.js:58, 1057-1061, 3796; corpus zettlr/source/main.ts:55-72; direct grep: 40 app.getPath / 29 files, 7 app.isPackaged in zettlr/source; docs/specs/kel135-persistent-profile-identity.md:41,146,205,379; crates/keld-runtime/src/role.rs:651-662; crates/keld-runtime/src/linux_strict.rs:206-238,1009",
+     "correction": "Record the env fact: strict child env is inherited-minus-removals on macOS/Windows but explicit on Linux, so no facade may read HOME/APPDATA/XDG_*; the BootDescriptor is the only path source. Under `keld dev` the facade must present process.argv as [exe, appDir, ...userArgs] with defaultApp=true (3-slot) and as [exe, ...userArgs] with defaultApp undefined when packaged — the object's test oracle already says this; make the proposed_answer text match it."
+    },
+    {
+     "decision_id": "F01-A5",
+     "verdict": "survives",
+     "reason": "Electron claims verified verbatim in app.md 850-905 and 1442-1530: macOS 'can only register protocols that have been added to your app's info.plist, which cannot be modified at runtime'; appx 'will return true for all calls but the registry key it sets won't be accessible'; 'uses the Windows Registry and LSSetDefaultHandlerForURLScheme'; setLoginItemSettings IMPORTANT about code signing/notarization and silent failure; type enum mainAppService/agentService/daemonService/loginItemService; Windows path default process.execPath, enabled toggles StartupApproved, name defaults to AppUserModelId; getLoginItemSettings status enum verified; openAsHidden removal history (PR #52351) verified at lines 1445-1448 and 1477-1480. Tutorial verified: 'On macOS and Linux, this feature will only work when your app is packaged' (line 140), dev-mode Windows execPath/argv[1] form (line 39), .desktop mimeType x-scheme-handler (168). Family JSON confirms login items tagged os_macos/os_windows only, so Linux autostart is a Keld extension. Keld blocker verified: docs/specs/keld-auth.md:1134-1135 'keld-pack is a name-only enum with zero emitters and zero dependents; no MSIX/uap:Protocol, Info.plist' and rung-2 rows 534/543; keld-native MODULES lists deeplink/autostart with only fs.rs implemented; arch 05 §3 rows 257/259 map them to setAsDefaultProtocolClient/setLoginItemSettings. Corpus demand verified at zero: direct grep of draw.io electron.js and zettlr/source finds no setAsDefaultProtocolClient/setLoginItemSettings/getLoginItemSettings. 'process.execPath is Bun' refusal is correct. The blocker is real; only the owner id is unverifiable offline: no docs/specs/kel19*.md exists and Linear is unavailable headless, so 'blocked_by KEL-19' rests on the owners table, not on a spec I could read. The decision itself (declare at build time, materialize in keld-pack, return false + diagnostic when unmaterialized) is consistent with KEL-127 'no silent downgrade'.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 850-905, 1442-1530, 1445-1448, 1477-1480; scratchpad/notes/f01-refute/launch-app-from-url-in-another-app.md lines 39, 48, 140, 168; families/F01-app-lifecycle.json tag counts (os_windows 20, os_macos 44, os_linux 4); docs/specs/keld-auth.md:534, 543, 1134-1135; crates/keld-native/src/lib.rs MODULES; docs/architecture/05-webview-and-native.md:257-260; direct corpus greps (0 hits)",
+     "correction": "Name the blocker by its fact ('no bundle/plist/.desktop/MSIX emitter; keld-pack is a name-only enum') and attach the owning ticket only after confirming KEL-19's scope includes bundle emission; otherwise the emitter needs its own ticket. Low corpus demand means this slice should be sequenced after A1-A4, not alongside."
+    },
+    {
+     "decision_id": "F01-A6",
+     "verdict": "survives",
+     "reason": "command-line.md verified verbatim: appendSwitch 'Append a switch... to Chromium's command line. NOTE: This will not affect process.argv. The intended usage of this function is to control Chromium's behavior'; getSwitchValue 'not meant to be used for application-specific command line arguments... please use process.argv' and 'When the switch is not present or has no value, it returns empty string'; removeSwitch example hasSwitch true->false. app.md verified: enableSandbox 'can only be called before app is ready'; disableHardwareAcceleration 'can only be called before app is ready'; isHardwareAccelerationEnabled NOTE 'only usable after the gpu-info-update event'. Never list verified in research 13 line 47 'Arbitrary Chromium CLI flags / V8 flags | Undermines engine policy' and briefing invariant 10. Corpus verified: draw.io electron.js:164-166 --disable-acceleration -> disableHardwareAcceleration, :691 enableSandbox commented out; Zettlr main.ts:78-80 DISABLE_HARDWARE_ACCELERATION flag; zero `app.commandLine` call sites in draw.io, Zettlr source and quick-start by direct grep. Facade-local self-consistent store + one dev warning is the smallest reversible path and a genuine tracer bullet a fresh agent can ship now with scoreboard rows and conformance cells, no boundary change. Two caveats: (1) 'calling after ready is still an error to match Electron' is not in the doc — it is an inference from Electron's C++ (electron_api_app.cc throws for post-ready enableSandbox/disableHardwareAcceleration) and must be cited from source or marked [inference]; (2) app.getAppMetrics() returns ProcessMetric[] and app.getGPUFeatureStatus() returns an object synchronously (only getGPUInfo returns a Promise), so 'host Calls returning Keld's process census' makes two synchronous APIs asynchronous unless the census is pushed/cached — needs a ▲ or a blocking Call with deadline per the KEL-127 sendSync precedent.",
+     "evidence": "scratchpad/notes/f01-refute/command-line.md (full); scratchpad/notes/f01-refute/app.md lines 1336-1380 (disableHardwareAcceleration, isHardwareAccelerationEnabled, getAppMetrics 'Returns ProcessMetric[]', getGPUFeatureStatus 'Returns GPUFeatureStatus', getGPUInfo Promise) and 1676-1680 (enableSandbox); docs/research/library/compatibility-competitors/13-electron-api-usage.md:42-47; corpus drawio-desktop/src/main/electron.js:164-166, 691; corpus zettlr/source/main.ts:78-80; direct grep 0 hits for app.commandLine across corpus",
+     "correction": "Mark the post-ready throw as [inference] pending a shell/browser/api/electron_api_app.cc @ v44.4.5 receipt. Split GPU/metrics: getGPUInfo may be a host Call (Promise in Electron); getAppMetrics and getGPUFeatureStatus must read a facade-cached census pushed by the host or be scored ▲ async."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "The corpus demand ranking relies on scan_electron_usage.py members_top, which attributes a bare member name to every Electron entity that has a member of that name. This inflates or fabricates app.* demand: the object's 'app.focus 26 / app.show 18 (Zettlr service providers)' are BrowserWindow/WebContents focus/show — direct grep for `app.focus` and `app.show` in zettlr/source returns 0 hits; 'app.exit 7 (draw.io) / 14 (Zettlr)' are 3 and 2 by direct grep; 'open-file (Zettlr 20 sites)' is 1 app.on('open-file') site. The surviving ranked items (whenReady/ready, window-all-closed, quit, exit, getPath 40, getVersion, requestSingleInstanceLock+second-instance, open-file, before-quit/will-quit, activate, relaunch 4, isPackaged 7, setAppUserModelId, disableHardwareAcceleration, defaultApp) are verified; 'focus/show (Zettlr)' must be removed from the F01 ranking and moved to F02.",
+     "evidence": "corpus/zettlr.usage.json members_top shows identical count 26/18 for app, BrowserWindow, WebContents, Tray, BaseWindow, Notification 'focus'/'show'; `grep -rn 'app\\.focus\\|app\\.show\\b' corpus/zettlr/source | wc -l` = 0; `grep -o 'app\\.[A-Za-z]*' drawio electron.js | sort | uniq -c` shows app.exit 3; zettlr direct grep app.exit 2 (main.ts:41,126), app.on('open-file' 1"
+    },
+    {
+     "severity": "high",
+     "finding": "Pre-ready ordering is not uniform across the host-delivered events: app.md guarantees second-instance after ready while open-file/open-url may precede ready. A single pre-Ready flush (A3) would make Zettlr drop second-instance events (main.ts:140-142 early return when the service container is not ready). The host needs two queues with different release points.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 500-502 'This event is guaranteed to be emitted after the ready event of app gets emitted'; lines 116-120 open-file 'even before the ready event is emitted'; corpus zettlr/source/main.ts:139-142"
+    },
+    {
+     "severity": "high",
+     "finding": "Both corpus apps execute exit-early CLI paths (export, --version, --help) before requesting the single-instance lock, and draw.io requests the lock after ready. Any design that resolves 'loser exits before Bun starts' silently breaks `drawio -x`, `drawio --version` and `zettlr --version` while a GUI instance runs. The lock must be a boot fact the facade can read at any time, with the notify-primary performed at requestSingleInstanceLock() call time.",
+     "evidence": "corpus drawio-desktop/src/main/electron.js:1697 app.exit(1) export failure, :1704-1711 -V/--version and -h/--help -> app.quit(), :1718 requestSingleInstanceLock inside app.whenReady().then; corpus zettlr/source/main.ts:30 handleExitArguments() before :35 lock"
+    },
+    {
+     "severity": "medium",
+     "finding": "Strict-child environment is per-OS and uncontracted today: RolePreparer on macOS/Windows inherits the host environment minus env_remove and adds KELD_APP_LINK (no env_clear), while Linux strict passes an explicit validated environment list. Any facade or library (electron-store, electron-log, env-paths) that derives HOME/APPDATA/XDG paths in Bun will behave differently per OS; this is a concrete reason A4's BootDescriptor must be the only path source and a KEL-78 gap to record (inherited objects are listed, environment is not).",
+     "evidence": "crates/keld-runtime/src/role.rs:651-662; crates/keld-runtime/src/linux_strict.rs:206-238, 1009 validate_environment; docs/specs/kel78-strict-profile-sandbox.md lists inherited handles (line 82) but no environment contract"
+    },
+    {
+     "severity": "medium",
+     "finding": "The KEL-142 evidence line in F01-A1 misquotes the spec: there is no 'No import-time ready promise, stdout readiness, renderer readiness' text; AC3 is the renderer->Bun roundtrip and AC4 is the host-lifecycle gate ('app.whenReady() does not resolve before real host Ready'). Substance holds, citation is wrong.",
+     "evidence": "docs/specs/kel142-macos-renderer-bridge-api.md:386-410; grep for 'import-time' and 'stdout readiness' in that file returns nothing"
+    },
+    {
+     "severity": "medium",
+     "finding": "F01-A6 would make two synchronous Electron APIs asynchronous: app.getAppMetrics() returns ProcessMetric[] and app.getGPUFeatureStatus() returns GPUFeatureStatus synchronously; only getGPUInfo returns a Promise. A 'host Call' implementation needs a facade-cached census or a ▲ row; the KEL-127 sendSync rule (blocking CALL with deadline, rate-limited, dev-warned) is the precedent.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 1357-1380"
+    },
+    {
+     "severity": "medium",
+     "finding": "F01-A2 claims app.exit skips before-quit/will-quit (doc-verified) but does not state whether the 'quit' event (with exitCode) is emitted on exit. In Electron's browser.cc Browser::Exit -> Shutdown() notifies OnQuit, which emits 'quit' when the message loop is ready; this is source knowledge, not in app.md, and must be receipted at v44.4.5 before the Exit{code} Call's event contract is written.",
+     "evidence": "scratchpad/notes/f01-refute/app.md lines 526-533 (only before-quit/will-quit excluded); shell/browser/browser.cc @ v44.4.5 not fetched — cheapest check: raw.githubusercontent.com/electron/electron/v44.4.5/shell/browser/browser.cc Browser::Exit and Browser::Shutdown"
+    },
+    {
+     "severity": "low",
+     "finding": "The object says 'A1 type: grilling' and the summary calls the first-window move a 'task gated by a grilling'; but the slice is not independently finishable — a Ready re-base with no window.create Call leaves whenReady with nothing to call. The honest sequencing is A6 (facade-only, shippable now) -> A1+minimal window.create (cross-unit with F02) -> A2 spec amendment -> A3 prototype (macOS-first two-launch harness) -> A4 BootDescriptor -> A5 blocked on the emitter.",
+     "evidence": "crates/keld-core/src/app_session.rs:1855/3085 create_app(...) is host-driven today; briefing line 75 'keld-core (window registry TARGET)'; no BrowserWindow in packages/@keld/electron"
+    },
+    {
+     "severity": "low",
+     "finding": "The 'enableSandbox after ready is still an error' claim and the 'WebView2 accepts some Chromium flags via additional browser arguments' claim are both unreceipted inferences in an object that otherwise labels facts; the first should cite electron_api_app.cc @ v44.4.5, the second CoreWebView2EnvironmentOptions.AdditionalBrowserArguments.",
+     "evidence": "scratchpad/notes/f01-refute/app.md 1676-1680 says only 'can only be called before app is ready' — no throw semantics documented"
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "PANEL-D23",
+   "decision": "How a quit request (Cmd+Q, app.quit, quitAndInstall) is sequenced against per-window close vetoes so that before-quit, per-window close, window-all-closed and will-quit match Electron 44.4.5 with two vetoing windows, and which AppKit termination reply the host uses to do it.",
+   "classification": "needs-experiment",
+   "milestone": "next",
+   "facts": [
+    "FACT: Electron v44.4.5 overrides NSApplication terminate: and calls Browser::Quit(); the code comment says termination proceeds if all windows close and a cancelled window close aborts it (shell/browser/mac/electron_application.mm at v44.4.5, fetched 2026-10-06).",
+    "FACT: neither electron_application.mm nor electron_application_delegate.mm at v44.4.5 contains applicationShouldTerminate or any NSTerminate reply (grep of the fetched files, 2026-10-06).",
+    "FACT: Browser::Quit sets is_quitting_ from the before-quit result, then calls NotifyAndShutdown if there are no windows, otherwise WindowList::CloseAllWindows (shell/browser/browser.cc at v44.4.5).",
+    "FACT: CloseAllWindows snapshots the window list, reverses it on macOS, and calls Close() on every window without re-checking the quitting flag (shell/browser/window_list.cc at v44.4.5).",
+    "FACT: a close-event preventDefault calls WindowList::WindowCloseCancelled, and Browser::OnWindowCloseCancelled then sets is_quitting_ to false (native_window.cc and browser.cc at v44.4.5).",
+    "FACT: Browser::OnWindowAllClosed emits will-quit via NotifyAndShutdown when quitting, and otherwise emits window-all-closed (browser.cc at v44.4.5); app.md says that after Cmd+Q or app.quit the window-all-closed event 'would not be emitted'.",
+    "FACT: AutoUpdater::QuitAndInstall emits before-quit-for-update and calls CloseAllWindows directly, without Browser::Quit (shell/browser/api/electron_api_auto_updater.cc at v44.4.5).",
+    "FACT: Apple documents that returning terminateLater 'causes Cocoa to run the run loop in the NSModalPanelRunLoopMode until your app subsequently calls reply(toApplicationShouldTerminate:)' (developer.apple.com NSApplication.TerminateReply.terminateLater, JSON endpoint fetched 2026-10-06).",
+    "FACT: draw.io sets cmdQPressed in before-quit on macOS and calls app.quit() from window-all-closed when that flag is set; it clears the flag when the user cancels the unsaved-changes dialog (corpus drawio-desktop @2edf9fb, src/main/electron.js).",
+    "FACT: KEL-139 AC6 requires one ordered quit owner; no AppKit termination hook exists in the Keld host today (spec read and grep at b4b907c3, 2026-10-06).",
+    "FACT: F01-T3 (GitHub #451, two-phase quit) is blocked by F01-T1 and F02-T3; the first-proof denominator is install, activation and a 4-step workflow ending in a single-window close (publish_plan.json; panel synthesis).",
+    "FACT (Linear, fetched 2026-10-06): KEL-139 Done; KEL-96 In Progress, assignee GYLDLAB; KEL-143 Backlog."
+   ],
+   "inferences": [
+    "INFERENCE (from source, no fixture run): Cmd+Q with two dirty draw.io windows in Electron 44.4.5 yields before-quit, then close on the newer window, then close on the older window (both vetoed, which cancels the quit), then the unsaved-changes dialogs, then closed for each window as the app destroys it, then window-all-closed (because the quit was cancelled), then draw.io's own app.quit, a second before-quit, will-quit and quit.",
+    "INFERENCE: this whole state machine (quitting flag, cancellation on any close veto, reverse-order close, window-all-closed suppressed while quitting) can live in the facade, because it needs only a host 'quit requested' event, the per-window close protocol and the existing ordered Quit call.",
+    "INFERENCE: Electron does not use a delayed termination reply at all, so matching it does not require NSTerminateLater. A host that returns terminateLater sits in the modal-panel run-loop mode until it replies, which may starve host work scheduled only in the default mode. This is new primary evidence against the 'later reply' mechanism clause in PANEL-D5.",
+    "INFERENCE: the first proof does not exercise quit, so it can ship without this decision."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether the Keld host keeps servicing Bun replies, web view callbacks and sheet presentation while AppKit holds it in the modal-panel run-loop mode after terminateLater.",
+    "UNKNOWN: behaviour on logout, restart and shutdown, where cancelling termination aborts the system action.",
+    "UNKNOWN: the recorded Electron transcript; the ordering above is source-derived only."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Mirror Electron: the host cancels the native terminate request and emits one quit-requested event; the facade runs Electron's quit state machine; process exit happens only through the existing ordered Quit call.",
+     "cost": "The facade must reproduce the quitting flag and its cancellation rule exactly; logout/shutdown handling needs its own decision.",
+     "new_invariant": "A native terminate request never terminates the host directly; only the ordered Quit call does.",
+     "invariant_at_risk": "None identified; consistent with KEL-139 AC6 one quit owner."
+    },
+    {
+     "option": "B. Host returns terminateLater and replies after the per-window close sequence (PANEL-D5's current mechanism).",
+     "cost": "The host runs in the modal-panel run-loop mode for the whole unsaved-changes interaction; Electron does not do this, so interleaving has no oracle.",
+     "new_invariant": "The host may hold a pending AppKit termination across app-owned dialogs.",
+     "invariant_at_risk": "KEL-142 rule that no UI thread blocks on Bun, if default-mode work stalls in that run-loop mode."
+    },
+    {
+     "option": "C. Host serializes close requests per app and delivers them after any modal returns, recorded as a divergence (the panel's fallback).",
+     "cost": "Event order differs from Electron when two windows veto; draw.io's second dialog timing changes.",
+     "new_invariant": "Close events are serialized across a blocking dialog.",
+     "invariant_at_risk": "Electron ordering conformance for quit."
+    }
+   ],
+   "recommendation": "Prefer A, and settle the A-versus-B host mechanism with a reduced harness when F01-T3 is scheduled: (1) an Electron 44.4.5 fixture with two windows that veto close, driven through Cmd+Q, app.quit and quitAndInstall, recording the event transcript to confirm the source-derived order; (2) a small objc2 host harness with two arms, terminateCancel plus later programmatic terminate versus terminateLater plus reply, each recording whether a default-mode run-loop source, a web view script callback and a window sheet are serviced while termination is pending. Exit: arm chosen where all three are serviced and the facade transcript equals the Electron transcript; if neither host arm can match, fall back to C with a sequence test. Keep this out of the first proof.",
+   "falsifier": "An Electron 44.4.5 transcript that differs from the source-derived order (for example, window-all-closed not emitted after a vetoed Cmd+Q), or a harness run showing terminateCancel cannot be re-driven to a clean ordered Quit.",
+   "reversible": "Yes before F01-T3 lands; the choice is host-internal. After conformance entries for quit ordering land, changing the mechanism means re-recording them.",
+   "missing_evidence": "The Electron transcript for the three quit entry points with two vetoing windows; host observations under terminateLater; the logout/shutdown path.",
+   "next_action": "Owner: map orchestrator. Post the source-derived Electron quit state machine and the two-arm harness on GitHub #443, add the terminateLater doc sentence to #425 as new evidence against its 'later reply' clause, and mark #443 as not blocking the first proof. First check: #443 lists both host arms and their three observables, and #451 references it instead of PANEL-P2 for quit ordering.",
+   "owner": "Quit ordering owner KEL-139 AC6 (Linear: Done, completed 2026-09-29) with KEL-96 (Linear: In Progress, assignee GYLDLAB, fetched 2026-10-06) for the existing ordered Quit; map tickets F01-T3 (#451) and PANEL-P2 (#419) consume it.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "F01-A4",
+   "decision": "Under the strict profile, `userData` and `logs` live inside the KEL-78 reviewed role-private container, where raw synchronous `node:fs` works by OS containment with no guard grant; a `node:fs`-over-FsBroker facade is not the owner of `userData`.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "FACT: The approved KEL-78 spec says a guard allow MUST NOT widen the child's OS profile, and its authority table has the row 'Files outside a reviewed role-private container | deny'. Source: <keld repo>/docs/specs/kel78-strict-profile-sandbox.md, section 'Authority surface the profile must cover', read at main b4b907c3.",
+    "FACT: The same spec requires role-private path success as a positive control ('create/read of a role-private path succeeds'), and its Linux candidate must 'still allow the role-private paths that role is supposed to use'. Source: kel78-strict-profile-sandbox.md, Linux candidate item 2 and the test-matrix row 'Direct filesystem'.",
+    "FACT: The Linux strict launcher already bind-mounts a role root read-write into the sandbox (`--bind role_root /app`). Source: <keld repo>/crates/keld-runtime/src/linux_strict.rs (SANDBOX_ROLE_ROOT).",
+    "FACT: `legacy` is an explicit Keld profile that runs 'authenticated + guarded, unsandboxed' with the forfeit printed, and the config key that declares it 'does not exist today'. Source: kel78-strict-profile-sandbox.md profile table and 'Capabilities / manifest' paragraph.",
+    "FACT: draw.io constructs electron-store at module top level and calls `app.getPath('userData')` before ready. Source: corpus/drawio-desktop@2edf9fb src/main/electron.js lines 30 and 58.",
+    "FACT: electron-store 11.0.2 (draw.io pins ^11.0.2) sets `defaultCwd: app.getPath('userData')` in the main process and extends Conf. Source: https://raw.githubusercontent.com/sindresorhus/electron-store/v11.0.2/index.js, retrieved 2026-10-06 through a summarising fetch.",
+    "FACT: Architecture 05 section 3 maps the `fs+` module to a 'strict-profile virtual Node-fs/watcher facade; raw access only in an explicit sandbox-off legacy tier'. Only `fs.rs` (brokered fs.read/fs.write) exists in keld-native. Source: <keld repo>/docs/architecture/05-webview-and-native.md row `fs+`; crates/keld-native/src.",
+    "FACT: Electron documents `userData` as 'by default is the appData directory appended with your app's name', with appData `~/Library/Application Support` on macOS. Source: https://raw.githubusercontent.com/electron/electron/v44.4.5/docs/api/app.md lines 622-626, retrieved 2026-10-06.",
+    "FACT: The first proof is draw.io on macOS under the explicit legacy profile; strict-profile draw.io is 'its own later spec consuming KEL-78/KEL-140/KEL-143'. Source: wayfinder/electron-compat/panel/synthesis.md lines 64 and 150.",
+    "FACT: KEL-78 is In Progress, assignee GYLDLAB, updated 2026-10-05. Its macOS App Sandbox task T2c is unchecked in the spec; Windows T3 and Linux T4 are checked. Source: Linear KEL-78, fetched 2026-10-06; kel78 spec task list.",
+    "FACT: F01-T4 (#452, first-proof boot facts) and X02-T3 (#499) are both blocked by F01-A4 in the published plan. Source: publish_plan.json blocked_by_keys."
+   ],
+   "inferences": [
+    "INFERENCE: Because electron-store reads and writes synchronously at import, a broker facade for `userData` would need blocking kipc from the Bun main thread. That depends on the unproven worker-owned transport (PANEL-P1, #418). The container option needs no IPC at all.",
+    "INFERENCE: The architecture 05 `fs+` facade and the container option do not conflict. The facade is the later owner for user-chosen paths outside the container (dialog-minted grants); the container owns the app's own private state.",
+    "INFERENCE: Under the macOS App Sandbox the home directory is redirected into the container, so Electron's default `~/Library/Application Support/<name>` layout would resolve inside the container without a Keld-specific path scheme. Not verified on a shipped artifact.",
+    "INFERENCE: The first proof needs only the legacy path value (Electron's documented default, host-minted in F01-T4), so the F01-T4 and X02-T3 edges to this ticket over-block the first proof."
+   ],
+   "unknowns": [
+    "UNKNOWN: Whether each OS mechanism gives a per-user, persistent, update-surviving writable directory inside the role-private container. The Linux role root today looks like the staged code root; the Windows spec names 'reviewed ACLs on runtime, profile, and data objects' but no userData location; macOS T2c is unshipped.",
+    "UNKNOWN: Whether a migrated app must see its existing Electron userData (for example `~/Library/Application Support/draw.io`), which sits outside a strict container. This is a product choice for the later strict spec.",
+    "UNKNOWN: Whether the KEL-78 row 'Persistence / update staging / signing keys | deny' needs wording that separates role-private app data from persistence of code or update state.",
+    "UNKNOWN: Whether non-primary roles (KEL-75) share the primary role's userData container or reach it only through the broker."
+   ],
+   "alternatives": [
+    {
+     "option": "(a) Role-private container owns userData and logs under strict",
+     "cost": "A KEL-78 spec amendment naming a persistent per-user data location per OS, plus hostile and positive-control rows per OS. Existing Electron data is not visible without a one-time host-brokered import.",
+     "new_invariant": "userData is role-private storage reached by OS containment; it is never an `app.fs.*` grant scope.",
+     "invariant_at_risk": "The KEL-78 'Persistence ... deny' row, unless the amendment states that role-private data is not code-loading or update persistence."
+    },
+    {
+     "option": "(b) `node:fs`-over-FsBroker facade for strict roles, with userData as a grant root",
+     "cost": "A new large owner with its own spec. Every synchronous fs call at import becomes a blocking kipc round trip, gated on PANEL-P1. Bun's node:fs surface has to be re-implemented and differentially tested.",
+     "new_invariant": "All strict-role file access is mediated by keld-guard through the host broker.",
+     "invariant_at_risk": "The measured link-stall finding (a parked Bun main thread stalls the link after 8 KiB) and 'no second transport per role'. Risk of a parallel fs implementation diverging from Bun."
+    },
+    {
+     "option": "(c) Generated `app.fs.*` grant root only, with raw node:fs (the original research proposal)",
+     "cost": "None to write, but it does not work.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Directly contradicts KEL-78: a grant does not widen the OS profile, so the write is OS-denied. Refuted by the invariants-lens refuter."
+    }
+   ],
+   "recommendation": "Choose (a) and park it. `keld migrate` should print, for strict: 'userData is role-private storage; raw node:fs outside it is OS-denied; call sites touching other paths need the fs+ facade or a dialog-minted grant, otherwise declare legacy'. For legacy it should print: 'userData = Electron default path, raw node:fs, containment forfeited'. Separately, narrow the F01-T4 and X02-T3 edges so the first proof is not blocked: under legacy, F01-T4 needs only the host-minted Electron-default path value.",
+   "falsifier": "Any one of: an OS strict mechanism that cannot provide a persistent per-user writable directory inside the container (for example macOS T2c fails to start Bun with a writable container); PANEL-P1 shows blocking kipc is cheap and safe and the owner prefers one mediated path; a corpus app whose userData must be shared live with another principal.",
+   "reversible": "Yes. Nothing is implemented, the first proof runs under legacy and does not depend on it, and both options sit behind the same `getPath('userData')` value. Reversing after strict ships would move user data, which costs a migration.",
+   "missing_evidence": "The per-OS persistent data location inside the role-private container (a KEL-78 amendment), and the product choice on importing existing Electron userData. Neither is needed for the first proof.",
+   "next_action": "Owner: the map orchestrator (single writer). Record this resolution on gyldlab/keld#392 and replace the F01-A4 blocker on #452 and #499 with 'legacy path value = Electron default; strict location parked under KEL-78'. First check: #452 no longer lists #392 under 'Blocked by'. The KEL-78 amendment is a later permission-model gate that needs the repository owner's exact-content approval; this packet does not grant it.",
+   "owner": "KEL-78 (Spec: strict-profile OS sandbox for Bun roles; In Progress, assignee GYLDLAB, Linear fetched 2026-10-06); crate keld-runtime. The path value belongs to F01-T4 (#452), which consumes KEL-75 (In Progress, unassigned, fetched 2026-10-06)."
+  },
+  {
+   "key": "F01-A5",
+   "decision": "Protocol-client and login-item registration stay 'returns false with a diagnostic' (F01-T6) and the bundle-declaration emitter is parked; when it is un-parked, keld-pack emits the declarations under the owner-designated KEL-19 packaging track, behind a new approved spec.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "FACT: Neither draw.io nor Zettlr calls setAsDefaultProtocolClient, isDefaultProtocolClient, setLoginItemSettings or getLoginItemSettings, and neither listens for open-url. Source: grep of corpus/drawio-desktop/src and corpus/zettlr/source, 0 hits, 2026-10-06.",
+    "FACT: The first-proof workflow is install + activation + open, edit, save, close-with-unsaved-prompt. Source: panel/synthesis.md line 64.",
+    "FACT: Electron says 'On macOS, you can only register protocols that have been added to your app's info.plist, which cannot be modified at runtime'. Source: Electron v44.4.5 docs/api/app.md, setAsDefaultProtocolClient, verified by both F01 refuters against the pinned file; pinned copy re-fetched 2026-10-06.",
+    "FACT: The ticket's premise 'keld-pack is a name-only enum' is stale. At main b4b907c3 keld-pack owns the Windows v0 package producer and the ExpectedAppIdentity container writer and readers. It has no Info.plist, .desktop or MSIX emitter (grep of crates/keld-pack/src and crates/keld-cli/src: 0 hits). Source: <keld repo>/crates/keld-pack/src/lib.rs header.",
+    "FACT: Architecture 01 section 5 names keld-pack as the future shipper of the `.app` ('the `.app` launch once keld-pack ships one; until then the spawn of the staged keld-host'). Source: <keld repo>/docs/architecture/01-overview.md line 215.",
+    "FACT: KEL-19 has status Done (completed 2026-07-10 as the CLI RFC), yet the owner directed that packaging work 'be tracked on this existing issue rather than a new one'. Its live tasks are the Windows identity container: T1 landed (#386), T2 passed on real Windows, T3 gated on the release channel (GitHub #181). No bundle-declaration task exists. Source: Linear KEL-19 comments c3dded99, 4a472696, 048e5f56, fetched 2026-10-06.",
+    "FACT: KEL-15 has status Done (2026-07-10). Its only comment ratifies exactly four config files: keld.config.ts holds app identity and windows, keld.build.ts holds 'targets, signing, update feed, delta settings', generated by migrate from the electron-builder config. Source: Linear KEL-15 comment d1137b07, fetched 2026-10-06; docs/architecture/04-electron-compat.md section 2.",
+    "FACT: keld-native lists `deeplink` and `autostart` as module names only; keld-auth records 'no `.app` bundle/plist emitter exists' for its custom-scheme rung. Source: crates/keld-native/src/lib.rs MODULES; docs/specs/keld-auth.md lines 534-551. KEL-89 is In Progress, unassigned (Linear, fetched 2026-10-06).",
+    "FACT: F01-T6 (#454) names 'Linear owner consumed: KEL-72'; KEL-72 has status Done, unassigned. Source: publish_plan.json; Linear KEL-72, fetched 2026-10-06."
+   ],
+   "inferences": [
+    "INFERENCE: With zero call sites in both corpus apps, neither the first proof nor the Zettlr follow-up needs a real registration, so designing the config fields now would be speculative.",
+    "INFERENCE: The ticket assumes the fields go in keld.config.ts, but the ratified file contract puts electron-builder-derived packaging input in keld.build.ts. A scheme is needed both by the packager and by the host at run time, so the field's home is a real one-source-of-truth question for the later spec.",
+    "INFERENCE: The runtime grant can reuse keld-guard's exact-match scope branch (keld-auth precedent) without a new matcher. Taken from the refuter verdict; not re-verified in this session."
+   ],
+   "unknowns": [
+    "UNKNOWN: Which config file owns the declared schemes and autostart flag (keld.config.ts or keld.build.ts) and how the value reaches the host without a second source.",
+    "UNKNOWN: The mapping of SMAppService status to Electron's four login-item status strings (no Apple receipt gathered).",
+    "UNKNOWN: Whether Linux autostart is offered at all (Electron tags login items macOS and Windows only).",
+    "UNKNOWN: Which Linear issue will track the macOS `.app` bundle emitter. KEL-141 (Backlog, unassigned) covers distribution of the Keld CLI and host, not app bundle declarations."
+   ],
+   "alternatives": [
+    {
+     "option": "Park: keep F01-T6 honest-false; decide owner and fields only when a committed corpus app calls these APIs",
+     "cost": "Apps that register a scheme get `false` plus a diagnostic until the emitter exists.",
+     "new_invariant": "Registration never reports success without a materialised OS declaration.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "Specify the emitter and config fields now",
+     "cost": "A permission-model, wire-protocol and config-schema spec for behaviour no current corpus app uses, plus an Info.plist/.desktop/MSIX emitter that does not exist on any OS.",
+     "new_invariant": "New grant groups for deeplink registration and autostart, and new config fields.",
+     "invariant_at_risk": "YAGNI; the four-file config contract; one source of truth for a value needed by both packager and host."
+    },
+    {
+     "option": "Register at run time from the Bun role",
+     "cost": "Impossible on macOS per Electron's own documentation; forbidden by KEL-78 zero ambient authority under strict.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Zero ambient OS authority for strict roles; default-deny."
+    }
+   ],
+   "recommendation": "Park it. Correct the ticket text (keld-pack is no longer name-only; the emitter is what is missing). Point F01-T6's diagnostic at this ticket rather than KEL-72. Re-open only when a committed corpus app has a resolved call site, and then write one spec under the KEL-19 packaging track that settles the config file question first.",
+   "falsifier": "A resolved call site of setAsDefaultProtocolClient, setLoginItemSettings or an open-url listener in a committed corpus app, or an owner statement that the first proof's 'activation' cell includes launch by URL scheme.",
+   "reversible": "Yes. Parking changes no code or contract, and F01-T6 already returns false with a diagnostic.",
+   "missing_evidence": "None needed for the park. For the later spec: the config-file home of the declaration, the SMAppService status receipt, and a named tracker for the macOS bundle emitter.",
+   "next_action": "Owner: the map orchestrator. Mark gyldlab/keld#393 parked with the corrected keld-pack fact and the re-open trigger, and fix the owner line on #454. First check: #454's diagnostic text names #393 and no longer cites KEL-72 as a live owner. Discovered here, not solved here: draw.io declares CFBundleDocumentTypes file associations in its electron-builder config (electron-builder-linux-mac.json), which would use the same absent emitter; route that to F01-T5 (#453) only if the activation cell includes opening a file from Finder.",
+   "owner": "Crate keld-pack, tracked on KEL-19 by owner direction (status Done as an RFC, live packaging comments through 2026-10-06; Linear fetched 2026-10-06). KEL-89 (In Progress, unassigned) consumes the deeplink rung. KEL-15 (Done) holds the ratified config-file contract. No live Linear issue owns a bundle-declaration emitter."
+  },
+  {
+   "key": "F08-D6",
+   "decision": "What app.getGPUFeatureStatus(), app.getGPUInfo(), app.isHardwareAccelerationEnabled() and app.disableHardwareAcceleration() return or do under @keld/electron on each system engine, given that no engine signal maps to a GPUFeatureStatus value.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "Linear (team KELD) is reachable in this session (fetched 2026-10-06). KEL-132 is In Progress, unassigned, updated 2026-10-05; its latest ledger comment shows the macOS rows still awaiting.",
+    "Electron source v44.4.5, shell/browser/api/electron_api_app.cc (retrieved 2026-10-06, sha256 2186eae4...): DisableHardwareAcceleration throws 'app.disableHardwareAcceleration() can only be called before app is ready' when the browser is ready, otherwise appends the --disable-gpu switch. GetGPUFeatureStatus synchronously returns content::GetFeatureStatus() with no readiness check. GetGPUInfo rejects with 'Invalid info type. Use 'basic' or 'complete'' or 'GPU access not allowed. Reason: ...'.",
+    "Electron docs/api/app.md v44.4.5 (retrieved 2026-10-06): disableHardwareAcceleration 'can only be called before app is ready'; getGPUFeatureStatus returns 'The Graphics Feature Status from chrome://gpu/'; 'gpu-info-update' is 'Emitted whenever there is a GPU info update'.",
+    "Electron docs/api/structures/gpu-feature-status.md v44.4.5 (retrieved 2026-10-06) lists eleven possible values from disabled_software to enabled_force_on; none means unknown.",
+    "drawio-desktop @2edf9fb calls app.disableHardwareAcceleration() only when process.argv contains '--disable-acceleration'; Zettlr @e6c7fd8 calls it only when its DISABLE_HARDWARE_ACCELERATION CLI argument is set. Neither corpus app, nor electron-quick-start, calls getGPUFeatureStatus, getGPUInfo or isHardwareAccelerationEnabled. Source: corpus clones (grep).",
+    "Keld's GpuSafeMode is an NVIDIA plus Wayland DMA-BUF mitigation state; its Normal variant is documented as 'No known-risky driver/session combination detected'. Source: crates/keld-wv/src/webkitgtk/mod.rs at origin/main.",
+    "The KEL-132 spec is approved and lists as a non-goal: 'change the GPU population or claim a rendering speedup'. Source: docs/specs/kel132-webview-gpu-media.md.",
+    "No Keld crate, package, architecture doc or spec references any of the four members (git grep at origin/main cb7d8e9e returns nothing).",
+    "The map already carries the applicable rules: the F01 epic's L0 exit is 'every app member exists with a typed KELD-COMPAT error for unsupported calls (never a silent no-op)', and F01-T6 defines facade-local shims where commandLine keeps a private switch map with one dev-only warning and enableSandbox() 'still throws after ready like Electron'. disableHardwareAcceleration is not yet in F01-T6's member list. Source: publish_plan.json."
+   ],
+   "inferences": [
+    "No Keld owner can prove any GPUFeatureStatus field on any OS today: GpuSafeMode Normal does not mean accelerated, and a degraded state proves only that the DMA-BUF renderer is off.",
+    "macOS WKWebView exposes no public GPU-feature or disable-acceleration API. This is a negative claim that a single documentation page cannot prove; it stays an inference.",
+    "Electron's own disableHardwareAcceleration is a command-line switch append, so the existing F01-T6 commandLine shim pattern covers it without new design.",
+    "The first proof never passes '--disable-acceleration' and never calls the getters, so nothing here gates it."
+   ],
+   "unknowns": [
+    "Whether WebView2 honours --disable-gpu through host-owned additional browser arguments under a shared user-data folder (refuter receipt says options must match the running browser process; the switch itself is unverified).",
+    "Whether WebKitGTK's hardware-acceleration policy setting is the single Linux mapping.",
+    "What isHardwareAccelerationEnabled() should answer after intent is recorded but not honoured; zero corpus demand, so left unsupported."
+   ],
+   "alternatives": [
+    {
+     "option": "A. Getters and isHardwareAccelerationEnabled are typed KELD-COMPAT unsupported under the existing F01 L0 rule; disableHardwareAcceleration joins the F01-T6 facade shims: before ready it records intent and emits one diagnostic that the engine setting is not honoured, after ready it throws Electron's exact message.",
+     "cost": "One member added to an existing ticket; no engine work.",
+     "new_invariant": "No GPU status value is ever emitted without an engine signal that proves it.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "B. Return an empty partial GPUFeatureStatus object under a quirks flag (the refuter's correction).",
+     "cost": "A quirks flag and report wording for members nobody calls.",
+     "new_invariant": "A structure may be returned with every documented field absent.",
+     "invariant_at_risk": "The F01 L0 'never a silent no-op' rule: callers read undefined with no diagnostic."
+    },
+    {
+     "option": "C. Derive fields from Linux GpuSafeMode.",
+     "cost": "Small.",
+     "new_invariant": "A mitigation state is reported as GPU feature status.",
+     "invariant_at_risk": "Honest reporting: this is the fabrication the research note itself forbids, and the code refutes the mapping."
+    },
+    {
+     "option": "D. Honour disableHardwareAcceleration per engine now (WebView2 browser arguments, WebKitGTK policy).",
+     "cost": "A KEL-132 spec amendment, two primary receipts and Windows and Linux devices; nothing for macOS.",
+     "new_invariant": "A host-owned per-engine software-rendering policy.",
+     "invariant_at_risk": "YAGNI: zero first-proof value and user-triggered demand only."
+    }
+   ],
+   "recommendation": "Take A and park D. The honest per-engine answer today is that nothing can be reported, so the getters stay unsupported with a typed error until a denominator app calls them. Fold disableHardwareAcceleration into F01-T6 with Electron's exact post-ready message as an acceptance line. If per-engine honouring is ever scheduled, it goes to KEL-132 with two named receipts first: the Microsoft page for ICoreWebView2EnvironmentOptions AdditionalBrowserArguments, and the WebKitGTK WebKitSettings hardware-acceleration-policy page.",
+   "falsifier": "A denominator app calls getGPUFeatureStatus, getGPUInfo or isHardwareAccelerationEnabled on a scored path (resolved call-site scan or the PANEL-P3 trace), so the typed error breaks a cell; or a public engine API exposing compositing state is found for any of the three engines.",
+   "reversible": "Yes. The change is facade-only and each member can move from unsupported to supported independently.",
+   "missing_evidence": "None for this decision. For the parked option D: the two primary receipts named in the recommendation.",
+   "next_action": "Owner: map orchestrator. Edit gyldlab/keld#408 to resolved/parked with the ruling above and add disableHardwareAcceleration to F01-T6's covered members with the exact post-ready throw text as acceptance. First completion check: #408 shows status resolved, and F01-T6 lists disableHardwareAcceleration.",
+   "owner": "Package owner: packages/@keld/electron under crates/keld-compat/AGENTS.md for the shim and the unsupported rows. KEL-132 (In Progress, unassigned, fetched 2026-10-06) owns any per-engine GPU policy. No Linear issue owns the facade members themselves; they ride the F01 epic on the map."
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F01-A4": {
+   "status": "decided",
+   "resolution": "Choose (a) and park it. `keld migrate` should print, for strict: 'userData is role-private storage; raw node:fs outside it is OS-denied; call sites touching other paths need the fs+ facade or a dialog-minted grant, otherwise declare legacy'. For legacy it should print: 'userData = Electron default path, raw node:fs, containment forfeited'. Separately, narrow the F01-T4 and X02-T3 edges so the first proof is not blocked: under legacy, F01-T4 needs only the host-minted Electron-default path value.",
+   "milestone": "parked"
+  },
+  "F01-A5": {
+   "status": "decided",
+   "resolution": "Park it. Correct the ticket text (keld-pack is no longer name-only; the emitter is what is missing). Point F01-T6's diagnostic at this ticket rather than KEL-72. Re-open only when a committed corpus app has a resolved call site, and then write one spec under the KEL-19 packaging track that settles the config file question first.",
+   "milestone": "parked"
+  },
+  "F08-D6": {
+   "status": "decided",
+   "resolution": "Take A and park D. The honest per-engine answer today is that nothing can be reported, so the getters stay unsupported with a typed error until a denominator app calls them. Fold disableHardwareAcceleration into F01-T6 with Electron's exact post-ready message as an acceptance line. If per-engine honouring is ever scheduled, it goes to KEL-132 with two named receipts first: the Microsoft page for ICoreWebView2EnvironmentOptions AdditionalBrowserArguments, and the WebKitGTK WebKitSettings hardware-acceleration-policy page.",
+   "milestone": "parked"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "Census: 160 members (app 115 = 75 methods/30 events/10 properties; CommandLine 5; Dock 11; process 29). Keld today implements a 5-member slice live (app.whenReady/isReady/quit/on/off + ready and window-all-closed events, process.type/process.versions.electron shims) over keld_ipc LIFECYCLE_CHANNEL=3 {Ready, LastWindowClosed, Quit}; everything else in the family is TARGET, and keld-native lists deeplink/autostart/dock as names only. Corpus demand ranks: whenReady/ready, window-all-closed, quit, exit, getPath (Zettlr 40 call sites, draw.io 3), getVersion, requestSingleInstanceLock+second-instance (both apps), open-file (Zettlr 20 sites, draw.io 1), before-quit/will-quit, activate, relaunch (Zettlr), focus/show (Zettlr), isPackaged, setAppUserModelId, disableHardwareAcceleration, process.defaultApp/argv parsing (draw.io). Four design-changing facts: (1) [fact] host Ready is currently signalled on NavigationReady of a host-created window (crates/keld-core/src/app_session.rs:3900), while Electron's ready fires before any window exists — BrowserWindow compat needs Ready re-based. (2) [fact] Quit is a one-shot correlated Call with no veto; Electron before-quit/will-quit preventDefault and beforeunload cancellation (Zettlr depends on it) need a two-phase host protocol; app.exit(code) cannot be process.exit because the supervisor recovers nonzero Bun exits with a fresh generation and re-sends Ready (arch 06 §1) and treats status-zero post-ready exit as KELD-RUNTIME-012. (3) [fact] the strict Bun child receives only KELD_APP_LINK + log sinks, so single-instance lock, second-instance argv/cwd/additionalData, open-file/open-url, getPath roots and OS registrations (protocol client, login items, dock) must be host-owned and delivered as typed events/calls; research 186 row 2 already classifies the handoff tuple as untrusted input. (4) [fact] protocol-client and login-item registration are build-time declarations (Info.plist CFBundleURLTypes, .desktop, MSIX uap:Protocol) and v0 has no .app/plist/MSIX emitter (keld-auth rung 2), so the facade must return false with a diagnostic rather than a silent true. commandLine.* is on the never list (arbitrary Chromium flags) and becomes a facade-local no-op store with a one-time dev warning. Six atoms below; all labelled; unknowns kept explicit.",
+  "decisions": [
+   {
+    "id": "F01-A1",
+    "question": "What does host `Ready` mean once BrowserWindow is app-created? Today Ready is emitted on AppWindowEvent::NavigationReady of a host-created window; Electron `ready` fires once after the main process's first event-loop tick, before any window exists, and apps create windows inside whenReady.",
+    "proposed_answer": "Re-base LifecycleEvent::Ready to 'host initialized, window module available, zero app windows' and move the first-window creation to the facade's `new BrowserWindow` (window module Call). Keep the wire enum unchanged (Ready=0x00) so KEL-237 cells stay valid; change only the host emission point. The existing LifecycleSession.window_opened/window_closed counter remains the LastWindowClosed owner (host-side registry count, not a facade-local count), which also fixes `activate(hasVisibleWindows)`. Type: task gated by a grilling on cold-start budget (window creation now waits for Bun start + HELLO; arch 01 §5 ≤300 ms cold→first paint must be re-measured, not assumed).",
+    "evidence": [
+     "[fact] crates/keld-core/src/app_session.rs:3900-3901 `AppWindowEvent::NavigationReady => router.signal_ready()`, `LastWindowClosed => router.signal_last_window_closed()`",
+     "[fact] crates/keld-wv/src/engine.rs:100-105 AppWindowEvent {NavigationReady: 'Initial renderer navigation completed on the live backend', LastWindowClosed}",
+     "[fact] Electron app.md 'ready': 'Emitted once, when Electron has finished initializing' and NOTE 'The ready event is only fired after the main process has finished running the first tick of the event loop'",
+     "[fact] electron-quick-start main.js:25-30 and draw.io electron.js:987 create windows inside app.whenReady().then(...)",
+     "[fact] KEL-142 spec AC3: 'No import-time ready promise, stdout readiness, renderer readiness' may stand in for host Ready"
+    ],
+    "confidence": "high that re-basing is required; medium on budget impact (unmeasured)",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Keep host-created first window and alias it to the first `new BrowserWindow` — rejected: hidden coupling (webPreferences/show:false/ready-to-show cannot be honored for a window that already navigated), ordering inversion, and a second `new BrowserWindow` would need a different path. (b) Emit `ready` from the facade at import — rejected by KEL-142 AC3 and by the lifecycle-corpus negative control (Promise.resolve() must fail the when-ready cell).",
+    "unknowns": "Cold-start→first-paint cost of deferring window creation until Bun HELLO is unmeasured [unknown]; whether `will-finish-launching` on macOS should map to a distinct host event (applicationWillFinishLaunching) or alias ready as on Win/Linux [unknown — low demand: draw.io uses it only to register open-file]."
+   },
+   {
+    "id": "F01-A2",
+    "question": "How do before-quit / will-quit / quit (with preventDefault and beforeunload cancellation) and app.exit(exitCode) map onto a host that owns windows and a supervisor that recovers Bun crashes?",
+    "proposed_answer": "Make Quit two-phase and host-owned: (1) a host→app `QuitRequested{source}` Event for Cmd+Q / dock Quit / OS logoff / facade app.quit(); the facade emits before-quit, then host closes windows (running renderer beforeunload via the window module), then will-quit; any preventDefault or a beforeunload veto sends `QuitCancelled` back and the host stays alive; otherwise the facade sends the existing correlated `Quit` Call and emits `quit(exitCode)` on Reply. (2) Add a distinct `Exit{code}` Call: host replies, skips before-quit/will-quit, tears down with KEL-96 ordering and exits with `code`; the supervisor must classify the following Bun exit as host-authorized (same rule already used for status-zero after accepted Quit). `window-all-closed` must NOT be emitted during a quit-initiated close (host suppresses LastWindowClosed while a Quit is in flight). Type: grilling → approved spec amendment to KEL-96/KEL-139 Quit ordering (architecture change: crash ownership of an app-requested exit).",
+    "evidence": [
+     "[fact] Electron app.md: app.quit 'Try to close all windows. The before-quit event will be emitted first ... This method guarantees that all beforeunload and unload event handlers are correctly executed. It is possible that a window cancels the quitting'; app.exit 'Exits immediately with exitCode ... before-quit and will-quit events will not be emitted'; window-all-closed 'If the user pressed Cmd + Q, or the developer called app.quit() ... the window-all-closed event would not be emitted'",
+     "[fact] Zettlr source/main.ts:201-217 will-quit handler calls event.preventDefault(), awaits shutdownApplication(), sets canQuit=true, then app.quit() again",
+     "[fact] draw.io electron.js: app.exit(1) in export mode and uncaughtException (7 sites); Zettlr main.ts:41 app.exit(0) when lock not obtained; corpus scan app.exit count 7 (draw.io) / 14 (Zettlr)",
+     "[fact] docs/architecture/06-runtime-and-tooling.md §1: 'a recoverable nonzero Bun crash revokes its endpoint/token/stream before the persistent guardian's one Supervisor requests a fresh generation ... send Ready again'; 'Status-zero self-termination remains terminal; a status-zero exit after an accepted correlated Quit is host-authorized'; strict post-ready liveness surfaces KELD-RUNTIME-012 for unrequested status-zero",
+     "[fact] crates/keld-ipc/src/lifecycle.rs: LifecycleRequest has only Quit; no cancel/veto; lifecycle not guard-routed",
+     "[fact] grep of crates/keld-core/src/app_session.rs for applicationShouldTerminate / WM_QUERYENDSESSION / SIGTERM returns no handler: host-initiated OS termination sources are not implemented"
+    ],
+    "confidence": "high that process.exit cannot implement app.exit and that a veto phase is needed; medium on exact event/Call shape",
+    "type": "grilling",
+    "alternatives_rejected": "(a) app.exit → process.exit(code): rejected — nonzero exit is recovered with a fresh generation and Ready(g2) (opposite of Electron), zero exit becomes KELD-RUNTIME-012 diagnostics, and exitCode is lost. (b) before-quit as fire-and-forget emitted just before the existing Quit Call: rejected — Zettlr's preventDefault + async shutdown + second quit would race the host teardown and renderer beforeunload could not veto. (c) Facade-local suppression of window-all-closed by a 'quitting' flag: rejected as hidden coupling — the host owns window close order and must own the suppression.",
+    "unknowns": "Whether `beforeunload` veto is reachable from the system webviews uniformly (WKWebView has no beforeunload dialog API; WebView2/WebKitGTK differ) [unknown — needs F03 window unit]; Windows session-end semantics (Electron emits none of before-quit/will-quit/quit on shutdown/logoff) have no Keld host handler yet [unknown]."
+   },
+   {
+    "id": "F01-A3",
+    "question": "Who owns single-instance lock, second-instance delivery, open-file and open-url, given the strict Bun child receives no argv/cwd and macOS Finder enforces single instance outside the app's control?",
+    "proposed_answer": "One host-owned `deeplink` admission point (arch 05 §3 row 'protocol registration + single-instance handoff'), declared in keld.config.ts (`app.singleInstance: true`, declared schemes/file types), acquired by the host BEFORE Bun spawn so a losing second host never shows a window and exits 0. The host converts OS inputs into typed, bounded Events on a lifecycle-adjacent channel: `SecondInstance{argv, cwd, additionalData, source}`, `OpenFile{path}`, `OpenUrl{url}`, `Activate{hasVisibleWindows}`; the host queues them from process start and flushes them to the facade after HELLO and before `Ready` so a synchronously registered top-level listener observes them exactly as in Electron. `requestSingleInstanceLock()` in the facade becomes a synchronous read of a host-provided boot fact (the lock is already held by this host) plus registration of additionalData for *future* losers; `hasSingleInstanceLock`/`releaseSingleInstanceLock` are Calls. All delivered strings are untrusted data (research 186 row 2): no path becomes an fs grant; the app must open it through the dialog-like scoped-grant flow. Type: prototype (3-OS two-launch harness) then spec.",
+    "evidence": [
+     "[fact] Electron app.md second-instance: 'emitted inside the primary instance ... when a second instance has been executed and calls app.requestSingleInstanceLock()'; 'argv will not be exactly the same list ... use additionalData'; 'If the second instance is started by a different user ... argv array will not include the arguments'; 'guaranteed to be emitted after the ready event'; requestSingleInstanceLock NOTE: mac/Linux single message limited to 32 MB, larger dropped (returns false, no event)",
+     "[fact] Electron app.md requestSingleInstanceLock: 'On macOS, the system enforces single instance automatically when users try to open a second instance ... in Finder, and the open-file and open-url events will be emitted ... when users start your app in command line, the system's single instance mechanism will be bypassed'",
+     "[fact] Electron app.md open-file: 'also emitted when a file is dropped onto the dock and the application is not yet running. Make sure to listen ... very early ... (even before the ready event)'; open-url: 'If you register the listener in response to a ready event, you'll miss URLs that trigger the launch'",
+     "[fact] docs/architecture/06-runtime-and-tooling.md: child gets 'KELD_APP_LINK ... and fixed-direction stdout/stderr log sinks ... no other inherited descriptor or OS handle'",
+     "[fact] docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md row 2: 'Treat every handoff field as external input ... Keld needs one host-owned primary admission point, replay/duplicate policy, source/role identity, and typed deep-link parsing before routing' — marked NEW gap",
+     "[fact] draw.io electron.js:1718-1760 requestSingleInstanceLock → app.quit() on failure; second-instance handler createWindow() then `commandLine.pop()` as a potential file path (statSafe isFile check); electron.js:2142-2150 open-file registered inside will-finish-launching with event.preventDefault()",
+     "[fact] Zettlr main.ts:35-42 top-level requestSingleInstanceLock → app.exit(0); main.ts:139-181 second-instance and open-file with a `filesBeforeOpen` queue for pre-ready delivery"
+    ],
+    "confidence": "high",
+    "type": "prototype",
+    "alternatives_rejected": "(a) Bun-side lock (lock file under userData, or a local socket): rejected — strict profile denies ambient fs/network (`connect`/`bind` always denied, KEL-78 §Network), and macOS Finder reopen is delivered to the host process regardless. (b) Resolve the lock after Bun starts: rejected — two hosts would each create a window and the loser's window would flash. (c) Deliver second-instance argv over the renderer bridge or ipcMain: rejected — wrong principal; delivery must be host→primary-role on a lifecycle channel.",
+    "unknowns": "additionalData size cap: Electron allows up to 32 MB; kipc inline frames are small (VirtualPort MAX_PORT_MESSAGE_LEN=4096; lifecycle frames are unit enums today) — a documented smaller cap (▲) or chunked delivery is a decision for the kipc owner [unknown]. Whether `source` should distinguish CLI vs Finder vs URL-scheme for policy [lead]. Windows: Electron's ProcessSingleton lives under userData; Keld's equivalent identity (KEL-135 profile identity vs per-executable) is undecided [unknown]."
+   },
+   {
+    "id": "F01-A4",
+    "question": "Where do getPath(name), getAppPath, getVersion/getName/name, isPackaged, process.resourcesPath/defaultApp/argv values come from, and must `userData` match Electron's layout?",
+    "proposed_answer": "Host-computed boot facts, delivered once after HELLO as a `BootDescriptor` Event (immutable for the generation; same transport as Ready) and cached synchronously in the facade so getPath/getVersion are synchronous like Electron. name/version/productName come from keld.config.ts (KEL-15) with package.json fallback; isPackaged = host-staged install root vs `keld dev` owner-private stage (KEL-96); process.argv is the host's OS argv re-shaped to packaged-Electron form `[exe, ...userArgs]` with process.defaultApp set only under `keld dev` (so draw.io's `argv.unshift(null)` and Zettlr's `extractFilesFromArgv` behave). `userData` must be a directory that is also a generated `app.fs.read`/`app.fs.write` grant root so electron-store/electron-log keep working under the strict profile; `sessionData` is Keld-owned (KEL-135 profile roots) and `setPath('sessionData')` is a documented ▲ no-op with diagnostic. `logs` defaults per Electron (~/Library/Logs/<name> on macOS; under userData on Win/Linux). Type: grilling (product decision on userData layout).",
+    "evidence": [
+     "[fact] Electron app.md getPath: userData 'by default is the appData directory appended with your app's name'; sessionData 'By default this points to userData'; 'On failure, an Error is thrown'; setPath: 'If the path specifies a directory that does not exist, an Error is thrown'; 'override the sessionData path before the ready event'; setAppLogsPath default '~/Library/Logs/YourAppName on macOS, and inside the userData directory on Linux and Windows'",
+     "[fact] Electron process.md defaultApp: 'When the app is started by being passed as parameter to the default Electron executable, this property is true in the main process, otherwise it is undefined ... useful to determine how many arguments will need to be sliced off from process.argv'",
+     "[fact] draw.io electron.js:1056-1061 `if (process.defaultApp != true) argv.unshift(null)` then parseDrawioArgs(argv); electron.js:58 and :3796 getPath('userData') for Local Storage leveldb and userDataDir; Zettlr main.ts:59-72 setPath('userData', dataDir) + setAppLogsPath when --data-dir given; app.isPackaged 7 signals",
+     "[fact] docs/specs/kel135-persistent-profile-identity.md: Windows `FOLDERID_LocalAppData/Keld/profiles/v1/<identity>/webview2`; Linux `$XDG_DATA_HOME/Keld/profiles/v1/<identity>/webkit`; macOS identifier-addressed WKWebsiteDataStore ('Apple owns physical store layout'; 'no Apple physical-path claim')",
+     "[fact] docs/architecture/06-runtime-and-tooling.md: 'No environment identity, child payload ... can choose a role or authority'; crates/keld-guard/src/lib.rs evaluate() default-denies paths outside `app.fs.*` scope arrays (path_in_scope) and rejects `..`"
+    ],
+    "confidence": "medium",
+    "type": "grilling",
+    "alternatives_rejected": "(a) Compute paths in Bun from HOME/APPDATA/XDG env: rejected — duplicates KEL-135 policy (one rule one owner), env availability in the strict child is not a contract, and the value would not be tied to a grant. (b) Make getPath async: rejected — Electron contract is synchronous and corpus apps call it at module top-level (Zettlr 40 sites). (c) Point userData at the KEL-135 profile root: rejected for v1 unless decided — Electron's own guidance says app files should avoid Chromium subdirs; mixing engine stores with app data recreates the problem Electron documents.",
+    "unknowns": "Whether migrated apps must find their *existing* Electron userData (e.g. ~/Library/Application Support/draw.io) — a product/migration decision, not derivable from docs [unknown]. Whether the strict profile exposes HOME/APPDATA at all to the child [unknown — KEL-78 spec lists inherited objects, not environment variables]. getPath('home'/'documents'/'downloads'/...) values are paths without authority; whether returning them without a matching grant misleads apps (▲ note) [lead]."
+   },
+   {
+    "id": "F01-A5",
+    "question": "How are setAsDefaultProtocolClient / isDefaultProtocolClient / removeAsDefaultProtocolClient and setLoginItemSettings / getLoginItemSettings implemented when the registrations are OS-level writes the strict child cannot perform and macOS/MSIX require build-time declarations?",
+    "proposed_answer": "Build-time declarations in keld.config.ts (`app.protocols: ['drawio']`, `app.autostart: true|false`) materialized by keld-pack into Info.plist CFBundleURLTypes, Linux .desktop MimeType x-scheme-handler/<scheme>, MSIX uap:Protocol, and — for autostart — SMAppService (macOS, requires signed+notarized), HKCU Run + StartupApproved (Windows), XDG autostart .desktop (Linux, a Keld extra since Electron tags login items mac/win only). Runtime facade calls become guarded host Calls on `deeplink.register`/`autostart.set` whose grant shape is a literal allowlist: `app.deeplink.register: ['drawio']`, `app.autostart.set: ['self']`; `path`/`args`/`execPath`-style options that would register another executable are refused (never). When the host cannot materialize (no bundle in `keld dev`, unsigned, appx), the facade returns `false` and emits a KELD-NATIVE-* diagnostic — never `true`. Type: task, blocked_by KEL-19 (no .app/plist/MSIX emitter) and KEL-89 rung 2.",
+    "evidence": [
+     "[fact] Electron app.md setAsDefaultProtocolClient: 'On macOS, you can only register protocols that have been added to your app's info.plist, which cannot be modified at runtime'; 'In a Windows Store environment (when packaged as an appx) this API will return true for all calls but the registry key it sets won't be accessible'; 'uses the Windows Registry and LSSetDefaultHandlerForURLScheme internally'; Returns boolean",
+     "[fact] Electron tutorial launch-app-from-url-in-another-app.md: 'On macOS and Linux, this feature will only work when your app is packaged'; dev mode on Windows requires `setAsDefaultProtocolClient(scheme, process.execPath, [path.resolve(process.argv[1])])`; Linux .desktop `mimeType x-scheme-handler/<scheme>`",
+     "[fact] Electron app.md setLoginItemSettings IMPORTANT: 'On macOS, your app should be code signed and notarized ... openAtLogin may silently fail'; options type mainAppService/agentService/daemonService/loginItemService, Windows path defaults to process.execPath, `enabled` toggles StartupApproved, `name` defaults to AppUserModelId; getLoginItemSettings status 'not-registered | enabled | requires-approval | not-found'",
+     "[fact] docs/specs/keld-auth.md host-broker chain rung 2: 'registration is unauthenticated last-writer on Windows — delivery ≠ ownership'; 'v0: effectively unavailable (no MSIX/uap:Protocol emitter exists; keld-pack is a name-only enum)'; macOS 'v0: no .app bundle/plist emitter exists → not reachable'",
+     "[fact] crates/keld-native/src/lib.rs MODULES includes 'deeplink', 'autostart' with no implementation; docs/architecture/05-webview-and-native.md §3 rows map them to app.setAsDefaultProtocolClient / app.setLoginItemSettings",
+     "[fact] corpus demand: neither draw.io nor Zettlr calls setAsDefaultProtocolClient or setLoginItemSettings (0 hits in usage scans); Zettlr declares a custom `safe-file://` protocol via protocol.handle (different unit)"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "(a) Runtime registry/LaunchServices writes from the Bun child: rejected — strict profile has zero ambient OS authority (KEL-78), Windows LPAC child cannot write HKCU Run, and runtime-only macOS registration is impossible per Electron's own doc. (b) Returning `true` optimistically to keep apps' happy paths: rejected — silent downgrade violates briefing invariant 3 and KEL-127 'no silent downgrade'. (c) Allowing `process.execPath` as the registered path: rejected — in Keld execPath is Bun, not the launchable app; the host/app bundle is the only valid target.",
+    "unknowns": "Whether Keld should expose Linux autostart at all (Electron does not; adding it is a ✔+ extension that needs its own scoreboard note) [decision]. Exact SMAppService status mapping to Electron's four status strings is not verified against Apple docs here [unknown]."
+   },
+   {
+    "id": "F01-A6",
+    "question": "What happens to app.commandLine.*, enableSandbox, disableHardwareAcceleration/isHardwareAccelerationEnabled, disableDomainBlockingFor3DAPIs, getGPUInfo/getGPUFeatureStatus/gpu-info-update, getAppMetrics and process.noAsar on an engine that is not Chromium-with-flags?",
+    "proposed_answer": "Facade-local, explicitly scored shims: `commandLine` keeps a private switch map so appendSwitch→hasSwitch/getSwitchValue/removeSwitch are self-consistent, never touches the engine, and emits one dev-only KELD-COMPAT warning per switch (never list: 'arbitrary Chromium/V8 flags'); `enableSandbox()` is a ✔ no-op (renderers are always sandboxed; calling after ready is still an error to match Electron); `disableHardwareAcceleration()` is ▲ and may map to an engine preference only through KEL-132's GPU/media guard, otherwise no-op with diagnostic; GPU info/metrics are host Calls returning Keld's process census (host + Bun roles + webview processes) with Electron field names where a 1:1 meaning exists and documented ▲ otherwise; `process.noAsar` is ✘ (no ASAR). Type: task (scoreboard entries + conformance cells), no boundary change.",
+    "proposed_answer_note": "",
+    "evidence": [
+     "[fact] Electron command-line.md: 'Append a switch ... to Chromium's command line. NOTE: This will not affect process.argv. The intended usage of this function is to control Chromium's behavior'; getSwitchValue 'not meant to be used for application-specific command line arguments ... use process.argv'; 'When the switch is not present or has no value, it returns empty string'",
+     "[fact] Electron app.md: enableSandbox 'all renderers will be launched sandboxed ... This method can only be called before app is ready'; disableHardwareAcceleration 'can only be called before app is ready'; isHardwareAccelerationEnabled 'only usable after the gpu-info-update event'",
+     "[fact] briefing never list + docs/research/library/compatibility-competitors/13-electron-api-usage.md Never table: 'Arbitrary Chromium CLI flags / V8 flags — Undermines engine policy'; 'Full Chrome DevTools Protocol in production webviews'",
+     "[fact] draw.io electron.js:164-166 `if (process.argv.indexOf('--disable-acceleration') !== -1) app.disableHardwareAcceleration()`; :691 enableSandbox commented out ('maybe the reason snap stopped working'); Zettlr DISABLE_HARDWARE_ACCELERATION CLI flag → app.disableHardwareAcceleration()",
+     "[fact] corpus usage scans show zero app.commandLine call sites in draw.io, Zettlr, electron-quick-start"
+    ],
+    "confidence": "high",
+    "type": "task",
+    "alternatives_rejected": "(a) Translate Chromium switches into WebView2/WKWebView/WebKitGTK settings: rejected by the never list and because the switch namespace is Chromium-specific (WebView2 does accept some Chromium flags via additional browser arguments, which would make behavior engine-dependent and silently divergent). (b) Throw on appendSwitch: rejected — would break apps that call it defensively at top level before ready; a self-consistent no-op plus diagnostic is the smaller reversible path.",
+    "unknowns": "Whether any corpus app in the planned 20-app panel depends on a specific switch (e.g. --disable-gpu, --lang) for correctness [unknown until wider scan]; whether WKWebView/WebKitGTK expose a hardware-acceleration toggle comparable to Chromium's [unknown — KEL-132 owner]."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "app.commandLine.appendSwitch / appendArgument with engine effect (any Chromium/V8 switch, incl. remote-debugging-port, no-sandbox, disable-web-security, js-flags)",
+    "rationale": "Briefing never list and research 13: arbitrary Chromium/V8 flags undermine engine policy; Keld uses system webviews where the switch namespace does not exist (WKWebView/WebKitGTK) or would be engine-specific (WebView2). Facade keeps a no-op local map with a diagnostic."
+   },
+   {
+    "surface": "app.relaunch({ execPath }) to any executable other than the app's own launcher",
+    "rationale": "Arbitrary exec from a strict role is on the never list (raw child_process/exec); relaunch must re-exec the host launcher only."
+   },
+   {
+    "surface": "setLoginItemSettings({ path, args }) / setUserTasks / setJumpList targeting a program other than the app's own launcher, and registering Bun's process.execPath",
+    "rationale": "Autostarting or launching foreign executables is ambient OS authority; Bun's execPath is not the launchable app in Keld."
+   },
+   {
+    "surface": "setAsDefaultProtocolClient for a scheme not declared at build time in keld.config.ts / Info.plist / .desktop / uap:Protocol, or returning `true` when the OS registration did not happen",
+    "rationale": "Runtime scheme minting is impossible on macOS and unauthenticated last-writer on Windows (keld-auth rung 2); a silent `true` is a silent downgrade forbidden by KEL-127."
+   },
+   {
+    "surface": "certificate-error → event.preventDefault() + callback(true) TLS trust override, select-client-certificate arbitrary selection, importCertificate into the platform store, from strict-profile roles",
+    "rationale": "Network trust decisions are host/guard policy; app-level overrides reintroduce the Electron default-allow class (research 186). Legacy-profile only, visibly labeled."
+   },
+   {
+    "surface": "second-instance / open-file argv paths used directly as filesystem authority (implicit grant)",
+    "rationale": "Research 186 row 2: handoff fields are untrusted external input; a delivered path is data until a scoped grant is minted through the dialog/deeplink grant flow."
+   },
+   {
+    "surface": "app.setPath('sessionData', …) relocating Keld-owned engine profile roots",
+    "rationale": "KEL-135 owns persistent profile identity and roots; app-selected engine storage paths would duplicate policy and break identity-bound isolation. Documented ▲ no-op."
+   },
+   {
+    "surface": "process.noAsar / ASAR semantics",
+    "rationale": "Keld has no ASAR archive layer; documented ✘ (not applicable), not emulated."
+   }
+  ],
+  "open_unknowns": [
+   "[unknown] Whether the ≤300 ms cold-start→first-paint budget survives deferring first-window creation until Bun HELLO + facade BrowserWindow Call (F01-A1); needs the KEL-90/KEL-129 harness measurement",
+   "[unknown] Host handling of OS-initiated termination (macOS applicationShouldTerminate / Cmd+Q from the app menu, Windows WM_QUERYENDSESSION/WM_ENDSESSION, Linux session managers) — no handler found in app_session.rs; needed before before-quit/will-quit can be faithful",
+   "[unknown] Whether renderer `beforeunload` veto is reachable uniformly on WKWebView / WebView2 / WebKitGTK (cross-unit with window family)",
+   "[unknown] additionalData size contract: Electron 32 MB vs kipc small inline frames; choose documented cap (▲) or chunking",
+   "[unknown] Single-instance identity on Windows/Linux: per KEL-135 profile identity, per installed root, or per executable path (Electron uses the user-data dir)",
+   "[unknown] Whether migrated apps must see their existing Electron userData directory (e.g. ~/Library/Application Support/draw.io) — product/migration decision not derivable from docs",
+   "[unknown] Whether the strict Bun child has HOME/APPDATA/XDG env at all (KEL-78 lists inherited objects, not environment); affects any Bun-side fallback and electron-store behavior",
+   "[unknown] Value to report for process.versions.electron (emulated baseline '44.4.5' vs Keld '0.0.1') and whether to synthesize versions.chrome — libraries gate on these",
+   "[unknown] Per-engine analogue for disableHardwareAcceleration and GPU feature status (KEL-132 owner)",
+   "[unknown] Exact SMAppService status mapping to Electron's four `status` strings; Linux XDG autostart as a Keld extension (Electron offers none)",
+   "[unknown] render-process-gone / child-process-gone reason-string mapping tables per engine (WKWebView, WebView2 ProcessFailed, WebKitGTK web-process-terminated) — not fetched from vendor docs in this unit",
+   "[unknown] Whether any app in the planned 20-app corpus depends on a specific Chromium switch for correctness (would force a scored ✘ with per-app quirks note)",
+   "[lead] `source` field on SecondInstance (cli | finder | url-scheme | file-association) for app policy — not in Electron's contract; would be a ✔+ extension",
+   "[unknown] Whether `will-finish-launching` on macOS needs a distinct host event or can alias ready (only draw.io uses it, to register open-file)"
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

@@ -1,0 +1,1130 @@
+{
+ "unit": "X02",
+ "name": "migrate-tooling",
+ "published": {
+  "epic": {
+   "key": "X02-EPIC",
+   "title": "program(migrate): read-only analyzer, module alias, five-file generation, honest report without percentages, corpus harness manifest",
+   "body": "## Scope\n`keld migrate` (reserved today), the module alias, the five generated files, the report format and the corpus manifest for real apps. Live: keld-guard manifest parser (64 KiB, unique keys, deny fix-text that prints the exact patch), KEL-74 scorer, KEL-237 lifecycle corpus runner pattern, KEL-215 addon evidence rows, the scratchpad demand scan (prototype of the analyzer).\n\n## Design facts fixed by research (two refuters + panel)\n- Analyzer is a read-only Rust verb: lexical, import-binding-aware scan of JS/TS/Vue plus static parsing of package.json/tsconfig/bunfig/electron-builder/forge configs; never evaluates app code; reports KEL-127's four blocker classes separately; emits reversible changes only after authorization (`--write`).\n- The report prints static coverage COUNTS by status (✔/▲/✘/unclassified) labelled \"static estimate, not a compatibility score\"; a KEL-74 claim line appears only for committed corpus members. Arch 04 §1's sample `compat score: 91%` contradicts §4/KEL-74 and must be fixed in the same PR (also arch 07 §4's `keld_migrate_analyze` row).\n- Module alias: a package.json dependency whose key is `electron` (npm: alias once published; file:/link: in dev) so every resolver sees `node_modules/electron` as the shim; tsconfig paths is editor/type mapping only (the refuter re-ran the probe: paths does NOT reach a node_modules dependency's require); the `bunfig.toml [alias]` wording in arch 04 §2 is a spec defect. Open: X03 proposes a Bun preload plugin for the five subpath specifiers — decide one owner (X02-A1).\n- `--write` seeds `keld.permissions.jsonc` with literal-only grants through the live vocabulary; `windows.<w>.channels` has no live evaluator (blocker shared with F04-A1); no recorder exists.\n- Boot facts are host-published at spawn (panel consensus); blocking pre-ready CALLs wait on PANEL-P1.\n- Corpus harness: a new manifest (`electron-apps-v0`, panel product) reusing KEL-237's schema and runner pattern, pinned by upstream commit + canonical bytes; analyzer counts are leads attached to rows, never cells.\n",
+   "tier": "Tier 1",
+   "blocked_by_keys": []
+  },
+  "tickets": [
+   {
+    "key": "X02-T1",
+    "title": "spec(migrate): read-only analyzer + report format + five-file generation contract (fixes the arch 04 §1 percentage contradiction in the same PR)",
+    "kind": "spec",
+    "tier": "Tier 1",
+    "maturity_target": "L0",
+    "what_to_build": "Write the approved spec for `keld migrate`: input discovery, static scan rules, blocker classes (compatibility/security/engine/native-dependency), report shape (counts not percentages; KEL-74 claim line only for committed corpus members; authority profile printed), `--write` outputs (keld.config.ts, keld.permissions.jsonc literal seeding, keld.build.ts, keld.compat.ts, package.json alias + scripts, tsconfig paths), and the same-PR correction of arch 04 §1/§4/§6 and arch 07 §4 wording.",
+    "acceptance_criteria": [
+     "Spec approved; rejected alternatives recorded (executing app configs; percentage output; wildcard seeding)",
+     "Every generated file maps to its owning schema (KEL-15/KEL-19) or names the missing RFC text as a blocker"
+    ],
+    "negative_controls": [
+     "A spec that prints a percentage without a denominator is rejected"
+    ],
+    "blocked_by_keys": [],
+    "blocked_by_external": [
+     "KEL-17 (Done RFC without a spec file)",
+     "KEL-15/KEL-19",
+     "KEL-127 analyzer-first direction"
+    ],
+    "linear_owner": "KEL-17 / KEL-19",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "keld migrate",
+     "keld.config.ts",
+     "keld.permissions.jsonc",
+     "keld.build.ts",
+     "keld.compat.ts"
+    ],
+    "size": "M",
+    "ready_state": "ready-for-agent",
+    "agent_brief": "**Category:** spec\n\n**Current behavior:** `keld migrate` is reserved (KELD-CLI-045); the demand scanner is a scratchpad prototype.\n\n**Desired behavior:** Write the approved spec for `keld migrate`: input discovery, static scan rules, blocker classes (compatibility/security/engine/native-dependency), report shape (counts not percentages; KEL-74 claim line only for committed corpus members; authority profile printed), `--write` outputs (keld.config.ts, keld.permissions.jsonc literal seeding, keld.build.ts, keld.compat.ts, package.json alias + scripts, tsconfig paths), and the same-PR correction of arch 04 §1/§4/§6 and arch 07 §4 wording.\n\n**Key interfaces:** keld-cli verb; guard manifest vocabulary; KEL-74 claim shape.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Implementation (X02-T2/T3).",
+    "out_of_scope": "Implementation (X02-T2/T3).",
+    "notes": ""
+   },
+   {
+    "key": "X02-T2",
+    "title": "feat(migrate): analyzer v0 — static Electron usage inventory per call site classified against the compat matrix, security/engine/native blockers listed separately",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Implement the read-only analyzer in keld-cli: resolve `electron` import bindings, inventory member usage per call site, classify against the committed matrix status, list weak-isolation webPreferences, dynamic `openExternal` targets, spawn/exec sites, custom scheme privileges, native addons (KEL-215 evidence lookup: qualified/unqualified) and `<webview>`; emit `--json` and human reports with counts only.",
+    "acceptance_criteria": [
+     "draw.io and Zettlr inventories match the committed demand scan within declared tolerance and list every blocker class",
+     "The report prints \"static estimate, not a compatibility score\" and no percentage",
+     "A dynamic channel dispatcher (Zettlr generic window.ipc) is reported as unenumerable with the recorder fix-it"
+    ],
+    "negative_controls": [
+     "Printing a percentage fails the honesty negative test"
+    ],
+    "blocked_by_keys": [
+     "X02-T1"
+    ],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-17 / KEL-19",
+    "review_gates": [
+     "public API"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "keld migrate (analyze)",
+     "keld_migrate_analyze (MCP)"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Reserved verb; no analyzer.\n\n**Desired behavior:** Implement the read-only analyzer in keld-cli: resolve `electron` import bindings, inventory member usage per call site, classify against the committed matrix status, list weak-isolation webPreferences, dynamic `openExternal` targets, spawn/exec sites, custom scheme privileges, native addons (KEL-215 evidence lookup: qualified/unqualified) and `<webview>`; emit `--json` and human reports with counts only.\n\n**Key interfaces:** keld-cli migrate verb; matrix status source; MCP tool.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Writing files (X02-T3).",
+    "out_of_scope": "Writing files (X02-T3).",
+    "notes": ""
+   },
+   {
+    "key": "X02-T3",
+    "title": "feat(migrate): --write generation of the five files with literal-only grant seeding and the package.json electron alias; draw.io hand-authored artefact first",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L1",
+    "what_to_build": "Generate keld.config.ts (identity, windows, scheme table, singleInstance), keld.permissions.jsonc (literal grants only: userData/logs roots per F01-A4, literal openExternal origins, enumerated `el:` channels, `app.system` tokens; `el:*` refused), keld.build.ts (translation per F09-T2), keld.compat.ts quirks, package.json (`electron` dependency alias + scripts), tsconfig paths; the first draw.io artefact is hand-authored to the exact shape the generator must emit, then the generator is specified from it.",
+    "acceptance_criteria": [
+     "`keld migrate --write` on draw.io produces files byte-identical to the approved hand-authored artefact",
+     "Every seeded grant is a literal; a wildcard in the input configs is reported, never seeded",
+     "electron-store/electron-log/electron-updater resolve `require(\"electron\")` to the shim through the package.json alias on Bun 1.4.2"
+    ],
+    "negative_controls": [
+     "Seeding `$HOME/**` fails the literal-only negative test"
+    ],
+    "blocked_by_keys": [
+     "X02-T2",
+     "X02-A1",
+     "F01-A4"
+    ],
+    "blocked_by_external": [],
+    "linear_owner": "KEL-19",
+    "review_gates": [
+     "permission model"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [
+     "keld migrate --write"
+    ],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** None.\n\n**Desired behavior:** Generate keld.config.ts (identity, windows, scheme table, singleInstance), keld.permissions.jsonc (literal grants only: userData/logs roots per F01-A4, literal openExternal origins, enumerated `el:` channels, `app.system` tokens; `el:*` refused), keld.build.ts (translation per F09-T2), keld.compat.ts quirks, package.json (`electron` dependency alias + scripts), tsconfig paths; the first draw.io artefact is hand-authored to the exact shape the generator must emit, then the generator is specified from it.\n\n**Key interfaces:** Generators per file; guard vocabulary; alias mechanism.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Recorder/dev-permissive profile (arch 03 §3 v0: none).",
+    "out_of_scope": "Recorder/dev-permissive profile (arch 03 §3 v0: none).",
+    "notes": ""
+   },
+   {
+    "key": "X02-T4",
+    "title": "feat(corpus): electron-apps-v0 product corpus manifest (draw.io first) reusing the KEL-237 schema and runner pattern; install/activation/primary_workflow cells via migrate + dev smoke",
+    "kind": "feature",
+    "tier": "Tier 1",
+    "maturity_target": "L3",
+    "what_to_build": "Create a new corpus manifest with its own id and `panel: product`, pinned by draw.io's upstream commit (with the webapp submodule populated — the shallow clone has it empty) and canonical bytes; cells = install, activation, and the 4-step primary workflow (open → edit → save → close-with-unsaved-prompt); records carry `authority_profile: LegacySandboxOff` until strict is admitted; a product corpus id owner must add it to the documented committed list before any percentage.",
+    "acceptance_criteria": [
+     "The manifest digest assertion and mutation control pass",
+     "draw.io cells run through migrate + `keld dev` smoke on macOS with per-cell pass/fail/unknown and immutable evidence URIs",
+     "The scoreboard shows `{passed}/{N} of product corpus electron-apps-v0@<digest> (primary_workflow)` only once the id is documented"
+    ],
+    "negative_controls": [
+     "Marking a cell pass on import success fails the honesty entry"
+    ],
+    "blocked_by_keys": [
+     "X02-T3",
+     "X01-T2"
+    ],
+    "blocked_by_external": [
+     "KEL-237",
+     "KEL-74 committed-id list owner (open)"
+    ],
+    "linear_owner": "KEL-237",
+    "review_gates": [
+     "none"
+    ],
+    "platforms": "macOS first; Windows/Linux lanes or explicit documented gap",
+    "electron_members_covered": [],
+    "size": "L",
+    "ready_state": "needs-spec",
+    "agent_brief": "**Category:** feature\n\n**Current behavior:** Only the 3-cell lifecycle corpus exists.\n\n**Desired behavior:** Create a new corpus manifest with its own id and `panel: product`, pinned by draw.io's upstream commit (with the webapp submodule populated — the shallow clone has it empty) and canonical bytes; cells = install, activation, and the 4-step primary workflow (open → edit → save → close-with-unsaved-prompt); records carry `authority_profile: LegacySandboxOff` until strict is admitted; a product corpus id owner must add it to the documented committed list before any percentage.\n\n**Key interfaces:** keld-compat corpus runner; KEL-74 records.\n\n**Acceptance criteria:** the checklist above, each as a test with its negative control.\n\n**Out of scope:** Zettlr cells (second app).",
+    "out_of_scope": "Zettlr cells (second app).",
+    "notes": ""
+   }
+  ],
+  "decision_tickets": [
+   {
+    "key": "X02-A1",
+    "title": "One module-alias owner: package.json `electron` dependency alias (X02) vs a Bun preload plugin for the five Electron specifiers (X03)",
+    "type": "grilling",
+    "question": "The refuter proved tsconfig paths does not reach a node_modules dependency's `require(\"electron\")`; a package.json dependency alias does on Bun 1.4.2. X03 proposes a Bun plugin to also cover `electron/main|renderer|common|utility`. Recommendation: package.json alias as the single runtime resolver (bundler-neutral) with package `exports` for the subpaths; a plugin only if exports cannot express them. Decide and fix the arch 04 §2 bunfig wording.",
+    "status": "open",
+    "resolution": "",
+    "resolution_evidence": [],
+    "blocked_by_keys": []
+   }
+  ],
+  "never_list": [
+   "executing app build/packaging configs",
+   "writing files without --write authorization",
+   "printing a compatibility percentage",
+   "seeding wildcard grants",
+   "translating setFeedURL into a feed",
+   "carrying nodeIntegration:true",
+   "mapping child_process with shell:true",
+   "claiming native-addon support without KEL-215-shaped evidence"
+  ],
+  "out_of_scope": [],
+  "not_yet_specified": [
+   "Recorder/dev-permissive profile (arch 03 §3 destination) as the source of dynamic grants",
+   "`keld doctor --web-compat` scope"
+  ],
+  "issue_numbers": {
+   "X02-A1": 412,
+   "X02-EPIC": 496,
+   "X02-T1": 497,
+   "X02-T2": 498,
+   "X02-T3": 499,
+   "X02-T4": 500
+  }
+ },
+ "critic_findings": {
+  "coverage_gaps": [
+   {
+    "entity": "first-proof cell 'install'",
+    "problem": "PANEL-D12 and X02-T4 score an install cell but no ticket defines it: MAP states no .app/DMG exists, KEL-141 (prebuilt CLI+host distribution) is Backlog and KEL-103 In Progress (Linear, fetched 2026-10-06), and X02-T4 runs cells through `keld dev`.",
+    "suggested_unit": "X02-T4: define install as an observable (dependency install + migrate + staged host launch) with its `kind`, or mark the cell `unknown` gated on KEL-141."
+   }
+  ],
+  "duplicates": [],
+  "edge_problems": [
+   {
+    "key": "X02-T4",
+    "problem": "Missing gates: the proof ticket is blocked only by X02-T3 and X01-T2. It consumes none of the implementation it scores and neither PANEL-P1 (sync dialog outcome) nor PANEL-P3 (denominator draft). X01-T2 (lifecycle-family recorder) is not a real gate — product cells reuse the KEL-237 runner pattern, not the recorder.",
+    "fix": "Edges X02-T4 ← F01-T2, F01-T4, F02-T2, F02-T3, F03-T2, F03-T5, F04-T3, F04-T4, F05-T4, F06-T2, F06-T4, F06-T5, F07-T1, F09-T1, X03-T1, PANEL-P1, PANEL-P3; drop X01-T2."
+   },
+   {
+    "key": "F01-T4",
+    "problem": "Wrong gate and missing gate. F01-A4 ('where does userData live under STRICT') does not gate a LegacySandboxOff first proof. The artifact F01-T4 actually consumes — the pre-ready call list / descriptor field set — is produced by PANEL-P3 (MAP: 'unspecified until E1 lists the pre-ready calls'), which gates nothing. The epic also says F01-T4 itself 'lists pre-ready calls', so the producer is ambiguous.",
+    "fix": "Replace F01-T4 ← F01-A4 with F01-T4 ← PANEL-P3; keep F01-A4 as a gate only on the strict-profile follow-up. Same correction for X02-T3 ← F01-A4."
+   },
+   {
+    "key": "X02-T3",
+    "problem": "Missing gates: it emits keld.build.ts 'per F09-T2' (schema does not exist; F09-A6 open), enumerated `el:` channels into windows.<w>.channels (parse-and-ignore until F04-A1), and — per PANEL-D14 — DRAWIO_DISABLE_UPDATE into a host-declared role environment that is not in its five-file list.",
+    "fix": "Edges X02-T3 ← F04-A1 and ← F09-A6 (or drop keld.build.ts from the first-proof artifact); add the role-environment output and its owning schema to the ticket."
+   }
+  ],
+  "invariant_violations": [],
+  "quality_problems": [
+   {
+    "key": "X01-T1, X02-T1, X04-T1",
+    "problem": "'Spec approved by a human' is not an agent-verifiable binary criterion, and the negative controls ('a spec that ... is rejected at review', 'a row whose negative test cannot fail is rejected') are reviewer opinions — they cannot fail mechanically.",
+    "fix": "ACs as checkable properties of the document (every section of the template filled; every mapping row names a test id and an owner; lint for '%' output); approval is the PR gate, not an AC."
+   },
+   {
+    "key": "X02-T2",
+    "problem": "AC1 'inventories match the committed demand scan within declared tolerance' — no committed demand scan exists (the scratchpad usage.json files are token-scan leads, not demand facts) and no tolerance is declared.",
+    "fix": "Oracle = a hand-resolved call-site list for a fixed file set at the pinned corpus commit, exact match."
+   },
+   {
+    "key": "X02-T3",
+    "problem": "AC1 (byte-identical to the hand-authored artefact) uses an oracle that shares the implementation's mistake: the generator is 'specified from' the same artefact, and nothing requires that artefact to boot draw.io. L-sized: generator for six outputs + alias.",
+    "fix": "First-proof slice = the hand-authored artefact, accepted only when X02-T4 activation passes with it; the generator is a separate `next` ticket."
+   },
+   {
+    "key": "F01-A4, F03-D4, F04-A1, F04-A4, X02-A1, F06-D1, X04-D4",
+    "problem": "Filed as 'open (not resolvable from current evidence)' with body '_No evidence-backed resolution yet; see the unit research note_' — the doctrine's banned 'needs discussion'. Most are ownership choices with a stated recommendation (X02-A1 even contains one), not evidence gaps.",
+    "fix": "Each gets a decision packet in the issue body: options, cost, new invariant, falsifier, recommendation, the one remaining question; resolve the ones evidence already determines (X02-A1, F04-A4)."
+   }
+  ],
+  "yagni": [
+   {
+    "key": "X01-T2",
+    "milestone": "next",
+    "reason": "Lifecycle-family recorder + replayer + comparator; the first proof's product cells do not consume recorded lifecycle goldens (the X02-T4 edge to it is not a real gate)."
+   },
+   {
+    "key": "X02-T1",
+    "milestone": "first-proof",
+    "reason": "Slice only: the five-file contract and the honest report shape that the hand-authored draw.io artefact must satisfy, plus the arch 04 percentage correction. Park analyzer scan rules."
+   },
+   {
+    "key": "X02-T2",
+    "milestone": "next",
+    "reason": "The 25 draw.io ipcMain channels and its webPreferences are hand-enumerable from one file; a static analyzer is needed for Zettlr (186 invoke sites, dynamic window.ipc dispatcher)."
+   },
+   {
+    "key": "X02-T3",
+    "milestone": "first-proof",
+    "reason": "Slice only: the hand-authored draw.io artefact (legacy profile declared, enumerated el: channels, single-instance declaration, electron/electron-updater alias so the four packages imported at :9, :17, :20, :22 resolve to the shim). The generator is next."
+   },
+   {
+    "key": "X02-T4",
+    "milestone": "first-proof",
+    "reason": "It is the proof: the product corpus manifest and the install/activation/four-step cells with authority_profile LegacySandboxOff."
+   }
+  ],
+  "ambiguity_laundering": [
+   {
+    "key": "X02-T4 / PANEL-D12",
+    "claim": "'cells = install, activation, and the 4-step primary workflow ... run through migrate + `keld dev` smoke'.",
+    "problem": "An 'install' cell is asserted as scoreable although no installable artifact exists (MAP: 'no .app/DMG/NSIS exists') and the prebuilt distribution issue KEL-141 is Backlog. What 'install' observes is undefined.",
+    "fix": "UNKNOWN: the install observable. Either define it (kind: dev-staged) or record the cell as `unknown` with the KEL-141 dependency named."
+   }
+  ],
+  "hidden_coupling": [
+   {
+    "keys": [
+     "F02-T3",
+     "F06-T2",
+     "PANEL-P1",
+     "X02-T4"
+    ],
+    "coupling": "The unsaved-prompt cell couples three atoms with no edges between them. draw.io sets modifiedModalOpen=true (:866) and then calls showMessageBoxSync (:876) inside an async ipcMain listener; if F06-T2's SCAFFOLDED throw fires, the flag is never cleared and every later close is ignored by the guard at :853 — the window can never close. F02-T3 AC1 and F06-T2 AC4 are mutually exclusive for a modified document.",
+    "fix": "New atom 'blocking host CALL from a Bun role' (transport ticket) with edges PANEL-P1 → transport → F06-T2(sync) → X02-T4(close cell); F02-T3 AC1 split into unmodified/modified. If P1 fails, a recorded decision 'draw.io = config + 1 edit'."
+   },
+   {
+    "keys": [
+     "F04-A1",
+     "F04-T3",
+     "X02-T3",
+     "X02-T2"
+    ],
+    "coupling": "Channel grants ↔ migrate. The runtime boundary (enumerated el:<channel>) is only as good as the list migrate emits; F04-T3 carries a migrate AC ('el:* is refused by migrate'), X02-T3 seeds windows.<w>.channels which the guard parses and ignores today, and the list for draw.io is derivable from main-side ipcMain registrations (25 literals) but not from the preload, which forwards page-chosen names.",
+    "fix": "New explicit rule owned by F04-A1: 'grant list source = main-side literal ipcMain registrations; non-literal registration is reported unenumerable'. Edge X02-T3 ← F04-A1; move the migrate AC from F04-T3 to X02-T3."
+   },
+   {
+    "keys": [
+     "PANEL-D14",
+     "X02-T3",
+     "F01-T4",
+     "F09-T1"
+    ],
+    "coupling": "Updater disablement depends on an environment variable: PANEL-D14 has migrate write DRAWIO_DISABLE_UPDATE=true into 'the host-declared role environment', read at module top level (:75). That is a boot fact delivered at spawn (F01-T4 / KEL-75 no-inherited-env) and a migrate output not present in X02-T3's file list. If it is absent, the boot-time checkForUpdates runs (:2092-2100) and F09-T1's 'typed error on explicit check' fires at activation.",
+    "fix": "Name the declared-role-environment field and its schema owner; add it to X02-T3 outputs and to F01-T4's payload; F09-T1 AC covers both env-present and env-absent boots."
+   },
+   {
+    "keys": [
+     "F01-T5",
+     "X02-T3"
+    ],
+    "coupling": "F01-T5 AC3 makes requestSingleInstanceLock() without a config declaration a typed diagnostic; draw.io quits when the call returns false (:1718-1722). Whether the proof app boots therefore depends on migrate emitting the declaration, which is listed in X02-T3 but not edged.",
+    "fix": "Edge X02-T3 ← F01-T5 (declaration key) and an X02-T4 activation precondition."
+   },
+   {
+    "keys": [
+     "X02-T3",
+     "F09-T2",
+     "F09-A6"
+    ],
+    "coupling": "X02-T3's byte-identical artefact includes keld.build.ts 'per F09-T2', whose schema has no text anywhere (KEL-15 body is only a brief). Changing the build schema later silently invalidates the golden artefact that defines the generator.",
+    "fix": "Remove keld.build.ts from the first-proof artefact (nothing reads it under keld dev) or add the edge and accept the delay."
+   }
+  ],
+  "first_proof_frontier": [
+   {
+    "key": "F04-A1",
+    "why_now": "Takeable now; gates F04-T3 and the grant seeding in X02-T3. The renderer→main boundary has no evaluator (guard evaluate reads manifest.app only).",
+    "consumes": "arch 03 §2/§3 at b4b907c3 (03-security.md:97 still shows el:*), kel102 spec (KEL-102 In Progress), the 25 literal ipcMain channels in drawio electron.js. Produces: approved amendment naming the windows.<w>.channels owner."
+   },
+   {
+    "key": "X02-A1",
+    "why_now": "Takeable now (the ticket already contains the recommendation); gates X03-T1 and X02-T3.",
+    "consumes": "Refuter-run Bun 1.4.2 alias probes (package.json dependency alias reaches node_modules requires; tsconfig paths and bunfig alias do not). Produces: single alias owner."
+   },
+   {
+    "key": "X02-T1",
+    "why_now": "Takeable now (no blockers); fixes the five-file contract and report shape the hand-authored artefact must meet.",
+    "consumes": "KEL-17 and KEL-19 (both Done), arch 04 §1/§2/§4, KEL-74 claim shape. Produces: approved migrate spec slice."
+   },
+   {
+    "key": "X03-T1",
+    "why_now": "Next: after X02-A1 and F01-T4; makes `electron` resolve inside the four node_modules packages.",
+    "consumes": "X02-A1 decision; F01-T4 payload; KEL-72 module alias (Done)."
+   },
+   {
+    "key": "F01-T5",
+    "why_now": "Next: after F01-T4 — lock verdict + registrable listeners only.",
+    "consumes": "F01-T4 boot payload; single-instance declaration key agreed with X02-T1."
+   },
+   {
+    "key": "X02-T3",
+    "why_now": "Next: hand-authored draw.io artefact once the config keys it must contain exist (alias, channels, single-instance, role env, legacy profile).",
+    "consumes": "X02-T1 contract; X02-A1; F04-A1 grant shape; F01-T5 declaration key; PANEL-P3 channel/env findings."
+   },
+   {
+    "key": "X02-T4",
+    "why_now": "Last: the proof. Takeable only when every slice above has landed and PANEL-P1/P3 outcomes are recorded.",
+    "consumes": "The hand-authored artefact; all first-proof slices at named SHAs; PANEL-P3 denominator draft; KEL-74 schema (Done) and KEL-237 runner pattern; a named owner for the committed product-corpus id (none today)."
+   }
+  ]
+ },
+ "refuter_verdicts_batch1": [
+  {
+   "lens": "Keld invariants, ownership and reuse (four uniques; default-deny never defaulted to allow; no Electron-isms in core/ipc; no parallel owners; reuse KEL-74/237/102/140/72/75/97/136; measured performance; spec+Linear gate; KEL-127 delegated direction). Verified against origin/main d150a14 files, KEL-127/KEL-17/KEL-19 Linear bodies (fetched 2026-10-06), the scratchpad corpus clones, and five Bun 1.4.2 probes re-run or newly written in the scratchpad (alias-probe, bunfig-probe, sync-probe, starve2, park-probe, file-alias-probe).",
+   "verdicts": [
+    {
+     "decision_id": "X02-A1",
+     "verdict": "unresolved",
+     "reason": "The direction (a package.json dependency alias so node_modules/electron IS the shim) is confirmed for the Bun resolver, but the specific `npm:` form has an unmet precondition and the non-Bun resolvers were never exercised. Confirmed: bunfig `[alias]` is still inert on Bun 1.4.2 (bunfig-probe loads npm electron@44.5.1 from the install cache and fails on `app`), so arch 04 §3's note holds. Confirmed by a new probe (scratchpad prototypes/file-alias-probe): with `\"electron\": \"file:../shim\"` bun install links node_modules/electron -> shim, and app ESM `import 'electron'`, the `electron/main` subpath via an `exports` map, a CJS `require('electron')` from a node_modules dependency, and an ESM dep all resolve to the shim. Refuting facts for the `npm:` form: @keld/electron is not published anywhere (arch 06 §2: 'no npm wrapper is currently shipped'; product-status.tsv row package.keld-electron = partial), and the real package is not installable standalone — `packages/@keld/electron/src/app.ts:8` imports `../../api/src/app.ts` outside the package, so `file:` to the real package fails at runtime ('Cannot find module ../../api/src/link.ts'). tsc and webpack resolution were not tested by the author or by me.",
+     "evidence": "packages/@keld/electron/package.json exports only '.'; packages/@keld/electron/src/app.ts:8 cross-package relative import; docs/architecture/06-runtime-and-tooling.md §2 'Target distribution (not implemented): an @keld/cli npm package'; docs/engineering/product-status.tsv line 14; scratchpad probes: prototypes/bunfig-probe (fails), prototypes/alias-probe main2.ts ({app:keld-shim,cjsDep:keld-shim,esmDep:{def,named}=keld-shim}), prototypes/file-alias-probe/app sub.ts ({app:file-shim,main:file-shim}), app2 (ts shim via file: -> dep resolves), app3 (real @keld/electron via file: -> module-not-found).",
+     "correction": "State the mechanism as 'a package.json dependency whose key is `electron` (npm: alias once @keld/electron is published; `file:`/`link:` for monorepo/dev)', and add two preconditions as owned work: (1) make @keld/electron self-contained (depend on a published @keld/api or inline the link client) — owner KEL-72/KEL-19 distribution; (2) publish `./main`, `./renderer`, `./common` subpath exports. Cheapest settling experiment: in file-alias-probe add `tsc --noEmit` with moduleResolution bundler/node16 and a minimal webpack build with target electron-main; record whether `electron` resolves to node_modules/electron (expected yes: webpack electron-* targets externalize `electron`, so runtime resolution governs — [inference]). Drop bunfig.toml from migrate output or amend arch 04 §2 (see extra finding)."
+    },
+    {
+     "decision_id": "X02-A2",
+     "verdict": "survives",
+     "reason": "KEL-127 body (fetched 2026-10-06) says verbatim: 'A future migration analyzer starts read-only, reports compatibility/security/engine/native-dependency blockers separately and emits reviewable reversible changes only after authorization.' Arch 07 §4 lists `keld_migrate_analyze` as read-only. `KeldErrorObject{code,message,cause?,fix,docs}` and `DoctorFinding{label,ok,detail,error?}` exist in keld-cli and are the shape MCP keld_doctor already emits, so a Rust verb reusing them is the one-owner path. Zettlr forge.config.js:1-32 does `require('child_process')` and `spawn(...)` inside the config module, confirming 'never execute app configs'. Receiver-blind false positives are real: scan_electron_usage.py uses regex `<webview|webviewTag` and draw.io's 7 hits are all `webviewTag: false` (electron.js:728,1090,1407,2210,3087) plus `will-attach-webview` at 2223.",
+     "evidence": "Linear KEL-127 §'Release/adoption evidence, not feature count'; docs/architecture/07-agent-experience.md:90; crates/keld-cli/src/error_object.rs:11-23; crates/keld-cli/src/doctor.rs:43-53; scratchpad scan_electron_usage.py:64; corpus/drawio-desktop/src/main/electron.js; corpus/zettlr/forge.config.js:1,32. Cargo.lock: serde_json and toml present, no YAML or JS-parser crate.",
+     "correction": "Three additions are required for the atom to be correctly scoped. (1) Spec gate: KEL-17 is Done with AC '`keld migrate` UX specified (input, output, report format)' but no docs/specs file exists and arch 04 §1 is the only UX text — a new approved spec per docs/agents/spec-template.md must precede any ticket; label the atom 'spec' not 'task'. (2) Code/spec drift: arch 04 §1's flow (`keld migrate` = analyze → generate → alias → report) and arch 06 §2's verb row ('analyzer + config generator') make generation the default; the read-only default with `--write` changes both and must be fixed in the same PR. (3) Dependency gate: Zettlr ships electron-builder YAML; no YAML crate is in Cargo.lock, so either YAML configs are reported as 'manual (unparsed)' or a workspace-pinned YAML dependency passes the dependency review gate. tsconfig.json is JSONC — reuse keld-guard's comment stripper by exposing it, not a second stripper."
+    },
+    {
+     "decision_id": "X02-A3",
+     "verdict": "survives",
+     "reason": "All cited contradictions are real in the tree: arch 04 §1 sample prints 'compat score: 91% — expected to run' and '✔ supported now: 42/47 call sites'; arch 04 §4 says 'Public percentages require a committed denominator … MUST NOT treat a partial measurement as 100% compatibility'; compat-scoreboard.md rule 4 fixes the only claim shape; evidence.rs `score` formats exactly `{passed}/{n} of {panel} corpus {id}@{digest} ({kind})` (lines 813-819), gates `unweighted_percent` on `product_corpus_is_documented_committed`, and `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` is `&[]` (line 1422). Only `score` constructs `Scoreboard`.",
+     "evidence": "docs/architecture/04-electron-compat.md §1 and §4; docs/engineering/compat-scoreboard.md rules 1-4; crates/keld-compat/src/evidence.rs:795-825, 1420-1430; crates/keld-compat/AGENTS.md ('MUST NOT add … a percentage/`complete` that lacks a committed product corpus').",
+     "correction": "Widen the same-PR fix set: arch 07 §4's `keld_migrate_analyze` row says 'returns compat report (score, per-API status, fix list)' and must lose 'score'; arch 04 §1's '42/47 call sites' fraction is also a denominator-shaped claim from a static estimate and should become the proposed per-status counts. The keld-compat AGENTS line 'Corpus score = release gate' stays correct only for KEL-74 `score` output."
+    },
+    {
+     "decision_id": "X02-A4",
+     "verdict": "survives",
+     "reason": "Policy content is confirmed: arch 03 §3 says `keld migrate seeds the manifest from static analysis`; arch 03 §2 and keld-guard make host-less globs inert and `parse_manifest` is the single decoder (64 KiB, unique keys, KELD-GUARD005/017); `DenyReason::fix` already owns the 'Add a grant at `<ptr>` / Append \"<req>\" to `<ptr>`' wording (lib.rs:338-359) with `json_pointer_for`; arch 05 (research 214 Table 5) puts dialog-selected paths as added scopes after a host dialog flow, not static grants; evaluate is generic over `app.<group>.<action>` string arrays so seeded `app.net.connect`/`app.shell.open` round-trip. Corpus literals are as claimed (draw.io getPath userData/documents at electron.js:58,3796,4175; Zettlr 40 getPath sites, spawn `shell:true` at get-program-version.ts:35, importer/index.ts:128, run-shell-command.ts:21).",
+     "evidence": "docs/architecture/03-security.md §2-3; crates/keld-guard/src/lib.rs:338-359, 568-600, 690-730, 786-789; crates/keld-cli/src/mcp/permissions.rs:31-33,92 (channel -> KELD-MCP014); corpus greps listed above.",
+     "correction": "The phrase 'live guard vocabulary' overstates what is live and hides a hard blocker. (a) Only `fs.read`/`fs.write` (and webview media) are wired call sites; `app.shell.*`, `app.net.*`, `app.system` evaluate structurally but nothing dispatches them; the top-level `windows` key is ignored by the parser ('Unknown top-level keys ($schema, windows, audit) are ignored', lib.rs:565) and MCP explain refuses `channel` with KELD-MCP014 — so seeded `windows.<w>.channels` grant nothing today and 'wildcard `el:*` is a linted convenience' names a linter that does not exist. (b) `path_scopes` rejects any `$`-bearing fs scope: lib.rs:786-789 'unexpanded `$VAR` scopes are not serviceable' (surfaced as KELD-NATIVE-008 at FsBroker prepare). A seeded `app.fs.read: [\"$APPDATA/**\"]` therefore makes the one live guarded fs op unusable until host `$VAR` resolution lands (arch 03 §2 'Destination: $VARS resolved by the host' — owner not named in the tree; explicit unknown). The generator must either emit the destination grammar and print this as a named blocker, or defer fs seeding until the resolver owner exists; it must not emit absolute per-machine paths to make `keld dev` pass."
+    },
+    {
+     "decision_id": "X02-A5",
+     "verdict": "refuted",
+     "reason": "The sync-probe proves only that `Atomics.wait` returns on Bun's main thread after a worker notify; it does not prove a host round-trip can complete while parked. A refined probe (scratchpad prototypes/starve2, Bun 1.4.2) shows the park starves the same-thread event loop: a socket write issued before the park was delivered at 281.5 ms (park ended 280.2 ms) and a 10 ms timer fired at 281.8 ms. The only kipc transport is `@keld/kipc` transport.ts (`DirectedReader.receive` is async, runs on the thread that imported it, i.e. the Bun main thread), so a main-thread blocking CALL can never receive its reply over the existing link. The 'worker-fed SharedArrayBuffer' therefore requires a worker that owns its own kipc connection — a second authenticated session per role, which the host does not admit today (arch 06 §2: 'the v0 echo listener admits exactly one authenticated session') and which is a principal-minting/link-ownership change (KEL-75/KEL-97/KEL-136), i.e. architecture per root AGENTS.md, not a facade detail. park-probe additionally shows the host side stalls after 8192 B while the client is parked (bytesSeenDuringPark 0), so lifecycle Events queue behind any sync call.",
+     "evidence": "scratchpad prototypes/starve2/main.ts output {wait:ok, parkStart:0.4, parkEnd:280.2, log:[[server-data,281.5],[timer10,281.8]]}; prototypes/park-probe output {bytesSeenDuringPark:0, stalledAtBytes:8192}; packages/@keld/kipc/src/transport.ts:746-764 (DirectedReader, async receive); docs/architecture/06-runtime-and-tooling.md §2 single admitted session; crates/keld-runtime/src/role.rs:655-662 (host passes `config.env` + KELD_APP_LINK, so a boot-facts env addition is host-owned and mechanically available).",
+     "correction": "Split the atom. Part 1 (boot facts) survives: isPackaged, resourcesPath, path catalog and the single-instance verdict are host-known before spawn (host registers the OS singleton first) and can ride a host-owned env/blob next to KELD_APP_LINK (role.rs env injection); `protocol.registerSchemesAsPrivileged` has no return value and can be buffered until the link is up. Part 2 (blocking CALL) is an architecture decision, not a prototype result: either a worker-owned second kipc link (needs host multi-session admission + identity rules from KEL-75/KEL-97) or moving the whole transport into a worker with SAB handoff (KEL-136 owner change); both must bound park time and specify Event queuing/backpressure. Cheapest next experiment: a worker-owned socket round-trip while the main thread is parked, against the real host echo endpoint, measuring p50/p99 and queued bytes."
+    },
+    {
+     "decision_id": "X02-A6",
+     "verdict": "survives",
+     "reason": "KEL-237's manifest and runner are as described: corpus.json has `corpus_id, scope, panel, kind, upstream{electron_version, electron_commit, app_docs}, cells[...]`; lifecycle_corpus.rs structs are `#[serde(deny_unknown_fields)]`, the denominator digest must equal sha256 of the exact `include_bytes!` manifest (test at lines 100-149), and each cell needs a passing named case. `OperationKind` is the closed set Install/Activation/PrimaryWorkflow/FullFeature (evidence.rs:270-280), so analyzer counts cannot be a cell. `keld dev` rejects every argument (`parse_dev_flags` -> KELD-CLI-044), so `--headless --smoke` is not live. Corpus demand confirming Tier-1 unreachability for draw.io/Zettlr is verified (draw.io session.defaultSession.webRequest at electron.js:994/1010 and electron-updater; Zettlr protocol.handle at custom-protocols.ts:58, six sendSync sites, sandbox:false x2, `nodehun/build/Release/Nodehun.node` import).",
+     "evidence": "crates/keld-compat/fixtures/lifecycle-corpus/corpus.json; crates/keld-compat/tests/lifecycle_corpus.rs:16-60,100-149; crates/keld-compat/src/evidence.rs:270-292,1420-1430; crates/keld-cli/src/flags.rs:96; corpus greps above.",
+     "correction": "Two precision fixes. (1) 'kept as a separate gitignored/pinned fixture set as §6 says' conflates two things: the corpus MANIFEST bytes must be committed (the denominator's `corpus_sha256` is their digest and the runner include_bytes! them); only the app source clones may be gitignored/pinned by commit. (2) Extending the manifest means changing the runner's `Manifest`/`Upstream` structs in the same PR (deny_unknown_fields), and moving draw.io/Zettlr to `panel: product` is a code edit to `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` (evidence.rs:1422) plus the scoreboard doc, not a documentation-only act. Also record that scored cells need a per-OS producer of `keld.compat.evidence/v1` records (artifact digest, engine, authority profile) which does not exist."
+    }
+   ],
+   "extra_findings": [
+    {
+     "finding": "Main-thread `Atomics.wait` blocks the kipc reader: any synchronous Electron API emulated by parking the Bun primary cannot receive its own reply over the existing single-thread link, and host Events back up (8192 B then stall).",
+     "severity": "high",
+     "evidence": "scratchpad prototypes/starve2 and prototypes/park-probe outputs (Bun 1.4.2); packages/@keld/kipc/src/transport.ts DirectedReader is async on the importing thread; arch 06 §2 one admitted session."
+    },
+    {
+     "finding": "Seeding `$APPDATA/**`-class fs grants produces a manifest the live guarded fs path cannot serve: `path_scopes` rejects `$`-bearing scopes ('unexpanded `$VAR` scopes are not serviceable'), surfaced as KELD-NATIVE-008 at FsBroker prepare. Migrate output would pass `parse_manifest` and still break `keld dev` fs.read/fs.write until a host `$VAR` resolver exists (owner not named in tree).",
+     "severity": "high",
+     "evidence": "crates/keld-guard/src/lib.rs:786-789; docs/architecture/03-security.md §2 'FsBroker::prepare separately rejects variable-bearing … scopes as KELD-NATIVE-008'."
+    },
+    {
+     "finding": "@keld/electron is not installable outside the monorepo (`src/app.ts:8` imports `../../api/src/app.ts`), so no package-manager alias (`npm:` or `file:`) can target the real shim today; only the in-repo tsconfig paths works. This blocks A1 regardless of alias syntax.",
+     "severity": "medium",
+     "evidence": "packages/@keld/electron/src/app.ts:8; scratchpad prototypes/file-alias-probe/app3 run: 'Cannot find module ../../api/src/link.ts'."
+    },
+    {
+     "finding": "Writing bunfig.toml 'for spec parity' is a mirrored config that does nothing on Bun 1.4.2 (confirmed inert), i.e. a diverging fallback path the root AGENTS one-owner rule classes as a defect. Either arch 04 §2 drops bunfig from the five files or migrate stops writing it; the current note in the shim header is not a license to keep both.",
+     "severity": "medium",
+     "evidence": "scratchpad prototypes/bunfig-probe (loads npm electron@44.5.1, fails); packages/@keld/electron/fixtures/bunfig.toml comment; AGENTS.md 'Parallel copies, mirrored constants and diverging fallback paths are defects'."
+    },
+    {
+     "finding": "Seeded `windows.<w>.channels` grants are inert on live Keld: the parser ignores the top-level `windows` key and `keld_permissions_explain` returns KELD-MCP014 when `channel` is present. No linter exists for the `el:*` wildcard the object calls 'linted'. The report must label channel grants as destination-only.",
+     "severity": "medium",
+     "evidence": "crates/keld-guard/src/lib.rs:565 'Unknown top-level keys ($schema, windows, audit) are ignored'; crates/keld-cli/src/mcp/permissions.rs:31-33,92."
+    },
+    {
+     "finding": "draw.io does call `autoUpdater.setFeedURL({provider:'github', repo:'drawio-desktop', owner:'jgraph', channel})` (electron-updater) at electron.js:2078, omitted from the object's draw.io demand summary. The classifier needs the rule the semantic trap only implies: literal provider objects map to `keld.build.ts`; any runtime-derived feed is ✘ never.",
+     "severity": "medium",
+     "evidence": "scratchpad corpus/drawio-desktop/src/main/electron.js:2078-2083."
+    },
+    {
+     "finding": "Analyzer inputs need parsers the workspace does not have: Zettlr's electron-builder.yml (no YAML crate in Cargo.lock) and tsconfig.json JSONC (only keld-guard has a comment stripper, private to the manifest parser). Both are dependency/one-owner gates the object does not list.",
+     "severity": "medium",
+     "evidence": "Cargo.lock has serde_json and toml only; crates/keld-guard/src/lib.rs `mod unique_json` + comment stripping inside parse_manifest_at."
+    },
+    {
+     "finding": "KEL-17 is Done with AC '`keld migrate` UX specified (input, output, report format)' yet the only UX text is arch 04 §1, which A3 shows is wrong. Every X02 atom typed 'task' or 'prototype' needs a new approved spec first (AGENTS: features require an approved spec + Linear); the object does not state this gate.",
+     "severity": "medium",
+     "evidence": "Linear KEL-17 body (fetched 2026-10-06); `ls docs/specs` shows no migrate spec; docs/architecture/04-electron-compat.md §1."
+    },
+    {
+     "finding": "Zettlr's preload (`source/common/modules/preload/index.ts`) is a webpack entry (forge.config.js:79) and calls `ipcRenderer.sendSync` at import time; preload/renderer `electron` resolution is Keld's injected user-script (arch 04 §3 layer 3), not node_modules, so A1's alias scope should be stated as main-process only and A5's sync problem also exists renderer-side with no Bun primitive available.",
+     "severity": "low",
+     "evidence": "corpus/zettlr/forge.config.js:79-80; corpus/zettlr/source/common/modules/preload/index.ts:37,57,63,74."
+    }
+   ]
+  },
+  {
+   "lens": "Electron v44.4.5 semantics accuracy + corpus demand + slice sizing for X02 migrate-tooling. Method: fetched pinned docs (app, protocol, dialog, shell, auto-updater, webview-tag, context-bridge, process, session, structures/web-preferences, tutorial/sandbox, process-model, security) into scratchpad/x02docs; re-grepped draw.io/Zettlr clones; re-ran scratchpad prototypes (alias-probe, sync-probe) and ran two new experiments (package.json `npm:` alias through `bun install`; Bun auto-install fallback); read keld-cli verb.rs/flags.rs/error_object.rs/doctor.rs/mcp/server.rs, keld-guard lib.rs evaluate/grant_node/fix, keld-compat evidence.rs + lifecycle corpus fixture/runner, arch 02/03/04/06/07; read KEL-127, KEL-17, KEL-237 bodies via Linear MCP.",
+   "verdicts": [
+    {
+     "decision_id": "X02-A1",
+     "verdict": "survives",
+     "reason": "The headline mechanism holds: a package.json alias is one of the two migrate-edited files in arch 04 §2 (lines 40-41), and my experiment shows `bun install` honors `\"electron\": \"npm:left-pad@1.3.0\"` (installs left-pad@1.3.0 at node_modules/electron) after which BOTH Bun 1.4.2 and Node 26 resolve `require(\"electron\")` and `require(\"electron/package.json\")` to the alias target from app code AND from a node_modules dependency (scratchpad/x02-npm-alias3: `app: function left-pad | dep: function:left-pad`). Forge facts also support runtime-alias-over-bundler-alias: @electron/forge plugin-webpack builds main with `target: 'electron-main'` (electron externalized), preload with explicit externals `['electron','electron/renderer','electron/common',…]`, and renderers as `web` unless nodeIntegration (Zettlr's renderer uses `window.ipc`, source/pinia/config.ts:20) — so Zettlr bundles emit runtime `require('electron')`, exactly what the alias serves. However two sub-claims in the evidence list do NOT survive (see correction).",
+     "evidence": "[fact] scratchpad/x02-npm-alias3 run 2026-10-06 (bun 1.4.2, node 26.10): `+ electron@1.3.0`, node_modules/electron/package.json name=left-pad; bun run + node run both print alias target for app and dep. [fact] x02docs/forge-WebpackConfig.ts:230 `target: 'electron-main'`; :264-267 renderer target `web` unless nodeIntegration; :393-400 preload externals list. [fact] arch 04 §2 lines 40-43 (package.json + bunfig/bundler alias; 'Nothing else'). [fact] packages/@keld/electron/package.json: `\"type\":\"module\"`, exports only `\".\": \"./src/index.ts\"`.",
+     "correction": "(1) Drop 'tsconfig paths is the proven dev fallback for node_modules deps': re-running the author's own alias-probe, `main.ts` FAILED (`node_modules dep electron -> ERR: require() async module \".../shim/index.ts\" is unsupported. use \"await import()\"`) while `main2.ts` passed in the same session — the CJS-dep→ESM/TS-shim path is flaky; with a CJS shim (shimcjs/index.cjs) every variant passed. Because @keld/electron is ESM-only `.ts`, and draw.io's electron-log@5 (CJS `src/index.js`) and electron-updater@6 (CJS `out/main.js`) `require('electron')`, the shim MUST ship a CJS-requirable entry (dual exports or built CJS) before any alias mechanism is claimed. (2) `electron/main` via tsconfig paths fails today (`Cannot find module 'electron/main'` from an exports-map dep) — the `paths` map needs `electron/*` entries as well as the subpath exports you already list. (3) Add to the unknowns→facts: aliasing `electron` breaks electron-builder/forge, which read node_modules/electron's version to pick the binary, so the same package.json edit must remove `start: electron .` and the `release-*`/forge scripts. (4) Record the Bun auto-install trap (extra finding 1) as a migrate/doctor check."
+    },
+    {
+     "decision_id": "X02-A2",
+     "verdict": "survives",
+     "reason": "Every load-bearing citation checks out: KEL-127 body contains verbatim 'A future migration analyzer starts read-only, reports compatibility/security/engine/native-dependency blockers separately and emits reviewable reversible changes only after authorization'; arch 07 §4 line 90 marks `keld_migrate_analyze` read-only; `KeldErrorObject{code,message,cause?,fix,docs}` and `DoctorFinding{label,ok,detail,error?}` exist (error_object.rs:11-22, doctor.rs:43-53); `ReservedVerb::Migrate` → KELD-CLI-045 with tracking KEL-17 (verb.rs:24-76). The receiver-blind false positives are real: usage.json lists `WebContents.replace` 22 (draw.io) / 110 (Zettlr) and all 7 draw.io webview hits are `webviewTag: false` (electron.js 728,1090,1407,2210,3087) or the `will-attach-webview` preventDefault (2223). Never-execute-configs is justified: Zettlr forge.config.js requires child_process and `./scripts/get-git-hash.js`, which `spawn(command, { shell: true })`s git, and its `generateAssets` hook (forge.config.js:92-136) runs `downloadPandoc` → `spawn('./scripts/get-pandoc.sh')`.",
+     "evidence": "[fact] Linear KEL-127 description, 'Release/adoption evidence' paragraph (read 2026-10-06 via MCP). [fact] docs/architecture/07-agent-experience.md:90. [fact] corpus/drawio-desktop.usage.json members_top[0] = WebContents.replace count 22; zettlr.usage.json WebContents.replace 110. [fact] corpus/zettlr/forge.config.js:1-6, 92-136; scripts/get-git-hash.js:8. [fact] docs/specs contains only kel74-compat-evidence-schema.md — no migrate spec although KEL-17 is Done with AC '`keld migrate` UX specified'.",
+     "correction": "Sizing/precision fixes, not a reversal: (a) 'forge.config.js spawns processes at load' is imprecise — the pandoc spawn runs in the `generateAssets` hook during packaging; the load-time hazard is the required get-git-hash module. Keep the rule, fix the receipt. (b) The proposed slice (import-binding-aware lexical scan of JS/TS/Vue + package.json/tsconfig/bunfig/electron-builder JSON AND YAML + four blocker classes + committed 2128-row matrix) is not a tracer bullet: YAML (Zettlr electron-builder.yml) and any JS/TS tokenizer are new dependencies (review gate), and no approved spec exists (AGENTS.md: features require a spec; KEL-17 closed without one). First finishable slice: approved spec + verb goes live with `--json` emitting DoctorFinding rows for ONE blocker class (webPreferences security flags, exact-default semantics below) over electron-quick-start and a draw.io fixture, changing the KELD-CLI-045 fix text in the same PR. (c) The 'committed compat matrix owned by keld-compat' is today a 510 KB scratchpad TSV; decide its committed form/size before citing it as the classification source."
+    },
+    {
+     "decision_id": "X02-A3",
+     "verdict": "survives",
+     "reason": "Contradiction confirmed in the spec itself: arch 04 §1 line 29 prints `compat score: 91% — expected to run`, while §4 lines 152-157 say public percentages require a committed denominator and `score` omits `unweighted_percent` for `panel: product`; compat-scoreboard.md rules 1 and 4 allow only `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`; evidence.rs `DOCUMENTED_COMMITTED_PRODUCT_CORPORA: &[&str] = &[]` and only `score()` builds `Scoreboard`. Printing status counts labeled as a static estimate and never a percentage is the only shape consistent with all four sources.",
+     "evidence": "[fact] docs/architecture/04-electron-compat.md:29, 145-157. [fact] docs/engineering/compat-scoreboard.md header + rules 1-4. [fact] crates/keld-compat/src/evidence.rs:1420-1431, 757-834.",
+     "correction": "Widen the same-PR spec fix beyond §1: arch 04 line 7 ('publish per-app compat scores'), §4 line 145 ('per-corpus-app score'), §6 line 191 ('the compat score trend is a release gate'), arch 07 §4 line 90 (`keld_migrate_analyze` 'returns compat report (score, per-API status, fix list)'), and arch 06 §2 verb table line 279 ('compat report') all carry the same 'score' wording and must be reworded to counts/claim-line in the same change or the code/spec drift rule is violated again."
+    },
+    {
+     "decision_id": "X02-A4",
+     "verdict": "survives",
+     "reason": "Policy matches arch 03 §3 (v0: no dev-permissive profile or recorder; migrate seeds from static analysis) and §2's grant vocabulary; `DenyReason::fix()` really prints `Add a grant at `{json_pointer}` in keld.permissions.jsonc.` / `Append \"{requested}\" to …` (lib.rs:340-359); `parse_manifest` caps at 64 KiB with unique-key JSONC (lib.rs:64, 594-662), so TODO comments round-trip. `evaluate` is generic over any dotted `app.*` capability whose node is a non-empty array of strings (grant_node + path_in_scope, lib.rs:699-727), so `shell.open`, `net.connect`, and `system` literal tokens are mechanically evaluable with the live code (net.connect already exercised in tests at lib.rs:1514). Corpus literals confirmed: draw.io getPath 'userData'/'documents' (electron.js 58,3796,4175), 14 unique `ipcMain.on` channels, 3 openExternal; Zettlr 40 getPath, 7 openExternal, `spawn(..., { shell: true })` at run-shell-command.ts:21, get-program-version.ts:35, importer/index.ts:128.",
+     "evidence": "[fact] docs/architecture/03-security.md:205-215, 85-100. [fact] crates/keld-guard/src/lib.rs:340-359, 594-662, 699-727, 1101-1111. [fact] crates/keld-cli/src/mcp/server.rs:83-87 (`keld_permissions_explain` … 'A present `channel` returns KELD-MCP014 (v0 does not evaluate channel grants)'). [fact] corpus greps listed in reason.",
+     "correction": "(1) `windows.<w>.channels` grants have NO live evaluator: `evaluate` reads only `manifest.app` and the MCP tool refuses `channel` with KELD-MCP014 — prototype 3's 'every literal grant evaluated allow by `evaluate`' is false for channels; label them spec-shaped, unverified seeds. (2) arch 03 §3 literally says migrate seeds 'autoUpdater → net to feed URL'; A4 moves the feed to keld.build.ts, so that sentence must change in the same PR (spec/code drift rule). (3) draw.io does call `autoUpdater.setFeedURL({provider:'github', repo:'drawio-desktop', owner:'jgraph', channel})` at runtime (electron.js:2078) in addition to builder `publish: {provider: github}` — the analyzer must classify a literal provider object as build-time-mappable, not as the ✘ `setFeedURL(userInput)` case. (4) `evaluate` matches `$VARS` literally (doc comment lib.rs:681-683); `$APPDATA/**` only allows paths the broker has already canonicalized to `$APPDATA/…`, and no `$LOGS` root exists in the §2 sketch — mark `logs` seeding [unknown] rather than implied."
+    },
+    {
+     "decision_id": "X02-A5",
+     "verdict": "unresolved",
+     "reason": "The need is real only for Zettlr: source/main.ts:35 calls `app.requestSingleInstanceLock()` then `app.exit(0)` before `whenReady`, and app.md:1077 says it `Returns boolean`. But the draw.io fact is wrong: electron.js:1718 sits at brace depth 2 inside `app.whenReady().then(() => {` (opened at line 987), i.e. AFTER ready, so the 'same pattern' claim is refuted. The blocking-CALL half is unproven as a design: the sync-probe shows Bun 1.4.2 main-thread `Atomics.wait` returns `ok` (I re-read main.ts/worker.ts; the 58 ms is the worker's 50 ms `setTimeout`, not a latency figure), but the worker that would feed the SharedArrayBuffer has no channel to the host — arch 02 says the host accepts 'one one-use platform bootstrap per Bun generation … there is no lifecycle-side listener or second HELLO within a generation' and arch 06 gives Bun only `KELD_APP_LINK`. So either the worker must own the sole kipc transport (main thread proxies everything) or the host contract changes; neither is named. Boot-facts-at-spawn (part 1) is plausible but also unspecified.",
+     "evidence": "[fact] corpus/zettlr/source/main.ts:35-42. [fact] awk brace count from drawio-desktop/src/main/electron.js:987 to 1718 = depth 2; enclosing top-level opener before 1718 is `app.whenReady().then(() =>` at 987. [fact] x02docs/app.md:1073-1090 (boolean; 'exit immediately'). [fact] docs/architecture/02-ipc.md:88-93; docs/architecture/06-runtime-and-tooling.md:8, 188, 303. [fact] prototypes/sync-probe/worker.ts uses `setTimeout(…, 50)`.",
+     "correction": "Missing evidence to settle: a Bun prototype where the WORKER owns the kipc link (HELLO + Ready) and the main thread issues one blocking CALL via Atomics.wait with a deadline, measured on macOS (then Windows/Linux); plus a host-side statement of which boot facts (isPackaged, resourcesPath, path catalog, single-instance verdict) can be minted before Bun spawn. Also record the divergence: if the host decides single-instance before spawning Bun, the second instance never runs app code, whereas Electron runs everything up to the lock call (Zettlr `handleExitArguments()`; draw.io `--version/--help` handling precedes its lock) — this must be a documented ▲, not a silent change. Fix the draw.io citation to 'post-ready'."
+    },
+    {
+     "decision_id": "X02-A6",
+     "verdict": "refuted",
+     "reason": "'Extend KEL-237's manifest with app entries' conflicts with both KEL-237's own scope and the runner's contract. KEL-237's body: 'The current bounded lifecycle corpus must not be represented as broad Electron/application compatibility or as the median-app product denominator.' The runner hard-codes a two-entry `test_path` allowlist (`RUST_TEST_PATH`/`TS_TEST_PATH` consts, lifecycle_corpus.rs:18-19, asserted at :178) and requires each cell to be a named, executed test case in those files (:214-281), with the manifest `include_bytes!`-ed from in-crate fixtures and digest-checked (:16-17, 117) — an app-run cell (`keld migrate --write && keld dev`) has no place in that shape, and arch 04 §6's 'separate repo, gitignored fixtures' contradicts in-crate exact-bytes hashing. The sequencing half SURVIVES: draw.io needs `session.defaultSession.webRequest` (electron.js 994, 1010), electron-updater, 7-8 `file:`/loadURL sites; Zettlr needs `protocol.handle('safe-file')` with no `registerSchemesAsPrivileged` (custom-protocols.ts:55-58), 5 `sendSync` call sites + wrapper (preload/index.ts:37-74, pinia/config.ts:28,49), `sandbox: false` x2 (splash-screen.ts:65, onboarding-window.ts:72), and a direct `Nodehun.node` import — none Tier-1 — so the 'quick-start + 3 corpus apps run unmodified' exit is unreachable with these two apps. `keld dev` indeed takes no flags (arch 06:297-298). Committed product list is `DOCUMENTED_COMMITTED_PRODUCT_CORPORA: &[&str] = &[]`.",
+     "evidence": "[fact] Linear KEL-237 description (read 2026-10-06). [fact] crates/keld-compat/tests/lifecycle_corpus.rs:16-19, 155-200, 214-281. [fact] crates/keld-compat/fixtures/lifecycle-corpus/corpus.json + denominator.json (panel showcase, corpus_id electron-lifecycle-v0). [fact] docs/architecture/04-electron-compat.md:189-192. [fact] crates/keld-compat/src/evidence.rs:1422. [fact] corpus greps cited in reason.",
+     "correction": "Reuse the SCHEMA and runner pattern, not the manifest: a new manifest with its own `corpus_id` (e.g. electron-apps-v0) and `panel: product`, KEL-74 denominator/v1 cells keyed by OperationKind (`activation` first), and a runner extension that adds an app-run cell kind (artifact digest + OS + `keld dev` activation observable) instead of a named Rust/Bun test case. 'Who commits' is a concrete code+doc change: add the id to `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` and to compat-scoreboard.md under review. Reconcile arch 04 §6 (separate repo/gitignored) with the exact-bytes digest rule before writing the harness. Keep the analyzer output as a lead attached to the row — confirmed correct, OperationKind has no 'analysis' value (evidence.rs:270-290)."
+    }
+   ],
+   "extra_findings": [
+    {
+     "severity": "high",
+     "finding": "Bun auto-install silently substitutes the REAL Electron package when the alias is not installed. With no node_modules present, `require(\"electron\")` under Bun 1.4.2 auto-installed electron@44.5.1 from the registry into ~/.bun/install/cache and returned the binary path string (`/Users/.../cache/electron@44.5.1@@@1/dist/Electron.app/Contents/MacOS/Electron`). A migrated app run before `bun install` (fresh clone, CI) gets Electron's stub, not @keld/electron, with no error. `keld migrate --write` should pin the alias AND `keld dev`/`keld doctor` should verify node_modules/electron resolves to @keld/electron (or write `bunfig.toml` `[install] auto = \"disable\"`).",
+     "evidence": "scratchpad/x02-autoinstall run 2026-10-06: `string <home>`; arch 04 §3 lines 108-110 already notes the install-cache behavior for bunfig alias."
+    },
+    {
+     "severity": "high",
+     "finding": "@keld/electron is not CJS-requirable in a stable way. It is `\"type\":\"module\"` with a single `.ts` export; a CJS node_modules dependency doing `require('electron')` through tsconfig paths failed with `require() async module … is unsupported. use \"await import()\"` in one of two runs today (the author's alias-probe main.ts), while a CJS shim passed every time. draw.io's electron-log@5 (CJS src/index.js) and electron-updater@6 (CJS out/main.js) take exactly that path; electron-store@11 and electron-context-menu@5 are ESM (`npm view … type` = module). Any alias decision (A1) is moot until the shim publishes a synchronous CJS entry.",
+     "evidence": "prototypes/alias-probe re-run 2026-10-06 (main.ts ERR, main2.ts ok, main-cjs.cjs ok, shimcjs variant ok); packages/@keld/electron/package.json exports; `npm view electron-log@5.4.4 exports`, `npm view electron-updater@6.8.10 main`."
+    },
+    {
+     "severity": "medium",
+     "finding": "Several '[fact]' corpus numbers in the object are inflated by the receiver-blind scan and do not match the source: draw.io electron.js has 7 `file://` lines (object: 11), 9 `dialog.show*` sites (object: 15), 4 `isDestroyed()` (object: 6), 9 `.destroy()` (object: 10), and its `requestSingleInstanceLock` is post-ready (inside `app.whenReady().then`, line 987→1718), not pre-ready. Zettlr sendSync is 5 call sites plus the preload wrapper definition. Relabel scan-derived counts as [lead] until the binding-aware scanner exists, or the migrate report will inherit the same error bars.",
+     "evidence": "grep -c on corpus/drawio-desktop/src/main/electron.js; awk brace depth 987→1718 = 2; corpus/zettlr grep sendSync."
+    },
+    {
+     "severity": "medium",
+     "finding": "Aliasing `electron` → shim breaks the app's existing toolchain in the same step: electron-builder and electron-forge read node_modules/electron/package.json to select the Electron binary, so `start: electron .`, `release-*` (draw.io) and forge `start/package/make` (Zettlr) fail immediately after the package.json edit. migrate must rewrite/remove those scripts in the same edit and the report must say so; otherwise the 'five files, nothing else' promise is observably false on the first `npm run`.",
+     "evidence": "corpus/drawio-desktop/package.json scripts; corpus/zettlr/forge.config.js plugin-webpack config; forge-WebpackConfig.ts externals."
+    },
+    {
+     "severity": "medium",
+     "finding": "Host-owned single-instance admission (A5 part 1) changes observable pre-lock behavior: Electron executes app code in the second instance up to `requestSingleInstanceLock()`; Zettlr runs `handleExitArguments()` first and draw.io handles `--version`/`--help`/CLI export before its (post-ready) lock. If the Keld host refuses to spawn Bun for a second instance, those CLI paths never run. Must be recorded as ▲ with a conformance ordering fixture, not treated as equivalent.",
+     "evidence": "corpus/zettlr/source/main.ts:28-35; corpus/drawio-desktop/src/main/electron.js:1700-1720; x02docs/app.md:1079-1090."
+    },
+    {
+     "severity": "medium",
+     "finding": "The analyzer must follow preload re-exports to count renderer IPC demand: Zettlr renderers are bundled with webpack target `web` and call `window.ipc.sendSync` / `window.ipc.invoke` (preload exposes them via contextBridge), so a scanner keyed on `ipcRenderer.` in renderer files under-counts sendSync/invoke sites and mis-attributes them to the preload only.",
+     "evidence": "corpus/zettlr/source/pinia/config.ts:20,28,49; preload/index.ts:37; forge-WebpackConfig.ts:264-267."
+    },
+    {
+     "severity": "low",
+     "finding": "Adjacent spec/code mismatch the migrate PR will touch: arch 07 §4 says `keld_permissions_explain` 'reads recorder output (dev)' while the live tool wraps `keld_guard::evaluate` and refuses `channel` (KELD-MCP014); and arch 03 §3's 'dialog → fs read of chosen paths' is phrased as a static seed although A4 (correctly) makes dialog paths runtime permits. Both sentences need the same-PR rewording as the 91% line.",
+     "evidence": "docs/architecture/07-agent-experience.md:92; crates/keld-cli/src/mcp/server.rs:83-87; docs/architecture/03-security.md:214-215."
+    },
+    {
+     "severity": "low",
+     "finding": "Electron doc receipts in the object check out against v44.4.5 raw docs: webPreferences `nodeIntegration` default false, `contextIsolation` defaults true, `sandbox` default true since Electron 20 and auto-disabled by `nodeIntegration: true`, `webviewTag` defaults false, `webSecurity` default true, preload 'will always have access to node APIs'; `app.exit` omits before-quit/will-quit; `registerSchemesAsPrivileged` pre-ready/once with session-bound protocol note; `ipcMain.handle` errors serialize only `message`; `sendSync` blocks the renderer; `app.getPath` accepts exactly home, appData, assets, userData, sessionData, temp, exe, module, desktop, documents, downloads, music, pictures, videos, recent, logs, crashDumps; autoUpdater has no Linux support and requires signing on macOS; `shell.openExternal` returns Promise<void> with `activate` macOS-only. No semantic claim in the semantic_traps section was found wrong.",
+     "evidence": "scratchpad/x02docs/*.md fetched 2026-10-06 from raw.githubusercontent.com/electron/electron/v44.4.5 (web-preferences.md:4-5,22-27,46-49,104-106,117-118; app.md:526-533,1073-1090, getPath list; protocol.md:72-78,31-50; ipc-main.v44.4.5.md:137; ipc-renderer.v44.4.5.md:197,226; auto-updater.md:13-31; shell.md:46-70)."
+    }
+   ]
+  }
+ ],
+ "refuter_verdicts_batch2": [],
+ "decision_packets": [
+  {
+   "key": "PANEL-P1",
+   "decision": "Whether @keld/kipc may keep its single authenticated link inside a Bun Worker for the whole session (SharedArrayBuffer/Atomics mailbox, in-order EVENT replay after wake) so the Bun main thread can park for showMessageBoxSync-class calls, or whether synchronous main-process emulation is a scored fail cell and draw.io is published as 'config + 1 edit'.",
+   "classification": "needs-experiment",
+   "milestone": "first-proof",
+   "facts": [
+    "FACT (Linear availability): Linear team KELD was reachable read-only in this session; get_issue, list_comments and list_issues all succeeded on 2026-10-06. The MemPalace MCP server failed to connect (ENOENT mempalace-mcp) and was not used.",
+    "FACT (re-run by me 2026-10-06, Bun 1.4.2, macOS 26.5.1, probe wayfinder/electron-compat/probes/park-probe/main.ts): main thread parked in Atomics.wait for 1511 ms saw 0 bytes; the server stalled after 9 writes at exactly 8192 accepted bytes; 8192 bytes arrived only after the park ended.",
+    "FACT (sysctl, 2026-10-06): net.local.stream.sendspace=8192 and recvspace=8192 on this Mac.",
+    "FACT (re-run by me, sync-probe): Atomics.wait on the Bun main thread returns 'ok' with value 42 after 53.55 ms when a Worker stores and notifies; main-thread parking with a worker wake works in Bun 1.4.2.",
+    "FACT (keld@b4b907c3 packages/@keld/kipc/src/transport.ts): the transport is a Bun.connect event-loop client (lines 953/958) with 'async receive' (764); a grep for Atomics, SharedArrayBuffer, 'new Worker' and readSync in that file returns no hits.",
+    "FACT (keld@b4b907c3 docs/architecture/02-ipc.md:378-389): APP_LINK_IO_DEADLINE is a 5 s SO_RCVTIMEO/SO_SNDTIMEO applied on writes, expiry is KELD-IPC-006, and 'the readiness-driven reader (and credit windows) remain later work'. Lines 248-257 label credit windows in GRANT frames as destination work.",
+    "FACT (keld@b4b907c3 crates/keld-ipc/src/frame.rs:46-47): FrameKind::Grant = 9 exists ('Grants flow-control credit on a channel'); the only other use found in crates/keld-ipc/src is a header-validation test (receive.rs:857).",
+    "FACT (crates/keld-ipc/src/link.rs tests): reader-side stall tests exist (interruptible_read_stalled_mid_header_is_ipc_006, plain_validated_read_closes_the_byte_trickle_gap); my grep found no test that drives the host WRITER against a non-draining peer.",
+    "FACT (corpus drawio-desktop@2edf9fb src/main/electron.js:851-876): the only close path with unsaved changes calls dialog.showMessageBoxSync(mainWindow, ...) inside the 'isModified-result' handler, with the source comment 'Can't use async function here because it crashes on Linux when win.destroy is called'.",
+    "FACT (Linear KEL-80, fetched 2026-10-06): status Backlog, priority High, no assignee, no blockers. Owner comment by GYLDLAB dated 2026-08-20: 'post-v0 / YAGNI until KEL-75 T3 ... has an approved spec that reuses kipc — do not pick up'. Comment dated 2026-09-26 narrows a product-spine slice that KEL-142 may consume. Its acceptance already lists host-enforced credits, slow-consumer and zero-credit cases.",
+    "FACT (Linear KEL-97, fetched 2026-10-06): status Backlog, blocked by KEL-75 (In Progress) and KEL-133 (Done); its scope is binding the host-owned app-link to a RoleRegistry-minted principal, not TypeScript transport ownership.",
+    "FACT (Linear KEL-136, fetched 2026-10-06): Done, assignee Amisha Ramani; it landed the canonical TypeScript app-link transport (product-status.tsv row package.keld-kipc cites KEL-98, KEL-136).",
+    "FACT (publish_plan.json): F06-T2 (#478), F06-EPIC (#476), X02-EPIC (#496) and PANEL-D18 (#438) reference this gate; no ticket lists PANEL-P1 in blocked_by_keys."
+   ],
+   "inferences": [
+    "INFERENCE: a parked Bun role would make the Rust host writer return KELD-IPC-006 after about 5 s once 8 KiB is queued. The stall is measured, but the probe server was Bun; the host-side expiry has not been observed against the Rust writer.",
+    "INFERENCE: host credit frames (arm C) cannot decide the first proof, because credits stop the writer from dying but cannot deliver a REPLY to a parked reader; and if arm B passes the worker keeps draining, so the writer never stalls. Arm C belongs to KEL-80's existing credit acceptance.",
+    "INFERENCE: arm B moves the bound rather than removing it. A worker that drains during a multi-minute modal must buffer EVENTs somewhere; an unbounded buffer contradicts KEL-80's 'one authoritative budget for pending bytes and calls'.",
+    "INFERENCE: the ticket's 'sync RTT <= 2x raw' is a diagnostic only; 1,000 calls in one session is below the architecture 01 section 5.1 floor for a publishable figure."
+   ],
+   "unknowns": [
+    "UNKNOWN: whether a Bun 1.4.2 Worker can own the Bun.connect socket for the whole session with no frame loss, and hand REPLY bytes to a parked main thread through a SharedArrayBuffer ring.",
+    "UNKNOWN: whether 10,000 EVENTs buffered during a park replay to main-thread listeners in order with zero drops or duplicates.",
+    "UNKNOWN: what the Rust host writer actually returns, and after how long, when the peer stops draining.",
+    "UNKNOWN: the EVENT byte rate toward a role during a real modal (window move, resize, focus mirrors) and therefore the buffer bound and overflow behaviour arm B needs.",
+    "UNKNOWN: whether a generation retire or link close issued during a park wakes main with a typed error inside the deadline and without a fabricated 'closed'.",
+    "UNKNOWN (owner routing): which Linear issue would host the follow-on transport spec. KEL-80 carries a 'do not pick up' owner comment and KEL-97's scope is host-side principal binding, so the ticket's 'KEL-80/KEL-97 spec' sentence has no confirmed owner."
+   ],
+   "alternatives": [
+    {
+     "option": "Run a trimmed S0 now: arm A as negative control against the Rust host writer, arm B (worker-owned single link) as the discriminating arm, arm E (revoke or link close during park). Park arm C on KEL-80.",
+     "cost": "About one to two days of scratch prototyping; no repository writes.",
+     "new_invariant": "None yet. If B passes, the follow-on spec would add: exactly one kipc link per role generation, owned by a Worker for the whole session, with a bounded ordered mailbox.",
+     "invariant_at_risk": "None in the experiment. The follow-on spec touches the wire-protocol and public-API review gates."
+    },
+    {
+     "option": "Run the ticket as written, including arm C host credit frames through FrameKind::Grant in a keld-ipc test.",
+     "cost": "Adds Rust-side credit semantics work that the first proof does not need and that KEL-80 already owns as acceptance.",
+     "new_invariant": "Credit-0 behaviour on the host writer would be defined by a prototype instead of its owner's spec.",
+     "invariant_at_risk": "One rule, one owner (KEL-80 credit semantics); YAGNI for the first proof."
+    },
+    {
+     "option": "Skip the experiment; record showMessageBoxSync as a fail cell and publish draw.io as 'config + 1 edit' (async showMessageBox in the isModified-result handler).",
+     "cost": "Gives up the config-only claim for the first proof without evidence that it is unreachable; Zettlr's six sendSync sites stay unresolved.",
+     "new_invariant": "Sync main-process APIs are documented-never until a later spec.",
+     "invariant_at_risk": "Architecture 02 section 5 says blocking sync calls must exist; the scoreboard would carry a tracked fail cell."
+    },
+    {
+     "option": "Inverse ownership as a fallback arm only if B fails: keep the transport on the Bun main thread and evaluate the app's main module in a Worker that parks.",
+     "cost": "No transport-ownership change, but app code sees isMainThread=false and worker-specific process semantics; compatibility hazards for electron-store, electron-log and any native module.",
+     "new_invariant": "App main code never runs on the role's main thread.",
+     "invariant_at_risk": "Boot-static synchronous-at-import contract and Node-compat expectations of corpus dependencies."
+    },
+    {
+     "option": "Second authenticated kipc link owned by a Worker.",
+     "cost": "Refused on the map already: it mints a second principal for the same role generation.",
+     "new_invariant": "Two links per role generation.",
+     "invariant_at_risk": "KEL-75 one-link-one-generation binding; principal minting is architecture."
+    }
+   ],
+   "recommendation": "Run the trimmed S0 (arms A, B, E) now and park arm C on KEL-80. Pass means, under a 10 s main-thread park with the host writing 100 x 64-byte EVENTs per second plus one 10,000-EVENT burst: the writer accepts every byte with no timeout, a sync CALL issued before the park returns its REPLY value while parked, the 10,000 EVENTs replay in sequence order with zero drops or duplicates, and a link close during the park wakes main with a typed error inside the deadline. Arm A under the same load must reproduce the 8,192-byte stall, and removing the worker's Atomics.notify must make the sync CALL time out, so the oracle is proven to bite. If B fails, test the inverse-ownership arm once before scoring the cell as a fail and re-scoring draw.io as 'config + 1 edit'. Treat the buffer bound and overflow behaviour as a required output, not an afterthought.",
+   "falsifier": "Arm B shows any writer stall or KELD-IPC-006, any dropped, duplicated or reordered EVENT, a REPLY that cannot reach the parked main thread, or a need for a second socket. Separately, parking arm C is wrong if arm B's buffer cannot be bounded without host-side credit.",
+   "reversible": "Yes. The experiment is scratch-only and writes nothing to Keld. The decision it feeds (a worker-owned transport spec) is expensive to reverse once landed, which is why the gate comes first.",
+   "missing_evidence": "Per-arm results against real @keld/kipc frames and the Rust host writer; the measured EVENT byte rate during a modal; the buffer bound and overflow outcome; a named Linear owner for the follow-on spec.",
+   "next_action": "Owner: the orchestrator (single writer for the map). Action: add the node below to the Prompt Tracker at prompts/NEW/ipc/38-electron-compat-s0-link-drain-gate.md and dispatch it on the Mac. First observable completion check: an artifact s0-link-drain.json exists with one row per arm (A, B, E), and arm A's row shows stalled_at_bytes=8192, which proves the negative control reproduced before B is read.",
+   "owner": "KEL-80 'Bridge: bounded virtual channels and traffic-replay conformance' (Linear, fetched 2026-10-06: Backlog, High, no assignee, owner comment 'do not pick up' until a KEL-75 T3 spec) for backpressure and transport contract; KEL-97 (Backlog, blocked by KEL-75 In Progress and KEL-133 Done) for link-to-principal binding; KEL-75 (In Progress) for principal semantics. Code owners: packages/@keld/kipc (landed under KEL-136, Done) and crate keld-ipc. No owner is confirmed for the follow-on transport spec.",
+   "prompt_tracker_node": "MODEL: GPT-5.6 Sol / Codex\nEFFORT: high\nHARNESS: direct Codex, single session, disposable no-push Keld checkout; no subagents\nGRAPH_NODE: new-ipc-38-electron-compat-s0-link-drain-gate\nGRAPH_ROLE: inspect\nSESSION: NEW\nOS: macos / real Mac (AF_UNIX stream buffer sizes are OS-specific; the result is macOS-only evidence)\nLINEAR: KEL-80 (read-only research; do not change or reopen status), KEL-97, KEL-75 (coordination only)\nPIN: keld=b4b907c3ef0e08854f24827cf08283ee625146e1; refetch origin/main and stop if packages/@keld/kipc/src/transport.ts or crates/keld-ipc/src/link.rs changed; Bun 1.4.2\nSOURCE: prompts/NEW/ipc/38-electron-compat-s0-link-drain-gate.md\nREADS: root AGENTS.md; crates/keld-ipc/AGENTS.md; docs/architecture/02-ipc.md sections 5 and 7; docs/specs/kel75-principalized-bun-child-roles.md; packages/@keld/kipc/src/transport.ts; KEL-80 and KEL-97 with comments; gyldlab/keld#391 and #418; park-probe and sync-probe on branch research/electron-compat-map\nWRITES: one scratch prototype directory outside every repository; no Keld, Linear or GitHub writes\nSINGLE_WRITER_KEYS: none\nREQUIRES_ARTIFACTS: park-probe/main.ts and sync-probe/{main,worker}.ts from research/electron-compat-map\nPRODUCES_ARTIFACTS: s0-link-drain.json (keld.execution-artifact/v1) plus the prototype sources and raw per-arm logs\nAFTER: none\nNEXT: new-os-macos-05-electron-compat-s1-close-veto-oracle\nDO_NOT_RUN_WITH: none\n\nRole: Prototype evidence for one question. You do not design the transport, write a spec, or touch product code.\n\nGoal: Decide with measurements whether a single kipc link owned by a Bun Worker for the whole session lets the Bun main thread park without stalling the link, and still deliver a sync REPLY and replay EVENTs in order.\n\nSuccess criteria:\n- Arm A (control, socket on main thread): under a 10 s Atomics.wait park, with the peer writing 100 x 64-byte EVENT frames per second, record bytes accepted before the writer stalls (expected 8192) and the Rust host writer's exact error and elapsed time (expected KELD-IPC-006 near the 5 s APP_LINK_IO_DEADLINE). State which entry point drove the Rust writer; if none exposes the write deadline publicly, report that instead of copying code.\n- Arm B (socket in a Worker, SharedArrayBuffer ring, Atomics.notify): same load plus one 10,000-EVENT burst. Pass = every byte accepted, no writer timeout, a sync CALL issued before the park returns its REPLY value while parked, and all 10,000 EVENTs reach main-thread listeners in sequence order with zero drops or duplicates.\n- Arm E: the host closes the link (or retires the generation) mid-park. Pass = main wakes with a typed error inside the deadline and no 'closed' event is fabricated.\n- Report the ring/buffer bound you used, the EVENT bytes buffered during the park, and what happens at overflow.\n- Sync round-trip p50/p99 over 1,000 calls is recorded as a diagnostic only, never as a claim.\n- Every frame is a real @keld/kipc frame; one link only. A second socket for the role is a fail, not a design.\n\nPrerequisites: Bun 1.4.2; a Rust toolchain; the pinned Keld checkout read-only. No approval is needed for scratch work; none is granted for product writes.\n\nResources: the scratch directory only. Unix socket paths must stay under the 104-byte limit.\n\nDelegation: none.\n\nVerification: negative control 1, arm A must show the stall (if it does not, the load is wrong; stop). Negative control 2, remove the worker's Atomics.notify and confirm the sync CALL times out. Negative control 3, drop one EVENT in the replay path and confirm the order check fails. No sleeps as synchronization.\n\nOutput: s0-link-drain.json with one acceptance row per arm (status passed or failed, observation, command, exit code), the three negative-control rows, the buffer-bound finding, and a one-paragraph verdict: 'B passes', 'B fails: reason', or 'undetermined: missing fact'. Findings go to the orchestrator, who alone posts to Linear or GitHub.\n\nStop rules: pinned files changed on origin/main; Bun is not 1.4.2; arm A does not reproduce the stall; the same arm fails for the same reason twice (preserve the evidence and stop); any step would need a write outside the scratch directory."
+  },
+  {
+   "key": "F01-A4",
+   "decision": "Under the strict profile, `userData` and `logs` live inside the KEL-78 reviewed role-private container, where raw synchronous `node:fs` works by OS containment with no guard grant; a `node:fs`-over-FsBroker facade is not the owner of `userData`.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "FACT: The approved KEL-78 spec says a guard allow MUST NOT widen the child's OS profile, and its authority table has the row 'Files outside a reviewed role-private container | deny'. Source: <keld repo>/docs/specs/kel78-strict-profile-sandbox.md, section 'Authority surface the profile must cover', read at main b4b907c3.",
+    "FACT: The same spec requires role-private path success as a positive control ('create/read of a role-private path succeeds'), and its Linux candidate must 'still allow the role-private paths that role is supposed to use'. Source: kel78-strict-profile-sandbox.md, Linux candidate item 2 and the test-matrix row 'Direct filesystem'.",
+    "FACT: The Linux strict launcher already bind-mounts a role root read-write into the sandbox (`--bind role_root /app`). Source: <keld repo>/crates/keld-runtime/src/linux_strict.rs (SANDBOX_ROLE_ROOT).",
+    "FACT: `legacy` is an explicit Keld profile that runs 'authenticated + guarded, unsandboxed' with the forfeit printed, and the config key that declares it 'does not exist today'. Source: kel78-strict-profile-sandbox.md profile table and 'Capabilities / manifest' paragraph.",
+    "FACT: draw.io constructs electron-store at module top level and calls `app.getPath('userData')` before ready. Source: corpus/drawio-desktop@2edf9fb src/main/electron.js lines 30 and 58.",
+    "FACT: electron-store 11.0.2 (draw.io pins ^11.0.2) sets `defaultCwd: app.getPath('userData')` in the main process and extends Conf. Source: https://raw.githubusercontent.com/sindresorhus/electron-store/v11.0.2/index.js, retrieved 2026-10-06 through a summarising fetch.",
+    "FACT: Architecture 05 section 3 maps the `fs+` module to a 'strict-profile virtual Node-fs/watcher facade; raw access only in an explicit sandbox-off legacy tier'. Only `fs.rs` (brokered fs.read/fs.write) exists in keld-native. Source: <keld repo>/docs/architecture/05-webview-and-native.md row `fs+`; crates/keld-native/src.",
+    "FACT: Electron documents `userData` as 'by default is the appData directory appended with your app's name', with appData `~/Library/Application Support` on macOS. Source: https://raw.githubusercontent.com/electron/electron/v44.4.5/docs/api/app.md lines 622-626, retrieved 2026-10-06.",
+    "FACT: The first proof is draw.io on macOS under the explicit legacy profile; strict-profile draw.io is 'its own later spec consuming KEL-78/KEL-140/KEL-143'. Source: wayfinder/electron-compat/panel/synthesis.md lines 64 and 150.",
+    "FACT: KEL-78 is In Progress, assignee GYLDLAB, updated 2026-10-05. Its macOS App Sandbox task T2c is unchecked in the spec; Windows T3 and Linux T4 are checked. Source: Linear KEL-78, fetched 2026-10-06; kel78 spec task list.",
+    "FACT: F01-T4 (#452, first-proof boot facts) and X02-T3 (#499) are both blocked by F01-A4 in the published plan. Source: publish_plan.json blocked_by_keys."
+   ],
+   "inferences": [
+    "INFERENCE: Because electron-store reads and writes synchronously at import, a broker facade for `userData` would need blocking kipc from the Bun main thread. That depends on the unproven worker-owned transport (PANEL-P1, #418). The container option needs no IPC at all.",
+    "INFERENCE: The architecture 05 `fs+` facade and the container option do not conflict. The facade is the later owner for user-chosen paths outside the container (dialog-minted grants); the container owns the app's own private state.",
+    "INFERENCE: Under the macOS App Sandbox the home directory is redirected into the container, so Electron's default `~/Library/Application Support/<name>` layout would resolve inside the container without a Keld-specific path scheme. Not verified on a shipped artifact.",
+    "INFERENCE: The first proof needs only the legacy path value (Electron's documented default, host-minted in F01-T4), so the F01-T4 and X02-T3 edges to this ticket over-block the first proof."
+   ],
+   "unknowns": [
+    "UNKNOWN: Whether each OS mechanism gives a per-user, persistent, update-surviving writable directory inside the role-private container. The Linux role root today looks like the staged code root; the Windows spec names 'reviewed ACLs on runtime, profile, and data objects' but no userData location; macOS T2c is unshipped.",
+    "UNKNOWN: Whether a migrated app must see its existing Electron userData (for example `~/Library/Application Support/draw.io`), which sits outside a strict container. This is a product choice for the later strict spec.",
+    "UNKNOWN: Whether the KEL-78 row 'Persistence / update staging / signing keys | deny' needs wording that separates role-private app data from persistence of code or update state.",
+    "UNKNOWN: Whether non-primary roles (KEL-75) share the primary role's userData container or reach it only through the broker."
+   ],
+   "alternatives": [
+    {
+     "option": "(a) Role-private container owns userData and logs under strict",
+     "cost": "A KEL-78 spec amendment naming a persistent per-user data location per OS, plus hostile and positive-control rows per OS. Existing Electron data is not visible without a one-time host-brokered import.",
+     "new_invariant": "userData is role-private storage reached by OS containment; it is never an `app.fs.*` grant scope.",
+     "invariant_at_risk": "The KEL-78 'Persistence ... deny' row, unless the amendment states that role-private data is not code-loading or update persistence."
+    },
+    {
+     "option": "(b) `node:fs`-over-FsBroker facade for strict roles, with userData as a grant root",
+     "cost": "A new large owner with its own spec. Every synchronous fs call at import becomes a blocking kipc round trip, gated on PANEL-P1. Bun's node:fs surface has to be re-implemented and differentially tested.",
+     "new_invariant": "All strict-role file access is mediated by keld-guard through the host broker.",
+     "invariant_at_risk": "The measured link-stall finding (a parked Bun main thread stalls the link after 8 KiB) and 'no second transport per role'. Risk of a parallel fs implementation diverging from Bun."
+    },
+    {
+     "option": "(c) Generated `app.fs.*` grant root only, with raw node:fs (the original research proposal)",
+     "cost": "None to write, but it does not work.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Directly contradicts KEL-78: a grant does not widen the OS profile, so the write is OS-denied. Refuted by the invariants-lens refuter."
+    }
+   ],
+   "recommendation": "Choose (a) and park it. `keld migrate` should print, for strict: 'userData is role-private storage; raw node:fs outside it is OS-denied; call sites touching other paths need the fs+ facade or a dialog-minted grant, otherwise declare legacy'. For legacy it should print: 'userData = Electron default path, raw node:fs, containment forfeited'. Separately, narrow the F01-T4 and X02-T3 edges so the first proof is not blocked: under legacy, F01-T4 needs only the host-minted Electron-default path value.",
+   "falsifier": "Any one of: an OS strict mechanism that cannot provide a persistent per-user writable directory inside the container (for example macOS T2c fails to start Bun with a writable container); PANEL-P1 shows blocking kipc is cheap and safe and the owner prefers one mediated path; a corpus app whose userData must be shared live with another principal.",
+   "reversible": "Yes. Nothing is implemented, the first proof runs under legacy and does not depend on it, and both options sit behind the same `getPath('userData')` value. Reversing after strict ships would move user data, which costs a migration.",
+   "missing_evidence": "The per-OS persistent data location inside the role-private container (a KEL-78 amendment), and the product choice on importing existing Electron userData. Neither is needed for the first proof.",
+   "next_action": "Owner: the map orchestrator (single writer). Record this resolution on gyldlab/keld#392 and replace the F01-A4 blocker on #452 and #499 with 'legacy path value = Electron default; strict location parked under KEL-78'. First check: #452 no longer lists #392 under 'Blocked by'. The KEL-78 amendment is a later permission-model gate that needs the repository owner's exact-content approval; this packet does not grant it.",
+   "owner": "KEL-78 (Spec: strict-profile OS sandbox for Bun roles; In Progress, assignee GYLDLAB, Linear fetched 2026-10-06); crate keld-runtime. The path value belongs to F01-T4 (#452), which consumes KEL-75 (In Progress, unassigned, fetched 2026-10-06)."
+  },
+  {
+   "key": "F09-A6",
+   "decision": "Is there an accepted KEL-15 configuration-RFC text outside the repository to recover, and what must exist in the repo before keld.build.ts translation work starts.",
+   "classification": "decided",
+   "milestone": "parked",
+   "facts": [
+    "Linear (team KELD) was reachable read-only in this session on 2026-10-06; every call succeeded.",
+    "KEL-15 'RFC: Configuration schema - keld.config and friends' is Done, completed 2026-07-10T15:57Z, moved Backlog to Done without an In Progress state, creator and assignee GYLDLAB, project 'Phase 1 - Architecture & Specs'. Its documents and attachments lists are empty. All three acceptance checkboxes are unchecked, including 'RFC drafted with the complete v1 schema'. Source: Linear get_issue KEL-15, fetched 2026-10-06.",
+    "KEL-15's only comment (d1137b07, GYLDLAB, 2026-07-08) says: 'Draft spec already exists at docs/architecture/04-electron-compat.md section 2 (currently uncommitted in the repo working tree) - this RFC should review/ratify the config file contract', then lists the four Keld config files, the two edited files and the keld.config.ts defineConfig sketch. Source: Linear list_comments KEL-15, fetched 2026-10-06.",
+    "Linear holds no RFC document: list_documents for the Phase 1 project and for the queries 'configuration schema', 'RFC' and 'keld.build' each returned an empty list. Source: Linear list_documents, fetched 2026-10-06.",
+    "Architecture 04 section 2 has been in the repo since b93ebb6e (2026-08-13, PR #2). Its table gives keld.build.ts one row ('packaging: targets, signing, update feed, delta settings', generated by migrate); only keld.config.ts has a sketch. Source: docs/architecture/04-electron-compat.md:32-61 at origin/main cb7d8e9e.",
+    "No RFC or schema file was ever committed on any ref: 'git log --all -S keld.build.ts' finds only prose commits (KEL-53 spec, the wayfinder research branch, checkpoint refs), and no added file on any ref matches rfc, config-schema or kel15. Source: local clone, 2026-10-06.",
+    "Nothing reads keld.build.ts: a fixed-string search over crates and packages has no hit. 'keld build' and 'keld migrate' are reserved verbs (KELD-CLI-045) tracked to KEL-19 and KEL-17. Source: crates/keld-cli/src/verb.rs:11,60-61.",
+    "The only live config file is the hello template's keld.config.ts with the shape {name, entry, renderer}, which differs from arch 04 section 2's defineConfig sketch. Source: crates/keld-cli/templates/hello/keld.config.ts.",
+    "KEL-19 is Done in Linear (2026-07-10, GYLDLAB) but is the live tracking issue for packaging work: comment c3dded99 records 'The owner asked that this be tracked on this existing issue rather than a new one', and comment 9ac5ecb2 records the owner direction that work with no nearby Linear issue be tracked in GitHub issues. Source: Linear list_comments KEL-19, fetched 2026-10-06.",
+    "macOS packaging owners are not landed: KEL-103 In Progress, KEL-137 In Progress, KEL-141 Backlog. Source: Linear, fetched 2026-10-06.",
+    "GitHub gyldlab/keld#410 is open with zero comments; F09-T2 (#492) is blocked by it and says 'RFC text to be located'. Source: gh issue view and publish_plan.json, 2026-10-06."
+   ],
+   "inferences": [
+    "The 'accepted RFC text' is architecture 04 section 2 itself (and arch 06 sections 2-5 for KEL-19). There is nothing else to locate. Done on KEL-15 ratified the file-set contract; it did not deliver a v1 schema.",
+    "The ticket's premise ('the repository holds no RFC document') is wrong in one respect: the ratified text is in the repo, but it contains no keld.build.ts schema.",
+    "keld.build.ts has no consumer until keld build is live, so a hand-authored keld.build.ts in the first-proof draw.io artefact would be an unread file.",
+    "F09-T2's real predecessor is 'write the keld.build.ts schema spec', not 'locate the RFC'."
+   ],
+   "unknowns": [
+    "Whether the owner holds an off-Linear draft (local file or chat). Nothing recorded suggests one.",
+    "Which issue should carry the future keld.build.ts schema spec: KEL-19 by precedent, or a GitHub issue under the owner's direction for work with no nearby Linear issue."
+   ],
+   "alternatives": [
+    {
+     "option": "1. Resolve by evidence: no RFC text exists beyond arch 04 section 2. Park the schema and rewrite F09-T2's predecessor as 'approved keld.build.ts schema spec under the keld build owner'.",
+     "cost": "None now.",
+     "new_invariant": "The keld.build.ts schema is owned by one approved spec under the keld build owner; migrate translation targets that spec, never prose.",
+     "invariant_at_risk": "None."
+    },
+    {
+     "option": "2. Reconstruct a kel15-config-schema spec from arch 04 section 2 now and land it under docs/specs.",
+     "cost": "A spec with no consumer that restates arch 04 section 2; any schema content would be invented and need exact-content owner approval.",
+     "new_invariant": "A second configuration-contract document.",
+     "invariant_at_risk": "One source of truth; the YAGNI rule; the no-hollow-files rule."
+    },
+    {
+     "option": "3. Ask the KEL-15 owner for the text and wait (the ticket as written).",
+     "cost": "Blocks F09-T2 on a question whose recorded answer is KEL-15's own comment.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "None; it only delays."
+    },
+    {
+     "option": "4. Hand-author keld.build.ts for draw.io in X02-T3 anyway.",
+     "cost": "An unconsumed generated file with an unapproved shape that later work would treat as precedent.",
+     "new_invariant": "A de facto schema defined by an example.",
+     "invariant_at_risk": "The no-stubs rule; the spec-plus-Linear gate for features."
+    }
+   ],
+   "recommendation": "Take option 1. Mark the ticket resolved with the Linear receipt, and change F09-T2's blocker from 'locate the RFC' to 'approved keld.build.ts schema spec, written when the keld build slice starts'. For the first proof, omit keld.build.ts from the draw.io artefact in X02-T3 (#499) and have the migrate report say 'not generated: keld build is reserved (KELD-CLI-045)'. Route the discovered drift between the hello keld.config.ts and the arch 04 sketch to the X02-T1 (#497) spec; do not fix it here.",
+   "falsifier": "The owner producing an RFC document dated on or before 2026-07-10 that contains a keld.build.ts schema; or a live code path that reads keld.build.ts on the first-proof route (a reader appearing in crates or packages).",
+   "reversible": "Yes. Only ticket text changes; an RFC found later can still be landed.",
+   "missing_evidence": "None needed to decide. Optional: a one-line owner confirmation that no off-Linear draft exists.",
+   "next_action": "Orchestrator updates gyldlab/keld#410 to resolved, citing Linear comment d1137b07 and the empty documents list, and rewrites the blocker sentence in #492. First check: #410 reads resolved with that citation and #492 no longer contains 'RFC text to be located'.",
+   "owner": "KEL-15 (Done, assignee GYLDLAB; Linear fetched 2026-10-06) for the historical RFC. Forward owner of the keld.build.ts schema: KEL-19 (Done in Linear but the live packaging tracking issue; the reserved build verb points to it), with keld-cli and keld-pack as crate owners.",
+   "prompt_tracker_node": ""
+  },
+  {
+   "key": "X02-A1",
+   "decision": "Which single mechanism resolves 'electron' and 'electron/main', 'electron/renderer', 'electron/common', 'electron/utility' to @keld/electron in a migrated app's Bun main role (package.json dependency alias with package exports, a Bun preload plugin, or tsconfig paths), and what architecture 04 sections 2 and 3 say afterwards.",
+   "classification": "decided",
+   "milestone": "first-proof",
+   "facts": [
+    "Linear (team KELD) was reachable read-only in this session on 2026-10-06; every call succeeded. KEL-17 'RFC: Electron compat layer and migration path' is Done (2026-07-10, assignee GYLDLAB). KEL-72 'compat: bootstrap @keld/electron - module alias + app lifecycle shim' is Done (2026-08-18, unassigned). KEL-19 is Done (GYLDLAB). No open Linear issue owns the alias. Source: Linear get_issue, fetched 2026-10-06.",
+    "Electron itself uses one resolver for the five names: electronModuleNames is the set {electron, electron/main, electron/renderer, electron/common, electron/utility} and Module._resolveFilename returns 'electron' for all of them. Source: electron v44.4.5 lib/common/init.ts:109-122 (copy in the scratchpad refuter directory, read 2026-10-06).",
+    "Re-run by me on Bun 1.4.2, 2026-10-06, scratchpad prototypes/x03-sem-alias. Arm N (npm-shaped electron in node_modules, no alias): every form returns npm's path string, and all four subpaths throw 'Cannot find module'.",
+    "Same re-run, arm Pl (Bun preload plugin registered through bunfig.toml): all five specifiers resolve to the shim for ESM and CommonJS, in app code and in node_modules dependencies, when run from the directory holding bunfig.toml.",
+    "Same re-run, arm Pl started from a different working directory: bare 'electron' silently returns npm's path string and the subpaths throw. The plugin was not loaded and there was no error. Under Node 26 the same arm also returns npm's string.",
+    "Same re-run, arm T (tsconfig paths with 'electron' and 'electron/*'): all five resolve on Bun from any working directory; under Node 26 they return npm's string or throw.",
+    "Reported by the X02 refuters, sources read but not re-executed by me (installing would write files): a dependency keyed 'electron' pointing at a shim with an exports map resolves app ESM imports, the 'electron/main' subpath and a CommonJS dependency's require on Bun 1.4.2; bun install honours the npm: alias form and both Bun 1.4.2 and Node 26 then resolve require('electron') from app code and from a dependency. Source: wayfinder notes/X02.md decision X02-A1 verdicts; probes/file-alias-probe sources.",
+    "Reported by the same refuters: bunfig.toml [alias] is still inert on Bun 1.4.2; and with no node_modules present Bun auto-installs the real electron package and returns its binary path with no error. Source: notes/X02.md extra findings.",
+    "draw.io needs the alias on its boot path: its main is ESM ('type': 'module') and imports named members from 'electron' at src/main/electron.js:5; it imports electron-log, electron-updater, electron-store and electron-context-menu at :9, :17, :20, :22. None of its sources use a subpath specifier. Source: corpus/drawio-desktop at 2edf9fb, fixed-string grep 2026-10-06.",
+    "Those dependencies import the bare name in both module systems: electron-store 11.0.2 and electron-context-menu 5.1.0 use 'import electron from \"electron\"' (ESM default import); electron-log 5.4.4 uses require('electron'). Source: package sources fetched by the X03 refuter, read 2026-10-06.",
+    "@keld/electron is not consumable as a package today: its exports map has only '.' pointing at ./src/index.ts, it is ESM TypeScript, and src/app.ts:8 imports '../../api/src/app.ts' from outside the package. Arch 06 says 'no npm wrapper is currently shipped'. Source: packages/@keld/electron/package.json and src/app.ts at origin/main cb7d8e9e; docs/architecture/06-runtime-and-tooling.md:420.",
+    "Architecture 04 section 2 lists 'package.json (edited)' and 'bunfig.toml/bundler alias (edited)' as the migrate-edited files; section 3 says bunfig.toml 'is not the v0 Bun runtime resolver', that the runtime resolver is tsconfig paths, and that 'treating that file as the resolver is a defect'. Source: docs/architecture/04-electron-compat.md:40-41, 65-68, 108-115.",
+    "The panel resolved that electron-updater is aliased to an adapter for the first proof, which is a second package-name alias of the same kind. Source: panel/synthesis.md:68.",
+    "X02-T3 (#499) and X03-T1 (#502) are both blocked by this decision; X03-T1 already says 'package exports for subpaths'. GitHub gyldlab/keld#412 is open with zero comments. Source: publish_plan.json; gh issue view, 2026-10-06."
+   ],
+   "inferences": [
+    "All three mechanisms can resolve the five names on Bun 1.4.2, so the choice is decided by ownership and failure mode, not by capability.",
+    "The plugin and tsconfig mechanisms leave the real electron package installed and fail silently when not in force (wrong working directory, Node-run script): the app receives a path string instead of the API. A dependency alias makes node_modules itself the truth, so every resolver agrees.",
+    "Package exports can express Electron's contract: map all five specifiers to one file. Mapping import and require conditions to different files would create two module instances and split the app singleton, so one file is required.",
+    "CommonJS require of an ESM entry works on Bun and Node 26 only without top-level await. That matches the already-resolved rule that boot-static values are synchronous at import.",
+    "Under real Electron the builtin resolver wins before node_modules, so an Electron-arm fixture is unaffected by the alias. Not run.",
+    "With types supplied by the aliased package, migrate has no reason to write tsconfig paths, and bunfig.toml loses its only stated purpose."
+   ],
+   "unknowns": [
+    "Whether the real @keld/electron resolves through the alias from draw.io's actual dependency set. It cannot be tested until the package is self-contained.",
+    "Whether Bun auto-install honours a package.json alias when node_modules is absent.",
+    "Whether a transitive package that lists electron under dependencies would bring a nested real electron.",
+    "tsc and webpack resolution through the alias. Not tested by anyone.",
+    "Whether a workspace-style spec can alias the name 'electron' inside the Keld monorepo fixtures."
+   ],
+   "alternatives": [
+    {
+     "option": "A. package.json dependency keyed 'electron' pointing at @keld/electron (npm: once published; file: or link: before), with package exports mapping all five specifiers to one entry.",
+     "cost": "@keld/electron must become an installable, self-contained package with one require()-able entry and four subpath exports. migrate must rewrite or remove 'electron .' and electron-builder scripts in the same edit. An installed-tree check is needed (exactly one electron, and it is the shim; Bun auto-install detected or disabled).",
+     "new_invariant": "node_modules/electron is @keld/electron; all five specifiers and both module systems resolve to one file; no runtime resolver hook exists.",
+     "invariant_at_risk": "The 'five files, nothing else' promise if the script rewrite is not done in the same edit; correctness if a nested real electron goes undetected."
+    },
+    {
+     "option": "B. Bun preload plugin for the five specifiers (the X03 proposal).",
+     "cost": "A Keld-owned hook in every role. Observed today: loaded by working directory through bunfig.toml and silently absent otherwise; Bun-only, so types and Node-run scripts need a second mapping; the real electron package stays installed.",
+     "new_invariant": "Every role starts with the alias preload active, which the host would have to enforce on the role command line.",
+     "invariant_at_risk": "One rule, one owner (plugin for runtime plus tsconfig for types); loud failure (it degrades to the wrong module silently); the host spawn path would carry a compat concern."
+    },
+    {
+     "option": "C. tsconfig paths (today's KEL-72 v0 mechanism).",
+     "cost": "No new code. Bun-only. A JavaScript app such as draw.io has no tsconfig, so migrate would edit a file outside arch 04 section 2's table. The X02 refuter reported one intermittent failure when a CommonJS dependency required the TypeScript ESM shim through it.",
+     "new_invariant": "tsconfig is a runtime input.",
+     "invariant_at_risk": "The five-file contract; Node-run consumers silently get the real electron package."
+    },
+    {
+     "option": "D. Ship A and B together.",
+     "cost": "Two resolvers that can disagree.",
+     "new_invariant": "None.",
+     "invariant_at_risk": "Root AGENTS rule that parallel copies and diverging fallback paths are defects."
+    }
+   ],
+   "recommendation": "Choose A as the single resolver; no plugin and no bunfig alias. Record it in arch 04 section 2 (the package.json row carries the 'electron' dependency; the bunfig.toml alias row is removed) and section 3 item 1 with its v0 note, inside the X02-T1 spec PR. X03-T1 adds the four subpath exports to the one entry. The KEL-72 fixtures keep tsconfig paths only until @keld/electron is consumable as a package, then switch to the same dependency form. Evidence that determines it: Electron's own one-resolver contract, the working-directory and Node probes re-run today showing B and C fail silently, and arch 04 section 2 already admitting the package.json edit. Any further use of bunfig.toml (for example disabling auto-install) is a separate decision.",
+   "falsifier": "With draw.io's four packages at the corpus-pinned versions installed beside an 'electron' dependency alias pointing at an @keld/electron-shaped package (ESM, one entry, exports for five specifiers), any of the following on Bun 1.4.2: a specifier form (ESM default, ESM named, CommonJS require, any subpath) from app code or a dependency not resolving to the shim; require of the entry failing in any of 20 runs; or require('electron').app and (await import('electron')).app being different objects. Any of these means exports cannot express the contract, and the plugin (with a host-passed preload) is reopened.",
+   "reversible": "Yes. It is one package.json line plus package exports; switching to a plugin later changes no wire format, permission or host contract. The arch 04 wording changes through a spec PR.",
+   "missing_evidence": "The positive dependency-alias arm executed against the real @keld/electron and draw.io's real dependencies (blocked until the package is self-contained); tsc and webpack resolution; Bun auto-install behaviour with the alias declared but node_modules absent. These are acceptance checks for X03-T1 and X02-T3, not blockers of the choice.",
+   "next_action": "Orchestrator records the decision on gyldlab/keld#412, citing the working-directory probe, and the X02-T1 (#497) spec author carries the arch 04 sections 2 and 3 erratum in that spec PR for exact-content owner approval. First check: #412 reads resolved with the probe cited, and the spec PR's arch 04 section 2 table no longer names bunfig.toml as the alias file.",
+   "owner": "Architecture 04 (docs/architecture/04-electron-compat.md), whose spec owner is KEL-17 (Done, assignee GYLDLAB), and the packages/@keld/electron package from KEL-72 (Done, unassigned); Linear fetched 2026-10-06. Neither is open, so the live tracking surface is gyldlab/keld#412 under map #391. The reserved migrate verb points to KEL-17.",
+   "prompt_tracker_node": ""
+  }
+ ],
+ "adopted_decisions_now_closed": {
+  "F01-A4": {
+   "status": "decided",
+   "resolution": "Choose (a) and park it. `keld migrate` should print, for strict: 'userData is role-private storage; raw node:fs outside it is OS-denied; call sites touching other paths need the fs+ facade or a dialog-minted grant, otherwise declare legacy'. For legacy it should print: 'userData = Electron default path, raw node:fs, containment forfeited'. Separately, narrow the F01-T4 and X02-T3 edges so the first proof is not blocked: under legacy, F01-T4 needs only the host-minted Electron-default path value.",
+   "milestone": "parked"
+  },
+  "F09-A6": {
+   "status": "decided",
+   "resolution": "Take option 1. Mark the ticket resolved with the Linear receipt, and change F09-T2's blocker from 'locate the RFC' to 'approved keld.build.ts schema spec, written when the keld build slice starts'. For the first proof, omit keld.build.ts from the draw.io artefact in X02-T3 (#499) and have the migrate report say 'not generated: keld build is reserved (KELD-CLI-045)'. Route the discovered drift between the hello keld.config.ts and the arch 04 sketch to the X02-T1 (#497) spec; do not fix it here.",
+   "milestone": "parked"
+  },
+  "X02-A1": {
+   "status": "decided",
+   "resolution": "Choose A as the single resolver; no plugin and no bunfig alias. Record it in arch 04 section 2 (the package.json row carries the 'electron' dependency; the bunfig.toml alias row is removed) and section 3 item 1 with its v0 note, inside the X02-T1 spec PR. X03-T1 adds the four subpath exports to the one entry. The KEL-72 fixtures keep tsconfig paths only until @keld/electron is consumable as a package, then switch to the same dependency form. Evidence that determines it: Electron's own one-resolver contract, the working-directory and Node probes re-run today showing B and C fail silently, and arch 04 section 2 already admitting the package.json edit. Any further use of bunfig.toml (for example disabling auto-install) is a separate decision.",
+   "milestone": "first-proof"
+  }
+ },
+ "panel_resolved_decisions_mentioning_unit": {},
+ "research": {
+  "summary": "[fact] Nothing of this unit is live: `keld migrate` is a reserved verb (`KELD-CLI-045`, exit 2, tracking KEL-17 in `crates/keld-cli/src/verb.rs`), `keld doctor --web-compat` is rejected as `KELD-CLI-044` (`flags.rs`), MCP exposes only keld_doctor/keld_docs_search/keld_permissions_explain (no keld_migrate_analyze), `keld.compat.ts` has no schema anywhere in the repo, the hello `keld.config.ts` is `{name, entry, renderer}` (not arch 04's `defineConfig` shape), no recorder/dev-permissive profile exists (arch 03 §3), and the compat scoreboard is a placeholder with no committed product denominator. What IS live and must be consumed: `keld_guard::parse_manifest` (JSONC, 64 KiB cap, unique keys, `app` principal fs scopes with `$APPDATA`-style roots and deny fix-text that already prints the exact manifest patch), `keld_compat::evidence` (KEL-74 record/denominator/scorer with the only legal claim shape), KEL-237's lifecycle corpus manifest + denominator + runner (`deny_unknown_fields`, upstream Electron commit pin, per-cell negative_control), `DoctorFinding`/`KeldErrorObject` JSON (`{code,message,cause,fix,docs}`), KEL-215's two version-qualified better-sqlite3 rows (arch 04 §5), and the three-app demand scan in this scratchpad. [fact] The demand scan says the first two corpus apps are NOT Tier-1-only: draw.io needs `session.defaultSession.webRequest` filters, `executeJavaScript`, `printToPDF`/`print`, 11 `file://` loads, `electron-updater` (a third-party package, not Electron `autoUpdater`), `electron-store`/`electron-log`/`electron-context-menu` (all `require('electron')` internally), `@electron/fuses` via electron-builder `afterPack`, and five electron-builder JSON configs; the briefing's \"<webview> tag usage (7 hits)\" is a false positive — every hit is `webviewTag: false` or the `will-attach-webview` preventDefault that disables webviews. Zettlr needs `protocol.handle('safe-file')` without `registerSchemesAsPrivileged`, `sandbox:false` on 2 windows, 6 `sendSync` sites (config-provider/citeproc, including inside the preload), `requestSingleInstanceLock()` + `app.exit(0)` before `whenReady`, macOS `open-file`, a direct `.node` import (`nodehun/build/Release/Nodehun.node`), chokidar+fsevents, `child_process.spawn(..., {shell:true})` for pandoc/gsettings/`--version`, and a webpack+electron-forge pipeline (`forge.config.js` executes `spawn` while packaging) plus electron-builder YAML for installers. Two scratchpad prototypes ran on Bun 1.4.2 (macOS): tsconfig `paths` remapped `require(\"electron\")` from inside a `node_modules` dependency to the shim (so ecosystem packages can be aliased without a bundler on Bun), and main-thread `Atomics.wait` on a SharedArrayBuffer returned `ok` after a worker notify (a blocking-CALL-with-deadline primitive exists in Bun for pre-ready synchronous Electron APIs). Six decision atoms follow: module-alias mechanism (prototype `npm:` alias), read-only analyzer shape (lexical scan + never execute app configs + KEL-127 four-way blocker report), report wording (arch 04 §1's \"compat score: 91%\" contradicts §4/KEL-74 and must change), permission seeding policy (literal-only static grants, dialog paths as runtime permits, everything else an explicit deny with fix text), synchronous boot facts for pre-ready APIs, and corpus harness ownership (extend KEL-237's manifest; analyzer output is a lead, not a scored cell; `keld dev --headless --smoke` is not live).",
+  "decisions": [
+   {
+    "id": "X02-A1",
+    "question": "How does a migrated app's `electron` import (app code, renderer bundles, and node_modules packages like electron-store/electron-log/electron-updater that `require('electron')` internally) resolve to `@keld/electron` using only the five files?",
+    "proposed_answer": "[inference] Prefer a package-manager alias in package.json (`\"electron\": \"npm:@keld/electron@<pin>\"`) so every resolver — Bun runtime, tsc, webpack (Zettlr forge plugin-webpack), vite — sees `node_modules/electron` as the shim with zero bundler config; keep tsconfig `paths` as the proven dev fallback (arch 04 §3 v0 note; scratchpad alias-probe on Bun 1.4.2 showed tsconfig paths remaps `require('electron')` inside a node_modules dependency too) and keep writing bunfig.toml for spec parity. Also requires `@keld/electron` to publish `electron/main|renderer|common` subpath exports (research 214: only bare `.` exists; subpaths error).",
+    "evidence": [
+     "[fact] packages/@keld/electron/src/index.ts header: Bun 1.3.14 honors tsconfig paths; bunfig [alias] does not remap runtime import",
+     "[fact] scratchpad prototypes/alias-probe run 2026-10-06, Bun 1.4.2: `app-code electron -> keld-shim`, `node_modules dep electron -> keld-shim`",
+     "[fact] research 214: `electron/main|renderer|common` -> Cannot find package 'electron' with today's alias",
+     "[fact] Zettlr webpack.main.config.js uses `externals` and forge plugin-webpack; draw.io deps electron-store/electron-log/electron-context-menu/electron-updater all live in node_modules",
+     "[fact] arch 04 §2: only package.json and bunfig.toml/bundler alias are migrate-edited; 'Nothing else'"
+    ],
+    "confidence": "medium",
+    "type": "prototype",
+    "alternatives_rejected": "tsconfig paths alone (does not affect webpack/vite renderer bundles or `node` scripts; proven only on Bun); bunfig.toml alias alone (does not remap runtime on Bun 1.3.x per arch 04 §3); editing webpack/vite configs (outside the five files; forge.config.js is executable JS).",
+    "unknowns": "Whether `bun install` honors `npm:` aliases for a workspace/`file:` package pointing at @keld/electron; whether tsconfig paths applies to packages with `exports` maps and ESM `import 'electron'` from node_modules (probe used a bare CJS main); Node-run build scripts (`sync.cjs`, forge hooks) that import electron."
+   },
+   {
+    "id": "X02-A2",
+    "question": "What is the analyzer (`keld migrate` default / `keld_migrate_analyze`): language, parsing depth, what it may execute, and what it reports?",
+    "proposed_answer": "[inference] A read-only Rust verb in keld-cli (replacing ReservedVerb::Migrate) that performs a lexical, import-binding-aware scan of JS/TS/Vue sources plus static parsing of package.json, tsconfig, bunfig, electron-builder JSON/YAML; it NEVER evaluates app code or JS configs (forge.config.js spawns processes at load). It reports KEL-127's four blocker classes separately — compatibility (matrix status per call site), security (webPreferences, openExternal dynamics, spawn, custom scheme privileges), engine (file://, SW on custom schemes, print), native-dependency (KEL-215 rows or UNKNOWN) — as `DoctorFinding`-shaped JSON with `KeldErrorObject.fix`, and emits no files unless `--write` is given (atom A4/A5 govern what is written). Classification source is one committed compat matrix owned by keld-compat.",
+    "evidence": [
+     "[fact] KEL-127 body: 'A future migration analyzer starts read-only, reports compatibility/security/engine/native-dependency blockers separately and emits reviewable reversible changes only after authorization'",
+     "[fact] arch 07 §4: keld_migrate_analyze is read-only; §2 error objects {code,message,cause,fix,docs} exist in crates/keld-cli/src/error_object.rs",
+     "[fact] scratchpad scan_electron_usage.py produced usable module/signal counts for 3 apps but member counting is receiver-blind: `WebContents.replace:22` (draw.io) / `:110` (Zettlr) are String.prototype.replace; `webview_tag:7` for draw.io are disabling lines",
+     "[fact] Zettlr forge.config.js line 1-60 requires child_process and spawns get-pandoc.sh inside the config module",
+     "[fact] arch 03 §3: migrate seeds the manifest from static analysis"
+    ],
+    "confidence": "medium",
+    "type": "task",
+    "alternatives_rejected": "A Bun/TS analyzer in a hypothetical @keld/cli (no such package; keld-cli is Rust and already owns doctor/MCP JSON shapes); executing the app under an instrumented shim to discover usage (violates read-only + would run forge/webpack code with ambient authority); full AST parser dependency (oxc/swc) before the lexical false-positive rate is measured on the corpus (dependency gate; YAGNI).",
+    "unknowns": "False-positive/negative rate of binding-aware lexical scanning on Zettlr (569 files, Vue SFCs, re-exported preload API); whether a Rust JS parser crate is needed for Tier-2 exit (80% median call-site coverage over 20 apps) — no 20-app corpus list exists in the repo."
+   },
+   {
+    "id": "X02-A3",
+    "question": "How does the migrate report express 'compat score' without violating KEL-74/arch 04 §4 (percentages only against a committed denominator)?",
+    "proposed_answer": "[fact-backed] The sample report in arch 04 §1 ('compat score: 91% — expected to run') contradicts §4 and KEL-74 ('Public percentages require a committed denominator'; only claim shape `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`). Fix the spec: migrate prints static coverage COUNTS by status (`✔ n / ▲ n / ✘ n call sites mapped; m unclassified`) labeled 'static estimate, not a compatibility score', and prints a KEL-74 claim line only when the app is a committed corpus member with scored cells. Percentages never appear in migrate output.",
+    "evidence": [
+     "[fact] docs/architecture/04-electron-compat.md §1 sample: 'compat score: 91% — expected to run'",
+     "[fact] §4: 'Public percentages require a committed denominator … MUST NOT treat a partial measurement as 100% compatibility'",
+     "[fact] docs/engineering/compat-scoreboard.md rule 4: only allowed claim shape; rule 1: no percentage without denominator document",
+     "[fact] crates/keld-compat/src/evidence.rs: only `score` constructs Scoreboard; `unweighted_percent` omitted for uncommitted product corpora",
+     "[fact] AGENTS.md: code/spec mismatch is a bug in one; fix both in same PR"
+    ],
+    "confidence": "high",
+    "type": "grilling",
+    "alternatives_rejected": "Keeping '91%' as a 'soft estimate' (violates invariant 9 and KEL-74 wording rules); computing a per-app denominator on the fly from the scanned call sites (denominator is not committed/digested; `score` requires parsed denominator with committed corpus_sha256).",
+    "unknowns": "Whether the maintainers want the per-app static counts to also be excluded from public pages (report is local by default; CI scoreboard is the public surface)."
+   },
+   {
+    "id": "X02-A4",
+    "question": "What may `keld migrate --write` put into `keld.permissions.jsonc` when no recorder/dev-permissive profile exists (arch 03 §3 v0)?",
+    "proposed_answer": "[inference] Literal-only static seeding through the live guard vocabulary: `app.getPath('userData'|'logs')` + electron-store/electron-log -> `app.fs.read/write $APPDATA/**` class roots; literal `shell.openExternal('https://…')` -> `app.shell.open` origin scopes; literal updater feed (electron-builder publish) -> `app.net.connect` ONLY in keld.build.ts/keld-update config, not an app grant; literal channel names -> `windows.<w>.channels`; `clipboard`/`Notification`/`Tray` usage -> `app.system` tokens. Everything non-literal (dialog paths, dynamic URLs, spawn with variable program, `getPath` with variable) is emitted as a `// TODO KELD-…` comment with the DenyReason fix wording and NO grant. Output must round-trip `keld_guard::parse_manifest` (64 KiB, unique keys). Dialog-chosen paths are runtime permits (KEL-140/KEL-102), never static globs. Recorder-sourced grants arrive only when the recorder exists.",
+    "evidence": [
+     "[fact] arch 03 §3: v0 has no dev-permissive profile or denial recorder; `keld doctor --permissions` planned; 'keld migrate seeds the manifest from static analysis of Electron API usage (dialog → fs read of chosen paths, autoUpdater → net to feed URL, etc.)'",
+     "[fact] arch 03 §2 manifest sketch grant shapes (fs/net/shell.open/shell.spawn/system/secrets/windows.channels/csp) and the 'A grant must name a destination' rules",
+     "[fact] crates/keld-guard/src/lib.rs:338-353 DenyReason fix text; parse_manifest caps and unique-key rule",
+     "[fact] corpus: draw.io getPath literals userData/documents; Zettlr 40 getPath sites, 7 openExternal, spawn with shell:true (run-command.ts:42)",
+     "[fact] briefing invariant 2: a missing Electron permission handler must NOT become allow"
+    ],
+    "confidence": "medium",
+    "type": "grilling",
+    "alternatives_rejected": "Seeding wildcards (`$DOCUMENTS/**`, `https://**`) to make the app 'just run' (default-deny violation; arch 03 §2 explicitly makes host-less globs match nothing); deferring all seeding to a recorder that does not exist (leaves the five-file promise empty); a second manifest writer with its own JSONC emitter (one owner rule).",
+    "unknowns": "Exact runtime-permit contract for dialog-returned paths (guard `ScopePermit`/`PathScope` exist by name; minting from a dialog result is unspecified); whether `app.net.connect` is needed for electron-updater's GitHub provider when the adapter runs in the host."
+   },
+   {
+    "id": "X02-A5",
+    "question": "How do pre-ready SYNCHRONOUS Electron APIs (requestSingleInstanceLock, app.isPackaged, app.getPath, setAsDefaultProtocolClient, protocol.registerSchemesAsPrivileged, process.resourcesPath) get their values when the facade's only channel is asynchronous kipc?",
+    "proposed_answer": "[inference] Two-part: (1) host-published boot facts delivered to the Bun role at spawn (today only `KELD_APP_LINK=<endpoint>#<token>` is the env contract; a boot-facts blob — isPackaged, resourcesPath, path catalog, single-instance verdict — would be a KEL-75/KEL-96 host-owned addition, not a facade invention); (2) for anything that must be decided by the host at call time, a blocking CALL with deadline using Bun `Atomics.wait` on a worker-fed SharedArrayBuffer (scratchpad sync-probe: Bun 1.4.2 main thread `Atomics.wait` returned `ok` after a worker notify in 58 ms), rate-limited and dev-warned per KEL-127 decision 5. Single-instance lock itself must be host-owned (OS mutex/socket) so the facade only reads a verdict.",
+    "evidence": [
+     "[fact] Zettlr source/main.ts:35 `if (!app.requestSingleInstanceLock()) { … app.exit(0) }` before whenReady; draw.io electron.js:1718 same pattern",
+     "[fact] Electron app.md v44.4.5: requestSingleInstanceLock 'Returns boolean'",
+     "[fact] scratchpad prototypes/sync-probe run 2026-10-06: {bun:1.4.2, wait:ok, value:42, ms:58.28}",
+     "[fact] arch 06 §2: the Bun bootstrap env var is KELD_APP_LINK only; KELD_DEV_LEASE never reaches Bun",
+     "[fact] research 186: second-instance delivers untrusted argv/cwd/data; gap 2 cold/warm activation tests"
+    ],
+    "confidence": "medium",
+    "type": "research",
+    "alternatives_rejected": "Returning `true` optimistically from requestSingleInstanceLock (silent downgrade; two instances would both run); making these APIs async (changes caller contract; Zettlr's `if (!lock)` becomes always-truthy Promise); implementing the lock in Bun with a lockfile (strict profile has zero ambient fs authority; host owns OS handles).",
+    "unknowns": "Whether `Atomics.wait` is acceptable on the Bun primary's main thread under the hot-path rule (no steady-state allocation) — it is boot-time only; Windows/Linux Bun behavior untested; which boot facts the host can know before the window exists (isPackaged yes; path catalog yes; single-instance verdict requires host-side registration before Bun spawn)."
+   },
+   {
+    "id": "X02-A6",
+    "question": "Where does the migration corpus harness (arch 04 §6) live and what counts as a scored cell for draw.io / Zettlr / electron-quick-start?",
+    "proposed_answer": "[inference] Extend KEL-237's manifest (`corpus_id, scope, panel, kind, upstream{…}, cells[…]`) with app entries pinned by upstream commit + canonical bytes (research 214 rule), kept as a separate gitignored/pinned fixture set as §6 says, and score only KEL-74 OperationKind cells (`install`, `activation`, `primary_workflow`, `full_feature`) produced by real runs (`keld migrate --write` then `keld dev`) per OS. Analyzer output (static counts) is a lead attached to the row, never a cell — the OperationKind enum has no 'analysis' kind. Panel for draw.io/Zettlr is `product` only once the corpus id is documented as committed (today the committed list is empty, so `score` returns complete=false and omits percent). Sequencing: electron-quick-start activation on macOS is the first achievable cell (needs BrowserWindow+loadFile, not live); draw.io/Zettlr cells cannot pass until Tier-2 surfaces (session.webRequest, protocol.handle, sendSync, electron-updater adapter) exist — so the Tier-1 exit criterion '3 corpus apps run unmodified' is unreachable with these two apps as written.",
+    "evidence": [
+     "[fact] crates/keld-compat/fixtures/lifecycle-corpus/corpus.json + tests/lifecycle_corpus.rs (deny_unknown_fields, exact-bytes sha256, named passing case required)",
+     "[fact] evidence.rs OperationKind closed set; scoreboard.md rule 2 (committed product corpus list empty)",
+     "[fact] arch 04 §6: separate repo, gitignored fixtures, `keld migrate && keld dev --headless --smoke` per app per OS; `keld dev` takes no flags today",
+     "[fact] corpus demand: draw.io session.webRequest (electron.js:994,1010), 11 file:// loads, electron-updater; Zettlr protocol.handle, 6 sendSync, sandbox:false x2, nodehun .node import",
+     "[fact] research 214: refuse running Electron spec/ as-is; manifest canonical bytes; no retries"
+    ],
+    "confidence": "medium",
+    "type": "task",
+    "alternatives_rejected": "A new corpus manifest format (duplicates KEL-237); scoring the static analyzer coverage as a cell (not an OperationKind; would mint percentages from estimates); vendoring Electron's spec/ runner (research 214 refusal).",
+    "unknowns": "Whether GitHub #313's 'draw.io first' intends Tier-1 exit to be redefined (draw.io needs Tier-2 session/webContents surfaces); who commits the product corpus id list; headless activation mechanism per OS (none live)."
+   }
+  ],
+  "never_list": [
+   {
+    "surface": "Executing application build/packaging configs (forge.config.js, afterPack hooks like build/fuses.mjs, webpack configs) or app code during `keld migrate` analysis",
+    "rationale": "KEL-127: analyzer starts read-only; Zettlr's forge.config.js spawns shell scripts at module load; running it grants ambient authority to third-party code."
+   },
+   {
+    "surface": "Writing or editing any file without explicit authorization (`--write`), or writing non-reversible edits",
+    "rationale": "KEL-127: 'emits reviewable reversible changes only after authorization'; the report must stand alone."
+   },
+   {
+    "surface": "Printing a compatibility percentage or 'expected to run' verdict in migrate output",
+    "rationale": "KEL-74 / scoreboard rule 1 & 4; only `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})` against a committed denominator."
+   },
+   {
+    "surface": "Seeding wildcard grants (`$HOME/**`, `https://**`, `file:///**`) or converting dialog/openExternal usage into static broad scopes",
+    "rationale": "Default-deny is sacred; arch 03 §2 rules make host-less globs match nothing; a missing Electron handler must not become allow."
+   },
+   {
+    "surface": "Translating `autoUpdater.setFeedURL(x)` / electron-updater runtime feed values into the privileged updater's feed",
+    "rationale": "Briefing never-list: app-selected updater feed URLs into a privileged updater; feed belongs in signed build config (KEL-53)."
+   },
+   {
+    "surface": "Carrying `nodeIntegration:true`, `contextIsolation:false`, `webSecurity:false` forward as allowed configuration",
+    "rationale": "Briefing never-list and research 13 'Never' table; at most a visibly labeled legacy profile for `sandbox:false` per KEL-127, never silent."
+   },
+   {
+    "surface": "Translating `app.commandLine.appendSwitch` / `disableBlinkFeatures` / V8 flags into engine flags",
+    "rationale": "Never list: arbitrary Chromium/V8 flags; report as dropped with reason."
+   },
+   {
+    "surface": "Mapping `child_process.spawn/exec` with `shell:true` or variable program paths to a `shell.spawn` grant automatically",
+    "rationale": "Never list: raw child_process from strict roles; only reviewed declared binaries (`$RESOURCES/bin/pandoc`) may be grants."
+   },
+   {
+    "surface": "Claiming native-addon support (nodehun, fsevents, better-sqlite3 other versions/arches) without a KEL-215-style version/runtime/digest row",
+    "rationale": "arch 04 §5: a package name or N-API declaration is not a runtime qualification; rows do not generalize."
+   },
+   {
+    "surface": "A second manifest parser/emitter, second corpus manifest format, or second compat matrix copy inside the migrate tool",
+    "rationale": "One rule, one owner: keld_guard::parse_manifest, KEL-237 manifest, KEL-74 scorer, one committed compat matrix."
+   },
+   {
+    "surface": "Running Electron's `spec/` tree under Bun as the migration oracle",
+    "rationale": "Research 214 refusal; conditional per-surface citation of test identities only."
+   }
+  ],
+  "open_unknowns": [
+   "KEL-17/KEL-19/KEL-15 are Done in Linear but their RFC bodies (Tier-1 mapping table, `keld migrate` UX/report format, full keld.config schema, electron-builder concept mapping) are not in docs/specs; only 'Must decide' lists were retrievable — whether the accepted RFC text exists elsewhere (private research/tracker) is unknown.",
+   "Does `bun install` honor a package.json `npm:` alias for `electron` -> `@keld/electron` (local/file or registry), and does tsconfig `paths` remapping also apply to node_modules packages with `exports` maps and ESM imports (probe covered only a bare CJS dep)?",
+   "Synchronous renderer-side `sendSync` on WKWebView/WebView2/WebKitGTK: no synchronous page->host round-trip mechanism is identified; Zettlr uses sendSync inside its preload.",
+   "Which Keld roots back `app.getPath` names sessionData, module, exe, recent, crashDumps; and the runtime-permit contract for dialog-returned paths (guard ScopePermit/PathScope seen by name only).",
+   "electron-updater (not Electron autoUpdater) API surface the adapter must cover for draw.io (autoDownload, autoInstallOnAppQuit, logger, checkForUpdates Promise, GitHub provider) — no Keld owner beyond KEL-53's generic updater.",
+   "Whether GitHub #313's draw.io-first decision implies redefining the Tier-1 exit criterion, since draw.io requires session.webRequest, executeJavaScript, print/printToPDF and file:// loads (Tier 2/engine surfaces).",
+   "No 20-app corpus list, no committed product corpus id, and no headless `keld dev` exist; the mechanism for per-OS headless activation cells is undefined.",
+   "Whether `keld doctor --web-compat` should be a separate verb flag (arch 06) or a section of the migrate engine-blockers report; no per-OS web-feature baseline matrix exists in the repo to scan against.",
+   "Native-dependency status for nodehun, fsevents/chokidar on Bun 1.4.2 (all OSes) — no KEL-215 rows; strict-profile addon workers (KEL-78) not live.",
+   "Whether `Atomics.wait` on the Bun primary thread at boot is acceptable under the hot-path rule and behaves identically on Windows/Linux Bun builds.",
+   "How `keld.compat.ts` quirks are typed and consumed (no schema, no reader exists); which first quirks (sendSync policy, windowOpenHandler strictness, shim logging) are generated for draw.io/Zettlr.",
+   "Cost/ownership of a Rust JS/TS parser dependency if the lexical scan's false-positive rate on Zettlr is unacceptable (dependency-addition review gate)."
+  ]
+ },
+ "program_corrections_x06": [
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Rewrite the entry condition as: (a) remove KEL-102/T3 from blocked_by and record KEL-140 as unblocked-and-unclaimed with the landed T3 artifact (comment cde25f5e, 66ccbbc) as its consumed input; (b) split 'start now' into scratchpad/research-branch analysis (truly unblocked) and repo-landing work (blocked: missing Linear owner); (c) present the KEL-127 reading as a decision packet. Option A: facade implementation after G2 = KEL-140+141+142+143 task artifacts. Option B: after G3/KEL-144, per the graph's G4 placement. Option C: a first-proof-only bounded slice after KEL-140+KEL-143, recorded as a new invariant on KEL-127. Recommendation: C only if the owner records on KEL-127 that the draw.io first proof is not 'broad expansion'; otherwise A. The one remaining question for the owner: is KEL-141 inside G2 for this purpose. (d) Reconcile #432's wording with whichever option is chosen instead of leaving both published."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Separate two axes. Tier label = the arch 04 §4 classification, changed only by a spec amendment. Pull order = milestone:first-proof -> milestone:next -> milestone:parked (labels already live), derived from draw.io resolved call sites on the install + activation + open/edit/save/close path. That order is: app lifecycle and boot facts; BrowserWindow core; ipcMain.on/send + contextBridge; the dialog/shell/Menu subset draw.io calls; the Tier-2-classified slices draw.io needs (webRequest recorded no-ops behind file:// containment + CSP, updater setFeedURL recorded no-op, did-finish-load/executeJavaScript/will-navigate). Park Zettlr-only work (invoke/handle volume, sendSync, protocol.handle, Notification, Tray) under milestone:next."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Publish only the residual, each mapped to a live issue where one exists: (1) the KEL-127 entry-reading decision packet from the D1 correction; (2) a Linear-owner decision packet — lift the cap, or free a slot by archiving, or the owner designates and re-scopes an existing open issue for compat conformance (KEL-237's non-goals currently exclude it), with consequences for each; (3) one sentence adopting workflow.md's Linear claim as the arbitrating record; (4) the conformance-first landing shape; (5) T4 as parked with its trigger. Map the remaining D3 items onto existing issue numbers instead of opening new tickets, and repoint R1 at KEL-237, which owns that fixture pin."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Park the ticket (label milestone:parked, wayfinder:task) with this shape for when it is pulled: scope it under an existing open Linear owner (KEL-124 is the candidate; confirm its scope first); include a byte-neutral router edit that trims at least as many bytes as the new row adds, with before/after bytes in the change record; give every file the skill writes, including domain.md, a routed manifest row or suppress the file; have issue-tracker.md link workflow.md § Agent claim rather than restate or vary the claim rule; keep CLAUDE.md untouched; run just agent-context and just atomic-protocol on the final diff."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map -> 14 epics and 52 decision tickets as sub-issues; tracer tickets under epics; tier labels per arch 04 §4; milestone:first-proof/next/parked labels for pull order; no GitHub milestones until a committed denominator exists. From D5 keep only the cheap additive part: put gate:wire-protocol, gate:permission-model and gate:public-api labels on needs-spec tickets whose bodies already name those gates. Never-list surfaces stay as rows in the existing task tickets."
+  },
+  {
+   "lens": "invariants",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "L1 claim: post the workflow.md '## Agent claim' block on the existing KEL issue that owns the surface, with Linear createdAt arbitrating. The GitHub assignee and a link comment are a mirror only. A ticket with no existing open KEL owner is not startable; route it to the Linear-owner decision packet (D3 correction item 2) rather than inventing a gh-<n> convention, which would be a reviewed change to workflow.md and tools/workspace.py needing its own Linear scope. L0 frontier oracle: a predecessor counts as landed only when its terminal artifact comment on the Linear issue names a landed SHA that is an ancestor of origin/main. A spec checkbox is a lead; a checkbox/code mismatch is reported as drift on the owning issue."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D1",
+   "verdict": "refuted",
+   "correction": "Entry condition, restated per slice: (a) KEL-142 (Done) is the only spine artifact every compat lane consumes. (b) Facades that dispatch a guarded broker (dialog-minted fs, shell) additionally consume the landed KEL-102/T3 -> KEL-140 route; this is an inference, to be confirmed by the draw.io boot trace #420. (c) BrowserWindow core needs the approved window-registry spec, not KEL-143. Replace the KEL-143 hard edge with one decision ticket, 'compat main-role loss policy', defaulting to Electron-faithful behaviour (role loss ends the app session under the legacy profile; the recovery cell is scored unknown until KEL-143 lands). (d) Move preload-injection ownership from KEL-79 to the isolated-world bridge owner (the KEL-142 successor slice), pending PANEL-D21. Keep KEL-79 for the renderer origin contract that draw.io's 20 `validateSender(e.senderFrame)` sites depend on (frame.url must start with a file:// codeUrl). (e) Present the G2/G3/G4 reading as a decision packet quoting both KEL-127 sentences. Cheapest discriminator for (c): run PANEL-P3 #420 and list which of the four workflow cells touch a generation-loss path; expected none."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D2",
+   "verdict": "refuted",
+   "correction": "Keep compat:tier-N labels as the arch 04 scoreboard taxonomy, but order pulls by the first-proof vertical slice taken from the draw.io boot trace (#420), not by family. S0: boot-static facts so the import survives (app.getPath/getVersion/getLocale, electron-store, electron-updater alias per PANEL-D14, electron-log). S1: whenReady, single-instance boolean, window registry and BrowserWindow (loadURL file://, close veto, destroy/isDestroyed), with nativeTheme.shouldUseDarkColors and screen getters as synchronous mirrors. S2: session.webRequest recorded no-ops after host containment (PANEL-D17). S3: ipcMain.on/once, event.reply, webContents.send, senderFrame.url, contextBridge with callback proxying. S4: dialog open/save/messageBox including the Sync form, Menu, shell.openExternal, webContents did-finish-load/executeJavaScript. Park until the Zettlr proof: invoke/handle, sendSync, protocol.handle, cancelable before-quit/will-quit, Tray, Notification, clipboard beyond draw.io's 3 sites. Replace the demand numbers with the resolved counts above and state F09 demand as 'electron-updater package alias; Electron autoUpdater API 0 resolved sites'."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D3",
+   "verdict": "refuted",
+   "correction": "Treat D3 as superseded by the published decision set and fix the three prototypes it contributes. P1: replay draw.io saveFile/readFile and mainResp payloads captured from an instrumented Electron 44.4.5 run, and measure the size distribution before choosing chunking or a larger bound; Zettlr invoke replay follows later. P3: add rows for a page-world callback passed as an argument, called N times from the isolated world, and a function nested in an object argument; run on WKWebView only. R2 and P2: park behind the draw.io proof with an explicit re-entry condition (Zettlr or Windows work starting). Add or link decisions for synchronous main-process APIs (showMessageBoxSync, requestSingleInstanceLock, screen/nativeTheme getters), window close veto, and the file:// origin contract for senderFrame.url. Narrow G2 to window registry plus close veto; move cancelable before-quit to the Zettlr tranche."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D4",
+   "verdict": "refuted",
+   "correction": "Keep the task but park it outside the first-proof path and reshape it. Register docs/agents/issue-tracker.md and triage-labels.md as routed rows with a `skill:<name>` trigger, the existing pattern in the budget file, and add no index.md row; if a router row is wanted, the same PR must trim at least (row bytes minus 40) from index.md. Remove the claim-surface sentence from issue-tracker.md: link workflow.md section Agent claim instead, and if the claim surface must change, change it in workflow.md through its own reviewed PR with a matching trim. Name the Linear issue that scopes the instruction change before the PR; creation is capped, so it must be an existing open issue chosen by the owner. Remove the blocked-by edges from D5 and D6."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D5",
+   "verdict": "refuted",
+   "correction": "Record the live structure as the decision: map #391 with 14 epics and 52 decision tickets as native sub-issues, tracer-bullet tickets under epics, native blocked-by edges. Milestones: at most one now, 'First proof: drawio-desktop on macOS, legacy profile: install + activation + 4-step workflow', matching PANEL-D12; create tier-exit milestones only after their corpus ids are committed, and keep percentages out of titles until then. Never-list: keep the single resolved ticket and use the compat:never label on matrix rows; open no per-surface issues. Drop the X06-D4 blocked-by edge."
+  },
+  {
+   "lens": "semantics",
+   "decision_id": "X06-D6",
+   "verdict": "refuted",
+   "correction": "Split the loop by ticket kind. Decision tickets (research, grilling, prototype; scratchpad or research branch only) claim by GitHub self-assign, as the map says. Any ticket that writes to the Keld repo, conformance entries included, needs a KEL owner id first: the claim is the workflow.md `## Agent claim` comment on that Linear issue (comments are not blocked by the cap) and GitHub self-assign is only a mirror. A repo-writing ticket with no KEL owner is not `ready-for-agent`; it stops at 'missing owner' with the unblock stated: the owner lifts the cap or bridges the epic, or designates an existing open KEL issue. Do not add a `gh-<n>` slug or a GitHub claim surface without a reviewed change to workflow.md and tools/workspace.py. L0 must gate on task checkboxes or SHAs, not Linear relations: KEL-140 shows every blockedBy Done while KEL-102/T3 is unchecked. For the pin: the three existing lifecycle cells can be re-pinned to v44.4.5 mechanically, since their oracle text is unchanged; R1 still has to choose one pin before new cells land."
+  }
+ ],
+ "open_decision_keys_allowed_as_blockers": {
+  "F02-A3": "Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on system webviews (hidden-paint oracle)?",
+  "F02-A6": "Which Windows/Linux chrome options (frame:false, titleBarStyle hidden, titleBarOverlay, setTitleBarOverlay) are Tier 1 and how are they implemented?",
+  "F03-D6": "How are print/printToPDF/devtools mapped per engine while release policy stays closed?",
+  "F04-A3": "Synchronous cross-world function calls: can a contextBridge-exposed function return a value synchronously on WKWebView/WebKitGTK worlds?",
+  "F04-A5": "Renderer sendSync mechanism on WKWebView (synchronous XHR to a host scheme handler) — measured feasibility",
+  "PANEL-D22": "CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app-modal dialog",
+  "PANEL-D23": "CONTESTED: close/quit veto sequencing with two dirty windows",
+  "PANEL-P1": "S0 link-drain gate: worker-owned single-link transport prototype (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park)",
+  "PANEL-P2": "S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applicationShouldTerminate later reply) diffed against Electron 44.4.5 fixtures (E3 re-entrancy, E5 two dirty windows)",
+  "PANEL-P3": "S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2 with a throwing @keld/electron stub and a Node-API tracer over install + activation + 4-step primary workflow",
+  "X01-A5": "Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-order fixture produce identical transcripts, and which normalisers are needed?",
+  "X04-D3": "Custom-scheme privilege matrix and CSP profile prototype (P2): can a renderer turn a resource locator into filesystem authority, and does the host CSP admit draw.io?",
+  "X05-A4": "Hot-path cost model for chatty one-way IPC (webContents.send fan-out, ipcRenderer.send) and the allocation-free rules for facade hot paths — measure before design"
+ },
+ "closed_decision_keys_never_blockers": [
+  "PANEL-D1",
+  "PANEL-D10",
+  "PANEL-D11",
+  "PANEL-D12",
+  "PANEL-D13",
+  "PANEL-D14",
+  "PANEL-D15",
+  "PANEL-D16",
+  "PANEL-D17",
+  "PANEL-D18",
+  "PANEL-D2",
+  "PANEL-D3",
+  "PANEL-D4",
+  "PANEL-D5",
+  "PANEL-D6",
+  "PANEL-D7",
+  "PANEL-D8",
+  "PANEL-D9",
+  "F01-A4",
+  "F01-A5",
+  "F03-D4",
+  "F04-A1",
+  "F04-A4",
+  "F05-D3",
+  "F06-D1",
+  "F06-D3",
+  "F06-D4",
+  "F07-A6",
+  "F07-E1",
+  "F08-D6",
+  "F09-A2",
+  "F09-A6",
+  "PANEL-D19",
+  "PANEL-D20",
+  "PANEL-D21",
+  "X02-A1",
+  "X03-A5",
+  "X03-A6",
+  "X04-D4"
+ ],
+ "program_wide_findings": [
+  {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ ]
+}

@@ -1,0 +1,51 @@
+[
+ {
+  "kind": "edge_problems",
+  "entry": {
+   "key": "ALL external predecessors",
+   "problem": "Predecessors are named at parent-issue level ('KEL-79', 'KEL-102 admission', 'KEL-80 (owner)', 'KEL-135 amendment (profile clear op)', 'KEL-208/KEL-209 authority rule', 'KEL-89 secrets'), which the plan's own cited rule forbids (kel139: 'A parent issue status never substitutes for a named task artifact'). Live state (Linear, fetched 2026-10-06): KEL-79/80/76/97/140/141/143/144 Backlog and unassigned; KEL-209 Duplicate; KEL-208 Done; KEL-89 is keld-auth, not secrets.",
+   "fix": "For each ticket name the task-level artifact (landed SHA, spec section, or 'does not exist — blocker, first action X'); remove KEL-209 and the KEL-89 secrets attribution."
+  }
+ },
+ {
+  "kind": "invariant_violations",
+  "entry": {
+   "key": "PANEL-P1",
+   "violation": "Performance rule: pass criterion 'sync RTT ≤ 2× raw kipc RTT' over 1,000 calls decides an architecture change (new @keld/kipc transport contract) while the same text calls the number 'diagnostic only'. An ineligible measurement (01 §5.1: ≥20 sessions × 100k calls) must not decide architecture.",
+   "fix": "Make the pass criteria purely semantic (zero stall, no KELD-IPC-006, ordered replay, arm E completes); report RTT as a diagnostic with a registry id and no threshold."
+  }
+ },
+ {
+  "kind": "invariant_violations",
+  "entry": {
+   "key": "MAP",
+   "violation": "'Features need an approved spec + Linear owner': no ticket has a Linear issue; the MAP records 'Linear is at its free issue cap' as a standing condition without a blocker class, an owner or a resolution path (root AGENTS requires an immediate resolution path for a blocker). Whether the cap still holds is an ASSUMPTION — not checked in this audit.",
+   "fix": "Record it as a classified blocker (missing approval/capacity) with options: free capacity by archiving, bridge each first-proof ticket onto an existing live owner issue (KEL-127/KEL-237), or an explicit owner ruling that GitHub issues satisfy the gate for this program."
+  }
+ },
+ {
+  "kind": "ambiguity_laundering",
+  "entry": {
+   "key": "MAP (kill condition 'Channel-grant wildcard') / PANEL-D13",
+   "claim": "'draw.io's single rendererReq channel is enumerable'.",
+   "problem": "electron.js registers 25 distinct ipcMain channels (rendererReq, isModified-result, saveAndClose-result, draftRemoved, app-load-finished, newfile, openDevTools, toggle*, zoom*, export*, import-*, xml-data*, svg-data, render-finished, checkForUpdates, log), and the preload exposes sendMessage(action, args) with a page-chosen channel name (:113-116). The grant is a ~25-entry list plus the main→renderer set, not one channel.",
+   "fix": "FACT: 25 literal renderer→main channel names are registered in the main file and are enumerable from those registrations; the preload itself does not constrain the channel. UNKNOWN: which the web app actually sends (webapp submodule is empty in the clone)."
+  }
+ },
+ {
+  "kind": "first_proof_frontier",
+  "entry": {
+   "key": "PANEL-P3",
+   "why_now": "Takeable now and upstream of everything: it decides the boot-descriptor field set, the Electron members the four top-level packages touch, the committed denominator and whether the proof is config-only or config+N. Prerequisite work inside it: populate the empty drawio webapp submodule and install node_modules (both absent in the clone).",
+   "consumes": "corpus drawio-desktop@2edf9fb (src/main/electron.js, electron-preload.js, package.json: electron-store ^11.0.2, electron-log ^5.4.4, electron-updater ^6.8.9, electron-context-menu ^5.1.0); Bun 1.4.2; a throwing @keld/electron stub. Produces: pre-ready call list, package member inventory, fs/net/spawn classification, denominator draft."
+  }
+ },
+ {
+  "kind": "first_proof_frontier",
+  "entry": {
+   "key": "PANEL-P1",
+   "why_now": "Takeable now; kill condition #1. Decides whether showMessageBoxSync on the close path (electron.js:876) can work, i.e. whether step 4 is config-only. Nothing that parks Bun may be specified before it.",
+   "consumes": "packages/@keld/kipc transport at b4b907c3, the keld-ipc Rust host writer, the existing park-probe prototype (8,192-byte stall measurement). Produces: pass/fail per arm; either the transport ticket (missing today) or the recorded 'config + 1 edit' decision."
+  }
+ }
+]
