@@ -82,10 +82,15 @@ framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every 
 rule, which is wire-gated: "Candidate connect-back" owns the connect-back endpoint, the
 claim's quality of service and impersonation, and every record and its failures;
 "Machine-UAC bootstrap" owns the bootstrap endpoint, roles, argument shape, quality of
-service and impersonation. `keld-ipc::attempt` implements the endpoint layer: the exact
-name predicate, the three closed descriptors (owner, single-mask protected DACL, explicit
-Medium no-write-up label), first-instance creation with readback, and the
-identification-only client's readback before it sends. The shared token-fact reader
+service and impersonation. `keld-ipc` implements the endpoint layer. The exact name
+predicate is `WindowsNamedPipeBootstrapStream::is_attempt_endpoint` in `bootstrap.rs`,
+beside the app-link and lifecycle predicates and sharing their one locator-shape rule.
+`keld-ipc::attempt` owns the three closed descriptors (owner, single-mask protected DACL,
+explicit Medium no-write-up label), first-instance creation with readback, and the
+identification-only client, which requires the server to be in its own session and its
+descriptor to be exact before it sends. Each readback is compared with its form by the
+named-pipe owner's one comparison, which the app-link and lifecycle pipes also use with
+a DACL-only form. The shared token-fact reader
 `query_windows_peer_token_facts` also reports each token's logon session
 (`TokenStatistics.AuthenticationId`), elevation and elevation type, the facts KEL-53
 requires of the claim writer's token and of the initiating token. No record or locator
