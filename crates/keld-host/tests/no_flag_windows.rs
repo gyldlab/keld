@@ -104,7 +104,7 @@ fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
 }
 
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); operator launches this controller under the second ordinary account"]
+#[ignore = "operator launches this controller under the second ordinary account"]
 fn kel135_second_user_storage_helper() {
     let request_path = env::var_os("KELD_KEL135_SECOND_USER_REQUEST")
         .expect("operator supplies the live request path");
@@ -124,6 +124,8 @@ fn kel135_second_user_storage_helper() {
     let nonce = request["nonce"].as_str().expect("request nonce");
     validate_profile_state_atom(nonce, false).expect("request nonce domain");
     let host = std::ffi::OsStr::new(request["host"].as_str().expect("signed host path"));
+    let installer =
+        std::ffi::OsStr::new(request["installer"].as_str().expect("install fixture path"));
     let identity =
         std::ffi::OsStr::new(request["identity"].as_str().expect("signed identity path"));
     let namespace = signed_fixture_profile_namespace(identity, Some(host));
@@ -157,6 +159,7 @@ fn kel135_second_user_storage_helper() {
         let case = SignedProfileStateCase {
             name: message["case"].as_str().expect("remote case name"),
             host,
+            installer,
             before: message["before"].as_str().expect("remote before value"),
             after: message["after"].as_str().expect("remote after value"),
         };

@@ -1,6 +1,8 @@
-//! Signed same-origin package purge and interrupted-intent recovery acceptance.
+//! Signed same-origin package purge and interrupted-intent recovery acceptance on
+//! installed packages.
 
 use crate::profile_state_run_nonce;
+use crate::support::installed::{INSTALLER_ENV, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::product::ProductFixture;
 use crate::support::profile_run::{SignedProfileStateCase, run_signed_profile_state_case};
 use crate::support::profile_server::ProfileStateServer;
@@ -9,10 +11,10 @@ use std::env;
 use std::net::TcpListener;
 
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires signed KEL-135 host and package-purge fixtures"]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1, KELD_KEL254_INSTALLER_FIXTURE and the KELD_KEL135_SIGNED_PURGE_FIXTURE package-purge fixture"]
 fn kel135_signed_host_purge_removes_same_origin_state() {
-    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
-        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
+    let signed_host = fixture_env(SIGNED_HOST_A_P1);
+    let installer = fixture_env(INSTALLER_ENV);
     let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
         .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
     let fixture = ProductFixture::new();
@@ -24,6 +26,7 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
     let seed = SignedProfileStateCase {
         name: "purge-seed",
         host: &signed_host,
+        installer: &installer,
         before: "",
         after: &seeded_state,
     };
@@ -40,6 +43,7 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
     let recovered = SignedProfileStateCase {
         name: "purge-recovered",
         host: &signed_host,
+        installer: &installer,
         before: "",
         after: &recovered_state,
     };
@@ -53,10 +57,10 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
 }
 
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires signed KEL-135 host and package-purge fixtures"]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1, KELD_KEL254_INSTALLER_FIXTURE and the KELD_KEL135_SIGNED_PURGE_FIXTURE package-purge fixture"]
 fn kel135_signed_host_recovers_an_interrupted_purge() {
-    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
-        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
+    let signed_host = fixture_env(SIGNED_HOST_A_P1);
+    let installer = fixture_env(INSTALLER_ENV);
     let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
         .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
     let fixture = ProductFixture::new();
@@ -68,6 +72,7 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
     let seed = SignedProfileStateCase {
         name: "purge-crash-seed",
         host: &signed_host,
+        installer: &installer,
         before: "",
         after: &seeded_state,
     };
@@ -95,6 +100,7 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
     let recovered = SignedProfileStateCase {
         name: "purge-crash-recovered",
         host: &signed_host,
+        installer: &installer,
         before: "",
         after: &recovered_state,
     };

@@ -30,6 +30,13 @@ getrandom = { workspace = true }
 sha2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# KEL-254 A3 T3 Part B: the one internal edge through which the boot owner consumes
+# KEL-53's opaque `ActivePackageSelection` and `ExpectedAppIdentity`. It adds no new
+# workspace crate, but it brings keld-update's already-pinned third-party closure
+# (zstd/zstd-sys, ed25519-dalek, blake3, base64, semver, sha2 0.11 and their
+# dependencies) into keld-core's and keld-host.exe's Windows build. Windows only,
+# because installed-root boot is Windows-only; keld-update never depends on keld-core.
+keld-update = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 
