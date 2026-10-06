@@ -23,6 +23,48 @@ fn u32_at(image: &[u8], at: usize) -> usize {
     .expect("u32 fits usize")
 }
 
+/// The section table offset of the image whose NT headers start at `nt`. PE Format: the
+/// table follows the optional header, whose size the COFF file header's
+/// `SizeOfOptionalHeader` gives (224 for PE32, 240 for PE32+); no size is assumed.
+fn section_table(image: &[u8], nt: usize) -> usize {
+    nt + 24 + u16_at(image, nt + 20)
+}
+
+/// Control for [`section_table`]: on a PE32-sized optional header a fixed PE32+ size of
+/// 240 misses the table, so only an offset read from the image finds it on both layouts.
+#[test]
+fn section_table_follows_size_of_optional_header() {
+    let nt = 0x80;
+    for optional_size in [224_u16, 240] {
+        let mut image = vec![0_u8; 0x200];
+        image[nt + 20..nt + 22].copy_from_slice(&optional_size.to_le_bytes());
+        let table = nt + 24 + usize::from(optional_size);
+        image[table..table + 8].copy_from_slice(b".keldeai");
+        let found = section_table(&image, nt);
+        assert_eq!(
+            &image[found..found + 8],
+            b".keldeai",
+            "SizeOfOptionalHeader {optional_size}: table at {found:#x}"
+        );
+    }
+}
+
+/// Asserts that one `WIN_CERTIFICATE` spans the attribute certificate table of
+/// `certificate_bytes` at `certificate`, and returns its header for the receipt.
+/// Authenticode PE (v1.0, 2008): `dwLength`, `wRevision`, `wCertificateType`.
+fn single_win_certificate(signed: &[u8], certificate: usize, certificate_bytes: usize) -> String {
+    let length = u32_at(signed, certificate);
+    let revision = u16_at(signed, certificate + 4);
+    let kind = u16_at(signed, certificate + 6);
+    assert_eq!(
+        length, certificate_bytes,
+        "one WIN_CERTIFICATE spans the whole table"
+    );
+    assert_eq!(revision, 0x0200, "WIN_CERT_REVISION_2_0");
+    assert_eq!(kind, 0x0002, "WIN_CERT_TYPE_PKCS_SIGNED_DATA");
+    format!("dwLength:{length:#x},wRevision:{revision:#06x},wCertificateType:{kind:#06x}")
+}
+
 /// What the KEL-135 verifier owner observed on one fresh copy of an image.
 #[derive(Debug, PartialEq)]
 enum Trust {
@@ -133,6 +175,7 @@ fn ac8_signed_container_coverage_falsifier() {
         signed.len(),
         "certificate table end"
     );
+    let win_certificate = single_win_certificate(&signed, certificate, certificate_bytes);
     let signer_owned = [
         checksum..checksum + 4,
         certificate_entry..certificate_entry + 8,
@@ -146,7 +189,8 @@ fn ac8_signed_container_coverage_falsifier() {
 
     // Falsifier offsets from the PE Format layout of the signed image, not from the writer.
     let sections = u16_at(&signed, nt + 6);
-    let header = optional + 240 + (sections - 1) * 40;
+    let table = section_table(&signed, nt);
+    let header = table + (sections - 1) * 40;
     assert_eq!(
         &signed[header..header + 8],
         b".keldeai",
@@ -173,13 +217,15 @@ fn ac8_signed_container_coverage_falsifier() {
     println!(
         "KELD_PACK_AC8 input_sha256={} embedded_sha256={} signed_sha256={} signed_bytes={} \
          signed_checksum={:#010x} certificate_table={certificate:#x}+{certificate_bytes:#x} \
-         container_header={header:#x} container_raw={pointer:#x}+{raw_bytes:#x} \
-         payload_bytes={length}",
+         win_certificate={win_certificate} size_of_optional_header={} \
+         section_table={table:#x} container_header={header:#x} \
+         container_raw={pointer:#x}+{raw_bytes:#x} payload_bytes={length}",
         sha256_hex(&host),
         sha256_hex(&embedded),
         sha256_hex(&signed),
         signed.len(),
-        u32_at(&signed, checksum)
+        u32_at(&signed, checksum),
+        table - optional
     );
     println!("KELD_PACK_AC8 row=intact {}", intact.describe());
     println!("KELD_PACK_AC8 row=unsigned-control {}", unsigned.describe());
