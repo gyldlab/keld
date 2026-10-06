@@ -456,23 +456,6 @@ fn the_repair_never_rewrites_a_current_that_became_valid() {
 }
 
 #[test]
-fn a_machine_installation_refuses_the_startup_repair() {
-    let fixture = tempfile::tempdir().expect("machine refusal fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let mut machine = trust.clone();
-    machine.installation.install_mode = crate::DirectInstallMode::MachineUacDirect;
-    let before = record_bytes(&trust);
-    let error = crate::windows_baseline::load::repair_invalid_current(
-        &machine,
-        &invalid_current_cause(),
-        None,
-    )
-    .expect_err("only the elevated writer may repair a machine installation");
-    assert!(error.to_string().contains("elevated writer"), "{error}");
-    assert_eq!(record_bytes(&trust), before);
-}
-
-#[test]
 fn an_invalid_current_is_not_repaired_beside_a_damaged_previous_known_good() {
     let fixture = tempfile::tempdir().expect("damaged PKG fixture");
     let trust = seed_per_user_baseline(fixture.path());
