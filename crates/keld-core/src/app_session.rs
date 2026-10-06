@@ -6160,19 +6160,29 @@ mod tests {
         assert!(error.to_string().contains("reparse point"), "{error}");
     }
 
+    /// Authenticode FFI names that only the `keld-guard` owner may use. Split
+    /// literals keep these needles from matching this test's own source.
+    const AUTHENTICODE_FFI_NEEDLES: [&str; 8] = [
+        concat!("WinTrust", "::"),
+        concat!("Cryptography", "::"),
+        concat!("WinVerify", "Trust"),
+        concat!("WT", "Helper"),
+        concat!("CryptDecode", "Object"),
+        concat!("CryptEncode", "Object"),
+        concat!("CryptQuery", "Object"),
+        concat!("Crypt", "Msg"),
+    ];
+
+    fn authenticode_ffi_needles_in(source: &str) -> Vec<&'static str> {
+        AUTHENTICODE_FFI_NEEDLES
+            .into_iter()
+            .filter(|needle| source.contains(needle))
+            .collect()
+    }
+
     /// The KEL-135 Authenticode FFI has one owner in `keld-guard` (KEL-270 D4).
     #[test]
     fn keld_core_source_holds_no_authenticode_ffi() {
-        // Split literals keep this test from matching its own source.
-        let forbidden = [
-            concat!("WinVerify", "Trust("),
-            concat!("WTHelper", "Prov"),
-            concat!("WTHelper", "Get"),
-            concat!("CryptDecode", "ObjectEx"),
-            concat!("CryptEncode", "ObjectEx"),
-            concat!("Security::", "WinTrust"),
-            concat!("Security::", "Cryptography"),
-        ];
         let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         let mut scanned = 0_usize;
         while let Some(directory) = pending.pop() {
@@ -6183,17 +6193,25 @@ mod tests {
                 } else if path.extension().is_some_and(|extension| extension == "rs") {
                     let source = fs::read_to_string(&path).expect("read a keld-core source file");
                     scanned += 1;
-                    for needle in forbidden {
-                        assert!(
-                            !source.contains(needle),
-                            "{} names `{needle}`; call the keld-guard Authenticode owner instead",
-                            path.display()
-                        );
-                    }
+                    let found = authenticode_ffi_needles_in(&source);
+                    assert!(
+                        found.is_empty(),
+                        "{} names {found:?}; call the keld-guard Authenticode owner instead",
+                        path.display()
+                    );
                 }
             }
         }
         assert!(scanned > 1, "no keld-core source files were scanned");
+    }
+
+    #[test]
+    fn authenticode_ffi_scan_flags_each_needle() {
+        assert!(authenticode_ffi_needles_in("fn clean() {}").is_empty());
+        for needle in AUTHENTICODE_FFI_NEEDLES {
+            let planted = format!("fn planted() {{ let _ = {needle}; }}");
+            assert_eq!(authenticode_ffi_needles_in(&planted), [needle]);
+        }
     }
 
     #[test]
@@ -6202,9 +6220,11 @@ mod tests {
         let error = verified_windows_identity_from_current_exe()
             .expect_err("the test executable is not an approved signed Keld package carrier");
         assert_eq!(error.code(), "KELD-WV-009");
-        // The running image opened as a pinned trust image and reached WinVerifyTrust.
+        // The running image opened as a pinned trust image and was refused by its owner.
         assert!(
-            error.to_string().contains("WinVerifyTrust rejected"),
+            error
+                .to_string()
+                .contains("rejected the current executable with status"),
             "{error}"
         );
     }
@@ -7951,7 +7971,7 @@ mod tests {
         let manifest_path = temp.path().join(PERMISSIONS_FILE);
         fs::write(&manifest_path, manifest_text).expect("write paused FS manifest");
         // SHA-256 of the exact static fixture bytes `{}\n`. Keep the Linux
-        // lifecycle regression independent of the macOS/Windows-only sha2 dependency.
+        // lifecycle regression independent of the macOS-only sha2 dependency.
         let digest = [
             0xca, 0x3d, 0x16, 0x3b, 0xab, 0x05, 0x53, 0x81, 0x82, 0x72, 0x26, 0x14, 0x05, 0x68,
             0xf3, 0xbe, 0xf7, 0xea, 0xac, 0x18, 0x7c, 0xeb, 0xd7, 0x68, 0x78, 0xe0, 0xb6, 0x3e,

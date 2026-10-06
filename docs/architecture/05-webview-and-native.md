@@ -57,8 +57,9 @@ before creating a listener, Bun child, or window. `keld-core` calls the single
 `keld-guard` KEL-135 Authenticode verifier (KEL-270 D4), which accepts one signature with
 no secondary signatures under [WinVerifyTrust Authenticode policy](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust).
 It derives publisher scope from the verified leaf certificate's SPKI and reads the
-canonical app id only from that signer's authenticated `SPC_SP_OPUS_INFO` program name
-with the exact `keld.app-id/v1:` prefix. A missing or invalid trust chain, signer,
+app id only from that signer's authenticated `SPC_SP_OPUS_INFO` program name with the
+exact `keld.app-id/v1:` prefix; `keld-core` then requires it to be canonical before
+deriving the profile identity. A missing or invalid trust chain, signer,
 attribute, or canonical id fails closed as `KELD-WV-009`. Only the authenticated
 `stdin-v1` dev lease selects a fresh ephemeral profile; release failures never fall
 back to a shared or temporary WebView2 store.
