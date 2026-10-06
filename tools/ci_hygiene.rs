@@ -5354,10 +5354,22 @@ foreach ($item in $items) {
     #[test]
     fn unknown_event_must_refuse_a_gitleaks_range() {
         assert_gitleaks_scan_refused(
-            "echo \"gitleaks: unsupported event $KELD_GITLEAKS_EVENT; refusing to choose a scan range\" >&2",
-            "KELD_GITLEAKS_RANGE=HEAD",
+            "refusing to choose a scan range\" >&2\n          exit 1",
+            "refusing to choose a scan range\" >&2\n          KELD_GITLEAKS_RANGE=HEAD",
             "an unknown event that falls back to a scan must fail",
         );
+    }
+
+    #[test]
+    fn gitleaks_scan_refusals_exit_nonzero() {
+        let next = |needle: &str| {
+            GITLEAKS_SCAN_COMMANDS
+                .iter()
+                .position(|command| command.contains(needle))
+                .and_then(|index| GITLEAKS_SCAN_COMMANDS.get(index + 1).copied())
+        };
+        assert_eq!(next("refusing an unresolvable range"), Some("exit 1"));
+        assert_eq!(next("refusing to choose a scan range"), Some("exit 1"));
     }
 
     #[test]
