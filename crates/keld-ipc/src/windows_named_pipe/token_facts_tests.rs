@@ -24,7 +24,7 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use super::{
-    WindowsTokenElevationType, current_process_query_token, elevation_type_from_raw,
+    U32TokenClass, WindowsTokenElevationType, current_process_query_token, elevation_type_from_raw,
     exact_token_information_length, luid_value,
 };
 use crate::query_windows_peer_token_facts;
@@ -68,6 +68,21 @@ fn elevation_type_admits_exactly_the_documented_values() {
             error.to_string(),
             "TokenElevationType returned an undocumented value"
         );
+    }
+}
+
+/// The closed set of 32-bit classes is exactly the allowlisted classes, as
+/// winnt.h numbers them (`TokenSessionId = 12`, `TokenElevationType = 18`,
+/// `TokenElevation = 20`), each reporting its own name.
+#[test]
+fn the_32_bit_token_classes_are_the_allowlisted_classes() {
+    for (class, value, name) in [
+        (U32TokenClass::SessionId, 12, "TokenSessionId"),
+        (U32TokenClass::ElevationType, 18, "TokenElevationType"),
+        (U32TokenClass::Elevation, 20, "TokenElevation"),
+    ] {
+        assert_eq!(class.class(), value, "{name}");
+        assert_eq!(class.name(), name);
     }
 }
 

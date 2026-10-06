@@ -968,7 +968,7 @@ pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<Windows
     let user_sid = unsafe { (*user).User.Sid };
     let user_sid = sid_bytes_in_token_buffer(&user_buffer, user_length, user_sid)?;
 
-    let session_id = token_information_u32(raw_token, TokenSessionId, "TokenSessionId")?;
+    let session_id = token_information_u32(raw_token, U32TokenClass::SessionId)?;
 
     let (integrity_buffer, integrity_length) =
         token_information_buffer(raw_token, TokenIntegrityLevel)?;
@@ -1003,9 +1003,9 @@ pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<Windows
 
     let authentication_id = luid_value(token_statistics(raw_token)?.AuthenticationId);
     // TOKEN_ELEVATION is one DWORD, `TokenIsElevated`.
-    let elevated = token_information_u32(raw_token, TokenElevation, "TokenElevation")? != 0;
+    let elevated = token_information_u32(raw_token, U32TokenClass::Elevation)? != 0;
     let elevation_type = elevation_type_from_raw(
-        token_information_u32(raw_token, TokenElevationType, "TokenElevationType")?.cast_signed(),
+        token_information_u32(raw_token, U32TokenClass::ElevationType)?.cast_signed(),
     )?;
     Ok(WindowsPeerTokenFacts {
         user_sid,
@@ -1017,12 +1017,40 @@ pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<Windows
     })
 }
 
-/// Reads a token-information class whose output is one 32-bit value
-/// (`TokenSessionId`'s `DWORD`, `TOKEN_ELEVATION` or `TOKEN_ELEVATION_TYPE`).
+/// The token-information classes whose output is one 32-bit value. The closed
+/// set is the allowlist: no other class can reach [`token_information_u32`].
+#[derive(Debug, Clone, Copy)]
+enum U32TokenClass {
+    /// `TokenSessionId`, a `DWORD`.
+    SessionId,
+    /// `TokenElevation`, `TOKEN_ELEVATION` (one `DWORD`, `TokenIsElevated`).
+    Elevation,
+    /// `TokenElevationType`, `TOKEN_ELEVATION_TYPE`.
+    ElevationType,
+}
+
+impl U32TokenClass {
+    fn class(self) -> TOKEN_INFORMATION_CLASS {
+        match self {
+            Self::SessionId => TokenSessionId,
+            Self::Elevation => TokenElevation,
+            Self::ElevationType => TokenElevationType,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::SessionId => "TokenSessionId",
+            Self::Elevation => "TokenElevation",
+            Self::ElevationType => "TokenElevationType",
+        }
+    }
+}
+
+/// Reads one of the 32-bit token-information classes.
 fn token_information_u32(
     token: windows_sys::Win32::Foundation::HANDLE,
-    class: TOKEN_INFORMATION_CLASS,
-    name: &str,
+    class: U32TokenClass,
 ) -> io::Result<u32> {
     let mut value = 0_u32;
     let size = u32::try_from(std::mem::size_of_val(&value)).map_err(io::Error::other)?;
@@ -1033,7 +1061,7 @@ fn token_information_u32(
     if unsafe {
         GetTokenInformation(
             token,
-            class,
+            class.class(),
             (&raw mut value).cast(),
             size,
             &raw mut returned,
@@ -1042,7 +1070,7 @@ fn token_information_u32(
     {
         return Err(io::Error::last_os_error());
     }
-    exact_token_information_length(returned, size, name)?;
+    exact_token_information_length(returned, size, class.name())?;
     Ok(value)
 }
 
