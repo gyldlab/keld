@@ -342,19 +342,26 @@ fn golden_phases() -> [(&'static str, ActivationPhase, &'static [u8]); 4] {
 
 #[test]
 fn activation_journal_v2_golden_vectors_are_exact_for_every_phase() {
+    // The wire review approves the goldens that the governing spec states, byte for byte.
+    let spec = include_str!("../../../../docs/specs/kel53-full-package-activation.md");
     for (name, phase, golden) in golden_phases() {
         let mut journal = activation_journal();
         journal.phase = phase;
+        let golden_text = std::str::from_utf8(golden).expect("UTF-8 golden");
         assert_eq!(
             String::from_utf8(encode_activation_journal(&journal).expect("v2 journal"))
                 .expect("UTF-8"),
-            std::str::from_utf8(golden).expect("UTF-8 golden"),
+            golden_text,
             "{name}: the v2 encoding is frozen by its checked-in golden vector"
         );
         assert_eq!(
             decode_activation_journal(golden).expect("v2 golden decodes"),
             journal,
             "{name}: the golden vector decodes to every journaled fact"
+        );
+        assert!(
+            spec.contains(&format!("```json\n{golden_text}\n```")),
+            "{name}: KEL-53 §4 states exactly the checked-in golden"
         );
     }
     // The spec fixes the owner encoding independently of the encoder under test.
@@ -366,12 +373,6 @@ fn activation_journal_v2_golden_vectors_are_exact_for_every_phase() {
         r#""attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"#,
         r#""phase":{"phase":"publish-pending"}}"#,
     )));
-    // The wire review approves the golden that the governing spec states, byte for byte.
-    let spec = include_str!("../../../../docs/specs/kel53-full-package-activation.md");
-    assert!(
-        spec.contains(&format!("```json\n{golden}\n```")),
-        "KEL-53 §4 states exactly the checked-in publish-pending golden"
-    );
 }
 
 #[test]

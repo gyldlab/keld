@@ -823,13 +823,32 @@ values, nonzero, and a negative `LogonTime` refuses. The wire review fixes these
 vectors. The two objects follow `lifecycle_channel_id` and precede `phase`, in the order
 above, under schema `keld.activation-journal/v2`. The fixture's logon session has
 `HighPart` 1 and `LowPart` `0x0002a5f3`, its `LogonTime` is 2026-10-06T08:00:00Z, and
-its owner is process 4242, created 42 seconds later. The exact accepted `publish-pending`
-record (one line, no trailing newline; the other phases differ only in `phase`, as in
-v1) is checked in with the other three as
-`crates/keld-update/src/records/golden/journal-v2-<phase>.json`:
+its owner is process 4242, created 42 seconds later. The exact accepted records, one per
+phase, are checked in as `crates/keld-update/src/records/golden/journal-v2-<phase>.json`.
+Each is one line with no trailing newline; they differ only in `phase`, as in v1.
+
+`journal-v2-publish-pending.json`:
 
 ```json
 {"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"publish-pending"}}
+```
+
+`journal-v2-awaiting-health.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"awaiting-health"}}
+```
+
+`journal-v2-health-accepted.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"health-accepted","health_receipt_digest":"7777777777777777777777777777777777777777777777777777777777777777"}}
+```
+
+`journal-v2-rollback-pending.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"rollback-pending","failure":"health-rejected"}}
 ```
 
 | Field | Accepted | Refused (`journal-v2-refusals.txt` beside the goldens) |
