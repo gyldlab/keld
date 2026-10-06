@@ -755,7 +755,10 @@ direct modes ship.
 
 ### Internal state and transition contract
 
-These internal shapes are not public Rust API or manifest wire:
+These internal shapes are not public Rust API or manifest wire, except the owner-fact
+value types `AttemptOwner` and `InitiatingLogon`: the attempt owner constructs them,
+with private fields, to call `WindowsMintedAttempt::journal`, so they are public API
+(§8; amended for the KEL-270 T4d S3 independent public-API review):
 
 ```rust
 struct ArtifactIdentity {
@@ -2190,7 +2193,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   guidance enum with pinned texts; the mint-then-journal seam, which changes
   `WindowsExtractionRoot::begin_activation` and the signatures of
   `WindowsRecoveryInspection::recover` and `resume_unlaunched` so that minting and the
-  first name-revealing record are separate calls; Machine-UAC admission in
+  first name-revealing record are separate calls, with its `WindowsMintedAttempt` and
+  `WindowsJournaledAttempt` handles and its `AttemptOwner` and `InitiatingLogon`
+  inputs (named for the KEL-270 T4d S3 public-API review); Machine-UAC admission in
   `load_windows_activation_write_snapshot` and `load_windows_recovery_inspection`,
   which today admit only `PerUserDirect` (`windows_baseline/load.rs:353`, `:382-385`),
   through the existing `require_windows_machine_uac_owner_token` predicate rather than a
