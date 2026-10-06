@@ -389,6 +389,7 @@ dependencies = [
 name = "keld-update-fuzz"
 version = "0.0.0"
 dependencies = [
+ "keld-pack",
  "keld-update",
  "libfuzzer-sys",
 ]
