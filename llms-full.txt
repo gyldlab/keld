@@ -2623,10 +2623,14 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   Bun roles remain non-SYSTEM. MSIX, App Installer, Store, enterprise and other
   deployment-owned installs remain with that owner and cannot acquire a competing Keld
   writer. This is approved product direction, not evidence that the seamless authority
-  or a machine-mode installed boot is implemented. KEL-96 boots the Windows dev stage
-  only under a valid dev lease; without one it boots only the authenticated installed
-  package that KEL-53's executable-located selection admits (KEL-254 T3 Part B), whose
-  native evidence covers `PerUserDirect` alone.
+  is implemented. KEL-96 boots the Windows dev stage only under a valid dev lease;
+  without one it boots only the authenticated installed package that KEL-53's
+  executable-located selection admits (KEL-254 T3 Part B). That selection also admits a
+  machine-mode installation read-only and keld-core applies no install-mode filter, so a
+  machine-mode installed boot is reachable but unqualified: native boot evidence covers
+  `PerUserDirect` alone, and each machine-mode cell stays unqualified until KEL-53's
+  native install-mode proof and the consumer's own native boot evidence exist for it.
+  This is not KEL-254 installed-boot acceptance; KEL-19 T2 and KEL-254 T4 remain open.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
