@@ -4,23 +4,22 @@
 //! An attempt endpoint name is a locator that carries no authority. This
 //! module owns the closed set of endpoint descriptors, the owner's
 //! first-instance creation with descriptor readback, and the client's
-//! readback of the server descriptor before it sends anything. It defines no
-//! message record; the subprotocol's byte layouts are owned by KEL-53.
+//! readback of the server descriptor before it sends anything. Comparing a
+//! readback with a form is not repeated here: it is the named-pipe owner's
+//! single comparison, which the app-link and lifecycle pipes share. It defines
+//! no message record; the subprotocol's byte layouts are owned by KEL-53.
 
-use std::ffi::OsString;
 use std::fmt::{self, Write as _};
 use std::io;
 use std::time::Instant;
 
-use windows_permissions::constants::SecurityInformation;
-use windows_permissions::wrappers::ConvertSecurityDescriptorToStringSecurityDescriptor;
-use windows_permissions::{Acl, LocalBox, SecurityDescriptor, Sid};
+use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
-use windows_sys::Win32::System::Pipes::PIPE_REJECT_REMOTE_CLIENTS;
 
 use crate::bootstrap::WindowsNamedPipeBootstrapStream;
 use crate::windows_named_pipe::{
-    PIPE_ACCESS_MASK, PipeDescriptorReadback, WindowsNamedPipeServer, WindowsNamedPipeStream,
+    PIPE_ACCESS_MASK, PipeDescriptorReadback, PipeSecuritySections, WindowsNamedPipeServer,
+    WindowsNamedPipeStream, WindowsPipeSecurityFact,
 };
 
 /// Explicit Medium mandatory label with `SYSTEM_MANDATORY_LABEL_NO_WRITE_UP`,
@@ -131,38 +130,24 @@ impl WindowsAttemptEndpointSecurity {
 
     /// Requires `readback` to be exactly this form: a non-inheritable handle,
     /// a pipe that rejects remote clients, this owner, this protected DACL
-    /// and this label. The DACL section, control flags included, must equal
-    /// the expected one, so an extra or reordered ACE, any other mask bit or
-    /// a lost protection flag is a mismatch. The label is compared as its ACE
-    /// list (type, flags, mask and SID), so a missing, lower or
-    /// policy-changed label is a mismatch; the SACL's auto-inherited control
-    /// flag, which Windows sets itself when it assigns the descriptor, is not
-    /// part of the label.
+    /// and this label, through the one pipe-form comparison
+    /// (`PipeDescriptorReadback::first_mismatch`) that the app-link and
+    /// lifecycle pipes also use.
     pub(crate) fn verify(
         &self,
         readback: &PipeDescriptorReadback,
     ) -> Result<(), WindowsAttemptEndpointError> {
-        let mismatch = |fact| Err(WindowsAttemptEndpointError::SecurityMismatch { fact });
-        if readback.handle_inheritable {
-            return mismatch(WindowsAttemptSecurityFact::InheritableHandle);
-        }
-        if readback.pipe_flags & PIPE_REJECT_REMOTE_CLIENTS == 0 {
-            return mismatch(WindowsAttemptSecurityFact::RemoteClients);
-        }
         let expected = self.descriptor()?;
-        let actual_owner = readback.descriptor.owner();
-        if actual_owner.is_none() || actual_owner != expected.owner() {
-            return mismatch(WindowsAttemptSecurityFact::Owner);
+        let mismatch = readback
+            .first_mismatch(&expected, PipeSecuritySections::OwnerDaclLabel)
+            .map_err(|source| WindowsAttemptEndpointError::Os {
+                operation: "render the endpoint descriptor",
+                source,
+            })?;
+        match mismatch {
+            Some(fact) => Err(WindowsAttemptEndpointError::SecurityMismatch { fact }),
+            None => Ok(()),
         }
-        if sddl_section(&readback.descriptor, SecurityInformation::Dacl)?
-            != sddl_section(&expected, SecurityInformation::Dacl)?
-        {
-            return mismatch(WindowsAttemptSecurityFact::Dacl);
-        }
-        if !same_aces(readback.descriptor.sacl(), expected.sacl()) {
-            return mismatch(WindowsAttemptSecurityFact::Label);
-        }
-        Ok(())
     }
 }
 
@@ -331,33 +316,6 @@ impl WindowsAttemptClient {
     }
 }
 
-/// The descriptor or pipe fact that differed from the expected form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowsAttemptSecurityFact {
-    /// The handle can be inherited by a child process.
-    InheritableHandle,
-    /// The pipe does not set `PIPE_REJECT_REMOTE_CLIENTS`.
-    RemoteClients,
-    /// The owner is absent or not the form's owner.
-    Owner,
-    /// The DACL is not exactly the form's protected ACE set.
-    Dacl,
-    /// The mandatory label is not exactly Medium with no-write-up.
-    Label,
-}
-
-impl fmt::Display for WindowsAttemptSecurityFact {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::InheritableHandle => "inheritable handle",
-            Self::RemoteClients => "remote clients admitted",
-            Self::Owner => "owner",
-            Self::Dacl => "DACL",
-            Self::Label => "mandatory label",
-        })
-    }
-}
-
 /// Typed failure of a `keld-attempt` endpoint operation.
 #[derive(Debug)]
 pub enum WindowsAttemptEndpointError {
@@ -376,7 +334,7 @@ pub enum WindowsAttemptEndpointError {
     /// handle is not the expected form.
     SecurityMismatch {
         /// The first fact that differed.
-        fact: WindowsAttemptSecurityFact,
+        fact: WindowsPipeSecurityFact,
     },
     /// `KELD-IPC-011`: a caller-supplied SID is not a valid binary Windows SID.
     InvalidSid,
@@ -433,38 +391,6 @@ impl std::error::Error for WindowsAttemptEndpointError {
             Self::EndpointShape | Self::SecurityMismatch { .. } | Self::InvalidSid => None,
         }
     }
-}
-
-/// Whether two ACLs hold the same ACEs in the same order: type, flags, mask
-/// and SID. An absent ACL never matches.
-fn same_aces(actual: Option<&Acl>, expected: Option<&Acl>) -> bool {
-    let (Some(actual), Some(expected)) = (actual, expected) else {
-        return false;
-    };
-    actual.len() == expected.len()
-        && (0..expected.len()).all(
-            |index| match (actual.get_ace(index), expected.get_ace(index)) {
-                (Some(actual), Some(expected)) => {
-                    actual.ace_type() == expected.ace_type()
-                        && actual.flags() == expected.flags()
-                        && actual.mask() == expected.mask()
-                        && actual.sid() == expected.sid()
-                }
-                _ => false,
-            },
-        )
-}
-
-fn sddl_section(
-    descriptor: &SecurityDescriptor,
-    section: SecurityInformation,
-) -> Result<OsString, WindowsAttemptEndpointError> {
-    ConvertSecurityDescriptorToStringSecurityDescriptor(descriptor, section).map_err(|source| {
-        WindowsAttemptEndpointError::Os {
-            operation: "render the endpoint descriptor",
-            source,
-        }
-    })
 }
 
 /// Renders a binary Windows SID as SDDL text. Only a structurally valid SID

@@ -33,7 +33,7 @@ pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
 #[cfg(windows)]
 pub use attempt::{
     WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
-    WindowsAttemptEndpointSecurity, WindowsAttemptSecurityFact,
+    WindowsAttemptEndpointSecurity,
 };
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
@@ -62,7 +62,8 @@ pub use session::{
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 #[cfg(windows)]
 pub use windows_named_pipe::{
-    WindowsPeerTokenFacts, WindowsTokenElevationType, query_windows_peer_token_facts,
+    WindowsPeerTokenFacts, WindowsPipeSecurityFact, WindowsTokenElevationType,
+    query_windows_peer_token_facts,
 };
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).

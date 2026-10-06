@@ -1,13 +1,16 @@
 //! Windows named-pipe handle and overlapped-I/O ownership.
 //!
-//! This module owns the Win32 ABI boundary only. Bootstrap token parsing,
-//! frame decoding, authentication, and rejection policy remain in safe shared
+//! This module owns the Win32 ABI boundary, including the readback of its
+//! pipes' security and the one safe comparison of a readback with a pipe's
+//! exact form. Bootstrap token parsing, frame decoding, authentication, the
+//! choice of each pipe's form and other rejection policy remain in safe shared
 //! modules.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(unsafe_code)] // KEL-101-sanctioned Win32 pipe/overlapped ABI owner
 
 use std::ffi::OsStr;
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -20,9 +23,11 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use std::{cell::RefCell, sync::mpsc};
 
-use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
+use windows_permissions::constants::{SeObjectType, SecurityInformation};
 use windows_permissions::utilities::current_process_sid;
-use windows_permissions::wrappers::{ConvertSidToStringSid, GetSecurityInfo};
+use windows_permissions::wrappers::{
+    ConvertSecurityDescriptorToStringSecurityDescriptor, ConvertSidToStringSid, GetSecurityInfo,
+};
 use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
 use windows_sys::Win32::Foundation::{
     ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
@@ -63,6 +68,10 @@ const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 /// attributes, `READ_CONTROL` and `SYNCHRONIZE`; never `FILE_CREATE_PIPE_INSTANCE`,
 /// `WRITE_DAC` or `WRITE_OWNER`.
 pub(crate) const PIPE_ACCESS_MASK: u32 = 0x0012_019B;
+const _: () = assert!(
+    PIPE_ACCESS_MASK & FILE_CREATE_PIPE_INSTANCE == 0,
+    "a keld-ipc pipe grant never lets a client create another instance"
+);
 
 #[cfg(test)]
 thread_local! {
@@ -117,25 +126,110 @@ pub(crate) struct WindowsNamedPipeStream {
     absolute_deadline: Mutex<Option<Instant>>,
 }
 
-/// Exact security facts read back from the live pipe handle.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct PipeSecurityFacts {
-    pub(crate) protected_dacl: bool,
-    pub(crate) ace_count: usize,
-    pub(crate) one_ace_is_current_user: bool,
-    pub(crate) one_ace_type: u8,
-    pub(crate) one_ace_flags: u8,
-    pub(crate) one_ace_mask: u32,
-    pub(crate) handle_flags: u32,
-    pub(crate) pipe_flags: u32,
-}
-
 /// Owner, DACL and mandatory label read back from a live pipe handle, with
 /// that handle's inheritance flag and the pipe's `GetNamedPipeInfo` flags.
 pub(crate) struct PipeDescriptorReadback {
     pub(crate) descriptor: LocalBox<SecurityDescriptor>,
     pub(crate) handle_inheritable: bool,
     pub(crate) pipe_flags: u32,
+}
+
+/// The descriptor sections that a pipe's exact security form fixes. Every
+/// form also requires a non-inheritable handle and a pipe that rejects remote
+/// clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipeSecuritySections {
+    /// The protected DACL only: the app-link and lifecycle pipes, whose owner
+    /// and label are the creating token's defaults.
+    Dacl,
+    /// Owner, protected DACL and mandatory label: `keld-attempt` endpoints.
+    OwnerDaclLabel,
+}
+
+/// The descriptor or pipe fact in which a live pipe differs from its exact
+/// security form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsPipeSecurityFact {
+    /// The handle can be inherited by a child process.
+    InheritableHandle,
+    /// The pipe does not set `PIPE_REJECT_REMOTE_CLIENTS`.
+    RemoteClients,
+    /// The owner is absent or not the form's owner.
+    Owner,
+    /// The DACL is not exactly the form's protected ACE set.
+    Dacl,
+    /// The mandatory label is not exactly the form's label.
+    Label,
+}
+
+impl fmt::Display for WindowsPipeSecurityFact {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InheritableHandle => "inheritable handle",
+            Self::RemoteClients => "remote clients admitted",
+            Self::Owner => "owner",
+            Self::Dacl => "DACL",
+            Self::Label => "mandatory label",
+        })
+    }
+}
+
+impl PipeDescriptorReadback {
+    /// The single exact-form comparison for Keld pipes: the first fact in
+    /// which this readback differs from `expected` over `sections`, or `None`
+    /// when it is exactly that form.
+    ///
+    /// The DACL section, control flags included, must render to the same SDDL
+    /// as the expected one, so an extra or reordered ACE, any other mask bit or
+    /// a lost protection flag differs. The label is compared as its ACE list
+    /// through `keld_guard::windows_acl_entries_equal`, so a missing, lower or
+    /// policy-changed label differs, while the SACL's auto-inherited control
+    /// flag, which Windows sets itself when it assigns the descriptor, is not
+    /// part of the label.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if a DACL cannot be rendered as SDDL.
+    pub(crate) fn first_mismatch(
+        &self,
+        expected: &SecurityDescriptor,
+        sections: PipeSecuritySections,
+    ) -> io::Result<Option<WindowsPipeSecurityFact>> {
+        if self.handle_inheritable {
+            return Ok(Some(WindowsPipeSecurityFact::InheritableHandle));
+        }
+        if self.pipe_flags & PIPE_REJECT_REMOTE_CLIENTS == 0 {
+            return Ok(Some(WindowsPipeSecurityFact::RemoteClients));
+        }
+        let owner_and_label = sections == PipeSecuritySections::OwnerDaclLabel;
+        if owner_and_label {
+            let owner = self.descriptor.owner();
+            if owner.is_none() || owner != expected.owner() {
+                return Ok(Some(WindowsPipeSecurityFact::Owner));
+            }
+        }
+        let dacl = |descriptor: &SecurityDescriptor| {
+            ConvertSecurityDescriptorToStringSecurityDescriptor(
+                descriptor,
+                SecurityInformation::Dacl,
+            )
+        };
+        if dacl(&self.descriptor)? != dacl(expected)? {
+            return Ok(Some(WindowsPipeSecurityFact::Dacl));
+        }
+        if owner_and_label {
+            let label_matches = match (self.descriptor.sacl(), expected.sacl()) {
+                (Some(actual), Some(expected)) => {
+                    keld_guard::windows_acl_entries_equal(actual, expected)
+                }
+                _ => false,
+            };
+            if !label_matches {
+                return Ok(Some(WindowsPipeSecurityFact::Label));
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Token facts observed from a process or the writer of a connected local pipe
@@ -171,11 +265,21 @@ pub enum WindowsTokenElevationType {
 }
 
 impl WindowsNamedPipeServer {
+    /// Creates `endpoint` under the current-user-only form (a protected DACL
+    /// granting only [`PIPE_ACCESS_MASK`] to this process's `TokenUser`) and
+    /// requires the readback to be exactly that form.
     pub(crate) fn bind(endpoint: &str) -> io::Result<Self> {
         let current_sid = current_process_sid()?;
         let descriptor = current_user_descriptor(&current_sid)?;
         let server = Self::bind_with_descriptor(endpoint, &descriptor)?;
-        server.validate_security(&current_sid)?;
+        if let Some(fact) = server
+            .descriptor_readback()?
+            .first_mismatch(&descriptor, PipeSecuritySections::Dacl)?
+        {
+            return Err(io::Error::other(format!(
+                "named-pipe security readback did not match the current-user-only contract: {fact}"
+            )));
+        }
         Ok(server)
     }
 
@@ -358,16 +462,6 @@ impl WindowsNamedPipeServer {
         WindowsNamedPipeCanceller {
             inner: Arc::downgrade(&self.inner),
         }
-    }
-
-    pub(crate) fn security_facts(&self) -> io::Result<PipeSecurityFacts> {
-        let pipe = self
-            .inner
-            .pipe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let pipe = pipe.as_ref().ok_or_else(closed_pipe_error)?;
-        read_security_facts(pipe)
     }
 
     /// Reads this server instance's owner, DACL and label back from its handle.
@@ -567,44 +661,6 @@ impl WindowsNamedPipeServer {
     #[cfg(test)]
     pub(crate) fn install_connect_busy_witness(witness: mpsc::Sender<()>) {
         CONNECT_BUSY_WITNESS.with(|slot| *slot.borrow_mut() = Some(witness));
-    }
-
-    fn validate_security(&self, current_sid: &Sid) -> io::Result<()> {
-        let facts = self.security_facts()?;
-        if !facts.protected_dacl
-            || facts.ace_count != 1
-            || !facts.one_ace_is_current_user
-            || facts.one_ace_type != AceType::ACCESS_ALLOWED_ACE_TYPE as u8
-            || facts.one_ace_flags != AceFlags::empty().bits()
-            || facts.one_ace_mask != PIPE_ACCESS_MASK
-            || facts.one_ace_mask & FILE_CREATE_PIPE_INSTANCE != 0
-            || facts.handle_flags & HANDLE_FLAG_INHERIT != 0
-            || facts.pipe_flags & PIPE_REJECT_REMOTE_CLIENTS == 0
-        {
-            return Err(io::Error::other(format!(
-                "named-pipe security readback did not match the current-user-only contract: {facts:?}"
-            )));
-        }
-        let descriptor = GetSecurityInfo(
-            self.inner
-                .pipe
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .ok_or_else(closed_pipe_error)?,
-            SeObjectType::SE_KERNEL_OBJECT,
-            SecurityInformation::Dacl,
-        )?;
-        let ace_sid = descriptor
-            .dacl()
-            .and_then(|dacl| dacl.get_ace(0))
-            .and_then(|ace| ace.sid());
-        if ace_sid != Some(current_sid) {
-            return Err(io::Error::other(
-                "named-pipe DACL ACE does not equal current TokenUser SID",
-            ));
-        }
-        Ok(())
     }
 
     fn cancel_pending_io(&self) -> io::Result<()> {
@@ -1442,31 +1498,8 @@ fn current_user_descriptor(sid: &Sid) -> io::Result<LocalBox<SecurityDescriptor>
     .parse()
 }
 
-fn read_security_facts(handle: &OwnedHandle) -> io::Result<PipeSecurityFacts> {
-    let descriptor = GetSecurityInfo(
-        handle,
-        SeObjectType::SE_KERNEL_OBJECT,
-        SecurityInformation::Dacl,
-    )?;
-    let current_sid = current_process_sid()?;
-    let sddl = descriptor.as_sddl()?;
-    let protected_dacl = sddl.to_string_lossy().contains("D:P");
-    let dacl = descriptor
-        .dacl()
-        .ok_or_else(|| io::Error::other("named-pipe descriptor contains no DACL"))?;
-    let ace = dacl.get_ace(0);
-    Ok(PipeSecurityFacts {
-        protected_dacl,
-        ace_count: usize::try_from(dacl.len()).map_err(io::Error::other)?,
-        one_ace_is_current_user: ace.and_then(|ace| ace.sid()) == Some(&current_sid),
-        one_ace_type: ace.map_or(u8::MAX, |ace| ace.ace_type() as u8),
-        one_ace_flags: ace.map_or(u8::MAX, |ace| ace.flags().bits()),
-        one_ace_mask: ace.map_or(0, |ace| ace.mask().bits()),
-        handle_flags: handle_flags(handle)?,
-        pipe_flags: pipe_flags(handle)?,
-    })
-}
-
+/// The one pipe-security reader: owner, DACL and label from a live server or
+/// client handle, with that handle's inheritance flag and the pipe's flags.
 pub(crate) fn read_pipe_descriptor(handle: &OwnedHandle) -> io::Result<PipeDescriptorReadback> {
     let descriptor = GetSecurityInfo(
         handle,

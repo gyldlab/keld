@@ -42,11 +42,12 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use super::{
     WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
-    WindowsAttemptEndpointSecurity, WindowsAttemptSecurityFact,
+    WindowsAttemptEndpointSecurity, WindowsPipeSecurityFact,
 };
 use crate::WindowsPeerTokenFacts;
 use crate::windows_named_pipe::{
-    WaitOutcome, WindowsNamedPipeServer, current_process_query_token, read_pipe_descriptor,
+    PipeSecuritySections, WaitOutcome, WindowsNamedPipeServer, current_process_query_token,
+    read_pipe_descriptor,
 };
 
 const MASK: &str = "0x12019b";
@@ -221,7 +222,7 @@ fn soon() -> Instant {
     Instant::now() + Duration::from_secs(2)
 }
 
-fn mismatch_fact(error: WindowsAttemptEndpointError) -> WindowsAttemptSecurityFact {
+fn mismatch_fact(error: WindowsAttemptEndpointError) -> WindowsPipeSecurityFact {
     match error {
         WindowsAttemptEndpointError::SecurityMismatch { fact } => fact,
         other => panic!("expected a security mismatch, got {other}"),
@@ -461,84 +462,84 @@ fn client_refuses_each_squatted_descriptor_fact() -> io::Result<()> {
         String,
         Squat,
         &WindowsAttemptEndpointSecurity,
-        Option<WindowsAttemptSecurityFact>,
+        Option<WindowsPipeSecurityFact>,
     )> = vec![
         (
             "missing label",
             format!("O:{user}D:P(A;;{MASK};;;{user})"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Label),
+            Some(WindowsPipeSecurityFact::Label),
         ),
         (
             "low label",
             format!("O:{user}D:P(A;;{MASK};;;{user})S:(ML;;NW;;;LW)"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Label),
+            Some(WindowsPipeSecurityFact::Label),
         ),
         (
             "no-read-up instead of no-write-up",
             format!("O:{user}D:P(A;;{MASK};;;{user})S:(ML;;NR;;;ME)"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Label),
+            Some(WindowsPipeSecurityFact::Label),
         ),
         (
             "extra Everyone ACE",
             format!("O:{user}D:P(A;;{MASK};;;{user})(A;;{MASK};;;WD){LABEL}"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "FILE_CREATE_PIPE_INSTANCE",
             format!("O:{user}D:P(A;;0x12019f;;;{user}){LABEL}"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "WRITE_DAC",
             format!("O:{user}D:P(A;;0x16019b;;;{user}){LABEL}"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "WRITE_OWNER",
             format!("O:{user}D:P(A;;0x1a019b;;;{user}){LABEL}"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "unprotected DACL",
             format!("O:{user}D:(A;;{MASK};;;{user}){LABEL}"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "Everyone instead of the user",
             format!("O:{user}D:P(A;;{MASK};;;WD){LABEL}"),
             SQUAT,
             &per_user,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "bootstrap without Administrators",
             exact.clone(),
             SQUAT,
             &bootstrap,
-            Some(WindowsAttemptSecurityFact::Dacl),
+            Some(WindowsPipeSecurityFact::Dacl),
         ),
         (
             "user owner where D5 requires O:BA",
             exact.clone(),
             SQUAT,
             &machine,
-            Some(WindowsAttemptSecurityFact::Owner),
+            Some(WindowsPipeSecurityFact::Owner),
         ),
         (
             "remote clients admitted",
@@ -548,7 +549,7 @@ fn client_refuses_each_squatted_descriptor_fact() -> io::Result<()> {
                 ..SQUAT
             },
             &per_user,
-            Some(WindowsAttemptSecurityFact::RemoteClients),
+            Some(WindowsPipeSecurityFact::RemoteClients),
         ),
         ("exact same-user copy", exact, SQUAT, &per_user, None),
     ];
@@ -580,14 +581,14 @@ fn owner_side_readback_refuses_remote_admission_and_inheritable_handles() -> io:
                 reject_remote: false,
                 ..SQUAT
             },
-            WindowsAttemptSecurityFact::RemoteClients,
+            WindowsPipeSecurityFact::RemoteClients,
         ),
         (
             Squat {
                 inheritable: true,
                 ..SQUAT
             },
-            WindowsAttemptSecurityFact::InheritableHandle,
+            WindowsPipeSecurityFact::InheritableHandle,
         ),
     ] {
         let pipe = squat(&random_attempt_name()?, &exact, how)?;
@@ -604,6 +605,85 @@ fn owner_side_readback_refuses_remote_admission_and_inheritable_handles() -> io:
     Ok(())
 }
 
+/// The app-link and lifecycle pipes share the one comparison in its DACL-only
+/// form: owner and label are the creating token's defaults and are not
+/// compared, while the protected DACL and both pipe flags are. The expected
+/// descriptor is a literal; a pipe that the shipped `bind` created is the
+/// positive control, and the same Low-label pipe that the DACL-only form admits
+/// is refused by an attempt form.
+#[test]
+fn the_dacl_only_form_compares_the_dacl_and_pipe_flags_but_not_owner_or_label() -> io::Result<()> {
+    let user = own_user_sid_text()?;
+    let expected: LocalBox<SecurityDescriptor> = format!("D:P(A;;{MASK};;;{user})").parse()?;
+    let dacl_only = |pipe: &OwnedHandle| {
+        read_pipe_descriptor(pipe)?.first_mismatch(&expected, PipeSecuritySections::Dacl)
+    };
+
+    let shipped = random_attempt_name()?;
+    let server = WindowsNamedPipeServer::bind(&shipped)?;
+    assert_eq!(server.inspect_owned_pipe(dacl_only)?, None, "shipped bind");
+
+    let low_label = format!("O:{user}D:P(A;;{MASK};;;{user})S:(ML;;NW;;;LW)");
+    for (row, sddl, how, fact) in [
+        (
+            "default owner, no label",
+            format!("D:P(A;;{MASK};;;{user})"),
+            SQUAT,
+            None,
+        ),
+        ("explicit owner, Low label", low_label.clone(), SQUAT, None),
+        (
+            "extra Everyone ACE",
+            format!("D:P(A;;{MASK};;;{user})(A;;{MASK};;;WD)"),
+            SQUAT,
+            Some(WindowsPipeSecurityFact::Dacl),
+        ),
+        (
+            "unprotected DACL",
+            format!("D:(A;;{MASK};;;{user})"),
+            SQUAT,
+            Some(WindowsPipeSecurityFact::Dacl),
+        ),
+        (
+            "FILE_CREATE_PIPE_INSTANCE",
+            format!("D:P(A;;0x12019f;;;{user})"),
+            SQUAT,
+            Some(WindowsPipeSecurityFact::Dacl),
+        ),
+        (
+            "remote clients admitted",
+            format!("D:P(A;;{MASK};;;{user})"),
+            Squat {
+                reject_remote: false,
+                ..SQUAT
+            },
+            Some(WindowsPipeSecurityFact::RemoteClients),
+        ),
+        (
+            "inheritable handle",
+            format!("D:P(A;;{MASK};;;{user})"),
+            Squat {
+                inheritable: true,
+                ..SQUAT
+            },
+            Some(WindowsPipeSecurityFact::InheritableHandle),
+        ),
+    ] {
+        let pipe = squat(&random_attempt_name()?, &sddl, how)?;
+        assert_eq!(dacl_only(&pipe)?, fact, "{row}");
+    }
+
+    let pipe = squat(&random_attempt_name()?, &low_label, SQUAT)?;
+    let attempt_form =
+        WindowsAttemptEndpointSecurity::per_user_connect_back(&own_user_sid_bytes()?)
+            .map_err(io::Error::other)?;
+    let error = attempt_form
+        .verify(&read_pipe_descriptor(&pipe)?)
+        .expect_err("an attempt form compares the label");
+    assert_eq!(mismatch_fact(error), WindowsPipeSecurityFact::Label);
+    Ok(())
+}
+
 /// Seam: Windows assigns a descriptor other than the requested form (here, no
 /// label). The owner must refuse its own instance and leave no pipe behind.
 #[test]
@@ -616,7 +696,7 @@ fn owner_refuses_and_closes_an_instance_whose_readback_deviates() -> io::Result<
     let name = random_attempt_name()?;
     let error = WindowsAttemptEndpoint::create_from(&name, &security, &deviating)
         .expect_err("a deviating readback must not be admitted");
-    assert_eq!(mismatch_fact(error), WindowsAttemptSecurityFact::Label);
+    assert_eq!(mismatch_fact(error), WindowsPipeSecurityFact::Label);
     let absent = probe_exists(&name).expect_err("the refused instance is closed");
     assert_eq!(
         absent.raw_os_error(),
@@ -711,7 +791,7 @@ fn every_error_names_its_code_and_fix() {
         ),
         (
             WindowsAttemptEndpointError::SecurityMismatch {
-                fact: WindowsAttemptSecurityFact::Label,
+                fact: WindowsPipeSecurityFact::Label,
             },
             "KELD-IPC-010",
             "mandatory label",
