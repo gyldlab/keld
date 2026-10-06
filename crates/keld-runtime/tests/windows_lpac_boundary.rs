@@ -790,7 +790,7 @@ fn process_handle_count(process: HANDLE) -> u32 {
 }
 
 fn child_contains_object(
-    child: &keld_runtime::windows_lpac::WindowsLpacChild,
+    child: &keld_runtime::windows_lpac::WindowsSuspendedChild,
     census: &[SystemHandleEntry],
     parent_object: HANDLE,
 ) -> bool {
@@ -822,7 +822,7 @@ fn child_contains_object(
 }
 
 fn assert_no_other_inheritable_parent_object(
-    child: &keld_runtime::windows_lpac::WindowsLpacChild,
+    child: &keld_runtime::windows_lpac::WindowsSuspendedChild,
     child_census: &[SystemHandleEntry],
     allowed: &[HANDLE],
 ) {
