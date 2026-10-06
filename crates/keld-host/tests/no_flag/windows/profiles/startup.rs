@@ -2,7 +2,9 @@
 //! staged-host refusal.
 
 use crate::support::control::{accept_ready_generation, read_control_line};
-use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
+use crate::support::installed::{
+    INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env, open_for_delete,
+};
 use crate::support::process::{process_exists, wait_child};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
@@ -14,6 +16,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 use std::{env, fs};
+use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
 
 /// KEL-254 AC2/AC11: signature success alone never admits installed mode. The
 /// `KELD_KEL135_SIGNED_HOST` carrier is a KEL-135 operator-signed host without an
@@ -69,6 +72,9 @@ fn kel135_signed_host_persistent_profile_startup() {
         &fixture_env(SIGNED_HOST_A_P1),
         &fixture_env(INSTALLER_ENV),
     );
+    // Positive control: before launch nothing pins the version directory, and the
+    // owner-private per-user profile admits this user's DELETE open.
+    drop(open_for_delete(installed.version_dir()).expect("an unpinned version directory"));
     let beacon = spawn_renderer_beacon(beacon_listener);
     let mut host = installed
         .command()
@@ -83,6 +89,15 @@ fn kel135_signed_host_persistent_profile_startup() {
     expect_renderer_beacon(beacon, "installed host renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
+    // The running session holds KEL-53's selection, which keeps the version directory
+    // it boots from open without delete sharing until the session returns.
+    let pinned = open_for_delete(installed.version_dir())
+        .expect_err("the running installed session pins its version directory");
+    assert_eq!(
+        pinned.raw_os_error(),
+        Some(i32::try_from(ERROR_SHARING_VIOLATION).expect("Win32 error fits i32")),
+        "{pinned}"
+    );
     writer.write_all(b"QUIT\n").expect("signed host Quit");
     writer.flush().expect("flush signed host Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");

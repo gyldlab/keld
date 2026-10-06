@@ -129,6 +129,15 @@ impl InstalledApp {
         &self.app_id
     }
 
+    /// The installed version directory, `<update-root>/versions/<version>`, whose
+    /// `tree` holds the host.
+    pub(crate) fn version_dir(&self) -> &Path {
+        self.host
+            .parent()
+            .and_then(Path::parent)
+            .expect("the installed host lies in its version directory's tree")
+    }
+
     /// A lease-less launch of the installed host from its tree, as a user starts it.
     pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.host);
@@ -152,6 +161,22 @@ impl Drop for InstalledApp {
             }
         }
     }
+}
+
+/// Opens `directory` itself for `DELETE`, sharing every access, so that only another
+/// handle to it that denies delete sharing can refuse the open (error 32). Nothing is
+/// deleted: the handle is not delete-on-close.
+pub(crate) fn open_for_delete(directory: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(directory)
 }
 
 /// Copies the compiled boot files, leaving out the staged developer host.
