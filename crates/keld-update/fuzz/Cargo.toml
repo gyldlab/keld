@@ -11,6 +11,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 keld-update = { path = "..", features = ["fuzzing"] }
+# KEL-19 container spec §5: the `host_identity` target reads the A3 container with
+# keld-pack's bytes reader; keld-update already depends on keld-pack, so no new crate.
+keld-pack = { path = "../../keld-pack" }
 
 [[bin]]
 name = "canonical_archive"
@@ -22,6 +25,13 @@ bench = false
 [[bin]]
 name = "activation_journal"
 path = "fuzz_targets/activation_journal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_identity"
+path = "fuzz_targets/host_identity.rs"
 test = false
 doc = false
 bench = false

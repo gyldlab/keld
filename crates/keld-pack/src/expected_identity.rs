@@ -21,6 +21,19 @@ const MAX_APP_ID_BYTES: usize = 255;
 const MAX_CHANNEL_BYTES: usize = 16;
 const MAX_TARGET_BYTES: usize = 64;
 
+/// Shortest canonical payload: the domain tag, three length bytes, one byte in each text
+/// field and the key. Derived from the bounds above so the host container never mirrors
+/// them (KEL-19 container spec §4 "Container format v1").
+pub(crate) const MIN_PAYLOAD_BYTES: usize =
+    EXPECTED_APP_IDENTITY_DOMAIN.len() + 3 + 3 + EXPECTED_APP_IDENTITY_KEY_BYTES;
+/// Longest canonical payload: every text field at its byte bound.
+pub(crate) const MAX_PAYLOAD_BYTES: usize = EXPECTED_APP_IDENTITY_DOMAIN.len()
+    + 3
+    + MAX_APP_ID_BYTES
+    + MAX_CHANNEL_BYTES
+    + MAX_TARGET_BYTES
+    + EXPECTED_APP_IDENTITY_KEY_BYTES;
+
 /// One bounded text field whose one-byte length was proven at construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Field {

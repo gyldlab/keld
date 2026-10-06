@@ -5,19 +5,26 @@
 //! live in `docs/engineering/product-status.tsv`.
 //! [`produce_windows_v0`] streams a package on Windows; other hosts refuse before I/O.
 //! [`ExpectedAppIdentityPayload`] owns the canonical expected-app-identity bytes that a
-//! signed host carries (KEL-254 A3); embedding them belongs to the KEL-19 packaging work.
+//! signed host carries (KEL-254 A3). [`embed_host_identity`] writes them exactly once
+//! into the unsigned prebuilt Windows host as the `.keldeai` container, and
+//! [`read_host_identity_bytes`] (or `read_host_identity` on a Windows handle) reads them
+//! back with bounded positioned reads (KEL-19 container spec §4).
 //! This library API does not create installers, sign releases, or activate updates.
 
 use std::fmt;
 use std::io::{self, Read, Write};
 
 mod expected_identity;
+mod host_identity;
 #[cfg(windows)]
 mod producer;
 #[cfg(test)]
 mod tests;
 
 pub use expected_identity::{EXPECTED_APP_IDENTITY_KEY_BYTES, ExpectedAppIdentityPayload};
+#[cfg(windows)]
+pub use host_identity::read_host_identity;
+pub use host_identity::{embed_host_identity, read_host_identity_bytes};
 
 /// Exact relative path of the content-authenticated Slice-A update policy.
 pub const UPDATE_POLICY_PATH: &str = ".keld/update-policy.v1";
@@ -219,6 +226,36 @@ pub enum PackError {
         /// Stable reason naming the failing part, without untrusted bytes.
         detail: &'static str,
     },
+    /// The host image is not an admissible Windows x64 PE32+ executable.
+    HostImageInvalid {
+        /// Stable reason naming the failing header rule, without untrusted bytes.
+        detail: &'static str,
+    },
+    /// The host image has no `.keldeai` expected-identity container.
+    IdentityContainerMissing,
+    /// The host image already has, or carries more than one, `.keldeai` container.
+    IdentityContainerDuplicate,
+    /// The host image is signed or has bytes after its last section's raw data.
+    HostImageNotPristine {
+        /// Stable reason naming what makes the image not pristine.
+        detail: &'static str,
+    },
+    /// The host image has no header room for one more section header.
+    HostImageNoRoom {
+        /// Stable reason naming the missing room.
+        detail: &'static str,
+    },
+    /// The single `.keldeai` container is not in its canonical v1 form, or the writer's
+    /// own read-back did not return the embedded payload.
+    IdentityContainerInvalid {
+        /// Stable reason naming the non-canonical field.
+        detail: &'static str,
+    },
+    /// A positioned read of the verified executable handle failed.
+    IdentityContainerRead {
+        /// Original I/O error.
+        source: io::Error,
+    },
 }
 
 impl PackError {
@@ -231,6 +268,13 @@ impl PackError {
             Self::SourceSizeMismatch { .. } => "KELD-PACK-003",
             Self::Processing { .. } => "KELD-PACK-004",
             Self::ExpectedIdentityInvalid { .. } => "KELD-PACK-005",
+            Self::HostImageInvalid { .. } => "KELD-PACK-006",
+            Self::IdentityContainerMissing => "KELD-PACK-007",
+            Self::IdentityContainerDuplicate => "KELD-PACK-008",
+            Self::HostImageNotPristine { .. } => "KELD-PACK-009",
+            Self::HostImageNoRoom { .. } => "KELD-PACK-010",
+            Self::IdentityContainerInvalid { .. } => "KELD-PACK-011",
+            Self::IdentityContainerRead { .. } => "KELD-PACK-012",
         }
     }
 }
@@ -243,6 +287,13 @@ impl fmt::Display for PackError {
             Self::SourceSizeMismatch { name, expected, observed } => write!(f, "KELD-PACK-003: package source `{name}` declared {expected} bytes but supplied {observed}. Discard partial output and rebuild from sources with correct lengths."),
             Self::Processing { stage, source } => write!(f, "KELD-PACK-004: package {stage} failed ({source}). Discard partial output, repair the source or sink, and rebuild the package."),
             Self::ExpectedIdentityInvalid { detail } => write!(f, "KELD-PACK-005: expected-app-identity payload is not canonical ({detail}). Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the host; never hand-edit the embedded bytes."),
+            Self::HostImageInvalid { detail } => write!(f, "KELD-PACK-006: host image is not an admissible Windows x64 PE32+ executable ({detail}). Use the unmodified prebuilt `keld-host.exe` of this Keld release; reinstall the signed package if an installed host is damaged."),
+            Self::IdentityContainerMissing => f.write_str("KELD-PACK-007: host image carries no `.keldeai` expected-identity container. Rebuild with `keld build` so `keld-pack` embeds the expected identity before signing."),
+            Self::IdentityContainerDuplicate => f.write_str("KELD-PACK-008: host image already carries a `.keldeai` expected-identity container, or more than one. Embed exactly once into the unmodified prebuilt host; never re-run embedding on its output."),
+            Self::HostImageNotPristine { detail } => write!(f, "KELD-PACK-009: host image is signed or has bytes after its last section ({detail}). Embed into the unsigned prebuilt host before signing; never embed into a signed image or after appending data."),
+            Self::HostImageNoRoom { detail } => write!(f, "KELD-PACK-010: host image has no header room for the expected-identity container ({detail}). Use a Keld-released prebuilt host; a host without header room is a Keld host-build defect to report."),
+            Self::IdentityContainerInvalid { detail } => write!(f, "KELD-PACK-011: expected-identity container is not canonical ({detail}). The host's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`."),
+            Self::IdentityContainerRead { source } => write!(f, "KELD-PACK-012: reading the host's identity container from the verified executable failed ({source}). Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists."),
         }
     }
 }
@@ -250,7 +301,9 @@ impl fmt::Display for PackError {
 impl std::error::Error for PackError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Processing { source, .. } => Some(source),
+            Self::Processing { source, .. } | Self::IdentityContainerRead { source } => {
+                Some(source)
+            }
             _ => None,
         }
     }
