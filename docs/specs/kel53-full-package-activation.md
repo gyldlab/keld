@@ -779,8 +779,10 @@ struct ActivationJournal {
     health_channel_id: [u8; 32],
     lifecycle_channel_id: [u8; 32],
     // T4d schema revision `keld.activation-journal/v2` (wire-gated): both fields are
-    // required in every v2 record and phase. `Option` models only the decoding of a v1
-    // record, which has neither and therefore never admits a candidate claim.
+    // required in every v2 record and phase. `Option` models the decoding of a v1 record,
+    // which has neither and therefore never admits a candidate claim, and the in-memory
+    // identities the mint-then-journal seam minted before `WindowsMintedAttempt::journal`
+    // supplies both facts; that minted state is never encoded.
     initiating_logon: Option<InitiatingLogon>,
     attempt_owner: Option<AttemptOwner>,
     phase: ActivationPhase,
