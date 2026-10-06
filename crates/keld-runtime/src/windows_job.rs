@@ -1070,11 +1070,14 @@ pub struct WindowsLaunchedProcess {
 }
 
 impl WindowsLaunchedProcess {
-    /// Records the launch identity of a freshly created suspended child.
+    /// Records the launch identity of a child that a launch path created
+    /// suspended.
     ///
-    /// Call this at launch, before resume. The recorded process ID is the
-    /// child's own, which process creation reported; the creation time is read
-    /// from the retained launch handle.
+    /// The process ID is the child's own, which process creation reported; the
+    /// creation time is read from the retained launch handle. Creation time is
+    /// fixed for the process object, so recording after resume is harmless: it
+    /// reads the same value as recording before resume, and the record names the
+    /// object the child retains, not the moment of the call.
     ///
     /// # Errors
     ///
