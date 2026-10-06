@@ -160,6 +160,7 @@
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_baseline/tests/support.rs",
+        "crates/keld-update/src/records/tests.rs",
         "tools/llms_docs.rs"
       ],
       "contract": "",
@@ -315,6 +316,7 @@
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_baseline/tests/support.rs",
+        "crates/keld-update/src/records/tests.rs",
         "tools/llms_docs.rs"
       ],
       "sha256": "c26c933315a7a03c5be368bfba574ecbc02d346a2ee4e0f0b0954f635c7dd319"
@@ -398,7 +400,8 @@
       "crates/keld-compat/fixtures/lifecycle-corpus/*"
     ],
     "keld-update": [
-      "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
+      "crates/keld-pack/tests/fixtures/windows-v0-content.tar",
+      "docs/specs/kel53-full-package-activation.md"
     ]
   }
 }

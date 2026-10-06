@@ -531,35 +531,34 @@ impl WindowsExtractionRoot {
         })
     }
 
-    /// Starts the common journaled activation for a completed stage.
+    /// Mints the attempt identities of the common journaled activation for a completed
+    /// stage, writing nothing.
     ///
     /// The root must retain the exclusive activation-writer lease. The stage value is
     /// not bound to the lease session that completed it: under this root's lease the
-    /// transaction re-reads the stage's completion
-    /// record, re-verifies and pins every referenced version, mints fresh attempt,
-    /// health and lifecycle identities and durably journals `PublishPending`. Only then
-    /// does it rename the stage to its version name, fully re-verify and pin the
-    /// candidate, advance the floor, select `current` and journal `AwaitingHealth`. The
-    /// returned attempt keeps the lease until health commits or rolls it back.
+    /// transaction re-reads the stage's completion record, re-verifies and pins every
+    /// referenced version and mints fresh attempt, health and lifecycle identities that
+    /// no record names yet. The owner creates its connect-back endpoint from them, then
+    /// [`crate::WindowsMintedAttempt::journal`] durably journals `PublishPending` with its
+    /// owner facts. Only then does the transaction rename the stage to its version name,
+    /// fully re-verify and pin the candidate, advance the floor, select `current` and
+    /// journal `AwaitingHealth`. The attempt keeps the lease until health commits or
+    /// rolls it back.
     ///
     /// # Errors
     /// Refuses a root without the writer lease, a zero coordinator digest, a stage
     /// whose completion record does not name that exact candidate, a candidate
-    /// outside the installation scope or not above the floor, any unverified or
-    /// unreferenced version, or a failed durable step. Every refusal is
-    /// [`UpdateError::Activation`]; its [`crate::ActivationEffect`] states what remains.
-    /// A refusal before the journal exists leaves only the stage, which is a tolerated
-    /// leftover, never an unreferenced version. A copy that fails verification after its
-    /// rename is retired under the journal and the next stage recording the exact
-    /// candidate is tried. With none left the journal is removed, and the refusal names
-    /// step `candidate verification` with
-    /// [`crate::ActivationEffect::ProtectedStateUnchanged`] (or
-    /// [`crate::ActivationEffect::ResolvedWithLeftovers`] if cleanup is incomplete).
+    /// outside the installation scope or not above the floor, or any unverified or
+    /// unreferenced version. Every refusal is [`UpdateError::Activation`] with
+    /// [`crate::ActivationEffect::ProtectedStateUnchanged`]: nothing was written and
+    /// only the stage remains, a tolerated leftover, never an unreferenced version.
+    /// [`crate::WindowsMintedAttempt::journal`] documents the refusals of the durable
+    /// steps.
     pub fn begin_activation(
         self,
         stage: CompletedWindowsStage,
         coordinator_image_blake3: [u8; 32],
-    ) -> Result<crate::WindowsActivationAttempt, UpdateError> {
+    ) -> Result<crate::WindowsMintedAttempt, UpdateError> {
         let Self {
             authority,
             versions,

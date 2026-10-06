@@ -35,6 +35,12 @@ pub(super) const CUT_ENV: &str = "KELD_KEL266_NATIVE_CUT";
 pub(super) const NON_NTFS_ROOT_ENV: &str = "KELD_KEL254_NON_NTFS_ROOT";
 pub(super) const GOLDEN: &[u8] =
     include_bytes!("../../../../keld-pack/tests/fixtures/windows-v0-content.tar");
+/// Owner facts that a fixture attempt owner journals. keld-update records them and
+/// cannot observe them, so fixed values prove the transaction, not the OS facts.
+pub(super) const ATTEMPT_OWNER: crate::AttemptOwner =
+    crate::AttemptOwner::new(4242, 0x01dd_5568_c883_7100);
+pub(super) const INITIATING_LOGON: crate::InitiatingLogon =
+    crate::InitiatingLogon::new(0x0000_0001_0002_a5f3, 0x01dd_5568_af7a_c000);
 
 pub(super) fn assert_user_principal_token() {
     let sid = windows_permissions::utilities::current_process_sid().expect("actual TokenUser");

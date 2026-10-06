@@ -5,11 +5,22 @@ use super::{
     decode_pointer, decode_provenance, encode_activation_journal, encode_complete, encode_floor,
     encode_pointer, encode_provenance,
 };
-use crate::records::{ActivationJournal, ActivationPhase};
+use crate::records::{
+    ActivationFailureClass, ActivationJournal, ActivationPhase, AttemptOwner, AttemptOwnership,
+    InitiatingLogon,
+};
 use crate::tests::expected_identity;
 use crate::{DirectInstallMode, InstallOwner, InstallProvenance, UpdateError};
 
 const VOLUME: &str = r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\";
+
+/// Owner facts of the checked-in v2 golden vectors: the logon session LUID with
+/// `HighPart` 1 and `LowPart` `0x0002a5f3`, logged on at 2026-10-06T08:00:00Z, and an
+/// owner process created 42 seconds later (both as FILETIME 100 ns ticks since 1601).
+const GOLDEN_OWNERSHIP: AttemptOwnership = AttemptOwnership {
+    initiating_logon: InitiatingLogon::new(0x0000_0001_0002_a5f3, 134_357_472_000_000_000),
+    attempt_owner: AttemptOwner::new(4242, 134_357_472_420_000_000),
+};
 
 #[test]
 fn floor_has_exact_canonical_bytes_and_distinct_pointer_schemas() {
@@ -294,7 +305,393 @@ fn activation_journal() -> ActivationJournal {
         helper_image_blake3: [0x55; 32],
         health_channel_id: [0x66; 32],
         lifecycle_channel_id: [0x88; 32],
+        ownership: Some(GOLDEN_OWNERSHIP),
         phase: ActivationPhase::PublishPending,
+    }
+}
+
+/// The four persisted phases of the golden fixture, with each phase's v2 golden bytes.
+fn golden_phases() -> [(&'static str, ActivationPhase, &'static [u8]); 4] {
+    [
+        (
+            "publish-pending",
+            ActivationPhase::PublishPending,
+            include_bytes!("golden/journal-v2-publish-pending.json"),
+        ),
+        (
+            "awaiting-health",
+            ActivationPhase::AwaitingHealth,
+            include_bytes!("golden/journal-v2-awaiting-health.json"),
+        ),
+        (
+            "health-accepted",
+            ActivationPhase::HealthAccepted {
+                health_receipt_digest: [0x77; 32],
+            },
+            include_bytes!("golden/journal-v2-health-accepted.json"),
+        ),
+        (
+            "rollback-pending",
+            ActivationPhase::RollbackPending {
+                failure: ActivationFailureClass::HealthRejected,
+            },
+            include_bytes!("golden/journal-v2-rollback-pending.json"),
+        ),
+    ]
+}
+
+#[test]
+fn activation_journal_v2_golden_vectors_are_exact_for_every_phase() {
+    // The wire review approves the goldens that the governing spec states, byte for byte.
+    let spec = include_str!("../../../../docs/specs/kel53-full-package-activation.md");
+    for (name, phase, golden) in golden_phases() {
+        let mut journal = activation_journal();
+        journal.phase = phase;
+        let golden_text = std::str::from_utf8(golden).expect("UTF-8 golden");
+        assert_eq!(
+            String::from_utf8(encode_activation_journal(&journal).expect("v2 journal"))
+                .expect("UTF-8"),
+            golden_text,
+            "{name}: the v2 encoding is frozen by its checked-in golden vector"
+        );
+        assert_eq!(
+            decode_activation_journal(golden).expect("v2 golden decodes"),
+            journal,
+            "{name}: the golden vector decodes to every journaled fact"
+        );
+        assert!(
+            spec.contains(&format!("```json\n{golden_text}\n```")),
+            "{name}: KEL-53 §4 states exactly the checked-in golden"
+        );
+    }
+    // The spec fixes the owner encoding independently of the encoder under test.
+    let golden = std::str::from_utf8(golden_phases()[0].2).expect("UTF-8 golden");
+    assert!(golden.starts_with(r#"{"schema":"keld.activation-journal/v2","attempt_id":"1111"#));
+    assert!(golden.contains(concat!(
+        r#""lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","#,
+        r#""initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"#,
+        r#""attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"#,
+        r#""phase":{"phase":"publish-pending"}}"#,
+    )));
+}
+
+#[test]
+fn a_v1_journal_decodes_without_owner_facts_and_keeps_its_landed_bytes() {
+    // The retained v1 seed shares the golden fixture; only its owner facts are absent.
+    let landed = include_bytes!("../../fuzz/corpus/activation_journal/canonical-awaiting-health");
+    let mut journal = activation_journal();
+    journal.phase = ActivationPhase::AwaitingHealth;
+    journal.ownership = None;
+    let decoded = decode_activation_journal(landed).expect("a landed v1 journal still decodes");
+    assert_eq!(decoded, journal);
+    assert_eq!(
+        decoded.ownership, None,
+        "a v1 record carries no attempt owner or initiating logon, so it admits no claim"
+    );
+    assert_eq!(
+        encode_activation_journal(&journal).expect("finishing a v1 attempt"),
+        landed,
+        "phase writes that finish a v1 attempt keep the landed v1 bytes"
+    );
+    // A re-mint record that supplies both facts is v2.
+    journal.ownership = Some(GOLDEN_OWNERSHIP);
+    assert_eq!(
+        encode_activation_journal(&journal).expect("v2 journal"),
+        golden_phases()[1].2
+    );
+}
+
+/// Refusal reasons of the v2 refusal vectors. Each vector must refuse for its own reason,
+/// so a vector that refused only because of an unrelated defect would fail this table.
+mod refusal {
+    /// The schema binds the owner objects: neither in v1, both in v2.
+    pub(super) const SHAPE: &str =
+        "activation journal owner fields must be absent from v1 and both present in v2";
+    /// Decoding admits only the exact canonical re-encoding of the typed record.
+    pub(super) const CANONICAL: &str = "record differs from its canonical typed encoding";
+    pub(super) const SCHEMA: &str = "unsupported record schema";
+    pub(super) const H16: &str = "value must be exactly 16 lowercase hexadecimal digits";
+    pub(super) const AUTHENTICATION_ID: &str = "initiating logon authentication ID must be nonzero";
+    pub(super) const LOGON_TIME: &str = "initiating logon time must be positive";
+    pub(super) const CREATION_TIME: &str = "attempt owner creation time must be nonzero";
+    pub(super) const PROCESS_ID: &str = "attempt owner process ID must be in 1..=4294967295";
+
+    /// Each refusal vector's label, in file order, with the reason it must refuse for.
+    /// Strict-codec reasons come from the typed JSON decoder; each is a detail prefix.
+    pub(super) const EXPECTED: [(&str, &str); 53] = [
+        ("v2-missing-initiating-logon", SHAPE),
+        ("v2-missing-attempt-owner", SHAPE),
+        ("v2-missing-both-owner-fields", SHAPE),
+        ("v2-null-initiating-logon", CANONICAL),
+        ("v2-null-attempt-owner", CANONICAL),
+        ("v1-with-owner-fields", SHAPE),
+        ("v1-with-initiating-logon-only", SHAPE),
+        ("v1-with-attempt-owner-only", SHAPE),
+        ("unknown-schema-v3", SCHEMA),
+        ("owner-objects-swapped", CANONICAL),
+        ("owner-after-phase", CANONICAL),
+        ("logon-keys-swapped", CANONICAL),
+        ("owner-keys-swapped", CANONICAL),
+        ("whitespace-in-owner", CANONICAL),
+        (
+            "missing-authentication-id",
+            "missing field `authentication_id`",
+        ),
+        ("missing-logon-time", "missing field `logon_time`"),
+        (
+            "missing-owner-process-id",
+            "missing field `owner_process_id`",
+        ),
+        (
+            "missing-owner-creation-time",
+            "missing field `owner_creation_time`",
+        ),
+        (
+            "duplicate-initiating-logon",
+            "duplicate field `initiating_logon`",
+        ),
+        ("duplicate-attempt-owner", "duplicate field `attempt_owner`"),
+        (
+            "duplicate-authentication-id",
+            "duplicate field `authentication_id`",
+        ),
+        ("duplicate-logon-time", "duplicate field `logon_time`"),
+        (
+            "duplicate-owner-process-id",
+            "duplicate field `owner_process_id`",
+        ),
+        (
+            "duplicate-owner-creation-time",
+            "duplicate field `owner_creation_time`",
+        ),
+        (
+            "unknown-field-in-initiating-logon",
+            "unknown field `session_id`",
+        ),
+        (
+            "unknown-field-in-attempt-owner",
+            "unknown field `owner_image`",
+        ),
+        (
+            "unknown-top-level-owner-field",
+            "unknown field `owner_session`",
+        ),
+        ("zero-authentication-id", AUTHENTICATION_ID),
+        ("zero-logon-time", LOGON_TIME),
+        ("zero-owner-creation-time", CREATION_TIME),
+        ("zero-owner-process-id", PROCESS_ID),
+        ("negative-logon-time-min", LOGON_TIME),
+        ("negative-logon-time-minus-one", LOGON_TIME),
+        (
+            "owner-process-id-above-u32",
+            "invalid value: integer `4294967296`, expected u32",
+        ),
+        (
+            "owner-process-id-negative",
+            "invalid value: integer `-1`, expected u32",
+        ),
+        (
+            "owner-process-id-fraction",
+            "invalid type: floating point `4242.0`, expected u32",
+        ),
+        (
+            "owner-process-id-exponent",
+            "invalid type: floating point `4242.0`, expected u32",
+        ),
+        ("owner-process-id-leading-zero", "invalid number"),
+        (
+            "owner-process-id-string",
+            "invalid type: string \"4242\", expected u32",
+        ),
+        ("authentication-id-uppercase", H16),
+        ("authentication-id-15-digits", H16),
+        ("authentication-id-17-digits", H16),
+        ("authentication-id-non-hex", H16),
+        ("authentication-id-0x-prefix", H16),
+        ("authentication-id-signed", H16),
+        (
+            "authentication-id-number",
+            "invalid type: integer `4295140851`, expected a string",
+        ),
+        ("authentication-id-escaped", CANONICAL),
+        ("logon-time-uppercase", H16),
+        ("logon-time-15-digits", H16),
+        (
+            "logon-time-number",
+            "invalid type: integer `134357472000000000`, expected a string",
+        ),
+        ("owner-creation-time-uppercase", H16),
+        ("owner-creation-time-17-digits", H16),
+        ("owner-creation-time-non-hex", H16),
+    ];
+}
+
+#[test]
+fn every_v2_refusal_vector_refuses_for_its_own_reason() {
+    let fixture = std::str::from_utf8(include_bytes!("golden/journal-v2-refusals.txt"))
+        .expect("UTF-8 refusal vectors");
+    assert!(
+        !fixture.contains('\r') && fixture.ends_with('\n'),
+        "refusal vectors are exact LF-terminated lines"
+    );
+    assert_eq!(
+        fixture.lines().count(),
+        refusal::EXPECTED.len(),
+        "every refusal vector has exactly one expected reason"
+    );
+    let golden = golden_phases()[0].2;
+    for (line, (label, reason)) in fixture.lines().zip(refusal::EXPECTED) {
+        let (found, record) = line.split_once('\t').expect("label<TAB>record");
+        assert_eq!(
+            found, label,
+            "the refusal vectors keep their reviewed order"
+        );
+        assert_ne!(
+            record.as_bytes(),
+            golden,
+            "{label}: a refusal vector differs"
+        );
+        match decode_activation_journal(record.as_bytes()) {
+            Err(UpdateError::LocalRecordInvalid { detail }) => assert!(
+                detail.starts_with(reason),
+                "{label}: refused for `{detail}`, not for `{reason}`"
+            ),
+            other => panic!("{label}: expected an invalid local record, got {other:?}"),
+        }
+    }
+}
+
+/// Splits a canonical journal at its trailing `phase` object.
+fn split_at_phase(record: &[u8]) -> (&str, &str) {
+    let record = std::str::from_utf8(record).expect("UTF-8 journal");
+    let at = record
+        .find(r#""phase":{"#)
+        .expect("a canonical journal ends with its phase object");
+    record.split_at(at)
+}
+
+#[test]
+fn v2_goldens_extend_the_landed_v1_records_and_differ_only_in_phase() {
+    // KEL-53 §4: the two objects follow `lifecycle_channel_id` and precede `phase`, and
+    // the four phases differ only in `phase`, as in v1. The oracle is the landed v1 bytes
+    // and the owner objects as the spec states them, never the encoder under test.
+    const OWNER_OBJECTS: &str = concat!(
+        r#""initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"#,
+        r#""attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"#,
+    );
+    let landed: [&[u8]; 4] = [
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-publish-pending"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-awaiting-health"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-health-accepted"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-rollback-pending"),
+    ];
+    let (stated_context, _) = split_at_phase(golden_phases()[0].2);
+    for (v1, (name, _, golden)) in landed.into_iter().zip(golden_phases()) {
+        let (context, phase) = split_at_phase(golden);
+        assert_eq!(
+            context, stated_context,
+            "{name}: every phase shares the stated context and owner objects"
+        );
+        let (v1_context, v1_phase) = split_at_phase(v1);
+        assert_eq!(
+            phase, v1_phase,
+            "{name}: the phase object is unchanged from v1"
+        );
+        // The landed publish-pending seed is a separate fuzzer fixture; the other three
+        // share the golden fixture, so v2 adds exactly the schema and the owner objects.
+        if name != "publish-pending" {
+            let schema = r#"{"schema":"keld.activation-journal/v"#;
+            let v1_rest = v1_context
+                .strip_prefix(&format!("{schema}1\""))
+                .expect("a landed v1 record");
+            assert_eq!(
+                context,
+                format!("{schema}2\"{v1_rest}{OWNER_OBJECTS}"),
+                "{name}: v2 is the landed v1 record with the owner objects before phase"
+            );
+        }
+    }
+}
+
+#[test]
+fn owner_fact_boundaries_encode_exact_h16_and_json_integers() {
+    let cases = [
+        (
+            InitiatingLogon::new(1, 1),
+            AttemptOwner::new(1, 1),
+            concat!(
+                r#""initiating_logon":{"authentication_id":"0000000000000001","logon_time":"0000000000000001"},"#,
+                r#""attempt_owner":{"owner_process_id":1,"owner_creation_time":"0000000000000001"}"#,
+            ),
+        ),
+        (
+            InitiatingLogon::new(u64::MAX, i64::MAX),
+            AttemptOwner::new(u32::MAX, u64::MAX),
+            concat!(
+                r#""initiating_logon":{"authentication_id":"ffffffffffffffff","logon_time":"7fffffffffffffff"},"#,
+                r#""attempt_owner":{"owner_process_id":4294967295,"owner_creation_time":"ffffffffffffffff"}"#,
+            ),
+        ),
+    ];
+    for (initiating_logon, attempt_owner, expected) in cases {
+        let mut journal = activation_journal();
+        journal.ownership = Some(AttemptOwnership {
+            initiating_logon,
+            attempt_owner,
+        });
+        let bytes = encode_activation_journal(&journal).expect("boundary owner facts");
+        assert!(
+            String::from_utf8_lossy(&bytes).contains(expected),
+            "{expected}"
+        );
+        assert_eq!(
+            decode_activation_journal(&bytes).expect("boundary read"),
+            journal
+        );
+    }
+}
+
+#[test]
+fn the_encoder_refuses_owner_facts_that_name_no_process_or_session() {
+    for (label, initiating_logon, attempt_owner) in [
+        (
+            "zero process ID",
+            GOLDEN_OWNERSHIP.initiating_logon,
+            AttemptOwner::new(0, 1),
+        ),
+        (
+            "zero creation time",
+            GOLDEN_OWNERSHIP.initiating_logon,
+            AttemptOwner::new(4242, 0),
+        ),
+        (
+            "zero authentication ID",
+            InitiatingLogon::new(0, 1),
+            GOLDEN_OWNERSHIP.attempt_owner,
+        ),
+        (
+            "zero logon time",
+            InitiatingLogon::new(1, 0),
+            GOLDEN_OWNERSHIP.attempt_owner,
+        ),
+        (
+            "negative logon time",
+            InitiatingLogon::new(1, -1),
+            GOLDEN_OWNERSHIP.attempt_owner,
+        ),
+        (
+            "minimum logon time",
+            InitiatingLogon::new(1, i64::MIN),
+            GOLDEN_OWNERSHIP.attempt_owner,
+        ),
+    ] {
+        let mut journal = activation_journal();
+        journal.ownership = Some(AttemptOwnership {
+            initiating_logon,
+            attempt_owner,
+        });
+        let error = encode_activation_journal(&journal).expect_err(label);
+        assert_eq!(error.code(), "KELD-UPDATE-014", "{label}: {error}");
     }
 }
 
@@ -303,7 +700,7 @@ fn activation_journal_uses_exact_canonical_bytes_and_roundtrips_all_context() {
     let journal = activation_journal();
     let bytes = encode_activation_journal(&journal).expect("activation journal");
     let text = String::from_utf8(bytes.clone()).expect("UTF-8");
-    assert!(text.starts_with(r#"{"schema":"keld.activation-journal/v1","attempt_id":"1111"#));
+    assert!(text.starts_with(r#"{"schema":"keld.activation-journal/v2","attempt_id":"1111"#));
     assert!(text.ends_with(r#""phase":{"phase":"publish-pending"}}"#));
     assert_eq!(
         decode_activation_journal(&bytes).expect("canonical journal"),
@@ -358,6 +755,23 @@ fn retained_activation_journal_fuzz_seeds_cover_each_phase() {
         assert_eq!(decoded.attempt_id, [0x11; 32], "{name}");
         assert_eq!(decoded.candidate.version, "1.1.0", "{name}");
         assert_eq!(decoded.phase, expected_phase, "{name}");
+        assert_eq!(
+            decoded.ownership, None,
+            "{name}: a v1 seed has no owner facts"
+        );
+    }
+    // The v2 seeds start mutation from every v2 phase shape and equal the goldens.
+    let v2_seeds: [&[u8]; 4] = [
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-v2-publish-pending"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-v2-awaiting-health"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-v2-health-accepted"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-v2-rollback-pending"),
+    ];
+    for (seed, (name, phase, golden)) in v2_seeds.into_iter().zip(golden_phases()) {
+        assert_eq!(seed, golden, "{name}: the v2 seed is the golden vector");
+        let decoded = decode_activation_journal(seed).expect("retained v2 fuzzer seed");
+        assert_eq!(decoded.phase, phase, "{name}");
+        assert_eq!(decoded.ownership, Some(GOLDEN_OWNERSHIP), "{name}");
     }
 }
 
@@ -372,10 +786,10 @@ fn activation_journal_rejects_noncanonical_or_substituted_context() {
     );
     let duplicate_lifecycle = text.replace(&"88".repeat(32), &"66".repeat(32));
     let cases = [
-        text.replace("keld.activation-journal/v1", "keld.activation-journal/v2"),
+        text.replace("keld.activation-journal/v2", "keld.activation-journal/v3"),
         text.replace(
-            r#""schema":"keld.activation-journal/v1""#,
-            r#""schema":"keld.activation-journal/v1","unknown":0"#,
+            r#""schema":"keld.activation-journal/v2""#,
+            r#""schema":"keld.activation-journal/v2","unknown":0"#,
         ),
         duplicate_attempt,
         text.replace("1.1.0", "1.0.0"),
