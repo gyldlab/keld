@@ -25,7 +25,7 @@ The selected parser controls run in CI against pinned Bun 1.4.2. See
 | CodeQL Actions | GitHub workflow source on Ubuntu | Does not audit organization settings, administrator bypasses or account access. |
 | Dependency review | GitHub's dependency comparison for exact base/head commits; new known vulnerabilities of every severity and scope block | Only manifests recognized by GitHub's dependency graph. No claim of complete `bun.lock` transitive coverage. Existing vulnerabilities and unknown advisories require separate review. |
 | cargo-deny | Cargo advisory, license and dependency policy in `deny.toml` | Cargo policy does not cover npm dependencies. |
-| gitleaks | Repository history | Secret detection does not establish revocation of an exposed credential. |
+| gitleaks | Pull request: that pull request's own commits (event `base.sha..head.sha`, both resolved). Push to `main`: `main`'s full history. Unmerged branches and tags are not scanned by CI; GitHub secret scanning (provider patterns, all branches) is their only coverage | Secret detection does not establish revocation of an exposed credential. Merge-commit conflict resolutions are not diffed. |
 
 Dependency review first checks every API response page for GitHub's incomplete
 snapshot warning. Unavailable APIs, malformed refs or incomplete snapshots fail the
