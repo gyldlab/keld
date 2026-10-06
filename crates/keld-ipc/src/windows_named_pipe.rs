@@ -26,13 +26,15 @@ use windows_permissions::wrappers::{ConvertSidToStringSid, GetSecurityInfo};
 use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
 use windows_sys::Win32::Foundation::{
     ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
-    GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LUID, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::{
     GetLengthSid, GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsValidSid,
-    RevertToSelf, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER, TokenIntegrityLevel,
-    TokenSessionId, TokenUser,
+    RevertToSelf, TOKEN_ELEVATION_TYPE, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL,
+    TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER, TokenElevation, TokenElevationType,
+    TokenElevationTypeDefault, TokenElevationTypeFull, TokenElevationTypeLimited,
+    TokenIntegrityLevel, TokenSessionId, TokenStatistics, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -52,7 +54,9 @@ use windows_sys::Win32::System::Threading::{
     WaitForMultipleObjects, WaitForSingleObject,
 };
 #[cfg(test)]
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, GetProcessHandleCount, OpenProcessToken,
+};
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 /// The landed `keld-ipc` pipe grant: read/write data, attributes and extended
@@ -144,6 +148,26 @@ pub struct WindowsPeerTokenFacts {
     pub session_id: u32,
     /// Mandatory integrity RID from the token.
     pub integrity_rid: u32,
+    /// The logon session the token represents, `TokenStatistics.AuthenticationId`,
+    /// as `(HighPart << 32) | LowPart` (the KEL-53 journal encoding). Many
+    /// tokens can represent one logon session.
+    pub authentication_id: u64,
+    /// Whether `TokenElevation` reports the token as elevated.
+    pub elevated: bool,
+    /// The token's `TokenElevationType`.
+    pub elevation_type: WindowsTokenElevationType,
+}
+
+/// A token's elevation type (`TOKEN_ELEVATION_TYPE`). Only the documented
+/// values exist; the reader refuses any other.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WindowsTokenElevationType {
+    /// `TokenElevationTypeDefault`: the token does not have a linked token.
+    Default,
+    /// `TokenElevationTypeFull`: the token is an elevated token.
+    Full,
+    /// `TokenElevationTypeLimited`: the token is a limited token.
+    Limited,
 }
 
 impl WindowsNamedPipeServer {
@@ -743,8 +767,8 @@ impl WindowsNamedPipeStream {
     }
 
     /// Impersonates the client that wrote the last frame and snapshots its
-    /// `TokenUser`, `TokenSessionId` and `TokenIntegrityLevel`, always reverting before
-    /// returning. This is available only on a connected server end.
+    /// token facts through [`query_windows_peer_token_facts`], always reverting
+    /// before returning. This is available only on a connected server end.
     ///
     /// # Errors
     ///
@@ -862,14 +886,17 @@ impl WindowsNamedPipeStream {
     }
 }
 
-/// Reads stable user/session/integrity facts from an owned Windows access token.
-/// The token must have `TOKEN_QUERY` access; the function returns copied values and
-/// retains no pointer into the token buffers.
+/// Reads stable user, session, integrity, logon-session and elevation facts
+/// from an owned Windows access token, primary or impersonation (including
+/// identification-level). The token must have `TOKEN_QUERY` access; the
+/// function returns copied values and retains no pointer into the token
+/// buffers.
 ///
 /// # Errors
 ///
-/// Returns an I/O error if a token query fails or Windows returns malformed,
-/// truncated or out-of-buffer SID data.
+/// Returns an I/O error if a token query fails, Windows returns malformed,
+/// truncated or out-of-buffer SID data, a fixed-size class returns any other
+/// size, or `TokenElevationType` is not one of its documented values.
 pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<WindowsPeerTokenFacts> {
     let raw_token = token.as_raw_handle().cast();
     let (user_buffer, user_length) = token_information_buffer(raw_token, TokenUser)?;
@@ -884,28 +911,7 @@ pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<Windows
     let user_sid = unsafe { (*user).User.Sid };
     let user_sid = sid_bytes_in_token_buffer(&user_buffer, user_length, user_sid)?;
 
-    let mut session_id = 0_u32;
-    let mut session_length = 0_u32;
-    let session_size =
-        u32::try_from(std::mem::size_of_val(&session_id)).map_err(io::Error::other)?;
-    // SAFETY: token remains owned and both output buffers are writable.
-    if unsafe {
-        GetTokenInformation(
-            raw_token,
-            TokenSessionId,
-            (&raw mut session_id).cast(),
-            session_size,
-            &raw mut session_length,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if session_length != session_size {
-        return Err(io::Error::other(
-            "TokenSessionId returned an unexpected size",
-        ));
-    }
+    let session_id = token_information_u32(raw_token, TokenSessionId, "TokenSessionId")?;
 
     let (integrity_buffer, integrity_length) =
         token_information_buffer(raw_token, TokenIntegrityLevel)?;
@@ -937,11 +943,107 @@ pub fn query_windows_peer_token_facts(token: &OwnedHandle) -> io::Result<Windows
     // SAFETY: GetSidSubAuthority returned the last in-range RID of a validated
     // SID contained within the returned token buffer.
     let integrity_rid = unsafe { *rid };
+
+    let authentication_id = luid_value(token_statistics(raw_token)?.AuthenticationId);
+    // TOKEN_ELEVATION is one DWORD, `TokenIsElevated`.
+    let elevated = token_information_u32(raw_token, TokenElevation, "TokenElevation")? != 0;
+    let elevation_type = elevation_type_from_raw(
+        token_information_u32(raw_token, TokenElevationType, "TokenElevationType")?.cast_signed(),
+    )?;
     Ok(WindowsPeerTokenFacts {
         user_sid,
         session_id,
         integrity_rid,
+        authentication_id,
+        elevated,
+        elevation_type,
     })
+}
+
+/// Reads a token-information class whose output is one 32-bit value
+/// (`TokenSessionId`'s `DWORD`, `TOKEN_ELEVATION` or `TOKEN_ELEVATION_TYPE`).
+fn token_information_u32(
+    token: windows_sys::Win32::Foundation::HANDLE,
+    class: TOKEN_INFORMATION_CLASS,
+    name: &str,
+) -> io::Result<u32> {
+    let mut value = 0_u32;
+    let size = u32::try_from(std::mem::size_of_val(&value)).map_err(io::Error::other)?;
+    let mut returned = 0_u32;
+    // SAFETY: the caller's token stays owned for this call; `value` is aligned,
+    // writable storage for `size` bytes in which every bit pattern is a valid
+    // `u32`, and `returned` is writable.
+    if unsafe {
+        GetTokenInformation(
+            token,
+            class,
+            (&raw mut value).cast(),
+            size,
+            &raw mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    exact_token_information_length(returned, size, name)?;
+    Ok(value)
+}
+
+/// Reads `TokenStatistics`.
+fn token_statistics(token: windows_sys::Win32::Foundation::HANDLE) -> io::Result<TOKEN_STATISTICS> {
+    let mut statistics = TOKEN_STATISTICS::default();
+    let size = u32::try_from(std::mem::size_of_val(&statistics)).map_err(io::Error::other)?;
+    let mut returned = 0_u32;
+    // SAFETY: the caller's token stays owned for this call; `statistics` is an
+    // aligned, writable TOKEN_STATISTICS of `size` bytes whose fields are all
+    // integers, so any bytes Windows writes form a valid value; `returned` is
+    // writable.
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenStatistics,
+            (&raw mut statistics).cast(),
+            size,
+            &raw mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    exact_token_information_length(returned, size, "TokenStatistics")?;
+    Ok(statistics)
+}
+
+/// Admits a fixed-size token-information class only when Windows reports
+/// exactly its structure's size.
+fn exact_token_information_length(returned: u32, size: u32, name: &str) -> io::Result<()> {
+    if returned == size {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{name} returned an unexpected size"
+        )))
+    }
+}
+
+/// `(HighPart << 32) | LowPart`, the KEL-53 journal's `authentication_id`.
+fn luid_value(luid: LUID) -> u64 {
+    (u64::from(luid.HighPart.cast_unsigned()) << 32) | u64::from(luid.LowPart)
+}
+
+/// Maps the documented `TOKEN_ELEVATION_TYPE` values and refuses any other.
+fn elevation_type_from_raw(raw: TOKEN_ELEVATION_TYPE) -> io::Result<WindowsTokenElevationType> {
+    if raw == TokenElevationTypeDefault {
+        Ok(WindowsTokenElevationType::Default)
+    } else if raw == TokenElevationTypeFull {
+        Ok(WindowsTokenElevationType::Full)
+    } else if raw == TokenElevationTypeLimited {
+        Ok(WindowsTokenElevationType::Limited)
+    } else {
+        Err(io::Error::other(
+            "TokenElevationType returned an undocumented value",
+        ))
+    }
 }
 
 fn token_information_buffer(
@@ -1472,6 +1574,19 @@ pub(crate) fn process_handle_count() -> io::Result<u32> {
     Ok(count)
 }
 
+/// This process's own primary token, opened for `TOKEN_QUERY` only.
+#[cfg(test)]
+pub(crate) fn current_process_query_token() -> io::Result<OwnedHandle> {
+    let mut raw = ptr::null_mut();
+    // SAFETY: GetCurrentProcess returns the caller's valid pseudo-handle and
+    // `raw` is writable HANDLE storage.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcessToken returned one fresh owned token handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+}
+
 #[cfg(test)]
 mod cancellation_tests {
     use super::{CancelledOperation, timeout_io_result};
@@ -1490,6 +1605,9 @@ mod cancellation_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod token_facts_tests;
 
 #[cfg(test)]
 mod revert_failure_tests {

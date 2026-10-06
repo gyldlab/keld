@@ -3,9 +3,11 @@
 //! item 1; §7 "8 (endpoint squatting)" and "17 (argument shape)").
 //!
 //! Oracles: hand-written SDDL literals, test-local Win32 reads of handle and
-//! pipe flags and of this process's own token, and squatter pipes that this
-//! module creates directly with `CreateNamedPipeW`, never through the code
-//! under test.
+//! pipe flags and of a client token's impersonation level, and squatter pipes
+//! that this module creates directly with `CreateNamedPipeW`, never through the
+//! code under test. This process's own token facts come from the shared reader,
+//! which `windows_named_pipe::token_facts_tests` checks against independent
+//! token reads.
 #![allow(unsafe_code)] // test-only independent Win32 descriptor, pipe and token oracle
 
 use std::fmt::Write as _;
@@ -26,7 +28,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::{
     GetTokenInformation, RevertToSelf, SECURITY_ATTRIBUTES, SECURITY_IMPERSONATION_LEVEL,
-    SecurityIdentification, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation, TokenImpersonationLevel,
+    SecurityIdentification, TOKEN_QUERY, TokenImpersonationLevel,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
@@ -36,15 +38,16 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
-};
+use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use super::{
     WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
     WindowsAttemptEndpointSecurity, WindowsAttemptSecurityFact,
 };
-use crate::windows_named_pipe::{WaitOutcome, WindowsNamedPipeServer, read_pipe_descriptor};
+use crate::WindowsPeerTokenFacts;
+use crate::windows_named_pipe::{
+    WaitOutcome, WindowsNamedPipeServer, current_process_query_token, read_pipe_descriptor,
+};
 
 const MASK: &str = "0x12019b";
 /// The label as a creator writes it in SDDL.
@@ -73,45 +76,19 @@ fn random_attempt_name() -> io::Result<String> {
     Ok(format!(r"\\.\pipe\keld-attempt-{}", random_locator()?))
 }
 
-fn own_token() -> io::Result<OwnedHandle> {
-    let mut raw = std::ptr::null_mut();
-    // SAFETY: the pseudo-handle names this process and `raw` is writable.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: OpenProcessToken returned one fresh owned token handle.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+/// This process's own token facts, through the shared reader.
+fn own_token_facts() -> io::Result<WindowsPeerTokenFacts> {
+    crate::query_windows_peer_token_facts(&current_process_query_token()?)
 }
 
 /// Binary `TokenUser` SID: the API's input, read through the production token
 /// reader. Expected SDDL text comes independently from `current_process_sid`.
 fn own_user_sid_bytes() -> io::Result<Vec<u8>> {
-    Ok(crate::query_windows_peer_token_facts(&own_token()?)?.user_sid)
+    Ok(own_token_facts()?.user_sid)
 }
 
 fn own_user_sid_text() -> io::Result<String> {
     Ok(current_process_sid()?.to_string())
-}
-
-fn own_token_is_elevated() -> io::Result<bool> {
-    let token = own_token()?;
-    let mut elevation = TOKEN_ELEVATION::default();
-    let mut returned = 0_u32;
-    let size = u32::try_from(size_of::<TOKEN_ELEVATION>()).map_err(io::Error::other)?;
-    // SAFETY: the token is live and the output buffer is a writable TOKEN_ELEVATION.
-    if unsafe {
-        GetTokenInformation(
-            token.as_raw_handle().cast(),
-            TokenElevation,
-            (&raw mut elevation).cast(),
-            size,
-            &raw mut returned,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(elevation.TokenIsElevated != 0)
 }
 
 fn own_session_id() -> io::Result<u32> {
@@ -286,7 +263,9 @@ fn bootstrap_endpoint_grants_exactly_the_host_user_and_administrators() -> io::R
 }
 
 /// D5: only an elevated creator can assign `O:BA`. A Medium creator, like a
-/// Medium squatter, gets `ERROR_INVALID_OWNER` and leaves no pipe behind.
+/// Medium squatter, gets `ERROR_INVALID_OWNER` and leaves no pipe behind. The
+/// branch follows this process's own `TokenElevation`, since a hosted runner may
+/// run elevated.
 #[test]
 fn administrators_owner_is_assignable_only_by_an_elevated_creator() -> io::Result<()> {
     let user = own_user_sid_text()?;
@@ -294,7 +273,7 @@ fn administrators_owner_is_assignable_only_by_an_elevated_creator() -> io::Resul
         .map_err(io::Error::other)?;
     let name = random_attempt_name()?;
     let created = WindowsAttemptEndpoint::create(&name, &security);
-    if own_token_is_elevated()? {
+    if own_token_facts()?.elevated {
         let endpoint = created.map_err(io::Error::other)?;
         assert_eq!(
             endpoint_sddl(&endpoint)?,
@@ -390,7 +369,11 @@ fn client_admits_the_exact_form_and_reports_the_creating_process() -> io::Result
 }
 
 /// A server, the owner or a squatter, can at most identify an attempt
-/// client: the impersonation token it obtains is identification-level.
+/// client: the impersonation token it obtains is identification-level. What
+/// the owner identifies through it, the claim writer's token facts (KEL-53
+/// "Candidate connect-back" *Acceptance*), equals the facts of the client
+/// process's own primary token: user, session, integrity, logon session,
+/// elevation and elevation type.
 #[test]
 fn attempt_client_grants_the_server_identification_only() -> io::Result<()> {
     let security = WindowsAttemptEndpointSecurity::per_user_connect_back(&own_user_sid_bytes()?)
@@ -410,6 +393,7 @@ fn attempt_client_grants_the_server_identification_only() -> io::Result<()> {
     assert_eq!(byte, [0x5a]);
     let level = endpoint.server.inspect_owned_pipe(impersonated_level)?;
     assert_eq!(level, SecurityIdentification);
+    assert_eq!(server.last_client_token_facts()?, own_token_facts()?);
     Ok(())
 }
 

@@ -85,8 +85,11 @@ claim's quality of service and impersonation, and every record and its failures;
 service and impersonation. `keld-ipc::attempt` implements the endpoint layer: the exact
 name predicate, the three closed descriptors (owner, single-mask protected DACL, explicit
 Medium no-write-up label), first-instance creation with readback, and the
-identification-only client's readback before it sends. No record or locator exists until
-KEL-53 fixes their byte layouts.
+identification-only client's readback before it sends. The shared token-fact reader
+`query_windows_peer_token_facts` also reports each token's logon session
+(`TokenStatistics.AuthenticationId`), elevation and elevation type, the facts KEL-53
+requires of the claim writer's token and of the initiating token. No record or locator
+exists until KEL-53 fixes their byte layouts.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then

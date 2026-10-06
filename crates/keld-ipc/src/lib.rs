@@ -61,7 +61,9 @@ pub use session::{
 };
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 #[cfg(windows)]
-pub use windows_named_pipe::{WindowsPeerTokenFacts, query_windows_peer_token_facts};
+pub use windows_named_pipe::{
+    WindowsPeerTokenFacts, WindowsTokenElevationType, query_windows_peer_token_facts,
+};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).
 ///
