@@ -2317,7 +2317,8 @@ Must not touch in Slice A:
     (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06).
   - S7, `keld-guard` token, logon-session and token-impersonation wrappers
     (`uac_token.rs`, `initiating_token.rs`, `logon_session.rs`). Gates: unsafe
-    (`keld-guard` amendment), dependency (`Win32_Security_Authentication_Identity`).
+    (`keld-guard` amendment), dependency (`Win32_Security_Authentication_Identity`),
+    public API (new safe wrappers and error types exported by `keld-guard`).
     Evidence: wrapper tests, including the seam-injected session statuses.
   - S8, the KEL-135 verifier move to `keld-guard` (`windows_authenticode.rs`) with
     `keld-core` calling it. Owner decision (Linear KEL-270 comment
