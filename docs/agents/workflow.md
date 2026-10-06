@@ -51,6 +51,14 @@ non-trivial work, never standalone factual questions. Hook enforcement requires 
 support, registration trusted through its UI and exercised activation. Without activation,
 claim no enforcement; report unsupported/untrusted clients.
 
+## Tracker issue
+
+The KELD Linear issue; if none live covers the work and Linear cannot take one (#517),
+its GitHub issue, linked from the nearest live Linear issue. Here and in routed
+playbooks, Linear means the tracker issue: its comment timestamps order claims and a
+claim elsewhere never wins. On GitHub, `kel-<n>` is `gh-<n>`; open unassigned = Todo,
+assigned = In Progress, blocked-by = Blocked, closed = Done.
+
 ## The loop (one issue, one agent, one concern)
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
@@ -138,10 +146,7 @@ claim no enforcement; report unsupported/untrusted clients.
    § Branch and commit contract). After CodeRabbit fixes, resolve the addressed GitHub
    review threads on that PR (and on an earlier PR when a follow-up merged the fix) per
    `.agents/review.md` § Current-head review. Description per the intake form
-   [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md):
-   Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Omit empty
-   optional sections. Strip every template HTML comment from the submitted PR
-   body. Append a deduped relevant-area learning only when the root threshold applies.
+   [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md). Append a deduped relevant-area learning only when the root threshold applies.
    Post actual gate output, unverified conditions, commit/PR links and follow-up issue
    IDs. Before finishing, leave the Linear branch/OS handoff owned by coordination.
    Apply `.agents/coordination.md` § Standing autonomous merge delegation after the
@@ -215,12 +220,10 @@ after the claim — one record of availability, not two.
   freshness · Mermaid structural checks + pinned render when diagrams change · secret
   scan · no `todo!()`/`unimplemented!()` on the diff. The always-created CI router owns
   the job-level applicability decision; unknown/shared/build-graph inputs run every
-  potentially affected gate. Workflow/router edits still create those jobs but must not
-  duplicate live Ubuntu `apt-get update` onto clippy/MSRV (GUI smoke owns WebKitGTK apt).
+  potentially affected gate.
   Visual inspection and the render report remain review artifacts in addition to CI.
-- **Review gates:** the five in root `AGENTS.md` (unsafe, public API, permissions,
-  dependencies, wire protocol) block until named independent security/architecture
-  evidence covers the exact final diff. `.github/CODEOWNERS` requests relevant reviewers
+- **Review gates:** the five in root `AGENTS.md` block until named independent
+  security/architecture evidence covers the exact final diff. `.github/CODEOWNERS` requests relevant reviewers
   but is not a human-only approval gate. Secret scan is the checksum-pinned `gitleaks` CLI job in
   `.github/workflows/ci.yml` (not the org-licensed GitHub Action).
 - **Architectural review covers** intent, boundaries, spec conformance and API shape;

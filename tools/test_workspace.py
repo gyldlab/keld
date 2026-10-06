@@ -100,6 +100,21 @@ class WorkspaceTests(unittest.TestCase):
         self.cli("start", "kel-245", "probe", "--session", "other", ok=False)
         self.assertEqual(first, self.start())
 
+    def test_github_tracker_issue_allocates_and_round_trips(self):
+        task = json.loads(self.cli("start", "gh-520", "probe", "--session", "test-session").stdout)
+        self.assertEqual((task["task"], task["issue"], task["branch"]), ("gh-520-probe", "GH-520", "agent/gh-520-probe"))
+        self.assertEqual(Path(task["path"]).name, "gh-520-probe")
+        self.assertEqual(task, json.loads(self.cli("start", "gh-520", "probe", "--session", "test-session").stdout))
+        self.cli("start", "gh-520", "probe", "--session", "other", ok=False)
+        self.assertIn("gh-520-probe", self.cli("status").stdout)
+
+    def test_task_names_accept_only_kel_or_gh_positive_ids(self):
+        for name in ["kel-245-probe", "gh-520-tracker-of-record"]:
+            self.assertEqual(workspace.task_name(name), name)
+        for name in ["GH-1-ok", "gh-0-ok", "gh-01-ok", "jira-1-ok", "gh-1", "kel-gh-1-ok", "gh--1-ok"]:
+            with self.subTest(name=name), self.assertRaises(workspace.WorkspaceError):
+                workspace.task_name(name)
+
     def test_default_base_is_origin_main_not_invoking_branch(self):
         self.git("commit", "--allow-empty", "-m", "local only")
         task = self.start()
@@ -118,7 +133,9 @@ class WorkspaceTests(unittest.TestCase):
     def test_bad_names_refuse_before_writes(self):
         for issue, slug, session in [("kel-0", "ok", "s"), ("kel-1", "../out", "s"),
                                      ("kel-1", "Upper", "s"), ("kel-1", "ok", "../s"),
-                                     ("kel-1", "ok", "CON"), ("kel-1", "a" * 70, "s")]:
+                                     ("kel-1", "ok", "CON"), ("kel-1", "a" * 70, "s"),
+                                     ("gh-0", "ok", "s"), ("GH-1", "ok", "s"), ("gh-01", "ok", "s"),
+                                     ("jira-1", "ok", "s"), ("gh", "ok", "s"), ("kel-gh-1", "ok", "s")]:
             with self.subTest(issue=issue, slug=slug, session=session):
                 self.cli("start", issue, slug, "--session", session, ok=False)
         self.assertFalse((self.root / ".keld-work").exists())

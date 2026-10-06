@@ -2,10 +2,10 @@
 Intake form. Policy lives in AGENTS.md — do not restate it here.
 Strip every HTML comment from the submitted PR body (this block and the per-heading hints). Do not delete them from this file — hygiene reads them. Leftover comments are paid on every later `gh pr view`.
 
-Branch: `agent/kel-<n>-<slug>` from `origin/main` (`.agents/review.md` § Branch and commit contract).
+Branch: `agent/kel-<n>-<slug>` (`gh-<n>` for a GitHub tracker issue) from `origin/main` (`.agents/review.md` § Branch and commit contract).
 
 Required headings below: keep the names. Fill them. Omit any optional heading that would be empty — do not write N/A.
-Optional (only if they have content): `## Linear` (KEL-n), `## Rollback`, `## Screenshots`.
+Optional (only if they have content): `## Linear` (KEL-n or GitHub #n), `## Rollback`, `## Screenshots`.
 Do not paste review-bot release notes into this body.
 -->
 

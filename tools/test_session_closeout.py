@@ -229,6 +229,29 @@ class CloseoutTests(unittest.TestCase):
         self.receipt["findings"][0]["remote_receipt"] = "https://linear.app/team/issue/KEL-999"
         self.reject("matching Linear issue")
 
+    def test_github_tracked_finding_needs_matching_issue_receipt(self):
+        finding = self.receipt["findings"][0]
+        finding.update(issue="GH-520", remote_receipt="https://github.com/gyldlab/keld/issues/520#issuecomment-1")
+        self.write()
+        checker.check(self.path)
+        for url in ["https://github.com/gyldlab/keld/issues/521#issuecomment-1",
+                    "https://github.com/gyldlab/other/issues/520",
+                    "https://github.com/gyldlab/keld/pull/520",
+                    "https://github.com/gyldlab/keld/issues/5200",
+                    "http://github.com/gyldlab/keld/issues/520",
+                    "https://github.com:8443/gyldlab/keld/issues/520",
+                    "https://user@github.com/gyldlab/keld/issues/520",
+                    "https://linear.app/gyldlab-keld/issue/GH-520"]:
+            with self.subTest(url=url):
+                finding["remote_receipt"] = url
+                self.reject("matching GitHub issue")
+        finding.update(issue="KEL-185", remote_receipt="https://github.com/gyldlab/keld/issues/185")
+        self.reject("matching Linear issue")
+        for issue in ["GH-0", "gh-520", "GITHUB-520", "GH-"]:
+            with self.subTest(issue=issue):
+                finding["issue"] = issue
+                self.reject("requires KEL issue")
+
     def test_fake_deleted_resource(self):
         self.resource.mkdir()
         self.reject("still exists")

@@ -66,8 +66,8 @@ def component(value, label, maximum=128):
 
 def task_name(value):
     component(value, "task", 64)
-    require(re.fullmatch(r"kel-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*", value),
-            "Invalid task. Use kel-<positive issue number>-<lowercase-kebab-slug>.")
+    require(re.fullmatch(r"(?:kel|gh)-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*", value),
+            "Invalid task. Use kel-<n>-<slug> or, for a GitHub tracker issue, gh-<n>-<slug>: positive number, lowercase-kebab slug.")
     return value
 
 
@@ -348,12 +348,13 @@ def load_task(ctx, name, session=None, *, active=True):
     if session is not None:
         component(session, "session")
         require((not active or record["state"] == "active") and record["owner"] == owner() and session in record["sessions"],
-                "Task belongs to another session or is released. Use the owning session; reconcile the Linear claim before transfer.")
+                "Task belongs to another session or is released. Use the owning session; reconcile the tracker claim before transfer.")
     return record, path
 
 
 def start(ctx, issue, slug, session, base):
-    require(re.fullmatch(r"kel-[1-9][0-9]*", issue), "Invalid issue. Use kel-<positive number>.")
+    require(re.fullmatch(r"(?:kel|gh)-[1-9][0-9]*", issue),
+            "Invalid issue. Use kel-<positive number>, or gh-<positive number> for a GitHub tracker issue.")
     name = task_name(issue + "-" + slug)
     session = component(session, "session")
     require(base and not base.startswith("-"), "Invalid base. Fetch origin main or pass a commit/ref with --base.")

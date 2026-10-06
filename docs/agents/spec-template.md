@@ -8,7 +8,7 @@ Status: approved (human sign-off).
 ```markdown
 # Spec: <name>
 Status: draft | approved | implementing | done
-Linear: KEL-<n> · Owner: <human> · Updated: YYYY-MM-DD
+Linear: KEL-<n> (or GitHub #<n>, #517) · Owner: <human> · Updated: YYYY-MM-DD
 
 ## 1. Goal & non-goals
 One paragraph: the problem and the observable outcome. Bullet the explicit non-goals.
