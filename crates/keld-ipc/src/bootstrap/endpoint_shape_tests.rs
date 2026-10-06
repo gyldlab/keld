@@ -4,7 +4,6 @@
 //! The oracle is the literal name table below, never a name derived by the
 //! production locator or predicate.
 
-use std::fmt::Write as _;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -32,7 +31,15 @@ fn attempt_endpoint_accepts_only_the_exact_local_shape() {
         &attempt_name(&"f".repeat(64))
     ));
 
+    // Same-length locators with one wrong digit: each is exactly 64 bytes, so
+    // the length rule admits it and only the digit rule can refuse it. U+FF10
+    // (FULLWIDTH DIGIT ZERO) is three UTF-8 bytes.
     let upper_one = format!("{}A", &LOCATOR[..63]);
+    let non_hex = format!("{}g", &LOCATOR[..63]);
+    let full_width_digit = format!("{}\u{ff10}", &LOCATOR[..61]);
+    for locator in [&upper_one, &non_hex, &full_width_digit] {
+        assert_eq!(locator.len(), 64, "{locator:?}");
+    }
     let mut refused = vec![
         // UNC, remote, device-path and slash variants of the same locator.
         format!(r"\\server\pipe\keld-attempt-{LOCATOR}"),
@@ -69,8 +76,8 @@ fn attempt_endpoint_accepts_only_the_exact_local_shape() {
         format!("{} ", attempt_name(LOCATOR)),
         format!(" {}", attempt_name(LOCATOR)),
         format!("{} --role recovery", attempt_name(LOCATOR)),
-        attempt_name(&format!("{}g", &LOCATOR[..63])),
-        attempt_name(&format!("{}\u{ff10}", &LOCATOR[..62])),
+        attempt_name(&non_hex),
+        attempt_name(&full_width_digit),
     ];
     refused.push(String::new());
     for name in &refused {
@@ -115,13 +122,7 @@ fn keld_pipe_namespaces_are_pairwise_disjoint() {
 /// succeed: an `InvalidInput` refusal proves the namespace check ran first.
 #[test]
 fn app_link_and_lifecycle_clients_refuse_a_live_attempt_name_before_opening() -> io::Result<()> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-    let mut locator = String::with_capacity(64);
-    for byte in bytes {
-        write!(locator, "{byte:02x}").map_err(io::Error::other)?;
-    }
-    let endpoint = attempt_name(&locator);
+    let endpoint = attempt_name(&super::random_test_locator()?);
     let live = WindowsNamedPipeServer::bind(&endpoint)?;
 
     let app_link = WindowsNamedPipeBootstrapStream::connect(&endpoint)

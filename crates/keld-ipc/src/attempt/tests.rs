@@ -10,7 +10,6 @@
 //! token reads.
 #![allow(unsafe_code)] // test-only independent Win32 descriptor, pipe and token oracle
 
-use std::fmt::Write as _;
 use std::io::{self, Read as _, Write as _};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -45,6 +44,7 @@ use super::{
     WindowsAttemptEndpointSecurity, WindowsPipeSecurityFact,
 };
 use crate::WindowsPeerTokenFacts;
+use crate::bootstrap::random_test_locator;
 use crate::windows_named_pipe::{
     PipeSecuritySections, WaitOutcome, WindowsNamedPipeServer, current_process_query_token,
     current_process_session_id, read_pipe_descriptor,
@@ -63,18 +63,8 @@ fn wide(value: &str) -> Vec<u16> {
         .collect()
 }
 
-fn random_locator() -> io::Result<String> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-    let mut locator = String::with_capacity(64);
-    for byte in bytes {
-        write!(locator, "{byte:02x}").map_err(io::Error::other)?;
-    }
-    Ok(locator)
-}
-
 fn random_attempt_name() -> io::Result<String> {
-    Ok(format!(r"\\.\pipe\keld-attempt-{}", random_locator()?))
+    Ok(format!(r"\\.\pipe\keld-attempt-{}", random_test_locator()?))
 }
 
 /// This process's own token facts, through the shared reader.
@@ -776,7 +766,7 @@ fn owner_refuses_and_closes_an_instance_whose_readback_deviates() -> io::Result<
 fn attempt_client_and_owner_refuse_other_keld_namespaces_before_any_open() -> io::Result<()> {
     let security = WindowsAttemptEndpointSecurity::per_user_connect_back(&own_user_sid_bytes()?)
         .map_err(io::Error::other)?;
-    let locator = random_locator()?;
+    let locator = random_test_locator()?;
     for name in [
         format!(r"\\.\pipe\keld-{locator}"),
         format!(r"\\.\pipe\keld-lifecycle-{locator}"),
@@ -792,7 +782,7 @@ fn attempt_client_and_owner_refuse_other_keld_namespaces_before_any_open() -> io
         ));
         probe_exists(&name)?;
     }
-    let unused = format!(r"\\.\pipe\keld-{}", random_locator()?);
+    let unused = format!(r"\\.\pipe\keld-{}", random_test_locator()?);
     assert!(matches!(
         WindowsAttemptEndpoint::create(&unused, &security),
         Err(WindowsAttemptEndpointError::EndpointShape)

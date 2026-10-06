@@ -2211,6 +2211,20 @@ fn has_exact_pipe_locator(endpoint: &str, prefix: &str) -> bool {
     })
 }
 
+/// Test-only: a fresh 64-lowercase-hex locator for a unique live test pipe,
+/// minted independently of the production locators so that no test name is
+/// derived by the code under test.
+#[cfg(all(test, windows))]
+pub(crate) fn random_test_locator() -> io::Result<String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    let mut locator = String::with_capacity(64);
+    for byte in bytes {
+        write!(locator, "{byte:02x}").map_err(io::Error::other)?;
+    }
+    Ok(locator)
+}
+
 #[cfg(all(test, windows))]
 mod endpoint_shape_tests;
 
