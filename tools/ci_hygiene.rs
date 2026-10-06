@@ -60,9 +60,6 @@ const PR_NEEDLES: &[&str] = &[
 
 const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "gitleaks detect",
-    // The scan is scoped to what the event admits (a PR's own commits, or the pushed
-    // history), so an unrelated fetched ref cannot fail every pull request.
-    "--log-opts=\"$KELD_GITLEAKS_RANGE\"",
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
@@ -103,6 +100,39 @@ const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "python3 -B tools/test_session_closeout_hook.py",
     "python3 -B tools/workspace.py check",
     "python3 -B tools/test_workspace.py",
+];
+
+// The gitleaks `Scan` step scans exactly what each event admits: a pull request's own
+// commits (both SHAs must resolve, so an unresolvable range cannot pass with zero
+// commits scanned) or the pushed branch's history; any other event refuses.
+const GITLEAKS_SCAN_ENV: &[(&str, &str)] = &[
+    ("KELD_GITLEAKS_EVENT", "${{ github.event_name }}"),
+    ("KELD_GITLEAKS_PR_BASE", "${{ github.event.pull_request.base.sha }}"),
+    ("KELD_GITLEAKS_PR_HEAD", "${{ github.event.pull_request.head.sha }}"),
+];
+
+const GITLEAKS_SCAN_COMMANDS: &[&str] = &[
+    "set -euo pipefail",
+    "case \"$KELD_GITLEAKS_EVENT\" in",
+    "pull_request)",
+    "for sha in \"$KELD_GITLEAKS_PR_BASE\" \"$KELD_GITLEAKS_PR_HEAD\"; do",
+    "if [ -z \"$sha\" ] || ! git cat-file -e \"${sha}^{commit}\"; then",
+    "echo \"gitleaks: a pull_request base or head SHA is missing or not a local commit; refusing an unresolvable range\" >&2",
+    "exit 1",
+    "fi",
+    "done",
+    "KELD_GITLEAKS_RANGE=\"$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD\"",
+    ";;",
+    "push)",
+    "KELD_GITLEAKS_RANGE=HEAD",
+    ";;",
+    "*)",
+    "echo \"gitleaks: unsupported event $KELD_GITLEAKS_EVENT; refusing to choose a scan range\" >&2",
+    "exit 1",
+    ";;",
+    "esac",
+    "echo \"gitleaks log range: $KELD_GITLEAKS_RANGE\"",
+    "gitleaks detect --source . --verbose --redact --exit-code 1 --log-opts=\"$KELD_GITLEAKS_RANGE\"",
 ];
 
 const PRODUCT_STATUS_COMMANDS: &[&str] = &[
@@ -1810,6 +1840,54 @@ fn check_public_audit_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_gitleaks_scan_step(text: &str) -> Result<(), String> {
+    let Some(secrets) = workflow_job_block(text, "secrets") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no unconditional `secrets` (gitleaks) job."
+        ));
+    };
+    let step = "Scan";
+    let count = workflow_direct_named_step_count(&secrets, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `secrets` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&secrets, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `secrets.steps`.")
+    })?;
+    if workflow_named_step_direct_keys(&block, step).as_deref()
+        != Some(["env".to_owned(), "run".to_owned()].as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` may contain only its env and run keys; conditions and wrappers can skip or soften the secrets gate."
+        ));
+    }
+    let expected_env: Vec<(String, String)> = GITLEAKS_SCAN_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&secrets, step, "env").as_deref() != Some(expected_env.as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` must bind exactly the event name and the pull request's base and head SHAs in `env`, never interpolate them into `run`."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` has no multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(GITLEAKS_SCAN_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` must run the exact scoped scan: resolve both pull-request SHAs to local commits, scan push history at HEAD, refuse other events, and pass the range with --log-opts. An unscoped, empty or unresolvable range lets the secrets gate pass without scanning the change."
+        ));
+    }
+    Ok(())
+}
+
 fn check_product_status_step(text: &str) -> Result<(), String> {
     let Some(changes) = workflow_job_block(text, "changes") else {
         return Err(format!(
@@ -2376,6 +2454,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_bun_test_job(&text)?;
     check_linux_media_guard_step(&text)?;
     check_required_job(&text)?;
+    check_gitleaks_scan_step(&text)?;
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
     check_windows_media_acceptance_step(&text)?;
@@ -2567,6 +2646,22 @@ mod tests {
     }
 
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
+    fn gitleaks_scan_step() -> String {
+        let mut lines = vec!["      - name: Scan".to_owned(), "        env:".to_owned()];
+        lines.extend(
+            GITLEAKS_SCAN_ENV
+                .iter()
+                .map(|(key, value)| format!("          {key}: {value}")),
+        );
+        lines.push("        run: |".to_owned());
+        lines.extend(
+            GITLEAKS_SCAN_COMMANDS
+                .iter()
+                .map(|command| format!("          {command}")),
+        );
+        lines.join("\n")
+    }
+
     fn valid_workflow() -> String {
         let windows_media_step = windows_media_step();
         [
@@ -2655,7 +2750,7 @@ mod tests {
             "        with:",
             "          toolchain: 1.97.1",
             "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
-            "      - run: gitleaks detect --source . --exit-code 1 --log-opts=\"$KELD_GITLEAKS_RANGE\"",
+            &gitleaks_scan_step(),
             "  hygiene:",
             "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
             "    steps:",
@@ -5211,15 +5306,67 @@ foreach ($item in $items) {
         );
     }
 
+    fn assert_gitleaks_scan_refused(from: &str, to: &str, what: &str) {
+        let workflow = valid_workflow();
+        assert!(workflow.contains(from), "fixture lacks `{from}`");
+        let temp = complete_fixture();
+        temp.write(WORKFLOW, &workflow.replacen(from, to, 1));
+        let error = check(temp.path()).expect_err(what);
+        assert!(error.contains("gitleaks `Scan`"), "{what}: {error}");
+    }
+
     #[test]
     fn unscoped_gitleaks_scan_fails() {
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &valid_workflow().replacen(" --log-opts=\"$KELD_GITLEAKS_RANGE\"", "", 1),
+        assert_gitleaks_scan_refused(
+            " --log-opts=\"$KELD_GITLEAKS_RANGE\"",
+            "",
+            "an all-refs gitleaks scan must fail",
         );
-        let error = check(temp.path()).expect_err("an all-refs gitleaks scan must fail");
-        assert!(error.contains("--log-opts"), "{error}");
+    }
+
+    #[test]
+    fn trailing_comment_cannot_spoof_the_gitleaks_scope() {
+        assert_gitleaks_scan_refused(
+            " --log-opts=\"$KELD_GITLEAKS_RANGE\"",
+            " # --log-opts=\"$KELD_GITLEAKS_RANGE\"",
+            "a commented-out scope must fail",
+        );
+    }
+
+    #[test]
+    fn unresolved_pull_request_sha_guard_is_required() {
+        assert_gitleaks_scan_refused(
+            "if [ -z \"$sha\" ] || ! git cat-file -e \"${sha}^{commit}\"; then",
+            "if [ -z \"$sha\" ]; then",
+            "a range whose SHAs are not resolved must fail",
+        );
+    }
+
+    #[test]
+    fn empty_gitleaks_range_fails() {
+        assert_gitleaks_scan_refused(
+            "KELD_GITLEAKS_RANGE=\"$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD\"",
+            "KELD_GITLEAKS_RANGE=\"$KELD_GITLEAKS_PR_HEAD..$KELD_GITLEAKS_PR_HEAD\"",
+            "an empty pull-request range must fail",
+        );
+    }
+
+    #[test]
+    fn unknown_event_must_refuse_a_gitleaks_range() {
+        assert_gitleaks_scan_refused(
+            "echo \"gitleaks: unsupported event $KELD_GITLEAKS_EVENT; refusing to choose a scan range\" >&2",
+            "KELD_GITLEAKS_RANGE=HEAD",
+            "an unknown event that falls back to a scan must fail",
+        );
+    }
+
+    #[test]
+    fn gitleaks_range_inputs_come_from_the_event() {
+        assert_gitleaks_scan_refused(
+            "KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.base.sha }}",
+            "KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.head.sha }}",
+            "a spoofed base SHA must fail",
+        );
     }
 
     #[test]

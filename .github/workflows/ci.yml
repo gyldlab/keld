@@ -501,15 +501,24 @@ jobs:
           KELD_GITLEAKS_PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [ "$KELD_GITLEAKS_EVENT" = pull_request ]; then
-            if [ -z "$KELD_GITLEAKS_PR_BASE" ] || [ -z "$KELD_GITLEAKS_PR_HEAD" ]; then
-              echo "gitleaks: pull_request event without base/head SHA; refusing an unscoped scan" >&2
+          case "$KELD_GITLEAKS_EVENT" in
+            pull_request)
+              for sha in "$KELD_GITLEAKS_PR_BASE" "$KELD_GITLEAKS_PR_HEAD"; do
+                if [ -z "$sha" ] || ! git cat-file -e "${sha}^{commit}"; then
+                  echo "gitleaks: a pull_request base or head SHA is missing or not a local commit; refusing an unresolvable range" >&2
+                  exit 1
+                fi
+              done
+              KELD_GITLEAKS_RANGE="$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD"
+              ;;
+            push)
+              KELD_GITLEAKS_RANGE=HEAD
+              ;;
+            *)
+              echo "gitleaks: unsupported event $KELD_GITLEAKS_EVENT; refusing to choose a scan range" >&2
               exit 1
-            fi
-            KELD_GITLEAKS_RANGE="$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD"
-          else
-            KELD_GITLEAKS_RANGE=HEAD
-          fi
+              ;;
+          esac
           echo "gitleaks log range: $KELD_GITLEAKS_RANGE"
           gitleaks detect --source . --verbose --redact --exit-code 1 --log-opts="$KELD_GITLEAKS_RANGE"
 
