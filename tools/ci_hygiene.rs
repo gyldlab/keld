@@ -232,6 +232,10 @@ const FUZZ_WORKSPACE_STEPS: &[(&str, &str)] = &[
         "Check keld-wv fuzz workspace",
         "cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml",
     ),
+    (
+        "Check keld-update fuzz workspace",
+        "cargo check --manifest-path crates/keld-update/fuzz/Cargo.toml",
+    ),
 ];
 
 const ROOT_TEST_RECIPE_COMMANDS: &[&str] = &[
@@ -2598,6 +2602,10 @@ mod tests {
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
             "          cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml",
+            "      - name: Check keld-update fuzz workspace",
+            "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
+            "        run: |",
+            "          cargo check --manifest-path crates/keld-update/fuzz/Cargo.toml",
             "      - name: clippy (warnings deny)",
             "        shell: bash",
             "        run: cargo clippy -p fixture --all-targets -- -D warnings",
@@ -3864,6 +3872,19 @@ mod tests {
         temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
         let error = check(temp.path()).expect_err("missing keld-wv fuzz workspace check must fail");
         assert!(error.contains("Check keld-wv fuzz workspace"), "{error}");
+    }
+
+    #[test]
+    fn missing_update_fuzz_workspace_step_fails() {
+        let temp = complete_fixture();
+        let step = "      - name: Check keld-update fuzz workspace\n        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'\n        run: |\n          cargo check --manifest-path crates/keld-update/fuzz/Cargo.toml\n";
+        temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
+        let error =
+            check(temp.path()).expect_err("missing keld-update fuzz workspace check must fail");
+        assert!(
+            error.contains("Check keld-update fuzz workspace"),
+            "{error}"
+        );
     }
 
     #[test]
