@@ -36,7 +36,9 @@ const PROVENANCE: &str = "install-provenance";
 /// The selection is journal-free: a pending activation journal refuses with
 /// [`crate::ActivationEffect::JournalBoundRecoveryRequired`]. An invalid `current` is
 /// repaired only when last-known-good is the located version, so a host started from
-/// any other tree never causes a write.
+/// any other tree never causes a write. In `MachineUacDirect` the ordinary process never
+/// repairs or recovers: a pending journal or an invalid `current` refuses with the typed
+/// [`crate::ActivationEffect::MachineRecoveryRequired`] and writes nothing.
 ///
 /// # Errors
 /// [`UpdateError::ExecutableBinding`] when the locator shape, executable identity, located
