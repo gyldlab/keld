@@ -838,7 +838,7 @@ v1) is checked in with the other three as
 | `logon_time` | `0000000000000001` to `7fffffffffffffff` | `0000000000000000`; `8000000000000000` to `ffffffffffffffff`, the two's complement of a negative `LogonTime`; uppercase, 15 digits, a JSON number |
 | `owner_process_id` | `1` to `4294967295` | `0`, `4294967296`, `-1`, `4242.0`, `4.242e3`, `04242`, `"4242"` |
 | `owner_creation_time` | `0000000000000001` to `ffffffffffffffff` | `0000000000000000`; uppercase, 17 digits, a non-hex digit |
-| record shape | both objects in v2, neither in v1 | an object missing or `null` in v2; either present in v1; another schema; swapped objects or keys, an object after `phase`, whitespace; a duplicate or unknown key at either level |
+| record shape | both objects in v2, neither in v1 | an object missing or `null` in v2; either present in v1; another schema; swapped objects or keys, an object after `phase`, whitespace; a key missing from either object; a duplicate or unknown key at either level |
 
 A v1 record still decodes, with neither object, and admits no claim. The phase writes
 that finish a decoded v1 attempt keep its v1 encoding, because no owner facts exist for

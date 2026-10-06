@@ -467,8 +467,9 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   (KEL-270 T4d S3): minting the attempt identities writes nothing, and a separate call
   journals them with the owner's process and initiating-logon facts, so an owner can hold
   its connect-back endpoint before any record reveals them. A landed v1 journal still
-  decodes; it carries no owner facts, so it can admit no candidate claim, and it
-  finishes under v1. `select_windows_active_package` mints the
+  decodes; it carries no owner facts, so it can admit no candidate claim. Its phase
+  writes keep v1, and only the re-mint record of a resumed unlaunched attempt, which
+  carries the resumed owner's facts, is v2. `select_windows_active_package` mints the
   journal-free `ActivePackageSelection` (KEL-254 AC4): under the shared snapshot lease it
   requires `current` to equal last-known-good or previous-known-good within the floor,
   admits only referenced versions, gives each the baseline loader's metadata admission
