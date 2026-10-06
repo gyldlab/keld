@@ -2,3 +2,11 @@
 # "unknown key" followed by descriptive text; no credential is present.
 # Keep this suppression fingerprint-specific so other findings still fail CI.
 0ef941a14a40ff7529dc2c6e7cd89dac65a9a517:docs/specs/kel53-full-package-activation.md:generic-api-key:35
+
+# False positive: commit b016563 on the unmerged planning branch
+# research/electron-compat-map quotes the Architecture 05 section 3 row that names the
+# OS keychain, DPAPI and libsecret stores behind the safeStorage facade. gitleaks reads
+# that prose as a generic API key; no credential is present. CI scans every fetched ref,
+# so this commit fails gitleaks on unrelated pull requests.
+b0165635630d99c777c8a53c7d5a740b26148150:wayfinder/electron-compat/notes/F06.md:generic-api-key:211
+b0165635630d99c777c8a53c7d5a740b26148150:wayfinder/electron-compat/drafts/swarm.json:generic-api-key:6221
