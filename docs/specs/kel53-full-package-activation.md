@@ -1916,7 +1916,9 @@ Implement in:
     claim writer's token and the initiating token alike. `GetNamedPipeServerProcessId`,
     `GetNamedPipeServerSessionId`, `GetNamedPipeClientProcessId`,
     `ImpersonateNamedPipeClient`, `RevertToSelf` and `DisconnectNamedPipe` are already
-    listed. The pipe impersonation is used only to read the claim writer's token at
+    listed; `ProcessIdToSessionId` on this process's own ID is added for the client's
+    same-session check (S4a).
+    The pipe impersonation is used only to read the claim writer's token at
     identification level; it never pins a source. The descriptor code uses
     `Win32_Security_Authorization`, which the workspace pin already enables. The new
     safe module `src/attempt.rs` holds the `keld-attempt` codec, server and client;
