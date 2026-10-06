@@ -18,6 +18,11 @@ const FOREIGN_SIGNED_APP_ID: &str = "dev.keld.other";
 fn refused_before_resources(output: &Output) -> String {
     assert!(!output.status.success(), "the installed host booted");
     let stderr = String::from_utf8(output.stderr.clone()).expect("refusal stderr UTF-8");
+    println!(
+        "KELD_KEL254_REFUSAL status={} stderr={}",
+        output.status,
+        stderr.trim_end()
+    );
     assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
     stderr
 }
