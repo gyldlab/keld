@@ -1,6 +1,7 @@
 //! Signed Windows profile acceptance scenarios.
 
 mod cross_user;
+mod installed;
 mod lifecycle;
 mod purge;
 mod startup;
