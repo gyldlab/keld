@@ -1,10 +1,20 @@
 # Spec: ExpectedAppIdentity Windows host container and writer
 Status: approved
-Linear: KEL-19 (packaging work: container and writer) · related KEL-254 amendment A3 and KEL-96 T3 Part B · Owner: GYLDLAB · Updated: 2026-10-05
+Linear: KEL-19 (packaging work: container and writer) · related KEL-254 amendment A3 and KEL-96 T3 Part B · Owner: GYLDLAB · Updated: 2026-10-06
 Approval: exact content approved by Linear KEL-19 owner approval comment
 `9ac5ecb2-7bd1-4805-80d4-460fd89e553b` (2026-10-06), binding PR #382 head
 `213834b1a6dc1a51fccc7a9ac05ac07b7ce1d247` and the approved spec-content SHA-256
 `2293ad68968337056efda4981b13120060673448ab57d087cc2a8c3a9c6ccbdf`.
+Post-approval errata (2026-10-06, KEL-19 T1): §5 and §8 add the workspace-pinned `sha2`
+dev-dependency for the AC7 digest (owner decision, Linear KEL-19 comment
+`dbddd923-c3e1-4b69-87fd-c7ba7f7210a7`); §5 makes the CI `KELD_PACK_REAL_HOST` path
+absolute because Cargo runs integration tests from the package directory; and §7 row 9
+assigns `KELD-PACK-006` to the header-structure defects that §4 reader step 1 refuses
+before step 3. Where §4 is silent, T1 refuses fail-closed: more than 96 sections, no
+section, or a section whose `VirtualSize` is 0 is `KELD-PACK-006`, and a container that
+is the only section, or a failed writer read-back, is `KELD-PACK-011`. The SHA-256 above
+binds the PR #382 head only; this file differs from it by the approval receipt and these
+errata.
 Owner decisions: the two product questions of the first draft (the packaging-input host
 form and the app-id dual carrier) were decided by the owner on 2026-10-05 and recorded
 by Linear KEL-19 comment `eebf7987-6c56-4fd5-9ad3-4d7096d055a6`; §4 "Owner decisions
@@ -751,7 +761,7 @@ Must not touch:
 | 6 | One mutation per field, each independently: `MZ`, `e_lfanew` (small, beyond file, overflow), `PE\0\0`, `Machine`, DLL bit, `SizeOfOptionalHeader`, `Magic`, `NumberOfRvaAndSizes`, `FileAlignment` (not a power of two, 256, 131072), `SectionAlignment` (below 4096, below `FileAlignment`), `SizeOfHeaders` (misaligned, beyond file), section table beyond `SizeOfHeaders`, a section with only one of `SizeOfRawData` and `PointerToRawData` zero, misaligned or overlapping raw ranges, raw range beyond file, non-adjacent virtual addresses, wrong `SizeOfImage`, and `u32` overflow; each `KELD-PACK-006` from both writer and reader. The fuzz target asserts no panic and a fixed allocation ceiling. |
 | 7 | Run the writer twice in one process and compare; the CI matrix on Linux, macOS and Windows compares the output SHA-256 with one checked-in golden digest. |
 | 8 | Windows, real signature: intact image returns zero and decodes; XOR `0x01` into one payload byte, one padding byte, and the low byte of the container's `VirtualSize`, each from a fresh copy, each exactly `TRUST_E_BAD_DIGEST` (`0x80096010`); any other status, including another non-zero one, fails the row; XOR `0x01` into one `CheckSum` byte, zero. Record each exact status. |
-| 9 | Missing, duplicate, and each non-canonical field of §4 reader steps 3 and 4 that reaches them, each `KELD-PACK-011` (characteristics, relocation and line-number fields, L below 68 and above 400, `SizeOfRawData`, not last in table, file order, overlap with the certificate table or a certificate table ending beyond the file, non-zero padding); a canonical container holding a truncated payload gives `KELD-PACK-005`. Erratum (2026-10-06): a container whose pointer is misaligned, whose raw data overlaps the headers or another section or ends beyond the file, whose address is out of order, or whose image has a wrong `SizeOfImage` is a header-structure defect that §4 reader step 1 refuses first with `KELD-PACK-006`, as AC6 allows ("or the more specific code §4 assigns"); the reader test asserts `KELD-PACK-006` for each. |
+| 9 | Missing, duplicate, and each non-canonical field of §4 reader steps 3 and 4 that reaches them, each `KELD-PACK-011` (characteristics, relocation and line-number fields, L below 68 and above 400, `SizeOfRawData`, not last in table, file order, overlap with the certificate table or a certificate table ending beyond the file, non-zero padding); a canonical container holding a truncated payload gives `KELD-PACK-005`. Erratum (2026-10-06): a container whose pointer is misaligned, whose raw data overlaps the headers or another section or ends beyond the file, whose address is out of order, or whose image has a wrong `SizeOfImage` is a header-structure defect that §4 reader step 1 refuses first with `KELD-PACK-006`, because §4 runs reader step 1 before step 3 and refuses at the first failing step; the reader test asserts `KELD-PACK-006` for each. |
 | 10 | Windows: `read_host_identity` succeeds on an anonymous `tempfile::tempfile()` file (no path) after its cursor is moved to end of file, and an injected read failure gives `KELD-PACK-012`; on every OS, a source scan of `keld-pack` finds no `unsafe`, `LoadLibrary`, `FindResource` or `UpdateResource`. |
 | 11 | `keld build` integration test (T3): signed input refuses with `KELD-PACK-009`; the step log shows digest verification, then embed, then signature; the post-sign check rejects with its `KELD-CLI` code, independently, an unsigned host, a fixture with bytes between the container and the certificate table and a fixture whose signer changed one byte before the certificate table outside the `CheckSum` and Certificate Table entry. |
 | 12 | `keld build` integration test (T3): a packaging input with one flipped byte, a digest for another target or Keld version, a missing digest and a digest that fails channel authentication each refuse with the new `KELD-CLI` code before the writer runs; a writer-call counter stays zero and no host output exists. |

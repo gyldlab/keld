@@ -324,7 +324,10 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release -p keld-host
-          cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact
+          # An --exact filter that matches nothing exits 0, so require the one pass.
+          out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
       - name: rustdoc (warnings deny)
         if: matrix.os == 'ubuntu-latest'
         env:

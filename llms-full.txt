@@ -5865,7 +5865,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: Reading the host's identity container from the verified executable failed
-- fix: Make sure the executable's volume is readable and relaunch, and reinstall the signed package if the failure persists.
+- fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
 
 ---
 
