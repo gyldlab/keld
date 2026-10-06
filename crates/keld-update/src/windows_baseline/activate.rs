@@ -225,16 +225,16 @@ impl WindowsMintedAttempt {
     ///
     /// # Errors
     /// Owner facts that name no process or logon session (a zero process ID or creation
-    /// time, or a zero or negative logon time) refuse before any write: a fresh attempt
-    /// at step `start` with [`ActivationEffect::ProtectedStateUnchanged`], a resumed
-    /// attempt with its journal unchanged and
-    /// [`ActivationEffect::JournalBoundRecoveryRequired`]. A failed durable step refuses
-    /// with the effect its journal decides; a fresh attempt refused before its journal
-    /// exists leaves only its stage. A copy that fails verification after its rename is
-    /// retired under the journal and the next stage recording the exact candidate is
-    /// tried. With none left the journal is removed, and the refusal names step
-    /// `candidate verification` with [`ActivationEffect::ProtectedStateUnchanged`] (or
-    /// [`ActivationEffect::ResolvedWithLeftovers`] if cleanup is incomplete).
+    /// time, a zero authentication ID, or a zero or negative logon time) refuse before
+    /// any write: a fresh attempt at step `start` with
+    /// [`ActivationEffect::ProtectedStateUnchanged`], a resumed attempt with its journal
+    /// unchanged and [`ActivationEffect::JournalBoundRecoveryRequired`]. A failed durable
+    /// step refuses with the effect its journal decides; a fresh attempt refused before
+    /// its journal exists leaves only its stage. A copy that fails verification after its
+    /// rename is retired under the journal and the next stage recording the exact
+    /// candidate is tried. With none left the journal is removed, and the refusal names
+    /// step `candidate verification` with [`ActivationEffect::ProtectedStateUnchanged`]
+    /// (or [`ActivationEffect::ResolvedWithLeftovers`] if cleanup is incomplete).
     pub fn journal(
         self,
         attempt_owner: AttemptOwner,

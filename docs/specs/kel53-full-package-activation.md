@@ -316,7 +316,8 @@ open of the verified host process instead.
    not the token's
    ([CreateProcessWithTokenW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw),
    `ms.date` 2018-12-05). Every launch-readiness proof that needs no created process (the
-   token facts, the session, `SeImpersonatePrivilege`, failed reversion, a zero logon
+   token facts, the session, `SeImpersonatePrivilege`, failed reversion, a zero
+   `AuthenticationId` (owner decision 2026-10-06 (zero LUID refused)) or a zero logon
    time of the initiating session, and desktop and profile availability) runs before the
    mint-then-journal seam writes `PublishPending`,
    so its refusal is `ProtectedStateUnchanged`. Only process creation and the
@@ -797,7 +798,7 @@ struct AttemptOwner {
 
 /// The initiating process token's logon session ("Machine-UAC owner-loss retirement").
 struct InitiatingLogon {
-    authentication_id: Luid, // `TokenStatistics.AuthenticationId`
+    authentication_id: Luid, // `TokenStatistics.AuthenticationId`; zero refuses launch
     logon_time: i64,         // `SECURITY_LOGON_SESSION_DATA.LogonTime`; zero refuses launch
 }
 
@@ -820,14 +821,16 @@ bytes). It adds `"initiating_logon": {"authentication_id": h16, "logon_time": h1
 `"attempt_owner": {"owner_process_id": n, "owner_creation_time": h16}`, where `h16` is a
 string of exactly 16 lowercase hexadecimal digits of an unsigned 64-bit value, and `n`
 is a JSON integer in `1..=4294967295`. `authentication_id` is the LUID as
-`(HighPart << 32) | LowPart`; `logon_time` and `owner_creation_time` are the FILETIME
-values, nonzero, and a negative `LogonTime` refuses. The wire review fixes these golden
-vectors. The two objects follow `lifecycle_channel_id` and precede `phase`, in the order
-above, under schema `keld.activation-journal/v2`. The fixture's logon session has
-`HighPart` 1 and `LowPart` `0x0002a5f3`, its `LogonTime` is 2026-10-06T08:00:00Z, and
-its owner is process 4242, created 42 seconds later. The exact accepted records, one per
-phase, are checked in as `crates/keld-update/src/records/golden/journal-v2-<phase>.json`.
-Each is one line with no trailing newline; they differ only in `phase`, as in v1.
+`(HighPart << 32) | LowPart`, nonzero by owner decision 2026-10-06 (zero LUID refused)
+("Machine-UAC owner-loss retirement" fact 2); `logon_time` and `owner_creation_time`
+are the FILETIME values, nonzero, and a negative `LogonTime` refuses. The wire review
+fixes these golden vectors. The two objects follow `lifecycle_channel_id` and precede
+`phase`, in the order above, under schema `keld.activation-journal/v2`. The fixture's
+logon session has `HighPart` 1 and `LowPart` `0x0002a5f3`, its `LogonTime` is
+2026-10-06T08:00:00Z, and its owner is process 4242, created 42 seconds later. The exact
+accepted records, one per phase, are checked in as
+`crates/keld-update/src/records/golden/journal-v2-<phase>.json`. Each is one line with no
+trailing newline; they differ only in `phase`, as in v1.
 
 `journal-v2-publish-pending.json`:
 
@@ -855,7 +858,7 @@ Each is one line with no trailing newline; they differ only in `phase`, as in v1
 
 | Field | Accepted | Refused (`journal-v2-refusals.txt` beside the goldens) |
 |---|---|---|
-| `authentication_id` | every `h16`, `0000000000000000` to `ffffffffffffffff` | uppercase, 15 or 17 digits, a non-hex digit, a `0x` or sign prefix, a JSON number, an escaped digit |
+| `authentication_id` | `0000000000000001` to `ffffffffffffffff` | `0000000000000000` (owner decision 2026-10-06 (zero LUID refused)); uppercase, 15 or 17 digits, a non-hex digit, a `0x` or sign prefix, a JSON number, an escaped digit |
 | `logon_time` | `0000000000000001` to `7fffffffffffffff` | `0000000000000000`; `8000000000000000` to `ffffffffffffffff`, the two's complement of a negative `LogonTime`; uppercase, 15 digits, a JSON number |
 | `owner_process_id` | `1` to `4294967295` | `0`, `4294967296`, `-1`, `4242.0`, `4.242e3`, `04242`, `"4242"` |
 | `owner_creation_time` | `0000000000000001` to `ffffffffffffffff` | `0000000000000000`; uppercase, 17 digits, a non-hex digit |
@@ -1159,8 +1162,11 @@ owner was lost resolves only when two independent facts hold. An unlaunched
    ([TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess),
    `ms.date` 2025-12-30), so closing the last handle of a kill-on-close Job only starts
    the family's termination. The journal records the initiating user's logon session
-   (`AuthenticationId` and its logon time) durably before launch; a zero logon time
-   refuses before `PublishPending` ("Machine-UAC bootstrap" item 6). Every family process must run with a primary token that references
+   (`AuthenticationId` and its logon time) durably before launch; a zero logon time or,
+   by owner decision 2026-10-06 (zero LUID refused), a zero `AuthenticationId` refuses
+   before `PublishPending` ("Machine-UAC bootstrap" item 6), because the session query
+   below would trivially report no such logon session for a LUID that no live session
+   can hold. Every family process must run with a primary token that references
    that session (the census below). Microsoft documents, for the authentication-package
    callback, that a logon session terminates when the last token referencing it is
    deleted

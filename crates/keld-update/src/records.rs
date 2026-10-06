@@ -113,8 +113,11 @@ impl InitiatingLogon {
     /// Records one initiating logon session.
     ///
     /// `authentication_id` is the session LUID as `(HighPart << 32) | LowPart`, and
-    /// `logon_time` its `LogonTime` FILETIME. Journaling refuses a zero or negative
-    /// `logon_time` before it writes.
+    /// `logon_time` its `LogonTime` FILETIME. Journaling refuses a zero
+    /// `authentication_id` and a zero or negative `logon_time` before it writes. Owner-loss
+    /// retirement reads "no such logon session" for the journaled LUID as proof that the
+    /// process family exited; a LUID that no live session can hold would make that proof
+    /// trivially true.
     #[cfg(any(windows, test))]
     #[must_use]
     pub const fn new(authentication_id: u64, logon_time: i64) -> Self {
@@ -568,6 +571,12 @@ fn validate_attempt_ownership(ownership: &AttemptOwnership) -> Result<(), Update
     }
     if ownership.attempt_owner.owner_creation_time == 0 {
         return Err(invalid("attempt owner creation time must be nonzero"));
+    }
+    // KEL-53 §4, owner decision 2026-10-06 (zero LUID refused); see `InitiatingLogon::new`.
+    if ownership.initiating_logon.authentication_id == 0 {
+        return Err(invalid(
+            "initiating logon authentication ID must be nonzero",
+        ));
     }
     if ownership.initiating_logon.logon_time <= 0 {
         return Err(invalid("initiating logon time must be positive"));

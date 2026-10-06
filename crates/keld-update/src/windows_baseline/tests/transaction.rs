@@ -1516,45 +1516,90 @@ fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
     );
 }
 
+/// Asserts an owner-fact refusal at `step` with `effect` whose detail names `reason`.
+fn assert_owner_fact_refusal(
+    result: Result<crate::WindowsJournaledAttempt, UpdateError>,
+    step: &str,
+    effect: ActivationEffect,
+    reason: &str,
+) {
+    match result.expect_err(reason) {
+        UpdateError::Activation {
+            step: refused,
+            effect: observed,
+            detail,
+        } => {
+            assert_eq!((refused, observed), (step, effect), "{reason}");
+            assert!(
+                detail.contains(reason),
+                "refused for `{detail}`, not `{reason}`"
+            );
+        }
+        other => panic!("expected a {step} refusal for `{reason}`, got {other:?}"),
+    }
+}
+
 #[test]
 fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
-    let fixture = tempfile::tempdir().expect("fresh owner-fact refusal fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    plant_stale_record_preparation(&trust);
-    let (root, stage) = complete(&trust, "2.0.0");
-    let before = observe(&trust);
-    let minted = root
-        .begin_activation(stage, COORDINATOR)
-        .expect("mint the attempt identities");
-    assert_refusal(
-        minted.journal(crate::AttemptOwner::new(0, 1), INITIATING_LOGON),
-        "start",
-        ActivationEffect::ProtectedStateUnchanged,
-    );
-    assert_eq!(
-        observe(&trust),
-        before,
-        "a refused owner fact writes no journal and removes no record sibling"
-    );
+    const ZERO_PROCESS_ID: &str = "attempt owner process ID must be in 1..=4294967295";
+    const ZERO_LOGON_TIME: &str = "initiating logon time must be positive";
+    // KEL-53 §4, owner decision 2026-10-06 (zero LUID refused).
+    const ZERO_LUID: &str = "initiating logon authentication ID must be nonzero";
+    let zero_luid = crate::InitiatingLogon::new(0, 0x01dd_5568_af7a_c000);
+
+    for (attempt_owner, initiating_logon, reason) in [
+        (
+            crate::AttemptOwner::new(0, 1),
+            INITIATING_LOGON,
+            ZERO_PROCESS_ID,
+        ),
+        (ATTEMPT_OWNER, zero_luid, ZERO_LUID),
+    ] {
+        let fixture = tempfile::tempdir().expect("fresh owner-fact refusal fixture");
+        let trust = seed_per_user_baseline(fixture.path());
+        plant_stale_record_preparation(&trust);
+        let (root, stage) = complete(&trust, "2.0.0");
+        let before = observe(&trust);
+        let minted = root
+            .begin_activation(stage, COORDINATOR)
+            .expect("mint the attempt identities");
+        assert_owner_fact_refusal(
+            minted.journal(attempt_owner, initiating_logon),
+            "start",
+            ActivationEffect::ProtectedStateUnchanged,
+            reason,
+        );
+        assert_eq!(
+            observe(&trust),
+            before,
+            "{reason}: a refused owner fact writes no journal and removes no record sibling"
+        );
+    }
 
     let fixture = tempfile::tempdir().expect("resumed owner-fact refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
-    let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
-        .expect("inspect the unlaunched attempt")
-        .resume_unlaunched(COORDINATOR)
-        .expect("re-mint the channels");
-    assert_refusal(
-        minted.journal(ATTEMPT_OWNER, crate::InitiatingLogon::new(1, 0)),
-        "local record",
-        ActivationEffect::JournalBoundRecoveryRequired,
-    );
-    assert_eq!(
-        std::fs::read(trust.installation.update_root.join("activation-journal"))
-            .expect("journal after the refusal"),
-        lost,
-        "a resumed refusal leaves the journal unchanged"
-    );
+    for (initiating_logon, reason) in [
+        (crate::InitiatingLogon::new(1, 0), ZERO_LOGON_TIME),
+        (zero_luid, ZERO_LUID),
+    ] {
+        let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
+            .expect("inspect the unlaunched attempt")
+            .resume_unlaunched(COORDINATOR)
+            .expect("re-mint the channels");
+        assert_owner_fact_refusal(
+            minted.journal(ATTEMPT_OWNER, initiating_logon),
+            "local record",
+            ActivationEffect::JournalBoundRecoveryRequired,
+            reason,
+        );
+        assert_eq!(
+            std::fs::read(trust.installation.update_root.join("activation-journal"))
+                .expect("journal after the refusal"),
+            lost,
+            "{reason}: a resumed refusal leaves the journal unchanged"
+        );
+    }
 }
 
 /// Replaces the protected journal with the landed v1 encoding of the same attempt, which

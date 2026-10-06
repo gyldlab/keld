@@ -411,13 +411,14 @@ mod refusal {
     pub(super) const CANONICAL: &str = "record differs from its canonical typed encoding";
     pub(super) const SCHEMA: &str = "unsupported record schema";
     pub(super) const H16: &str = "value must be exactly 16 lowercase hexadecimal digits";
+    pub(super) const AUTHENTICATION_ID: &str = "initiating logon authentication ID must be nonzero";
     pub(super) const LOGON_TIME: &str = "initiating logon time must be positive";
     pub(super) const CREATION_TIME: &str = "attempt owner creation time must be nonzero";
     pub(super) const PROCESS_ID: &str = "attempt owner process ID must be in 1..=4294967295";
 
     /// Each refusal vector's label, in file order, with the reason it must refuse for.
     /// Strict-codec reasons come from the typed JSON decoder; each is a detail prefix.
-    pub(super) const EXPECTED: [(&str, &str); 52] = [
+    pub(super) const EXPECTED: [(&str, &str); 53] = [
         ("v2-missing-initiating-logon", SHAPE),
         ("v2-missing-attempt-owner", SHAPE),
         ("v2-missing-both-owner-fields", SHAPE),
@@ -475,6 +476,7 @@ mod refusal {
             "unknown-top-level-owner-field",
             "unknown field `owner_session`",
         ),
+        ("zero-authentication-id", AUTHENTICATION_ID),
         ("zero-logon-time", LOGON_TIME),
         ("zero-owner-creation-time", CREATION_TIME),
         ("zero-owner-process-id", PROCESS_ID),
@@ -615,10 +617,10 @@ fn v2_goldens_extend_the_landed_v1_records_and_differ_only_in_phase() {
 fn owner_fact_boundaries_encode_exact_h16_and_json_integers() {
     let cases = [
         (
-            InitiatingLogon::new(0, 1),
+            InitiatingLogon::new(1, 1),
             AttemptOwner::new(1, 1),
             concat!(
-                r#""initiating_logon":{"authentication_id":"0000000000000000","logon_time":"0000000000000001"},"#,
+                r#""initiating_logon":{"authentication_id":"0000000000000001","logon_time":"0000000000000001"},"#,
                 r#""attempt_owner":{"owner_process_id":1,"owner_creation_time":"0000000000000001"}"#,
             ),
         ),
@@ -661,6 +663,11 @@ fn the_encoder_refuses_owner_facts_that_name_no_process_or_session() {
             "zero creation time",
             GOLDEN_OWNERSHIP.initiating_logon,
             AttemptOwner::new(4242, 0),
+        ),
+        (
+            "zero authentication ID",
+            InitiatingLogon::new(0, 1),
+            GOLDEN_OWNERSHIP.attempt_owner,
         ),
         (
             "zero logon time",
