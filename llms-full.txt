@@ -1345,17 +1345,21 @@ before mutation. LC1/LA1/LR1 version this KEL-53 protocol separately from generi
 frames; production capability handoff remains disconnected until lifecycle proof gates
 pass. See KEL-53 for the record and failure contract.
 
-**Windows activation-attempt subprotocol (KEL-53 T4d; target, not implemented):** the
-candidate connect-back and the Machine-UAC helper bootstrap use a third one-peer
-protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>` namespace,
-disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
+**Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer current, message
+records target):** the candidate connect-back and the Machine-UAC helper bootstrap use a
+third one-peer protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>`
+namespace, disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
 connecting. It has its own magic values and message types and reuses only the low-level
 framing, nonce, deadline and peer-verification utilities. KEL-53 §4 owns every other
 rule, which is wire-gated: "Candidate connect-back" owns the connect-back endpoint, the
 claim's quality of service and impersonation, and every record and its failures;
 "Machine-UAC bootstrap" owns the bootstrap endpoint, roles, argument shape, quality of
-service and impersonation.
+service and impersonation. `keld-ipc::attempt` implements the endpoint layer: the exact
+name predicate, the three closed descriptors (owner, single-mask protected DACL, explicit
+Medium no-write-up label), first-instance creation with readback, and the
+identification-only client's readback before it sends. No record or locator exists until
+KEL-53 fixes their byte layouts.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -5058,6 +5062,36 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-ipc
 - message: HELLO session token rejected
 - fix: Mint the token with the host (`keld dev`) into KELD_APP_LINK as `<endpoint>#<64 hex chars>` and send those exact 32 bytes as the HELLO payload. A wrong HELLO semantic shape is `KELD-IPC-005`; `KELD-IPC-007` is reserved for invalid bootstrap token text or an exactly shaped foreign token.
+
+## KELD-IPC-008
+
+- crate: keld-ipc
+- message: keld-attempt endpoint name refused before any open
+- fix: Pass exactly one local `\\.\pipe\keld-attempt-<64 lowercase hex>` name; UNC, `\\?\`, other `keld-*` namespaces, uppercase hex and other lengths are refused.
+
+## KELD-IPC-009
+
+- crate: keld-ipc
+- message: keld-attempt endpoint name already exists
+- fix: Refuse this attempt before any protected write; never reuse, wait for or connect to a name that another process created.
+
+## KELD-IPC-010
+
+- crate: keld-ipc
+- message: keld-attempt endpoint security readback mismatch
+- fix: Refuse the endpoint without sending anything: only the owner's exact form (owner, protected DACL, Medium no-write-up label, remote clients rejected, non-inheritable handle) is admitted.
+
+## KELD-IPC-011
+
+- crate: keld-ipc
+- message: SID is not a valid binary Windows SID
+- fix: Pass the exact TokenUser SID bytes from query_windows_peer_token_facts.
+
+## KELD-IPC-012
+
+- crate: keld-ipc
+- message: Windows call failed for a keld-attempt endpoint
+- fix: Check that the endpoint exists, and that the creating token can assign the form's owner (a Medium token cannot assign BUILTIN Administrators).
 
 ## KELD-WV-001
 

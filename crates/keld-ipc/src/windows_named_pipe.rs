@@ -55,7 +55,10 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
-const PIPE_ACCESS_MASK: u32 = 0x0012_019B;
+/// The landed `keld-ipc` pipe grant: read/write data, attributes and extended
+/// attributes, `READ_CONTROL` and `SYNCHRONIZE`; never `FILE_CREATE_PIPE_INSTANCE`,
+/// `WRITE_DAC` or `WRITE_OWNER`.
+pub(crate) const PIPE_ACCESS_MASK: u32 = 0x0012_019B;
 
 #[cfg(test)]
 thread_local! {
@@ -123,6 +126,14 @@ pub(crate) struct PipeSecurityFacts {
     pub(crate) pipe_flags: u32,
 }
 
+/// Owner, DACL and mandatory label read back from a live pipe handle, with
+/// that handle's inheritance flag and the pipe's `GetNamedPipeInfo` flags.
+pub(crate) struct PipeDescriptorReadback {
+    pub(crate) descriptor: LocalBox<SecurityDescriptor>,
+    pub(crate) handle_inheritable: bool,
+    pub(crate) pipe_flags: u32,
+}
+
 /// Token facts observed from a process or the writer of a connected local pipe
 /// message. The byte SID is the exact Windows SID encoding.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -139,6 +150,18 @@ impl WindowsNamedPipeServer {
     pub(crate) fn bind(endpoint: &str) -> io::Result<Self> {
         let current_sid = current_process_sid()?;
         let descriptor = current_user_descriptor(&current_sid)?;
+        let server = Self::bind_with_descriptor(endpoint, &descriptor)?;
+        server.validate_security(&current_sid)?;
+        Ok(server)
+    }
+
+    /// Creates the only, first instance of `endpoint` under `descriptor`, with
+    /// remote clients rejected and a non-inheritable handle. The caller reads
+    /// the descriptor back before it relies on it.
+    pub(crate) fn bind_with_descriptor(
+        endpoint: &str,
+        descriptor: &LocalBox<SecurityDescriptor>,
+    ) -> io::Result<Self> {
         let endpoint_wide = wide(endpoint);
         let attributes_len = u32::try_from(std::mem::size_of::<
             windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
@@ -181,7 +204,7 @@ impl WindowsNamedPipeServer {
         let cancel_event = unsafe { OwnedHandle::from_raw_handle(raw_cancel as RawHandle) };
         let connect_event = OwnedEvent::new()?;
 
-        let server = Self {
+        Ok(Self {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
                 lifecycle: Mutex::new(()),
@@ -196,9 +219,7 @@ impl WindowsNamedPipeServer {
                 #[cfg(test)]
                 force_cancel_error: AtomicBool::new(false),
             }),
-        };
-        server.validate_security(&current_sid)?;
-        Ok(server)
+        })
     }
 
     pub(crate) fn accept_until(&self, deadline: Option<Instant>) -> io::Result<WaitOutcome> {
@@ -325,6 +346,16 @@ impl WindowsNamedPipeServer {
         read_security_facts(pipe)
     }
 
+    /// Reads this server instance's owner, DACL and label back from its handle.
+    pub(crate) fn descriptor_readback(&self) -> io::Result<PipeDescriptorReadback> {
+        let pipe = self
+            .inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        read_pipe_descriptor(pipe.as_ref().ok_or_else(closed_pipe_error)?)
+    }
+
     pub(crate) fn close_terminal(&self) -> io::Result<()> {
         let _lifecycle = self
             .inner
@@ -358,7 +389,12 @@ impl WindowsNamedPipeServer {
         Self::connect_client_with_flags(endpoint, FILE_FLAG_OVERLAPPED)
     }
 
-    pub(crate) fn connect_lifecycle_client(endpoint: &str) -> io::Result<WindowsNamedPipeStream> {
+    /// Opens a client that grants the server at most identification of its
+    /// token (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), as the
+    /// lifecycle and `keld-attempt` clients require.
+    pub(crate) fn connect_identification_client(
+        endpoint: &str,
+    ) -> io::Result<WindowsNamedPipeStream> {
         Self::connect_client_with_flags(
             endpoint,
             FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
@@ -445,7 +481,7 @@ impl WindowsNamedPipeServer {
         Self::connect_client_until_with(endpoint, deadline, false)
     }
 
-    pub(crate) fn connect_lifecycle_client_until(
+    pub(crate) fn connect_identification_client_until(
         endpoint: &str,
         deadline: Instant,
     ) -> io::Result<WindowsNamedPipeStream> {
@@ -455,15 +491,15 @@ impl WindowsNamedPipeServer {
     fn connect_client_until_with(
         endpoint: &str,
         deadline: Instant,
-        lifecycle_identity: bool,
+        identification_only: bool,
     ) -> io::Result<WindowsNamedPipeStream> {
         let endpoint_wide = wide(endpoint);
         loop {
             if Instant::now() >= deadline {
                 return Err(connect_deadline_error());
             }
-            let connected = if lifecycle_identity {
-                Self::connect_lifecycle_client(endpoint)
+            let connected = if identification_only {
+                Self::connect_identification_client(endpoint)
             } else {
                 Self::connect_client(endpoint)
             };
@@ -665,6 +701,17 @@ impl WindowsNamedPipeStream {
             return Err(io::Error::other("named pipe peer PID is zero"));
         }
         Ok(pid)
+    }
+
+    /// Reads the pipe's owner, DACL and label back through this endpoint's
+    /// handle. A client handle carries `READ_CONTROL` in [`PIPE_ACCESS_MASK`].
+    pub(crate) fn descriptor_readback(&self) -> io::Result<PipeDescriptorReadback> {
+        let pipe = self
+            .inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        read_pipe_descriptor(pipe.as_ref().ok_or_else(closed_pipe_error)?)
     }
 
     pub(crate) fn peer_session_id(&self) -> io::Result<u32> {
@@ -1318,6 +1365,19 @@ fn read_security_facts(handle: &OwnedHandle) -> io::Result<PipeSecurityFacts> {
     })
 }
 
+pub(crate) fn read_pipe_descriptor(handle: &OwnedHandle) -> io::Result<PipeDescriptorReadback> {
+    let descriptor = GetSecurityInfo(
+        handle,
+        SeObjectType::SE_KERNEL_OBJECT,
+        SecurityInformation::Owner | SecurityInformation::Dacl | SecurityInformation::Label,
+    )?;
+    Ok(PipeDescriptorReadback {
+        descriptor,
+        handle_inheritable: handle_flags(handle)? & HANDLE_FLAG_INHERIT != 0,
+        pipe_flags: pipe_flags(handle)?,
+    })
+}
+
 fn handle_flags(handle: &OwnedHandle) -> io::Result<u32> {
     let mut flags = 0;
     // SAFETY: `handle` is live and `flags` is a valid writable u32.
@@ -1329,8 +1389,9 @@ fn handle_flags(handle: &OwnedHandle) -> io::Result<u32> {
 
 fn pipe_flags(handle: &OwnedHandle) -> io::Result<u32> {
     let mut flags = 0;
-    // SAFETY: `handle` is the live server-pipe handle and `flags` is a valid
-    // writable u32; omitted size/count outputs are optional null pointers.
+    // SAFETY: `handle` is a live pipe handle (server or client end) borrowed
+    // for this call and `flags` is a valid writable u32; omitted size/count
+    // outputs are optional null pointers.
     if unsafe {
         GetNamedPipeInfo(
             handle.as_raw_handle(),

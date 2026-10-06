@@ -1346,7 +1346,7 @@ pub fn connect_windows_lifecycle_rendezvous_until<P: WindowsLifecyclePeerPin>(
         ));
     }
     let mut stream = WindowsNamedPipeBootstrapStream(
-        WindowsNamedPipeServer::connect_lifecycle_client_until(endpoint, deadline)?,
+        WindowsNamedPipeServer::connect_identification_client_until(endpoint, deadline)?,
     );
     let process_id = stream.peer_process_id()?;
     let session_id = stream.peer_session_id()?;
