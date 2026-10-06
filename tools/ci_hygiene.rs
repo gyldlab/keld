@@ -60,6 +60,9 @@ const PR_NEEDLES: &[&str] = &[
 
 const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "gitleaks detect",
+    // The scan is scoped to what the event admits (a PR's own commits, or the pushed
+    // history), so an unrelated fetched ref cannot fail every pull request.
+    "--log-opts=\"$KELD_GITLEAKS_RANGE\"",
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
@@ -2652,7 +2655,7 @@ mod tests {
             "        with:",
             "          toolchain: 1.97.1",
             "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
-            "      - run: gitleaks detect --source . --exit-code 1",
+            "      - run: gitleaks detect --source . --exit-code 1 --log-opts=\"$KELD_GITLEAKS_RANGE\"",
             "  hygiene:",
             "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
             "    steps:",
@@ -5206,6 +5209,17 @@ foreach ($item in $items) {
             "{:?}",
             action_uses_unpinned(workflow)
         );
+    }
+
+    #[test]
+    fn unscoped_gitleaks_scan_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(" --log-opts=\"$KELD_GITLEAKS_RANGE\"", "", 1),
+        );
+        let error = check(temp.path()).expect_err("an all-refs gitleaks scan must fail");
+        assert!(error.contains("--log-opts"), "{error}");
     }
 
     #[test]

@@ -491,8 +491,27 @@ jobs:
           tar -xzf "$archive" gitleaks
           sudo mv gitleaks /usr/local/bin/gitleaks
           gitleaks version
+      # Scan exactly what this event admits: a pull request's own commits, or the pushed
+      # branch's history. Other fetched refs (for example unmerged research branches) are
+      # not merge input, so their content must not fail unrelated pull requests.
       - name: Scan
-        run: gitleaks detect --source . --verbose --redact --exit-code 1
+        env:
+          KELD_GITLEAKS_EVENT: ${{ github.event_name }}
+          KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.base.sha }}
+          KELD_GITLEAKS_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$KELD_GITLEAKS_EVENT" = pull_request ]; then
+            if [ -z "$KELD_GITLEAKS_PR_BASE" ] || [ -z "$KELD_GITLEAKS_PR_HEAD" ]; then
+              echo "gitleaks: pull_request event without base/head SHA; refusing an unscoped scan" >&2
+              exit 1
+            fi
+            KELD_GITLEAKS_RANGE="$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD"
+          else
+            KELD_GITLEAKS_RANGE=HEAD
+          fi
+          echo "gitleaks log range: $KELD_GITLEAKS_RANGE"
+          gitleaks detect --source . --verbose --redact --exit-code 1 --log-opts="$KELD_GITLEAKS_RANGE"
 
   hygiene:
     name: CODEOWNERS + templates
