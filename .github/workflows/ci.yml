@@ -491,8 +491,36 @@ jobs:
           tar -xzf "$archive" gitleaks
           sudo mv gitleaks /usr/local/bin/gitleaks
           gitleaks version
+      # Scan exactly what this event admits: a pull request's own commits, or the pushed
+      # branch's history. Other fetched refs (for example unmerged research branches) are
+      # not merge input, so their content must not fail unrelated pull requests.
       - name: Scan
-        run: gitleaks detect --source . --verbose --redact --exit-code 1
+        env:
+          KELD_GITLEAKS_EVENT: ${{ github.event_name }}
+          KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.base.sha }}
+          KELD_GITLEAKS_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          case "$KELD_GITLEAKS_EVENT" in
+            pull_request)
+              for sha in "$KELD_GITLEAKS_PR_BASE" "$KELD_GITLEAKS_PR_HEAD"; do
+                if [ -z "$sha" ] || ! git cat-file -e "${sha}^{commit}"; then
+                  echo "gitleaks: a pull_request base or head SHA is missing or not a local commit; refusing an unresolvable range" >&2
+                  exit 1
+                fi
+              done
+              KELD_GITLEAKS_RANGE="$KELD_GITLEAKS_PR_BASE..$KELD_GITLEAKS_PR_HEAD"
+              ;;
+            push)
+              KELD_GITLEAKS_RANGE=HEAD
+              ;;
+            *)
+              echo "gitleaks: unsupported event $KELD_GITLEAKS_EVENT; refusing to choose a scan range" >&2
+              exit 1
+              ;;
+          esac
+          echo "gitleaks log range: $KELD_GITLEAKS_RANGE"
+          gitleaks detect --source . --verbose --redact --exit-code 1 --log-opts="$KELD_GITLEAKS_RANGE"
 
   hygiene:
     name: CODEOWNERS + templates
