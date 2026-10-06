@@ -1,0 +1,16 @@
+# gitleaks configuration. CI runs `gitleaks detect --source .`, which loads this file from the
+# repository root. Every default rule stays enabled; only the allowlist below is added.
+title = "Keld gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# The Electron compatibility research artifacts quote the Architecture 05 section 3 row that
+# names the OS secret stores behind the safeStorage facade. generic-api-key reads that store
+# list as a key, and each new research commit repeats it in another file, so a per-commit
+# fingerprint in .gitleaksignore cannot keep up. This entry matches only that exact secret
+# value; any other value on the same kind of line is still reported.
+[[allowlists]]
+description = "Architecture prose naming the OS secret stores, not a credential"
+regexTarget = "secret"
+regexes = ['''\Akeychain/DPAPI/libsecret\z''']
