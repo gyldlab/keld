@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use windows_permissions::constants::{SeObjectType, SecurityInformation};
 use windows_permissions::utilities::current_process_sid;
 use windows_permissions::wrappers::{
-    ConvertSecurityDescriptorToStringSecurityDescriptor, GetSecurityInfo,
+    ConvertSecurityDescriptorToStringSecurityDescriptor,
+    ConvertStringSecurityDescriptorToSecurityDescriptor, GetSecurityInfo,
 };
 use windows_permissions::{LocalBox, SecurityDescriptor};
 use windows_sys::Win32::Foundation::{
@@ -79,7 +80,39 @@ fn own_user_sid_bytes() -> io::Result<Vec<u8>> {
 }
 
 fn own_user_sid_text() -> io::Result<String> {
-    Ok(current_process_sid()?.to_string())
+    sddl_owner_text(&current_process_sid()?.to_string())
+}
+
+/// A SID as Windows writes it inside a descriptor's SDDL: the `S-1-…` string,
+/// or a well-known alias such as `LA` for this machine's built-in
+/// Administrator (RID 500), the account hosted Windows runners use.
+fn sddl_owner_text(sid: &str) -> io::Result<String> {
+    let descriptor = ConvertStringSecurityDescriptorToSecurityDescriptor(&format!("O:{sid}"))?;
+    let rendered = ConvertSecurityDescriptorToStringSecurityDescriptor(
+        &descriptor,
+        SecurityInformation::Owner,
+    )?
+    .to_string_lossy()
+    .into_owned();
+    rendered
+        .strip_prefix("O:")
+        .map(str::to_owned)
+        .ok_or_else(|| io::Error::other(format!("owner-only SDDL rendered as {rendered}")))
+}
+
+/// Hosted runners run as the built-in Administrator, whose SID the descriptor
+/// SDDL writes as `LA`; this host's ordinary account keeps its `S-1-…` form.
+#[test]
+fn expected_owner_text_uses_the_descriptor_sddl_alias() -> io::Result<()> {
+    let user = current_process_sid()?.to_string();
+    let (domain, rid) = user
+        .rsplit_once('-')
+        .ok_or_else(|| io::Error::other(format!("SID without a RID: {user}")))?;
+    assert_eq!(sddl_owner_text(&format!("{domain}-500"))?, "LA");
+    if rid != "500" {
+        assert_eq!(sddl_owner_text(&user)?, user);
+    }
+    Ok(())
 }
 
 fn own_session_id() -> io::Result<u32> {
