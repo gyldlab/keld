@@ -1050,7 +1050,7 @@ impl keld_ipc::WindowsLifecyclePeerPin for WindowsProcessPeer {
 }
 
 /// One process that an attempt owner launched suspended, retained with the
-/// process ID and creation time recorded at launch.
+/// creation time recorded at launch.
 ///
 /// This is the owner's side of the connect-back claim (KEL-53 §4 "Candidate
 /// connect-back", *Acceptance*): only the exact process object that the owner
@@ -1060,16 +1060,15 @@ impl keld_ipc::WindowsLifecyclePeerPin for WindowsProcessPeer {
 #[derive(Debug)]
 pub struct WindowsLaunchedProcess {
     child: WindowsSuspendedChild,
-    process_id: u32,
     creation_time: u64,
 }
 
 impl WindowsLaunchedProcess {
     /// Records the launch identity of a freshly created suspended child.
     ///
-    /// Call this at launch, before resume. The process ID is the one process
-    /// creation reported; the creation time is read from the retained launch
-    /// handle.
+    /// Call this at launch, before resume. The recorded process ID is the
+    /// child's own, which process creation reported; the creation time is read
+    /// from the retained launch handle.
     ///
     /// # Errors
     ///
@@ -1081,9 +1080,8 @@ impl WindowsLaunchedProcess {
             "launch identity record",
         )?;
         Ok(Self {
-            process_id: child.id(),
-            creation_time,
             child,
+            creation_time,
         })
     }
 
@@ -1197,7 +1195,7 @@ impl<'a> ProcessObservation<'a> {
     fn of_launch(launch: &'a WindowsLaunchedProcess) -> Self {
         Self {
             handle: launch.child.process_handle().as_raw_handle().cast(),
-            process_id: launch.process_id,
+            process_id: launch.child.id(),
             creation_time: launch.creation_time,
             _owner: std::marker::PhantomData,
         }
@@ -1240,9 +1238,11 @@ fn bind_observed_claimant(
 /// Reports whether two handles name one kernel object.
 ///
 /// `CompareObjectHandles` needs no access right on either handle. `TRUE` means
-/// one object, and `FALSE` with `ERROR_NOT_SAME_OBJECT` is the documented
-/// different-object result. Any other `FALSE` (an invalid or closed handle
-/// reports `ERROR_INVALID_HANDLE`) is neither verdict, so it is an error.
+/// one object. Its reference page documents only `FALSE` for "not the same"; its
+/// example shows that a different object leaves `ERROR_NOT_SAME_OBJECT`, so only
+/// that error is the different-object verdict. Any other `FALSE` (an invalid or
+/// closed handle leaves `ERROR_INVALID_HANDLE`, observed on Windows 11 build
+/// 26300) is neither verdict, so it is an error and the caller refuses.
 fn same_kernel_object(first: HANDLE, second: HANDLE) -> io::Result<bool> {
     // SAFETY: CompareObjectHandles only resolves the two handle values through
     // this process's handle table and dereferences no caller memory; an unusable
@@ -3876,7 +3876,6 @@ mod tests {
         let mut launch = recorded_launch(Some(blocking_stdio()));
         let process_id = launch.launched.child().id();
         let claimant = claimant_by_pid(process_id);
-        assert_eq!(launch.launched.process_id, process_id);
         assert_eq!(
             launch.launched.creation_time,
             claimant.creation_time(),
