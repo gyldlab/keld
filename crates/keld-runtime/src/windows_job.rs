@@ -3991,15 +3991,66 @@ mod tests {
             .launched
             .bind_claimant(&claimant)
             .expect("the live launch binds before termination");
-        launch.launched.terminate(7).expect("terminate the launch");
+        signal_launch(&mut launch.launched);
+        let refusal = launch.launched.bind_claimant(&claimant);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::LaunchExited)),
+            "{refusal:?}"
+        );
+    }
+
+    /// Terminates a recorded launch and waits until its retained handle is
+    /// signaled with the exit code the termination set.
+    fn signal_launch(launched: &mut WindowsLaunchedProcess) {
+        launched.terminate(7).expect("terminate the launch");
         assert_eq!(
-            launch
-                .launched
+            launched
                 .wait(10_000)
                 .expect("observe the signaled launch handle"),
             7
         );
-        let refusal = launch.launched.bind_claimant(&claimant);
+    }
+
+    // Fact order (KEL-53 §4 "Candidate connect-back", *Acceptance*: "in order").
+    // Each cell fails more than one fact, so a reordered binding reports a
+    // different refusal.
+
+    #[test]
+    fn claimant_binding_compares_the_process_object_before_launch_liveness() {
+        // Every fact fails: another process object, a signaled launch handle and
+        // a different process ID. Only the comparison-first order reports
+        // NotLaunchedProcess.
+        let mut launch = recorded_launch(None);
+        signal_launch(&mut launch.launched);
+        let other = claimant_by_pid(std::process::id());
+        assert_ne!(other.process_id, launch.launched.child().id());
+        let refusal = launch.launched.bind_claimant(&other);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn claimant_binding_checks_launch_liveness_before_the_recorded_identity() {
+        // Seam-injected: the compared handles are one process object, opened
+        // before the launch exits, while the launch handle is signaled and the
+        // recorded creation time is wrong. Only liveness-before-identity reports
+        // LaunchExited.
+        let mut launch = recorded_launch(None);
+        let peer = claimant_by_pid(launch.launched.child().id());
+        signal_launch(&mut launch.launched);
+        let claimant = ProcessObservation::of_peer(&peer);
+        let recorded = ProcessObservation::of_launch(&launch.launched);
+        assert!(
+            same_kernel_object(claimant.handle, recorded.handle).expect("compare two live handles"),
+            "the claimant handle still names the exited launch object"
+        );
+        let wrong_time = ProcessObservation {
+            creation_time: claimant.creation_time + 1,
+            ..recorded
+        };
+        let refusal = bind_observed_claimant(claimant, wrong_time);
         assert!(
             matches!(refusal, Err(WindowsClaimantRefusal::LaunchExited)),
             "{refusal:?}"
