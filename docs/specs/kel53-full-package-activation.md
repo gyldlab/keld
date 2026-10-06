@@ -170,8 +170,8 @@ health-sequence rules (*Messages*). Every value that earlier approved text left 
 and every rule that this amendment adds, is listed once, with its rationale, under
 *Proposals* there. The same approval binds the rewording of criterion 8 and of
 Architecture 06 §4a "Health identity", which then say that the receipt binds the attempt
-id and the full artifact identity through the §4 receipt digest, and that Architecture
-06 paragraph's statement of the candidate-mode generation-exit rule of the
+id and the full artifact identity through the §4 receipt digest, and binds that
+Architecture 06 paragraph's statement of the candidate-mode generation-exit rule of the
 *Health sequence* paragraph. §6 assigns the purpose-`1` locator and the
 `is_attempt_endpoint` predicate to S4 and the bootstrap records and the purpose-`2`
 locator to S11, §7 adds the codec and health-sequence rows, and §8 records the new
@@ -1627,21 +1627,30 @@ decision) A reader reads the 8-byte magic first, refuses a magic that is not adm
 that position, and only then reads the rest of that record under its deadline. After
 `AR1` the owner admits `AB1`, or `AF1` with class `1` or `3`; after `AB1`, `AY1`, or
 `AF1` with class `2` or `3`; after `AY1`, no record. The candidate sends nothing after
-`AY1` or `AF1` and reads exactly one `AK1`. In candidate mode the host arms its landed
-recovery gate only after it reads `AK1` accepted, not at `Ready`: from its `AY1` until
-then, an unexpected application-generation exit installs no successor generation and
-ends the host, as the gate already does before `Ready` (Architecture 06 §1), so the
-owner observes end of file or its signaled launch handle. The owner accepts health only
-when 30 monotonic seconds pass after it reads `AY1` with its launch handle unsignaled,
-the connection open and no further byte received. A malformed, truncated,
+`AY1` or `AF1` and reads exactly one `AK1`. In candidate mode the host neither arms its
+landed recovery gate at `Ready` nor treats the revocation of an application generation
+after `Ready` as recoverable until it reads `AK1` accepted: from its `AY1` until then it
+handles such a revocation as it already handles one before `Ready` (`keld-core`
+`app_session.rs:4994-4999`): it denies the gate, which then provisions no successor
+(`role.rs:731-744`), and ends the host, so the owner observes end of file or its
+signaled launch handle. On such a revocation the host first closes its attempt
+connection, then denies its gate and ends. The owner accepts health only when 30
+monotonic seconds pass after it reads `AY1` with its launch handle unsignaled, the
+connection open and no further byte received. The owner commits only if the connection
+is still open and its launch handle unsignaled G after the 30 seconds, where G bounds
+the host's revocation-to-close latency and is measured in T4d. A malformed, truncated,
 out-of-position or mismatched record, end of file, a signaled launch handle or an
 expired deadline ends the exchange: before `AR1` it refuses the claimant (*Refusal*);
 after `AR1` it cannot commit health (criterion 8), and the owner rolls back. The owner
 sends `AK1` accepted only after `HealthAccepted` is durable, because an owner lost
-before that write leaves `AwaitingHealth`, which recovery rolls back. On the rollback
-path, while the connection is still open, it sends `AK1` rolled back once and then ends
-the candidate family without waiting for the candidate to read it; after end of file or
-a signaled launch handle it sends none. A failed `AK1` write changes neither outcome.
+before that write leaves `AwaitingHealth`, which recovery rolls back. On the accept path
+the owner flushes `AK1` accepted (`FlushFileBuffers`, under a deadline) before it
+disconnects or closes the endpoint. The candidate reads `AK1` under a deadline; on end
+of file, a read failure, that deadline or `AK1` rolled back it never arms its gate, so
+any later generation exit ends the host. On the rollback path, while the connection is
+still open, the owner sends `AK1` rolled back once and then ends the candidate family
+without waiting for the candidate to read it; after end of file or a signaled launch
+handle it sends none. A failed `AK1` write changes neither outcome.
 
 *Bootstrap records.* (proposed; pending owner approval in the KEL-270 T4d wire-layout
 decision) `BH1` to `BO1` land with S11, not S4 (§6). S6 and every `PerUserDirect` cell
@@ -1693,16 +1702,28 @@ amendment's proposal for the wire review, with its rationale:
 - the candidate-mode generation-exit rule and the `AK1` timing (*Health sequence*). The
   owner cannot see a generation exit, because the host replaces Bun generations
   in-process (Architecture 06 §1), and §5 plans no Job-notification path. The rule moves
-  only the arm point of the landed `keld-runtime` `RoleRecoveryGate` (`role.rs:40-47`),
-  so a process exit that the kernel reports carries the failure, with no new wire value
-  and no write from the failing host, and the landed `ProcessCrash` class
-  (`records.rs:110-111`) records it. It moves recovery from such an exit from an
+  two landed decision points to `AK1` accepted: the arm of the `keld-runtime`
+  `RoleRecoveryGate` (`role.rs:40-47`), which only holds successor provisioning while
+  undecided (`role.rs:731-744`), and the `keld-core` predicate that makes a revocation
+  terminal, today `window_ready` (`app_session.rs:4994-4999`), which the host sets at
+  `Ready` just before it requests the arm (`app_session.rs:4426-4427`); before the first
+  bind keld-core already denies on its own (`app_session.rs:3101-3125`). Deferring the
+  arm alone leaves the host alive with no generation and lets the owner commit. With
+  both moved, a process exit that the kernel reports carries the failure, with no new
+  wire value, and the landed `ProcessCrash` class (`records.rs:110-111`) records it. As
+  under the alternative, the surviving host must act on the revocation, and its
+  revocation-to-close latency G is a window edge that both options share. `AK1` accepted
+  becomes load-bearing for in-process recovery, so the owner flushes it and the
+  candidate reads it under a deadline. It moves recovery from such an exit from an
   in-process successor to the attempt owner's rollback, a crash-ownership change that
   root AGENTS.md treats as architecture, so Architecture 06 §4a states it under this
   same approval. The alternative, a fourth `AF1` class for an exit after Ready, admitted
   until `AK1`, keeps in-process replacement but adds a class that the approved list does
   not name, and health then commits whenever the failing host does not deliver that
   record;
+- the window start at the owner's read of `AY1`, because the owner cannot observe the
+  candidate's own `Ready` time without trusting it, and the margin G after the window,
+  because an exit in its last G would otherwise reach the owner only after the commit;
 - the S11 placement of the bootstrap records and of the `BQ1` field set
   (*Bootstrap records*).
 
@@ -2248,11 +2269,14 @@ Must not touch in Slice A:
     process-object cells of the claimant-binding row at the binding; pipe, token,
     deadline and one-shot cells close in S6/S11.
   - S6, `PerUserDirect` connect-back end to end (`keld-update`, `keld-core` as the host
-    coordinator owner, `keld-runtime`, `keld-ipc`). Gates: permission model; public API
-    for the `keld-update` health-receipt digest that the candidate computes for `AB1`
-    ("Candidate connect-back"; proposed; pending owner approval in the KEL-270 T4d
-    wire-layout decision). Evidence: the `PerUserDirect` cells of the connect-back,
-    claimant-binding and squatting rows, and the "8 (health sequence)" row.
+    coordinator owner, `keld-runtime`, `keld-ipc`), including the `keld-core`
+    `app_session.rs` candidate mode that defers both the recovery-gate arm and the
+    terminal-revocation predicate to `AK1` accepted (*Health sequence*). Gates:
+    permission model; public API for the `keld-update` health-receipt digest that the
+    candidate computes for `AB1` ("Candidate connect-back"). Evidence: the
+    `PerUserDirect` cells of the connect-back, claimant-binding and squatting rows, and
+    the "8 (health sequence)" row (proposed; pending owner approval in the KEL-270 T4d
+    wire-layout decision).
   - S7, `keld-guard` token, logon-session and token-impersonation wrappers
     (`uac_token.rs`, `initiating_token.rs`, `logon_session.rs`). Gates: unsafe
     (`keld-guard` amendment), dependency (`Win32_Security_Authentication_Identity`).
@@ -2330,8 +2354,8 @@ Must not touch in Slice A:
 | 8 (claimant binding) | only the exact launched and retained process is accepted. Two separate observables cover a copy of the candidate image started during `AwaitingHealth`: a same-user Medium copy, like a second instance from the candidate tree that connects first, opens the endpoint, is refused by `CompareObjectHandles`, is disconnected and refuses with a typed `WriterActive`, after which the same pipe instance accepts the real candidate; an LPAC copy that a hostile role starts is denied at pipe open by the DACL and the label and never reaches `CompareObjectHandles`. A peer whose process ID equals the launched one but whose process object differs (seam-injected), a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, integrity or elevation each refuse, as does a token from another session that otherwise matches (administrator-constructed); a connector that sends nothing is dropped at its per-connection deadline; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner (seam-injected); the candidate's connected handle is non-inheritable and in no role's handle list |
 | 8 (endpoint squatting) | at every durable step a test reader of the journal finds the named endpoint already held; a name that exists when a fresh owner creates its endpoint (seam-injected, since the order makes it otherwise unobservable) refuses with `ProtectedStateUnchanged` and no protected write, and for a resumed owner leaves the journal unchanged; a second creation of a live owner's name fails; after owner death, a squatter that creates the name as the same user and one that creates it as a second ordinary user, including one whose process ID equals the journaled owner's (seam-injected), are refused by the claimant on descriptor owner, DACL, label, session or image before it sends anything, or on the journaled owner fields after acceptance; in `MachineUacDirect` a Medium process cannot create the endpoint with an `O:BA` owner; a squatting server receives only an identification-level token; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label, a wrong owner and remote-client admission; the observed default label of an unlabelled pipe that an elevated process creates is recorded; a v1 journal admits no claim |
 | 8 (connect-back in every direct mode) | separately for `PerUserDirect` with the host coordinator as owner, `PerUserDirect` with a criterion-10 post-exit helper if one is used, and `MachineUacDirect` with `keld-updater-helper.exe` as owner: the candidate inherits no endpoint, receives only its rendezvous name, connects back, is accepted, reports Ready and commits after 30 seconds, and the claimant-binding and endpoint-squatting rows pass in that cell; no `MachineUacDirect` cell uses a post-exit helper; `MachineSeamlessDirect` is refusal-only, so no claim is accepted before its authority is selected; a pass in one cell does not close another |
-| 8 (keld-attempt codec) | proposed; pending owner approval in the KEL-270 T4d wire-layout decision: each S4 record's golden bytes, and one negative per byte rule, each refused: each out-of-set purpose (with S11), class or result byte, including `0`; each magic at a position where it is not admitted; a truncated record and a record with one extra trailing byte; a one-field mutation of `AA1`, of `AR1` and of `AB1`; an `AC1` whose IDs fail the locator check, refused before `AA1`; an `AH1` with a foreign installation ID or client PID; and locator calls with an all-zero or a duplicated input |
-| 8 (health sequence) | proposed; pending owner approval in the KEL-270 T4d wire-layout decision: in candidate mode an unexpected application-generation exit after `AY1` and before `AK1` ends the candidate host with no successor generation, and the owner rolls back; a negative control that arms the recovery gate at `Ready` instead fails this row; after `AK1` accepted the same exit is replaced in-process; an owner killed between the end of the window and the durable `HealthAccepted` has sent no `AK1`, and recovery rolls back; on rollback, `AK1` rolled back is written before the candidate family ends, and the rollback completes when the candidate never reads it |
+| 8 (keld-attempt codec) | proposed; pending owner approval in the KEL-270 T4d wire-layout decision: each S4 record's golden bytes, and one negative per byte rule, each refused: each out-of-set purpose (with S11), class or result byte, including `0`; each magic at a position where it is not admitted; a truncated record and a record with one extra trailing byte; a one-field mutation of `AA1`, of `AR1` and of `AB1`; an `AC1` whose IDs fail the locator check, refused before `AA1`; an `AH1` with a foreign installation ID or client PID; locator calls with an all-zero or a duplicated input; an `AC1` whose server PID differs from `GetNamedPipeServerProcessId`; an `AF1` whose class is not admitted at its position (class `1` after `AB1`, class `2` before it); and a non-admitted magic followed by no further byte, refused before its deadline |
+| 8 (health sequence) | proposed; pending owner approval in the KEL-270 T4d wire-layout decision: in candidate mode an unexpected application-generation exit after `AY1` and before `AK1` ends the candidate host with no successor generation, and the owner rolls back; a negative control that arms the recovery gate at `Ready` instead fails this row, and a second negative control that defers the arm but keeps the `Ready`-keyed revocation predicate also fails this row; one byte after `AY1` fails health; an exit injected in the last G of the window fails health; an `AK1` accepted that the candidate loses to end of file, a read failure or its deadline leaves its gate unarmed, so a later generation exit ends the host; after `AK1` accepted the same exit is replaced in-process; an owner killed between the end of the window and the durable `HealthAccepted` has sent no `AK1`, and recovery rolls back; on rollback, `AK1` rolled back is written before the candidate family ends, and the rollback completes when the candidate never reads it |
 | 8, 17 (D5 fallback) | when the Medium claimant cannot open the elevated owner, the claim binds on the `O:BA` owner and the session before sending and on the journaled owner process ID after acceptance; when the open is admitted, creation time and `helper_image_blake3` are checked as well |
 | 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL and its own user SID as owner before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS and, before sending, verifies that the host process image is its installation's selected `keld-host.exe`, the session, and a descriptor owned by that host's user SID; it takes the initiating token only from that host process object and refuses an elevated or non-Medium initiating token before any protected write; a forged rendezvous argument, a squatting server that is not that `keld-host.exe` (same-user code is outside the boundary and is not claimed), a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted with the initiating token unchanged once S1 shows the open works, and otherwise refuses with a typed `ProtectedStateUnchanged` before any protected write; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
 | 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
