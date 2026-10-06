@@ -91,12 +91,17 @@ fn fixed_size_classes_refuse_any_other_returned_length() {
 /// The anonymous logon token belongs to the well-known anonymous logon session
 /// (winnt.h `ANONYMOUS_LOGON_LUID` is `{ 0x3e6, 0x0 }`) and its user is
 /// ANONYMOUS LOGON (S-1-5-7), so the reader reports the queried token's own
-/// session and user, not this process's.
+/// session and user, not this process's. It has no linked token, so its
+/// elevation type is `Default`; this row reaches the no-linked-token path on
+/// every machine, including a split-token one whose own token never does.
 #[test]
 fn anonymous_logon_token_reports_the_anonymous_session_and_user() -> io::Result<()> {
-    let anonymous = query_windows_peer_token_facts(&anonymous_logon_token()?)?;
+    let token = anonymous_logon_token()?;
+    let anonymous = query_windows_peer_token_facts(&token)?;
     assert_eq!(anonymous.authentication_id, 0x3e6);
     assert_eq!(anonymous.user_sid, [1, 1, 0, 0, 0, 0, 0, 5, 7, 0, 0, 0]);
+    assert!(linked_token(&token)?.is_none());
+    assert_eq!(anonymous.elevation_type, WindowsTokenElevationType::Default);
     let own = query_windows_peer_token_facts(&current_process_query_token()?)?;
     assert_ne!(own.authentication_id, anonymous.authentication_id);
     assert_ne!(own.user_sid, anonymous.user_sid);
