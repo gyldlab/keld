@@ -47,7 +47,7 @@ use super::{
 use crate::WindowsPeerTokenFacts;
 use crate::windows_named_pipe::{
     PipeSecuritySections, WaitOutcome, WindowsNamedPipeServer, current_process_query_token,
-    read_pipe_descriptor,
+    current_process_session_id, read_pipe_descriptor,
 };
 
 const MASK: &str = "0x12019b";
@@ -342,6 +342,59 @@ fn a_pre_created_name_is_refused_even_when_the_squatter_allows_more_instances() 
         WindowsAttemptEndpoint::create(&name, &security),
         Err(WindowsAttemptEndpointError::NameInUse { .. })
     ));
+    Ok(())
+}
+
+/// KEL-53 §4: before it sends anything the client requires
+/// `GetNamedPipeServerSessionId` to equal its own session. The oracle for that
+/// session is this process token's `TokenSessionId`, not the
+/// `ProcessIdToSessionId` call that the client makes.
+#[test]
+fn client_admits_a_server_in_its_own_session() -> io::Result<()> {
+    let security = WindowsAttemptEndpointSecurity::per_user_connect_back(&own_user_sid_bytes()?)
+        .map_err(io::Error::other)?;
+    let name = random_attempt_name()?;
+    let _owner = WindowsAttemptEndpoint::create(&name, &security).map_err(io::Error::other)?;
+    let token_session = own_token_facts()?.session_id;
+    assert_eq!(current_process_session_id()?, token_session);
+    let client =
+        WindowsAttemptClient::connect_until(&name, &security, soon()).map_err(io::Error::other)?;
+    assert_eq!(
+        client.server_session_id().map_err(io::Error::other)?,
+        token_session
+    );
+    Ok(())
+}
+
+/// Seam: no second Windows session exists on a test host, so the client's own
+/// session is replaced by another value to stand in for a server in a
+/// different session. The endpoint is the exact form, so the session is the
+/// only fact that differs, and the client refuses on it.
+#[test]
+fn client_refuses_a_server_in_another_session() -> io::Result<()> {
+    let security = WindowsAttemptEndpointSecurity::per_user_connect_back(&own_user_sid_bytes()?)
+        .map_err(io::Error::other)?;
+    let token_session = own_token_facts()?.session_id;
+    let other_session = token_session.wrapping_add(1);
+    let name = random_attempt_name()?;
+    let _owner = WindowsAttemptEndpoint::create(&name, &security).map_err(io::Error::other)?;
+    match WindowsAttemptClient::connect_in_session(&name, &security, soon(), other_session) {
+        Err(WindowsAttemptEndpointError::ServerSession {
+            server_session,
+            own_session,
+        }) => {
+            assert_eq!(server_session, token_session);
+            assert_eq!(own_session, other_session);
+        }
+        other => panic!("a server in another session must be refused: {other:?}"),
+    }
+    // Positive control: a second exact endpoint, since the refused client
+    // occupied the first one's only instance.
+    let control = random_attempt_name()?;
+    let _control_owner =
+        WindowsAttemptEndpoint::create(&control, &security).map_err(io::Error::other)?;
+    WindowsAttemptClient::connect_in_session(&control, &security, soon(), token_session)
+        .map_err(io::Error::other)?;
     Ok(())
 }
 
@@ -808,6 +861,14 @@ fn every_error_names_its_code_and_fix() {
             },
             "KELD-IPC-012",
             "BUILTIN Administrators",
+        ),
+        (
+            WindowsAttemptEndpointError::ServerSession {
+                server_session: 0,
+                own_session: 1,
+            },
+            "KELD-IPC-013",
+            "own session",
         ),
     ];
     for (error, code, fix) in cases {

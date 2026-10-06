@@ -5096,6 +5096,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Windows call failed for a keld-attempt endpoint
 - fix: Check that the endpoint exists, and that the creating token can assign the form's owner (a Medium token cannot assign BUILTIN Administrators).
 
+## KELD-IPC-013
+
+- crate: keld-ipc
+- message: keld-attempt server runs in another session than the client
+- fix: Refuse the endpoint without sending anything: only an owner in the client's own session is admitted.
+
 ## KELD-WV-001
 
 - crate: keld-wv

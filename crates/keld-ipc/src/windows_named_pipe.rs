@@ -54,6 +54,7 @@ use windows_sys::Win32::System::Pipes::{
     GetNamedPipeServerSessionId, ImpersonateNamedPipeClient, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentThread, INFINITE, OpenThreadToken, ResetEvent, SetEvent,
     WaitForMultipleObjects, WaitForSingleObject,
@@ -1511,6 +1512,20 @@ pub(crate) fn read_pipe_descriptor(handle: &OwnedHandle) -> io::Result<PipeDescr
         handle_inheritable: handle_flags(handle)? & HANDLE_FLAG_INHERIT != 0,
         pipe_flags: pipe_flags(handle)?,
     })
+}
+
+/// This process's own Windows session, from `ProcessIdToSessionId` on this
+/// process's own ID: the session a `keld-attempt` client requires of the
+/// server before it sends anything (KEL-53 §4).
+pub(crate) fn current_process_session_id() -> io::Result<u32> {
+    let mut session_id = 0_u32;
+    // SAFETY: the process ID is this running process's own, so it names no
+    // other process for the duration of the call, and `session_id` is
+    // writable u32 storage.
+    if unsafe { ProcessIdToSessionId(std::process::id(), &raw mut session_id) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(session_id)
 }
 
 fn handle_flags(handle: &OwnedHandle) -> io::Result<u32> {

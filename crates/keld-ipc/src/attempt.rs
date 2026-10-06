@@ -19,7 +19,7 @@ use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
 use crate::bootstrap::WindowsNamedPipeBootstrapStream;
 use crate::windows_named_pipe::{
     PIPE_ACCESS_MASK, PipeDescriptorReadback, PipeSecuritySections, WindowsNamedPipeServer,
-    WindowsNamedPipeStream, WindowsPipeSecurityFact,
+    WindowsNamedPipeStream, WindowsPipeSecurityFact, current_process_session_id,
 };
 
 /// Explicit Medium mandatory label with `SYSTEM_MANDATORY_LABEL_NO_WRITE_UP`,
@@ -238,9 +238,9 @@ impl WindowsAttemptEndpoint {
     }
 }
 
-/// A client connection to a `keld-attempt` endpoint whose server descriptor
-/// was read back and matched before this value existed. Nothing has been sent
-/// on it.
+/// A client connection to a `keld-attempt` endpoint whose server was found in
+/// this process's session, with its descriptor read back and matched, before
+/// this value existed. Nothing has been sent on it.
 #[derive(Debug)]
 pub struct WindowsAttemptClient {
     stream: WindowsNamedPipeStream,
@@ -249,17 +249,22 @@ pub struct WindowsAttemptClient {
 impl WindowsAttemptClient {
     /// Refuses any name outside the `keld-attempt` namespace before opening
     /// it, opens the endpoint so the server can at most identify this client
-    /// (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), and requires the
-    /// server's owner, DACL, label and remote-client rejection to be exactly
-    /// `expected` before returning.
+    /// (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), and, before
+    /// returning, requires `GetNamedPipeServerSessionId` to equal this
+    /// process's own session and the server's owner, DACL, label and
+    /// remote-client rejection to be exactly `expected` (KEL-53 §4
+    /// "Candidate connect-back" and "Machine-UAC bootstrap" item 3).
     ///
     /// # Errors
     ///
     /// - [`WindowsAttemptEndpointError::EndpointShape`] before any open;
+    /// - [`WindowsAttemptEndpointError::ServerSession`] when the server runs
+    ///   in another session (the connection is closed, nothing was sent);
     /// - [`WindowsAttemptEndpointError::SecurityMismatch`] when the server is
     ///   not exactly `expected` (the connection is closed, nothing was sent);
-    /// - [`WindowsAttemptEndpointError::Os`] when the open, including its
-    ///   wait for a busy instance until `deadline`, or the readback fails.
+    /// - [`WindowsAttemptEndpointError::Os`] when this process's session query,
+    ///   the open (including its wait for a busy instance until `deadline`),
+    ///   the server session query or the readback fails.
     pub fn connect_until(
         endpoint: &str,
         expected: &WindowsAttemptEndpointSecurity,
@@ -268,12 +273,43 @@ impl WindowsAttemptClient {
         if !WindowsNamedPipeBootstrapStream::is_attempt_endpoint(endpoint) {
             return Err(WindowsAttemptEndpointError::EndpointShape);
         }
+        let own_session =
+            current_process_session_id().map_err(|source| WindowsAttemptEndpointError::Os {
+                operation: "query this process's session",
+                source,
+            })?;
+        Self::connect_in_session(endpoint, expected, deadline, own_session)
+    }
+
+    /// Opens `endpoint` and admits it only for a server in `own_session` whose
+    /// descriptor is exactly `expected`. Production passes this process's own
+    /// session; a test passes another to stand in for a server that runs in a
+    /// different session.
+    fn connect_in_session(
+        endpoint: &str,
+        expected: &WindowsAttemptEndpointSecurity,
+        deadline: Instant,
+        own_session: u32,
+    ) -> Result<Self, WindowsAttemptEndpointError> {
         let stream =
             WindowsNamedPipeServer::connect_identification_client_until(endpoint, deadline)
                 .map_err(|source| WindowsAttemptEndpointError::Os {
                     operation: "open the endpoint",
                     source,
                 })?;
+        let server_session =
+            stream
+                .peer_session_id()
+                .map_err(|source| WindowsAttemptEndpointError::Os {
+                    operation: "query the server session ID",
+                    source,
+                })?;
+        if server_session != own_session {
+            return Err(WindowsAttemptEndpointError::ServerSession {
+                server_session,
+                own_session,
+            });
+        }
         let readback =
             stream
                 .descriptor_readback()
@@ -345,6 +381,14 @@ pub enum WindowsAttemptEndpointError {
         /// The Windows failure.
         source: io::Error,
     },
+    /// `KELD-IPC-013`: the server end of the endpoint runs in another Windows
+    /// session than this client; refused before anything is sent.
+    ServerSession {
+        /// The server's session, from `GetNamedPipeServerSessionId`.
+        server_session: u32,
+        /// This client process's own session.
+        own_session: u32,
+    },
 }
 
 impl fmt::Display for WindowsAttemptEndpointError {
@@ -380,6 +424,15 @@ impl fmt::Display for WindowsAttemptEndpointError {
                  can assign the form's owner (a Medium token cannot assign BUILTIN \
                  Administrators)."
             ),
+            Self::ServerSession {
+                server_session,
+                own_session,
+            } => write!(
+                f,
+                "KELD-IPC-013: keld-attempt server runs in session {server_session}, not this \
+                 process's session {own_session}. Refuse the endpoint without sending \
+                 anything: only an owner in the client's own session is admitted."
+            ),
         }
     }
 }
@@ -388,7 +441,10 @@ impl std::error::Error for WindowsAttemptEndpointError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NameInUse { source } | Self::Os { source, .. } => Some(source),
-            Self::EndpointShape | Self::SecurityMismatch { .. } | Self::InvalidSid => None,
+            Self::EndpointShape
+            | Self::SecurityMismatch { .. }
+            | Self::InvalidSid
+            | Self::ServerSession { .. } => None,
         }
     }
 }
