@@ -77,10 +77,12 @@ pub(crate) struct ActivationJournal {
     pub(crate) lifecycle_channel_id: [u8; 32],
     /// Initiating logon session and attempt owner, required in every v2 record and phase.
     ///
-    /// `None` only for a decoded `keld.activation-journal/v1` record, which has neither
-    /// and therefore never admits a candidate claim. Such a record keeps its v1 encoding
-    /// for the phase writes that finish it; a resumed owner's re-mint record supplies both
-    /// facts and is v2. One field holds both, so a record with only one is unrepresentable.
+    /// `None` for a decoded `keld.activation-journal/v1` record, which has neither and
+    /// therefore never admits a candidate claim, and for freshly minted identities that no
+    /// record names yet, until their owner journals them with its facts. A v1 record keeps
+    /// its v1 encoding for the phase writes that finish it; a resumed owner's re-mint
+    /// record supplies both facts and is v2. One field holds both, so a record with only
+    /// one is unrepresentable.
     pub(crate) ownership: Option<AttemptOwnership>,
     /// One explicit durable phase; phase recovery is never inferred from filenames.
     pub(crate) phase: ActivationPhase,
