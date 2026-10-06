@@ -95,8 +95,13 @@ pub(crate) fn release_json(
 }
 
 pub(crate) fn manifest_json(releases: &str) -> Vec<u8> {
+    manifest_json_for(APP_ID, releases)
+}
+
+/// [`manifest_json`] for the app `app_id`.
+pub(crate) fn manifest_json_for(app_id: &str, releases: &str) -> Vec<u8> {
     format!(
-        r#"{{"schema":1,"channel":"stable","target":"{TARGET}","app":{{"id":"{APP_ID}"}},"releases":[{releases}]}}"#
+        r#"{{"schema":1,"channel":"stable","target":"{TARGET}","app":{{"id":"{app_id}"}},"releases":[{releases}]}}"#
     )
     .into_bytes()
 }

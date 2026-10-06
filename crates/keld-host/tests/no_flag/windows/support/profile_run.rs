@@ -1,9 +1,13 @@
 //! Signed state-run fixture, ordered host/Bun guard and per-store report owner.
+//!
+//! Each case installs its own renderer: Windows persistent profiles boot only from an
+//! authenticated installed package (KEL-254 A3 AC2), whose tree is immutable.
 
 use super::control::{
     accept_control_or_host_failure, parse_descendant_pid, read_control_line,
     read_control_line_or_host_failure,
 };
+use super::installed::InstalledApp;
 use super::process::process_exists;
 use super::product::ProductFixture;
 use super::profile_observation::ProfileStateObservation;
@@ -15,13 +19,15 @@ use crate::PRODUCT_DEADLINE;
 use std::fs;
 use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Instant;
 
 pub(crate) struct SignedProfileStateCase<'a> {
     pub(crate) name: &'a str,
+    /// An operator-signed host that embeds its expected app identity.
     pub(crate) host: &'a std::ffi::OsStr,
+    /// The keld-update unit-test executable holding the per-user install fixture.
+    pub(crate) installer: &'a std::ffi::OsStr,
     pub(crate) before: &'a str,
     pub(crate) after: &'a str,
 }
@@ -79,13 +85,13 @@ pub(crate) fn record_profile_state_case(
 }
 
 pub(crate) struct SignedProfileStateRun {
-    // Drop the process guard before releasing the staged namespace pins.
+    // Drop the process guard before removing the installation it runs from.
     pub(crate) process: SignedStateProcessGuard,
     reader: BufReader<TcpStream>,
     pub(crate) bun_pid: u32,
     deadline: Instant,
     case_name: String,
-    _stage: keld_cli::boot::DevBootStage,
+    _installed: InstalledApp,
 }
 
 impl SignedProfileStateRun {
@@ -102,19 +108,18 @@ impl SignedProfileStateRun {
             state_redirect_html(address, case.name, run_nonce, case.after),
         )
         .expect("write state renderer");
-        let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(case.host))
-            .expect("stage signed state host");
+        let installed = InstalledApp::install(&fixture.project, case.host, case.installer);
         let control_port = control_listener
             .local_addr()
             .expect("state control address")
             .port();
-        let child = Command::new(stage.host())
-            .current_dir(stage.root())
+        let child = installed
+            .command()
             .env("KELD_T1B_CONTROL", control_port.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("launch signed state host");
+            .expect("launch the installed state host without KELD_DEV_LEASE");
         let mut process = SignedStateProcessGuard::new(child);
         let control =
             accept_control_or_host_failure(control_listener, process.child_mut(), deadline);
@@ -153,7 +158,7 @@ impl SignedProfileStateRun {
             bun_pid,
             deadline,
             case_name: case.name.to_owned(),
-            _stage: stage,
+            _installed: installed,
         }
     }
 

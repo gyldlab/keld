@@ -1,6 +1,8 @@
-//! Signed persistent-profile startup acceptance and its explicit fixture prerequisite.
+//! Signed persistent-profile startup on an installed package, and the lease-less
+//! staged-host refusal.
 
 use crate::support::control::{accept_ready_generation, read_control_line};
+use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{process_exists, wait_child};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
@@ -39,11 +41,11 @@ fn kel135_signed_lease_less_stage_is_refused_before_resources() {
     assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
 }
 
+/// The installed host boots lease-less into its persistent profile and renderer
+/// (KEL-254 T3 Part B restores this row on installed provenance).
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires a signed KEL-135 Windows host fixture"]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1 and KELD_KEL254_INSTALLER_FIXTURE (KEL-254 installed-host operator fixtures)"]
 fn kel135_signed_host_persistent_profile_startup() {
-    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
-        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind signed control");
     let control_port = control_listener
@@ -55,7 +57,6 @@ fn kel135_signed_host_persistent_profile_startup() {
         .local_addr()
         .expect("signed beacon address")
         .port();
-    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -63,19 +64,23 @@ fn kel135_signed_host_persistent_profile_startup() {
         ),
     )
     .expect("write signed renderer");
-    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
-        .expect("stage the signed KEL-135 host");
-    let mut host = Command::new(stage.host())
-        .current_dir(stage.root())
+    let installed = InstalledApp::install(
+        &fixture.project,
+        &fixture_env(SIGNED_HOST_A_P1),
+        &fixture_env(INSTALLER_ENV),
+    );
+    let beacon = spawn_renderer_beacon(beacon_listener);
+    let mut host = installed
+        .command()
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("launch signed host without KELD_DEV_LEASE");
+        .expect("launch the installed host without KELD_DEV_LEASE");
     let host_pid = host.id();
     let (mut reader, mut writer, bun_pid, _) =
         accept_ready_generation(&control_listener, &mut host);
-    expect_renderer_beacon(beacon, "signed host renderer beacon");
+    expect_renderer_beacon(beacon, "installed host renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
     writer.write_all(b"QUIT\n").expect("signed host Quit");

@@ -3,6 +3,7 @@
 pub(crate) mod control;
 pub(crate) mod cross_user;
 pub(crate) mod handles;
+pub(crate) mod installed;
 pub(crate) mod process;
 pub(crate) mod product;
 pub(crate) mod product_cycle;

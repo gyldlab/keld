@@ -2,6 +2,7 @@
 
 mod alias;
 mod capture;
+mod installed_host_operator;
 mod locate;
 mod locate_operator;
 mod machine_staging;

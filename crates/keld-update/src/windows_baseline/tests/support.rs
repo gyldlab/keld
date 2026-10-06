@@ -22,7 +22,9 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
 };
 
-use crate::tests::{digest_hex, expected_identity, manifest_json, release_json, sign, signing_key};
+use crate::tests::{
+    digest_hex, expected_identity, manifest_json_for, release_json, sign, signing_key,
+};
 use crate::windows_baseline::WindowsBaselineTrust;
 use crate::{BaselineVerifier, VerifiedBaseline};
 
@@ -240,6 +242,15 @@ pub(super) fn provision_machine_uac_as_administrator_with(
 }
 
 pub(super) fn provision_per_user(root: &Path, label: &str) -> WindowsBaselineTrust {
+    provision_per_user_with(root, label, GOLDEN)
+}
+
+/// [`provision_per_user`] for a baseline whose canonical package content is `content`.
+pub(super) fn provision_per_user_with(
+    root: &Path,
+    label: &str,
+    content: &[u8],
+) -> WindowsBaselineTrust {
     let parent = directory(root);
     let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
     let install =
@@ -250,7 +261,7 @@ pub(super) fn provision_per_user(root: &Path, label: &str) -> WindowsBaselineTru
             .expect("create exact owner-private per-user update root");
     crate::windows_fs::create_directory_relative_with_profile(&update, "versions", profile)
         .expect("create exact owner-private per-user versions root");
-    let mut trust = trust_for(&root.join(label));
+    let mut trust = trust_for_with(&root.join(label), content);
     trust.installation.install_mode = crate::DirectInstallMode::PerUserDirect;
     trust
 }
@@ -259,7 +270,8 @@ pub(super) fn baseline(trust: &WindowsBaselineTrust) -> VerifiedBaseline {
     baseline_with(trust, GOLDEN)
 }
 
-/// [`baseline`] for canonical package content `content`.
+/// [`baseline`] for canonical package content `content`, published for the trusted
+/// installation's app.
 pub(super) fn baseline_with(trust: &WindowsBaselineTrust, content: &[u8]) -> VerifiedBaseline {
     let compressed =
         zstd::stream::encode_all(Cursor::new(content), 0).expect("fixture compression");
@@ -271,7 +283,7 @@ pub(super) fn baseline_with(trust: &WindowsBaselineTrust, content: &[u8]) -> Ver
         &digest_hex(content),
         "",
     );
-    let manifest = manifest_json(&release);
+    let manifest = manifest_json_for(&trust.installation.app_id, &release);
     BaselineVerifier::new(
         trust.installation.clone(),
         signing_key().verifying_key().to_bytes(),

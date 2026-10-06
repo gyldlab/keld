@@ -6,26 +6,25 @@
 //! and `select_active_package_for_executable`, as the host does with the handle KEL-135
 //! verified; Authenticode verification itself is the host's and is not exercised here.
 
-use super::locate::{host_path, open_image, refuses};
+use super::locate::{host_path, open_image, payload_for_identity, refuses};
 use super::support::host_package_content_with;
 use super::writer::seed_per_user_baseline_with;
 use crate::windows_baseline::select_active_package_for_executable;
 use crate::{ExpectedAppIdentity, ProvenanceField, UpdateError};
 
-/// This test executable with a canonical container naming `app_id` and the fixture's
-/// channel, target and release key.
+/// The canonical payload a host built for `app_id` and the fixture installation's
+/// channel, target and release key embeds.
+pub(super) fn fixture_payload(app_id: &str) -> keld_pack::ExpectedAppIdentityPayload {
+    let mut identity = crate::tests::expected_identity();
+    app_id.clone_into(&mut identity.app_id);
+    payload_for_identity(&identity)
+}
+
+/// This test executable with a canonical container for `app_id`.
 fn host_embedded_for(app_id: &str) -> Vec<u8> {
-    let identity = crate::tests::expected_identity();
-    let payload = keld_pack::ExpectedAppIdentityPayload::new(
-        app_id,
-        identity.channel.as_str(),
-        &identity.target,
-        crate::tests::signing_key().verifying_key().to_bytes(),
-    )
-    .expect("fixture fields fit the canonical payload");
     let image = std::fs::read(std::env::current_exe().expect("test executable path"))
         .expect("read the test executable image");
-    keld_pack::embed_host_identity(&image, &payload)
+    keld_pack::embed_host_identity(&image, &fixture_payload(app_id))
         .expect("the linked test executable is an admissible host image")
 }
 
