@@ -542,6 +542,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Linux strict-profile construction, namespace, mount, seccomp, Landlock, FD isolation, readiness, or target exec failed
 - fix: Do not start an uncontained replacement. For an unsupported architecture or unavailable unprivileged user namespaces, move the workload to a supported x86_64 host with unprivileged user namespaces. Otherwise install or repair the reviewed Bubblewrap and Keld launcher artifacts and the exact runtime-file, mount, seccomp, enabled-Landlock, readiness-channel, or target configuration, then refresh the hostile proof. A kernel without Landlock is recorded rather than treated as this error; `legacy` remains an explicit policy choice that forfeits the zero-authority claim and is never selected automatically.
 
+## KELD-RUNTIME-017
+
+- crate: keld-runtime
+- message: A Windows connect-back claimant was not the exact launched and retained candidate process
+- fix: No operator action for one refusal: the attempt owner disconnects that client and re-arms the endpoint, and a process that keeps connecting can at most cause a health timeout and the ordinary rollback. If the launched candidate itself is refused, report the refusal detail; do not weaken the process-object comparison.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
@@ -805,6 +811,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-update
 - message: The running executable is not bound to the installation it locates
 - fix: Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged.
+
+## KELD-UPDATE-019
+
+- crate: keld-update
+- message: The verified host image does not carry exactly one readable, canonical expected-identity container
+- fix: Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container.
 
 ## KELD-PACK-001
 

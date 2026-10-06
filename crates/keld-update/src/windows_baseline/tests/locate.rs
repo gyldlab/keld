@@ -65,14 +65,21 @@ pub(super) fn expected_for(trust: &WindowsBaselineTrust) -> ExpectedAppIdentity 
 pub(super) fn expected_for_identity(
     identity: &crate::DirectInstallationIdentity,
 ) -> ExpectedAppIdentity {
-    let payload = keld_pack::ExpectedAppIdentityPayload::new(
+    ExpectedAppIdentity::decode(&payload_for_identity(identity).encode())
+        .expect("canonical expectation decodes")
+}
+
+/// The canonical payload a host built for `identity` and the fixture release key embeds.
+pub(super) fn payload_for_identity(
+    identity: &crate::DirectInstallationIdentity,
+) -> keld_pack::ExpectedAppIdentityPayload {
+    keld_pack::ExpectedAppIdentityPayload::new(
         &identity.app_id,
         identity.channel.as_str(),
         &identity.target,
         crate::tests::signing_key().verifying_key().to_bytes(),
     )
-    .expect("fixture identity fits the canonical payload");
-    ExpectedAppIdentity::decode(&payload.encode()).expect("canonical expectation decodes")
+    .expect("fixture identity fits the canonical payload")
 }
 
 /// Every protected record of the installation, including `install-provenance`.

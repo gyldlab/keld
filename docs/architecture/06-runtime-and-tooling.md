@@ -113,8 +113,15 @@
   lease differs. The ordinary application host and
   Bun roles remain non-SYSTEM. MSIX, App Installer, Store, enterprise and other
   deployment-owned installs remain with that owner and cannot acquire a competing Keld
-  writer. This is approved product direction, not evidence that installed boot or the
-  seamless authority is implemented; KEL-96 currently boots the Windows dev stage.
+  writer. This is approved product direction, not evidence that the seamless authority
+  is implemented. KEL-96 boots the Windows dev stage only under a valid dev lease;
+  without one it boots only the authenticated installed package that KEL-53's
+  executable-located selection admits (KEL-254 T3 Part B). That selection also admits a
+  machine-mode installation read-only and keld-core applies no install-mode filter, so a
+  machine-mode installed boot is reachable but unqualified: native boot evidence covers
+  `PerUserDirect` alone, and each machine-mode cell stays unqualified until KEL-53's
+  native install-mode proof and the consumer's own native boot evidence exist for it.
+  This is not KEL-254 installed-boot acceptance; KEL-19 T2 and KEL-254 T4 remain open.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -480,14 +487,17 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   slots and the floor pass under the snapshot lease; a failed check keeps its own error)
   and the refusal of a pending journal in any phase are the typed
   `MachineRecoveryRequired` effect: the ordinary process writes nothing, and until the
-  helper's recovery-only role is enabled its guidance is `RecoveryDisabled`. Live feed
-  orchestration, host candidate launch, the private health channel and its 30-second
-  `Ready` observation, installed-host lifecycle composition, candidate-mode selection,
-  the KEL-19 `ExpectedAppIdentity` host container with its boot-time reader
-  (`ExpectedAppIdentity::from_signed_image`, KEL-254 T3 Part B), and the KEL-96 host
-  consumer of the selection remain unimplemented; the KEL-254 T2b executable-located
-  entrypoint (`select_active_package_for_executable`) and its payload codec have
-  landed, but no host calls them yet. Planned Windows
+  helper's recovery-only role is enabled its guidance is `RecoveryDisabled`. The
+  KEL-254 T2b executable-located entrypoint (`select_active_package_for_executable`)
+  and its payload codec, the KEL-19 `.keldeai` host container (T1) and its boot-time
+  reader `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and
+  the KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
+  through `keld-guard`, reads the expectation from that pinned handle, selects its
+  installation and requires the record's publisher and app id to equal the verified
+  identity before any listener, child or window. No `keld build` step embeds the
+  container yet (KEL-19 T3). Live feed orchestration, host candidate launch, the private
+  health channel and its 30-second `Ready` observation, installed-host lifecycle
+  composition and candidate-mode selection remain unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
   lifecycle proof and a separately approved architecture/spec amendment selects and

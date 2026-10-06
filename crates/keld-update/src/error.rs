@@ -301,6 +301,14 @@ pub enum UpdateError {
         /// Failing part: a keld-pack payload detail, the channel or the public key.
         detail: String,
     },
+    /// The verified host image does not carry exactly one readable, canonical
+    /// expected-identity container.
+    ExpectedIdentityContainer {
+        /// The keld-pack container-reader code, such as `KELD-PACK-007`.
+        pack_code: &'static str,
+        /// The keld-pack refusal message, beginning with that code.
+        detail: String,
+    },
     /// The common journaled activation transaction refused or could not confirm a step.
     Activation {
         /// Transaction boundary that refused the operation.
@@ -362,6 +370,7 @@ impl UpdateError {
             Self::Activation { .. } => "KELD-UPDATE-016",
             Self::ExpectedIdentityInvalid { .. } => "KELD-UPDATE-017",
             Self::ExecutableBinding { .. } => "KELD-UPDATE-018",
+            Self::ExpectedIdentityContainer { .. } => "KELD-UPDATE-019",
         }
     }
 }
@@ -407,6 +416,7 @@ impl fmt::Display for UpdateError {
                 f,
                 "KELD-UPDATE-017: the host's expected app identity is invalid ({detail}). Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then."
             ),
+            Self::ExpectedIdentityContainer { detail, .. } => fmt_container_error(f, detail),
             Self::ManifestInvalid { detail } => write!(
                 f,
                 "KELD-UPDATE-005: authenticated update manifest is not valid v0 ({detail}). Publish one closed, duplicate-free v0 manifest with canonical fields."
@@ -468,6 +478,13 @@ impl fmt::Display for UpdateError {
             } => fmt_activation_error(f, step, *effect, detail),
         }
     }
+}
+
+fn fmt_container_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-019: the signed host's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container."
+    )
 }
 
 fn fmt_activation_error(

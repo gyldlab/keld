@@ -23,9 +23,12 @@ use keld_ipc::{
     WindowsLifecycleRendezvousPeer,
 };
 
+use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild};
+
 use windows_sys::Win32::Foundation::{
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, GetHandleInformation, HANDLE,
-    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NOT_SAME_OBJECT, FILETIME,
+    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType, ReadFile,
@@ -904,25 +907,10 @@ impl WindowsProcessPeer {
             ));
         }
         let image_path = PathBuf::from(std::ffi::OsString::from_wide(&image[..image_units]));
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        // SAFETY: process is retained and all four FILETIME outputs are writable.
-        if unsafe {
-            GetProcessTimes(
-                process.as_raw_handle().cast(),
-                &raw mut creation,
-                &raw mut exit,
-                &raw mut kernel,
-                &raw mut user,
-            )
-        } == 0
-        {
-            return Err(WindowsHostJobError::new("keeper peer creation-time query"));
-        }
-        let creation_time =
-            (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+        let creation_time = process_creation_time(
+            process.as_raw_handle().cast(),
+            "keeper peer creation-time query",
+        )?;
         // A process can exit after the pipe reports its PID. Refuse a stale
         // process object before returning this connected-peer observation.
         // The protocol challenge/ack must still bind the live connection.
@@ -1059,6 +1047,277 @@ impl keld_ipc::WindowsLifecyclePeerPin for WindowsProcessPeer {
     fn has_exited(&self) -> io::Result<bool> {
         WindowsProcessPeer::has_exited(self).map_err(|error| io::Error::other(error.to_string()))
     }
+}
+
+/// One process that an attempt owner launched suspended, retained with the
+/// creation time recorded at launch.
+///
+/// This is the owner's side of the connect-back claim (KEL-53 §4 "Candidate
+/// connect-back", *Acceptance*): only the exact process object that the owner
+/// launched and still retains may claim. A process ID identifies a process only
+/// until that process exits, so the binding compares kernel objects. Dropping
+/// this value drops the child, which terminates a process it has not reaped.
+///
+/// The record pairs the child with its creation time, so the child is never lent
+/// mutably: [`Self::child`] is a shared borrow of a type without interior
+/// mutability, and [`Self::resume`], [`Self::wait`] and [`Self::terminate`]
+/// forward to it. Safe code therefore cannot `mem::swap` or `mem::replace` the
+/// retained child under a record that stays fixed.
+#[derive(Debug)]
+pub struct WindowsLaunchedProcess {
+    child: WindowsSuspendedChild,
+    creation_time: u64,
+}
+
+impl WindowsLaunchedProcess {
+    /// Records the launch identity of a child that a launch path created
+    /// suspended.
+    ///
+    /// The process ID is the child's own, which process creation reported; the
+    /// creation time is read from the retained launch handle. Creation time is
+    /// fixed for the process object, so recording after resume is harmless: it
+    /// reads the same value as recording before resume, and the record names the
+    /// object the child retains, not the moment of the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and terminates the child as it drops, when Windows
+    /// cannot read the creation time.
+    pub fn record(child: WindowsSuspendedChild) -> Result<Self, WindowsHostJobError> {
+        let creation_time = process_creation_time(
+            child.process_handle().as_raw_handle().cast(),
+            "launch identity record",
+        )?;
+        Ok(Self {
+            child,
+            creation_time,
+        })
+    }
+
+    /// Borrows the retained child, for example to verify it before resume.
+    #[must_use]
+    pub const fn child(&self) -> &WindowsSuspendedChild {
+        &self.child
+    }
+
+    /// Resumes the retained child's primary thread exactly once, through
+    /// [`WindowsSuspendedChild::resume`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if the child was already resumed or the kernel rejects resume.
+    pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
+        self.child.resume()
+    }
+
+    /// Waits for the retained child to terminate and returns its exact Windows
+    /// exit code, through [`WindowsSuspendedChild::wait`].
+    ///
+    /// # Errors
+    ///
+    /// Fails on timeout or process-status query failure.
+    pub fn wait(&mut self, timeout_ms: u32) -> Result<u32, WindowsLpacError> {
+        self.child.wait(timeout_ms)
+    }
+
+    /// Terminates the retained child, through [`WindowsSuspendedChild::terminate`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if Windows rejects termination.
+    pub fn terminate(&mut self, exit_code: u32) -> Result<(), WindowsLpacError> {
+        self.child.terminate(exit_code)
+    }
+
+    /// Binds a connected claimant to this exact launch.
+    ///
+    /// `claimant` is the process that the connected pipe's client process ID
+    /// names, opened and pinned by [`WindowsProcessPeer::open`]. In order, the
+    /// binding requires that `CompareObjectHandles` reports the claimant handle
+    /// and the retained launch handle as one kernel object, that the retained
+    /// launch handle is still unsignaled, and that the claimant's process ID and
+    /// creation time equal those recorded at launch. The token checks of the
+    /// claim's writer are separate and still required.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failed fact as a [`WindowsClaimantRefusal`].
+    pub fn bind_claimant(
+        &self,
+        claimant: &WindowsProcessPeer,
+    ) -> Result<(), WindowsClaimantRefusal> {
+        bind_observed_claimant(
+            ProcessObservation::of_peer(claimant),
+            ProcessObservation::of_launch(self),
+        )
+    }
+}
+
+/// Why an attempt owner refused a connect-back claimant.
+///
+/// Every variant refuses. The owner disconnects that client and re-arms the same
+/// endpoint instance; a refusal consumes no one-shot and never extends the health
+/// deadline (KEL-53 §4 "Candidate connect-back", *Refusal*).
+#[derive(Debug)]
+pub enum WindowsClaimantRefusal {
+    /// `CompareObjectHandles` reports that the claimant handle and the retained
+    /// launch handle are different kernel objects.
+    NotLaunchedProcess,
+    /// The retained launch handle is signaled: the launched process has exited.
+    LaunchExited,
+    /// The claimant's process ID or creation time differs from the launch record.
+    LaunchIdentityMismatch,
+    /// Windows could not compare or query the handles, so nothing was proved.
+    Unverifiable {
+        /// The comparison or query that failed.
+        phase: &'static str,
+        /// The Windows error it reported.
+        source: io::Error,
+    },
+}
+
+impl std::fmt::Display for WindowsClaimantRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KELD-RUNTIME-017: connect-back claimant refused: ")?;
+        match self {
+            Self::NotLaunchedProcess => f.write_str(
+                "the connected process is not the launched and retained process object",
+            )?,
+            Self::LaunchExited => f.write_str("the launched process has exited")?,
+            Self::LaunchIdentityMismatch => f.write_str(
+                "the connected process ID or creation time differs from the launch record",
+            )?,
+            Self::Unverifiable { phase, source } => write!(f, "{phase} failed: {source}")?,
+        }
+        f.write_str(
+            ". Disconnect this client and re-arm the endpoint without consuming its one-shot; \
+             only the exact launched process can claim, and the health deadline is not extended.",
+        )
+    }
+}
+
+impl std::error::Error for WindowsClaimantRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unverifiable { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Process-object identity compared by the claimant binding. The lifetime keeps
+/// the raw handle's owner alive while the observation is in use.
+#[derive(Clone, Copy)]
+struct ProcessObservation<'a> {
+    handle: HANDLE,
+    process_id: u32,
+    creation_time: u64,
+    _owner: std::marker::PhantomData<&'a OwnedHandle>,
+}
+
+impl<'a> ProcessObservation<'a> {
+    fn of_peer(peer: &'a WindowsProcessPeer) -> Self {
+        Self {
+            handle: peer.process.as_raw_handle().cast(),
+            process_id: peer.process_id,
+            creation_time: peer.creation_time,
+            _owner: std::marker::PhantomData,
+        }
+    }
+
+    fn of_launch(launch: &'a WindowsLaunchedProcess) -> Self {
+        Self {
+            handle: launch.child.process_handle().as_raw_handle().cast(),
+            process_id: launch.child.id(),
+            creation_time: launch.creation_time,
+            _owner: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Requires the three acceptance facts in their specified order.
+fn bind_observed_claimant(
+    claimant: ProcessObservation<'_>,
+    launch: ProcessObservation<'_>,
+) -> Result<(), WindowsClaimantRefusal> {
+    match same_kernel_object(claimant.handle, launch.handle) {
+        Ok(true) => {}
+        Ok(false) => return Err(WindowsClaimantRefusal::NotLaunchedProcess),
+        Err(source) => {
+            return Err(WindowsClaimantRefusal::Unverifiable {
+                phase: "claimant process-object comparison",
+                source,
+            });
+        }
+    }
+    // SAFETY: the launch observation borrows its owner, which retains the launch
+    // handle through this zero-time, read-only signal query.
+    match unsafe { WaitForSingleObject(launch.handle, 0) } {
+        WAIT_TIMEOUT => {}
+        WAIT_OBJECT_0 => return Err(WindowsClaimantRefusal::LaunchExited),
+        _ => {
+            return Err(WindowsClaimantRefusal::Unverifiable {
+                phase: "launch handle state query",
+                source: io::Error::last_os_error(),
+            });
+        }
+    }
+    if claimant.process_id != launch.process_id || claimant.creation_time != launch.creation_time {
+        return Err(WindowsClaimantRefusal::LaunchIdentityMismatch);
+    }
+    Ok(())
+}
+
+/// Reports whether two handles name one kernel object.
+///
+/// `CompareObjectHandles` requires no access right on either handle. Its
+/// reference page documents only the return value: `TRUE` for one object,
+/// otherwise `FALSE`. Its example names `ERROR_NOT_SAME_OBJECT` only for two
+/// objects of different types, an event and a process. That two different
+/// process objects leave `ERROR_NOT_SAME_OBJECT`, and that a null, out-of-range
+/// or closed handle leaves `ERROR_INVALID_HANDLE`, is observed only on Windows 11
+/// build 26300, pinned by
+/// `compare_object_handles_classifies_same_different_and_invalid_handles` and
+/// `compare_object_handles_refuses_a_closed_handle`. So `FALSE` with
+/// `ERROR_NOT_SAME_OBJECT` is the only different-object verdict, and any other
+/// `FALSE` is an error. Every non-`TRUE` result refuses the claimant: the verdict
+/// as [`WindowsClaimantRefusal::NotLaunchedProcess`], an error as
+/// [`WindowsClaimantRefusal::Unverifiable`].
+fn same_kernel_object(first: HANDLE, second: HANDLE) -> io::Result<bool> {
+    // SAFETY: CompareObjectHandles only resolves the two handle values through
+    // this process's handle table and dereferences no caller memory; an unusable
+    // value makes it fail without touching any object.
+    if unsafe { CompareObjectHandles(first, second) } != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_NOT_SAME_OBJECT.cast_signed()) {
+        return Ok(false);
+    }
+    Err(error)
+}
+
+/// Reads one retained process object's creation time in FILETIME units.
+fn process_creation_time(process: HANDLE, phase: &'static str) -> Result<u64, WindowsHostJobError> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: the caller retains the process handle and all four FILETIME outputs
+    // are writable.
+    if unsafe {
+        GetProcessTimes(
+            process,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    } == 0
+    {
+        return Err(WindowsHostJobError::new(phase));
+    }
+    Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
 impl WindowsProcessJob {
@@ -2845,7 +3104,14 @@ pub fn install_host_death_job() -> Result<WindowsHostJobObservation, WindowsHost
 #[allow(clippy::expect_used, clippy::panic)] // subprocess contract failures abort the proof
 mod tests {
     use super::*;
+    use crate::windows_lpac::{WindowsLpacProfile, WindowsLpacStdio};
+    use std::ffi::{OsStr, OsString};
+    use std::os::windows::io::AsHandle as _;
+    use std::path::Path;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows_sys::Win32::System::Threading::PROCESS_CREATE_PROCESS;
@@ -3417,5 +3683,490 @@ mod tests {
             "unexpected private active-process helper entry"
         );
         std::thread::park();
+    }
+
+    // KEL-270 T4d S5: the connect-back claimant binding (KEL-53 §4 "Candidate
+    // connect-back", *Acceptance*; §7 row 8, claimant binding). Every launch comes
+    // from the generalized suspended-child path and every compared handle is a
+    // real Windows handle unless the cell says it is seam-injected.
+
+    static CLAIMANT_LAUNCH_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+    /// Standard handles that keep a resumed command interpreter blocked on stdin.
+    struct BlockingStdio {
+        stdin: std::io::PipeReader,
+        _stdin_writer: std::io::PipeWriter,
+        sink: std::fs::File,
+    }
+
+    /// One recorded suspended launch. Fields drop in order: the launch, which
+    /// terminates an unreaped child, before its profile and its stdin writer.
+    struct RecordedLaunch {
+        launched: WindowsLaunchedProcess,
+        _profile: WindowsLpacProfile,
+        _stdio: Option<BlockingStdio>,
+    }
+
+    fn system32() -> PathBuf {
+        PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set")).join("System32")
+    }
+
+    fn blocking_stdio() -> BlockingStdio {
+        let (stdin, stdin_writer) = std::io::pipe().expect("create the launch stdin pipe");
+        let sink = std::fs::OpenOptions::new()
+            .write(true)
+            .open("NUL")
+            .expect("open the launch output sink");
+        BlockingStdio {
+            stdin,
+            _stdin_writer: stdin_writer,
+            sink,
+        }
+    }
+
+    fn recorded_launch(stdio: Option<BlockingStdio>) -> RecordedLaunch {
+        let sequence = CLAIMANT_LAUNCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_nanos();
+        let name = format!(
+            "Keld.Test.Claimant.{}.{sequence}.{nanos}",
+            std::process::id()
+        );
+        let profile = WindowsLpacProfile::create(OsStr::new(&name))
+            .expect("create a zero-capability LPAC profile");
+        let system32 = system32();
+        // AppContainer creation derives the package's LOCALAPPDATA/TEMP from this
+        // block and fails with ERROR_ENVVAR_NOT_FOUND without the profile keys.
+        let environment: Vec<(OsString, OsString)> =
+            ["SystemRoot", "WINDIR", "USERPROFILE", "LOCALAPPDATA"]
+                .into_iter()
+                .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+                .collect();
+        let standard_handles = stdio.as_ref().map(|stdio| WindowsLpacStdio {
+            stdin: stdio.stdin.as_handle(),
+            stdout: stdio.sink.as_handle(),
+            stderr: stdio.sink.as_handle(),
+        });
+        let child = profile
+            .spawn_suspended(
+                &system32.join("cmd.exe"),
+                &[OsString::from("/d")],
+                &environment,
+                Some(&system32),
+                standard_handles,
+                &[],
+            )
+            .expect("create one suspended launch");
+        let launched = WindowsLaunchedProcess::record(child)
+            .expect("record the launch identity before resume");
+        RecordedLaunch {
+            launched,
+            _profile: profile,
+            _stdio: stdio,
+        }
+    }
+
+    /// Opens a claimant exactly as the owner does: from the PID and session the
+    /// connected pipe reports.
+    fn claimant_by_pid(process_id: u32) -> WindowsProcessPeer {
+        let mut session_id = 0_u32;
+        // SAFETY: the PID names a live test-owned process; the output is writable.
+        assert_ne!(
+            unsafe { ProcessIdToSessionId(process_id, &raw mut session_id) },
+            0,
+            "query claimant session: {}",
+            io::Error::last_os_error()
+        );
+        WindowsProcessPeer::open(process_id, session_id).expect("open the pipe-reported claimant")
+    }
+
+    #[test]
+    fn compare_object_handles_classifies_same_different_and_invalid_handles() {
+        let launch = recorded_launch(None);
+        let launch_handle: HANDLE = launch
+            .launched
+            .child()
+            .process_handle()
+            .as_raw_handle()
+            .cast();
+        let same = claimant_by_pid(launch.launched.child().id());
+        assert!(
+            same_kernel_object(same.process.as_raw_handle().cast(), launch_handle)
+                .expect("compare two live handles"),
+            "a handle opened by PID and the retained launch handle are one process object"
+        );
+        let other = claimant_by_pid(std::process::id());
+        assert!(
+            !same_kernel_object(other.process.as_raw_handle().cast(), launch_handle)
+                .expect("compare two live handles"),
+            "two different process objects compare unequal"
+        );
+        // Null and a value above the per-process handle-table range are never
+        // live handles. A closed value is proved in its own process by
+        // `compare_object_handles_refuses_a_closed_handle`, because a parallel
+        // test here can reuse a freed handle value.
+        for invalid in [
+            std::ptr::null_mut(),
+            std::ptr::without_provenance_mut(0x7fff_fff0),
+        ] {
+            for (first, second) in [(invalid, launch_handle), (launch_handle, invalid)] {
+                let error = same_kernel_object(first, second)
+                    .expect_err("an invalid handle is neither the same nor a different object");
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(ERROR_INVALID_HANDLE.cast_signed()),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compare_object_handles_refuses_a_closed_handle() {
+        // The helper runs alone in a fresh test process, so no other test can
+        // reuse the closed handle value between its close and the comparisons.
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "windows_job::tests::closed_handle_comparison_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "closed-handle")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the closed-handle comparison helper");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("CLOSED_HANDLE_REFUSED"),
+            "closed-handle helper status {:?}\nstdout:\n{stdout}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "private subprocess entry point"]
+    fn closed_handle_comparison_helper() {
+        assert_eq!(
+            std::env::var(HELPER_ENV).as_deref(),
+            Ok("closed-handle"),
+            "unexpected private closed-handle helper entry"
+        );
+        let retained = claimant_by_pid(std::process::id());
+        let live = ProcessObservation::of_peer(&retained);
+        let second = claimant_by_pid(std::process::id());
+        let closed: HANDLE = second.process.as_raw_handle().cast();
+        assert!(
+            same_kernel_object(closed, live.handle).expect("compare two live handles"),
+            "two live handles to this process are one object before the close"
+        );
+        drop(second);
+        assert!(
+            handle_value_is_closed(closed),
+            "the second handle is closed"
+        );
+        for (first, second) in [(closed, live.handle), (live.handle, closed)] {
+            let error = same_kernel_object(first, second)
+                .expect_err("a closed handle is neither the same nor a different object");
+            assert_eq!(
+                error.raw_os_error(),
+                Some(ERROR_INVALID_HANDLE.cast_signed()),
+                "{error}"
+            );
+        }
+        let claimant = ProcessObservation {
+            handle: closed,
+            ..live
+        };
+        match bind_observed_claimant(claimant, live) {
+            Err(WindowsClaimantRefusal::Unverifiable { phase, source }) => {
+                assert_eq!(phase, "claimant process-object comparison");
+                assert_eq!(
+                    source.raw_os_error(),
+                    Some(ERROR_INVALID_HANDLE.cast_signed())
+                );
+            }
+            other => panic!("a closed claimant handle must refuse as unverifiable: {other:?}"),
+        }
+        // Still unused after the comparisons, so each one saw the closed value
+        // rather than a reused handle.
+        assert!(
+            handle_value_is_closed(closed),
+            "the closed value stayed unused"
+        );
+        println!("CLOSED_HANDLE_REFUSED");
+    }
+
+    /// Independent oracle for a closed value: `GetHandleInformation` refuses a
+    /// value that names no open handle in this process.
+    fn handle_value_is_closed(handle: HANDLE) -> bool {
+        let mut flags = 0_u32;
+        // SAFETY: the call only resolves the value through this process's handle
+        // table and writes one u32 to live local storage.
+        let resolved = unsafe { GetHandleInformation(handle, &raw mut flags) };
+        resolved == 0
+            && io::Error::last_os_error().raw_os_error() == Some(ERROR_INVALID_HANDLE.cast_signed())
+    }
+
+    #[test]
+    fn claimant_binding_accepts_the_exact_launched_process_before_and_after_resume() {
+        let mut launch = recorded_launch(Some(blocking_stdio()));
+        let process_id = launch.launched.child().id();
+        let claimant = claimant_by_pid(process_id);
+        assert_eq!(
+            launch.launched.creation_time,
+            claimant.creation_time(),
+            "the launch record equals the creation time read through a second handle"
+        );
+        launch
+            .launched
+            .bind_claimant(&claimant)
+            .expect("the exact suspended launch binds");
+
+        launch.launched.resume().expect("resume the launch once");
+        assert!(
+            !claimant
+                .has_exited()
+                .expect("query the resumed launch through the claimant handle"),
+            "the resumed interpreter waits on its stdin pipe"
+        );
+        launch
+            .launched
+            .bind_claimant(&claimant)
+            .expect("the retained launch handle still binds after resume");
+        launch
+            .launched
+            .bind_claimant(&claimant_by_pid(process_id))
+            .expect("a claimant handle opened after resume binds");
+
+        launch
+            .launched
+            .terminate(0)
+            .expect("terminate the resumed launch");
+        launch
+            .launched
+            .wait(10_000)
+            .expect("reap the resumed launch");
+    }
+
+    #[test]
+    fn claimant_binding_refuses_a_second_instance_of_the_launched_image() {
+        let launch = recorded_launch(None);
+        let mut copy = Command::new(system32().join("cmd.exe"))
+            .arg("/d")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start a same-user copy of the launched image");
+        let claimant = claimant_by_pid(copy.id());
+        let refusal = launch.launched.bind_claimant(&claimant);
+        copy.kill().expect("terminate the same-image copy");
+        let _ = copy.wait().expect("reap the same-image copy");
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn claimant_binding_refuses_a_forged_peer_carrying_the_launched_identity() {
+        // Seam-injected: a peer whose process ID and creation time equal the
+        // launch record but whose process object differs. Windows cannot give two
+        // live processes one PID, so another real process handle carries the
+        // launched identity numbers.
+        let launch = recorded_launch(None);
+        let other = claimant_by_pid(std::process::id());
+        let recorded = ProcessObservation::of_launch(&launch.launched);
+        let forged = ProcessObservation {
+            process_id: recorded.process_id,
+            creation_time: recorded.creation_time,
+            ..ProcessObservation::of_peer(&other)
+        };
+        let refusal = bind_observed_claimant(forged, recorded);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn claimant_binding_refuses_once_the_launch_handle_is_signaled() {
+        let mut launch = recorded_launch(None);
+        let claimant = claimant_by_pid(launch.launched.child().id());
+        launch
+            .launched
+            .bind_claimant(&claimant)
+            .expect("the live launch binds before termination");
+        signal_launch(&mut launch.launched);
+        let refusal = launch.launched.bind_claimant(&claimant);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::LaunchExited)),
+            "{refusal:?}"
+        );
+    }
+
+    /// Terminates a recorded launch and waits until its retained handle is
+    /// signaled with the exit code the termination set.
+    fn signal_launch(launched: &mut WindowsLaunchedProcess) {
+        launched.terminate(7).expect("terminate the launch");
+        assert_eq!(
+            launched
+                .wait(10_000)
+                .expect("observe the signaled launch handle"),
+            7
+        );
+    }
+
+    // Fact order (KEL-53 §4 "Candidate connect-back", *Acceptance*: "in order").
+    // Each cell fails more than one fact, so a reordered binding reports a
+    // different refusal.
+
+    #[test]
+    fn claimant_binding_compares_the_process_object_before_launch_liveness() {
+        // Every fact fails: another process object, a signaled launch handle and
+        // a different process ID. Only the comparison-first order reports
+        // NotLaunchedProcess.
+        let mut launch = recorded_launch(None);
+        signal_launch(&mut launch.launched);
+        let other = claimant_by_pid(std::process::id());
+        assert_ne!(other.process_id, launch.launched.child().id());
+        let refusal = launch.launched.bind_claimant(&other);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn claimant_binding_checks_launch_liveness_before_the_recorded_identity() {
+        // Seam-injected: the compared handles are one process object, opened
+        // before the launch exits, while the launch handle is signaled and the
+        // recorded creation time is wrong. Only liveness-before-identity reports
+        // LaunchExited.
+        let mut launch = recorded_launch(None);
+        let peer = claimant_by_pid(launch.launched.child().id());
+        signal_launch(&mut launch.launched);
+        let claimant = ProcessObservation::of_peer(&peer);
+        let recorded = ProcessObservation::of_launch(&launch.launched);
+        assert!(
+            same_kernel_object(claimant.handle, recorded.handle).expect("compare two live handles"),
+            "the claimant handle still names the exited launch object"
+        );
+        let wrong_time = ProcessObservation {
+            creation_time: claimant.creation_time + 1,
+            ..recorded
+        };
+        let refusal = bind_observed_claimant(claimant, wrong_time);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::LaunchExited)),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn claimant_binding_refuses_a_wrong_recorded_creation_time_or_process_id() {
+        // Seam-injected: the recorded values differ from the kernel's while the
+        // compared handles are one live process object.
+        let launch = recorded_launch(None);
+        let peer = claimant_by_pid(launch.launched.child().id());
+        let claimant = ProcessObservation::of_peer(&peer);
+        let recorded = ProcessObservation::of_launch(&launch.launched);
+        bind_observed_claimant(claimant, recorded).expect("the unaltered record binds");
+        let wrong_time = ProcessObservation {
+            creation_time: recorded.creation_time + 1,
+            ..recorded
+        };
+        let refusal = bind_observed_claimant(claimant, wrong_time);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::LaunchIdentityMismatch)),
+            "{refusal:?}"
+        );
+        let wrong_pid = ProcessObservation {
+            process_id: recorded.process_id ^ 4,
+            ..recorded
+        };
+        let refusal = bind_observed_claimant(claimant, wrong_pid);
+        assert!(
+            matches!(refusal, Err(WindowsClaimantRefusal::LaunchIdentityMismatch)),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn claimant_binding_refuses_an_invalid_claimant_handle_with_a_typed_error() {
+        // Seam-injected: safe callers cannot hold an invalid owned handle, so the
+        // observation carries a null handle with the launched identity.
+        let launch = recorded_launch(None);
+        let recorded = ProcessObservation::of_launch(&launch.launched);
+        let invalid = ProcessObservation {
+            handle: std::ptr::null_mut(),
+            ..recorded
+        };
+        match bind_observed_claimant(invalid, recorded) {
+            Err(WindowsClaimantRefusal::Unverifiable { phase, source }) => {
+                assert_eq!(phase, "claimant process-object comparison");
+                assert_eq!(
+                    source.raw_os_error(),
+                    Some(ERROR_INVALID_HANDLE.cast_signed())
+                );
+            }
+            other => panic!("an invalid claimant handle must refuse as unverifiable: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claimant_refusals_render_runtime_017_with_fix_guidance() {
+        let refusal = WindowsClaimantRefusal::NotLaunchedProcess;
+        assert_eq!(
+            refusal.to_string(),
+            "KELD-RUNTIME-017: connect-back claimant refused: the connected process is not \
+             the launched and retained process object. Disconnect this client and re-arm \
+             the endpoint without consuming its one-shot; only the exact launched process \
+             can claim, and the health deadline is not extended."
+        );
+        for refusal in [
+            WindowsClaimantRefusal::LaunchExited,
+            WindowsClaimantRefusal::LaunchIdentityMismatch,
+            WindowsClaimantRefusal::Unverifiable {
+                phase: "claimant process-object comparison",
+                source: io::Error::from_raw_os_error(ERROR_INVALID_HANDLE.cast_signed()),
+            },
+        ] {
+            let text = refusal.to_string();
+            assert!(text.starts_with("KELD-RUNTIME-017: "), "{text}");
+            assert!(text.contains("re-arm the endpoint"), "{text}");
+        }
+    }
+
+    #[test]
+    fn suspended_child_owns_the_sole_resume_thread_call() {
+        // KEL-53 §5 reuse decision: one suspended-child type owns the only
+        // primary-thread resume, so a later launch path cannot add a second one.
+        // It counts the identifier, not one call spelling: an alias or a
+        // qualified path must still name it, so the import and the one call
+        // are the only two occurrences.
+        let needle = concat!("Resume", "Thread");
+        let mut calls = Vec::new();
+        let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).expect("list a source directory") {
+                let path = entry.expect("read a source entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("read a source file");
+                    let count = source.matches(needle).count();
+                    if count != 0 {
+                        let name = path.file_name().expect("file name").to_string_lossy();
+                        calls.push((name.into_owned(), count));
+                    }
+                }
+            }
+        }
+        assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 2)]);
     }
 }

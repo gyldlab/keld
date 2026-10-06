@@ -1,5 +1,7 @@
-//! Signed five-store profile isolation acceptance; requires source-bound fixtures.
+//! Signed five-store profile isolation acceptance on installed packages; requires
+//! source-bound fixtures.
 
+use crate::support::installed::{INSTALLER_ENV, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::product::ProductFixture;
 use crate::support::profile_run::{SignedProfileStateCase, run_signed_profile_state_case};
 use crate::support::profile_server::ProfileStateServer;
@@ -9,14 +11,12 @@ use std::env;
 use std::net::TcpListener;
 
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires signed KEL-135 host fixtures and WebView2 state acceptance"]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1/B_P1/A_P2, KELD_KEL254_INSTALLER_FIXTURE, the matching KELD_KEL135_SIGNED_IDENTITY fixtures and WebView2 state acceptance"]
 fn kel135_signed_host_profile_state_isolation() {
-    let primary_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
-        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed host");
-    let sibling_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_B_P1")
-        .expect("KELD_KEL135_SIGNED_HOST_B_P1 must point to a signed host");
-    let alternate_publisher_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P2")
-        .expect("KELD_KEL135_SIGNED_HOST_A_P2 must point to a signed host");
+    let primary_carrier = fixture_env(SIGNED_HOST_A_P1);
+    let sibling_carrier = fixture_env("KELD_KEL254_SIGNED_HOST_B_P1");
+    let alternate_publisher_carrier = fixture_env("KELD_KEL254_SIGNED_HOST_A_P2");
+    let installer = fixture_env(INSTALLER_ENV);
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind state control");
     let state_server = ProfileStateServer::new();
@@ -91,6 +91,7 @@ fn kel135_signed_host_profile_state_isolation() {
         let case = SignedProfileStateCase {
             name,
             host,
+            installer: &installer,
             before,
             after,
         };
