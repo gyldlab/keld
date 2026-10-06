@@ -1939,9 +1939,11 @@ Current code verifies signed manifests/full artifacts and the Windows canonical
 archive, and extracts to observed owner-private incomplete stages. KEL-266 adds an
 actual SYSTEM-only protected machine-baseline installer/loader and SYSTEM staging
 cell. For `PerUserDirect`, KEL-270 T4b adds the common journaled library transaction
-(current/LKG publication, commit/rollback and crash recovery). Host candidate launch
-and health observation, installer/host integration and machine-mode activation remain
-absent. The `PerUserDirect` and
+(current/LKG publication, commit/rollback and crash recovery). Host consumption of the
+active selection has landed: without a dev lease, the Windows host boots only the
+authenticated installed package that KEL-53's executable-located selection admits
+(KEL-254 T3 Part B). Host candidate launch and health observation, installer
+integration and machine-mode activation remain absent. The `PerUserDirect` and
 `MachineUacDirect` baseline initializers have landed as library entrypoints; installer
 integration and mode-aware activation remain implementation work. Architecture 06 and
 KEL-53 own
