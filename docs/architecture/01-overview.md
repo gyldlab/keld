@@ -103,7 +103,7 @@ view and links each claim to tracked evidence.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `keld-core` | Host runtime, lifecycle, window registry, session orchestration, plugin host and privileged routing | wv, ipc, guard, runtime, native |
+| `keld-core` | Host runtime, lifecycle, window registry, session orchestration, plugin host and privileged routing | wv, ipc, guard, runtime, native; update (Windows installed boot only) |
 | `keld-wv` | Webview abstraction and per-platform engine policy, including optional pinned-engine tiers | guard |
 | `keld-ipc` | kipc framing, authentication, channel registry, backpressure, schema runtime and measured optional bulk lanes | guard |
 | `keld-native` | Guarded native services: filesystem, menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell and secure storage | ipc, guard |

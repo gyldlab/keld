@@ -2,6 +2,7 @@
 
 mod alias;
 mod capture;
+mod installed_host_operator;
 mod locate;
 mod locate_operator;
 mod machine_staging;
@@ -11,6 +12,7 @@ mod qualification;
 mod reader;
 mod role;
 mod selection;
+mod signed_host;
 mod substitutions;
 mod support;
 mod transaction;

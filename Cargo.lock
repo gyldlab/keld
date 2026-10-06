@@ -1553,6 +1553,7 @@ dependencies = [
  "keld-ipc",
  "keld-native",
  "keld-runtime",
+ "keld-update",
  "keld-wv",
  "nix",
  "serde",
