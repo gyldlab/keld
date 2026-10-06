@@ -6335,6 +6335,38 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
+    fn installed_boot_reads_the_verified_handle_never_the_locator_path() {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+
+        // The locator names this test executable, a valid PE image without a container
+        // (KELD-PACK-007 if anything reopened it). The handle is an anonymous file, with
+        // no path to reopen and its cursor at end of file, holding no PE image at all.
+        let locator = std::env::current_exe()
+            .expect("test executable path")
+            .canonicalize()
+            .expect("canonical locator");
+        let mut image = tempfile::tempfile().expect("anonymous image handle");
+        image
+            .write_all(b"MZ is not a host image")
+            .expect("write the malformed image");
+        image.seek(SeekFrom::End(0)).expect("cursor to end of file");
+        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
+            .expect("synthetic verified identity");
+        let before = startup_resource_snapshot();
+        let error = validate_installed_from_verified(&locator, &image, identity)
+            .expect_err("a malformed verified image is refused");
+        // KELD-PACK-006 is the handle's malformed image; a locator reopen would report the
+        // test executable's missing container instead.
+        assert_eq!(error.code(), "KELD-UPDATE-019");
+        assert!(error.to_string().contains("KELD-PACK-006"), "{error}");
+        assert_eq!(
+            error.resources, before,
+            "installed boot advanced app resources"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn installed_record_must_name_the_verified_publisher_and_app() {
         let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.app")
             .expect("synthetic verified identity");
