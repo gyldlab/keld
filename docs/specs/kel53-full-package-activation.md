@@ -162,15 +162,15 @@ the new `crates/keld-updater-helper` crate and the owner of each call, §6 T4d o
 slices, and §8 records the gates.
 
 KEL-270 T4d wire-layout amendment (draft; independent wire review and owner approval
-pending, so no code may depend on it yet): it fixes the bytes that the T4d wire review
-owed before code. "Candidate connect-back" gains the locator function with its single
-owner, `keld-ipc` (*Locator*), and the `keld-attempt` record table with its transcript
-rules (*Messages*). Every value that earlier approved text left open is listed once,
-with its rationale, under *Proposals* there. §6 moves the locator into S4 and the
-bootstrap records into S11, and §8 records the new `keld-ipc` edge to the
-workspace-pinned `blake3` and the health-receipt digest that the candidate computes.
-The journal-v2 golden vectors are not part of it; the S3 pull request fixes them under
-that slice's wire review.
+pending, so no code may depend on it yet): it proposes the byte layouts that approved
+text left to the T4d wire review before code. "Candidate connect-back" gains the locator
+function with its single owner, `keld-ipc` (*Locator*), and the `keld-attempt` record
+table with its transcript rules (*Messages*). Every value that earlier approved text
+left open is listed once, with its rationale, under *Proposals* there. §6 assigns the
+locator to S4 and moves the bootstrap records into S11, and §8 records the new
+`keld-ipc` edge to the workspace-pinned `blake3` and the health-receipt digest that the
+candidate computes. The journal-v2 golden vectors are not part of it; the S3 pull
+request fixes them under that slice's wire review.
 
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
