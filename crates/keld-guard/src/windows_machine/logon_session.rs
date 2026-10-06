@@ -242,8 +242,14 @@ fn query_logon_session(session: WindowsLogonSessionId) -> Result<LsaReply, &'sta
         // just returned; the reader checks its self-reported size before LogonTime.
         unsafe { copy_session(data) }
     });
-    // SAFETY: `data` is the LSA-allocated buffer returned above, released exactly once
-    // and never read again.
+    // SAFETY: `data` started null, so this non-null value was written by the call above;
+    // a null output returned earlier and is never freed. The LSA documentation names only
+    // one thing the call writes there, the buffer it allocates for LsaFreeReturnBuffer,
+    // and does not say what a failed call leaves, so for a non-success status this
+    // ASSUMES that a non-null output is that allocation. The fail-safe parts do not rest
+    // on the assumption: a non-success buffer is never read, and a release that does not
+    // return STATUS_SUCCESS halts the caller as malformed. The pointer is released
+    // exactly once and never read again.
     let released = unsafe { LsaFreeReturnBuffer(data.cast()) } == STATUS_SUCCESS;
     Ok(LsaReply {
         status,
