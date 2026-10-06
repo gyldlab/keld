@@ -1,0 +1,1377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keld IPC bridge logic prototype (F04)</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1c1d21; --muted: #62656e; --line: #d9dbe0;
+    --accent: #3b55c9; --accent-soft: #e9edfb; --code: #f1f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15161a; --panel: #1c1e24; --ink: #e7e8ec; --muted: #a0a4b0; --line: #353843;
+      --accent: #93a4ff; --accent-soft: #262c4a; --code: #23252d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1320px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 21px; margin: 0 0 6px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+  h3 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  p { margin: 6px 0; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 3px; }
+  .muted { color: var(--muted); }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 12px 14px; }
+  .intro ul { margin: 6px 0 0; padding-left: 18px; columns: 2; column-gap: 28px; }
+  .intro li { break-inside: avoid; margin-bottom: 3px; }
+  @media (max-width: 800px) { .intro ul { columns: 1; } }
+  .cols { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 960px) { .cols { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 12px; }
+  .grid .card { margin: 0; }
+  button { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 8px; margin: 2px 2px 2px 0; cursor: pointer; text-align: left; }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  button .tag { color: var(--muted); font-size: 11px; }
+  select, input[type=text] { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; max-width: 100%; }
+  label { font-size: 12px; color: var(--muted); display: inline-flex; flex-direction: column; gap: 2px; margin: 0 8px 6px 0; }
+  label.inline { flex-direction: row; align-items: center; gap: 5px; color: var(--ink); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 1px 10px; font-size: 12.5px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .04em; padding: 0 5px;
+    border: 1px solid var(--muted); border-radius: 3px; color: var(--muted); white-space: nowrap; vertical-align: 1px; }
+  .badge.FACT { border-style: solid; color: var(--ink); border-color: var(--ink); }
+  .badge.INFERENCE { border-style: dashed; color: var(--ink); border-color: var(--ink); }
+  .badge.PROPOSED { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .changes { list-style: none; margin: 6px 0 0; padding: 0; }
+  .changes li { padding: 3px 0 3px 74px; position: relative; border-top: 1px dotted var(--line); }
+  .changes li:first-child { border-top: 0; }
+  .changes li .k { position: absolute; left: 0; top: 4px; width: 66px; text-align: center; }
+  .k-ok { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .k-err { border: 2px solid var(--ink); color: var(--ink); }
+  .k-drop, .k-warn { border-style: dashed; color: var(--ink); border-color: var(--ink); }
+  .errbox { border: 2px solid var(--ink); border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+  .errbox .code { font-weight: 700; }
+  .call { font-weight: 600; }
+  .inv { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  .inv li { border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; font-size: 12px; }
+  .inv li.bad { border: 2px solid var(--ink); font-weight: 600; }
+  .log { margin: 0; padding: 0; list-style: none; max-height: 250px; overflow: auto; font-size: 12px; }
+  .log li { padding: 1px 0; border-top: 1px dotted var(--line); overflow-wrap: anywhere; }
+  .log li.new { background: var(--accent-soft); }
+  .meter { height: 6px; background: var(--code); border-radius: 3px; overflow: hidden; margin-top: 2px; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .tabs button[aria-selected=true] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  ol.steps { margin: 8px 0 0; padding-left: 26px; max-height: 330px; overflow: auto; }
+  ol.steps li { padding: 3px 4px; border-radius: 4px; }
+  ol.steps li.done { color: var(--muted); }
+  ol.steps li.cur { background: var(--accent-soft); }
+  ol.steps .res { font-size: 11.5px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 5px 8px; border-top: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 10px; padding: 6px 10px 8px; }
+  legend { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 0 4px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Keld host-mediated IPC: does it reproduce Electron <code>ipcMain</code> / <code>ipcRenderer</code> semantics?</h1>
+<div class="intro">
+  <p><strong>Bounded question (unit F04, map gyldlab/keld#391).</strong> A Keld renderer never talks to the Bun main role directly: every
+  message is <em>renderer &rarr; Rust host &rarr; Bun role</em> over one kipc link. This page is a logic model of that path. It asks whether
+  the decided design reproduces the Electron v44.4.5 behaviours an unmodified app depends on:</p>
+  <ul>
+    <li><code>ipcRenderer.invoke</code> / <code>ipcMain.handle</code> round trip</li>
+    <li>handler throw &rarr; message-only error in the renderer; typed <code>KELD-*</code> code stays on the wire</li>
+    <li><code>send</code> / <code>on</code> ordering per channel</li>
+    <li><code>sendSync</code> as a blocking CALL with deadline + rate limit + dev warning, <em>scaffolded</em> (typed throw + fix-it) until the transport experiment passes</li>
+    <li><code>webContents.send</code> targets the current main frame of one webview principal</li>
+    <li><code>event.reply</code> bound to the sender document generation; stale replies dropped silently</li>
+    <li><code>event.senderFrame</code> may be <code>null</code></li>
+    <li>bounded credit window: a slow consumer produces a typed error, never an unbounded queue</li>
+    <li>ungranted <code>el:&lt;channel&gt;</code> refused with <code>KELD-GUARD003</code>; <code>el:*</code> refused by <code>keld migrate</code></li>
+    <li>the renderer never obtains a Bun endpoint</li>
+    <li>a parked Bun main thread that owns the socket stalls the link after 8 KiB; a worker-owned single link does not</li>
+  </ul>
+  <p class="muted">Planning artefact only. Nothing here is Keld product code and no implementation is authorised by it. The reducer in the first
+  <code>&lt;script&gt;</code> block has no DOM access and is the part meant to be lifted (as a conformance-fixture oracle or a design reference).
+  Every semantic is labelled <span class="badge FACT">FACT</span> <span class="badge INFERENCE">INFERENCE</span> or
+  <span class="badge PROPOSED">PROPOSED</span> in the last section; anything still open on the map is PROPOSED.</p>
+</div>
+
+<h2>Guided walkthroughs</h2>
+<div class="card">
+  <div class="tabs" id="tabs" role="tablist"></div>
+  <p id="sc-intro" class="muted"></p>
+  <div>
+    <button class="primary" id="sc-reset">Reset to this walkthrough's initial state</button>
+    <button id="sc-next">Next step</button>
+    <button id="sc-all">Run all remaining steps</button>
+    <span id="sc-status" class="muted"></span>
+  </div>
+  <ol class="steps" id="sc-steps"></ol>
+</div>
+
+<h2>Free play and current state</h2>
+<div class="cols">
+  <div>
+    <div class="card">
+      <h3>Parameters used by the buttons below</h3>
+      <label>Webview principal
+        <select id="p-wv"><option value="1">#1 (window "main")</option><option value="2">#2 (window "popup", channels [])</option></select></label>
+      <label>Channel
+        <input type="text" id="p-ch" list="chs" value="config-provider" size="16">
+        <datalist id="chs"><option>config-provider</option><option>rendererReq</option><option>mainResp</option><option>export-finalize</option><option>fileChanged</option></datalist></label>
+      <label>Payload
+        <select id="p-bytes"><option value="256">256 B</option><option value="2048">2 KiB</option><option value="2097152">2 MiB (over bound)</option></select></label>
+      <label>Captured IpcMainEvent
+        <select id="p-ev"><option value="0">(none yet)</option></select></label>
+      <div><button id="fp-reset" class="primary">Reset (empty app)</button><button id="fp-booted">Reset (booted app: listeners + handler registered)</button></div>
+    </div>
+    <div id="controls"></div>
+  </div>
+  <div>
+    <div class="card" id="changed" aria-live="polite"></div>
+    <div class="card"><h3>Invariants (recomputed after every action)</h3><ul class="inv" id="inv"></ul></div>
+    <div class="grid" id="state"></div>
+    <div class="grid" style="margin-top:12px">
+      <div class="card"><h3>Wire log (hop by hop; newest first)</h3><ul class="log mono" id="wire"></ul></div>
+      <div class="card"><h3>Host and main-process diagnostics (newest first)</h3><ul class="log mono" id="diag"></ul></div>
+    </div>
+  </div>
+</div>
+
+<h2>Assumptions and decisions encoded</h2>
+<p class="muted">Sources were re-opened on 2026-10-06 unless the row says otherwise: pinned Electron v44.4.5 raw docs and <code>lib/</code> sources,
+Keld <code>origin/main</code> at <code>b4b907c3</code>, the published plan (F04-EPIC, F04-T1..T5, PANEL-D2..D18 resolution comments) and the F04 research unit with both refuter verdicts.
+Error identifiers ending in <code>*</code> are symbolic placeholders: no number is allocated (channel-id and capability-name allocation is X05-T2), so each such identifier is PROPOSED even where the behaviour is decided.</p>
+<div class="tablewrap"><table id="sem"><thead><tr><th style="width:30%">Semantic encoded in the reducer</th><th>Source</th><th style="width:96px">Label</th></tr></thead><tbody></tbody></table></div>
+<h3 style="margin-top:14px">Deliberately not modelled</h3>
+<p class="muted" id="notmodelled"></p>
+
+</main>
+
+<!-- ======================================================================================================
+     LOGIC MODULE. Pure reducer: no DOM, no document, no window, no timers, no I/O, no randomness.
+     KeldIpcBridge.init(overrides) -> state (plain JSON)
+     KeldIpcBridge.step(state, action) -> { state, changes[], error|null, value }   (input state is not mutated)
+     KeldIpcBridge.invariants(state) -> [{ id, text, ok, detail }]
+     KeldIpcBridge.describe(action) -> string in Electron API / Keld terms
+     KeldIpcBridge.SCENARIOS -> walkthrough scripts with expected outcomes (usable as fixtures)
+     ====================================================================================================== -->
+<script>
+var KeldIpcBridge = (function () {
+  'use strict';
+
+  var DEFAULTS = {
+    transport: 'main',            // 'main' = Bun main thread owns the socket (live today); 'worker' = worker-owned single link (candidate)
+    syncExperiment: 'not-run',    // F04-A5 WKWebView synchronous-XHR experiment: 'not-run' | 'passed'
+    creditWindow: 4,              // renderer->main outstanding calls per webview (number PROPOSED)
+    m2rWindow: 4,                 // host-held main->renderer events while the renderer is busy (PROPOSED)
+    hostEventWindow: 16,          // host-originated EVENT frames outstanding to the Bun role (PROPOSED, arm C of PANEL-P1)
+    payloadBoundBytes: 1048576,   // floor v2 payload bound; the real number is "by measurement" (PROPOSED)
+    sockBufBytes: 8192,           // macOS net.local.stream.sendspace, park-probe (PANEL-D3)
+    ringBytes: 65536,             // worker SAB ring capacity (PROPOSED)
+    writerDeadlineMs: 5000,       // APP_LINK_IO_DEADLINE (arch 02 s7)
+    blockingDeadlineMs: 30000,    // deadline of a blocking main-side CALL (PROPOSED)
+    sendSyncDeadlineMs: 2000,     // PROPOSED
+    sendSyncRatePerSec: 2         // PROPOSED
+  };
+
+  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+
+  function mkWebview(id, win, url) {
+    return { id: id, windowName: win, generation: 1, url: url, page: 1, destroyed: false, bunEndpoint: null,
+      listeners: {}, outstanding: [], settled: [], received: [], r2mSeq: {}, m2rSeq: {},
+      busy: false, held: [], blocked: null, syncTimes: [] };
+  }
+
+  function init(overrides) {
+    overrides = overrides || {};
+    var s = {
+      clock: 0,
+      config: clone(DEFAULTS),
+      mutations: { noGrantCheck: false, replyByWebviewId: false, noCreditWindow: false, lifoDispatch: false },
+      app: { sourceChannels: ['rendererReq', 'config-provider'] },
+      manifest: { windows: { main: { channels: ['el:rendererReq', 'el:config-provider'] }, popup: { channels: [] } } },
+      webviews: { '1': mkWebview(1, 'main', 'app://bundle/index.html'), '2': mkWebview(2, 'popup', 'app://bundle/popup.html') },
+      main: { listeners: {}, handlers: {}, inbox: [], events: [], parked: null, hostEventsSeen: [], lastHostSeq: 0 },
+      link: { sockFrames: [], sockBytes: 0, ring: [], ringBytes: 0, stalled: null, dead: null, hostOutstanding: 0 },
+      wire: [], diagnostics: [],
+      audit: { ungrantedAdmitted: 0, staleDelivered: 0, orderViolations: 0 },
+      lastDispatchSeq: {},
+      next: { corr: 1, event: 1, wire: 1, hostSeq: 1, diag: 1 }
+    };
+    var k;
+    if (overrides.config) for (k in overrides.config) s.config[k] = overrides.config[k];
+    if (overrides.mutations) for (k in overrides.mutations) s.mutations[k] = overrides.mutations[k];
+    if (overrides.preset === 'booted') {
+      s.main.listeners['rendererReq'] = 1;
+      s.main.handlers['config-provider'] = 'resolve';
+      s.webviews['1'].listeners['mainResp'] = 1;
+    }
+    return s;
+  }
+
+  // ---------- typed errors -------------------------------------------------------------------------------
+  // allocated:true  -> the code exists in Keld today (text quoted from the owning crate)
+  // allocated:false -> symbolic placeholder, shown with a trailing *, number not allocated
+  // allocated:null  -> not a Keld code: Electron's own exception text, or an action that cannot physically occur
+  var E = {
+    guard003: function (grant, win) { return { code: 'KELD-GUARD003', allocated: true, label: 'FACT',
+      message: 'channel `' + grant + '` is not granted to this principal.',
+      fix: 'Add `' + grant + '` to this principal\'s channels list in keld.permissions.jsonc (windows.' + win + '.channels), or re-run `keld migrate` so static analysis enumerates it. Enumerated literals only; `el:*` is never accepted.',
+      source: 'crates/keld-guard DenyReason::ChannelForbidden text; PANEL-D13; F04-T3 acceptance' }; },
+    credit: function (wid, n) { return { code: 'KELD-IPC-CREDIT-EXHAUSTED*', allocated: false, label: 'PROPOSED',
+      message: 'webview #' + wid + ' already has ' + n + ' renderer-originated calls outstanding; the host credit window is ' + n + '. The call was not queued.',
+      fix: 'Await earlier ipcRenderer.invoke results (or let ipcMain drain earlier sends) before issuing more. The host never queues beyond the window; the link stays healthy.',
+      source: 'F04-T2 (typed KELD-WV/KELD-IPC error on overflow; decided). Identifier and N are placeholders. The live floor already reports its one-pending overflow as KELD-WV-011 "another renderer invoke is already pending" (macos_bridge.rs, origin/main b4b907c3), so reusing KELD-WV-011 is the default candidate before any new identifier is allocated.' }; },
+    m2rCredit: function (wid, n) { return { code: 'KELD-IPC-CREDIT-EXHAUSTED*', allocated: false, label: 'PROPOSED',
+      message: 'webview #' + wid + ' is not draining: ' + n + ' main-to-renderer events are already held by the host. The event was not queued.',
+      fix: 'Coalesce or throttle webContents.send for this webview, or wait for the renderer to drain. The host never grows this queue.',
+      source: 'F04-T2 principle applied to the host-to-renderer direction; direction, window and identifier are PROPOSED' }; },
+    hostCredit: function (n) { return { code: 'KELD-IPC-CREDIT-EXHAUSTED*', allocated: false, label: 'PROPOSED',
+      message: n + ' host-originated EVENT frames are already outstanding to the Bun role; the host does not write more.',
+      fix: 'The Bun role must run event-loop turns (returning credit) before the host emits further events; the host coalesces state events instead of queueing.',
+      source: 'PANEL-P1 arm C (host credit frames via the existing Grant frame kind), open' }; },
+    payload: function (bytes, bound) { return { code: 'KELD-WV-PAYLOAD-BOUND*', allocated: false, label: 'PROPOSED',
+      message: 'payload of ' + bytes + ' bytes exceeds the renderer bridge bound of ' + bound + ' bytes.',
+      fix: 'Send large data through the bulk/stream lane (not specified yet) instead of an inline IPC payload.',
+      source: 'Live floor rejects > 4096 bytes as KELD-WV-011 "payload exceeds the 4096-byte renderer bound" (macos_bridge.rs, FACT), so KELD-WV-011 is the default code to reuse; the v2 bound is "by measurement" (F04-T2), so the number here is a placeholder' }; },
+    sendSyncScaffold: function (ch) { return { code: 'KELD-COMPAT-SENDSYNC-SCAFFOLDED*', allocated: false, label: 'FACT',
+      message: 'ipcRenderer.sendSync(\'' + ch + '\') is scaffolded: no blocking page-to-host primitive is proven on this engine yet. It throws instead of silently becoming asynchronous.',
+      fix: 'Use `await ipcRenderer.invoke(\'' + ch + '\', ...)` with `ipcMain.handle(\'' + ch + '\', ...)`. Tracked by F04-A5 (WKWebView synchronous-XHR experiment).',
+      source: 'PANEL-D8 resolution; F04-EPIC design facts. Behaviour decided; identifier is a placeholder.' }; },
+    sendSyncRate: function (ch, n) { return { code: 'KELD-COMPAT-SENDSYNC-RATE*', allocated: false, label: 'PROPOSED',
+      message: 'ipcRenderer.sendSync(\'' + ch + '\') exceeded ' + n + ' blocking calls per second for this document.',
+      fix: 'Move the call to ipcRenderer.invoke, or cache the value in the preload.',
+      source: 'arch 02 s5 requires a rate limit; the number and reject-versus-delay are open (F04-A5)' }; },
+    blockingScaffold: function () { return { code: 'KELD-COMPAT-BLOCKING-SCAFFOLDED*', allocated: false, label: 'FACT',
+      message: 'a blocking main-process call would park the Bun main thread, which owns the only kipc socket; the host writer stalls after 8192 bytes. The call throws instead of parking.',
+      fix: 'Use the asynchronous variant (for example dialog.showMessageBox). Tracked by PANEL-P1 (worker-owned single-link transport).',
+      source: 'PANEL-D3 resolution ("nothing that parks the Bun main thread may land"). Identifier is a placeholder.' }; },
+    noEndpoint: function (wid) { return { code: 'KELD-WV-NO-ROLE-ENDPOINT*', allocated: false, label: 'PROPOSED',
+      message: 'webview #' + wid + ' asked for a direct endpoint to the Bun role. No such endpoint exists: browser and Bun endpoints never connect directly.',
+      fix: 'Use ipcRenderer.send / invoke; the host routes, authorises and correlates every frame.',
+      source: 'arch 02 s5; F04-T2 (one HELLO, one principal per link, host-minted correlation). Identifier is a placeholder.' }; },
+    secondLink: function () { return { code: 'KELD-IPC-SECOND-LINK*', allocated: false, label: 'FACT',
+      message: 'a second authenticated kipc link for the same role generation would mint a second principal. Refused.',
+      fix: 'Keep one link per role generation. Synchronous emulation must come from the worker-owned single-link transport (PANEL-P1), not a second socket.',
+      source: 'PANEL-D4 resolution (refused, not open). Identifier is a placeholder.' }; },
+    migrateWildcard: function () { return { code: 'KELD-COMPAT-MIGRATE-WILDCARD*', allocated: false, label: 'FACT',
+      message: '`keld migrate` refuses to emit `el:*`: a wildcard channel grant would make default-deny nominal for the migrated app.',
+      fix: 'Let migrate enumerate literal channel strings from the app source; add any dynamically named channel by hand as an exact `el:<channel>` entry.',
+      source: 'PANEL-D13 resolution; F04-EPIC never-list. Identifier is a placeholder.' }; },
+    wildcardGrant: function (grant) { return { code: 'KELD-GUARD-CHANNEL-WILDCARD*', allocated: false, label: 'PROPOSED',
+      message: '`' + grant + '` is a wildcard channel grant; only enumerated `el:<channel>` literals are accepted.',
+      fix: 'List each channel explicitly under windows.<w>.channels.',
+      source: 'F04-EPIC never-list says wildcard grants are never offered; where a hand-written one is rejected (manifest load) is not decided (F04-A1 open)' }; },
+    linkStalled: function (l) { return { code: 'KELD-IPC-LINK-STALLED*', allocated: false, label: 'PROPOSED',
+      message: 'the host writer is blocked behind a frame that stalled at ' + l.stalled.accepted + ' accepted bytes (socket buffer full, reader parked). No further frame can be written.',
+      fix: 'Nothing the renderer can do. The Bun role must resume reading, or the writer deadline expires with KELD-IPC-006.',
+      source: 'PANEL-D3 probe (the stall itself is FACT) plus arch 02 s7 writer deadline. Refusing later frames with a typed error (rather than queueing them behind the stalled write) is this model\'s choice: how the host reports frames offered during a stall is not specified anywhere, so both the behaviour and the identifier are PROPOSED' }; },
+    linkDead: function () { return { code: 'KELD-IPC-006', allocated: true, label: 'INFERENCE',
+      message: 'the app link to the Bun role expired its write deadline and is closed.',
+      fix: 'The host must restart the role per policy; in-flight calls reject with a role-qualified KELD-* error.',
+      source: 'arch 02 s7 (APP_LINK_IO_DEADLINE expiry is KELD-IPC-006); PANEL-D3 marks its application to this stall as inference' }; },
+    destroyed: function () { return { code: 'Electron TypeError', allocated: null, label: 'INFERENCE',
+      message: 'Object has been destroyed', fix: 'Check webContents.isDestroyed() before sending.',
+      source: 'PANEL-D6: text comes from the shared destroyed-wrapper check, not from a fixture run' }; },
+    dupHandler: function (ch) { return { code: 'Electron Error', allocated: null, label: 'FACT',
+      message: 'Attempted to register a second handler for \'' + ch + '\'',
+      fix: 'Call ipcMain.removeHandler(\'' + ch + '\') first. Thrown synchronously by ipcMain.handle, exactly as Electron does.',
+      source: 'electron v44.4.5 lib/browser/ipc-main-impl.ts' }; },
+    cannot: function (why) { return { code: 'CANNOT-OCCUR', allocated: null, label: 'FACT', message: why,
+      fix: 'Not an error the system reports: this action has no way to happen in the current state.', source: 'model precondition' }; }
+  };
+
+  // ---------- small helpers ------------------------------------------------------------------------------
+  function say(ctx, kind, text) { ctx.out.changes.push({ kind: kind, text: text }); }
+  function fail(ctx, err) { ctx.out.error = err; say(ctx, 'err', err.code + ': ' + err.message); return null; }
+  function wire(ctx, hop, text) { var s = ctx.s; s.wire.push({ n: s.next.wire++, hop: hop, text: text }); if (s.wire.length > 40) s.wire.shift(); }
+  function diag(ctx, who, text) { var s = ctx.s; s.diagnostics.push({ n: s.next.diag++, who: who, text: text }); if (s.diagnostics.length > 40) s.diagnostics.shift(); }
+  function keep(list, n) { while (list.length > n) list.shift(); }
+  function findOutstanding(w, corr) { for (var i = 0; i < w.outstanding.length; i++) if (w.outstanding[i].corr === corr) return i; return -1; }
+
+  function rendererGuard(ctx, a, api) {
+    var w = ctx.s.webviews[String(a.w)];
+    if (!w) return fail(ctx, E.cannot('there is no webview #' + a.w + '.'));
+    if (w.destroyed) return fail(ctx, E.cannot('webview #' + w.id + ' is destroyed: no renderer exists to run ' + api + '.'));
+    if (w.blocked) return fail(ctx, E.cannot('the renderer of webview #' + w.id + ' is blocked inside ipcRenderer.sendSync(\'' + w.blocked.channel + '\'); no page or preload JavaScript runs until the reply or the deadline.'));
+    return w;
+  }
+  function mainGuard(ctx, api) {
+    if (ctx.s.main.parked) return fail(ctx, E.cannot('the Bun main thread is parked in Atomics.wait; it cannot run ' + api + ' until it wakes.'));
+    return true;
+  }
+  // Bun -> host direction needs the single kipc link too: once it is closed nothing the main role writes can leave.
+  function mainLink(ctx, api) {
+    if (!mainGuard(ctx, api)) return null;
+    if (ctx.s.link.dead) { var e = E.linkDead(); e.surfacedTo = api + ' in the Bun main role: the role has no link until the host restarts it (use Reset)'; return fail(ctx, e); }
+    return true;
+  }
+
+  // Host -> Bun write over the single kipc link. Returns false when refused (error already set).
+  function linkWrite(ctx, f, what) {
+    var s = ctx.s, l = s.link, c = s.config, m = s.main;
+    if (l.dead) { fail(ctx, E.linkDead()); return false; }
+    if (l.stalled) { fail(ctx, E.linkStalled(l)); return false; }
+    wire(ctx, 'host -> bun', what + ' (' + f.bytes + ' B)');
+    if (!m.parked) { m.inbox.push(f); return true; }
+    if (c.transport === 'worker' && l.sockFrames.length === 0 && l.ringBytes + f.bytes <= c.ringBytes) {
+      l.ring.push(f); l.ringBytes += f.bytes;
+      say(ctx, 'note', 'Bun main is parked, but the worker owns the socket and drained the frame into the shared ring (' + l.ringBytes + ' / ' + c.ringBytes + ' B), in order, for replay after wake.');
+      return true;
+    }
+    if (l.sockBytes + f.bytes <= c.sockBufBytes) {
+      l.sockFrames.push(f); l.sockBytes += f.bytes;
+      say(ctx, 'warn', 'Nobody is reading the link: the frame sits in the kernel socket buffer (' + l.sockBytes + ' / ' + c.sockBufBytes + ' B).');
+      return true;
+    }
+    var accepted = c.sockBufBytes - l.sockBytes;
+    l.sockBytes = c.sockBufBytes;
+    l.stalled = { frame: f, since: s.clock, accepted: accepted, what: what };
+    say(ctx, 'err', 'HOST WRITER STALLED: the socket buffer is full at exactly ' + c.sockBufBytes + ' B (' + accepted + ' B of this frame accepted). Every later host-to-Bun frame is blocked behind it; the ' + c.writerDeadlineMs + ' ms write deadline is now running.');
+    diag(ctx, 'host', 'app-link writer stalled at ' + c.sockBufBytes + ' B at t=' + s.clock + ' ms');
+    return true;
+  }
+
+  // Renderer -> host admission: payload bound, guard grant, credit window, host-minted correlation, forward.
+  function admit(ctx, w, kind, channel, bytes, surfaced) {
+    var s = ctx.s, c = s.config;
+    wire(ctx, 'wv#' + w.id + ' -> host', kind + ' el.r2m {channel:"' + channel + '"} from document generation ' + w.generation + ' (' + bytes + ' B)');
+    if (bytes > c.payloadBoundBytes) { var pe = E.payload(bytes, c.payloadBoundBytes); pe.surfacedTo = surfaced; return fail(ctx, pe); }
+    var grant = 'el:' + channel;
+    if (s.manifest.windows[w.windowName].channels.indexOf(grant) === -1) {
+      if (!s.mutations.noGrantCheck) {
+        diag(ctx, 'host', 'KELD-GUARD003 deny: webview #' + w.id + ' gen ' + w.generation + ' channel ' + grant + ' (nothing forwarded to the Bun role)');
+        var ge = E.guard003(grant, w.windowName); ge.surfacedTo = surfaced; return fail(ctx, ge);
+      }
+      s.audit.ungrantedAdmitted++;
+      say(ctx, 'warn', 'NEGATIVE CONTROL ACTIVE (grant check removed): ungranted ' + grant + ' was forwarded to the Bun role.');
+    }
+    if (w.outstanding.length >= c.creditWindow) {
+      if (!s.mutations.noCreditWindow) {
+        var ce = E.credit(w.id, c.creditWindow);
+        if (kind !== 'event') { ce.surfacedTo = surfaced; return fail(ctx, ce); }
+        ce.surfacedTo = 'OPEN: where a refused fire-and-forget send surfaces is not decided (synchronous throw from the renderer compat script, or host diagnostic only)';
+        diag(ctx, 'host', 'credit window full: ipcRenderer.send dropped, webview #' + w.id + ' channel ' + grant);
+        fail(ctx, ce);
+        say(ctx, 'warn', 'ELECTRON DIVERGENCE (PROPOSED, open): this ipcRenderer.send was not delivered. Electron never drops a send; ipcRenderer.send returns undefined and the message is queued. Under the decided "typed error, never an unbounded queue" rule a burst larger than the window loses messages unless the page is told synchronously, so the window size and the surfacing must be settled by measurement against draw.io\'s send bursts before F04-T2 lands.');
+        return null;
+      }
+      say(ctx, 'warn', 'NEGATIVE CONTROL ACTIVE (credit window removed): the call was queued beyond the window.');
+    }
+    var seq = (w.r2mSeq[channel] || 0) + 1;
+    var f = { type: 'r2m', kind: kind, channel: channel, corr: s.next.corr, webview: w.id, generation: w.generation, url: w.url, bytes: bytes, seq: seq };
+    var ok = linkWrite(ctx, f, kind + ' el.r2m {channel:"' + channel + '", corr:#' + f.corr + ', principal: webview #' + w.id + ' gen ' + w.generation + '}');
+    if (!ok) { ctx.out.error.surfacedTo = surfaced; return null; }
+    s.next.corr++; w.r2mSeq[channel] = seq;
+    w.outstanding.push({ corr: f.corr, kind: kind, channel: channel, generation: w.generation, stale: false });
+    return f;
+  }
+
+  function deliverNow(ctx, w, item) {
+    if (!w.listeners[item.channel]) {
+      say(ctx, 'drop', 'Webview #' + w.id + ': no ipcRenderer listener for \'' + item.channel + '\' in the current document, so the message is dropped (EventEmitter emit with zero listeners; there is no renderer-side queue).');
+      return;
+    }
+    wire(ctx, 'host -> wv#' + w.id, 'event el.m2r {channel:"' + item.channel + '", seq:' + item.seq + '} into document generation ' + w.generation);
+    w.received.push(item); keep(w.received, 12);
+    say(ctx, 'ok', 'Webview #' + w.id + ' (document generation ' + w.generation + '): ipcRenderer.on(\'' + item.channel + '\') listener fired, message seq ' + item.seq + ' via ' + item.via + '.');
+  }
+  function deliver(ctx, w, channel, via) {
+    var s = ctx.s, c = s.config;
+    // A renderer blocked inside ipcRenderer.sendSync runs no JavaScript ("block the whole renderer process",
+    // ipc-renderer.md v44.4.5), so no ipcRenderer.on listener may fire until it returns: same as a long task.
+    var notDraining = w.busy || !!w.blocked;
+    if (notDraining && w.held.length >= c.m2rWindow && !s.mutations.noCreditWindow) return fail(ctx, E.m2rCredit(w.id, c.m2rWindow));
+    var seq = (w.m2rSeq[channel] || 0) + 1; w.m2rSeq[channel] = seq;
+    var item = { channel: channel, seq: seq, generation: w.generation, via: via };
+    if (notDraining) { w.held.push(item); say(ctx, 'note', 'Renderer of webview #' + w.id + (w.blocked ? ' is blocked inside ipcRenderer.sendSync and runs no listener' : ' is busy') + ': the host holds the event (' + w.held.length + ' / ' + c.m2rWindow + ' credits used), in order.'); return true; }
+    deliverNow(ctx, w, item); return true;
+  }
+  // Deliver host-held main-to-renderer events once the renderer can run JavaScript again.
+  function drainHeld(ctx, w) {
+    if (w.destroyed || w.busy || w.blocked || !w.held.length) return;
+    var held = w.held; w.held = [];
+    say(ctx, 'note', 'Renderer of webview #' + w.id + ' can run JavaScript again: ' + held.length + ' held event(s) are delivered in order.');
+    held.forEach(function (item) { deliverNow(ctx, w, item); });
+  }
+
+  function replyInvoke(ctx, f, res) {
+    var s = ctx.s, w = s.webviews[String(f.webview)];
+    if (res.ok) wire(ctx, 'bun -> host', 'REPLY corr:#' + f.corr + ' {result}');
+    else {
+      wire(ctx, 'bun -> host', 'ERR corr:#' + f.corr + ' {code:"' + res.code + '", message:"' + res.text + '"}');
+      diag(ctx, 'main', 'Error occurred in handler for \'' + f.channel + '\': ' + res.text + ' [' + res.code + ']');
+    }
+    var i = findOutstanding(w, f.corr), o = i >= 0 ? w.outstanding[i] : null;
+    if (i >= 0) w.outstanding.splice(i, 1);
+    if (w.destroyed) { say(ctx, 'drop', 'Reply for corr #' + f.corr + ' dropped: webview #' + w.id + ' is destroyed.'); return; }
+    var stale = !o || o.stale || f.generation !== w.generation;
+    if (stale && !s.mutations.replyByWebviewId) {
+      say(ctx, 'drop', 'Reply for corr #' + f.corr + ' rejected by the host before dispatch into the page: it belongs to document generation ' + f.generation + ', the live generation is ' + w.generation + '.');
+      diag(ctx, 'host', 'stale-generation reply dropped: webview #' + w.id + ' corr #' + f.corr);
+      return;
+    }
+    if (stale) { s.audit.staleDelivered++; say(ctx, 'warn', 'NEGATIVE CONTROL ACTIVE (reply keyed by webview id): a reply for generation ' + f.generation + ' was delivered into generation ' + w.generation + '.'); }
+    wire(ctx, 'host -> wv#' + w.id, res.ok ? 'reply corr:#' + f.corr + ' {result}' : 'reply corr:#' + f.corr + ' {error:"' + res.text + '"} (message only; no code, no stack)');
+    var text = res.ok ? 'resolved with ' + res.text : 'rejected with Error("Error invoking remote method \'' + f.channel + '\': ' + res.text + '")';
+    w.settled.push({ corr: f.corr, channel: f.channel, ok: res.ok, text: text }); keep(w.settled, 8);
+    say(ctx, res.ok ? 'ok' : 'note', 'Webview #' + w.id + ': ipcRenderer.invoke(\'' + f.channel + '\') Promise ' + text + (res.ok ? '.' : '. The renderer error has a message only; the typed code ' + res.code + ' stayed on the wire and in main-process diagnostics.'));
+  }
+
+  function endPark(ctx, how) {
+    var s = ctx.s, m = s.main, l = s.link, p = m.parked;
+    m.parked = null;
+    var drained = l.ring.concat(l.sockFrames);
+    if (l.stalled && !l.dead) {
+      drained.push(l.stalled.frame); l.stalled = null;
+      say(ctx, 'note', 'The reader is running again: the stalled frame completed before the write deadline and the host writer resumed.');
+    }
+    l.ring = []; l.ringBytes = 0; l.sockFrames = []; l.sockBytes = 0;
+    var replayed = 0;
+    drained.forEach(function (f) {
+      if (f.type === 'blockingReply') { if (how === 'timeout') say(ctx, 'drop', 'The REPLY that sat unread in the socket during the park is read only now, after the caller already timed out, and is discarded.'); }
+      else { m.inbox.push(f); replayed++; }
+    });
+    if (how === 'reply') say(ctx, 'ok', 'Worker read the REPLY and called Atomics.notify: the Bun main thread woke with its value after ' + (s.clock - p.since) + ' ms.');
+    else say(ctx, 'err', 'The park ended by timeout after ' + (s.clock - p.since) + ' ms: the blocking call fails with KELD-IPC-006 (deadline). ' +
+      (s.config.transport === 'worker' ? 'No REPLY arrived within the deadline (the worker stayed able to deliver one).' : 'No reply could reach a parked reader.') +
+      ' The timeout closes and dismisses nothing: the host never auto-closes on timeout. Whether a user-paced modal may carry a deadline at all is PROPOSED (Electron\'s showMessageBoxSync waits for the user indefinitely).');
+    if (replayed) say(ctx, 'note', replayed + ' frame(s) buffered during the park were moved to the Bun main inbound queue in arrival order; they dispatch on the next event-loop turns.');
+  }
+
+  function killLink(ctx) {
+    var s = ctx.s, l = s.link;
+    l.dead = { at: s.clock, code: 'KELD-IPC-006' }; l.stalled = null;
+    say(ctx, 'err', 'KELD-IPC-006: the host writer waited ' + s.config.writerDeadlineMs + ' ms on a full socket and gave up. The app link is closed.');
+    diag(ctx, 'host', 'KELD-IPC-006 app-link write deadline expired at t=' + s.clock + ' ms; role link closed');
+    Object.keys(s.webviews).forEach(function (k) {
+      var w = s.webviews[k], n = 0;
+      w.outstanding.forEach(function (o) {
+        if (o.kind === 'invoke' && !o.stale && !w.destroyed) { n++; w.settled.push({ corr: o.corr, channel: o.channel, ok: false, text: 'rejected: the main role link was lost (role-qualified KELD-* error)' }); }
+      });
+      w.outstanding = [];
+      if (w.blocked) {
+        w.settled.push({ corr: w.blocked.corr, channel: w.blocked.channel, ok: false, text: 'sendSync threw: the main role link was lost (role-qualified KELD-* error)' });
+        say(ctx, 'err', 'Webview #' + w.id + ': the blocked ipcRenderer.sendSync(\'' + w.blocked.channel + '\') throws because the role link is gone; the renderer is unblocked.');
+        w.blocked = null;
+      }
+      keep(w.settled, 8);
+      if (n) say(ctx, 'err', 'Webview #' + w.id + ': ' + n + ' pending ipcRenderer.invoke Promise(s) rejected because the role link is gone.');
+      drainHeld(ctx, w);
+    });
+    l.hostOutstanding = 0;
+  }
+
+  // ---------- transitions --------------------------------------------------------------------------------
+  var H = {};
+
+  H['ipcRenderer.on'] = function (ctx, a) {
+    var w = rendererGuard(ctx, a, 'ipcRenderer.on'); if (!w) return;
+    w.listeners[a.c] = (w.listeners[a.c] || 0) + 1;
+    say(ctx, 'ok', 'Webview #' + w.id + ' preload registered ipcRenderer.on(\'' + a.c + '\') in document generation ' + w.generation + '. It lives only as long as this document.');
+  };
+
+  H['ipcRenderer.send'] = function (ctx, a) {
+    var w = rendererGuard(ctx, a, 'ipcRenderer.send'); if (!w) return;
+    var f = admit(ctx, w, 'event', a.c, a.bytes || 256, 'host diagnostic and dev console only: send is fire-and-forget and the check is host-side, so nothing is thrown into the page (INFERENCE)');
+    if (!f) return;
+    say(ctx, 'ok', 'ipcRenderer.send(\'' + a.c + '\') returned. The host checked the ' + 'el:' + a.c + ' grant, stamped principal webview #' + w.id + ' generation ' + w.generation + ' and forwarded it as seq ' + f.seq + ' on that channel. Credit ' + w.outstanding.length + ' / ' + ctx.s.config.creditWindow + '.');
+  };
+
+  H['ipcRenderer.invoke'] = function (ctx, a) {
+    var w = rendererGuard(ctx, a, 'ipcRenderer.invoke'); if (!w) return;
+    var f = admit(ctx, w, 'invoke', a.c, a.bytes || 256, 'the invoke Promise rejects in the page');
+    if (!f) return;
+    say(ctx, 'ok', 'ipcRenderer.invoke(\'' + a.c + '\') returned a pending Promise. The host minted correlation #' + f.corr + ' (the page never chooses it) and forwarded a CALL. Credit ' + w.outstanding.length + ' / ' + ctx.s.config.creditWindow + '.');
+  };
+
+  H['ipcRenderer.sendSync'] = function (ctx, a) {
+    var s = ctx.s, c = s.config;
+    var w = rendererGuard(ctx, a, 'ipcRenderer.sendSync'); if (!w) return;
+    if (c.syncExperiment !== 'passed') { var se = E.sendSyncScaffold(a.c); se.surfacedTo = 'synchronous throw in the preload/page'; return fail(ctx, se); }
+    diag(ctx, 'dev', 'warning: ipcRenderer.sendSync(\'' + a.c + '\') blocks the whole renderer; prefer ipcRenderer.invoke (webview #' + w.id + ')');
+    say(ctx, 'warn', 'Dev warning emitted for ipcRenderer.sendSync(\'' + a.c + '\').');
+    w.syncTimes = w.syncTimes.filter(function (t) { return s.clock - t < 1000; });
+    if (w.syncTimes.length >= c.sendSyncRatePerSec) { var re = E.sendSyncRate(a.c, c.sendSyncRatePerSec); re.surfacedTo = 'synchronous throw in the preload/page'; return fail(ctx, re); }
+    var f = admit(ctx, w, 'sync', a.c, a.bytes || 256, 'synchronous throw in the preload/page');
+    if (!f) return;
+    w.syncTimes.push(s.clock);
+    w.blocked = { corr: f.corr, channel: a.c, deadlineAt: s.clock + c.sendSyncDeadlineMs };
+    say(ctx, 'ok', 'ipcRenderer.sendSync(\'' + a.c + '\') is a blocking CALL (corr #' + f.corr + '): the renderer of webview #' + w.id + ' is blocked until event.returnValue is set or the ' + c.sendSyncDeadlineMs + ' ms deadline fires.');
+  };
+
+  H['renderer.openBunEndpoint'] = function (ctx, a) {
+    var w = rendererGuard(ctx, a, 'a connection attempt'); if (!w) return;
+    wire(ctx, 'wv#' + w.id + ' -> host', 'request: direct endpoint / socket / port to the Bun role');
+    diag(ctx, 'host', 'refused: webview #' + w.id + ' requested a direct Bun role endpoint');
+    var e = E.noEndpoint(w.id); e.surfacedTo = 'rejected in the page'; fail(ctx, e);
+  };
+
+  H['renderer.setBusy'] = function (ctx, a) {
+    var s = ctx.s, w = s.webviews[String(a.w)];
+    if (!w || w.destroyed) return fail(ctx, E.cannot('webview #' + a.w + ' has no live renderer.'));
+    w.busy = !!a.busy;
+    if (w.busy) return say(ctx, 'note', 'Renderer of webview #' + w.id + ' is now busy (long task): it does not drain main-to-renderer events.');
+    if (w.blocked) return say(ctx, 'note', 'The long task of webview #' + w.id + ' ended, but the renderer is still blocked inside ipcRenderer.sendSync(\'' + w.blocked.channel + '\'): ' + w.held.length + ' held event(s) stay held until it returns.');
+    if (!w.held.length) return say(ctx, 'note', 'Renderer of webview #' + w.id + ' is idle again: no event was held for it.');
+    drainHeld(ctx, w);
+  };
+
+  H['ipcMain.on'] = function (ctx, a) {
+    if (!mainGuard(ctx, 'ipcMain.on')) return;
+    var m = ctx.s.main; m.listeners[a.c] = (m.listeners[a.c] || 0) + 1;
+    say(ctx, 'ok', 'Bun main registered ipcMain.on(\'' + a.c + '\') (listener registry; separate from the invoke-handler registry).');
+  };
+
+  H['ipcMain.handle'] = function (ctx, a) {
+    if (!mainGuard(ctx, 'ipcMain.handle')) return;
+    var m = ctx.s.main;
+    if (m.handlers[a.c]) { var e = E.dupHandler(a.c); e.surfacedTo = 'synchronous throw in the Bun main module'; return fail(ctx, e); }
+    m.handlers[a.c] = a.behavior === 'throw' ? 'throw' : 'resolve';
+    say(ctx, 'ok', 'Bun main registered ipcMain.handle(\'' + a.c + '\'); this handler will ' + (m.handlers[a.c] === 'throw' ? 'throw new Error("boom")' : 'return a value') + '.');
+  };
+
+  H['ipcMain.removeHandler'] = function (ctx, a) {
+    if (!mainGuard(ctx, 'ipcMain.removeHandler')) return;
+    var had = !!ctx.s.main.handlers[a.c]; delete ctx.s.main.handlers[a.c];
+    say(ctx, had ? 'ok' : 'note', had ? 'ipcMain.removeHandler(\'' + a.c + '\') removed the handler.' : 'ipcMain.removeHandler(\'' + a.c + '\'): no handler was registered; Electron treats this as a no-op and so does the facade.');
+  };
+
+  H['main.openSecondLink'] = function (ctx) {
+    if (!mainGuard(ctx, 'a connect call')) return;
+    wire(ctx, 'bun -> host', 'HELLO on a second socket for the same role generation');
+    diag(ctx, 'host', 'refused: second link for an already-bound role generation');
+    var e = E.secondLink(); e.surfacedTo = 'the connecting code in the Bun role'; fail(ctx, e);
+  };
+
+  H['main.runTurn'] = function (ctx) {
+    var s = ctx.s, m = s.main;
+    if (!mainLink(ctx, 'an event-loop dispatch')) return;
+    if (!m.inbox.length) return say(ctx, 'note', 'Bun main ran one event-loop turn: its inbound queue is empty, nothing was dispatched.');
+    var f = s.mutations.lifoDispatch ? m.inbox.pop() : m.inbox.shift();
+    if (s.mutations.lifoDispatch) say(ctx, 'warn', 'NEGATIVE CONTROL ACTIVE (ordering removed): the newest frame was dispatched first.');
+    if (f.type === 'host') {
+      if (f.seq < m.lastHostSeq) s.audit.orderViolations++;
+      m.lastHostSeq = Math.max(m.lastHostSeq, f.seq);
+      m.hostEventsSeen.push(f.seq); keep(m.hostEventsSeen, 12);
+      s.link.hostOutstanding = Math.max(0, s.link.hostOutstanding - 1);
+      wire(ctx, 'bun -> host', 'GRANT +1 (host event seq ' + f.seq + ' consumed)');
+      return say(ctx, 'ok', 'Bun main dispatched host EVENT seq ' + f.seq + ' to the app and returned one credit to the host.');
+    }
+    var w = s.webviews[String(f.webview)];
+    var key = f.webview + '|' + f.generation + '|' + f.channel;
+    if ((s.lastDispatchSeq[key] || 0) > f.seq) s.audit.orderViolations++;
+    s.lastDispatchSeq[key] = Math.max(s.lastDispatchSeq[key] || 0, f.seq);
+    if (f.kind === 'invoke') {
+      var h = m.handlers[f.channel];
+      if (!h) return replyInvoke(ctx, f, { ok: false, code: 'KELD-COMPAT-NO-HANDLER*', text: 'Error: No handler registered for \'' + f.channel + '\'' });
+      if (h === 'throw') return replyInvoke(ctx, f, { ok: false, code: 'KELD-COMPAT-HANDLER-THREW*', text: 'Error: boom' });
+      return replyInvoke(ctx, f, { ok: true, text: '"value for ' + f.channel + ' #' + f.seq + '"' });
+    }
+    var n = m.listeners[f.channel] || 0, i;
+    // A sync CALL whose reply slot is already closed (the document navigated, was destroyed, or the deadline
+    // fired) can never be answered: its credit returns when Bun consumes the frame, or the window would leak.
+    var slotClosed = f.kind === 'sync' && !(w.blocked && w.blocked.corr === f.corr);
+    if (slotClosed) {
+      i = findOutstanding(w, f.corr);
+      if (i >= 0) { w.outstanding.splice(i, 1); wire(ctx, 'bun -> host', 'GRANT +1 (corr #' + f.corr + ' consumed; its reply slot is already closed)'); }
+    } else if (f.kind === 'sync') {
+      i = findOutstanding(w, f.corr); if (i >= 0) w.outstanding[i].consumed = true;   // only the open reply slot still holds this credit
+    }
+    if (n === 0) {
+      if (f.kind === 'sync') {
+        diag(ctx, 'main', 'WebContents #' + f.webview + ' called ipcRenderer.sendSync() with \'' + f.channel + '\' channel without listeners.');
+        return say(ctx, 'warn', 'No ipcMain.on(\'' + f.channel + '\') listener: Electron\'s "without listeners" warning is logged. ' +
+          (slotClosed ? 'The reply slot of this call is already closed (its document is gone or the deadline fired), so its credit was returned at consumption.' : 'Nobody will set event.returnValue, so the blocked renderer waits for the deadline.'));
+      }
+      i = findOutstanding(w, f.corr); if (i >= 0) w.outstanding.splice(i, 1);
+      wire(ctx, 'bun -> host', 'GRANT +1 (corr #' + f.corr + ' consumed)');
+      return say(ctx, 'drop', 'ipcRenderer.send(\'' + f.channel + '\') seq ' + f.seq + ' reached ipcMain but no ipcMain.on listener exists: dropped, as EventEmitter does. Credit returned.');
+    }
+    var ev = { id: s.next.event++, webview: f.webview, generation: f.generation, channel: f.channel, seq: f.seq, corr: f.corr, url: f.url, sync: f.kind === 'sync', replied: false };
+    m.events.push(ev); keep(m.events, 10);
+    if (f.kind === 'event') { i = findOutstanding(w, f.corr); if (i >= 0) w.outstanding.splice(i, 1); wire(ctx, 'bun -> host', 'GRANT +1 (corr #' + f.corr + ' consumed)'); }
+    var staleNote = (w.destroyed || w.generation !== f.generation) ? ' The sending document is already gone, so event.senderFrame is null.' : '';
+    say(ctx, 'ok', 'ipcMain.on(\'' + f.channel + '\') fired with seq ' + f.seq + ' as IpcMainEvent #' + ev.id + ': event.sender = WebContents #' + f.webview + ', bound to document generation ' + f.generation + (ev.sync ? '; this is a sendSync event, the renderer is waiting for event.returnValue.' : '.') + staleNote);
+  };
+
+  function getEvent(ctx, id) {
+    var evs = ctx.s.main.events;
+    for (var i = 0; i < evs.length; i++) if (evs[i].id === Number(id)) return evs[i];
+    return fail(ctx, E.cannot('there is no captured IpcMainEvent #' + id + ' in the Bun main role.'));
+  }
+
+  H['event.reply'] = function (ctx, a) {
+    var s = ctx.s;
+    if (!mainLink(ctx, 'event.reply')) return;
+    var ev = getEvent(ctx, a.e); if (!ev) return;
+    var w = s.webviews[String(ev.webview)];
+    wire(ctx, 'bun -> host', 'event el.m2r {channel:"' + a.c + '", reply-bound to webview #' + ev.webview + ' gen ' + ev.generation + '}');
+    if (w.destroyed) {
+      diag(ctx, 'host', 'reply dropped: sender frame destroyed (webview #' + w.id + ')');
+      return say(ctx, 'drop', 'event.reply(\'' + a.c + '\') returned normally, but the host dropped it silently: the sender frame is destroyed (Electron: sendToFrame returns false, nothing is thrown).');
+    }
+    if (w.generation !== ev.generation) {
+      if (!s.mutations.replyByWebviewId) {
+        diag(ctx, 'host', 'stale-generation reply dropped: webview #' + w.id + ' event gen ' + ev.generation + ', live gen ' + w.generation);
+        return say(ctx, 'drop', 'event.reply(\'' + a.c + '\') returned normally, but the host dropped it silently: the event is bound to document generation ' + ev.generation + ' and webview #' + w.id + ' is now at generation ' + w.generation + '. The new document never sees it.');
+      }
+      s.audit.staleDelivered++;
+      say(ctx, 'warn', 'NEGATIVE CONTROL ACTIVE (reply keyed by webview id): a reply bound to generation ' + ev.generation + ' is being delivered into generation ' + w.generation + '.');
+    }
+    deliver(ctx, w, a.c, 'event.reply of IpcMainEvent #' + ev.id);
+  };
+
+  H['event.senderFrame'] = function (ctx, a) {
+    if (!mainGuard(ctx, 'a read of event.senderFrame')) return;
+    var ev = getEvent(ctx, a.e); if (!ev) return;
+    var w = ctx.s.webviews[String(ev.webview)];
+    if (w.destroyed || w.generation !== ev.generation) {
+      ctx.out.value = null;
+      return say(ctx, 'note', 'event.senderFrame of IpcMainEvent #' + ev.id + ' is null: the frame has navigated or been destroyed. (draw.io\'s validateSender returns false on null.)');
+    }
+    // WebFrameMain.url is "the current URL of the frame" (web-frame-main.md v44.4.5): a live read of the host
+    // navigation registry for the still-current document, not a snapshot taken when the message was sent.
+    ctx.out.value = { url: w.url };
+    say(ctx, 'ok', 'event.senderFrame.url of IpcMainEvent #' + ev.id + ' = "' + w.url + '". It is the current URL of the sending frame, read from the host navigation registry (so it follows same-document hash changes) and never taken from the renderer payload.');
+  };
+
+  H['event.setReturnValue'] = function (ctx, a) {
+    if (!mainGuard(ctx, 'an assignment to event.returnValue')) return;
+    var ev = getEvent(ctx, a.e); if (!ev) return;
+    var w = ctx.s.webviews[String(ev.webview)];
+    if (!ev.sync) return say(ctx, 'note', 'IpcMainEvent #' + ev.id + ' came from ipcRenderer.send, not sendSync: assigning event.returnValue has no IPC effect.');
+    if (!mainLink(ctx, 'the event.returnValue reply')) return;
+    if (ev.replied) return say(ctx, 'note', 'event.returnValue of IpcMainEvent #' + ev.id + ' was already set; the reply slot is used once.');
+    ev.replied = true;
+    wire(ctx, 'bun -> host', 'REPLY corr:#' + ev.corr + ' {returnValue}');
+    var i = findOutstanding(w, ev.corr);
+    if (i < 0 || w.outstanding[i].stale || !w.blocked || w.blocked.corr !== ev.corr) {
+      if (i >= 0) w.outstanding.splice(i, 1);
+      return say(ctx, 'drop', 'event.returnValue was set, but the reply slot for corr #' + ev.corr + ' is already closed (deadline fired or the document is gone): dropped by the host.');
+    }
+    w.outstanding.splice(i, 1); w.blocked = null;
+    w.settled.push({ corr: ev.corr, channel: ev.channel, ok: true, text: 'sendSync returned "value for ' + ev.channel + '"' }); keep(w.settled, 8);
+    say(ctx, 'ok', 'Setting event.returnValue sent the reply at the moment of assignment: ipcRenderer.sendSync(\'' + ev.channel + '\') returned in webview #' + w.id + ' and the renderer is unblocked.');
+    drainHeld(ctx, w);
+  };
+
+  H['webContents.send'] = function (ctx, a) {
+    if (!mainGuard(ctx, 'webContents.send')) return;
+    var w = ctx.s.webviews[String(a.w)];
+    if (!w) return fail(ctx, E.cannot('there is no WebContents #' + a.w + '.'));
+    if (w.destroyed) { var e = E.destroyed(); e.surfacedTo = 'synchronous throw in the Bun main module'; return fail(ctx, e); }
+    if (!mainLink(ctx, 'webContents.send')) return;
+    wire(ctx, 'bun -> host', 'event el.m2r {channel:"' + a.c + '", target: webview principal #' + w.id + ' (current main frame)}');
+    say(ctx, 'note', 'webContents.send(\'' + a.c + '\') is host-routed to exactly one webview principal, #' + w.id + ', and lands in whatever document is its main frame now (generation ' + w.generation + ').');
+    deliver(ctx, w, a.c, 'webContents.send');
+  };
+
+  H['main.blockingCall'] = function (ctx) {
+    var s = ctx.s;
+    if (!mainGuard(ctx, 'a blocking call')) return;
+    if (s.config.transport !== 'worker') { var e = E.blockingScaffold(); e.surfacedTo = 'synchronous throw in the Bun main module'; return fail(ctx, e); }
+    if (s.link.dead) return fail(ctx, E.linkDead());
+    wire(ctx, 'bun -> host', 'CALL host.blocking (sent by the worker that owns the socket)');
+    s.main.parked = { reason: 'blocking call', since: s.clock, deadlineAt: s.clock + s.config.blockingDeadlineMs };
+    say(ctx, 'ok', 'Bun main issued a blocking CALL and parked in Atomics.wait (deadline ' + s.config.blockingDeadlineMs + ' ms). The worker keeps reading the single link.');
+  };
+
+  H['probe.parkMain'] = function (ctx, a) {
+    var s = ctx.s;
+    if (!mainGuard(ctx, 'another park')) return;
+    var ms = a.timeoutMs || 30000;
+    wire(ctx, 'bun -> host', 'CALL host.blocking (then the main thread parks)');
+    s.main.parked = { reason: 'park probe', since: s.clock, deadlineAt: s.clock + ms };
+    say(ctx, s.config.transport === 'worker' ? 'note' : 'warn', 'PROBE: the Bun main thread is parked in Atomics.wait for up to ' + ms + ' ms. ' +
+      (s.config.transport === 'worker' ? 'The worker owns the socket and keeps draining it.' : 'It also owns the socket, so nothing drains the link until it wakes. (The product path refuses to get here: see main-side blocking call.)'));
+  };
+
+  H['host.replyBlockingCall'] = function (ctx) {
+    var s = ctx.s, l = s.link;
+    if (!s.main.parked) return fail(ctx, E.cannot('no blocking CALL is outstanding: the Bun main thread is not parked.'));
+    if (l.dead) return fail(ctx, E.linkDead());
+    if (l.stalled) return fail(ctx, E.linkStalled(l));
+    var f = { type: 'blockingReply', bytes: 64 };
+    wire(ctx, 'host -> bun', 'REPLY host.blocking (64 B)');
+    if (s.config.transport === 'worker' && l.sockFrames.length === 0) return endPark(ctx, 'reply');
+    if (l.sockBytes + f.bytes <= s.config.sockBufBytes) {
+      l.sockFrames.push(f); l.sockBytes += f.bytes;
+      return say(ctx, 'warn', 'The host wrote the REPLY (' + l.sockBytes + ' / ' + s.config.sockBufBytes + ' B in the socket buffer), but the only reader is the parked thread: a reply cannot be delivered to a parked reader. The park can only end by timeout.');
+    }
+    l.stalled = { frame: f, since: s.clock, accepted: s.config.sockBufBytes - l.sockBytes, what: 'REPLY' }; l.sockBytes = s.config.sockBufBytes;
+    say(ctx, 'err', 'HOST WRITER STALLED while writing the REPLY: socket buffer full at ' + s.config.sockBufBytes + ' B.');
+  };
+
+  H['host.emitEvent'] = function (ctx, a) {
+    var s = ctx.s, l = s.link, bytes = a.bytes || 2048;
+    if (l.hostOutstanding >= s.config.hostEventWindow && !s.mutations.noCreditWindow) { var e = E.hostCredit(s.config.hostEventWindow); e.surfacedTo = 'host diagnostics (the host coalesces instead of queueing)'; return fail(ctx, e); }
+    var f = { type: 'host', seq: s.next.hostSeq, bytes: bytes };
+    if (!linkWrite(ctx, f, 'EVENT host seq ' + f.seq)) return;
+    s.next.hostSeq++; l.hostOutstanding++;
+    if (!ctx.out.changes.length) say(ctx, 'ok', 'Host wrote EVENT seq ' + f.seq + ' (' + bytes + ' B) to the Bun role; it is in the main inbound queue. Host credit ' + l.hostOutstanding + ' / ' + s.config.hostEventWindow + '.');
+  };
+
+  H['clock.advance'] = function (ctx, a) {
+    var s = ctx.s, c = s.config, target = s.clock + (a.ms || 1000), fired = 0;
+    for (;;) {
+      var cands = [];
+      if (s.link.stalled && !s.link.dead) cands.push({ t: s.link.stalled.since + c.writerDeadlineMs, k: 'writer' });
+      if (s.main.parked) cands.push({ t: s.main.parked.deadlineAt, k: 'park' });
+      Object.keys(s.webviews).forEach(function (k) { var w = s.webviews[k]; if (w.blocked) cands.push({ t: w.blocked.deadlineAt, k: 'sync', w: k }); });
+      cands = cands.filter(function (x) { return x.t <= target; }).sort(function (x, y) { return x.t - y.t; });
+      if (!cands.length) break;
+      var d = cands[0]; s.clock = Math.max(s.clock, d.t); fired++;
+      if (d.k === 'writer') killLink(ctx);
+      else if (d.k === 'park') endPark(ctx, 'timeout');
+      else {
+        var w = s.webviews[d.w], b = w.blocked, i = findOutstanding(w, b.corr);
+        if (i >= 0) w.outstanding.splice(i, 1);
+        w.blocked = null;
+        w.settled.push({ corr: b.corr, channel: b.channel, ok: false, text: 'sendSync threw KELD-COMPAT-SENDSYNC-DEADLINE*' }); keep(w.settled, 8);
+        diag(ctx, 'host', 'sendSync deadline expired: webview #' + w.id + ' channel ' + b.channel + ' corr #' + b.corr);
+        say(ctx, 'err', 'KELD-COMPAT-SENDSYNC-DEADLINE*: ipcRenderer.sendSync(\'' + b.channel + '\') in webview #' + w.id + ' got no event.returnValue within ' + c.sendSyncDeadlineMs + ' ms. It throws a typed deadline error and the renderer is unblocked. Fix: set event.returnValue in an ipcMain.on listener, or move to invoke.');
+        drainHeld(ctx, w);
+      }
+    }
+    s.clock = target;
+    say(ctx, 'note', 'Logical clock advanced to t=' + s.clock + ' ms' + (fired ? '.' : '; no deadline fired.'));
+  };
+
+  H['webview.navigate'] = function (ctx, a) {
+    var s = ctx.s, w = s.webviews[String(a.w)];
+    if (!w || w.destroyed) return fail(ctx, E.cannot('webview #' + a.w + ' does not exist or is destroyed; it cannot navigate.'));
+    var old = w.generation, pend = 0;
+    w.outstanding.forEach(function (o) { if (o.kind === 'invoke' && !o.stale) pend++; o.stale = true; });
+    w.outstanding = w.outstanding.filter(function (o) { return !o.consumed; });   // a sync CALL Bun already consumed: closing its slot frees the credit
+    w.generation++; w.page++; w.url = 'app://bundle/page-' + w.page + '.html';
+    w.listeners = {}; w.syncTimes = []; w.busy = false;   // a long task belongs to the old document
+    var held = w.held.length; w.held = [];
+    say(ctx, 'ok', 'Webview #' + w.id + ' navigated to a new document (' + w.url + '): the host rotated its principal generation ' + old + ' -> ' + w.generation + '. All ipcRenderer listeners of the old document are gone.');
+    if (pend) { diag(ctx, 'host', 'KELD-WV-011: renderer document navigated before reply (' + pend + ' pending, webview #' + w.id + ')'); say(ctx, 'note', pend + ' pending ipcRenderer.invoke Promise(s) of the old document were rejected with KELD-WV-011 (renderer document navigated before reply). Their replies, when they arrive, will be dropped before dispatch.'); }
+    if (w.blocked) { w.blocked = null; say(ctx, 'note', 'The blocked sendSync belonged to the old document; its reply slot is closed.'); }
+    if (held) say(ctx, 'drop', held + ' host-held main-to-renderer event(s) addressed to the old document were dropped.');
+  };
+
+  H['webview.hashChange'] = function (ctx, a) {
+    var w = ctx.s.webviews[String(a.w)];
+    if (!w || w.destroyed) return fail(ctx, E.cannot('webview #' + a.w + ' does not exist or is destroyed.'));
+    w.url = w.url.split('#')[0] + '#section-' + (ctx.s.clock % 97 + ctx.s.next.wire);
+    say(ctx, 'ok', 'Webview #' + w.id + ' changed its URL hash (same-document navigation): URL is now ' + w.url + ' and the document generation stays ' + w.generation + '. Listeners and event.reply bindings survive.');
+  };
+
+  H['webview.destroy'] = function (ctx, a) {
+    var w = ctx.s.webviews[String(a.w)];
+    if (!w || w.destroyed) return fail(ctx, E.cannot('webview #' + a.w + ' does not exist or is already destroyed.'));
+    w.destroyed = true; w.listeners = {}; w.blocked = null; w.held = [];
+    w.outstanding.forEach(function (o) { o.stale = true; });
+    w.outstanding = w.outstanding.filter(function (o) { return !o.consumed; });
+    say(ctx, 'ok', 'Webview #' + w.id + ' was destroyed: the host revoked its window generation. The facade WebContents #' + w.id + ' is a tombstone.');
+  };
+
+  H['manifest.grant'] = function (ctx, a) {
+    var s = ctx.s, win = s.manifest.windows[a.windowName];
+    if (!win) return fail(ctx, E.cannot('there is no window "' + a.windowName + '" in the manifest.'));
+    var grant = 'el:' + a.c;
+    if (String(a.c).indexOf('*') !== -1) { var e = E.wildcardGrant(grant); e.surfacedTo = 'manifest validation'; return fail(ctx, e); }
+    if (win.channels.indexOf(grant) !== -1) return say(ctx, 'note', grant + ' is already listed in windows.' + a.windowName + '.channels.');
+    win.channels.push(grant);
+    say(ctx, 'ok', 'keld.permissions.jsonc: added the enumerated grant ' + grant + ' to windows.' + a.windowName + '.channels. (Model convenience: in the product this is a manifest edit and relaunch.)');
+  };
+
+  H['migrate.run'] = function (ctx, a) {
+    var s = ctx.s;
+    if (a.wildcard) { var e = E.migrateWildcard(); e.surfacedTo = 'keld migrate report (non-zero exit)'; return fail(ctx, e); }
+    var grants = s.app.sourceChannels.map(function (c) { return 'el:' + c; });
+    s.manifest.windows.main.channels = grants;
+    say(ctx, 'ok', 'keld migrate enumerated the literal channel strings found in the app source and wrote windows.main.channels = [' + grants.join(', ') + ']. Other windows keep channels: []. No wildcard is emitted.');
+  };
+
+  H['config.set'] = function (ctx, a) {
+    var s = ctx.s;
+    if (a.key === 'transport') {
+      var idle = !s.main.parked && !s.link.dead && !s.link.stalled && !s.link.sockFrames.length && !s.link.ring.length;
+      if (!idle) return fail(ctx, E.cannot('socket ownership is fixed for the life of the link; it can only differ on a fresh role launch (use Reset).'));
+      s.config.transport = a.value === 'worker' ? 'worker' : 'main';
+      return say(ctx, 'note', s.config.transport === 'worker'
+        ? 'Transport set to worker-owned single link: one socket, one HELLO, one principal; the reader lives in a Worker for the whole session. This is the candidate under PANEL-P1, not a landed design.'
+        : 'Transport set to main-thread-owned socket (what @keld/kipc does today).');
+    }
+    if (a.key === 'syncExperiment') {
+      s.config.syncExperiment = a.value === 'passed' ? 'passed' : 'not-run';
+      return say(ctx, 'note', s.config.syncExperiment === 'passed'
+        ? 'HYPOTHETICAL: the WKWebView synchronous-XHR experiment (F04-A5) is assumed to have passed. sendSync now takes the blocking path; every number on that path is PROPOSED.'
+        : 'The sendSync transport experiment (F04-A5) has not passed: sendSync is scaffolded.');
+    }
+    fail(ctx, E.cannot('unknown configuration key "' + a.key + '".'));
+  };
+
+  H['mutation.set'] = function (ctx, a) {
+    var s = ctx.s;
+    if (!(a.key in s.mutations)) return fail(ctx, E.cannot('unknown negative control "' + a.key + '".'));
+    s.mutations[a.key] = !!a.on;
+    say(ctx, 'warn', 'Negative control "' + a.key + '" is now ' + (a.on ? 'ON: the corresponding rule is deleted from the model; its invariant should start failing when exercised.' : 'OFF.'));
+  };
+
+  function step(prev, action) {
+    var ctx = { s: clone(prev), out: { changes: [], error: null, value: undefined } };
+    var fn = H[action.type];
+    if (!fn) fail(ctx, E.cannot('unknown action type "' + action.type + '".')); else fn(ctx, action);
+    return { state: ctx.s, changes: ctx.out.changes, error: ctx.out.error, value: ctx.out.value };
+  }
+
+  function invariants(s) {
+    var c = s.config, over = [], direct = [], leaked = [], inFlight = {};
+    s.main.inbox.concat(s.link.ring, s.link.sockFrames, s.link.stalled ? [s.link.stalled.frame] : []).forEach(function (f) { if (f.type === 'r2m') inFlight[f.corr] = true; });
+    Object.keys(s.webviews).forEach(function (k) {
+      var w = s.webviews[k];
+      w.outstanding.forEach(function (o) {
+        if (!inFlight[o.corr] && !(w.blocked && w.blocked.corr === o.corr)) leaked.push('webview #' + w.id + ' corr #' + o.corr + ' (' + o.kind + ')');
+      });
+      if (w.outstanding.length > c.creditWindow) over.push('webview #' + w.id + ' has ' + w.outstanding.length + ' outstanding (window ' + c.creditWindow + ')');
+      if (w.held.length > c.m2rWindow) over.push('webview #' + w.id + ' has ' + w.held.length + ' held events (window ' + c.m2rWindow + ')');
+      if (w.bunEndpoint !== null) direct.push('webview #' + w.id);
+    });
+    if (s.link.hostOutstanding > c.hostEventWindow) over.push('host events outstanding ' + s.link.hostOutstanding + ' (window ' + c.hostEventWindow + ')');
+    return [
+      { id: 'grant', text: 'No ungranted el:<channel> reached the Bun role', ok: s.audit.ungrantedAdmitted === 0, detail: s.audit.ungrantedAdmitted + ' ungranted frame(s) forwarded' },
+      { id: 'generation', text: 'No reply crossed a document generation', ok: s.audit.staleDelivered === 0, detail: s.audit.staleDelivered + ' stale reply(ies) delivered' },
+      { id: 'bounded', text: 'Every queue is inside its credit window', ok: over.length === 0, detail: over.join('; ') },
+      { id: 'credit', text: 'Every held credit belongs to a frame still in flight or to the live blocked sendSync (no credit leak)', ok: leaked.length === 0, detail: leaked.join('; ') },
+      { id: 'order', text: 'Per-channel order preserved', ok: s.audit.orderViolations === 0, detail: s.audit.orderViolations + ' out-of-order dispatch(es)' },
+      { id: 'endpoint', text: 'No renderer holds a Bun endpoint (holds by construction: no transition creates one)', ok: direct.length === 0, detail: direct.join(', ') },
+      { id: 'link', text: 'kipc link healthy', ok: !s.link.dead && !s.link.stalled, detail: s.link.dead ? 'link closed with ' + s.link.dead.code : 'host writer stalled' }
+    ];
+  }
+
+  function describe(a) {
+    var w = a.w !== undefined ? ' [webview #' + a.w + ']' : '';
+    switch (a.type) {
+      case 'ipcRenderer.on': return 'ipcRenderer.on(\'' + a.c + '\', listener)' + w;
+      case 'ipcRenderer.send': return 'ipcRenderer.send(\'' + a.c + '\', payload ' + (a.bytes || 256) + ' B)' + w;
+      case 'ipcRenderer.invoke': return 'ipcRenderer.invoke(\'' + a.c + '\', payload ' + (a.bytes || 256) + ' B)' + w;
+      case 'ipcRenderer.sendSync': return 'ipcRenderer.sendSync(\'' + a.c + '\')' + w;
+      case 'renderer.openBunEndpoint': return 'page tries to obtain a direct Bun role endpoint' + w;
+      case 'renderer.setBusy': return 'renderer ' + (a.busy ? 'starts a long task (stops draining)' : 'finishes its long task') + w;
+      case 'ipcMain.on': return 'ipcMain.on(\'' + a.c + '\', listener)';
+      case 'ipcMain.handle': return 'ipcMain.handle(\'' + a.c + '\', handler that ' + (a.behavior === 'throw' ? 'throws' : 'returns') + ')';
+      case 'ipcMain.removeHandler': return 'ipcMain.removeHandler(\'' + a.c + '\')';
+      case 'main.openSecondLink': return 'Bun role opens a second kipc link for the same role generation';
+      case 'main.runTurn': return 'Bun main runs one event-loop turn (dispatch the next inbound frame)';
+      case 'event.reply': return 'IpcMainEvent #' + a.e + ': event.reply(\'' + a.c + '\')';
+      case 'event.senderFrame': return 'IpcMainEvent #' + a.e + ': read event.senderFrame';
+      case 'event.setReturnValue': return 'IpcMainEvent #' + a.e + ': event.returnValue = value';
+      case 'webContents.send': return 'webContents.send(\'' + a.c + '\')  on WebContents #' + a.w;
+      case 'main.blockingCall': return 'Bun main makes a blocking call (showMessageBoxSync class)';
+      case 'probe.parkMain': return 'PROBE: park the Bun main thread in Atomics.wait (' + (a.timeoutMs || 30000) + ' ms)';
+      case 'host.replyBlockingCall': return 'host writes the REPLY for the blocking call';
+      case 'host.emitEvent': return 'host writes one host-originated EVENT (' + (a.bytes || 2048) + ' B) to the Bun role';
+      case 'clock.advance': return 'advance the logical clock by ' + (a.ms || 1000) + ' ms';
+      case 'webview.navigate': return 'webview #' + a.w + ' navigates to a new document';
+      case 'webview.hashChange': return 'webview #' + a.w + ' changes its URL hash (same document)';
+      case 'webview.destroy': return 'webview #' + a.w + ' is destroyed';
+      case 'manifest.grant': return 'add "el:' + a.c + '" to windows.' + a.windowName + '.channels';
+      case 'migrate.run': return a.wildcard ? 'keld migrate asked to emit "el:*"' : 'keld migrate emits enumerated grants';
+      case 'config.set': return 'set ' + a.key + ' = ' + a.value;
+      case 'mutation.set': return 'negative control ' + a.key + ' = ' + (a.on ? 'on' : 'off');
+      default: return a.type;
+    }
+  }
+
+  // ---------- walkthrough scripts (also usable as fixtures) -------------------------------------------------
+  // expect: 'ok' or the error code the step must produce. has: substring that must appear in the step's callouts.
+  // inv: { invariantId: boolean } the invariants() result the state must show after the step (negative controls).
+  var CFG = 'config-provider', REQ = 'rendererReq', RESP = 'mainResp';
+  var SCENARIOS = [
+    { id: 'happy', title: 'Happy path', init: {},
+      intro: 'Empty app, default transport (main-owned socket), sendSync experiment not run. Round trip, ordered send/on, reply, senderFrame and webContents.send.',
+      steps: [
+        { a: { type: 'ipcMain.handle', c: CFG, behavior: 'resolve' }, expect: 'ok', say: 'The Bun main role registers an invoke handler (Zettlr style).' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', has: 'host minted correlation #1', say: 'The page invokes. Watch the wire log: renderer -> host -> bun, never renderer -> bun.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'Promise resolved', say: 'Bun main dispatches the CALL; the handler returns; the host routes the reply to the same document.' },
+        { a: { type: 'ipcMain.on', c: REQ }, expect: 'ok', say: 'draw.io style: one multiplexed request channel on ipcMain.on.' },
+        { a: { type: 'ipcRenderer.on', w: 1, c: RESP }, expect: 'ok', say: 'The preload listens for responses.' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', has: 'seq 1', say: 'Three sends in a row on one channel...' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', has: 'seq 2', say: '...second...' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', has: 'seq 3', say: '...third. Credit shows 3 / 4 outstanding.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'seq 1 as IpcMainEvent #1', say: 'ipcMain sees them in send order: 1...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'seq 2 as IpcMainEvent #2', say: '...2...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'seq 3 as IpcMainEvent #3', say: '...3. Each dispatch returns one credit.' },
+        { a: { type: 'event.senderFrame', e: 1 }, expect: 'ok', has: 'app://bundle/index.html', say: 'validateSender reads event.senderFrame.url: host-minted.' },
+        { a: { type: 'event.reply', e: 1, c: RESP }, expect: 'ok', has: 'listener fired', say: 'event.reply goes back to the document that sent event #1.' },
+        { a: { type: 'webContents.send', w: 1, c: RESP }, expect: 'ok', has: 'exactly one webview principal', say: 'webContents.send targets the current main frame of webview #1 only; webview #2 sees nothing.' },
+        { a: { type: 'webview.hashChange', w: 1 }, expect: 'ok', has: 'generation stays 1', say: 'A hash change is a same-document navigation.' },
+        { a: { type: 'event.reply', e: 2, c: RESP }, expect: 'ok', has: 'listener fired', say: 'So a reply to an earlier event still arrives.' },
+        { a: { type: 'event.senderFrame', e: 2 }, expect: 'ok', has: '#section-', say: 'And event.senderFrame.url is the frame\'s current URL (hash included), not a send-time snapshot.' },
+        { a: { type: 'migrate.run', wildcard: false }, expect: 'ok', has: 'No wildcard', say: 'For reference: what keld migrate writes for this app.' }
+      ] },
+    { id: 'edges', title: 'Tricky edges', init: {},
+      intro: 'Error envelope, navigation races (stale reply, null senderFrame, pending invoke), and both credit windows.',
+      steps: [
+        { a: { type: 'ipcMain.handle', c: CFG, behavior: 'throw' }, expect: 'ok', say: 'A handler that throws new Error("boom").' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: 'The page invokes it.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'typed code KELD-COMPAT-HANDLER-THREW* stayed on the wire', say: 'The renderer gets Electron\'s message-only error. Compare the "bun -> host" and "host -> wv" wire lines.' },
+        { a: { type: 'ipcMain.on', c: REQ }, expect: 'ok', say: 'Now the navigation race. Register a listener...' },
+        { a: { type: 'ipcRenderer.on', w: 1, c: RESP }, expect: 'ok', say: '...and a renderer listener in document generation 1.' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', say: 'The page sends a request.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'IpcMainEvent #1', say: 'ipcMain captures event #1, bound to generation 1, and starts slow work.' },
+        { a: { type: 'webview.navigate', w: 1 }, expect: 'ok', has: 'generation 1 -> 2', say: 'Meanwhile the webview navigates to a new document.' },
+        { a: { type: 'event.senderFrame', e: 1 }, expect: 'ok', has: 'is null', say: 'event.senderFrame is now null (not a throw, not a stale URL).' },
+        { a: { type: 'ipcRenderer.on', w: 1, c: RESP }, expect: 'ok', say: 'The new document registers the same channel name.' },
+        { a: { type: 'event.reply', e: 1, c: RESP }, expect: 'ok', has: 'dropped it silently', say: 'The late event.reply returns normally but the new document must not receive it.' },
+        { a: { type: 'webContents.send', w: 1, c: RESP }, expect: 'ok', has: 'document generation 2', say: 'webContents.send, by contrast, follows the webview to its current main frame.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: 'Credit window: four overlapping invokes are fine (the live floor allows one)...' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: '...2...' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: '...3...' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', has: 'Credit 4 / 4', say: '...4. The window is full because Bun main has not run.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'KELD-IPC-CREDIT-EXHAUSTED*', say: 'The fifth gets a typed error at once. Nothing was queued; the link invariant stays green.' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'KELD-IPC-CREDIT-EXHAUSTED*', has: 'Electron never drops a send', inv: { bounded: true, link: true }, say: 'The same overflow on a fire-and-forget send: the message is refused, which Electron never does. Where the page learns of it is OPEN (PROPOSED).' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', say: 'Bun main settles one; a credit comes back.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: 'Now the page can invoke again.' },
+        { a: { type: 'webview.navigate', w: 1 }, expect: 'ok', has: 'KELD-WV-011', say: 'Navigate with four invokes pending: the old document\'s Promises reject with KELD-WV-011.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'rejected by the host before dispatch', say: 'A reply for the old generation is rejected by the host before it reaches the new page.' },
+        { a: { type: 'ipcRenderer.on', w: 2, c: RESP }, expect: 'ok', say: 'Main-to-renderer direction, using webview #2: it listens...' },
+        { a: { type: 'renderer.setBusy', w: 2, busy: true }, expect: 'ok', say: '...then gets stuck in a long task.' },
+        { a: { type: 'webContents.send', w: 2, c: RESP }, expect: 'ok', say: 'Main keeps sending: 1...' },
+        { a: { type: 'webContents.send', w: 2, c: RESP }, expect: 'ok', say: '...2...' },
+        { a: { type: 'webContents.send', w: 2, c: RESP }, expect: 'ok', say: '...3...' },
+        { a: { type: 'webContents.send', w: 2, c: RESP }, expect: 'ok', has: '4 / 4', say: '...4: the host holds them, bounded.' },
+        { a: { type: 'webContents.send', w: 2, c: RESP }, expect: 'KELD-IPC-CREDIT-EXHAUSTED*', say: 'The fifth is a typed error to the sender, not a fifth queued item (PROPOSED direction).' },
+        { a: { type: 'renderer.setBusy', w: 2, busy: false }, expect: 'ok', has: 'seq 4', say: 'When the renderer drains, the four held events arrive in order.' }
+      ] },
+    { id: 'illegal', title: 'Illegal attempts', init: {},
+      intro: 'Every refused action, with the typed error and fix text the real system would give (or Electron\'s own exception text where Electron defines it).',
+      steps: [
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: 'export-finalize' }, expect: 'KELD-GUARD003', say: 'A channel the manifest does not list for window "main".' },
+        { a: { type: 'ipcRenderer.send', w: 2, c: REQ }, expect: 'KELD-GUARD003', say: 'The popup webview principal has channels: [] even for a channel the main window may use.' },
+        { a: { type: 'migrate.run', wildcard: true }, expect: 'KELD-COMPAT-MIGRATE-WILDCARD*', say: 'Asking keld migrate for the easy way out.' },
+        { a: { type: 'manifest.grant', windowName: 'main', c: '*' }, expect: 'KELD-GUARD-CHANNEL-WILDCARD*', say: 'Hand-writing the wildcard instead.' },
+        { a: { type: 'manifest.grant', windowName: 'main', c: 'export-finalize' }, expect: 'ok', say: 'The sanctioned fix: one enumerated literal.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: 'export-finalize' }, expect: 'ok', say: 'The same invoke is now admitted...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'No handler registered for', say: '...but nobody handles it: Electron\'s exact no-handler rejection.' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'KELD-COMPAT-SENDSYNC-SCAFFOLDED*', say: 'sendSync while the transport experiment has not passed: a typed throw with a fix-it, never a silent async rewrite.' },
+        { a: { type: 'renderer.openBunEndpoint', w: 1 }, expect: 'KELD-WV-NO-ROLE-ENDPOINT*', say: 'The page tries to reach the Bun role directly.' },
+        { a: { type: 'ipcMain.handle', c: CFG, behavior: 'resolve' }, expect: 'ok', say: 'Register a handler...' },
+        { a: { type: 'ipcMain.handle', c: CFG, behavior: 'resolve' }, expect: 'Electron Error', say: '...twice: Electron\'s synchronous throw, same text.' },
+        { a: { type: 'main.blockingCall' }, expect: 'KELD-COMPAT-BLOCKING-SCAFFOLDED*', say: 'A blocking main-side call on the main-owned socket is refused rather than allowed to park.' },
+        { a: { type: 'main.openSecondLink' }, expect: 'KELD-IPC-SECOND-LINK*', say: 'Working around that with a second socket would mint a second principal.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG, bytes: 2097152 }, expect: 'KELD-WV-PAYLOAD-BOUND*', say: 'A 2 MiB inline payload.' },
+        { a: { type: 'webview.destroy', w: 2 }, expect: 'ok', say: 'Destroy the popup...' },
+        { a: { type: 'webContents.send', w: 2, c: RESP }, expect: 'Electron TypeError', say: '...then send to its tombstone.' },
+        { a: { type: 'ipcRenderer.send', w: 2, c: REQ }, expect: 'CANNOT-OCCUR', say: 'A destroyed webview has no renderer to send from.' },
+        { a: { type: 'event.reply', e: 99, c: RESP }, expect: 'CANNOT-OCCUR', say: 'Replying to an event that was never captured.' }
+      ] },
+    { id: 'sendsync', title: 'sendSync: scaffold, then the proposed blocking path', init: {},
+      intro: 'First the decided behaviour (scaffold). Then a clearly hypothetical switch: assume experiment F04-A5 passed and exercise deadline, rate limit and dev warning. Every number on that path is PROPOSED.',
+      steps: [
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'KELD-COMPAT-SENDSYNC-SCAFFOLDED*', say: 'Decided today: typed throw + fix-it.' },
+        { a: { type: 'config.set', key: 'syncExperiment', value: 'passed' }, expect: 'ok', say: 'HYPOTHETICAL from here on.' },
+        { a: { type: 'ipcMain.on', c: CFG }, expect: 'ok', say: 'sendSync reaches ipcMain.on listeners (not handle).' },
+        { a: { type: 'ipcRenderer.on', w: 1, c: RESP }, expect: 'ok', say: 'The page also listens for main-to-renderer messages.' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'ok', has: 'Dev warning emitted', say: 'The renderer blocks in a blocking CALL; a dev warning is logged.' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: CFG }, expect: 'CANNOT-OCCUR', say: 'While blocked, the page cannot run anything else.' },
+        { a: { type: 'webContents.send', w: 1, c: RESP }, expect: 'ok', has: 'blocked inside ipcRenderer.sendSync and runs no listener', say: 'Main sends meanwhile: no ipcRenderer.on listener may fire inside a blocked renderer, so the host holds it.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'sendSync event', say: 'ipcMain gets the event.' },
+        { a: { type: 'event.setReturnValue', e: 1 }, expect: 'ok', has: 'moment of assignment', say: 'The reply is sent when event.returnValue is assigned, even if the listener returned earlier. Only then does the held message reach its listener.' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'ok', say: 'A second call inside the same second is within the rate limit; this time main is slow.' },
+        { a: { type: 'clock.advance', ms: 2000 }, expect: 'ok', has: 'KELD-COMPAT-SENDSYNC-DEADLINE*', say: 'Two seconds pass with no returnValue: typed deadline error, the renderer is released.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', say: 'The listener finally runs...' },
+        { a: { type: 'event.setReturnValue', e: 2 }, expect: 'ok', has: 'already closed', say: '...but its late returnValue has nowhere to go.' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'ok', say: 'Rate limit: first call in this second...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', say: '' },
+        { a: { type: 'event.setReturnValue', e: 3 }, expect: 'ok', say: '' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'ok', say: '...second...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', say: '' },
+        { a: { type: 'event.setReturnValue', e: 4 }, expect: 'ok', say: '' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: CFG }, expect: 'KELD-COMPAT-SENDSYNC-RATE*', say: '...third within one second: typed rate-limit error.' },
+        { a: { type: 'clock.advance', ms: 1000 }, expect: 'ok', say: 'A second later the budget is back.' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: REQ }, expect: 'ok', say: 'sendSync on a channel with no ipcMain.on listener.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'without listeners', say: 'Electron\'s warning text is logged; nobody will reply.' },
+        { a: { type: 'clock.advance', ms: 2000 }, expect: 'ok', has: 'KELD-COMPAT-SENDSYNC-DEADLINE*', say: 'Keld ends the wait with a deadline error rather than a hang.' },
+        { a: { type: 'clock.advance', ms: 1000 }, expect: 'ok', say: 'Navigation race: a second later...' },
+        { a: { type: 'ipcRenderer.sendSync', w: 1, c: REQ }, expect: 'ok', say: '...the page blocks in another sendSync...' },
+        { a: { type: 'webview.navigate', w: 1 }, expect: 'ok', has: 'reply slot is closed', say: '...and its document is navigated away before main ever runs.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'credit was returned at consumption', inv: { credit: true, bounded: true }, say: 'Bun consumes the orphaned CALL: its credit comes back, so a dead document cannot leak the window.' }
+      ] },
+    { id: 'park', title: 'Parked Bun main: who owns the socket', init: {},
+      intro: 'Arm A: main thread owns the socket (today). Then a reset to arm B: worker-owned single link (the candidate under PANEL-P1, PROPOSED).',
+      steps: [
+        { a: { type: 'main.blockingCall' }, expect: 'KELD-COMPAT-BLOCKING-SCAFFOLDED*', say: 'Product rule: with a main-owned socket, a blocking call is refused. The next steps show what that refusal prevents.' },
+        { a: { type: 'ipcMain.handle', c: CFG, behavior: 'resolve' }, expect: 'ok', say: 'A handler, for later.' },
+        { a: { type: 'probe.parkMain', timeoutMs: 30000 }, expect: 'ok', say: 'Probe arm A: force the park anyway (a modal dialog open for up to 30 s).' },
+        { a: { type: 'host.replyBlockingCall' }, expect: 'ok', has: 'cannot be delivered to a parked reader', say: 'The host answers, but the reader is the parked thread.' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: 'Ordinary host events keep flowing: 2 KiB...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: '...4 KiB...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: '...6 KiB...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', has: 'exactly 8192 B', say: '...and the writer stalls at exactly 8,192 bytes.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'KELD-IPC-LINK-STALLED*', say: 'Collateral damage: an unrelated renderer invoke cannot be forwarded.' },
+        { a: { type: 'clock.advance', ms: 5000 }, expect: 'ok', has: 'KELD-IPC-006', say: 'Five seconds later the write deadline expires and the link is gone (INFERENCE: see table).' },
+        { reset: { config: { transport: 'worker' } }, say: 'RESET to the initial state with transport = worker-owned single link (PROPOSED candidate).' },
+        { a: { type: 'ipcMain.handle', c: CFG, behavior: 'resolve' }, expect: 'ok', say: 'Same handler.' },
+        { a: { type: 'main.blockingCall' }, expect: 'ok', has: 'parked in Atomics.wait', say: 'The blocking call is admitted: the main thread parks, the worker keeps the socket.' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: 'The same flood: 2 KiB...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: '...4...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: '...6...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: '...8...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', say: '...10...' },
+        { a: { type: 'host.emitEvent', bytes: 2048 }, expect: 'ok', has: '12288 / 65536', say: '...12 KiB, past the 8 KiB mark, and no stall: the frames wait in order in the worker\'s ring.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: 'A renderer invoke is accepted too (it will be answered after wake).' },
+        { a: { type: 'host.replyBlockingCall' }, expect: 'ok', has: 'Atomics.notify', say: 'The REPLY reaches the worker, which wakes the main thread.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'host EVENT seq 1', say: 'Buffered frames replay in arrival order: host event 1...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'host EVENT seq 2', say: '...2, and so on. The order invariant stays green.' }
+      ] },
+    { id: 'controls', title: 'Negative controls', init: {},
+      intro: 'Each rule is deleted in turn. The matching invariant must turn VIOLATED; if it stayed green the invariant would prove nothing. (The "no Bun endpoint" invariant has no control: it holds by construction.)',
+      steps: [
+        { a: { type: 'mutation.set', key: 'noGrantCheck', on: true }, expect: 'ok', say: 'Delete the guard grant check.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: 'export-finalize' }, expect: 'ok', has: 'NEGATIVE CONTROL ACTIVE', inv: { grant: false }, say: 'An ungranted channel now reaches the Bun role: the default-deny invariant fails.' },
+        { reset: {}, say: 'RESET. Next: reply routing keyed by webview id instead of document generation.' },
+        { a: { type: 'ipcMain.on', c: REQ }, expect: 'ok', say: '' },
+        { a: { type: 'ipcRenderer.on', w: 1, c: RESP }, expect: 'ok', say: '' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', say: '' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'IpcMainEvent #1', say: 'Event #1 is bound to generation 1.' },
+        { a: { type: 'webview.navigate', w: 1 }, expect: 'ok', say: 'The document is replaced...' },
+        { a: { type: 'ipcRenderer.on', w: 1, c: RESP }, expect: 'ok', say: '...and the new one listens on the same channel.' },
+        { a: { type: 'mutation.set', key: 'replyByWebviewId', on: true }, expect: 'ok', say: 'Delete the generation binding.' },
+        { a: { type: 'event.reply', e: 1, c: RESP }, expect: 'ok', has: 'NEGATIVE CONTROL ACTIVE', inv: { generation: false }, say: 'The stale reply lands in the new document: the generation invariant fails.' },
+        { reset: {}, say: 'RESET. Next: no credit window.' },
+        { a: { type: 'mutation.set', key: 'noCreditWindow', on: true }, expect: 'ok', say: 'Delete the credit window.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: '1...' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: '...2...' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', say: '...3...' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', inv: { bounded: true }, say: '...4: still inside the window.' },
+        { a: { type: 'ipcRenderer.invoke', w: 1, c: CFG }, expect: 'ok', has: 'queued beyond the window', inv: { bounded: false }, say: 'The fifth is queued instead of refused: the bounded-queue invariant fails.' },
+        { reset: {}, say: 'RESET. Next: no ordering guarantee.' },
+        { a: { type: 'ipcMain.on', c: REQ }, expect: 'ok', say: '' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', has: 'seq 1', say: 'Two sends on one channel...' },
+        { a: { type: 'ipcRenderer.send', w: 1, c: REQ }, expect: 'ok', has: 'seq 2', say: '...in order.' },
+        { a: { type: 'mutation.set', key: 'lifoDispatch', on: true }, expect: 'ok', say: 'Delete the ordering guarantee.' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'seq 2 as IpcMainEvent', say: 'ipcMain sees seq 2 first...' },
+        { a: { type: 'main.runTurn' }, expect: 'ok', has: 'seq 1 as IpcMainEvent', inv: { order: false }, say: '...then seq 1: the per-channel order invariant fails.' }
+      ] }
+  ];
+
+  var api = { init: init, step: step, invariants: invariants, describe: describe, DEFAULTS: DEFAULTS, SCENARIOS: SCENARIOS };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  return api;
+})();
+</script>
+
+<!-- ======================================================================================================
+     PAGE GLUE. Reads inputs, calls KeldIpcBridge.step, renders. No domain rules live here.
+     ====================================================================================================== -->
+<script>
+(function () {
+  'use strict';
+  var B = KeldIpcBridge;
+  var state = B.init();
+  var last = null;         // { action, result, label }
+  var prevWire = 0, prevDiag = 0;
+  var sc = { idx: 0, pos: 0, results: [] };
+
+  function $(id) { return document.getElementById(id); }
+  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function P() { return { w: Number($('p-wv').value), c: $('p-ch').value.trim() || 'config-provider', bytes: Number($('p-bytes').value), e: Number($('p-ev').value) }; }
+
+  function run(action) {
+    prevWire = state.next.wire; prevDiag = state.next.diag;
+    var r = B.step(state, action);
+    state = r.state; last = { action: action, result: r };
+    render();
+    return r;
+  }
+  function reset(overrides, note) {
+    state = B.init(overrides); prevWire = 1; prevDiag = 1;
+    last = { action: null, result: { changes: [{ kind: 'note', text: note || 'State reset.' }], error: null } };
+    render();
+  }
+
+  // ----- free-play controls -----
+  var GROUPS = [
+    { title: 'Renderer (page / preload of the selected webview)', buttons: [
+      ['ipcRenderer.on(channel)', function (p) { return { type: 'ipcRenderer.on', w: p.w, c: p.c }; }],
+      ['ipcRenderer.send(channel)', function (p) { return { type: 'ipcRenderer.send', w: p.w, c: p.c, bytes: p.bytes }; }],
+      ['ipcRenderer.invoke(channel)', function (p) { return { type: 'ipcRenderer.invoke', w: p.w, c: p.c, bytes: p.bytes }; }],
+      ['ipcRenderer.sendSync(channel)', function (p) { return { type: 'ipcRenderer.sendSync', w: p.w, c: p.c }; }],
+      ['Try to open a direct Bun endpoint', function (p) { return { type: 'renderer.openBunEndpoint', w: p.w }; }],
+      ['Renderer busy (stop draining)', function (p) { return { type: 'renderer.setBusy', w: p.w, busy: true }; }],
+      ['Renderer idle (drain)', function (p) { return { type: 'renderer.setBusy', w: p.w, busy: false }; }]
+    ] },
+    { title: 'Bun main role (ipcMain / webContents)', buttons: [
+      ['ipcMain.on(channel)', function (p) { return { type: 'ipcMain.on', c: p.c }; }],
+      ['ipcMain.handle(channel) returning', function (p) { return { type: 'ipcMain.handle', c: p.c, behavior: 'resolve' }; }],
+      ['ipcMain.handle(channel) throwing', function (p) { return { type: 'ipcMain.handle', c: p.c, behavior: 'throw' }; }],
+      ['ipcMain.removeHandler(channel)', function (p) { return { type: 'ipcMain.removeHandler', c: p.c }; }],
+      ['Run one event-loop turn', function () { return { type: 'main.runTurn' }; }],
+      ['event.reply(channel) on selected event', function (p) { return { type: 'event.reply', e: p.e, c: p.c }; }],
+      ['Read event.senderFrame', function (p) { return { type: 'event.senderFrame', e: p.e }; }],
+      ['Set event.returnValue', function (p) { return { type: 'event.setReturnValue', e: p.e }; }],
+      ['webContents.send(channel) to selected webview', function (p) { return { type: 'webContents.send', w: p.w, c: p.c }; }],
+      ['Blocking call (showMessageBoxSync class)', function () { return { type: 'main.blockingCall' }; }],
+      ['Open a second kipc link', function () { return { type: 'main.openSecondLink' }; }]
+    ] },
+    { title: 'Host, webview lifecycle, clock', buttons: [
+      ['Navigate selected webview (new document)', function (p) { return { type: 'webview.navigate', w: p.w }; }],
+      ['Hash change (same document)', function (p) { return { type: 'webview.hashChange', w: p.w }; }],
+      ['Destroy selected webview', function (p) { return { type: 'webview.destroy', w: p.w }; }],
+      ['Host emits a 2 KiB EVENT to Bun', function () { return { type: 'host.emitEvent', bytes: 2048 }; }],
+      ['Host writes the blocking-call REPLY', function () { return { type: 'host.replyBlockingCall' }; }],
+      ['Clock +1 s', function () { return { type: 'clock.advance', ms: 1000 }; }],
+      ['Clock +5 s', function () { return { type: 'clock.advance', ms: 5000 }; }],
+      ['PROBE: park Bun main 1.5 s', function () { return { type: 'probe.parkMain', timeoutMs: 1500 }; }],
+      ['PROBE: park Bun main 30 s', function () { return { type: 'probe.parkMain', timeoutMs: 30000 }; }]
+    ] },
+    { title: 'Manifest and keld migrate', buttons: [
+      ['Grant el:<channel> to the selected webview\'s window', function (p) { return { type: 'manifest.grant', windowName: p.w === 1 ? 'main' : 'popup', c: p.c }; }],
+      ['Grant el:* (wildcard)', function (p) { return { type: 'manifest.grant', windowName: p.w === 1 ? 'main' : 'popup', c: '*' }; }],
+      ['keld migrate: enumerate grants', function () { return { type: 'migrate.run', wildcard: false }; }],
+      ['keld migrate: emit el:*', function () { return { type: 'migrate.run', wildcard: true }; }]
+    ] },
+    { title: 'Transport and experiment switches', buttons: [
+      ['Socket owner: main thread (today)', function () { return { type: 'config.set', key: 'transport', value: 'main' }; }],
+      ['Socket owner: worker (PROPOSED candidate)', function () { return { type: 'config.set', key: 'transport', value: 'worker' }; }],
+      ['sendSync experiment: not run (decided state)', function () { return { type: 'config.set', key: 'syncExperiment', value: 'not-run' }; }],
+      ['sendSync experiment: assume passed (HYPOTHETICAL)', function () { return { type: 'config.set', key: 'syncExperiment', value: 'passed' }; }]
+    ] }
+  ];
+  var MUTATIONS = [
+    ['noGrantCheck', 'Remove the guard grant check'],
+    ['replyByWebviewId', 'Key replies by webview id, not document generation'],
+    ['noCreditWindow', 'Remove the credit windows'],
+    ['lifoDispatch', 'Delete the ordering guarantee (newest first)']
+  ];
+
+  function buildControls() {
+    var host = $('controls');
+    GROUPS.forEach(function (g) {
+      var fs = document.createElement('fieldset');
+      var lg = document.createElement('legend'); lg.textContent = g.title; fs.appendChild(lg);
+      g.buttons.forEach(function (b) {
+        var el = document.createElement('button'); el.type = 'button'; el.textContent = b[0];
+        el.addEventListener('click', function () { run(b[1](P())); });
+        fs.appendChild(el);
+      });
+      host.appendChild(fs);
+    });
+    var fs = document.createElement('fieldset');
+    var lg = document.createElement('legend'); lg.textContent = 'Negative controls (delete one rule; its invariant must fail)'; fs.appendChild(lg);
+    MUTATIONS.forEach(function (m) {
+      var lab = document.createElement('label'); lab.className = 'inline';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'mut-' + m[0];
+      cb.addEventListener('change', function () { run({ type: 'mutation.set', key: m[0], on: cb.checked }); });
+      lab.appendChild(cb); lab.appendChild(document.createTextNode(m[1]));
+      fs.appendChild(lab); fs.appendChild(document.createElement('br'));
+    });
+    host.appendChild(fs);
+  }
+
+  // ----- rendering -----
+  var KIND = { ok: 'OK', err: 'REFUSED', drop: 'DROPPED', warn: 'WARNING', note: 'NOTE' };
+  function codeLabel(e) {
+    if (e.allocated === true) return 'existing Keld code';
+    if (e.allocated === false) return 'symbolic identifier, number not allocated';
+    return e.code === 'CANNOT-OCCUR' ? 'not a system error' : 'Electron\'s own exception text';
+  }
+  function renderChanged() {
+    var h = '<h3>What just changed</h3>';
+    if (!last) { h += '<p class="muted">No action yet. Use a walkthrough above or the buttons on the left.</p>'; $('changed').innerHTML = h; return; }
+    var r = last.result;
+    if (last.action) h += '<p class="call mono">' + esc(B.describe(last.action)) + '</p>';
+    h += '<ul class="changes">';
+    r.changes.forEach(function (c) {
+      var k = c.kind === 'err' && !r.error ? 'err' : c.kind;
+      var word = c.kind === 'err' && !r.error ? 'FAILURE' : KIND[c.kind];
+      h += '<li><span class="badge k k-' + k + '">' + word + '</span>' + esc(c.text) + '</li>';
+    });
+    h += '</ul>';
+    if (r.error) {
+      var e = r.error;
+      h += '<div class="errbox"><div><span class="code mono">' + esc(e.code) + '</span> <span class="muted">(' + codeLabel(e) + ')</span> <span class="badge ' + e.label + '">' + e.label + '</span></div>' +
+        '<div>' + esc(e.message) + '</div>' +
+        '<div><strong>Fix:</strong> ' + esc(e.fix) + '</div>' +
+        (e.surfacedTo ? '<div class="muted"><strong>Surfaces as:</strong> ' + esc(e.surfacedTo) + '</div>' : '') +
+        '<div class="muted"><strong>Source:</strong> ' + esc(e.source) + '</div></div>';
+    }
+    if (r.value !== undefined) h += '<p class="mono">returned: ' + esc(JSON.stringify(r.value)) + '</p>';
+    $('changed').innerHTML = h;
+  }
+  function meter(n, max) { return '<div class="meter"><i style="width:' + Math.min(100, Math.round(100 * n / max)) + '%"></i></div>'; }
+  function list(o) { var k = Object.keys(o); return k.length ? k.map(function (x) { return esc(x) + (o[x] !== 1 && typeof o[x] === 'number' ? ' x' + o[x] : (typeof o[x] === 'string' ? ' (' + o[x] + ')' : '')); }).join(', ') : '<span class="muted">none</span>'; }
+
+  function renderWebview(w) {
+    var c = state.config, grants = state.manifest.windows[w.windowName].channels;
+    var out = w.outstanding.map(function (o) { return '#' + o.corr + ' ' + o.kind + ' ' + esc(o.channel) + (o.stale ? ' (stale gen ' + o.generation + ')' : ''); }).join('; ') || '<span class="muted">none</span>';
+    var rec = w.received.slice().reverse().map(function (x) { return esc(x.channel) + ' seq ' + x.seq + ' @gen ' + x.generation; }).join('; ') || '<span class="muted">none</span>';
+    var set = w.settled.slice().reverse().map(function (x) { return '#' + x.corr + ' ' + esc(x.channel) + ': ' + esc(x.text); }).join('<br>') || '<span class="muted">none</span>';
+    return '<div class="card"><h3>Webview principal #' + w.id + ' &middot; window "' + w.windowName + '"' + (w.destroyed ? ' &middot; DESTROYED' : '') + '</h3><dl class="kv">' +
+      '<dt>document generation</dt><dd><strong>' + w.generation + '</strong> <span class="muted">(host-minted)</span></dd>' +
+      '<dt>URL</dt><dd class="mono">' + esc(w.url) + '</dd>' +
+      '<dt>el: grants</dt><dd class="mono">' + (grants.length ? esc(grants.join(', ')) : '[] (default-deny)') + '</dd>' +
+      '<dt>ipcRenderer listeners</dt><dd>' + list(w.listeners) + '</dd>' +
+      '<dt>renderer state</dt><dd>' + (w.destroyed ? 'gone' : w.blocked ? 'BLOCKED in sendSync(\'' + esc(w.blocked.channel) + '\') until t=' + w.blocked.deadlineAt + ' ms' : w.busy ? 'busy (not draining)' : 'idle') + '</dd>' +
+      '<dt>outstanding to main</dt><dd>' + w.outstanding.length + ' / ' + c.creditWindow + ' credits' + meter(w.outstanding.length, c.creditWindow) + out + '</dd>' +
+      '<dt>held by host for it</dt><dd>' + w.held.length + ' / ' + c.m2rWindow + meter(w.held.length, c.m2rWindow) + '</dd>' +
+      '<dt>messages received</dt><dd>' + rec + '</dd>' +
+      '<dt>invoke / sendSync results</dt><dd>' + set + '</dd>' +
+      '<dt>Bun endpoint held</dt><dd>' + (w.bunEndpoint === null ? 'none (never)' : 'YES') + '</dd>' +
+      '</dl></div>';
+  }
+  function renderMain() {
+    var m = state.main;
+    var q = m.inbox.map(function (f) { return f.type === 'host' ? 'host EVENT seq ' + f.seq : f.kind + ' ' + esc(f.channel) + ' seq ' + f.seq + ' (wv#' + f.webview + ' gen ' + f.generation + ')'; }).join('; ') || '<span class="muted">empty</span>';
+    var evs = m.events.slice().reverse().map(function (e) {
+      var w = state.webviews[String(e.webview)];
+      return '#' + e.id + ' ' + esc(e.channel) + ' seq ' + e.seq + ' from wv#' + e.webview + ' gen ' + e.generation + (e.sync ? (e.replied ? ' (sync, replied)' : ' (sync, awaiting returnValue)') : '') + ((w.destroyed || w.generation !== e.generation) ? ' [stale]' : '');
+    }).join('<br>') || '<span class="muted">none</span>';
+    return '<div class="card"><h3>Bun main role (ipcMain facade)</h3><dl class="kv">' +
+      '<dt>thread</dt><dd>' + (m.parked ? '<strong>PARKED</strong> (' + m.parked.reason + ') until t=' + m.parked.deadlineAt + ' ms' : 'running') + '</dd>' +
+      '<dt>ipcMain.on listeners</dt><dd>' + list(m.listeners) + '</dd>' +
+      '<dt>ipcMain.handle handlers</dt><dd>' + list(m.handlers) + '</dd>' +
+      '<dt>inbound queue</dt><dd>' + m.inbox.length + ' frame(s): ' + q + '</dd>' +
+      '<dt>captured IpcMainEvents</dt><dd>' + evs + '</dd>' +
+      '<dt>host events seen</dt><dd>' + (m.hostEventsSeen.length ? m.hostEventsSeen.join(', ') : '<span class="muted">none</span>') + '</dd>' +
+      '</dl></div>';
+  }
+  function renderLink() {
+    var l = state.link, c = state.config;
+    return '<div class="card"><h3>kipc link host &harr; Bun (one link, one principal)</h3><dl class="kv">' +
+      '<dt>socket owner</dt><dd><strong>' + (c.transport === 'worker' ? 'Worker' : 'Bun main thread') + '</strong> ' + (c.transport === 'worker' ? '<span class="badge PROPOSED">PROPOSED</span>' : '<span class="muted">(today)</span>') + '</dd>' +
+      '<dt>status</dt><dd>' + (l.dead ? '<strong>CLOSED: ' + l.dead.code + '</strong> at t=' + l.dead.at + ' ms' : l.stalled ? '<strong>WRITER STALLED</strong> since t=' + l.stalled.since + ' ms (deadline t=' + (l.stalled.since + c.writerDeadlineMs) + ' ms)' : 'healthy') + '</dd>' +
+      '<dt>kernel socket buffer</dt><dd>' + l.sockBytes + ' / ' + c.sockBufBytes + ' B unread' + meter(l.sockBytes, c.sockBufBytes) + '</dd>' +
+      '<dt>worker ring</dt><dd>' + (c.transport === 'worker' ? l.ringBytes + ' / ' + c.ringBytes + ' B, ' + l.ring.length + ' frame(s) in order' + meter(l.ringBytes, c.ringBytes) : '<span class="muted">n/a</span>') + '</dd>' +
+      '<dt>host events outstanding</dt><dd>' + l.hostOutstanding + ' / ' + c.hostEventWindow + meter(l.hostOutstanding, c.hostEventWindow) + '</dd>' +
+      '<dt>sendSync</dt><dd>' + (c.syncExperiment === 'passed' ? 'blocking path <span class="badge PROPOSED">PROPOSED</span> deadline ' + c.sendSyncDeadlineMs + ' ms, ' + c.sendSyncRatePerSec + '/s' : 'SCAFFOLDED (experiment F04-A5 not passed)') + '</dd>' +
+      '<dt>logical clock</dt><dd>t = ' + state.clock + ' ms</dd>' +
+      '</dl></div>';
+  }
+  function renderLog(id, items, prev, fmt) {
+    $(id).innerHTML = items.slice().reverse().map(function (x) { return '<li class="' + (x.n >= prev ? 'new' : '') + '">' + fmt(x) + '</li>'; }).join('') || '<li class="muted">empty</li>';
+  }
+  function render() {
+    renderChanged();
+    $('inv').innerHTML = B.invariants(state).map(function (i) { return '<li class="' + (i.ok ? '' : 'bad') + '">' + (i.ok ? 'holds' : 'VIOLATED') + ': ' + esc(i.text) + (i.ok ? '' : ' &mdash; ' + esc(i.detail)) + '</li>'; }).join('');
+    $('state').innerHTML = renderWebview(state.webviews['1']) + renderWebview(state.webviews['2']) + renderMain() + renderLink();
+    renderLog('wire', state.wire, prevWire, function (x) { return '<strong>' + esc(x.hop) + '</strong> ' + esc(x.text); });
+    renderLog('diag', state.diagnostics, prevDiag, function (x) { return '<strong>[' + esc(x.who) + ']</strong> ' + esc(x.text); });
+    var sel = $('p-ev'), cur = sel.value, evs = state.main.events;
+    sel.innerHTML = evs.length ? evs.slice().reverse().map(function (e) { return '<option value="' + e.id + '">#' + e.id + ' ' + esc(e.channel) + ' (wv#' + e.webview + ' gen ' + e.generation + ')</option>'; }).join('') : '<option value="0">(none yet)</option>';
+    if (evs.some(function (e) { return String(e.id) === cur; })) sel.value = cur;
+    MUTATIONS.forEach(function (m) { var cb = $('mut-' + m[0]); if (cb) cb.checked = !!state.mutations[m[0]]; });
+    renderScenario();
+  }
+
+  // ----- walkthroughs -----
+  function buildTabs() {
+    B.SCENARIOS.forEach(function (s, i) {
+      var b = document.createElement('button'); b.type = 'button'; b.textContent = s.title; b.setAttribute('role', 'tab');
+      b.addEventListener('click', function () { startScenario(i); });
+      $('tabs').appendChild(b);
+    });
+  }
+  function startScenario(i) {
+    sc = { idx: i, pos: 0, results: [] };
+    reset(B.SCENARIOS[i].init, 'Reset to the initial state of walkthrough "' + B.SCENARIOS[i].title + '".');
+  }
+  function scStep() {
+    var s = B.SCENARIOS[sc.idx]; if (sc.pos >= s.steps.length) return false;
+    var st = s.steps[sc.pos], res;
+    if (st.reset) { reset(st.reset, st.say); res = { got: 'reset', match: true }; }
+    else {
+      var r = run(st.a), got = r.error ? r.error.code : 'ok';
+      var text = r.changes.map(function (c) { return c.text; }).join(' | ');
+      var invOk = true;
+      if (st.inv) B.invariants(state).forEach(function (i) { if (st.inv.hasOwnProperty(i.id) && st.inv[i.id] !== i.ok) invOk = false; });
+      res = { got: got, match: got === st.expect && (!st.has || text.indexOf(st.has) !== -1) && invOk };
+    }
+    sc.results[sc.pos] = res; sc.pos++; renderScenario(); return true;
+  }
+  function renderScenario() {
+    var s = B.SCENARIOS[sc.idx];
+    Array.prototype.forEach.call($('tabs').children, function (b, i) { b.setAttribute('aria-selected', i === sc.idx ? 'true' : 'false'); });
+    $('sc-intro').textContent = s.intro;
+    $('sc-status').textContent = 'step ' + sc.pos + ' of ' + s.steps.length + (sc.pos >= s.steps.length ? ' (finished)' : '');
+    $('sc-steps').innerHTML = s.steps.map(function (st, i) {
+      var r = sc.results[i], cls = i < sc.pos ? 'done' : i === sc.pos ? 'cur' : '';
+      var res = r ? ' <span class="res mono">[' + (r.got === 'ok' ? 'accepted' : r.got === 'reset' ? 'reset' : 'refused: ' + esc(r.got)) + (r.match ? '' : ' &mdash; UNEXPECTED, model and script disagree') + ']</span>' : '';
+      return '<li class="' + cls + '"><span class="mono">' + esc(st.reset ? 'reset' : B.describe(st.a)) + '</span>' + (st.say ? ' &mdash; ' + esc(st.say) : '') + res + '</li>';
+    }).join('');
+    var cur = $('sc-steps').querySelector('.cur'); if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+  }
+
+  // ----- assumptions table -----
+  var SEM = [
+    ['Renderer frames travel renderer -> host -> Bun only; the Electron channel string and a kind discriminator (event | invoke | sync) are payload fields on one fixed control channel per direction; no runtime-minted channel ids.', 'F04-EPIC "Design facts fixed by research"; arch 02 s5. Decided design; nothing of it is implemented (live floor: channel 1 only).', 'FACT'],
+    ['ipcMain keeps two registries: on/once listeners and handle handlers. A second handle on a channel throws "Attempted to register a second handler for \'<channel>\'" synchronously; removeHandler is idempotent.', 'electron v44.4.5 lib/browser/ipc-main-impl.ts (re-opened).', 'FACT'],
+    ['invoke with no handler rejects with "Error invoking remote method \'<channel>\': Error: No handler registered for \'<channel>\'".', 'electron v44.4.5 lib/browser/ipc-dispatch.ts + lib/renderer/api/ipc-renderer.ts (re-opened).', 'FACT'],
+    ['A handler throw reaches the renderer as the message only; the typed KELD-* code stays on the kipc wire and in main-process diagnostics.', 'docs/api/ipc-main.md v44.4.5: "only the message property from the original error is provided to the renderer process"; PANEL-D16 resolution.', 'FACT'],
+    ['Letting app-handler error text cross host -> renderer needs an amendment to the KEL-142 rule that no handler detail is returned to the renderer.', 'F04 refuter (Keld-invariants lens) finding citing the KEL-142 spec; not re-opened by this prototype.', 'INFERENCE'],
+    ['The wire identifiers KELD-COMPAT-HANDLER-THREW* and KELD-COMPAT-NO-HANDLER*.', 'No allocation exists; X05-T2 owns allocation.', 'PROPOSED'],
+    ['send/on ordering is preserved per channel (and per sender document); a message with no ipcMain listener is dropped.', 'arch 02 s5 "Semantics preserved: ordering per channel" (re-opened); F04-T1; EventEmitter emit in ipc-dispatch.ts.', 'FACT'],
+    ['The model dispatches one FIFO per link, so order is also preserved across channels from one sender, which is stronger than the per-channel order arch 02 s5 promises. Electron carries every channel of a frame over one ordered pipe, so an app may depend on cross-channel order; the F04-T1 ordering entry should pin which guarantee Keld gives.', 'arch 02 s5 says "ordering per channel" only (re-opened). The Electron single-pipe claim was not re-opened in shell/ sources here.', 'INFERENCE'],
+    ['A main-to-renderer message with no ipcRenderer listener is dropped; there is no renderer-side queue.', 'F04 refuter (Electron lens) cites lib/renderer/ipc-native-setup.ts; that file was not re-opened here, so this prototype carries it one level down.', 'INFERENCE'],
+    ['sendSync is a blocking CALL with a deadline, a rate limit and a dev warning, and is SCAFFOLDED (typed throw + fix-it to invoke) until the WKWebView synchronous-XHR experiment passes.', 'arch 02 s5 (re-opened); PANEL-D8 resolution; F04-EPIC.', 'FACT'],
+    ['On the blocking path the reply is sent when event.returnValue is assigned; zero listeners logs "WebContents #N called ipcRenderer.sendSync() with \'<channel>\' channel without listeners."', 'electron v44.4.5 lib/browser/ipc-dispatch.ts addReturnValueToEvent and the sync branch (re-opened).', 'FACT'],
+    ['Everything else on the blocking path: that it exists at all on WKWebView, the 2000 ms deadline, 2 calls per second per document, rejecting (rather than delaying) on rate limit, the deadline and rate identifiers, ending a never-answered call with a deadline error.', 'F04-A5 is open. Electron itself returns {error: "reply was never sent"} at garbage collection (refuter, reply_channel.h; not re-opened).', 'PROPOSED'],
+    ['webContents.send goes to the current main frame of exactly one webview principal, so it follows the webview across navigations.', 'electron v44.4.5 lib/browser/api/web-contents.ts "return this.mainFrame.send(channel, ...args)" (re-opened); arch 02 s5 "host-routed EVENT to a specific webview principal"; PANEL-D6.', 'FACT'],
+    ['webContents.send on a destroyed WebContents throws "Object has been destroyed".', 'PANEL-D6 evidence line marks the exact text as inference (shared destroyed-wrapper check, no fixture run).', 'INFERENCE'],
+    ['event.reply is bound to the sender document generation; a stale reply is dropped silently and the caller sees no error.', 'Keld rule: arch 02 s7 "pending replies to the old principal drop" (re-opened); F04-EPIC; F04-T3; PANEL-D6. Electron mechanism: ipc-dispatch.ts addReplyToEvent -> event.sender.sendToFrame([processId, frameId], ...), which returns false without throwing when the frame is gone (web-contents.ts, re-opened).', 'FACT'],
+    ['That Electron itself drops the reply after every cross-document navigation. Electron keys on the frame host ([processId, frameId]), not on the document: where Chromium keeps the same frame host across a same-site cross-document navigation, Electron would deliver the late reply into the new document and the Keld rule is deliberately stricter.', 'Whether the pinned Chromium swaps the frame host on every cross-document navigation was not verified here (no fixture run, no Chromium source re-opened). Needs an oracle run before the F04-T1 conformance entry claims equivalence.', 'INFERENCE'],
+    ['A same-document hash change keeps the generation; a cross-document navigation rotates it.', 'F04-EPIC ("survives same-document hash changes, as Electron keys on the frame host").', 'FACT'],
+    ['Which counter is the generation (bridge navigation counter vs guard webview generation) and whether it rotates at navigation start or commit. The model rotates atomically.', 'F04-A4 is open.', 'PROPOSED'],
+    ['event.senderFrame is null after the frame navigated or was destroyed; its url is host-minted, never taken from the payload.', 'docs/api/structures/ipc-main-event.md v44.4.5 "May be null if accessed after the frame has either navigated or been destroyed" (re-opened 2026-10-06); PANEL-D13 resolution.', 'FACT'],
+    ['While the sending document is still current, event.senderFrame.url is read live from the host navigation registry, so it follows same-document hash changes.', 'docs/api/web-frame-main.md v44.4.5: frame.url is "A string representing the current URL of the frame" (re-opened 2026-10-06). CONTRADICTION, not averaged: the F04 research note proposes a url/origin snapshot taken at dispatch time; the pinned sentence says current. The model follows the pinned doc; snapshot versus live read is undecided and matters to draw.io, which drives state through location.hash and reads senderFrame.url in validateSender.', 'PROPOSED'],
+    ['A renderer-to-main message already forwarded when its document navigates away is still delivered to ipcMain (with senderFrame null).', 'Electron does this (ipc-dispatch.ts FrameTreeNode lookup comment, re-opened). Whether Keld forwards or drops such frames is not decided.', 'PROPOSED'],
+    ['A pending invoke rejects with KELD-WV-011 when its document navigates.', 'crates/keld-wv macos_bridge.rs pagehide handler at origin/main b4b907c3 (re-opened). That floor v2 keeps this code is assumed.', 'INFERENCE'],
+    ['Renderer calls per webview are bounded by a host-enforced credit window; overflow is a typed error to the caller, never a longer queue, and the link stays healthy. Stale-generation replies are rejected before dispatch.', 'F04-T2 "What to build" and acceptance criteria; F04-EPIC.', 'FACT'],
+    ['An ipcRenderer.send refused by a full credit window is a lost message from the page\'s point of view. Electron never drops a send (it returns undefined and the message is queued), so this is a real divergence for burst senders; where the refusal surfaces (synchronous throw from the renderer compat script versus host diagnostic only) and a window size that draw.io\'s bursts never hit are both undecided.', 'F04-T2 decides only "typed error, never an unbounded queue"; docs/api/ipc-renderer.md v44.4.5 documents send as an asynchronous message with no failure mode other than serialization. No measurement of draw.io send bursts exists.', 'PROPOSED'],
+    ['A renderer blocked inside ipcRenderer.sendSync runs no ipcRenderer.on listener until the call returns; main-to-renderer events sent meanwhile wait.', 'docs/api/ipc-renderer.md v44.4.5: "Sending a synchronous message will block the whole renderer process until the reply is received" (re-opened 2026-10-06). That the host is what holds them, bounded by the same window, is PROPOSED.', 'FACT'],
+    ['A sync CALL whose document navigated or was destroyed before Bun consumed it returns its credit at consumption (no credit leak; checked by the "no credit leak" invariant).', 'Model rule added so that a dead document cannot shrink the window permanently; no ticket states it.', 'PROPOSED'],
+    ['Window size 4; the identifier KELD-IPC-CREDIT-EXHAUSTED* (the live floor already uses KELD-WV-011 for its one-pending overflow and its 4096-byte bound, so reusing KELD-WV-011 is the default candidate); credit returned by a Grant frame from Bun; stale outstanding calls holding credit until Bun consumes them; the same rule for host-held main-to-renderer events and for host-originated events.', 'FrameKind::Grant exists unused (PANEL-D4 evidence); KEL-80 is Backlog and unassigned (Linear, fetched 2026-10-06); PANEL-P1 arm C open.', 'PROPOSED'],
+    ['An ungranted el:<channel> is refused by the host with KELD-GUARD003 and never reaches the Bun role; the per-window enumerated grant, not the preload, is the renderer-to-main boundary; a popup webview principal starts with channels: [].', 'crates/keld-guard DenyReason::ChannelForbidden text (re-opened); PANEL-D13 resolution; F04-T3 acceptance.', 'FACT'],
+    ['How the grant is evaluated: exact-literal match on the channel string, in which crate, under which owner. Today keld-guard denies every webview principal before any grant lookup and ignores the windows key.', 'F04-A1 is open (no owner for the windows.<w>.channels vocabulary; KEL-102 is In Progress and scoped to manifest load + dispatch, Linear fetched 2026-10-06).', 'PROPOSED'],
+    ['keld migrate emits enumerated grants from static analysis and refuses el:*.', 'PANEL-D13 resolution; F04-EPIC never-list. keld migrate is not live; static enumeration of channel literals is plausible but unproven (F04 refuter).', 'FACT'],
+    ['A hand-written wildcard grant is rejected at manifest validation.', 'Never-list says wildcards are never offered; the rejection point is not decided (F04-A1).', 'PROPOSED'],
+    ['The renderer never obtains a Bun endpoint; correlation ids are host-minted; one HELLO, one principal per link; a second link for the same role generation is refused.', 'arch 02 s5 "Browser and Bun endpoints never connect directly" (re-opened); F04-T2; PANEL-D4 resolution. Identifiers are placeholders.', 'FACT'],
+    ['With the Bun main thread parked and owning the socket, nothing drains the link: the host writer stalls at exactly 8,192 bytes, and a REPLY cannot reach the parked reader.', 'PANEL-D3 park-probe (Bun 1.4.2, macOS net.local.stream.sendspace 8192; the probe server was Bun, not the Rust host). Read from the resolution comment; the probe was not re-run here.', 'FACT'],
+    ['After the stall, the host writer gives up at 5 s with KELD-IPC-006, the link closes and pending invokes reject. Once the link is closed nothing the Bun role writes (webContents.send, event.reply, a returnValue or handler reply) can leave until the host restarts the role.', 'arch 02 s7 APP_LINK_IO_DEADLINE and "in-flight calls reject with a registered role-qualified KELD-* error" (re-opened); PANEL-D3 labels the follow-on as inference (the probe server was Bun, not the Rust host writer).', 'INFERENCE'],
+    ['Frames offered to the host writer during the stall are refused at once with a typed error (KELD-IPC-LINK-STALLED*) instead of queueing behind the stalled write.', 'Not specified anywhere; chosen here because queueing would be an unbounded queue. Behaviour and identifier are both open.', 'PROPOSED'],
+    ['Until a transport survives the park, a blocking main-side call throws a typed scaffold error instead of parking.', 'PANEL-D3 resolution ("nothing that parks the Bun main thread may land..."); PANEL-D18.', 'FACT'],
+    ['A worker-owned single link does not stall: the worker keeps reading, buffers EVENTs in order in a shared ring, wakes the main thread on REPLY and replays in order. Ring size 64 KiB; 30 s blocking deadline. A deadline on a user-paced modal is itself open: Electron\'s showMessageBoxSync waits for the user indefinitely, draw.io has one on its close path, and an expired deadline must not dismiss the dialog or close the window (the host never auto-closes on timeout).', 'PANEL-D4 names it the only candidate; PANEL-P1 (arms A/B/C/E against real kipc frames) is open. Only "Atomics.wait + worker reply works in principle" is measured.', 'PROPOSED'],
+    ['Inline payload bound of 1 MiB.', 'Live bound is 4096 bytes (macos_bridge.rs, re-opened); F04-T2 says the v2 bound is chosen by measurement, and large exports need a bulk lane.', 'PROPOSED']
+  ];
+  function buildSem() {
+    $('sem').querySelector('tbody').innerHTML = SEM.map(function (r) {
+      return '<tr><td>' + esc(r[0]) + '</td><td class="muted">' + esc(r[1]) + '</td><td><span class="badge ' + r[2] + '">' + r[2] + '</span></td></tr>';
+    }).join('');
+    $('notmodelled').textContent = 'contextBridge value table and the preload world (F04-T4, PANEL-D21, F04-A3); structured-clone throws and the SCV codec (F03-D4); contents.ipc / frame.ipc dispatch levels and subframe senders; once / removeListener / handleOnce; MessagePort, utilityProcess and service-worker IPC (F04-T5); payload chunking and the bulk lane; audit logging; Windows and Linux engines. The model treats handler execution as completing within one event-loop turn.';
+  }
+
+  $('sc-reset').addEventListener('click', function () { startScenario(sc.idx); });
+  $('sc-next').addEventListener('click', scStep);
+  $('sc-all').addEventListener('click', function () { var guard = 0; while (scStep() && guard++ < 200) { /* run to the end */ } });
+  $('fp-reset').addEventListener('click', function () { reset({}, 'Reset: empty app, no listeners or handlers, main-owned socket, sendSync scaffolded.'); });
+  $('fp-booted').addEventListener('click', function () { reset({ preset: 'booted' }, 'Reset: booted app with ipcMain.on(\'rendererReq\'), ipcMain.handle(\'config-provider\') and ipcRenderer.on(\'mainResp\') in webview #1.'); });
+
+  buildControls(); buildTabs(); buildSem(); render();
+})();
+</script>
+</body>
+</html>

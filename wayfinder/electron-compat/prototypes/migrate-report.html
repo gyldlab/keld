@@ -1,0 +1,1077 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>keld migrate — report honesty (logic prototype)</title>
+<style>
+  :root {
+    --bg: #fbfbf9; --panel: #ffffff; --ink: #1b1d1f; --muted: #5d6368; --line: #d9dcde;
+    --soft: #f1f2f0; --accent: #0b6e69; --accent-soft: #e2f1ef; --on-accent: #ffffff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141617; --panel: #1b1e20; --ink: #e7e9ea; --muted: #a0a7ac; --line: #353a3e;
+      --soft: #22262a; --accent: #5cc8bf; --accent-soft: #17302e; --on-accent: #0c1414;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); }
+  main { max-width: 1320px; margin: 0 auto; padding: 20px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  p { margin: 6px 0; } code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+  code { background: var(--soft); padding: 0 3px; border-radius: 3px; }
+  .lede { max-width: 92ch; } .muted { color: var(--muted); } .small { font-size: 12.5px; }
+  .question { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 12px; margin: 10px 0; max-width: 100ch; }
+  .cols { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 20px; align-items: start; }
+  @media (max-width: 980px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  .sticky { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow: auto; }
+  @media (max-width: 980px) { .sticky { position: static; max-height: none; } }
+  button { font: 13px/1.3 var(--sans); color: var(--ink); background: var(--soft); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 9px; margin: 3px 4px 3px 0; cursor: pointer; text-align: left; }
+  button:hover { border-color: var(--accent); } button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  button.tab { border-radius: 4px 4px 0 0; margin: 0 2px 0 0; border-bottom: none; }
+  button.tab[aria-selected="true"] { background: var(--panel); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .tabbody { border: 1px solid var(--line); border-radius: 0 6px 6px 6px; padding: 10px 12px; background: var(--panel); }
+  .phases { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 10px; }
+  .phase { font: 12px var(--mono); padding: 2px 7px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); }
+  .phase.done { color: var(--ink); } .phase.now { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 6px 10px; margin: 5px 0; font-size: 13.5px; }
+  .error { border: 1px dashed var(--ink); background: var(--soft); padding: 8px 10px; margin: 5px 0; font-size: 13.5px; }
+  .error .code { font: 600 13px var(--mono); }
+  .tag { font: 11px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-left: 4px; color: var(--muted); white-space: nowrap; }
+  .tag.acc { border-color: var(--accent); color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  th { color: var(--muted); font-weight: 600; } td.num, th.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  details { border-top: 1px solid var(--line); padding: 5px 0; } summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
+  ol.steps { padding-left: 22px; margin: 8px 0; } ol.steps li { margin: 4px 0; font-size: 13.5px; }
+  ol.steps li.next { font-weight: 600; } ol.steps li.next::marker { color: var(--accent); }
+  .res { font: 12px var(--mono); margin-left: 6px; color: var(--accent); } .res.bad { color: var(--ink); text-decoration: underline wavy; }
+  .inv-ok { color: var(--accent); } .inv-bad { font-weight: 700; }
+</style>
+</head>
+<body>
+<main>
+  <h1><code>keld migrate</code> — does the analyzer state model produce an honest report?</h1>
+  <p class="lede muted">Logic prototype for map gyldlab/keld#391, units X02 (migrate tooling), X03 (Node/Bun and native addons), X04 (security mapping). Planning only: nothing here is implemented in Keld. Today <code>keld migrate</code> is a reserved verb that exits 2 with <code>KELD-CLI-045</code>.</p>
+  <div class="question">
+    <strong>Bounded question.</strong> Given a static scan of an Electron app, does this state model — scan → inventory call sites per Electron member → classify against the compat matrix (✔ / ▲ documented divergence / ✘ tracked / ✘ never / unclassified) → native-module qualification lookup → security blockers listed separately → authority profile printed → five files generated only after <code>--write</code> → counts labelled “static estimate, not a compatibility score” → a KEL-74 claim line only against a committed denominator — ever let the report say more than the evidence supports?
+    <div class="small muted" style="margin-top:6px">How to read it: the right-hand panel is the whole analyzer state, re-rendered after every action. Buttons under “Free play” are always available; an action the real system must refuse returns a typed error instead of doing nothing. The three walkthroughs reset to a known state. “Negative controls” mutate a rendered report and show the honesty checker catching each mutation.</div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>Guided walkthroughs</h2>
+      <div id="tabs" role="tablist"></div>
+      <div class="tabbody" id="walk"></div>
+
+      <h2>Free play</h2>
+      <div id="freeplay"></div>
+    </div>
+    <div class="panel sticky" id="statepanel" aria-live="polite"></div>
+  </div>
+
+  <h2>Assumptions and decisions encoded</h2>
+  <p class="small muted">FACT = read from the owning source on 2026-10-06 (Keld origin/main, pinned Electron v44.4.5 docs, corpus clone, Linear, or a resolved map decision). INFERENCE = my derivation from those facts. PROPOSED = still open on the map or invented by this prototype; not decided.</p>
+  <div class="panel"><table id="encoded"></table></div>
+</main>
+
+<!-- ============================================================================================
+     DATA BLOCK — pure data, no DOM. Matrix slice, never-list, KEL-215 rows, corpus manifest sketch,
+     and three scan fixtures. In the real analyzer these are inputs (committed matrix, evidence
+     ledger, the app tree); they are not part of the logic.
+     ============================================================================================ -->
+<script id="migrate-data">
+const KELD_MIGRATE_DATA = (function () {
+  'use strict';
+  var F = {
+    F01: 'KEL-72, KEL-142, KEL-139', F02: 'KEL-139, KEL-142, KEL-143, KEL-135', F03: 'KEL-79, KEL-132, KEL-142',
+    F04: 'KEL-80, KEL-75, KEL-136, KEL-98, KEL-142', F05: 'KEL-79, KEL-135, KEL-74', F06: 'KEL-71, KEL-130, KEL-102, KEL-89, KEL-76'
+  };
+  // [member, keld_status, tier, family] — every row re-read from compat-matrix.tsv on 2026-10-06.
+  var rows = [
+    ['app.whenReady', 'BEHAVIOR_MATCH', 1, 'F01'], ['app.quit', 'BEHAVIOR_MATCH ▲ (Promise<void>)', 1, 'F01'],
+    ['app.exit', 'UNSUPPORTED', 1, 'F01'], ['app.getPath', 'UNSUPPORTED', 1, 'F01'],
+    ['app.requestSingleInstanceLock', 'UNSUPPORTED', 1, 'F01'],
+    ['BrowserWindow.constructor', 'UNSUPPORTED', 1, 'F02'], ['BrowserWindow.loadURL', 'UNSUPPORTED', 1, 'F02'],
+    ['BrowserWindow.loadFile', 'UNSUPPORTED', 1, 'F02'],
+    ['WebContents.send', 'UNSUPPORTED', 1, 'F03'], ['WebContents.executeJavaScript', 'UNSUPPORTED', 1, 'F03'],
+    ['WebContents.setWindowOpenHandler', 'UNSUPPORTED', 1, 'F03'], ['WebContents.printToPDF', 'UNSUPPORTED', 1, 'F03'],
+    ['ipcMain.on', 'UNSUPPORTED', 1, 'F04'], ['ipcMain.handle', 'UNSUPPORTED', 1, 'F04'],
+    ['ipcRenderer.send', 'UNSUPPORTED', 1, 'F04'], ['ipcRenderer.invoke', 'UNSUPPORTED', 1, 'F04'],
+    ['ipcRenderer.sendSync', 'UNSUPPORTED', 1, 'F04'], ['contextBridge.exposeInMainWorld', 'UNSUPPORTED', 1, 'F04'],
+    ['protocol.handle', 'UNSUPPORTED', 2, 'F05'], ['WebRequest.onHeadersReceived', 'UNSUPPORTED', 2, 'F05'],
+    ['WebRequest.onBeforeRequest', 'UNSUPPORTED', 2, 'F05'],
+    ['dialog.showMessageBoxSync', 'UNSUPPORTED', 1, 'F06'], ['dialog.showSaveDialog', 'UNSUPPORTED', 1, 'F06'],
+    ['dialog.showOpenDialog', 'UNSUPPORTED', 1, 'F06'], ['shell.openExternal', 'UNSUPPORTED', 1, 'F06'],
+    ['shell.openPath', 'UNSUPPORTED', 1, 'F06'], ['clipboard.writeText', 'UNSUPPORTED', 1, 'F06'],
+    ['Menu.setApplicationMenu', 'UNSUPPORTED', 1, 'F06'], ['desktopCapturer.getSources', 'UNSUPPORTED', 3, 'F06'],
+    ['sharedTexture.importSharedTexture', 'NEVER', 'never', 'F03']
+  ];
+  var matrixRows = {};
+  rows.forEach(function (r) { matrixRows[r[0]] = { status: r[1], tier: r[2], family: r[3], owners: F[r[3]] }; });
+  matrixRows['app.quit'].note = 'returns Promise<void> — a host/kipc constraint no app can toggle (scoreboard ▲ with a conformance test)';
+
+  return {
+    electronPin: '44.4.5',
+    matrix: { snapshot: 'compat-matrix.tsv, 2,128 members: 2,088 UNSUPPORTED · 33 NEVER · 3 BEHAVIOR_MATCH · 2 BEHAVIOR_MATCH ▲ (Promise<void>) · 1 SCAFFOLDED · 1 PARTIAL', rows: matrixRows },
+    // Never-list entries are consulted BEFORE the matrix: a removed or refused surface must not fall through to "unclassified".
+    neverList: [
+      { members: ['remote (module)'], why: 'remote module: never (removed from Electron itself in 14.0)', source: 'PANEL-D10; X04-EPIC never list; Electron breaking-changes 14.0' }
+    ],
+    neverPrefs: {
+      'nodeIntegration:true': 'Node reach in renderers is never carried', 'contextIsolation:false': 'never carried',
+      'enableRemoteModule:true': 'never carried', 'webSecurity:false': 'never carried'
+    },
+    // Decided dispositions that can be "landed" as a world input. Landing simulates the owning ticket merging a
+    // conformance entry + implementation; the analyzer itself never promotes a row.
+    landable: {
+      webRequest: { members: ['WebRequest.onHeadersReceived', 'WebRequest.onBeforeRequest'], cls: 'div', status: 'BEHAVIOR_MATCH ▲ (recorded no-op)',
+        why: 'listener is recorded and never invoked; CSP injection and file:// containment are host-enforced', source: 'PANEL-D17 (resolved)', requires: 'containmentProof' },
+      updater: { members: ['electron-updater: autoUpdater.setFeedURL'], cls: 'div', status: 'BEHAVIOR_MATCH ▲ (recorded no-op)',
+        why: 'feed is host-declared; app feed ignored; never thrown, never translated into a feed', source: 'PANEL-D14 (resolved)' },
+      ipcCore: { members: ['ipcMain.on', 'WebContents.send', 'contextBridge.exposeInMainWorld'], cls: 'ok', status: 'BEHAVIOR_MATCH',
+        why: 'conformance entry landed (illustrative)', source: 'simulation only — no such entry exists today' },
+      sendSync: { members: ['ipcRenderer.sendSync'], gated: 'sendSync stays a deadline-bounded blocking CALL that is not admitted until the WKWebView sync-XHR experiment passes (PANEL-D8); the worker-owned single-link transport (PANEL-P1) is still an open prototype' }
+    },
+    defaultTarget: { os_arch: 'darwin-arm64', bun: '1.4.2', bunRev: '744846f844374847c902b5e7fd59b4342a51ef99' },
+    // KEL-215-shaped rows that exist today (docs/architecture/04 §5). Both are win32-x64 only.
+    kel215Rows: [
+      { pkg: 'better-sqlite3', version: '13.0.3', os_arch: 'win32-x64', bun: '1.4.2', bunRev: '744846f844374847c902b5e7fd59b4342a51ef99',
+        artifact: 'e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a', operation: 'SQL / callback / teardown', outcome: 'pass', source: 'KEL-215 fixture (live)' },
+      { pkg: 'better-sqlite3', version: '12.11.1', os_arch: 'win32-x64', bun: '1.4.2', bunRev: '744846f844374847c902b5e7fd59b4342a51ef99',
+        artifact: '707a4b480026ccd1fb8e308d43c7248e779d35eeefa09559ec9bb521bb97bb3b (selected, never loaded)', operation: 'first Database construction',
+        outcome: 'fail: ERR_DLOPEN_FAILED (the JavaScript require had succeeded)', source: 'KEL-215 fixture (live)' }
+    ],
+    corpus: {
+      id: 'electron-apps-v0', panel: 'product', digest: 'sim-digest-2edf9fb', // digest is simulated: the manifest does not exist yet (X02-T4)
+      denominators: { install: ['install'], activation: ['activation'], primary_workflow: ['open', 'edit', 'save', 'close-with-unsaved-prompt'] },
+      // What a legacy-profile dev smoke could record today in the best case: the close prompt is dialog.showMessageBoxSync,
+      // which waits on PANEL-P1, so that cell stays unknown.
+      smokeRecords: [
+        { cell: 'install', verdict: 'pass' }, { cell: 'activation', verdict: 'pass' }, { cell: 'open', verdict: 'pass' },
+        { cell: 'edit', verdict: 'pass' }, { cell: 'save', verdict: 'pass' }, { cell: 'close-with-unsaved-prompt', verdict: 'unknown' }
+      ]
+    },
+    fixtures: {
+      'drawio-like': {
+        title: 'draw.io-like', provenance: 'drawio-desktop 31.7.0 @2edf9fb — resolved call sites (grep -rF over src/, 2026-10-06, and PANEL-D15); a subset of members, hence “-like”',
+        corpusMember: true, pin: '2edf9fb', appName: 'draw.io',
+        parsedConfigs: ['package.json', 'electron-builder-linux-mac.json', 'electron-builder-win.json', 'electron-builder-win-arm64.json', 'electron-builder-appx.json', 'electron-builder-snap.json'],
+        notEvaluated: [],
+        sites: [
+          { member: 'app.whenReady', n: 2, where: 'main/electron.js' }, { member: 'app.quit', n: 5, where: 'main/electron.js' },
+          { member: 'app.exit', n: 3, where: 'main/electron.js' }, { member: 'app.getPath', n: 3, where: 'main/electron.js', note: "literal names: 'userData' ×2, 'documents' ×1" },
+          { member: 'app.requestSingleInstanceLock', n: 1, where: 'main/electron.js' },
+          { member: 'BrowserWindow.constructor', n: 4, where: 'main/electron.js' }, { member: 'BrowserWindow.constructor', n: 1, where: 'main/progress-bar.js' },
+          { member: 'BrowserWindow.loadURL', n: 4, where: 'main/', note: 'file:// loads' },
+          { member: 'WebContents.send', n: 9, where: 'main/electron.js' }, { member: 'WebContents.executeJavaScript', n: 3, where: 'main/electron.js', note: 'two further grep hits in this file are comments and are not call sites' }, { member: 'WebContents.executeJavaScript', n: 1, where: 'main/progress-bar.js' },
+          { member: 'WebContents.setWindowOpenHandler', n: 1, where: 'main/electron.js' }, { member: 'WebContents.printToPDF', n: 1, where: 'main/electron.js' },
+          { member: 'ipcMain.on', n: 15, where: 'main/electron.js', note: '15 literal channel names' },
+          { member: 'ipcRenderer.send', n: 2, where: 'main/electron-preload.js', note: 'channel is a caller-chosen argument' },
+          { member: 'contextBridge.exposeInMainWorld', n: 2, where: 'main/electron-preload.js' },
+          { member: 'dialog.showMessageBoxSync', n: 1, where: 'main/electron.js', note: 'close path' },
+          { member: 'dialog.showSaveDialog', n: 1, where: 'main/electron.js' }, { member: 'dialog.showOpenDialog', n: 1, where: 'main/electron.js' },
+          { member: 'shell.openExternal', n: 3, where: 'main/electron.js', note: '2 literal URLs, 1 dynamic' },
+          { member: 'WebRequest.onHeadersReceived', n: 1, where: 'main/electron.js', note: 'CSP header closure over codeDir' },
+          { member: 'WebRequest.onBeforeRequest', n: 1, where: 'main/electron.js', note: "file://* filter: startsWith(codeUrl)" },
+          { member: 'clipboard.writeText', n: 1, where: 'main/' },
+          { member: 'electron-updater: autoUpdater.setFeedURL', n: 1, where: 'main/electron.js', note: 'third-party package, not an Electron member; called outside the disable-update guard' }
+        ],
+        prefs: [
+          { key: 'nodeIntegration', value: 'false', n: 5, where: 'main/electron.js' }, { key: 'nodeIntegration', value: 'false', n: 1, where: 'main/progress-bar.js' },
+          { key: 'disableBlinkFeatures', value: '(string)', n: 4, where: 'main/' }
+        ],
+        webview: 'disabled everywhere (webviewTag:false and will-attach-webview prevented) — no finding',
+        proc: [
+          { api: 'child_process.spawn', n: 2, what: 'attrib.exe (Windows only)', shell: 'no' },
+          { api: 'child_process.execFile', n: 1, what: 'execFile(file, args, {timeout: 30000}); failure tolerated', shell: 'no' }
+        ],
+        deps: [
+          { pkg: 'electron-store', resolved: '^11.0.2', kind: 'electron-wrapper' }, { pkg: 'electron-log', resolved: '^5.4.4', kind: 'electron-wrapper' },
+          { pkg: 'electron-updater', resolved: '^6.8.9', kind: 'electron-wrapper' }
+        ],
+        mainChannels: ['rendererReq', 'checkForUpdates', 'export', 'isModified-result', 'log', 'newfile', 'openDevTools', 'resetZoom', 'saveAndClose-result', 'toggleFullscreen', 'toggleGoogleFonts', 'toggleSpellCheck', 'toggleStoreBkp', 'zoomIn', 'zoomOut'],
+        dispatcher: 'electron-preload.js exposes sendMessage(action, args) → ipcRenderer.send(action, args): the page chooses the channel',
+        external: { literal: ['https://www.drawio.com', 'https://github.com/jgraph/drawio-desktop/issues'], dynamic: 1 },
+        inputWildcards: [], customSchemes: [], syncIpc: 0,
+        bootStatic: ['electron-store is constructed at module top level (needs app.getPath synchronously at import)'],
+        getPathLiterals: ['userData', 'documents'], roleEnv: { DRAWIO_DISABLE_UPDATE: 'true' }, updaterFeedCall: true
+      },
+      'zettlr-like': {
+        title: 'Zettlr-like', provenance: 'Zettlr 4.8.0 @e6c7fd8 — resolved call sites (grep -rF over source/, 2026-10-06, and PANEL-D15); a subset of members',
+        corpusMember: false, pin: 'e6c7fd8', appName: 'Zettlr',
+        parsedConfigs: ['package.json', 'tsconfig.json', 'electron-builder.yml'],
+        notEvaluated: ['forge.config.js (JavaScript: listed, never evaluated)', 'webpack.main.config.js', 'webpack.renderer.config.js'],
+        sites: [
+          { member: 'ipcRenderer.invoke', n: 186, where: 'source/ (renderer)' }, { member: 'ipcRenderer.send', n: 35, where: 'source/ (renderer)' },
+          { member: 'ipcRenderer.sendSync', n: 6, where: 'common/modules/preload, pinia/config.ts', note: "channels 'config-provider', 'citeproc-provider' and one caller-chosen" },
+          { member: 'WebContents.send', n: 49, where: 'source/app' }, { member: 'ipcMain.handle', n: 25, where: 'source/app' }, { member: 'ipcMain.on', n: 6, where: 'source/app' },
+          { member: 'app.getPath', n: 40, where: 'source/app', note: "literal names: userData ×26, temp ×6, home ×4, documents ×2, exe ×1, downloads ×1" },
+          { member: 'app.quit', n: 10, where: 'source/app' }, { member: 'app.exit', n: 2, where: 'source/app' }, { member: 'app.whenReady', n: 1, where: 'source/main.ts' },
+          { member: 'app.requestSingleInstanceLock', n: 1, where: 'source/app' },
+          { member: 'BrowserWindow.constructor', n: 15, where: 'source/app' }, { member: 'BrowserWindow.loadURL', n: 14, where: 'source/app' }, { member: 'BrowserWindow.loadFile', n: 1, where: 'source/app' },
+          { member: 'protocol.handle', n: 1, where: 'source/app', note: "custom scheme 'safe-file'" },
+          { member: 'shell.openExternal', n: 7, where: 'source/app', note: 'every target is a variable' }, { member: 'shell.openPath', n: 16, where: 'source/app' },
+          { member: 'dialog.showOpenDialog', n: 4, where: 'source/app' }, { member: 'dialog.showSaveDialog', n: 2, where: 'source/app' },
+          { member: 'clipboard.writeText', n: 11, where: 'source/' }, { member: 'Menu.setApplicationMenu', n: 1, where: 'source/app' },
+          { member: 'WebContents.setWindowOpenHandler', n: 1, where: 'source/app' }, { member: 'WebContents.printToPDF', n: 1, where: 'source/app' },
+          { member: 'contextBridge.exposeInMainWorld', n: 5, where: 'common/modules/preload' }
+        ],
+        prefs: [{ key: 'sandbox', value: 'false', n: 1, where: 'app/util/splash-screen.ts' }, { key: 'sandbox', value: 'false', n: 1, where: 'service-providers/config/onboarding-window.ts' }],
+        webview: null,
+        proc: [
+          { api: 'child_process.spawn', n: 3, what: 'get-program-version, importer (pandoc), run-shell-command', shell: 'true' },
+          { api: 'child_process.spawn', n: 1, what: 'run-command.ts: spawn(command, argv, { shell }) — shell is a variable', shell: 'dynamic' },
+          { api: 'child_process.spawn', n: 2, what: 'gsettings (Linux), exporter (pandoc; options not resolved by this scan)', shell: 'no / unresolved' }
+        ],
+        deps: [
+          { pkg: 'nodehun', resolved: '3.0.2', kind: 'napi-addon', note: 'node-gyp source build; raw .node import',
+            // digest of the binary the scan finds on disk for each target (simulated). A source build differs per machine, which is exactly why the digest must match.
+            artifacts: { 'darwin-arm64': 'sim-nodehun-local-build-sha256' } },
+          { pkg: 'chokidar', resolved: '5.0.0', kind: 'pure-js', note: 'pure JS over fs.watch; the Bun fs.watch differential is not measured' },
+          { pkg: 'fsevents', resolved: '2.3.3', kind: 'napi-addon', note: 'optional dependency, macOS only', os: ['darwin'] }
+        ],
+        mainChannels: ['appearance-provider', 'application', 'assets-provider', 'citeproc-provider', 'close-all', 'config-provider', 'css-provider', 'dictionary-provider', 'documents-authority', 'documents-provider', 'fsal', 'i18n', 'link-provider', 'log-provider', 'lrt-provider', 'menu-provider', 'onboarding', 'provider-name', 'request-dir', 'request-files', 'search-provider', 'stats-provider', 'tag-provider', 'targets-provider', 'update-provider', 'window-controls'],
+        dispatcher: "preload exposes window.ipc = { send, sendSync, invoke, on } with a caller-chosen channel: a generic dispatcher",
+        external: { literal: [], dynamic: 7 },
+        inputWildcards: [], customSchemes: ['safe-file'], syncIpc: 6, bootStatic: [],
+        getPathLiterals: ['userData', 'temp', 'home', 'documents', 'exe', 'downloads'], roleEnv: {}, updaterFeedCall: false
+      },
+      'synthetic-legacy': {
+        title: 'synthetic legacy app', provenance: 'SYNTHETIC — not a corpus app. Built to exercise never-list rows neither corpus app contains (draw.io sets nodeIntegration:false everywhere; neither uses remote).',
+        corpusMember: false, pin: null, appName: 'legacy-sample',
+        parsedConfigs: ['package.json'], notEvaluated: ['forge.config.js (JavaScript: listed, never evaluated)'],
+        sites: [
+          { member: 'app.whenReady', n: 1, where: 'main.js' }, { member: 'app.quit', n: 1, where: 'main.js' },
+          { member: 'remote (module)', n: 3, where: 'renderer.js', note: "require('electron').remote" },
+          { member: 'desktopCapturer.getSources', n: 2, where: 'capture.js' },
+          { member: 'sharedTexture.importSharedTexture', n: 1, where: 'gpu.js' },
+          { member: 'electron[name] (computed member access)', n: 2, where: 'plugins.js', note: 'member name is computed at run time' },
+          { member: 'shell.openExternal', n: 1, where: 'main.js', note: 'target comes from renderer input' },
+          { member: 'BrowserWindow.constructor', n: 1, where: 'main.js' }
+        ],
+        prefs: [
+          { key: 'nodeIntegration', value: 'true', n: 1, where: 'main.js' }, { key: 'contextIsolation', value: 'false', n: 1, where: 'main.js' },
+          { key: 'enableRemoteModule', value: 'true', n: 1, where: 'main.js' }, { key: 'sandbox', value: 'false', n: 1, where: 'main.js' }
+        ],
+        webview: null,
+        proc: [{ api: 'child_process.exec', n: 1, what: 'exec(userCommand)', shell: 'true' }],
+        deps: [
+          { pkg: 'better-sqlite3', resolved: '13.0.3', kind: 'napi-addon',
+            // simulated: assumes the scan resolved the same published win32-x64 prebuild that the KEL-215 row loaded
+            artifacts: { 'win32-x64': 'e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a' } },
+          { pkg: 'node-pty', resolved: '1.0.0', kind: 'napi-addon', note: 'PTY is a host service (KEL-76), not an in-process addon' }
+        ],
+        mainChannels: ['db-query'], dispatcher: 'nodeIntegration renderer calls ipcRenderer directly with computed channels',
+        external: { literal: [], dynamic: 1 },
+        inputWildcards: ["legacy allow-list config: ipc channels ['*']"], customSchemes: [], syncIpc: 0, bootStatic: [],
+        getPathLiterals: [], roleEnv: {}, updaterFeedCall: false
+      }
+    }
+  };
+})();
+</script>
+
+<!-- ============================================================================================
+     LOGIC BLOCK — the liftable module. Pure: no DOM, no document/window, no clock, no randomness.
+     createMigrateModel(DATA) returns { initialState, reduce, checkInvariants, factsOf, PHASES }.
+     reduce(state, action) -> { state, changes[], error|null }. On error the state is returned unchanged.
+     ============================================================================================ -->
+<script id="migrate-logic">
+function createMigrateModel(DATA) {
+  'use strict';
+  var PHASES = ['idle', 'scanned', 'inventoried', 'classified', 'natives', 'security', 'profiled', 'reported'];
+  var LABEL = 'static estimate, not a compatibility score';
+  var FORFEIT = 'legacy — zero-authority claim forfeited';
+  var CLASSES = ['ok', 'div', 'tracked', 'never', 'unknown'];
+  var GLYPH = { ok: '✔ behavior match', div: '▲ documented divergence', tracked: '✘ tracked', never: '✘ never', unknown: '? unclassified' };
+  var CLAIM_SHAPE = /^\d+\/\d+ of [a-z]+ corpus [\w.-]+@[\w.:-]+ \([a-z_]+\)$/;
+
+  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+  function ix(p) { return PHASES.indexOf(p); }
+  function fixtureOf(s) { return s.appId ? DATA.fixtures[s.appId] : null; }
+  function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+
+  // ---- typed errors: the live KeldErrorObject shape {code, message, cause, fix, docs} --------------------------
+  // live:true  = code and wording exist on origin/main today. live:false = number is PROPOSED by this prototype.
+  function err(code, live, message, cause, fix) { return { code: code, live: live, message: message, cause: cause, fix: fix, docs: 'https://keld.dev/e/' + code }; }
+  var E = {
+    stage: function (stage, need, have) { return err('KELD-COMPAT-101', false, 'analysis stage `' + stage + '` cannot run yet', 'it consumes the output of `' + need + '`, and the analysis is at `' + have + '`', 'Run the stages in order (scan → inventory → classify → natives → security blockers → authority profile → report), or run `analyze` to complete the remaining ones.'); },
+    unknownInput: function (kind, v) { return err('KELD-COMPAT-110', false, 'unknown ' + kind + ' `' + v + '`', 'the model has no such ' + kind, 'Use one of the listed inputs.'); },
+    execConfig: function (f) { return err('KELD-COMPAT-102', false, 'refusing to evaluate `' + f + '`', 'the analyzer is read-only and never executes app code or JavaScript build configs (a forge config can spawn processes at load)', 'Nothing to do: the file is listed under “not evaluated”. Translate its packaging settings into keld.build.ts by hand, or convert them to a JSON/YAML config the analyzer can parse statically.'); },
+    noWrite: function () { return err('KELD-COMPAT-103', false, 'no files written', 'generation changes the project and was not authorized', 'Re-run as `keld migrate --write`. Without the flag the verb is analysis only.'); },
+    percent: function (hasDenominator) { return err('KELD-COMPAT-104', false, 'a compatibility percentage is not a legal line in a migrate report', hasDenominator ? 'a committed denominator exists, but percentages belong to the KEL-74 scorer (`unweighted_percent`), which derives them from evidence records — never from static call-site counts' : 'no committed product denominator exists, and static call-site counts are leads, not scored cells', 'Read the counts by status (labelled “' + LABEL + '”). For a claim, use the KEL-74 shape `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.'); },
+    claim: function (reason) { return err('KELD-COMPAT-105', false, 'no KEL-74 claim line can be printed', reason, 'A claim needs, in order: a committed corpus member scanned at its pinned bytes, a committed denominator document, the corpus id on the documented committed list, and evidence records for the committed cells.'); },
+    emptyDenominator: function () { return err('KELD-COMPAT-008', true, 'invalid denominator (cells must contain at least one entry)', '`score` rejects an empty cell list; 0/0 is not complete', 'Commit a v1 denominator with unique cells before scoring.'); },
+    badRecord: function (detail) { return err('KELD-COMPAT-005', true, 'invalid evidence record (' + detail + ')', 'a KEL-74 record must carry one of strict_bun, sandboxed_addon_worker, legacy_sandbox_off, user_approved_tool_child; `unverified` is a reporting state, not an evidence profile', 'Use the closed field set in docs/specs/kel74-compat-evidence-schema.md. (Migrate context, PROPOSED wording: accept the legacy forfeit explicitly so records carry legacy_sandbox_off, or wait for strict admission.)'); },
+    importPass: function (what) { return err('KELD-COMPAT-106', false, 'import success is not a passing operation', what, 'Record the operation itself (package version, OS/arch, Bun revision, loaded artifact SHA-256, operation, oracle). KEL-215 shows why: better-sqlite3 12.11.1 required cleanly on Bun 1.4.2 and then failed with ERR_DLOPEN_FAILED on first Database construction.'); },
+    strict: function () { return err('KELD-COMPAT-107', false, 'profile `strict` cannot be selected', 'strict needs admission plus a complete OS-containment archive for this OS, artifact and profile. On origin/main (arch 03 §4) macOS remains unverified; the Windows LPAC and Linux Bubblewrap/seccomp/Landlock mechanisms are live, the Linux one consumed by the no-flag primary; other named roles remain unverified until they consume a matching profile and archive. No archive exists for a migrated Electron app', 'Stay `unverified` (the default, reported as such), or accept the legacy forfeit explicitly.'); },
+    inferLegacy: function () { return err('KELD-COMPAT-112', false, 'the authority profile is never inferred from Electron settings', '`sandbox:false` is an Electron renderer option; it is ignored with a ▲ diagnostic and is not a Keld profile selector. A silent legacy downgrade is on the never-list', 'If you want the unsandboxed profile, accept the forfeit explicitly; the report will print “' + FORFEIT + '”.'); },
+    noAck: function () { return err('KELD-COMPAT-113', false, 'profile `legacy` was not written', 'the forfeit of the zero-authority claim was not acknowledged', 'Acknowledge the forfeit explicitly; every surface will then print “' + FORFEIT + '”.'); },
+    never: function (what, why, fix) { return err('KELD-COMPAT-108', false, 'refusing to carry `' + what + '` into the generated files', why, fix); },
+    gated: function (what, why) { return err('KELD-COMPAT-109', false, 'cannot land a conformance entry for ' + what, why, 'Close the gating artifact first; until then the member stays ✘ tracked in every report.'); },
+    wildcardChannel: function (g) { return err('KELD-COMPAT-121', false, 'refusing to seed wildcard channel grant `' + g + '`', 'both corpus preloads let the page choose the channel, so the per-window channel grant is the only renderer→main boundary; a wildcard removes it', 'Seed enumerated `el:<channel>` grants from literal main-side handlers. At run time an unlisted channel is denied: “KELD-GUARD003: channel `<name>` is not granted to this principal”.'); },
+    broadRoot: function (g) { return err('KELD-COMPAT-122', false, 'refusing to seed filesystem scope `' + g + '`', 'only app-scoped class roots derived from literal app.getPath names may be seeded', 'Grant the specific root the app needs, or leave it out: the guard deny text prints the exact manifest patch when the app first needs it.'); },
+    wildcardOrigin: function (g) { return err('KELD-COMPAT-123', false, 'refusing to seed wildcard open target `' + g + '`', 'shell.openExternal has no built-in filtering in Electron; an origin wildcard reproduces that', 'Seed literal origins found in source. Dynamic targets stay denied until the grant spelling for scheme classes is ruled (X04-D4).'); },
+    notDerived: function (g) { return err('KELD-COMPAT-124', false, 'grant `' + g + '` is not derived from a literal call site', 'seeding is literal-only: no recorder or dev-permissive profile exists to observe dynamic use', 'Add it by hand to keld.permissions.jsonc if the app needs it; migrate will not invent it.'); },
+    notMember: function () { return err('KELD-COMPAT-114', false, 'no KEL-74 record can be attached', 'this app is not a member of a committed corpus', 'Only committed corpus members get cells; the product corpus sketch holds draw.io only.'); },
+    notMigrated: function () { return err('KELD-COMPAT-114', false, 'no KEL-74 record can be attached', 'cells run through migrate + dev smoke, and the five files have not been generated', 'Authorize `--write`, generate, then run the smoke.'); },
+    notPinned: function (pin) { return err('KELD-COMPAT-114', false, 'no KEL-74 record can be attached', 'the scanned tree does not match the pinned corpus bytes (' + pin + '), and a cell binds to the pinned bytes', 'Check out the pinned commit, re-scan, regenerate, then run the smoke.'); },
+    staleGenerated: function (why) { return err('KELD-COMPAT-111', false, 'the generated files are stale', why, 'Re-run the analysis and `keld migrate --write` so the five files match the current tree and profile, then run the smoke again. Evidence from a stale generation is rejected, never relabelled.'); }
+  };
+
+  function initialState() {
+    return {
+      phase: 'idle', appId: null, dirtyTree: false,
+      target: clone(DATA.defaultTarget),
+      world: { landed: {}, containmentProof: false, denominatorCommitted: false, corpusIdDocumented: false, nativeEvidence: clone(DATA.kel215Rows), cellRecords: [] },
+      scan: null, inventory: null, classification: null, natives: null, blockers: null, profilePrint: null,
+      profile: { state: 'unverified', forfeitAccepted: false },
+      writeAuthorized: false, generated: null, report: null, probe: null
+    };
+  }
+
+  // Stepping back is how the model keeps a stale report from ever being shown.
+  function invalidate(s, to, changes, why) {
+    if (ix(s.phase) <= ix(to)) return;
+    var t = ix(to);
+    if (t < ix('classified')) s.classification = null;
+    if (t < ix('natives')) s.natives = null;
+    if (t < ix('security')) s.blockers = null;
+    if (t < ix('profiled')) s.profilePrint = null;
+    s.report = null; s.probe = null; s.phase = to;
+    if (why) changes.push('Report withdrawn (' + why + '). Analysis stepped back to “' + to + '”; re-run the remaining stages.');
+  }
+  function enter(s, stage, need, changes) {
+    if (ix(s.phase) < ix(need)) return E.stage(stage, need, s.phase);
+    invalidate(s, need, changes, null);
+    return null;
+  }
+
+  // ---- stage 2: inventory ------------------------------------------------------------------------------------
+  function buildInventory(fx) {
+    var by = {}, order = [];
+    fx.sites.forEach(function (g) {
+      if (!by[g.member]) { by[g.member] = { member: g.member, sites: 0, where: [], notes: [] }; order.push(g.member); }
+      by[g.member].sites += g.n; by[g.member].where.push(g.where + ' ×' + g.n); if (g.note) by[g.member].notes.push(g.note);
+    });
+    var api = order.map(function (m) { return by[m]; }).sort(function (a, b) { return b.sites - a.sites; });
+    var pb = {}, po = [];
+    fx.prefs.forEach(function (p) { var k = p.key + ':' + p.value; if (!pb[k]) { pb[k] = { key: p.key, value: p.value, sites: 0, where: [] }; po.push(k); } pb[k].sites += p.n; pb[k].where.push(p.where + ' ×' + p.n); });
+    return {
+      api: api, prefs: po.map(function (k) { return pb[k]; }), proc: clone(fx.proc), deps: clone(fx.deps),
+      channels: { literal: fx.mainChannels.slice(), dispatcher: fx.dispatcher }, external: clone(fx.external),
+      inputWildcards: fx.inputWildcards.slice(), customSchemes: fx.customSchemes.slice(), bootStatic: fx.bootStatic.slice(), webview: fx.webview,
+      totalSites: api.reduce(function (t, r) { return t + r.sites; }, 0), totalMembers: api.length
+    };
+  }
+
+  // ---- stage 3: classify -------------------------------------------------------------------------------------
+  function classifyMember(member, world) {
+    var nv = DATA.neverList.filter(function (n) { return n.members.indexOf(member) >= 0; })[0];
+    if (nv) return { cls: 'never', status: 'never-list', why: nv.why, source: nv.source };
+    var landed = world.landed[member];
+    if (landed) return { cls: landed.cls, status: landed.status, why: landed.why, source: landed.source + ' — simulated landing' };
+    var row = DATA.matrix.rows[member];
+    if (!row) return { cls: 'unknown', status: 'no matrix row', why: 'not an Electron ' + DATA.electronPin + ' member the matrix knows; counted, never assumed supported', source: 'compat matrix' };
+    if (row.status === 'BEHAVIOR_MATCH') return { cls: 'ok', status: row.status, why: 'conformance entry passes', source: 'matrix; owners ' + row.owners };
+    // The committed matrix spells the divergence inline, e.g. `BEHAVIOR_MATCH ▲ (Promise<void>)`: match the prefix, never the exact string.
+    if (row.status.indexOf('BEHAVIOR_MATCH ▲') === 0) return { cls: 'div', status: row.status, why: row.note || 'documented divergence', source: 'matrix; owners ' + row.owners };
+    if (row.status === 'NEVER') return { cls: 'never', status: row.status, why: 'documented never', source: 'matrix' };
+    // UNSUPPORTED, and also SCAFFOLDED / PARTIAL: neither is a passing conformance entry, so neither may read as supported.
+    return { cls: 'tracked', status: row.status, why: 'tier ' + row.tier + ', tracked by ' + row.owners, source: 'matrix' };
+  }
+  function buildClassification(inv, world) {
+    var counts = {}; CLASSES.forEach(function (c) { counts[c] = { members: 0, sites: 0 }; });
+    var rows = inv.api.map(function (r) {
+      var c = classifyMember(r.member, world);
+      counts[c.cls].members += 1; counts[c.cls].sites += r.sites;
+      return { member: r.member, sites: r.sites, cls: c.cls, status: c.status, why: c.why, source: c.source };
+    });
+    return { rows: rows, counts: counts };
+  }
+
+  // ---- stage 4: native-module qualification ------------------------------------------------------------------
+  // Only a row matching package version + OS/arch + Bun revision, whose artifact digest EQUALS the binary the scan
+  // found, with a passing OPERATION, may say "qualified" (arch 04 §5: a row does not generalize to another package
+  // version, artifact, architecture, Bun revision or operation). Package name, N-API declaration and import success
+  // never do.
+  function scannedArtifact(dep, target) { return (dep.artifacts && dep.artifacts[target.os_arch]) || null; }
+  function short(d) { return d.length > 12 ? d.slice(0, 12) + '…' : d; }
+  function qualify(dep, target, rows) {
+    if (dep.kind === 'pure-js') return { pkg: dep.pkg, version: dep.resolved, outcome: 'not-native', text: 'not a native addon — ' + (dep.note || 'pure JS') };
+    if (dep.kind === 'electron-wrapper') return { pkg: dep.pkg, version: dep.resolved, outcome: 'not-native', text: 'pure JS package that requires `electron` internally; resolves through the module alias (alias owner open: X02-A1)' };
+    if (dep.os && dep.os.indexOf(target.os_arch.split('-')[0]) < 0) return { pkg: dep.pkg, version: dep.resolved, outcome: 'not-applicable', text: 'not installed on ' + target.os_arch + ' (optional dependency for ' + dep.os.join(', ') + ' only): nothing to qualify on this target' };
+    var have = scannedArtifact(dep, target);
+    var mine = rows.filter(function (r) { return r.pkg === dep.pkg; });
+    var exact = mine.filter(function (r) { return r.version === dep.resolved && r.os_arch === target.os_arch && r.bunRev === target.bunRev; });
+    var passing = exact.filter(function (r) { return r.outcome === 'pass' && r.artifact && r.operation; });
+    var pass = passing.filter(function (r) { return have && r.artifact === have; })[0];
+    if (pass) return { pkg: dep.pkg, version: dep.resolved, outcome: 'qualified', text: 'qualified for exactly ' + dep.resolved + ' on ' + target.os_arch + ' / Bun ' + target.bun + ' — operation “' + pass.operation + '”, artifact ' + short(pass.artifact) + ' equals the scanned binary (' + pass.source + '). In-process load still fails closed under strict' };
+    if (passing.length) return { pkg: dep.pkg, version: dep.resolved, outcome: 'unqualified', text: 'unqualified — a passing row exists for ' + dep.resolved + ' on ' + target.os_arch + ' / Bun ' + target.bun + ', but it binds artifact ' + short(passing[0].artifact) + ' and ' + (have ? 'the scanned binary is ' + short(have) : 'the scan found no built binary to compare') + '. Evidence does not generalize to another artifact' };
+    var fail = exact[0];
+    if (fail) return { pkg: dep.pkg, version: dep.resolved, outcome: 'failed', text: 'evidence row FAILS for this exact tuple: ' + fail.outcome };
+    var near = mine.map(function (r) { return r.version + ' on ' + r.os_arch + ' (' + (r.outcome === 'pass' ? 'pass' : 'fail') + ')'; });
+    return { pkg: dep.pkg, version: dep.resolved, outcome: 'unqualified', text: 'unqualified — evidence required for ' + dep.resolved + ' on ' + target.os_arch + ' / Bun ' + target.bun + (near.length ? '. Existing rows do not generalize: ' + near.join('; ') : '. No row exists for this package') + (dep.note ? '. ' + dep.note : '') };
+  }
+
+  // ---- stage 5: blockers, by KEL-127 class; the security class is its own list and never touches the counts ----
+  function buildBlockers(s) {
+    var inv = s.inventory, fx = fixtureOf(s), w = s.world, out = [];
+    function add(cls, severity, title, sites, disposition, source) { out.push({ cls: cls, severity: severity, title: title, sites: sites, disposition: disposition, source: source }); }
+    function memberSites(m) { var r = inv.api.filter(function (x) { return x.member === m; })[0]; return r ? r.sites : 0; }
+
+    inv.prefs.forEach(function (p) {
+      var k = p.key + ':' + p.value;
+      if (DATA.neverPrefs[k]) add('security', 'never', 'webPreferences ' + k, p.sites, 'fails loudly; never carried into keld.config.ts. ' + DATA.neverPrefs[k], 'X04-EPIC never list; PANEL-D10');
+      else if (k === 'sandbox:false') add('security', 'diagnostic', 'webPreferences sandbox:false', p.sites, '▲ ignored with a diagnostic. It is an Electron renderer option, not a Keld profile key: the authority profile below is unaffected. What the app loses: in Electron an unsandboxed preload gets the full Node.js engine; that Node reach is never carried, so preload code that needs more than the sandboxed preload subset must move behind an enumerated main-side handler', 'X04-EPIC design facts; PANEL-D10; Electron v44.4.5 structures/web-preferences.md (sandbox)');
+      else if (p.key === 'disableBlinkFeatures') add('engine', 'diagnostic', 'webPreferences disableBlinkFeatures', p.sites, 'ignored with a diagnostic: Keld uses the system webview, there is no Blink feature switch to honor', 'X04-EPIC design facts');
+      else if (k === 'nodeIntegration:false') add('security', 'clean', 'webPreferences nodeIntegration:false', p.sites, 'no finding: already the safe value', 'scan');
+    });
+    var remote = memberSites('remote (module)');
+    if (remote) add('security', 'never', 'remote module', remote, 'never. Move the work behind an enumerated ipcMain handler', 'PANEL-D10; removed from Electron in 14.0');
+
+    var wr = memberSites('WebRequest.onHeadersReceived') + memberSites('WebRequest.onBeforeRequest');
+    if (wr) {
+      var landed = !!w.landed['WebRequest.onHeadersReceived'];
+      if (landed) add('security', 'diagnostic', 'session.webRequest listeners', wr, '▲ recorded no-ops behind host containment: the app’s CSP header and file:// filter closures are recorded and never invoked; the host enforces CSP injection and file:// containment', 'PANEL-D17');
+      else if (w.containmentProof) add('security', 'blocker', 'session.webRequest listeners', wr, 'host containment is proven, but no conformance entry has landed for the recorded no-op; until it does these stay ✘ tracked', 'PANEL-D17');
+      else add('security', 'blocker', 'session.webRequest listeners', wr, 'the app enforces its CSP and its file:// allow-list in these JavaScript closures, and they will not run. They may become recorded no-ops only after the host enforces CSP injection and file:// containment with a negative control (a file:// URL outside the app code dir is refused before bytes load)', 'PANEL-D17');
+    }
+    if (inv.external.literal.length) add('security', 'diagnostic', 'shell.openExternal — literal targets', inv.external.literal.length, 'seedable as literal origin grants: ' + inv.external.literal.map(originOf).join(', '), 'X02-T3; grant spelling open in X04-D4');
+    if (inv.external.dynamic) add('security', 'blocker', 'shell.openExternal — dynamic targets', inv.external.dynamic, 'unenumerable by static analysis. Electron opens any URL unfiltered; Keld denies by default. Not seeded', 'PANEL-D10; X04-D4 (open)');
+    inv.proc.forEach(function (p) {
+      if (p.shell === 'true') add('security', 'never', p.api + ' with shell:true — ' + p.what, p.n, 'never mapped: a shell string cannot be expressed as an executable allow-list plus argument schema', 'X02-EPIC never list');
+      else add('security', 'blocker', p.api + ' — ' + p.what + (p.shell === 'dynamic' ? ' (shell option is dynamic)' : ''), p.n, 'under strict: never a raw spawn (a host process broker is proposed, owner unconfirmed). Under legacy: Bun node:child_process with documented gaps', 'X03-EPIC; X03-A5 (open)');
+    });
+    add('security', 'blocker', 'renderer→main channel boundary', inv.channels.literal.length, plural(inv.channels.literal.length, 'literal main-side channel') + ' enumerated as `el:<channel>` grants. ' + inv.channels.dispatcher + ' — dynamic channels are unenumerable; fix-it: record them with the dev recorder (which does not exist yet) or list them by hand. `el:*` is refused. Note: window-level channel grants have no live evaluator yet', 'PANEL-D13; X02-T2; X02-EPIC');
+    if (fx.updaterFeedCall) add('security', 'diagnostic', 'electron-updater setFeedURL', 1, 'never translated into a feed: the feed is host-declared and signed. Decided disposition is a recorded no-op that never throws', 'PANEL-D14');
+    inv.customSchemes.forEach(function (sc) { add('security', 'blocker', "custom scheme '" + sc + "' (protocol.handle)", 1, 'scheme privileges are host declarations, never minted by app code; the privilege matrix is an open prototype', 'X04-EPIC; X04-D3 (open)'); });
+    inv.inputWildcards.forEach(function (x) { add('security', 'blocker', 'wildcard in an input config', 1, x + ' — reported, never seeded', 'X02-T3 acceptance'); });
+
+    var ss = memberSites('ipcRenderer.sendSync');
+    if (ss) add('compatibility', 'blocker', 'ipcRenderer.sendSync', ss, 'a deadline-bounded blocking CALL, not admitted until the WKWebView sync-XHR experiment passes', 'PANEL-D8');
+    var mbs = memberSites('dialog.showMessageBoxSync');
+    if (mbs) add('compatibility', 'blocker', 'dialog.showMessageBoxSync', mbs, 'needs the blocking class of sync emulation; the only candidate (worker-owned single-link transport) is an open prototype', 'PANEL-D18; PANEL-P1 (open)');
+    inv.bootStatic.forEach(function (b) { add('compatibility', 'blocker', 'boot-static read at import', 1, b + '. Boot facts must be host-published at spawn and synchronous at import', 'PANEL-D7'); });
+    if (inv.webview) add('engine', 'clean', '<webview>', 0, inv.webview, 'scan');
+    (s.natives || []).forEach(function (n) {
+      if (n.outcome === 'unqualified' || n.outcome === 'failed') add('native-dependency', 'blocker', n.pkg + ' ' + n.version, 1, n.text, 'KEL-215; X03-T2');
+    });
+    return out;
+  }
+  function originOf(u) { var m = /^([a-z][a-z0-9+.-]*:\/\/[^\/]+)/i.exec(u); return m ? m[1] : u; }
+
+  // ---- stage 6: authority profile ----------------------------------------------------------------------------
+  function buildProfilePrint(s) {
+    var strict = [];
+    (s.natives || []).forEach(function (n) { if (n.outcome !== 'not-native' && n.outcome !== 'not-applicable') strict.push('in-process native addon: ' + n.pkg); });
+    s.inventory.proc.forEach(function (p) { strict.push(p.api + ' ×' + p.n); });
+    // sandbox:false is deliberately absent: it is ignored (X04-EPIC), so it cannot also be a reason strict is withheld.
+    s.inventory.prefs.forEach(function (p) { if (p.key === 'nodeIntegration' && p.value === 'true') strict.push('window with nodeIntegration:true ×' + p.sites); });
+    if (s.profile.state === 'legacy') return { state: 'legacy', zeroAuthority: 'forfeited', forfeitPrinted: true, line: 'authority profile: ' + FORFEIT + ' (explicit user choice; authenticated and guarded, unsandboxed; evidence profile legacy_sandbox_off)', strictBlockers: strict };
+    return { state: 'unverified', zeroAuthority: 'forbidden', forfeitPrinted: false, line: 'authority profile: unverified — no OS proof (default; no zero-authority claim may be made; strict is not admitted for this app on ' + s.target.os_arch + ')', strictBlockers: strict };
+  }
+
+  // ---- KEL-74 claim eligibility ------------------------------------------------------------------------------
+  function claimStatus(s) {
+    var fx = fixtureOf(s), c = DATA.corpus;
+    if (!fx || !fx.corpusMember) return { ok: false, reason: 'this app is not a member of a committed corpus' };
+    if (s.dirtyTree) return { ok: false, reason: 'the scanned tree does not match the pinned corpus bytes (' + c.id + ' pins ' + fx.pin + ')' };
+    if (!s.world.denominatorCommitted) return { ok: false, reason: 'no committed denominator document exists for ' + c.id };
+    if (!s.world.corpusIdDocumented) return { ok: false, reason: c.id + ' is not on the documented committed product corpus list' };
+    if (!s.world.cellRecords.length) return { ok: false, reason: 'no evidence records exist for the committed cells (static counts are leads attached to rows, never cells)' };
+    var lines = [], unknown = [];
+    Object.keys(c.denominators).forEach(function (kind) {
+      var cells = c.denominators[kind], passed = 0;
+      cells.forEach(function (cell) {
+        var rec = s.world.cellRecords.filter(function (r) { return r.cell === cell; })[0];
+        if (rec && rec.verdict === 'pass') passed += 1; else unknown.push(cell + ' (' + (rec ? rec.verdict : 'missing') + ')');
+      });
+      lines.push(passed + '/' + cells.length + ' of ' + c.panel + ' corpus ' + c.id + '@' + c.digest + ' (' + kind + ')');
+    });
+    return { ok: true, lines: lines, unknown: unknown };
+  }
+
+  // ---- generation (only after --write) ------------------------------------------------------------------------
+  function derivedGrants(s) {
+    var inv = s.inventory, fx = fixtureOf(s);
+    return {
+      // A literal channel name that itself contains a wildcard character is reported and never seeded.
+      channels: inv.channels.literal.filter(function (c) { return !/[*?]/.test(c); }).map(function (c) { return 'el:' + c; }),
+      open: inv.external.literal.map(originOf).filter(function (o, i, a) { return a.indexOf(o) === i; }),
+      fs: fx.getPathLiterals.indexOf('userData') >= 0 ? ['$APPDATA/**'] : []
+    };
+  }
+  function validateGrant(g, s) {
+    var d = derivedGrants(s);
+    if (/^el:/.test(g)) { if (/[*?]/.test(g)) return E.wildcardChannel(g); return d.channels.indexOf(g) >= 0 ? null : E.notDerived(g); }
+    if (/^[a-z][a-z0-9+.-]*:(\/\/)?/i.test(g)) { if (/\*/.test(g)) return E.wildcardOrigin(g); return d.open.indexOf(g) >= 0 ? null : E.notDerived(g); }
+    if (d.fs.indexOf(g) >= 0) return null;
+    if (/\*/.test(g) || /^\$|^~|^\//.test(g)) return E.broadRoot(g);
+    return E.notDerived(g);
+  }
+  function buildGenerated(s) {
+    var fx = fixtureOf(s), inv = s.inventory, d = derivedGrants(s), notSeeded = [], dropped = [];
+    if (inv.external.dynamic) notSeeded.push(plural(inv.external.dynamic, 'dynamic shell.openExternal target') + ' (unenumerable)');
+    notSeeded.push('dynamic channels reachable through the preload dispatcher (unenumerable)');
+    inv.inputWildcards.forEach(function (x) { notSeeded.push('input wildcard reported, not seeded: ' + x); });
+    inv.channels.literal.forEach(function (c) { if (/[*?]/.test(c)) notSeeded.push('literal channel `' + c + '` contains a wildcard character (reported, never seeded)'); });
+    fx.getPathLiterals.forEach(function (n) { if (n !== 'userData' && n !== 'logs') notSeeded.push("app.getPath('" + n + "') root (outside the app-scoped class roots)"); });
+    inv.prefs.forEach(function (p) { if (DATA.neverPrefs[p.key + ':' + p.value]) dropped.push(p.key + ':' + p.value); if (p.key === 'sandbox' && p.value === 'false') dropped.push('sandbox:false (▲ ignored)'); });
+    var env = Object.keys(fx.roleEnv).map(function (k) { return k + '=' + fx.roleEnv[k]; });
+    return {
+      profile: s.profile.state, stale: null, // the profile the files were written under; `stale` names why they no longer match
+      grants: d, notSeeded: notSeeded, dropped: dropped,
+      files: [
+        { name: 'keld.config.ts', change: 'created', summary: 'identity “' + fx.appName + '”, ' + plural(inv.api.filter(function (r) { return r.member === 'BrowserWindow.constructor'; }).reduce(function (t, r) { return t + r.sites; }, 0), 'window') + ' site(s), singleInstance' + (env.length ? ', host-declared role env ' + env.join(', ') : '') + (s.profile.state === 'legacy' ? ', profile key `legacy` (forfeit accepted)' : ', no profile key (stays unverified)') + (dropped.length ? '; NOT carried: ' + dropped.join(', ') : '') },
+        { name: 'keld.permissions.jsonc', change: 'created', summary: plural(d.channels.length, 'enumerated channel grant') + ', ' + plural(d.open.length, 'literal open origin') + ', ' + plural(d.fs.length, 'app-scoped fs root') + '; no wildcard channel' },
+        { name: 'keld.build.ts', change: 'created', summary: 'packaging translated from the statically parsed builder config; update feed left host-declared (an app setFeedURL is never translated)' },
+        { name: 'keld.compat.ts', change: 'created', summary: 'quirks flags only; a quirk may narrow authority and never widen it; the guard never reads this file' },
+        { name: 'package.json', change: 'edited', summary: '`electron` dependency aliased to the @keld/electron shim, scripts switched to keld dev/build' }
+      ]
+    };
+  }
+
+  // ---- stage 7: report ---------------------------------------------------------------------------------------
+  function buildReport(s) {
+    var fx = fixtureOf(s), inv = s.inventory, cl = s.classification, L = [], claim = claimStatus(s);
+    L.push('keld migrate report — ' + fx.title + (fx.pin ? ' @' + fx.pin : ''));
+    L.push('  scan: read-only; ' + plural(fx.parsedConfigs.length, 'config') + ' parsed statically; ' + (fx.notEvaluated.length ? 'NOT evaluated: ' + fx.notEvaluated.join(', ') : 'no executable config encountered'));
+    L.push('  Electron ' + DATA.electronPin + ' usage: ' + plural(inv.totalMembers, 'member') + ', ' + plural(inv.totalSites, 'call site') + '; target ' + s.target.os_arch + ' / Bun ' + s.target.bun);
+    L.push('  static coverage by status (' + LABEL + '):');
+    CLASSES.forEach(function (c) { L.push('    ' + pad(GLYPH[c], 26) + pad(plural(cl.counts[c].members, 'member'), 13) + plural(cl.counts[c].sites, 'call site')); });
+    cl.rows.filter(function (r) { return r.cls === 'div'; }).forEach(function (r) { L.push('  ▲ ' + r.member + ' — ' + r.why); });
+    cl.rows.filter(function (r) { return r.cls === 'never'; }).forEach(function (r) { L.push('  ✘ never: ' + r.member + ' ×' + r.sites + ' — ' + r.why); });
+    cl.rows.filter(function (r) { return r.cls === 'unknown'; }).forEach(function (r) { L.push('  ? ' + r.member + ' ×' + r.sites + ' — ' + r.why); });
+    var tracked = cl.rows.filter(function (r) { return r.cls === 'tracked'; });
+    if (tracked.length) L.push('  ✘ tracked, largest first: ' + tracked.slice(0, 5).map(function (r) { return r.member + ' ×' + r.sites; }).join(', ') + (tracked.length > 5 ? ', and ' + (tracked.length - 5) + ' more' : ''));
+    ['security', 'compatibility', 'engine', 'native-dependency'].forEach(function (cls) {
+      var bs = s.blockers.filter(function (b) { return b.cls === cls && b.severity !== 'clean'; });
+      L.push('  blockers — ' + cls + ': ' + (bs.length ? bs.length + ' listed' : 'none found by static analysis'));
+      bs.forEach(function (b) { L.push('    [' + b.severity + '] ' + b.title + (b.sites ? ' ×' + b.sites : '') + ' — ' + b.disposition); });
+    });
+    var nat = s.natives.filter(function (n) { return n.outcome !== 'not-native'; }), js = s.natives.filter(function (n) { return n.outcome === 'not-native'; });
+    L.push('  native modules: ' + (nat.length ? nat.length + ' found' : 'none found') + (js.length ? ' (JavaScript dependencies checked and not native: ' + js.map(function (n) { return n.pkg; }).join(', ') + ')' : ''));
+    nat.forEach(function (n) { L.push('    ' + n.pkg + ' ' + n.version + ' — ' + n.text); });
+    L.push('  ' + s.profilePrint.line);
+    if (s.profilePrint.strictBlockers.length) L.push('    blockers to strict: ' + s.profilePrint.strictBlockers.join('; '));
+    if (s.generated) L.push('  files written (--write): ' + s.generated.files.map(function (f) { return f.name + ' (' + f.change + ')'; }).join(' · ') + (s.generated.stale ? ' — STALE: ' + s.generated.stale + '; regenerate before any smoke run' : ''));
+    else L.push('  files: none written (' + (s.writeAuthorized ? '--write authorized; generation has not run' : 'analysis only; pass --write to authorize generation') + ')');
+    if (claim.ok) {
+      claim.lines.forEach(function (c) { L.push('  ' + c); });
+      L.push('    records carry authority_profile legacy_sandbox_off' + (claim.unknown.length ? '; not passing: ' + claim.unknown.join(', ') : ''));
+    } else L.push('  no KEL-74 claim line: ' + claim.reason);
+    return {
+      lines: L, counts: clone(cl.counts), claimLines: claim.ok ? claim.lines : [],
+      natives: s.natives.map(function (n) { return { pkg: n.pkg, version: n.version, outcome: n.outcome }; }),
+      profile: { state: s.profilePrint.state, forfeitPrinted: s.profilePrint.forfeitPrinted },
+      filesWritten: !!s.generated, grants: s.generated ? s.generated.grants.channels.concat(s.generated.grants.open, s.generated.grants.fs) : []
+    };
+  }
+  function pad(t, n) { while (t.length < n) t += ' '; return t; }
+
+  // ---- honesty invariants: the oracle. Ground truth (facts) comes from state, never from the report. --------
+  // factsOf deliberately does NOT call qualify() or claimStatus(): it recomputes eligibility from the raw world
+  // inputs, so the oracle cannot inherit a mistake made by the code that produced the report.
+  function factsOf(s) {
+    var fx = fixtureOf(s), w = s.world, q = [], cells = {};
+    if (fx) fx.deps.forEach(function (d) {
+      if (d.kind !== 'napi-addon') return;
+      var have = d.artifacts ? d.artifacts[s.target.os_arch] : null;
+      var ok = w.nativeEvidence.some(function (r) { return r.pkg === d.pkg && r.version === d.resolved && r.os_arch === s.target.os_arch && r.bunRev === s.target.bunRev && r.outcome === 'pass' && !!r.operation && !!have && r.artifact === have; });
+      if (ok) q.push(d.pkg + '@' + d.resolved);
+    });
+    Object.keys(DATA.corpus.denominators).forEach(function (kind) {
+      var list = DATA.corpus.denominators[kind];
+      cells[kind] = { n: list.length, passed: list.filter(function (c) { return w.cellRecords.some(function (r) { return r.cell === c && r.verdict === 'pass'; }); }).length };
+    });
+    return {
+      totalSites: s.inventory ? s.inventory.totalSites : 0, totalMembers: s.inventory ? s.inventory.totalMembers : 0,
+      claimEligible: !!fx && fx.corpusMember === true && !s.dirtyTree && w.denominatorCommitted === true && w.corpusIdDocumented === true && w.cellRecords.length > 0,
+      cells: cells, qualified: q, forfeitAccepted: s.profile.forfeitAccepted, writeAuthorized: s.writeAuthorized,
+      securityFindings: (s.blockers || []).filter(function (b) { return b.cls === 'security' && b.severity !== 'clean'; }).length
+    };
+  }
+  function claimCountsHold(line, f) {
+    var m = /^(\d+)\/(\d+) of .* \(([a-z_]+)\)$/.exec(line), c = m ? f.cells[m[3]] : null;
+    return !!c && Number(m[1]) === c.passed && Number(m[2]) === c.n;
+  }
+  function checkInvariants(r, f) {
+    var text = r.lines.join('\n'), sumS = 0, sumM = 0;
+    CLASSES.forEach(function (c) { sumS += r.counts[c].sites; sumM += r.counts[c].members; });
+    function inv(id, ok, t) { return { id: id, ok: !!ok, text: t }; }
+    return [
+      inv('I1', !/%|\bpercent/i.test(text), 'no percentage anywhere in the report'),
+      inv('I2', r.lines.some(function (l) { return l.indexOf('static coverage') >= 0 && l.indexOf(LABEL) >= 0; }), 'counts carry the label “' + LABEL + '”'),
+      inv('I3', sumS === f.totalSites && sumM === f.totalMembers, 'every inventoried member and call site lands in exactly one status (nothing dropped)'),
+      inv('I4', r.claimLines.length === 0 || (f.claimEligible && r.claimLines.every(function (c) { return CLAIM_SHAPE.test(c) && claimCountsHold(c, f); })), 'a claim line appears only with a committed denominator, documented id, pinned bytes and records — in the KEL-74 shape, with passed/N equal to the recorded passing cells over the committed cells'),
+      inv('I5', r.natives.every(function (n) { return n.outcome !== 'qualified' || f.qualified.indexOf(n.pkg + '@' + n.version) >= 0; }), '“qualified” only with a passing row for this version + OS/arch + Bun revision whose artifact digest equals the scanned binary'),
+      inv('I6', (r.profile.state === 'unverified' || (r.profile.state === 'legacy' && f.forfeitAccepted && r.profile.forfeitPrinted)) && text.indexOf('authority profile:') >= 0, 'authority profile printed; legacy only with an accepted, printed forfeit; never strict'),
+      inv('I7', (!r.filesWritten || f.writeAuthorized) && r.grants.every(function (g) { return !/^el:.*[*?]/.test(g); }), 'files only after --write; no wildcard channel grant'),
+      inv('I8', f.securityFindings === 0 || r.lines.some(function (l) { return l.indexOf('blockers — security:') >= 0 && l.indexOf('none found') < 0; }), 'security blockers listed in their own section')
+    ];
+  }
+  var MUTATIONS = {
+    'inject-percent': { say: 'append “compat score: 91% — expected to run” (the arch 04 §1 sample line)', run: function (r) { r.lines.push('  compat score: 91% — expected to run. `keld dev` to verify.'); } },
+    'drop-label': { say: 'remove the “static estimate” label from the counts header', run: function (r) { r.lines = r.lines.map(function (l) { return l.replace(' (' + LABEL + ')', ''); }); } },
+    'hide-unclassified': { say: 'silently drop the unclassified and never rows from the counts', run: function (r) { r.counts.unknown = { members: 0, sites: 0 }; r.counts.never = { members: 0, sites: 0 }; r.counts.tracked.sites -= 1; } },
+    'forge-claim': { say: 'print a claim line built from static counts', run: function (r) { r.claimLines.push(r.counts.ok.sites + '/' + (r.counts.ok.sites + r.counts.tracked.sites) + ' of product corpus toy-uncommitted@none (primary_workflow)'); } },
+    'unknown-as-pass': { say: 'count the unknown close-prompt cell as passed (4/4)', run: function (r) { var done = false; r.claimLines = r.claimLines.map(function (c) { if (/\(primary_workflow\)$/.test(c)) { done = true; return c.replace(/^\d+\/(\d+)/, '$1/$1'); } return c; }); if (!done) r.claimLines.push('4/4 of product corpus ' + DATA.corpus.id + '@' + DATA.corpus.digest + ' (primary_workflow)'); } },
+    'qualify-by-name': { say: 'mark every native module qualified because it declares N-API', run: function (r) { r.natives.forEach(function (n) { if (n.outcome !== 'not-native' && n.outcome !== 'not-applicable') n.outcome = 'qualified'; }); if (!r.natives.some(function (n) { return n.outcome === 'qualified'; })) r.natives.push({ pkg: 'better-sqlite3', version: '12.11.1', outcome: 'qualified' }); } },
+    'silent-legacy': { say: 'print profile legacy without an accepted forfeit', run: function (r) { r.profile = { state: 'legacy', forfeitPrinted: false }; } },
+    'strict-claim': { say: 'print profile strict', run: function (r) { r.profile = { state: 'strict', forfeitPrinted: false }; } },
+    'wildcard-grant': { say: 'seed `el:*` into the generated manifest', run: function (r) { r.filesWritten = true; r.grants.push('el:*'); } },
+    'merge-security': { say: 'fold security blockers into the counts and drop their section', run: function (r) { r.lines = r.lines.map(function (l) { return l.indexOf('blockers — security:') >= 0 ? '  blockers — security: none found by static analysis' : l; }); } }
+  };
+
+  // ---- reducer ------------------------------------------------------------------------------------------------
+  var H = {
+    reset: function (s, a, ch) { var f = initialState(); Object.keys(s).forEach(function (k) { delete s[k]; }); Object.assign(s, f); ch.push('Reset: no app scanned; profile unverified; no write authorization; world inputs back to today (two KEL-215 rows, both win32-x64; no denominator; no containment proof).'); },
+    scan: function (s, a, ch) {
+      var fx = DATA.fixtures[a.app]; if (!fx) return E.unknownInput('fixture', a.app);
+      var world = s.world, target = s.target, f = initialState(); Object.keys(s).forEach(function (k) { delete s[k]; }); Object.assign(s, f);
+      s.world = world; s.world.cellRecords = []; s.target = target; s.appId = a.app; s.phase = 'scanned';
+      s.scan = { parsed: fx.parsedConfigs.slice(), notEvaluated: fx.notEvaluated.slice(), groups: fx.sites.length };
+      ch.push('Scanned ' + fx.title + ' read-only: ' + plural(fx.sites.length, 'raw site group') + ' found by import-binding-aware lexical scan; ' + plural(fx.parsedConfigs.length, 'config') + ' parsed statically.');
+      if (fx.notEvaluated.length) ch.push('Listed but NOT evaluated: ' + fx.notEvaluated.join(', ') + '.');
+      ch.push('Per-app state reset: profile back to unverified, write authorization cleared, no cell records. World inputs and target are kept.');
+    },
+    inventory: function (s, a, ch) {
+      var e = enter(s, 'inventory', 'scanned', ch); if (e) return e;
+      s.inventory = buildInventory(fixtureOf(s)); s.phase = 'inventoried';
+      ch.push('Inventory: ' + plural(s.inventory.totalMembers, 'Electron member') + ', ' + plural(s.inventory.totalSites, 'resolved call site') + '. Also recorded: ' + plural(s.inventory.prefs.length, 'webPreferences setting') + ', ' + plural(s.inventory.proc.length, 'spawn/exec site group') + ', ' + plural(s.inventory.deps.length, 'dependency') + ', ' + plural(s.inventory.channels.literal.length, 'literal IPC channel') + '.');
+    },
+    classify: function (s, a, ch) {
+      var e = enter(s, 'classify', 'inventoried', ch); if (e) return e;
+      s.classification = buildClassification(s.inventory, s.world); s.phase = 'classified';
+      var c = s.classification.counts;
+      ch.push('Classified against the matrix: ✔ ' + c.ok.sites + ' · ▲ ' + c.div.sites + ' · ✘ tracked ' + c.tracked.sites + ' · ✘ never ' + c.never.sites + ' · unclassified ' + c.unknown.sites + ' call sites. These are counts by status, not a score.');
+      s.classification.rows.forEach(function (r) { if (r.cls === 'unknown') ch.push(r.member + ' has no matrix row → unclassified (counted, not assumed supported).'); if (r.cls === 'never') ch.push(r.member + ' → ✘ never (' + r.why + ').'); });
+    },
+    qualifyNatives: function (s, a, ch) {
+      var e = enter(s, 'qualifyNatives', 'classified', ch); if (e) return e;
+      s.natives = s.inventory.deps.map(function (d) { return qualify(d, s.target, s.world.nativeEvidence); }); s.phase = 'natives';
+      if (!s.natives.some(function (n) { return n.outcome !== 'not-native'; })) ch.push('Native modules: no native addon found' + (s.natives.length ? ' (' + s.natives.map(function (n) { return n.pkg; }).join(', ') + ' are JavaScript).' : '.'));
+      s.natives.forEach(function (n) { if (n.outcome !== 'not-native') ch.push(n.pkg + ' ' + n.version + ' → ' + n.text + '.'); });
+    },
+    listSecurityBlockers: function (s, a, ch) {
+      var e = enter(s, 'listSecurityBlockers', 'natives', ch); if (e) return e;
+      s.blockers = buildBlockers(s); s.phase = 'security';
+      var sec = s.blockers.filter(function (b) { return b.cls === 'security' && b.severity !== 'clean'; });
+      ch.push('Blockers listed by class, apart from the counts: security ' + sec.length + ' (' + sec.filter(function (b) { return b.severity === 'never'; }).length + ' never, ' + sec.filter(function (b) { return b.severity === 'blocker'; }).length + ' blocker, ' + sec.filter(function (b) { return b.severity === 'diagnostic'; }).length + ' diagnostic), compatibility ' + s.blockers.filter(function (b) { return b.cls === 'compatibility'; }).length + ', engine ' + s.blockers.filter(function (b) { return b.cls === 'engine' && b.severity !== 'clean'; }).length + ', native-dependency ' + s.blockers.filter(function (b) { return b.cls === 'native-dependency'; }).length + '.');
+      s.blockers.forEach(function (b) { if (b.severity === 'never') ch.push('✘ never: ' + b.title + '.'); });
+    },
+    printAuthorityProfile: function (s, a, ch) {
+      var e = enter(s, 'printAuthorityProfile', 'security', ch); if (e) return e;
+      s.profilePrint = buildProfilePrint(s); s.phase = 'profiled';
+      ch.push('Printed: ' + s.profilePrint.line + '.');
+      if (s.profilePrint.strictBlockers.length) ch.push('Blockers to strict: ' + s.profilePrint.strictBlockers.join('; ') + '.');
+    },
+    renderReport: function (s, a, ch) {
+      var e = enter(s, 'renderReport', 'profiled', ch); if (e) return e;
+      s.report = buildReport(s); s.phase = 'reported';
+      var bad = checkInvariants(s.report, factsOf(s)).filter(function (i) { return !i.ok; });
+      ch.push('Report rendered: ' + s.report.lines.length + ' lines; ' + (s.report.claimLines.length ? plural(s.report.claimLines.length, 'KEL-74 claim line') : 'no KEL-74 claim line') + '; honesty invariants ' + (bad.length ? 'VIOLATED: ' + bad.map(function (i) { return i.id; }).join(', ') : 'all hold') + '.');
+    },
+    analyze: function (s, a, ch) {
+      if (s.phase === 'idle') return E.stage('analyze', 'scanned', s.phase);
+      var order = ['inventory', 'classify', 'qualifyNatives', 'listSecurityBlockers', 'printAuthorityProfile', 'renderReport'], start = ix(s.phase) - 1;
+      if (s.phase === 'reported') start = order.length - 1;
+      for (var i = Math.max(start, 0); i < order.length; i += 1) { var e = H[order[i]](s, {}, ch); if (e) return e; }
+    },
+    acceptLegacyForfeit: function (s, a, ch) {
+      if (s.phase === 'idle') return E.stage('acceptLegacyForfeit', 'scanned', s.phase);
+      if (!a.acknowledge) return E.noAck();
+      s.profile = { state: 'legacy', forfeitAccepted: true };
+      ch.push('User accepted the forfeit: profile key `legacy` will be written on --write. Every surface now prints “' + FORFEIT + '”. KEL-74 records for this app carry legacy_sandbox_off.');
+      if (s.generated && s.generated.profile !== 'legacy' && !s.generated.stale) { s.generated.stale = 'written under profile ' + s.generated.profile + ', so keld.config.ts carries no `legacy` key'; ch.push('The files already written are now STALE: ' + s.generated.stale + '. Regenerate before any smoke run.'); }
+      invalidate(s, 'security', ch, 'authority profile changed');
+    },
+    authorizeWrite: function (s, a, ch) {
+      if (s.phase === 'idle') return E.stage('authorizeWrite', 'scanned', s.phase);
+      s.writeAuthorized = true; ch.push('--write authorized: generation of the five files is now permitted. Nothing has been written yet.');
+      invalidate(s, 'profiled', ch, 'write authorization changed');
+    },
+    generateFiles: function (s, a, ch) {
+      if (!s.writeAuthorized) return E.noWrite();
+      if (ix(s.phase) < ix('profiled')) return E.stage('generateFiles', 'profiled', s.phase);
+      s.generated = buildGenerated(s);
+      ch.push('Wrote five files: ' + s.generated.files.map(function (f) { return f.name; }).join(', ') + '.');
+      ch.push('keld.permissions.jsonc seeded literal-only: ' + plural(s.generated.grants.channels.length, '`el:<channel>` grant') + ', ' + plural(s.generated.grants.open.length, 'open origin') + ', ' + plural(s.generated.grants.fs.length, 'fs root') + '. Not seeded: ' + s.generated.notSeeded.join('; ') + '.');
+      if (s.generated.dropped.length) ch.push('Not carried into keld.config.ts: ' + s.generated.dropped.join(', ') + '.');
+      invalidate(s, 'profiled', ch, 'files were written');
+    },
+    setTarget: function (s, a, ch) {
+      if (['darwin-arm64', 'win32-x64'].indexOf(a.os_arch) < 0) return E.unknownInput('target', a.os_arch);
+      s.target.os_arch = a.os_arch; ch.push('Target is now ' + a.os_arch + ' / Bun ' + s.target.bun + '. Native evidence is matched against this exact tuple.');
+      invalidate(s, 'classified', ch, 'target changed');
+    },
+    // ---- world inputs (simulated) ----
+    recordContainmentProof: function (s, a, ch) {
+      s.world.containmentProof = true; ch.push('World: host file:// containment and CSP injection recorded as proven by a negative control (simulated; the mechanism is unbuilt and unmeasured today).');
+      invalidate(s, 'inventoried', ch, 'a gating artifact changed');
+    },
+    landConformance: function (s, a, ch) {
+      var d = DATA.landable[a.set]; if (!d) return E.unknownInput('conformance set', a.set);
+      if (d.gated) return E.gated(d.members.join(', '), d.gated);
+      if (d.requires === 'containmentProof' && !s.world.containmentProof) return E.gated(d.members.join(', '), 'a webRequest listener may become a recorded no-op only after the host enforces CSP injection and file:// containment, proven by a negative control (PANEL-D17). That proof is not recorded');
+      d.members.forEach(function (m) { s.world.landed[m] = { cls: d.cls, status: d.status, why: d.why, source: d.source }; });
+      ch.push('World: conformance entry landed (simulated) — ' + d.members.join(', ') + ' → ' + d.status + '.');
+      invalidate(s, 'inventoried', ch, 'the matrix changed');
+    },
+    addNativeEvidence: function (s, a, ch) {
+      var other = a.variant === 'other-artifact', digest = other ? 'sim-other-nodehun-binary-sha256' : 'sim-nodehun-local-build-sha256';
+      s.world.nativeEvidence.push({ pkg: 'nodehun', version: '3.0.2', os_arch: s.target.os_arch, bun: s.target.bun, bunRev: s.target.bunRev, artifact: digest, operation: 'load dictionary + spell() + suggest() + teardown', outcome: 'pass', source: 'simulated row' });
+      ch.push('World: a KEL-215-shaped row lands for nodehun 3.0.2 on ' + s.target.os_arch + ' / Bun ' + s.target.bun + ' with a passing operation and artifact digest ' + digest + (other ? ' — a different binary from the one in the scanned tree' : ' — the digest of the binary in the scanned tree') + ' (simulated).');
+      invalidate(s, 'classified', ch, 'the native evidence ledger changed');
+    },
+    commitDenominator: function (s, a, ch) {
+      if (a.empty) return E.emptyDenominator();
+      s.world.denominatorCommitted = true; ch.push('World: denominator documents committed for ' + DATA.corpus.id + ' — install (1 cell), activation (1 cell), primary_workflow (4 cells: open, edit, save, close-with-unsaved-prompt). Simulated: the manifest does not exist yet.');
+      invalidate(s, 'profiled', ch, 'claim preconditions changed');
+    },
+    documentCorpusId: function (s, a, ch) {
+      s.world.corpusIdDocumented = true; ch.push('World: ' + DATA.corpus.id + ' added to the documented committed product corpus list (simulated; the list is empty today).');
+      invalidate(s, 'profiled', ch, 'claim preconditions changed');
+    },
+    attachCellEvidence: function (s, a, ch) {
+      if (a.kind === 'import-success') return E.importPass('a cell was offered as `pass` because the main module imported without throwing');
+      var fx = fixtureOf(s); if (!fx || !fx.corpusMember) return E.notMember();
+      if (s.profile.state !== 'legacy') return E.badRecord('unknown authority_profile `' + s.profile.state + '`');
+      if (!s.generated) return E.notMigrated();
+      if (s.generated.stale) return E.staleGenerated(s.generated.stale);
+      if (s.dirtyTree) return E.notPinned(fx.pin);
+      s.world.cellRecords = DATA.corpus.smokeRecords.map(function (r) { return { cell: r.cell, verdict: r.verdict, authority_profile: 'legacy_sandbox_off' }; });
+      ch.push('World: dev-smoke records attached (simulated) — install pass, activation pass, open/edit/save pass, close-with-unsaved-prompt unknown (it runs dialog.showMessageBoxSync, which waits on PANEL-P1). Every record carries legacy_sandbox_off.');
+      invalidate(s, 'profiled', ch, 'evidence records changed');
+    },
+    modifyWorkingTree: function (s, a, ch) {
+      if (s.phase === 'idle') return E.stage('modifyWorkingTree', 'scanned', s.phase);
+      s.dirtyTree = true; ch.push('The scanned tree now differs from the pinned corpus bytes.');
+      if (s.generated && !s.generated.stale) { s.generated.stale = 'the tree changed after the files were generated'; ch.push('The files already written are now STALE: ' + s.generated.stale + '.'); }
+      invalidate(s, 'profiled', ch, 'the scanned tree changed');
+    },
+    // ---- attempts the real system must refuse ----
+    executeAppConfig: function () { return E.execConfig('forge.config.js'); },
+    printPercentage: function (s) { return E.percent(s.world.denominatorCommitted); },
+    emitClaimLine: function (s, a, ch) {
+      var c = claimStatus(s); if (!c.ok) return E.claim(c.reason);
+      ch.push('Claim is legal and already part of the report: ' + c.lines.join(' · ') + '.');
+    },
+    seedGrant: function (s, a, ch) {
+      if (!s.inventory) return E.stage('seedGrant', 'inventoried', s.phase);
+      var e = validateGrant(a.grant, s); if (e) return e;
+      if (!s.writeAuthorized) return E.noWrite();
+      ch.push('`' + a.grant + '` is a literal derived from source and is already in the seed set.');
+    },
+    requestStrict: function () { return E.strict(); },
+    inferLegacyFromSandbox: function () { return E.inferLegacy(); },
+    markQualifiedFromImport: function () { return E.importPass('a native-addon row was offered with no operation and no loaded-artifact digest — only “require() did not throw”'); },
+    translateSetFeedURL: function () { return E.never('autoUpdater.setFeedURL(url)', 'an app-selected feed, headers or server never reaches a privileged updater; feed trust is host-only', 'Declare the feed in keld.build.ts. At run time the app’s setFeedURL is a recorded no-op (it must not throw: draw.io routes a throw into a user-facing “Update Error” dialog).'); },
+    carryNodeIntegration: function () { return E.never('webPreferences.nodeIntegration: true', 'Node reach in renderers is on the never-list', 'Move the Node work into the main role behind an enumerated `el:<channel>` handler and expose it with contextBridge.'); },
+    mapShellTrueSpawn: function () { return E.never("child_process spawn/exec with shell: true", 'a shell string cannot be expressed as an executable allow-list plus argument schema', 'Rewrite the call as an explicit executable with an argument array; it then becomes a reported spawn site instead of a never.'); },
+    probeMutation: function (s, a, ch) {
+      var m = MUTATIONS[a.kind]; if (!m) return E.unknownInput('mutation', a.kind);
+      if (!s.report) return E.stage('probeMutation', 'reported', s.phase);
+      var r = clone(s.report); m.run(r);
+      var bad = checkInvariants(r, factsOf(s)).filter(function (i) { return !i.ok; });
+      s.probe = { kind: a.kind, say: m.say, caught: bad };
+      ch.push('Negative control “' + m.say + '”: ' + (bad.length ? 'caught by ' + bad.map(function (i) { return i.id; }).join(', ') + '. The real report is untouched.' : 'NOT CAUGHT — the oracle is vacuous for this mutation.'));
+    }
+  };
+  function reduce(prev, action) {
+    var h = H[action.type];
+    if (!h) return { state: prev, changes: [], error: E.unknownInput('action', action.type) };
+    var s = clone(prev), changes = [];
+    var e = h(s, action, changes);
+    if (e) return { state: prev, changes: [], error: e };
+    return { state: s, changes: changes, error: null };
+  }
+  return { PHASES: PHASES, LABEL: LABEL, GLYPH: GLYPH, MUTATIONS: MUTATIONS, initialState: initialState, reduce: reduce, checkInvariants: checkInvariants, factsOf: factsOf, claimStatus: claimStatus };
+}
+</script>
+
+<!-- ============================================================================================
+     PAGE BLOCK — rendering and wiring only. All decisions come from the logic module above.
+     ============================================================================================ -->
+<script id="page">
+(function () {
+  'use strict';
+  var model = createMigrateModel(KELD_MIGRATE_DATA);
+  var state = model.initialState();
+  var last = { label: 'initial state', changes: ['Nothing scanned yet. Profile unverified; no write authorization; world inputs as they are today.'], error: null };
+  var tab = 'happy', cursor = { happy: 0, edges: 0, illegal: 0 }, results = { happy: [], edges: [], illegal: [] };
+
+  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function $(id) { return document.getElementById(id); }
+  function dispatch(action, label) { var r = model.reduce(state, action); state = r.state; last = { label: label, changes: r.changes, error: r.error }; return r; }
+
+  var A = {
+    scanD: { label: 'scan draw.io-like', a: { type: 'scan', app: 'drawio-like' } }, scanZ: { label: 'scan Zettlr-like', a: { type: 'scan', app: 'zettlr-like' } },
+    scanS: { label: 'scan synthetic legacy app', a: { type: 'scan', app: 'synthetic-legacy' } },
+    inv: { label: 'inventory call sites', a: { type: 'inventory' } }, cls: { label: 'classify against matrix', a: { type: 'classify' } },
+    nat: { label: 'qualify native modules', a: { type: 'qualifyNatives' } }, sec: { label: 'list security blockers', a: { type: 'listSecurityBlockers' } },
+    prof: { label: 'print authority profile', a: { type: 'printAuthorityProfile' } }, rep: { label: 'render report', a: { type: 'renderReport' } },
+    all: { label: 'analyze (run all remaining stages)', a: { type: 'analyze' }, primary: true },
+    legacy: { label: 'accept the legacy forfeit', a: { type: 'acceptLegacyForfeit', acknowledge: true } },
+    write: { label: 'authorize --write', a: { type: 'authorizeWrite' } }, gen: { label: 'generate the five files', a: { type: 'generateFiles' } },
+    tMac: { label: 'target darwin-arm64', a: { type: 'setTarget', os_arch: 'darwin-arm64' } }, tWin: { label: 'target win32-x64', a: { type: 'setTarget', os_arch: 'win32-x64' } },
+    proof: { label: 'host containment proven (negative control)', a: { type: 'recordContainmentProof' } },
+    landWR: { label: 'land ▲ recorded no-op: webRequest listeners', a: { type: 'landConformance', set: 'webRequest' } },
+    landUp: { label: 'land ▲ recorded no-op: electron-updater setFeedURL', a: { type: 'landConformance', set: 'updater' } },
+    landIpc: { label: 'land ✔: ipcMain.on, WebContents.send, contextBridge', a: { type: 'landConformance', set: 'ipcCore' } },
+    natEv: { label: 'KEL-215-shaped row lands: nodehun 3.0.2 at current target, scanned binary', a: { type: 'addNativeEvidence' } },
+    natEvOther: { label: 'KEL-215-shaped row lands: nodehun 3.0.2 at current target, a different binary', a: { type: 'addNativeEvidence', variant: 'other-artifact' } },
+    denom: { label: 'commit denominator documents', a: { type: 'commitDenominator' } }, docId: { label: 'document corpus id as committed', a: { type: 'documentCorpusId' } },
+    smoke: { label: 'attach dev-smoke cell records', a: { type: 'attachCellEvidence', kind: 'smoke' } }, dirty: { label: 'modify the scanned tree', a: { type: 'modifyWorkingTree' } },
+    xExec: { label: 'evaluate forge.config.js', a: { type: 'executeAppConfig' } }, xPct: { label: 'print “compat score: N%”', a: { type: 'printPercentage' } },
+    xClaim: { label: 'force a KEL-74 claim line', a: { type: 'emitClaimLine' } }, xEmpty: { label: 'commit an empty denominator', a: { type: 'commitDenominator', empty: true } },
+    xImp: { label: 'mark a cell pass on import success', a: { type: 'attachCellEvidence', kind: 'import-success' } },
+    xElStar: { label: 'seed grant el:*', a: { type: 'seedGrant', grant: 'el:*' } }, xHome: { label: 'seed grant $HOME/**', a: { type: 'seedGrant', grant: '$HOME/**' } },
+    xOrigin: { label: 'seed grant https://**', a: { type: 'seedGrant', grant: 'https://**' } }, xGuess: { label: 'seed grant el:not-in-source', a: { type: 'seedGrant', grant: 'el:not-in-source' } },
+    xStrict: { label: 'select profile strict', a: { type: 'requestStrict' } }, xInfer: { label: 'infer legacy from sandbox:false', a: { type: 'inferLegacyFromSandbox' } },
+    xNoAck: { label: 'set legacy without acknowledging the forfeit', a: { type: 'acceptLegacyForfeit', acknowledge: false } },
+    xNat: { label: 'mark a native module qualified from import success', a: { type: 'markQualifiedFromImport' } },
+    xFeed: { label: 'translate setFeedURL into a feed', a: { type: 'translateSetFeedURL' } }, xNode: { label: 'carry nodeIntegration:true', a: { type: 'carryNodeIntegration' } },
+    xShell: { label: 'map a shell:true spawn', a: { type: 'mapShellTrueSpawn' } }, xSync: { label: 'land ✔: ipcRenderer.sendSync', a: { type: 'landConformance', set: 'sendSync' } },
+    reset: { label: 'reset everything', a: { type: 'reset' } }
+  };
+  Object.keys(model.MUTATIONS).forEach(function (k) { A['m_' + k] = { label: model.MUTATIONS[k].say, a: { type: 'probeMutation', kind: k } }; });
+
+  var GROUPS = [
+    { title: 'Analyzer stages — what `keld migrate` runs, read-only', keys: ['scanD', 'scanZ', 'scanS', 'inv', 'cls', 'nat', 'sec', 'prof', 'rep', 'all'] },
+    { title: 'User choices', keys: ['legacy', 'write', 'gen', 'tMac', 'tWin', 'reset'] },
+    { title: 'World inputs — simulated evidence landing elsewhere on the map (the analyzer never does these)', keys: ['proof', 'landWR', 'landUp', 'landIpc', 'natEvOther', 'natEv', 'denom', 'docId', 'smoke', 'dirty'] },
+    { title: 'Attempts the real system must refuse — each returns a typed error', keys: ['gen', 'xExec', 'xPct', 'xClaim', 'xEmpty', 'xImp', 'xElStar', 'xHome', 'xOrigin', 'xGuess', 'xStrict', 'xInfer', 'xNoAck', 'xNat', 'xFeed', 'xNode', 'xShell', 'xSync'] },
+    { title: 'Negative controls — mutate a copy of the rendered report; the honesty checker must catch each', keys: Object.keys(model.MUTATIONS).map(function (k) { return 'm_' + k; }) }
+  ];
+
+  function st(key, say, expect, code) { return { key: key, say: say, expect: expect || 'ok', code: code }; }
+  var WALKS = {
+    happy: { title: 'Happy path', intro: 'draw.io-like, start to claim line. Starts from a full reset.', steps: [
+      st('scanD', 'Scan the tree read-only. Builder configs are JSON, so everything is parsed and nothing is executed.'),
+      st('inv', 'Group raw sites into one row per Electron member with resolved call-site counts.'),
+      st('cls', 'Look each member up in the committed matrix. Today almost every member is ✘ tracked: only app.whenReady is ✔ and app.quit is ▲. The electron-updater call has no matrix row and stays unclassified.'),
+      st('nat', 'draw.io has no native addon; its three electron-* packages are JavaScript.'),
+      st('sec', 'Security findings are listed on their own: the two webRequest listeners, one dynamic openExternal, three spawn/exec sites, the page-chosen IPC channel. nodeIntegration:false is not a finding.'),
+      st('prof', 'The profile is printed and it is unverified. Nothing in the app can change that.'),
+      st('rep', 'First report: counts with the label, no percentage, no files, and an explicit reason why there is no claim line.'),
+      st('legacy', 'The user accepts the forfeit. The report is withdrawn because the profile changed.'),
+      st('write', 'The user authorizes --write.'),
+      st('all', 'Re-run the withdrawn stages: generation needs a current analysis. The profile line now prints the forfeit.'),
+      st('gen', 'Five files are written. Grants are literal-only: 15 enumerated channels, 2 origins, 1 app-scoped root. The dynamic openExternal target and dispatcher channels are not seeded.'),
+      st('denom', 'Elsewhere on the map: denominator documents are committed for the product corpus.'),
+      st('docId', 'The corpus id is documented as committed.'),
+      st('smoke', 'A legacy-profile dev smoke attaches cell records.'),
+      st('all', 'Re-run. Three claim lines appear, in the only legal shape. primary_workflow is 3/4 because the close prompt cell is unknown. The static counts above did not move.')
+    ] },
+    edges: { title: 'Tricky edges', intro: 'Places where a careless analyzer would overstate. Starts from a full reset.', steps: [
+      st('scanZ', 'Zettlr-like. forge.config.js and both webpack configs are listed and not evaluated.'),
+      st('all', 'Look at the panel: sandbox:false ×2 is ▲ ignored and the profile is still unverified; nodehun and fsevents are unqualified; chokidar is not a native addon; three shell:true spawns are never mapped; six sendSync sites are a compatibility blocker; the generic window.ipc dispatcher makes channels unenumerable.'),
+      st('denom', 'Commit the denominators…'), st('docId', '…and document the corpus id.'),
+      st('all', 'Still no claim line: Zettlr is not a member of the committed corpus. A denominator for one app says nothing about another.'),
+      st('natEvOther', 'A passing row lands for nodehun 3.0.2 at darwin-arm64 — but it binds a different binary than the one in the scanned tree (nodehun is a source build, so every machine produces its own).'),
+      st('all', 'nodehun is still unqualified: same version, same target, same Bun revision, wrong artifact digest.'),
+      st('natEv', 'A passing row lands whose artifact digest equals the scanned binary.'),
+      st('all', 'nodehun now reads qualified, for exactly that version, OS/arch, Bun revision and artifact.'),
+      st('tWin', 'Change the target to win32-x64.'),
+      st('all', 'nodehun is unqualified again. Evidence does not generalize across targets. fsevents is reported as not installed on this target rather than as a blocker.'),
+      st('scanS', 'Synthetic legacy app, target still win32-x64.'),
+      st('all', 'better-sqlite3 13.0.3 is qualified here because the live KEL-215 row is win32-x64 and its loaded artifact digest equals the prebuild the scan resolved (that equality is simulated). remote and sharedTexture are ✘ never; the computed member access is unclassified; nodeIntegration:true is a never.'),
+      st('tMac', 'Back to darwin-arm64.'),
+      st('all', 'The same better-sqlite3 13.0.3 is now unqualified. The report names the existing rows and says they do not generalize.'),
+      st('scanD', 'draw.io-like again. World inputs persist across scans; per-app choices do not.'),
+      st('all', 'The webRequest listeners are a security blocker and ✘ tracked.'),
+      st('landWR', 'Try to land the recorded no-op before containment is proven.', 'error', 'KELD-COMPAT-109'),
+      st('proof', 'Record the host containment proof. The classification is withdrawn.'),
+      st('landWR', 'Now the conformance entry can land.'),
+      st('all', 'Two call sites moved from ✘ tracked to ▲, and the security entry became a diagnostic. Nothing became ✔.'),
+      st('legacy', 'Accept legacy…'), st('write', '…authorize --write…'), st('all', '…bring the analysis current…'), st('gen', '…generate…'), st('smoke', '…attach smoke records.'),
+      st('all', 'Claim lines appear (denominator and id were committed earlier).'),
+      st('dirty', 'Modify the scanned tree.'),
+      st('all', 'The claim lines are withdrawn: a claim binds to the pinned corpus bytes, not to a similar tree.')
+    ] },
+    illegal: { title: 'Illegal attempts', intro: 'Every step below after the setup must fail with a typed error, or be caught by the checker. Starts from a full reset.', steps: [
+      st('cls', 'Classify before anything was scanned.', 'error', 'KELD-COMPAT-101'),
+      st('scanD', 'Setup: scan draw.io-like.'), st('all', 'Setup: complete the analysis.'),
+      st('gen', 'Generate without --write.', 'error', 'KELD-COMPAT-103'),
+      st('write', 'Setup for the next step: authorize --write. The report is withdrawn, so the analysis is no longer current.'),
+      st('legacy', 'Setup: accept legacy as well, which steps the analysis back further.'),
+      st('gen', 'Generate from a stale analysis.', 'error', 'KELD-COMPAT-101'),
+      st('scanD', 'Setup: re-scan. Per-app choices (profile, --write) are cleared.'), st('all', 'Setup: complete the analysis again.'),
+      st('xExec', 'Evaluate a JavaScript build config.', 'error', 'KELD-COMPAT-102'),
+      st('xPct', 'Print a compatibility percentage.', 'error', 'KELD-COMPAT-104'),
+      st('xClaim', 'Force a claim line with no committed denominator.', 'error', 'KELD-COMPAT-105'),
+      st('xEmpty', 'Commit a denominator with no cells. This is the live scorer error.', 'error', 'KELD-COMPAT-008'),
+      st('smoke', 'Attach cell records while the profile is unverified. This is the live evidence-parser error: there is no unverified evidence profile.', 'error', 'KELD-COMPAT-005'),
+      st('xImp', 'Mark a cell pass because the module imported.', 'error', 'KELD-COMPAT-106'),
+      st('xNat', 'Mark a native module qualified because require() did not throw.', 'error', 'KELD-COMPAT-106'),
+      st('xElStar', 'Seed el:*.', 'error', 'KELD-COMPAT-121'), st('xHome', 'Seed $HOME/**.', 'error', 'KELD-COMPAT-122'),
+      st('xOrigin', 'Seed https://**.', 'error', 'KELD-COMPAT-123'), st('xGuess', 'Seed a channel that is not in source.', 'error', 'KELD-COMPAT-124'),
+      st('xStrict', 'Select strict.', 'error', 'KELD-COMPAT-107'), st('xInfer', 'Infer legacy from sandbox:false.', 'error', 'KELD-COMPAT-112'),
+      st('xNoAck', 'Write legacy without acknowledging the forfeit.', 'error', 'KELD-COMPAT-113'),
+      st('xFeed', 'Translate setFeedURL into a feed.', 'error', 'KELD-COMPAT-108'), st('xNode', 'Carry nodeIntegration:true.', 'error', 'KELD-COMPAT-108'),
+      st('xShell', 'Map a shell:true spawn.', 'error', 'KELD-COMPAT-108'), st('xSync', 'Land sendSync as ✔.', 'error', 'KELD-COMPAT-109'),
+      st('m_inject-percent', 'Negative control: inject the 91% line.', 'caught'), st('m_drop-label', 'Negative control: drop the label.', 'caught'),
+      st('m_hide-unclassified', 'Negative control: hide unclassified rows.', 'caught'), st('m_forge-claim', 'Negative control: forge a claim from static counts.', 'caught'),
+      st('m_qualify-by-name', 'Negative control: qualify by package name.', 'caught'), st('m_silent-legacy', 'Negative control: silent legacy.', 'caught'),
+      st('m_strict-claim', 'Negative control: print strict.', 'caught'), st('m_wildcard-grant', 'Negative control: wildcard channel grant.', 'caught'),
+      st('m_merge-security', 'Negative control: fold the security section away.', 'caught'),
+      st('m_unknown-as-pass', 'Negative control: print a complete 4/4 primary_workflow claim.', 'caught'),
+      st('write', 'Setup for the last step: authorize --write.'), st('all', 'Setup: bring the analysis current.'),
+      st('gen', 'Setup: generate under the default unverified profile. keld.config.ts carries no profile key.'),
+      st('legacy', 'Setup: accept the legacy forfeit after the files were written. The files are now stale.'),
+      st('smoke', 'Attach legacy smoke records against files generated without the legacy key.', 'error', 'KELD-COMPAT-111')
+    ] }
+  };
+
+  function runStep(name) {
+    var w = WALKS[name], i = cursor[name]; if (i >= w.steps.length) return false;
+    if (i === 0) { state = model.initialState(); results[name] = []; }
+    var s = w.steps[i], r = dispatch(A[s.key].a, w.title + ' · step ' + (i + 1) + ': ' + A[s.key].label);
+    var got = r.error ? 'error' : (s.expect === 'caught' ? (r.state.probe && r.state.probe.caught.length ? 'caught' : 'missed') : 'ok');
+    var match = got === s.expect && (!s.code || (r.error && r.error.code === s.code));
+    results[name][i] = { got: got, code: r.error ? r.error.code : (got === 'caught' ? r.state.probe.caught.map(function (c) { return c.id; }).join(',') : ''), match: match };
+    cursor[name] = i + 1; return true;
+  }
+
+  // ---- rendering ----------------------------------------------------------------------------------------------
+  function renderTabs() {
+    $('tabs').innerHTML = Object.keys(WALKS).map(function (k) { return '<button class="tab" role="tab" data-tab="' + k + '" aria-selected="' + (k === tab) + '">' + esc(WALKS[k].title) + '</button>'; }).join('');
+    var w = WALKS[tab], c = cursor[tab], res = results[tab];
+    var bad = res.filter(function (r) { return r && !r.match; }).length;
+    $('walk').innerHTML = '<p class="small muted">' + esc(w.intro) + '</p>' +
+      '<button data-walk="reset">Reset to step 1</button><button class="primary" data-walk="next"' + (c >= w.steps.length ? ' disabled' : '') + '>Next step (' + Math.min(c + 1, w.steps.length) + ' of ' + w.steps.length + ')</button><button data-walk="all">Run all</button>' +
+      (c > 0 ? '<span class="small muted"> ' + c + ' run, ' + (bad ? bad + ' did NOT match its expectation' : 'all matched expectations') + '</span>' : '') +
+      '<ol class="steps">' + w.steps.map(function (s, i) {
+        var r = res[i], mark = '';
+        if (r && i < c) mark = '<span class="res' + (r.match ? '' : ' bad') + '">' + (r.got === 'ok' ? 'ok' : esc(r.got + (r.code ? ' ' + r.code : ''))) + (r.match ? '' : ' — expected ' + esc(s.expect + (s.code ? ' ' + s.code : ''))) + '</span>';
+        return '<li class="' + (i === c ? 'next' : '') + '"><code>' + esc(A[s.key].label) + '</code> — ' + esc(s.say) + (s.expect !== 'ok' && !r ? ' <span class="tag">expects ' + esc(s.expect + (s.code ? ' ' + s.code : '')) + '</span>' : '') + mark + '</li>';
+      }).join('') + '</ol>';
+  }
+  function renderFreeplay() {
+    $('freeplay').innerHTML = GROUPS.map(function (g) {
+      return '<h3>' + esc(g.title) + '</h3><div>' + g.keys.map(function (k) { return '<button data-act="' + k + '"' + (A[k].primary ? ' class="primary"' : '') + '>' + esc(A[k].label) + '</button>'; }).join('') + '</div>';
+    }).join('');
+  }
+  function table(head, rows) { return '<table><tr>' + head.map(function (h) { return '<th' + (h.num ? ' class="num"' : '') + '>' + esc(h.t) + '</th>'; }).join('') + '</tr>' + rows.join('') + '</table>'; }
+  function yes(b) { return b ? 'yes' : 'no'; }
+
+  function renderState() {
+    var s = state, fx = s.appId ? KELD_MIGRATE_DATA.fixtures[s.appId] : null, h = '';
+    h += '<h3 style="margin-top:0">Current state</h3><div class="phases">' + model.PHASES.map(function (p, i) { var now = model.PHASES.indexOf(s.phase); return '<span class="phase' + (i === now ? ' now' : (i < now ? ' done' : '')) + '">' + p + '</span>'; }).join('') + '</div>';
+    h += '<h3>What just changed <span class="tag">' + esc(last.label) + '</span></h3>';
+    if (last.error) {
+      var e = last.error;
+      h += '<div class="error"><div><span class="code">' + esc(e.code) + '</span><span class="tag' + (e.live ? ' acc' : '') + '">' + (e.live ? 'live code on origin/main' : 'code number PROPOSED') + '</span></div><div><strong>' + esc(e.message) + '</strong></div><div><span class="muted">cause:</span> ' + esc(e.cause) + '</div><div><span class="muted">fix:</span> ' + esc(e.fix) + '</div><div class="small muted">State unchanged.</div></div>';
+    } else h += last.changes.map(function (c) { return '<div class="callout">' + esc(c) + '</div>'; }).join('');
+
+    h += '<h3>Facts</h3><dl class="kv">' +
+      '<dt>app</dt><dd>' + (fx ? esc(fx.title) + ' <span class="small muted">— ' + esc(fx.provenance) + '</span>' : '<span class="muted">none scanned</span>') + '</dd>' +
+      '<dt>target</dt><dd class="mono">' + esc(s.target.os_arch + ' / Bun ' + s.target.bun) + '</dd>' +
+      '<dt>authority profile</dt><dd><strong>' + esc(s.profile.state) + '</strong> ' + (s.profile.state === 'legacy' ? '— zero-authority claim forfeited (accepted by the user)' : '— default; no zero-authority claim') + '</dd>' +
+      '<dt>--write</dt><dd>' + (s.writeAuthorized ? 'authorized' : 'not authorized') + '; files ' + (s.generated ? (s.generated.stale ? 'written, now STALE — ' + esc(s.generated.stale) : 'written under profile ' + esc(s.generated.profile)) : 'not written') + '</dd>' +
+      '<dt>scanned tree</dt><dd>' + (s.appId ? (s.dirtyTree ? 'modified — differs from the pin' : (fx.pin ? 'at pin ' + esc(fx.pin) : 'no pin (not a corpus app)')) : '—') + '</dd>' +
+      '<dt>world: containment proof</dt><dd>' + yes(s.world.containmentProof) + '</dd>' +
+      '<dt>world: landed entries</dt><dd>' + (Object.keys(s.world.landed).length ? esc(Object.keys(s.world.landed).join(', ')) : 'none beyond today’s matrix') + '</dd>' +
+      '<dt>world: native evidence rows</dt><dd>' + s.world.nativeEvidence.map(function (r) { return esc(r.pkg + ' ' + r.version + ' ' + r.os_arch + ' (' + (r.outcome === 'pass' ? 'pass' : 'fail') + ')'); }).join('; ') + '</dd>' +
+      '<dt>world: denominator / id / records</dt><dd>' + yes(s.world.denominatorCommitted) + ' / ' + yes(s.world.corpusIdDocumented) + ' / ' + s.world.cellRecords.length + '</dd></dl>';
+
+    if (s.report) {
+      var invs = model.checkInvariants(s.report, model.factsOf(s));
+      h += '<details open><summary>Report</summary><pre>' + esc(s.report.lines.join('\n')) + '</pre>' +
+        '<div class="small">' + invs.map(function (i) { return '<div class="' + (i.ok ? 'inv-ok' : 'inv-bad') + '">' + (i.ok ? '✔' : '✘') + ' ' + i.id + ' <span class="' + (i.ok ? 'muted' : '') + '">' + esc(i.text) + '</span></div>'; }).join('') + '</div></details>';
+    } else if (s.appId) h += '<details open><summary>Report</summary><p class="small muted">No current report. ' + (s.phase === 'profiled' ? 'Render it.' : 'The analysis is at “' + s.phase + '”.') + ' A report is never shown stale.</p></details>';
+    if (s.probe) h += '<details open><summary>Negative control result</summary><div class="callout">Mutation: ' + esc(s.probe.say) + '<br>' + (s.probe.caught.length ? s.probe.caught.map(function (c) { return '<span class="inv-bad">✘ ' + c.id + '</span> ' + esc(c.text); }).join('<br>') : '<strong>NOT CAUGHT</strong>') + '</div></details>';
+
+    if (s.inventory) {
+      var cmap = {}; if (s.classification) s.classification.rows.forEach(function (r) { cmap[r.member] = r; });
+      h += '<details' + (s.report ? '' : ' open') + '><summary>Inventory' + (s.classification ? ' and classification' : '') + ' — ' + s.inventory.totalMembers + ' members, ' + s.inventory.totalSites + ' call sites</summary>';
+      if (s.classification) h += table([{ t: 'status' }, { t: 'members', num: 1 }, { t: 'call sites', num: 1 }], Object.keys(model.GLYPH).map(function (c) { var n = s.classification.counts[c]; return '<tr><td>' + esc(model.GLYPH[c]) + '</td><td class="num">' + n.members + '</td><td class="num">' + n.sites + '</td></tr>'; })) + '<p class="small muted">' + esc(model.LABEL) + '</p>';
+      h += table([{ t: 'Electron member' }, { t: 'sites', num: 1 }, { t: 'status' }, { t: 'why / where' }], s.inventory.api.map(function (r) {
+        var c = cmap[r.member];
+        return '<tr><td class="mono">' + esc(r.member) + '</td><td class="num">' + r.sites + '</td><td>' + (c ? esc(model.GLYPH[c.cls]) : '<span class="muted">—</span>') + '</td><td class="small">' + (c ? esc(c.why) + '<br>' : '') + '<span class="muted">' + esc(r.where.join(', ') + (r.notes.length ? ' — ' + r.notes.join('; ') : '')) + '</span></td></tr>';
+      })) + '</details>';
+    }
+    if (s.natives) h += '<details><summary>Dependencies checked for native code — ' + s.natives.length + '</summary>' + (s.natives.length ? table([{ t: 'package' }, { t: 'outcome' }, { t: 'basis' }], s.natives.map(function (n) { return '<tr><td class="mono">' + esc(n.pkg + ' ' + n.version) + '</td><td>' + esc(n.outcome) + '</td><td class="small">' + esc(n.text) + '</td></tr>'; })) : '<p class="small muted">No dependencies recorded.</p>') + '</details>';
+    if (s.blockers) h += '<details><summary>Blockers by class — ' + s.blockers.filter(function (b) { return b.severity !== 'clean'; }).length + ' (security listed first, apart from the counts)</summary>' + table([{ t: 'class' }, { t: 'severity' }, { t: 'finding' }, { t: 'sites', num: 1 }, { t: 'disposition' }], s.blockers.map(function (b) { return '<tr><td>' + esc(b.cls) + '</td><td>' + esc(b.severity) + '</td><td>' + esc(b.title) + '</td><td class="num">' + (b.sites || '') + '</td><td class="small">' + esc(b.disposition) + ' <span class="muted">[' + esc(b.source) + ']</span></td></tr>'; })) + '</details>';
+    if (s.generated) h += '<details><summary>Generated files — 5</summary>' + table([{ t: 'file' }, { t: '' }, { t: 'content' }], s.generated.files.map(function (f) { return '<tr><td class="mono">' + esc(f.name) + '</td><td>' + esc(f.change) + '</td><td class="small">' + esc(f.summary) + '</td></tr>'; })) +
+      '<pre>' + esc('// keld.permissions.jsonc — seeded grants (shape illustrative)\nwindows.main.channels: ' + JSON.stringify(s.generated.grants.channels) + '\napp.shell.open: ' + JSON.stringify(s.generated.grants.open) + '\napp.fs.read / app.fs.write: ' + JSON.stringify(s.generated.grants.fs) + '\n// not seeded: ' + s.generated.notSeeded.join('; ')) + '</pre></details>';
+    $('statepanel').innerHTML = h;
+  }
+  function render() { renderTabs(); renderState(); }
+
+  var ENCODED = [
+    ['The analyzer is read-only: lexical, import-binding-aware scan plus static parsing of JSON/YAML configs; it never evaluates app code or JavaScript configs.', 'X02-EPIC design facts; X02 never list', 'FACT (decided; unbuilt — `keld migrate` is reserved, KELD-CLI-045, on origin/main)'],
+    ['Status mapping: BEHAVIOR_MATCH → ✔, BEHAVIOR_MATCH ▲ → ▲, UNSUPPORTED → ✘ tracked, NEVER → ✘ never.', 'compat-matrix.tsv status vocabulary; PANEL-D9', 'FACT'],
+    ['SCAFFOLDED and PARTIAL also read as ✘ tracked, because neither is a passing conformance entry.', 'matrix has 1 SCAFFOLDED (process.type) and 1 PARTIAL (app.isReady) row', 'INFERENCE'],
+    ['A decided-but-unlanded disposition (webRequest no-op, setFeedURL no-op) does not change a row’s class; only a landed conformance entry does.', 'PANEL-D9 (▲ needs a conformance test); AGENTS.md “compat lands a conformance entry first”', 'INFERENCE'],
+    ['Never-list entries are checked before the matrix, so `remote` is ✘ never, not unclassified.', 'PANEL-D10; X04-EPIC never list; Electron v44.4.5 breaking-changes.md “Removed: remote module” (14.0), retrieved 2026-10-06', 'FACT for the list; INFERENCE for the precedence order'],
+    ['A member with no matrix row is “unclassified”: counted, shown, never assumed supported (electron-updater’s setFeedURL is third-party and has no row).', 'X02-EPIC “counts by status (✔/▲/✘/unclassified)”', 'FACT'],
+    ['Counts are by status, labelled “static estimate, not a compatibility score”; the report never prints a percentage, even when a denominator exists.', 'X02-EPIC; X02-T2 negative control; compat-scoreboard.md rules 1–4; KEL-74 (Done — Linear, fetched 2026-10-06)', 'FACT'],
+    ['Claim shape `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`, shown only once the denominator is committed and the corpus id is documented.', 'compat-scoreboard.md rule 4; X02-T4 acceptance', 'FACT'],
+    ['passed/N in the claim line is counted here from simulated records. The real line must be read from the KEL-74 scorer output (`score` is the single owner of passed, N, completeness and the digest/profile/engine agreement rules); migrate only decides whether the line may be shown.', 'compat-scoreboard.md rules 2–3 (“Only `score` constructs `Scoreboard`”); AGENTS.md one rule, one owner', 'INFERENCE; the wiring from migrate to the scorer is PROPOSED'],
+    ['A claim also needs the scanned tree to equal the pinned corpus bytes, and one line is printed per denominator kind.', 'X02-EPIC “pinned by upstream commit + canonical bytes”', 'INFERENCE'],
+    ['Static counts never become cells: passed/N comes only from evidence records.', 'X02-EPIC “analyzer counts are leads attached to rows, never cells”', 'FACT'],
+    ['No KEL-74 record can exist under `unverified`: the evidence profile enum has four variants and none is unverified (live KELD-COMPAT-005).', 'keld-compat evidence parser on origin/main; KEL-78 profile states', 'FACT for the enum; INFERENCE that migrate + smoke would surface it this way'],
+    ['“Qualified” requires a row matching package version + OS/arch + Bun revision, with a passing operation and an artifact digest. Import success never qualifies.', 'arch 04 §5 (“Neither row generalizes to another package version, artifact, architecture, Bun revision, or operation”); KEL-215 (Done — Linear, fetched 2026-10-06); X03-T2', 'FACT'],
+    ['The row’s artifact digest must equal the digest of the binary the scan finds for the target; a passing row for another binary of the same version stays unqualified. An addon that is not installed on the target OS (fsevents off macOS) is “not applicable”, not a blocker.', 'arch 04 §5 names the selected/loaded native-binary SHA-256 as part of each claim; how a read-only scan resolves the binary (prebuild lookup vs hashing node_modules) is not specified anywhere', 'INFERENCE for the equality rule; PROPOSED for how the scan obtains the digest (fixture digests are simulated)'],
+    ['A qualified row speaks for the authority profile it was recorded under; in-process addon load fails closed under strict.', 'arch 04 §5 (claims name the authority profile); KEL-78 spec acceptance row 6', 'FACT; the recording profile of the two KEL-215 rows was not re-read here (UNKNOWN)'],
+    ['better-sqlite3 13.0.3 passes on Bun 1.4.2 win32-x64 only; 12.11.1 requires cleanly then fails ERR_DLOPEN_FAILED on first Database construction.', 'arch 04 §5 (KEL-215 fixture)', 'FACT'],
+    ['Default target darwin-arm64 / Bun 1.4.2.', 'first proof is macOS (PANEL-D12); the architecture is my choice', 'INFERENCE'],
+    ['Blockers are reported in four classes (compatibility, security, engine, native-dependency) apart from the counts.', 'X02-T1; X02-T2; KEL-127 direction as cited by the epic', 'FACT'],
+    ['nodeIntegration:true, contextIsolation:false, enableRemoteModule: never carried. sandbox:false: ▲ ignored, never a profile selector; the report also says what is lost (the Node reach of an unsandboxed preload). disableBlinkFeatures: ignored with a diagnostic.', 'X04-EPIC design facts and never list. PANEL-D10 lists “nodeIntegration:true / sandbox:false / webSecurity:false Node reach in renderers” under never: read together, the setting is ignored (▲) and the Node reach it asks for is never carried. Electron v44.4.5 structures/web-preferences.md: sandbox “disabling the Node.js engine”. Note: the X04 research proposal (X04-D2) had lumped disableBlinkFeatures with the ✘ set; the epic text is followed.', 'FACT for each source; INFERENCE for the combined reading'],
+    ['Electron defaults assumed when reading webPreferences: sandbox defaults to true since Electron 20 and is disabled automatically by nodeIntegration:true; contextIsolation defaults to true.', 'Electron v44.4.5 docs/api/structures/web-preferences.md, retrieved 2026-10-06', 'FACT'],
+    ['webRequest listeners become recorded no-ops only after host CSP injection + file:// containment is proven by a negative control.', 'PANEL-D17 (resolved). Electron v44.4.5 web-request.md: “Only the last attached listener will be used”.', 'FACT for the rule; the containment mechanism is unbuilt (INFERENCE on the map)'],
+    ['shell.openExternal: literal origins are seedable, dynamic targets are reported and not seeded.', 'PANEL-D10; X02-T3', 'FACT'],
+    ['Spelling of open grants (literal origins vs a confirm-class token).', 'X04-D4 — open, needs the KEL-208 owner ruling', 'PROPOSED'],
+    ['Spawn/exec under strict goes through a host process broker.', 'X03-A5 — open', 'PROPOSED'],
+    ['A custom scheme registered with protocol.handle (Zettlr `safe-file`) is listed as a security blocker; which privileges a host-declared scheme may carry is undecided.', 'X04-EPIC (scheme privileges are host declarations); X04-D3 — open prototype', 'FACT for the host-declaration rule; PROPOSED for the privilege matrix'],
+    ['shell:true spawns are never mapped.', 'X02-EPIC never list', 'FACT'],
+    ['Renderer→main boundary is the enumerated per-window `el:<channel>` grant; `el:*` is refused; a page-chosen channel dispatcher is reported as unenumerable.', 'PANEL-D13 (resolved); X02-T2 acceptance; live deny text KELD-GUARD003', 'FACT'],
+    ['Window-level channel grants have no live evaluator, and the recorder named by the fix-it does not exist.', 'X02-EPIC design facts and fog', 'FACT'],
+    ['Profile: unverified by default, printed “unverified — no OS proof”; legacy only when the user accepts the forfeit, printed “zero-authority claim forfeited”. Electron sandbox settings never select a profile.', 'KEL-78 spec profile states and reporting table (KEL-78 In Progress — Linear, fetched 2026-10-06); arch 03 §4; PANEL-D12', 'FACT'],
+    ['strict is not selectable for a migrated app today.', 'arch 03 §4 on origin/main: macOS strict remains unverified; Windows LPAC and Linux Bubblewrap/seccomp/Landlock mechanisms are live, the Linux one consumed by the no-flag primary; other named roles remain unverified until they consume a matching profile and archive. An earlier draft of this prototype said “not admitted on any OS”, which origin/main contradicts.', 'INFERENCE'],
+    ['The legacy declaration is written as a profile key in keld.config.ts.', 'KEL-78 spec: “a future keld.permissions.jsonc / keld.config.ts key may declare profile … The key does not exist today”; adding it is a permission-model + public-API review gate', 'PROPOSED (key, file and spelling are all open)'],
+    ['Files written under one profile or tree are stale once the profile or tree changes: the report says STALE and smoke records against them are refused (KELD-COMPAT-111).', 'this prototype, applying the Keld rule that stale state is rejected rather than relabelled', 'PROPOSED'],
+    ['“Blockers to strict” lists in-process native addons, spawn/exec sites and nodeIntegration:true windows. sandbox:false is left out because X04 says it is ignored.', 'X03-A4 research proposal (X03 is not yet independently refuted); X04-EPIC', 'PROPOSED'],
+    ['Files are written only after --write. The five: keld.config.ts, keld.permissions.jsonc, keld.build.ts, keld.compat.ts, package.json.', 'X02-EPIC never list and title (“five-file generation”); X02-T3. Sources disagree on a sixth edit: arch 04 §2 on origin/main also lists `bunfig.toml`/bundler alias (X02-EPIC calls that wording a spec defect), and X02-T1/T3 list `tsconfig paths` (editor/type mapping) among the --write outputs. Neither is modelled; if either is written, the “files written” line must list it.', 'FACT for --write gating and the five named; UNKNOWN whether a sixth file is edited (contradiction stated, not resolved)'],
+    ['Exact contents of the generated files.', 'X02-T3: the hand-authored draw.io artefact that fixes the shape does not exist yet', 'PROPOSED'],
+    ['Module alias lives in package.json (`electron` dependency alias).', 'X02-A1 — open (X03 proposes a Bun preload plugin instead)', 'PROPOSED'],
+    ['Seeded filesystem root is `$APPDATA/**`, only when source reads the literal userData path.', 'F01-A4 — open; `$APPDATA/**` is existing guard vocabulary', 'PROPOSED'],
+    ['setFeedURL is never translated into a feed; DRAWIO_DISABLE_UPDATE is written into the host-declared role environment.', 'PANEL-D14 (resolved). Note: the X04 research proposal (X04-D6) had a throwing check; D14 says never thrown and is followed.', 'FACT'],
+    ['When never-class settings are present, generation still runs and drops them (rather than refusing to write).', 'not decided anywhere on the map', 'PROPOSED'],
+    ['Stage order, and withdrawing the report whenever an input changes (matrix, evidence, target, profile, tree, authorization).', 'this prototype', 'PROPOSED'],
+    ['Error objects use the live shape {code, message, cause?, fix, docs}. KELD-COMPAT-005, KELD-COMPAT-008, KELD-GUARD003 and KELD-CLI-045 are live; the 005 and 008 message and fix sentences are the live Display text, the cause lines are this prototype’s.', 'keld-cli error object, keld-compat evidence errors, keld-guard on origin/main', 'FACT'],
+    ['KELD-COMPAT-101…124 numbers and wording, one code per failing condition. Whether migrate errors belong to the KELD-COMPAT or the KELD-CLI ledger is also open.', 'this prototype; the live keld-compat ledger stops at KELD-COMPAT-009 and the reserved verb reports KELD-CLI-045', 'PROPOSED'],
+    ['Fixture call-site counts are resolved sites (grep -rF over the corpus clones, 2026-10-06, and PANEL-D15). Matrix demand columns are token-scan leads and are not used.', 'corpus clones drawio-desktop @2edf9fb, zettlr @e6c7fd8; PANEL-D15. Correction on re-read: draw.io executeJavaScript is 3 call sites in electron.js plus 1 in progress-bar.js; the “5 in electron.js” in PANEL-D15 counts two comment lines.', 'FACT (a subset of each app’s members; the draw.io rows were re-counted by the judge, the Zettlr rows only sampled)'],
+    ['ipcRenderer.sendSync is UNSUPPORTED in the matrix while the panel wording calls it SCAFFOLDED. Either way it is ✘ tracked here.', 'compat-matrix.tsv vs PANEL-D8 wording', 'FACT (contradiction stated, not resolved)'],
+    ['World inputs (containment proof, landed entries, denominators, corpus id, cell records, the nodehun row, corpus digest) are simulations.', 'none of these artifacts exist today; KEL-237 is In Progress (Linear, fetched 2026-10-06)', 'PROPOSED (simulation only)']
+  ];
+  $('encoded').innerHTML = '<tr><th>Semantic encoded</th><th>Source</th><th>Label</th></tr>' + ENCODED.map(function (r) { return '<tr><td>' + esc(r[0]) + '</td><td class="small">' + esc(r[1]) + '</td><td class="small"><strong>' + esc(r[2].split(' ')[0]) + '</strong>' + esc(r[2].slice(r[2].split(' ')[0].length)) + '</td></tr>'; }).join('');
+
+  document.addEventListener('click', function (ev) {
+    var t = ev.target.closest('button'); if (!t) return;
+    if (t.dataset.act) { dispatch(A[t.dataset.act].a, 'free play: ' + A[t.dataset.act].label); render(); }
+    else if (t.dataset.tab) { tab = t.dataset.tab; render(); }
+    else if (t.dataset.walk === 'reset') { cursor[tab] = 0; results[tab] = []; state = model.initialState(); last = { label: WALKS[tab].title + ' reset', changes: ['Reset to the known initial state for this walkthrough.'], error: null }; render(); }
+    else if (t.dataset.walk === 'next') { runStep(tab); render(); }
+    else if (t.dataset.walk === 'all') { cursor[tab] = 0; while (runStep(tab)) { /* run to the end */ } render(); }
+  });
+  renderFreeplay(); render();
+})();
+</script>
+</body>
+</html>

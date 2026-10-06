@@ -1,0 +1,1596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compat matrix cell — maturity ladder logic prototype</title>
+<style>
+  :root {
+    --bg: #f8f8f6; --panel: #ffffff; --text: #1b1c1e; --muted: #5d6167; --line: #d7d8db;
+    --soft: #efeff0; --accent: #2a55c4; --accent-soft: #e7edfb; --on-accent: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121315; --panel: #1a1b1e; --text: #e7e7e8; --muted: #9a9fa6; --line: #303238;
+      --soft: #222327; --accent: #8fb0ff; --accent-soft: #1c2740; --on-accent: #0f1524;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main, header { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+  header { padding-top: 28px; }
+  h1 { font-size: 22px; line-height: 1.25; margin: 0 0 10px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  p { margin: 0 0 10px; }
+  .lede { max-width: 82ch; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+  code { background: var(--soft); padding: 0 4px; border-radius: 3px; overflow-wrap: anywhere; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 16px 0; }
+  .grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .grid, .two { grid-template-columns: minmax(0, 1fr); } }
+  button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; cursor: pointer; text-align: left; }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .cellbtn { display: block; width: 100%; margin-bottom: 6px; padding: 8px 10px; }
+  .cellbtn[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
+  .cellbtn .name { font-weight: 600; display: block; overflow-wrap: anywhere; }
+  .chip { display: inline-block; font-size: 11px; line-height: 1.5; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap; margin-right: 4px; font-variant-numeric: tabular-nums; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .chip.out { border-color: var(--accent); color: var(--accent); }
+  .chip.dash { border-style: dashed; }
+  .ladder { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; margin: 10px 0 4px; }
+  .rung { border: 1px solid var(--line); border-radius: 6px; padding: 6px 6px 5px; font-size: 11px; min-width: 0; }
+  .rung b { display: block; font-size: 11px; overflow-wrap: break-word; }
+  .rung.claimed { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .rung.below { background: var(--accent-soft); border-color: var(--accent); }
+  .rung.supported { border-bottom: 3px solid var(--accent); }
+  .rung.frozen { opacity: 0.5; }
+  @media (max-width: 700px) { .ladder { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  ul.gates { list-style: none; margin: 0; padding: 0; }
+  ul.gates li { padding: 2px 0 2px 24px; position: relative; font-size: 13.5px; }
+  ul.gates li::before { position: absolute; left: 2px; top: 2px; width: 16px; text-align: center; font-weight: 700; }
+  ul.gates li.met::before { content: "\2713"; color: var(--accent); }
+  ul.gates li.unmet::before { content: "\25CB"; color: var(--muted); }
+  ul.gates li.unmet { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 5px 8px 5px 0; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  blockquote { margin: 6px 0; padding: 4px 0 4px 12px; border-left: 3px solid var(--line); color: var(--muted); font-size: 13.5px; }
+  .callout { border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; padding: 10px 14px; background: var(--accent-soft); }
+  .callout.refused { border-left-color: var(--text); background: var(--soft); }
+  .callout ul { margin: 6px 0 0; padding-left: 18px; }
+  .callout .verdict { font-weight: 700; letter-spacing: 0.04em; font-size: 12px; text-transform: uppercase; }
+  .errcode { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; }
+  .btnrow { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .tabs button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  ol.steps { margin: 10px 0 0; padding-left: 22px; }
+  ol.steps li { margin-bottom: 7px; }
+  ol.steps li.next { font-weight: 600; }
+  ol.steps li .why { display: block; font-weight: 400; color: var(--muted); font-size: 13px; }
+  ol.steps li .res { display: block; font-weight: 400; font-size: 13px; }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; font-size: 13.5px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .log { font-size: 13px; color: var(--muted); margin: 8px 0 0; padding-left: 0; list-style: none; }
+  td.nw { white-space: nowrap; }
+  .rung .reach { display: block; font-size: 10px; margin-top: 2px; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 4px 20px 40px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Does the compatibility-matrix cell state machine encode the maturity ladder honestly?</h1>
+  <p class="lede">One cell of the Electron compatibility matrix is one observable of one Electron member, for example
+  the order <code>before-quit</code> → window <code>close</code> → <code>will-quit</code> for <code>app.quit()</code>.
+  This page runs the cell's state machine so you can check whether each step up the ladder
+  <span class="mono">UNSUPPORTED → SCAFFOLDED (L0) → PARTIAL (L1) → BEHAVIOR_MATCH → CONFORMANCE_PASS → CORPUS_VERIFIED</span>
+  can only be reached with the evidence it names, whether losing a gate demotes the cell and raises a P1, and whether
+  ▲ accepted divergences, ✘ never, waivers and percentages behave the way the map and the live KEL-74 scorer say.</p>
+  <p class="lede muted small">Logic prototype for wayfinder map gyldlab/keld#391 (units X01, F05, F06). Nothing here is implemented in Keld.
+  The reducer lives in its own script block with no DOM access; the page only calls into it. Every button is always enabled:
+  an action the real system would refuse returns its typed error instead of succeeding. Error codes marked
+  <span class="chip on">live</span> are quoted from the Keld repository at <span class="mono">b4b907c3</span>; codes marked
+  <span class="chip dash">proposed</span> do not exist yet and are placeholders for the X01 spec.</p>
+</header>
+
+<main>
+  <div class="grid">
+    <section aria-label="Matrix cells" style="margin:16px 0 0">
+      <h2>Cells</h2>
+      <div id="cells"></div>
+      <p class="muted small" style="margin-top:8px">Buttons below act on the selected cell.</p>
+    </section>
+    <section aria-label="Current state of the selected cell" style="margin:16px 0 0">
+      <div id="cellpanel"></div>
+    </section>
+  </div>
+
+  <section aria-live="polite" aria-label="What just changed">
+    <h2>What just changed</h2>
+    <div id="changed"></div>
+    <ul class="log" id="log"></ul>
+  </section>
+
+  <section aria-label="Scoreboard">
+    <h2>Scoreboard (KEL-74 <code>score()</code> over the committed denominator)</h2>
+    <div id="board"></div>
+  </section>
+
+  <section aria-label="Free play">
+    <h2>Free play</h2>
+    <p class="muted small">One button per action. Nothing is disabled; refusals show up in “What just changed”.</p>
+    <div id="freeplay"></div>
+    <div class="btnrow" style="margin-top:12px"><button id="resetall">Reset everything to the initial state</button></div>
+  </section>
+
+  <section aria-label="Guided walkthroughs">
+    <h2>Guided walkthroughs</h2>
+    <div class="tabs" role="tablist" id="tabs"></div>
+    <div id="walk"></div>
+  </section>
+
+  <section aria-label="Assumptions and decisions encoded">
+    <h2>Assumptions and decisions encoded</h2>
+    <p class="muted small"><span class="chip on">FACT</span> the cited source states it (live code, a spec, or a map item that is
+    resolved with evidence). <span class="chip out">INFERENCE</span> derived by this prototype from facts; the source does not say it in
+    these words. <span class="chip dash">PROPOSED</span> not decided anywhere: an open map item, a research answer that is not yet a
+    spec, or a rule this prototype had to invent to close a hole.</p>
+    <div class="scroll"><table id="assume"></table></div>
+    <h3>Receipts</h3>
+    <div class="scroll"><table id="receipts"></table></div>
+  </section>
+</main>
+<footer>Single self-contained file. No network, no storage, no framework.</footer>
+
+<!-- ====================================================================== -->
+<!-- LOGIC MODULE. Pure: no DOM, no globals beyond the one it defines.       -->
+<!-- Liftable as the reference model / test vectors for the X01-T1 spec.     -->
+<!-- ====================================================================== -->
+<script id="logic">
+const KeldCompatCell = (function () {
+  'use strict';
+
+  var RUNGS = ['UNSUPPORTED', 'SCAFFOLDED', 'PARTIAL', 'BEHAVIOR_MATCH', 'CONFORMANCE_PASS', 'CORPUS_VERIFIED'];
+  var RUNG_NOTE = { UNSUPPORTED: 'member absent', SCAFFOLDED: 'L0', PARTIAL: 'L1', BEHAVIOR_MATCH: 'equals golden',
+    CONFORMANCE_PASS: 'doc-cited', CORPUS_VERIFIED: 'real app' };
+  var LANES = ['macos', 'windows', 'linux'];
+  var PIN = { version: '44.4.5', commit: '694f45852a0f1726cd23bfd379854de489cccb65' };
+  var AUTHORITY_PROFILES = ['strict_bun', 'sandboxed_addon_worker', 'legacy_sandbox_off', 'user_approved_tool_child'];
+  var INITIAL_AS_OF = '2026-10-06';
+
+  // ---- Catalogue: one entry per matrix cell (operation_id, oracle_id) ----
+  var CATALOGUE = [
+    { id: 'app.quit.order', member: 'app.quit()', family: 'F01 app lifecycle (first cells of X01-T2)',
+      observable: '`before-quit` is emitted first, windows close, then `will-quit`',
+      oracleId: 'electron-v44.4.5.app.quit-order',
+      oracle: { kind: 'doc', page: 'docs/api/app.md',
+        sentence: 'Try to close all windows. The `before-quit` event will be emitted first. If all windows are successfully closed, the `will-quit` event will be emitted and by default the application will terminate.' },
+      negativeControl: 'Swapping the `before-quit` and `will-quit` emissions in the Keld arm must fail the cell.',
+      fixIt: 'await the returned promise; Keld `app.quit()` returns `Promise<void>` (recorded ▲ on a separate cell).',
+      divergence: null, never: null, blockedBy: null },
+    { id: 'nativeTheme.updated', member: "nativeTheme event 'updated'", family: 'F06 native desktop',
+      observable: '`updated` is emitted when the underlying theme state changes (for example `shouldUseDarkColors` flips)',
+      oracleId: 'electron-v44.4.5.native-theme.updated',
+      oracle: { kind: 'doc', page: 'docs/api/native-theme.md',
+        sentence: 'Emitted when something in the underlying NativeTheme has changed.' },
+      negativeControl: 'Dropping the host theme-change notification must leave the `updated` listener uncalled and fail the cell.',
+      fixIt: 'read `nativeTheme.shouldUseDarkColors` once at startup until the event lands.',
+      divergence: null, never: null, blockedBy: null },
+    { id: 'ready-to-show.order', member: "BrowserWindow 'ready-to-show' vs webContents 'did-finish-load'",
+      family: 'X01 observed-only (members owned by F02/F03)',
+      observable: 'relative order of `ready-to-show` and `did-finish-load` in the recorded transcript',
+      oracleId: 'electron-v44.4.5.observed.ready-to-show-order-unspecified',
+      oracle: { kind: 'observed-only', page: 'docs/api/browser-window.md',
+        sentence: 'This event is usually emitted after the `did-finish-load` event, but for pages with many remote resources, it may be emitted before the `did-finish-load` event.' },
+      negativeControl: '',
+      fixIt: 'do not depend on the relative order; wait for both events.',
+      divergence: null, never: null, blockedBy: null },
+    { id: 'session.permission.no-handler', member: 'session.setPermissionRequestHandler (no handler installed)',
+      family: 'F05 session / permissions',
+      observable: 'outcome of a permission request when the app installed no handler',
+      oracleId: 'electron-v44.4.5.security.permission-default-approve',
+      oracle: { kind: 'doc', page: 'docs/tutorial/security.md',
+        sentence: 'By default, Electron will automatically approve all permission requests unless the developer has manually configured a custom handler.' },
+      negativeControl: 'Making the missing-handler path return allow must fail the mapped divergence test.',
+      fixIt: 'grant the capability in `keld.permissions.jsonc`; an installed handler can then only narrow it.',
+      divergence: { kind: 'host-constraint',
+        wording: 'Electron auto-approves when no handler is installed; Keld `keld-guard` default-denies for the requesting webview principal. A missing handler is a deny.' },
+      never: null, blockedBy: null },
+    { id: 'dialog.showMessageBoxSync', member: 'dialog.showMessageBoxSync()', family: 'F06 native desktop',
+      observable: 'the call blocks the main process until the box is closed and returns the button index',
+      oracleId: 'electron-v44.4.5.dialog.show-message-box-sync-blocks',
+      oracle: { kind: 'doc', page: 'docs/api/dialog.md',
+        sentence: 'Shows a message box, it will block the process until the message box is closed.' },
+      negativeControl: 'Returning before the box is dismissed must fail the cell.',
+      fixIt: 'use the asynchronous `dialog.showMessageBox()` and continue in its promise.',
+      divergence: null, never: null,
+      blockedBy: { key: 'PANEL-P1', text: 'S0 link-drain gate (worker-owned single-link kipc transport prototype) is open: a parked Bun main thread stalls the only kipc link after 8,192 bytes' } },
+    { id: 'session.loadExtension', member: 'session.loadExtension() / session.extensions.loadExtension()',
+      family: 'F05 session / extensions',
+      observable: 'loading an unpacked Chrome extension into a session',
+      oracleId: 'electron-v44.4.5.extensions.load-extension',
+      oracle: { kind: 'doc', page: 'docs/api/extensions.md',
+        sentence: 'Electron only supports loading unpacked extensions (i.e., `.crx` files do not work). Extensions are installed per-`session`.' },
+      negativeControl: 'A call that resolves instead of throwing the typed error must fail the cell.',
+      fixIt: 'remove the call or keep it behind a non-packaged development check; there is no Chromium extension runtime in WKWebView or WebKitGTK.',
+      divergence: null,
+      never: { source: 'F05-EPIC never list (documented ✘)',
+        reason: 'no Chromium extension runtime in the system webviews; Electron itself calls Chrome-extension compatibility a non-goal' },
+      blockedBy: null },
+    { id: 'webContents.setWindowOpenHandler.unrecognized', member: 'webContents.setWindowOpenHandler() (unrecognised return value)',
+      family: 'F03 webContents / navigation (demo cell for the quirks-flag route)',
+      observable: 'a handler that returns an unrecognised value logs a console error and the new window is not created',
+      oracleId: 'electron-v44.4.5.web-contents.window-open-handler-unrecognized',
+      oracle: { kind: 'doc', page: 'docs/api/web-contents.md',
+        sentence: "Returning an unrecognized value such as a null, undefined, or an object without a recognized 'action' value will result in a console error and have the same effect as returning `{action: 'deny'}`." },
+      negativeControl: 'Creating the window when the handler returns an unrecognised value must fail the cell.',
+      fixIt: "return `{ action: 'deny' }` or `{ action: 'allow' }` explicitly from the handler.",
+      divergence: { kind: 'per-app-choice',
+        wording: 'DEMO wording, not decided on the map: with the `windowOpenHandler` strictness quirk on, an unrecognised handler return throws a typed `KELD-COMPAT` error instead of logging a console error. The window is still not created, so the quirk narrows and never widens.' },
+      never: null, blockedBy: null }
+  ];
+  // Corpus clones in the map's scratchpad (briefing): the only apps a corpus run may name.
+  var CORPUS_APPS = ['drawio-desktop', 'zettlr', 'electron-quick-start'];
+  var DEF = {};
+  CATALOGUE.forEach(function (d) { DEF[d.id] = d; });
+
+  // ---- small pure helpers ----
+  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+  function idx(rung) { return RUNGS.indexOf(rung); }
+  function trim(s) { return String(s == null ? '' : s).trim(); }
+  function cellLabel(id) { return id + '/' + DEF[id].oracleId; }      // CellKey::label() = operation_id/oracle_id
+  function parseCivilDate(text) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text));
+    if (!m) return { error: 'expires_on `' + text + '` is not YYYY-MM-DD' };
+    var y = +m[1], mo = +m[2], d = +m[3];
+    var leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    var dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (mo < 1 || mo > 12 || d < 1 || d > dim[mo - 1]) return { error: 'expires_on `' + text + '` is not a real calendar date' };
+    return { value: m[0] };
+  }
+  function addDays(iso, n) {
+    var p = iso.split('-').map(Number);
+    return new Date(Date.UTC(p[0], p[1] - 1, p[2] + n)).toISOString().slice(0, 10);
+  }
+  function demoDigest(value) {                                           // NOT sha256; a visible stand-in
+    var s = JSON.stringify(value), h = 0x811c9dc5;
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return 'demo-digest:' + ('0000000' + h.toString(16)).slice(-8);
+  }
+
+  // ---- typed errors ----
+  function E(code, allocation, message, fix, source) {
+    return { code: code, allocation: allocation, message: message, fix: fix, source: source };
+  }
+  var EVIDENCE_RS = 'crates/keld-compat/src/evidence.rs (KEL-74, live)';
+  function live005(detail) { return E('KELD-COMPAT-005', 'live', 'invalid evidence record (' + detail + ').',
+    'Use the closed field set in docs/specs/kel74-compat-evidence-schema.md.', EVIDENCE_RS + ' InvalidRecord'); }
+  function live006(detail) { return E('KELD-COMPAT-006', 'live', 'invalid waiver (' + detail + ').',
+    'Waive only with owner, reason, and a future YYYY-MM-DD expiry.', EVIDENCE_RS + ' InvalidWaiver'); }
+  function live008(detail) { return E('KELD-COMPAT-008', 'live', 'invalid denominator (' + detail + ').',
+    'Commit a v1 denominator with unique cells before scoring.', EVIDENCE_RS + ' InvalidDenominator'); }
+  function liveCli045() { return E('KELD-CLI-045', 'live',
+    '`keld migrate` is a reserved verb that this binary does not implement, and `keld dev --headless --smoke` is not live.',
+    'Electron migrate is not in Phase 2 (KEL-17). Scaffold a hello app with `keld create <name>` then `keld dev`.',
+    'crates/keld-cli/src/verb.rs ReservedVerb::Migrate (live); X01 research open unknown on `keld dev --headless --smoke`'); }
+  var PROPOSED_NAMES = {
+    L01: 'silent-scaffold', L02: 'entry-before-implementation', L03: 'golden-arm', L04: 'normaliser', L05: 'replay-precondition',
+    L06: 'authority-profile-label', L07: 'observed-only-cap', L08: 'gate-not-met', L09: 'test-or-control', L10: 'lane-gap',
+    L11: 'corpus-provenance', L12: 'product-panel-uncommitted', L13: 'divergence-routing', L14: 'never-terminal',
+    L15: 'ledger-conflict', L16: 'percentage-refused', L17: 'never-needs-source', L18: 'blocked-by-open-gate', L19: 'nothing-to-do'
+  };
+  function P(n, message, fix, source) {
+    var e = E('KELD-COMPAT-' + n, 'proposed', message, fix, source);
+    e.name = PROPOSED_NAMES[n];
+    return e;
+  }
+
+  // ---- state ----
+  function freshCell(def) {
+    return { id: def.id, rung: 'UNSUPPORTED', mark: 'none', divergence: null, never: null, waiver: null,
+      facts: { memberExists: false, typedError: false, entry: 'absent', ownedTest: 'absent', implemented: false,
+        golden: null, normalisers: null, lanes: { macos: 'none', windows: 'none', linux: 'none' }, laneGap: {},
+        authorityProfile: null, negativeControl: 'absent', corpus: null } };
+  }
+  function initialState() {
+    var cells = {};
+    CATALOGUE.forEach(function (d) { cells[d.id] = freshCell(d); });
+    return { asOf: INITIAL_AS_OF, seq: 0, cells: cells, denominator: null, committedProductCorpora: [],
+      tooling: { migrateDevLive: false }, p1: [] };
+  }
+
+  // ---- gates: what each rung needs. Cumulative: a rung needs every gate at or below it. ----
+  function gates(cell, state) {
+    var def = DEF[cell.id], f = cell.facts;
+    var lanes = LANES.map(function (l) { return f.lanes[l]; });
+    var anyMatch = lanes.indexOf('match') >= 0;
+    return [
+      { rung: 'SCAFFOLDED', key: 'member-exists', met: f.memberExists,
+        label: '`' + def.member + '` exists on the `@keld/electron` facade',
+        fix: 'Land the L0 scaffold for this member.' },
+      { rung: 'SCAFFOLDED', key: 'typed-error', met: f.typedError,
+        label: 'unsupported calls throw a typed `KELD-COMPAT` error with a fix-it, never a silent no-op',
+        fix: 'Make the scaffold throw the typed error; a silent no-op is not L0.' },
+      { rung: 'PARTIAL', key: 'conformance-entry', met: f.entry !== 'absent',
+        label: 'conformance entry landed before the implementation (cites the pinned doc sentence, or is tagged observed-only)',
+        fix: 'Land the conformance entry first; it may be red.' },
+      { rung: 'PARTIAL', key: 'implemented', met: f.implemented,
+        label: 'behaviour implemented for the corpus path on macOS',
+        fix: 'Implement the behaviour behind the entry.' },
+      { rung: 'BEHAVIOR_MATCH', key: 'golden', met: !!f.golden,
+        label: 'golden transcript recorded under `electron@' + PIN.version + '` (never re-recorded from the Keld arm)',
+        fix: 'Record the golden with the pinned Electron arm and commit it with its receipt.' },
+      { rung: 'BEHAVIOR_MATCH', key: 'normalisers', met: !!f.normalisers,
+        label: 'normalisers declared for this cell in the manifest',
+        fix: 'Declare the normalisers (pid, windowId, file paths, Error.stack) in the manifest cell.' },
+      { rung: 'BEHAVIOR_MATCH', key: 'one-lane-match', met: anyMatch,
+        label: 'Keld transcript equals the golden on at least one OS lane',
+        fix: 'Replay the fixture under `@keld/electron` until one lane equals the golden.' },
+      { rung: 'BEHAVIOR_MATCH', key: 'authority-profile', met: f.authorityProfile === 'legacy_sandbox_off',
+        label: 'record carries `authority_profile: legacy_sandbox_off`',
+        fix: 'Record the replay under the honest profile; the harness is an ordinary test process.' },
+      { rung: 'CONFORMANCE_PASS', key: 'doc-sentence', met: f.entry === 'doc-cited',
+        label: 'the oracle is a cited pinned v' + PIN.version + ' doc sentence (observed-only cells stop at BEHAVIOR_MATCH)',
+        fix: 'Only a doc sentence can be the oracle of a conformance claim.' },
+      { rung: 'CONFORMANCE_PASS', key: 'owned-test', met: f.ownedTest === 'green',
+        label: 'Keld-owned test, independent of the transcript diff, is green',
+        fix: 'Run the doc-cited Keld-owned test to green.' },
+      { rung: 'CONFORMANCE_PASS', key: 'negative-control', met: f.negativeControl === 'proven',
+        label: 'named negative control proven to fail when the behaviour is mutated',
+        fix: 'Prove the named negative control.' },
+      { rung: 'CONFORMANCE_PASS', key: 'three-lanes', met: anyMatch && lanes.every(function (v) { return v === 'match' || v === 'gap'; }),
+        label: 'macOS, Windows and Linux lanes all pass, or each lane without a pass carries an explicit ▲ gap',
+        fix: 'Pass the remaining OS lanes, or record an explicit ▲ gap with a reason for each one.' },
+      { rung: 'CORPUS_VERIFIED', key: 'corpus-run', met: !!(f.corpus && f.corpus.ok),
+        label: 'same observable matched in a real corpus app through `keld migrate` + `keld dev` smoke',
+        fix: 'Run the corpus app through migrate + dev and match the observable there.' },
+      { rung: 'CORPUS_VERIFIED', key: 'profile-printed', met: !!(f.corpus && f.corpus.profile === 'legacy_sandbox_off'),
+        label: 'authority profile printed on the corpus record',
+        fix: 'Print the authority profile on the corpus record.' },
+      { rung: 'CORPUS_VERIFIED', key: 'panel', met: !!f.corpus && (f.corpus.panel !== 'product' || state.committedProductCorpora.indexOf(f.corpus.app) >= 0),
+        label: 'panel `product` only when the corpus id is documented as committed',
+        fix: 'Use a showcase corpus, or get the product corpus id committed first.' }
+    ];
+  }
+  function firstUnmetUpTo(cell, state, target) {
+    var list = gates(cell, state);
+    for (var i = 0; i < list.length; i++) {
+      if (idx(list[i].rung) <= idx(target) && !list[i].met) return list[i];
+    }
+    return null;
+  }
+  function supported(cell, state) {
+    var best = 'UNSUPPORTED';
+    for (var r = 1; r < RUNGS.length; r++) {
+      if (firstUnmetUpTo(cell, state, RUNGS[r])) break;
+      best = RUNGS[r];
+    }
+    return best;
+  }
+  function divergenceProofHolds(cell) {
+    var f = cell.facts;
+    return f.implemented && f.entry === 'doc-cited' && f.ownedTest === 'green' && f.negativeControl === 'proven';
+  }
+
+  // ---- KEL-74 ledger verdict for one cell on one OS lane: pass | fail | unknown | waived | null (no record) ----
+  function ledger(cell, lane) {
+    var f = cell.facts, i = idx(cell.rung), natural;
+    if (cell.mark === 'never') {
+      natural = { result: 'fail', why: 'documented ✘ never: a `fail` cell with its fix-it. It can never become `pass`.' };
+    } else if (cell.mark === 'divergence') {
+      natural = { result: 'fail', intentional: cell.divergence.wording,
+        why: 'accepted ▲: `expected_verdict: fail` plus `intentional_divergence`, as the live `app.quit.return-contract` cell does. Never counted in `passed`.' };
+    } else if (i === 0 || f.entry === 'absent') {
+      natural = { result: null, why: 'no evidence record (a record needs an oracle id). If a denominator names this cell it counts as `missing`.' };
+    } else if (f.entry === 'observed-only') {
+      natural = { result: 'unknown', why: 'observed-only: the docs leave the path unspecified, so the record is `unknown` with an oracle id naming that path. Never `pass`.' };
+    } else if (i <= 2) {
+      natural = { result: 'fail', why: 'the doc-cited oracle is not met yet.' };
+    } else if (i === 3) {
+      natural = { result: 'unknown', why: 'equal to the golden is a mirror-oracle match. Until the doc-cited Keld-owned test and its negative control hold, it is `unknown`, not `pass`.' };
+    } else if (f.lanes[lane] === 'match') {
+      natural = { result: 'pass', why: 'doc-cited oracle passed on this lane.' };
+    } else {
+      natural = { result: 'fail', intentional: f.laneGap[lane] || '',
+        why: 'explicit ▲ gap on this lane: recorded `fail` with the gap reason. Each platform is scored separately.' };
+    }
+    if (cell.waiver) {
+      return { result: 'waived', natural: natural.result, intentional: natural.intentional,
+        why: 'explicit waiver (owner ' + cell.waiver.owner + ', expires ' + cell.waiver.expiresOn + '). Counts in N, not in `passed`. Underneath: ' + (natural.result || 'no record') + '.' };
+    }
+    return natural;
+  }
+
+  // ---- score(): mirrors evidence.rs score() ----
+  function score(state, lane) {
+    var d = state.denominator;
+    if (!d) return { status: 'none', reasons: ['no committed denominator file: no claim string and no percentage exist'] };
+    var rows = [], passed = 0, failed = 0, unknown = 0, waived = 0, missing = 0;
+    for (var i = 0; i < d.cells.length; i++) {
+      var cell = state.cells[d.cells[i]];
+      var v = ledger(cell, lane);
+      if (v.result === 'waived' && cell.waiver.expiresOn < state.asOf) {
+        return { status: 'error', error: live006('waiver for `' + cellLabel(cell.id) + '` expired on ' + cell.waiver.expiresOn + ' (as_of ' + state.asOf + ')') };
+      }
+      if (v.result === 'pass') passed++; else if (v.result === 'fail') failed++;
+      else if (v.result === 'unknown') unknown++; else if (v.result === 'waived') waived++; else missing++;
+      rows.push({ cell: cell.id, result: v.result, why: v.why, intentional: v.intentional || '' });
+    }
+    var n = d.cells.length;
+    var corpusOk = d.panel === 'showcase' || state.committedProductCorpora.indexOf(d.corpusId) >= 0;
+    var identityOk = true;                       // every record in this model is legacy_sandbox_off on one engine
+    var reasons = [];
+    if (missing > 0) reasons.push(missing + ' required cell(s) have no record (`missing`)');
+    if (unknown > 0) reasons.push(unknown + ' required cell(s) are `unknown`');
+    if (!corpusOk) reasons.push('panel is `product` and `' + d.corpusId + '` is not a documented committed product corpus');
+    var mayPublish = missing === 0 && unknown === 0 && n > 0 && identityOk && corpusOk;
+    return { status: 'ok', lane: lane, n: n, passed: passed, failed: failed, unknown: unknown, waived: waived, missing: missing,
+      percent: mayPublish ? Math.floor(passed * 100 / n) : null,
+      complete: n > 0 && passed === n && missing === 0 && unknown === 0 && failed === 0 && waived === 0 && identityOk && corpusOk,
+      claim: passed + '/' + n + ' of ' + d.panel + ' corpus ' + d.corpusId + '@' + d.digest + ' (' + d.kind + ')',
+      reasons: reasons, rows: rows };
+  }
+
+  // ---- what an app observes when it touches the member (a query, not a transition) ----
+  function observe(cell) {
+    var def = DEF[cell.id], i = idx(cell.rung);
+    if (cell.mark === 'never') {
+      return cell.facts.typedError
+        ? 'throws the typed `KELD-COMPAT` never error: `' + def.member + '` is documented ✘. Fix: ' + def.fixIt
+        : 'the member is still absent (plain JavaScript `TypeError`, or a listener that never fires). The documented ✘ needs its L0 stub so the app gets the typed error and this fix-it: ' + def.fixIt;
+    }
+    if (cell.mark === 'divergence') return 'behaves differently from Electron on purpose: ' + cell.divergence.wording;
+    if (!cell.facts.memberExists) return 'the member is absent from `@keld/electron`: a plain JavaScript `TypeError`, or for an event a listener that never fires. No `KELD-*` code. Removing this silence is what L0 is for.';
+    if (!cell.facts.typedError) return 'the member exists but does nothing: a silent no-op. This is the state L0 forbids.';
+    if (i <= 1 || !cell.facts.implemented) return 'throws a typed `KELD-COMPAT` error naming `' + def.member + '`. Fix: ' + def.fixIt;
+    if (i === 2) return 'works on the implemented macOS corpus path; other paths still throw the typed `KELD-COMPAT` error.';
+    return 'behaves as Electron ' + PIN.version + ' does for this observable: ' + def.observable + '.';
+  }
+
+  // ---- reducer ----
+  var CELL_ACTIONS = { LAND_SCAFFOLD: 1, LAND_CONFORMANCE_ENTRY: 1, IMPLEMENT: 1, RUN_OWNED_TEST: 1, PROVE_NEGATIVE_CONTROL: 1,
+    RECORD_GOLDEN: 1, DECLARE_NORMALISERS: 1, REPLAY: 1, RECORD_LANE_GAP: 1, RUN_CORPUS: 1, CLAIM_RUNG: 1, ACCEPT_DIVERGENCE: 1,
+    RETIRE_DIVERGENCE: 1, MARK_NEVER: 1, REGRESS: 1, WAIVE: 1, DROP_WAIVER: 1, ACCEPT_LOWERED_MANIFEST: 1, CALL_FROM_APP: 1 };
+  var ALLOWED_ON_NEVER = { LAND_SCAFFOLD: 1, CALL_FROM_APP: 1 };
+
+  function raiseP1(s, cellId, cause, from, to, changes) {
+    var item = { id: 'P1-' + (s.p1.length + 1), cell: cellId, cause: cause, from: from, to: to, openedOn: s.asOf, status: 'open', closedBy: '' };
+    s.p1.push(item);
+    changes.push('**' + item.id + ' raised (compat regression).** `' + DEF[cellId].member + '` fell from ' + from + ' to ' + to + ' because ' + cause + '.');
+  }
+  function closeP1(s, cellId, predicate, how, changes) {
+    s.p1.forEach(function (p) {
+      if (p.cell === cellId && p.status === 'open' && predicate(p)) {
+        p.status = 'closed'; p.closedBy = how;
+        changes.push(p.id + ' closed: ' + how + '.');
+      }
+    });
+  }
+  // After evidence is lost: the claimed rung may no longer be supported.
+  function settle(s, cell, cause, changes) {
+    if (cell.mark === 'divergence' && !divergenceProofHolds(cell)) {
+      cell.mark = 'none'; cell.divergence = null;
+      raiseP1(s, cell.id, cause, '▲ accepted divergence', cell.rung + ' (unmarked)', changes);
+      changes.push('The ▲ lost its proof, so it is no longer an accepted state. The cell reports plain `fail` until the test and negative control hold again.');
+    }
+    var sup = supported(cell, s);
+    if (idx(cell.rung) > idx(sup)) {
+      var from = cell.rung;
+      cell.rung = sup;
+      raiseP1(s, cell.id, cause, from, sup, changes);
+      changes.push('Demoted by construction: the manifest may not claim a rung its evidence no longer supports.');
+      return true;
+    }
+    return false;
+  }
+
+  function dispatch(prev, action) {
+    var s = clone(prev);
+    s.seq += 1;
+    var changes = [];
+    function refuse(error) { return { ok: false, state: prev, changes: [], error: error, action: action }; }
+    function done() { return { ok: true, state: s, changes: changes, error: null, action: action }; }
+
+    if (!action || typeof action.type !== 'string') {
+      return refuse(P('L19', 'malformed action: an action is an object with a string `type`.', 'Use a defined action.', 'prototype'));
+    }
+    function badLane(l) {
+      return LANES.indexOf(l) >= 0 ? null
+        : P('L19', 'unknown OS lane `' + l + '`.', 'Use one of: ' + LANES.join(', ') + '.', 'prototype');
+    }
+
+    var cell = null, def = null, f = null, name = '';
+    if (CELL_ACTIONS[action.type]) {
+      cell = s.cells[action.cell];
+      if (!cell) return refuse(P('L19', 'unknown matrix cell `' + action.cell + '`.', 'Name a cell from the committed manifest.', 'prototype'));
+      def = DEF[cell.id]; f = cell.facts; name = '`' + def.member + '`';
+      if (cell.mark === 'never' && !ALLOWED_ON_NEVER[action.type]) {
+        return refuse(P('L14', name + ' is documented ✘ never. That state is terminal: no rung claim, waiver, divergence or evidence can move it.',
+          'If primary evidence changes the decision, reopen it on the map and land a new approved spec that records the new invariant. Until then give the app the fix-it: ' + def.fixIt,
+          'PANEL-D9 and PANEL-D10 (resolved): documented-never is a ✘ fail cell with fix-it; root AGENTS.md: a different architecture must record the new invariant'));
+      }
+    }
+
+    switch (action.type) {
+
+    case 'LAND_SCAFFOLD':
+      if (action.silentNoop) {
+        return refuse(P('L01', name + ' was scaffolded as a silent no-op. L0 requires every member to exist with a typed `KELD-COMPAT` error for unsupported calls.',
+          'Throw the typed error with a fix-it instead of returning quietly: ' + def.fixIt,
+          'F01/F05/F06 epics, maturity ladder L0: "never a silent no-op"'));
+      }
+      if (f.memberExists && f.typedError) { changes.push('No change: ' + name + ' already has its L0 scaffold.'); return done(); }
+      f.memberExists = true; f.typedError = true;
+      changes.push(name + ' now exists on the `@keld/electron` facade and throws a typed `KELD-COMPAT` error with a fix-it when called.');
+      if (cell.mark === 'never') changes.push('The cell stays ✘ never. The stub is its L0 obligation: the app now gets the typed error instead of a bare `TypeError`.');
+      else changes.push('Evidence only. The manifest still says ' + cell.rung + ' until the rung is claimed in a reviewed change.');
+      return done();
+
+    case 'LAND_CONFORMANCE_ENTRY':
+      if (f.entry !== 'absent') { changes.push('No change: the conformance entry for ' + name + ' already exists (' + f.entry + ').'); return done(); }
+      if (def.oracle.kind === 'doc') {
+        f.entry = 'doc-cited'; f.ownedTest = 'red'; f.negativeControl = 'named';
+        changes.push('Conformance entry landed for ' + name + ', red, before any implementation. It cites ' + def.oracle.page + ' at v' + PIN.version + ': "' + def.oracle.sentence + '"');
+        changes.push('Negative control named: ' + def.negativeControl);
+      } else {
+        f.entry = 'observed-only';
+        changes.push('Conformance entry landed for ' + name + ' tagged **observed-only**. ' + def.oracle.page + ' does not fix the order ("' + def.oracle.sentence + '"), so there is no sentence to cite as the oracle.');
+        changes.push('The cell can be recorded and compared, but it can never exceed BEHAVIOR_MATCH and its KEL-74 record is `unknown`.');
+      }
+      return done();
+
+    case 'IMPLEMENT':
+      if (def.never) {
+        return refuse(P('L14', name + ' is on a published never list (' + def.never.source + '). A documented ✘ is not implemented; its only obligation is the L0 typed stub.',
+          'Record the ✘ mark and land the typed stub. If primary evidence changes the decision, reopen it on the map and land a new approved spec first.',
+          'PANEL-D10 (resolved) and the per-epic "Never list (documented ✘)" sections; prototype rule (PROPOSED): the never list, not the mark, is what makes ✘ terminal'));
+      }
+      if (!f.memberExists || !f.typedError) {
+        return refuse(P('L08', 'cannot implement ' + name + ': the L0 scaffold is missing.', 'Land the L0 scaffold first.', 'family epics, L0 before L1'));
+      }
+      if (f.entry === 'absent') {
+        return refuse(P('L02', 'implementation of ' + name + ' arrived before its conformance entry.',
+          'Land the conformance entry first, citing the pinned Electron doc sentence (it may be red), then implement.',
+          'root AGENTS.md working invariants: "Compat lands a conformance entry first"; crates/keld-compat/AGENTS.md'));
+      }
+      if (def.blockedBy) {
+        return refuse(P('L18', name + ' cannot be implemented yet: ' + def.blockedBy.key + ' is open. ' + def.blockedBy.text + '.',
+          'Keep the member SCAFFOLDED (typed throw). App fix-it: ' + def.fixIt + ' Revisit when ' + def.blockedBy.key + ' reports.',
+          'F06-EPIC design facts; map #391 PANEL-P1 (open prototype); PANEL-D3 and PANEL-D4 (resolved)'));
+      }
+      if (f.implemented) { changes.push('No change: ' + name + ' is already implemented for the macOS corpus path.'); return done(); }
+      f.implemented = true;
+      changes.push(name + ' is implemented for the corpus path on macOS. The doc-cited test has not been run yet.');
+      return done();
+
+    case 'RUN_OWNED_TEST':
+      if (f.entry === 'observed-only') {
+        return refuse(P('L07', name + ' is observed-only: there is no doc sentence, so no doc-cited Keld-owned test can exist for it.',
+          'Keep it as a lead at BEHAVIOR_MATCH. If Electron documents the behaviour at a later pin, re-cut the cell against that sentence.',
+          'X01-EPIC scope; X01-T1 acceptance: "Observed-only cells cannot exceed BEHAVIOR_MATCH by construction"'));
+      }
+      if (f.ownedTest === 'absent') {
+        return refuse(P('L02', 'there is no Keld-owned test for ' + name + ' because no conformance entry has landed.',
+          'Land the conformance entry first.', 'crates/keld-compat/AGENTS.md'));
+      }
+      if (!f.implemented) {
+        return refuse(P('L09', 'the Keld-owned test for ' + name + ' is red: the behaviour is not implemented.',
+          'Implement the behaviour; do not weaken the test.', 'root AGENTS.md: MUST NOT weaken tests'));
+      }
+      if (f.ownedTest === 'green') { changes.push('No change: the Keld-owned test for ' + name + ' is already green.'); return done(); }
+      f.ownedTest = 'green';
+      changes.push('The Keld-owned test for ' + name + ' is green. It asserts the cited sentence directly and does not read the transcript diff.');
+      return done();
+
+    case 'PROVE_NEGATIVE_CONTROL':
+      if (f.negativeControl === 'absent') {
+        return refuse(P('L09', 'no negative control is named for ' + name + '.',
+          'Name the one mutation that must fail in the conformance entry.', 'ticket template: "Negative controls (each names the one mutation that must fail)"'));
+      }
+      if (f.ownedTest !== 'green') {
+        return refuse(P('L09', 'the negative control for ' + name + ' cannot be proven while its test is ' + f.ownedTest + ': a red test cannot show that the mutation is what makes it fail.',
+          'Get the Keld-owned test green first, then apply the mutation and watch it fail.', 'briefing doctrine rule 9'));
+      }
+      if (f.negativeControl === 'proven') { changes.push('No change: the negative control for ' + name + ' is already proven.'); return done(); }
+      f.negativeControl = 'proven';
+      changes.push('Negative control proven for ' + name + ': ' + def.negativeControl);
+      return done();
+
+    case 'RECORD_GOLDEN':
+      if (action.arm !== 'electron') {
+        return refuse(P('L03', 'the golden transcript for ' + name + ' may only be recorded by the pinned Electron arm (`electron@' + PIN.version + '`, commit ' + PIN.commit.slice(0, 8) + '…). Recording it from the Keld arm makes Keld its own oracle.',
+          'Run the recorder arm at the pin and commit golden, manifest and receipts together in one reviewed change.',
+          'X01-EPIC never list: "re-recording goldens from the Keld arm", "fetching electron latest/main"'));
+      }
+      if (f.golden) {
+        changes.push('No change: the golden for ' + name + ' is an immutable blob at this pin. Replays that matched it stay valid only because it did not change; a new golden needs a pin bump and fresh replays.');
+        return done();
+      }
+      f.golden = { arm: 'electron@' + PIN.version, commit: PIN.commit };
+      changes.push('Golden transcript for ' + name + ' recorded under `electron@' + PIN.version + '` and committed as an immutable blob with its receipt.');
+      changes.push('The golden is evidence-of-record. The oracle stays the pinned doc sentence.');
+      return done();
+
+    case 'DECLARE_NORMALISERS':
+      if (action.set === 'redact-all-args') {
+        return refuse(P('L04', 'the normaliser for ' + name + ' reduces every row\'s args to `{}`. A normaliser that broad hides the divergence it is supposed to expose.',
+          'Declare field-level normalisers only: pid, windowId, file paths, Error.stack. Keep Error.message and code.',
+          'X01 research X01-A5 (ticket open): first falsifier "a cell whose normalizers reduce args to {} while still scoring pass"'));
+      }
+      f.normalisers = ['pid', 'windowId', 'file paths', 'Error.stack'];
+      changes.push('Normalisers declared in the manifest cell for ' + name + ': pid, windowId, file paths, Error.stack. Timing is never compared.');
+      return done();
+
+    case 'REPLAY': {
+      var profile = action.profile || 'legacy_sandbox_off';
+      if (badLane(action.lane)) return refuse(badLane(action.lane));
+      if (action.outcome !== 'match' && action.outcome !== 'diff') {
+        return refuse(P('L19', 'a replay outcome is `match` or `diff`, not `' + action.outcome + '`.', 'Report what the comparator returned.', 'prototype'));
+      }
+      if (AUTHORITY_PROFILES.indexOf(profile) < 0) return refuse(live005('unknown authority_profile `' + profile + '`'));
+      if (profile !== 'legacy_sandbox_off') {
+        return refuse(P('L06', 'the replay of ' + name + ' was labelled `' + profile + '`, but the comparator is an ordinary test process. That label would claim a measurement that was not taken.',
+          'Record `authority_profile: legacy_sandbox_off`. `strict` is not admitted on any OS today.',
+          'X01-EPIC never list: "labelling the harness strict_bun"; docs/specs/kel77 §4.5; PANEL-D12 (resolved)'));
+      }
+      if (!f.implemented || !f.golden || !f.normalisers) {
+        var lack = !f.implemented ? 'the behaviour is not implemented' : !f.golden ? 'no golden transcript is committed' : 'no normalisers are declared';
+        return refuse(P('L05', 'cannot replay ' + name + ' on ' + action.lane + ': ' + lack + '.',
+          !f.implemented ? 'Implement the behaviour first.' : !f.golden ? 'Record the golden under the pinned Electron arm.' : 'Declare the cell\'s normalisers in the manifest.',
+          'X01-T2 acceptance: replay committed goldens offline'));
+      }
+      if (cell.mark === 'divergence' && action.outcome === 'match') {
+        return refuse(P('L15', name + ' is an accepted ▲ whose manifest says `expected_verdict: fail`, but the Keld transcript now equals Electron\'s. An expected-fail cell that passes fails CI until the manifest is updated.',
+          'Retire the divergence in a reviewed manifest change, then climb the ladder normally.',
+          'X01 research X01-A4: CI required fails when "an expected-fail cell passes (forces manifest update)"'));
+      }
+      var was = f.lanes[action.lane];
+      f.lanes[action.lane] = action.outcome === 'match' ? 'match' : 'diff';
+      delete f.laneGap[action.lane];
+      f.authorityProfile = profile;
+      if (action.outcome === 'match') {
+        changes.push('Replay on ' + action.lane + ': the Keld transcript of ' + name + ' equals the Electron ' + PIN.version + ' golden under the declared normalisers. Recorded with `authority_profile: legacy_sandbox_off`.');
+      } else {
+        changes.push('Replay on ' + action.lane + ': the Keld transcript of ' + name + ' differs from the golden (ordered sequence mismatch).' + (was === 'match' ? ' This lane used to match.' : ''));
+        settle(s, cell, 'the ' + action.lane + ' replay no longer equals the golden', changes);
+      }
+      return done();
+    }
+
+    case 'RECORD_LANE_GAP': {
+      if (badLane(action.lane)) return refuse(badLane(action.lane));
+      if (f.lanes[action.lane] === 'match') {
+        return refuse(P('L10', 'the ' + action.lane + ' lane of ' + name + ' currently equals the golden. Replacing a pass with a ▲ gap lowers that lane\'s record from `pass` to `fail` without a regression being raised.',
+          'If the lane really stopped matching, record the differing replay (that demotes the cell and raises the P1). A gap is for a lane that has never passed.',
+          'crates/keld-compat/AGENTS.md: "any score drop = P1 regression"; prototype rule (PROPOSED)'));
+      }
+      if (!trim(action.reason)) {
+        return refuse(P('L10', 'an explicit ▲ gap for the ' + action.lane + ' lane of ' + name + ' needs a reason.',
+          'State why the lane cannot pass (platform-only member, engine limit) so the gap is documented, not silent.',
+          'ticket template: "Windows/Linux lanes or explicit documented gap"'));
+      }
+      var openHere = s.p1.some(function (p) { return p.cell === cell.id && p.status === 'open'; });
+      if (f.lanes[action.lane] === 'diff' && openHere) {
+        return refuse(P('L10', 'the ' + action.lane + ' lane of ' + name + ' is a live regression with an open P1. It cannot be relabelled as an accepted ▲ gap.',
+          'Fix the regression and re-claim the rung, or lower the manifest in a reviewed decision with owner and reason.',
+          'prototype rule (PROPOSED): nothing on the map stops a regression being laundered into a ▲'));
+      }
+      f.lanes[action.lane] = 'gap'; f.laneGap[action.lane] = trim(action.reason);
+      changes.push('Explicit ▲ gap recorded for the ' + action.lane + ' lane of ' + name + ': ' + trim(action.reason) + '. That lane reports `fail` with the gap reason; it never counts as a pass.');
+      settle(s, cell, 'the ' + action.lane + ' lane was turned into a gap', changes);
+      return done();
+    }
+
+    case 'RUN_CORPUS': {
+      if (action.via !== 'migrate+dev') {
+        return refuse(P('L11', 'corpus evidence for ' + name + ' must come from the real app run through `keld migrate` + `keld dev` smoke. A hand port is a different program.',
+          'Run the unmodified corpus clone through migrate + dev and match the same observable there.',
+          'X01-EPIC ladder: "real corpus app through migrate + dev smoke"'));
+      }
+      if (CORPUS_APPS.indexOf(action.app) < 0) {
+        return refuse(P('L11', '`' + action.app + '` is not a committed corpus clone, so a run of it is not corpus evidence for ' + name + '.',
+          'Run one of the pinned corpus apps: ' + CORPUS_APPS.join(', ') + '.',
+          'X01-EPIC ladder: "a real corpus app"; map briefing corpus list (drawio-desktop, zettlr, electron-quick-start)'));
+      }
+      var cpanel = action.panel || 'showcase';
+      if (cpanel !== 'product' && cpanel !== 'showcase') return refuse(live005('panel `' + cpanel + '` is not product|showcase'));
+      if (!s.tooling.migrateDevLive) return refuse(liveCli045());
+      var cp = action.profile || 'legacy_sandbox_off';
+      if (AUTHORITY_PROFILES.indexOf(cp) < 0) return refuse(live005('unknown authority_profile `' + cp + '`'));
+      if (cp !== 'legacy_sandbox_off') {
+        return refuse(P('L06', 'the corpus run of ' + name + ' was labelled `' + cp + '`. `strict` is not admitted on any OS and cannot be reported from documentation.',
+          'Declare the Keld `legacy` profile key explicitly in the corpus app, print the forfeit, and record `legacy_sandbox_off`.',
+          'docs/specs/kel78-strict-profile-sandbox.md profile states; PANEL-D12 (resolved)'));
+      }
+      if (cpanel === 'product' && s.committedProductCorpora.indexOf(action.app) < 0) {
+        return refuse(P('L12', 'the corpus run of ' + name + ' asked for panel `product`, but `' + action.app + '` is not a documented committed product corpus id. The committed list is empty today.',
+          'Record the run on a showcase corpus, or first get `' + action.app + '` recorded as the committed product corpus (no owner is named for that step).',
+          'X01-EPIC ladder and fog; evidence.rs DOCUMENTED_COMMITTED_PRODUCT_CORPORA = [] (live)'));
+      }
+      if (!f.implemented) {
+        return refuse(P('L11', 'the corpus app cannot match ' + name + ': the behaviour is not implemented.', 'Implement the behaviour first.', 'X01-EPIC ladder'));
+      }
+      f.corpus = { app: action.app, via: 'migrate+dev', panel: cpanel, profile: cp, ok: action.outcome !== 'fail' };
+      if (f.corpus.ok) {
+        changes.push('`' + action.app + '` ran through `keld migrate` + `keld dev` smoke and showed the same observable for ' + name + '. Record: panel `' + f.corpus.panel + '`, authority profile printed as `legacy_sandbox_off` (containment forfeited, strict not admitted).');
+      } else {
+        changes.push('`' + action.app + '` smoke under `keld dev` no longer shows the observable for ' + name + '.');
+        settle(s, cell, 'the `' + action.app + '` corpus smoke failed', changes);
+      }
+      return done();
+    }
+
+    case 'CLAIM_RUNG': {
+      if (cell.mark === 'divergence') {
+        return refuse(P('L15', name + ' is an accepted ▲ divergence: by definition its transcript does not equal Electron\'s for this observable, so it cannot also claim a ladder rung above ' + cell.rung + '.',
+          'Split the member into separate cells (one per observable, as `app.quit.return-contract` does), or retire the divergence first.',
+          'prototype rule (PROPOSED); precedent: crates/keld-compat/fixtures/lifecycle-corpus/corpus.json'));
+      }
+      if (cell.waiver) {
+        return refuse(P('L15', name + ' carries a waiver. A waiver cannot be paired with a climbing rung: it is not evidence and it cannot coexist with `pass`.',
+          'Drop the waiver, then claim the rung on its evidence.', 'compat-scoreboard.md rule 5; evidence.rs validate_scored_waiver'));
+      }
+      var target = action.target || RUNGS[Math.min(idx(cell.rung) + 1, RUNGS.length - 1)];
+      if (idx(target) < 0) return refuse(P('L19', '`' + target + '` is not a rung.', 'Use one of: ' + RUNGS.join(', ') + '.', 'prototype'));
+      if (idx(target) <= idx(cell.rung)) {
+        return refuse(P('L19', name + ' already claims ' + cell.rung + '; there is nothing to claim at ' + target + '.',
+          cell.rung === 'CORPUS_VERIFIED' ? 'CORPUS_VERIFIED is the top rung.' : 'Claim a higher rung, or lower the manifest through the reviewed-decision action.', 'prototype'));
+      }
+      var unmet = firstUnmetUpTo(cell, s, target);
+      if (unmet) {
+        if (unmet.key === 'doc-sentence') {
+          return refuse(P('L07', name + ' is observed-only and stops at BEHAVIOR_MATCH. ' + def.oracle.page + ' gives no sentence that fixes this behaviour, and a golden transcript is evidence, not an oracle.',
+            'Report it as a lead with result `unknown`. Do not cite the golden\'s digest as the oracle.',
+            'X01-EPIC scope; X01-T1 acceptance criterion 3'));
+        }
+        return refuse(P('L08', 'cannot claim ' + target + ' for ' + name + ': gate `' + unmet.key + '` of ' + unmet.rung + ' is not met (' + unmet.label + ').',
+          unmet.fix, 'X01-EPIC maturity ladder; family epics L0/L1'));
+      }
+      var before = cell.rung;
+      cell.rung = target;
+      changes.push('**' + name + ': ' + before + ' → ' + target + '.** Every gate at or below ' + target + ' holds, so the manifest claim is accepted.');
+      var v = ledger(cell, 'macos');
+      changes.push('KEL-74 record on macOS: `' + (v.result || 'none') + '`. ' + v.why);
+      closeP1(s, cell.id, function (p) { return idx(p.from) >= 0 && idx(p.from) <= idx(cell.rung); }, 'gate restored and ' + cell.rung + ' re-claimed', changes);
+      return done();
+    }
+
+    case 'ACCEPT_DIVERGENCE': {
+      if (cell.mark === 'divergence') {
+        return refuse(P('L13', name + ' is already an accepted ▲ (' + cell.divergence.routing + ').', 'Retire it first if the routing must change.', 'prototype'));
+      }
+      if (action.widensAuthority) {
+        return refuse(P('L13', 'the quirks flag proposed for ' + name + ' widens authority. A `keld.compat.ts` quirk may narrow behaviour but never widen it, and `keld-guard` never reads that file.',
+          'Express the need as an explicit grant in `keld.permissions.jsonc`, evaluated by `keld-guard`. Default-deny is not a quirk.',
+          'PANEL-D9 and PANEL-D10 (resolved): "any quirks flag that widens authority" is on the never list'));
+      }
+      if (cell.waiver) {
+        return refuse(P('L15', name + ' carries a waiver. Drop it before recording an accepted divergence.', 'Drop the waiver.', 'compat-scoreboard.md rule 5'));
+      }
+      if (!trim(action.wording)) {
+        return refuse(P('L13', 'an accepted ▲ for ' + name + ' needs its report wording.', 'Write the one-sentence divergence statement that the scoreboard will print.',
+          'crates/keld-compat/AGENTS.md: "chosen in PR with report wording"'));
+      }
+      if (action.routing !== 'scoreboard' && action.routing !== 'quirks-flag') {
+        return refuse(P('L13', 'the divergence of ' + name + ' is recorded nowhere. Prose alone is not a routing.', 'Choose scoreboard ▲ or a `keld.compat.ts` quirks flag.',
+          'PANEL-D9 (resolved): "Never prose-only"'));
+      }
+      // The catalogue, not the caller, says whether a divergence is a host constraint: omitting or
+      // relabelling `kind` must not turn default-deny into a per-app toggle.
+      var dkind = def.divergence ? def.divergence.kind : (action.kind === 'host-constraint' ? 'host-constraint' : 'per-app-choice');
+      if (LANES.some(function (l) { return f.lanes[l] === 'match'; })) {
+        return refuse(P('L15', name + ' has a lane whose Keld transcript equals Electron\'s golden. A cell that matches Electron is not a divergence, and marking it ▲ would turn a `pass` into a `fail` with no regression raised.',
+          'If the behaviour really changed, record the differing replay first (that demotes the cell and raises the P1), then propose the ▲.',
+          'crates/keld-compat/AGENTS.md: "any score drop = P1 regression"; prototype rule (PROPOSED)'));
+      }
+      if (dkind === 'host-constraint' && action.routing === 'quirks-flag') {
+        return refuse(P('L13', 'the divergence of ' + name + ' is a host constraint that no app can toggle. It cannot be a per-app `keld.compat.ts` quirks flag.',
+          'Record it as a scoreboard ▲ with its conformance test.',
+          'docs/engineering/compat-scoreboard.md "Recorded divergences"; PANEL-D9 (resolved)'));
+      }
+      if (!divergenceProofHolds(cell)) {
+        var miss = !f.implemented ? 'the divergent behaviour is not implemented'
+          : f.entry !== 'doc-cited' ? 'no pinned doc sentence states what Electron does (nothing to diverge from)'
+          : f.ownedTest !== 'green' ? 'the Keld-owned test of the divergent behaviour is not green'
+          : 'the negative control is not proven';
+        return refuse(P('L13', 'cannot accept ▲ for ' + name + ': ' + miss + '. A divergence is tested, never asserted.',
+          'Land the entry citing the Electron sentence, implement, get the divergence test green and prove its negative control.',
+          'PANEL-D9 (resolved): "scoreboard ▲ with a conformance test"; live corpus cell `app.quit.return-contract`'));
+      }
+      cell.mark = 'divergence';
+      cell.divergence = { routing: action.routing, kind: dkind, wording: trim(action.wording) };
+      changes.push('**' + name + ' is now ▲ accepted divergence**, recorded ' + (action.routing === 'scoreboard' ? 'on the scoreboard' : 'as a `keld.compat.ts` quirks flag') + ': ' + cell.divergence.wording);
+      changes.push('KEL-74 record: `fail` with `intentional_divergence`. It is reported beside the oracle matches and is never counted in `passed`.');
+      closeP1(s, cell.id, function (p) { return p.from === '▲ accepted divergence'; }, 'divergence proof restored and ▲ re-accepted', changes);
+      return done();
+    }
+
+    case 'RETIRE_DIVERGENCE':
+      if (cell.mark !== 'divergence') {
+        return refuse(P('L13', name + ' has no accepted ▲ to retire.', 'Nothing to do.', 'prototype'));
+      }
+      cell.mark = 'none'; cell.divergence = null;
+      changes.push('▲ retired for ' + name + ' in a reviewed manifest change. The cell is back on the ladder at ' + cell.rung + ' and reports on its evidence.');
+      return done();
+
+    case 'MARK_NEVER':
+      // A source string typed by the caller is not a decision: the member must be on a published
+      // never list in the catalogue, or any passing cell could be frozen as ✘ with no P1.
+      if (!def.never || !trim(action.source) || !trim(action.reason)) {
+        return refuse(P('L17', name + ' is not on a published never list. ✘ never is a decision with a source, not a status anyone can set.',
+          'Add the member to a documented never list by decision first (epic never list or PANEL-D10), with the reason.',
+          'PANEL-D10 (resolved) and the per-epic "Never list (documented ✘)" sections'));
+      }
+      if (!trim(action.fixIt)) {
+        return refuse(P('L17', 'a ✘ never cell for ' + name + ' must carry a fix-it: what the app should do instead.',
+          'Write the fix-it text that the typed error and `keld migrate` report will print.', 'PANEL-D9 (resolved): "✘ fail cell with fix-it"'));
+      }
+      if (cell.waiver) {
+        return refuse(P('L15', name + ' carries a waiver. Drop it before marking the cell ✘ never.', 'Drop the waiver.', 'compat-scoreboard.md rule 5'));
+      }
+      cell.mark = 'never'; cell.divergence = null;
+      cell.never = { source: trim(action.source), reason: trim(action.reason), fixIt: trim(action.fixIt) };
+      changes.push('**' + name + ' is now ✘ never (terminal).** Source: ' + cell.never.source + '. Reason: ' + cell.never.reason + '.');
+      changes.push('KEL-74 record: `fail`, permanently. Any denominator that names this cell can never be `complete`.');
+      if (s.p1.some(function (p) { return p.cell === cell.id && p.status === 'open'; })) changes.push('Open P1s on this cell stay open: marking a cell ✘ does not close a regression.');
+      return done();
+
+    case 'REGRESS': {
+      var cause = '';
+      if (action.gate === 'typed-error') {
+        if (!f.typedError) return refuse(P('L19', name + ' has no typed error to lose.', 'Nothing to regress.', 'prototype'));
+        f.typedError = false; cause = 'the member became a silent no-op (typed `KELD-COMPAT` error lost)';
+      } else if (action.gate === 'member') {
+        if (!f.memberExists) return refuse(P('L19', name + ' is not on the facade, so it cannot disappear from it.', 'Nothing to regress.', 'prototype'));
+        f.memberExists = false; f.typedError = false; cause = 'the member disappeared from the `@keld/electron` facade';
+      } else if (action.gate === 'implementation') {
+        if (!f.implemented) return refuse(P('L19', name + ' is not implemented, so its implementation cannot be lost.', 'Nothing to regress.', 'prototype'));
+        // Explicit coupling: evidence that was produced by the implementation cannot outlive it.
+        f.implemented = false;
+        if (f.ownedTest === 'green') f.ownedTest = 'red';
+        if (f.negativeControl === 'proven') f.negativeControl = 'named';
+        LANES.forEach(function (l) { if (f.lanes[l] === 'match') f.lanes[l] = 'diff'; });
+        if (f.corpus) f.corpus.ok = false;
+        cause = 'the implementation was removed or stubbed out';
+      } else if (action.gate === 'normalisers') {
+        if (!f.normalisers) return refuse(P('L19', name + ' has no declared normalisers to lose.', 'Nothing to regress.', 'prototype'));
+        // A match is a match under the declared normalisers; without them no replay result stands.
+        f.normalisers = null; LANES.forEach(function (l) { if (f.lanes[l] !== 'gap') f.lanes[l] = 'none'; });
+        cause = 'the cell\'s normaliser declaration was removed from the manifest';
+      } else if (action.gate === 'owned-test') {
+        if (f.ownedTest !== 'green') return refuse(P('L19', 'the Keld-owned test for ' + name + ' is not green, so it cannot go red.', 'Nothing to regress.', 'prototype'));
+        f.ownedTest = 'red'; if (f.negativeControl === 'proven') f.negativeControl = 'named';
+        cause = 'the doc-cited Keld-owned test went red';
+      } else if (action.gate === 'negative-control') {
+        if (f.negativeControl !== 'proven') return refuse(P('L19', 'the negative control for ' + name + ' is not proven, so it cannot go dead.', 'Nothing to regress.', 'prototype'));
+        f.negativeControl = 'named'; cause = 'the negative control stopped failing (the mutation no longer breaks the test)';
+      } else if (action.gate === 'golden') {
+        if (!f.golden) return refuse(P('L19', name + ' has no committed golden.', 'Nothing to regress.', 'prototype'));
+        f.golden = null; LANES.forEach(function (l) { if (f.lanes[l] !== 'gap') f.lanes[l] = 'none'; });
+        cause = 'the golden bytes no longer match their committed digest';
+      } else if (action.gate === 'corpus') {
+        if (!f.corpus || !f.corpus.ok) return refuse(P('L19', name + ' has no passing corpus run.', 'Nothing to regress.', 'prototype'));
+        f.corpus.ok = false; cause = 'the `' + f.corpus.app + '` corpus smoke failed';
+      } else {
+        return refuse(P('L19', 'unknown gate `' + action.gate + '`.', 'Use member, typed-error, implementation, normalisers, owned-test, negative-control, golden or corpus.', 'prototype'));
+      }
+      changes.push('Evidence lost for ' + name + ': ' + cause + '.');
+      settle(s, cell, cause, changes);
+      if (changes.length === 1) changes.push('No claimed rung or accepted ▲ rested on that evidence, so there is no demotion and no P1.');
+      return done();
+    }
+
+    case 'WAIVE': {
+      var owner = trim(action.owner), reason = trim(action.reason);
+      if (!owner || !reason) return refuse(live006('owner and reason must be non-empty'));
+      var date = parseCivilDate(action.expiresOn);
+      if (date.error) return refuse(live006(date.error));
+      if (date.value < s.asOf) return refuse(live006('waiver for `' + cellLabel(cell.id) + '` expired on ' + date.value + ' (as_of ' + s.asOf + ')'));
+      var bare = { id: cell.id, rung: cell.rung, mark: cell.mark, divergence: cell.divergence, facts: f, waiver: null };
+      var nat = ledger(bare, 'macos');
+      // The waiver is cell-wide, so it lands on every lane's record: one passing lane is enough to refuse it.
+      if (LANES.some(function (l) { return ledger(bare, l).result === 'pass'; })) return refuse(live006('waiver is only allowed when result is waived'));
+      if (nat.result === null) {
+        return refuse(P('L15', name + ' has no evidence record to waive: a `waived` record still needs an oracle id.',
+          'Land the conformance entry so the cell has an oracle, then waive it.', 'evidence.rs: operation.oracle.{id, revision} are required'));
+      }
+      cell.waiver = { owner: owner, reason: reason, expiresOn: date.value };
+      changes.push(name + ' is waived until ' + date.value + ' by ' + owner + ': ' + reason + '.');
+      changes.push('KEL-74 record: `waived` (was `' + nat.result + '`). It still counts in N and not in `passed`; the board cannot be `complete` while any cell is waived. The rung and any open P1 are untouched.');
+      return done();
+    }
+
+    case 'DROP_WAIVER':
+      if (!cell.waiver) return refuse(P('L19', name + ' has no waiver.', 'Nothing to drop.', 'prototype'));
+      cell.waiver = null;
+      changes.push('Waiver dropped for ' + name + '. The record reverts to `' + (ledger(cell, 'macos').result || 'none') + '`.');
+      return done();
+
+    case 'ACCEPT_LOWERED_MANIFEST': {
+      var open = s.p1.filter(function (p) { return p.cell === cell.id && p.status === 'open'; });
+      if (open.length === 0) return refuse(P('L19', name + ' has no open P1 to acknowledge.', 'Nothing to do.', 'prototype'));
+      if (!trim(action.owner) || !trim(action.reason)) {
+        return refuse(P('L19', 'lowering the manifest for ' + name + ' needs an owner and a reason.', 'Name who accepts the lower rung and why.', 'prototype rule (PROPOSED)'));
+      }
+      closeP1(s, cell.id, function () { return true; }, 'manifest lowered to ' + cell.rung + ' by reviewed decision (' + trim(action.owner) + ': ' + trim(action.reason) + ')', changes);
+      return done();
+    }
+
+    case 'CALL_FROM_APP':
+      changes.push('An app touching ' + name + ' today: ' + observe(cell));
+      return { ok: true, state: prev, changes: changes, error: null, action: action };
+
+    case 'TOOLING_LANDS':
+      if (s.tooling.migrateDevLive) { changes.push('No change: `keld migrate` and `keld dev --headless --smoke` are already live in this run.'); return done(); }
+      s.tooling.migrateDevLive = true;
+      changes.push('Hypothetical: `keld migrate` and `keld dev --headless --smoke` are now live. Today `migrate` is reserved verb KELD-CLI-045 and no owner or date is named for the smoke mode.');
+      return done();
+
+    case 'ADVANCE_CLOCK': {
+      var days = Number(action.days);
+      if (!(days > 0) || Math.floor(days) !== days || days > 3650) {
+        return refuse(P('L19', 'the clock only moves forward, by whole days, at most ten years at a time.', 'Advance by a positive whole number of days.', 'prototype'));
+      }
+      s.asOf = addDays(s.asOf, days);
+      changes.push('`as_of` is now ' + s.asOf + '.');
+      Object.keys(s.cells).forEach(function (id) {
+        var c = s.cells[id];
+        if (c.waiver && c.waiver.expiresOn < s.asOf) {
+          changes.push('The waiver on `' + DEF[id].member + '` expired on ' + c.waiver.expiresOn + '. Nothing removes it automatically: `score()` now fails closed for every denominator that names this cell.');
+        }
+      });
+      return done();
+    }
+
+    case 'COMMIT_DENOMINATOR': {
+      var ids = action.cells || [];
+      if (action.panel !== 'product' && action.panel !== 'showcase') return refuse(live005('panel `' + action.panel + '` is not product|showcase'));
+      if (!trim(action.corpusId)) return refuse(live005('corpus_id must be non-empty'));
+      if (ids.length === 0) return refuse(live008('cells must contain at least one entry'));
+      var seen = {};
+      for (var k = 0; k < ids.length; k++) {
+        if (!DEF[ids[k]]) return refuse(P('L19', 'unknown matrix cell `' + ids[k] + '` in the denominator.', 'Name cells from the manifest.', 'prototype'));
+        if (seen[ids[k]]) return refuse(live008('duplicate cell `' + cellLabel(ids[k]) + '`'));
+        seen[ids[k]] = true;
+      }
+      var kind = action.kind || 'primary_workflow';
+      s.denominator = { panel: action.panel, corpusId: action.corpusId, kind: kind, cells: ids.slice(),
+        digest: demoDigest({ panel: action.panel, id: action.corpusId, kind: kind, cells: ids }) };
+      changes.push('Denominator committed: panel `' + action.panel + '`, corpus `' + action.corpusId + '`, kind `' + kind + '`, N = ' + ids.length + '. Its digest (' + s.denominator.digest + ') is part of every claim, so changing the cell list changes the claim\'s identity.');
+      if (prev.denominator) changes.push('This replaces the previous denominator `' + prev.denominator.corpusId + '@' + prev.denominator.digest + '`. Records outside the denominator cannot shrink N.');
+      return done();
+    }
+
+    case 'DOCUMENT_PRODUCT_CORPUS':
+      if (!trim(action.id)) {
+        return refuse(P('L12', 'a committed product corpus needs an id.', 'Name the corpus id that the denominator will carry.', 'evidence.rs DOCUMENTED_COMMITTED_PRODUCT_CORPORA (live)'));
+      }
+      if (s.committedProductCorpora.indexOf(action.id) >= 0) { changes.push('No change: `' + action.id + '` is already documented as a committed product corpus.'); return done(); }
+      s.committedProductCorpora.push(action.id);
+      changes.push('`' + action.id + '` is now a documented committed product corpus id. Today that list is empty in `evidence.rs` and no one owns adding the first id (GitHub #313 chose draw.io, nobody owns the commit).');
+      return done();
+
+    case 'PUBLISH_PERCENT': {
+      if (badLane(action.lane || 'macos')) return refuse(badLane(action.lane || 'macos'));
+      var sc = score(s, action.lane || 'macos');
+      if (sc.status === 'none') {
+        return refuse(P('L16', 'no percentage can be published: there is no committed denominator file. That includes `0%` and `100%`.',
+          'Commit a `keld.compat.denominator/v1` naming panel, corpus id, corpus digest, kind and a non-empty unique cell list.',
+          'docs/engineering/compat-scoreboard.md rule 1'));
+      }
+      if (sc.status === 'error') return refuse(sc.error);
+      if (sc.percent === null) {
+        return refuse(P('L16', 'no percentage can be published for `' + s.denominator.corpusId + '`: ' + sc.reasons.join('; ') + '. `unweighted_percent` is omitted. The claim string is still available: ' + sc.claim + '.',
+          sc.reasons[0].indexOf('product') >= 0 ? 'Document the product corpus id as committed, or publish only the claim string.' : 'Resolve every `unknown` and `missing` cell, or remove observed-only cells from the denominator in a reviewed change.',
+          'docs/engineering/compat-scoreboard.md rule 2; evidence.rs score() may_publish_percent'));
+      }
+      changes.push('Publishable on the ' + sc.lane + ' lane: **' + sc.claim + '** (' + sc.percent + '%, complete: ' + sc.complete + ').');
+      changes.push('This is the only allowed claim shape. It describes this corpus at this digest, never "' + sc.percent + '% compatible".');
+      return { ok: true, state: prev, changes: changes, error: null, action: action };
+    }
+
+    default:
+      return refuse(P('L19', 'unknown action `' + action.type + '`.', 'Use a defined action.', 'prototype'));
+    }
+  }
+
+  // ---- walkthrough scripts (pure data; double as test vectors) ----
+  var A = 'app.quit.order', B = 'ready-to-show.order', C = 'session.permission.no-handler',
+      D = 'dialog.showMessageBoxSync', X = 'session.loadExtension', T = 'nativeTheme.updated',
+      W = 'webContents.setWindowOpenHandler.unrecognized';
+  var ALL_LANES_MATCH = function (cell) {
+    return LANES.map(function (l) { return a('REPLAY', cell, { lane: l, outcome: 'match' }); });
+  };
+  var RECLAIM = function (cell) { return a('CLAIM_RUNG', cell, { target: 'CONFORMANCE_PASS' }); };
+  function a(type, cell, extra) { var o = { type: type }; if (cell) o.cell = cell; if (extra) Object.keys(extra).forEach(function (k) { o[k] = extra[k]; }); return o; }
+  function toPartial(cell) {
+    return [a('LAND_SCAFFOLD', cell), a('CLAIM_RUNG', cell), a('LAND_CONFORMANCE_ENTRY', cell), a('IMPLEMENT', cell), a('CLAIM_RUNG', cell)];
+  }
+  function toBehaviorMatch(cell) {
+    return toPartial(cell).concat([a('RECORD_GOLDEN', cell, { arm: 'electron' }), a('DECLARE_NORMALISERS', cell, { set: 'fields' }),
+      a('REPLAY', cell, { lane: 'macos', outcome: 'match' }), a('CLAIM_RUNG', cell)]);
+  }
+  function toConformance(cell) {
+    return toBehaviorMatch(cell).concat([a('RUN_OWNED_TEST', cell), a('PROVE_NEGATIVE_CONTROL', cell),
+      a('REPLAY', cell, { lane: 'windows', outcome: 'match' }), a('REPLAY', cell, { lane: 'linux', outcome: 'match' }), a('CLAIM_RUNG', cell)]);
+  }
+  var WAIVER = { owner: 'compat lane owner', reason: 'blocked on PANEL-P1 S0 link-drain gate', expiresOn: '2026-10-20' };
+  var DRAWIO = { app: 'drawio-desktop', via: 'migrate+dev', panel: 'showcase', profile: 'legacy_sandbox_off' };
+  var SHOWCASE_ID = 'electron-44.4.5-cell-demo-v1';
+
+  var WALKTHROUGHS = [
+    { id: 'happy', title: 'Happy path', intro: '`app.quit()` ordering climbs every rung with its evidence, then one honest claim is published.',
+      steps: [
+        { title: 'Land the L0 scaffold', why: 'The member exists and throws a typed error. The manifest does not move by itself.', actions: [a('LAND_SCAFFOLD', A)], expect: 'ok' },
+        { title: 'Claim SCAFFOLDED (L0)', why: 'A rung is a manifest claim checked against evidence.', actions: [a('CLAIM_RUNG', A)], expect: 'ok' },
+        { title: 'Land the conformance entry, red', why: 'Entry before implementation; it cites the pinned `app.md` sentence and names the negative control.', actions: [a('LAND_CONFORMANCE_ENTRY', A)], expect: 'ok' },
+        { title: 'Implement for the macOS corpus path', why: '', actions: [a('IMPLEMENT', A)], expect: 'ok' },
+        { title: 'Claim PARTIAL (L1)', why: 'The KEL-74 record is `fail`: the oracle is not met yet.', actions: [a('CLAIM_RUNG', A)], expect: 'ok' },
+        { title: 'Record the golden under Electron 44.4.5', why: 'Evidence-of-record from the pinned arm only.', actions: [a('RECORD_GOLDEN', A, { arm: 'electron' })], expect: 'ok' },
+        { title: 'Declare the cell\'s normalisers', why: '', actions: [a('DECLARE_NORMALISERS', A, { set: 'fields' })], expect: 'ok' },
+        { title: 'Replay on macOS: equals the golden', why: 'One OS is enough for this rung. Profile is `legacy_sandbox_off`.', actions: [a('REPLAY', A, { lane: 'macos', outcome: 'match' })], expect: 'ok' },
+        { title: 'Claim BEHAVIOR_MATCH', why: 'Watch the record: it is `unknown`, not `pass`. Equal to the golden is a mirror oracle.', actions: [a('CLAIM_RUNG', A)], expect: 'ok' },
+        { title: 'Run the Keld-owned doc-cited test to green', why: 'Independent of the transcript diff.', actions: [a('RUN_OWNED_TEST', A)], expect: 'ok' },
+        { title: 'Prove the negative control', why: 'Swap `before-quit` and `will-quit`; the test must fail.', actions: [a('PROVE_NEGATIVE_CONTROL', A)], expect: 'ok' },
+        { title: 'Replay on Windows and Linux: both equal the golden', why: '', actions: [a('REPLAY', A, { lane: 'windows', outcome: 'match' }), a('REPLAY', A, { lane: 'linux', outcome: 'match' })], expect: 'ok' },
+        { title: 'Claim CONFORMANCE_PASS', why: 'Only now does the record become `pass`.', actions: [a('CLAIM_RUNG', A)], expect: 'ok' },
+        { title: 'Try the corpus run today', why: '`keld migrate` is a reserved verb. The rung is honestly unreachable right now.', actions: [a('RUN_CORPUS', A, DRAWIO)], expect: 'KELD-CLI-045' },
+        { title: 'Hypothetical: migrate + dev smoke go live', why: 'Not a decided fact; needed to show the top rung.', actions: [a('TOOLING_LANDS')], expect: 'ok' },
+        { title: 'Run draw.io through migrate + dev, legacy profile printed', why: 'Showcase panel: no product corpus id is committed.', actions: [a('RUN_CORPUS', A, DRAWIO)], expect: 'ok' },
+        { title: 'Claim CORPUS_VERIFIED', why: '', actions: [a('CLAIM_RUNG', A)], expect: 'ok' },
+        { title: 'Commit a one-cell showcase denominator', why: 'A percentage exists only against a committed denominator.', actions: [a('COMMIT_DENOMINATOR', null, { panel: 'showcase', corpusId: SHOWCASE_ID, cells: [A] })], expect: 'ok' },
+        { title: 'Publish', why: 'The claim is 1/1 of this corpus at this digest. It says nothing about the other 2,127 members.', actions: [a('PUBLISH_PERCENT', null, { lane: 'macos' })], expect: 'ok' }
+      ] },
+    { id: 'edges', title: 'Tricky edges', intro: 'Regression and P1, the observed-only cap, ▲ routing, waiver expiry, and what a percentage refuses to do.',
+      steps: [
+        { title: 'Fast-forward `app.quit()` to CONFORMANCE_PASS', why: 'Replays the first 14 happy-path actions through the same reducer.', actions: toConformance(A), expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0, result: 'pass' } },
+        { title: 'The negative control stops failing', why: 'A gate is lost, so the claim is no longer supported: demotion plus a P1.', actions: [a('REGRESS', A, { gate: 'negative-control' })], expect: 'ok',
+          after: { cell: A, rung: 'BEHAVIOR_MATCH', openP1: 1, result: 'unknown' } },
+        { title: 'Re-prove the control and re-claim', why: 'Restoring the gate and re-claiming the rung is what closes the P1.', actions: [a('PROVE_NEGATIVE_CONTROL', A), a('CLAIM_RUNG', A)], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0, result: 'pass' } },
+        { title: 'The Linux lane starts to differ', why: 'Second regression: one lane is enough to lose CONFORMANCE_PASS.', actions: [a('REPLAY', A, { lane: 'linux', outcome: 'diff' })], expect: 'ok',
+          after: { cell: A, rung: 'BEHAVIOR_MATCH', openP1: 1 } },
+        { title: 'Try to relabel that lane as an explicit ▲ gap', why: 'A regression must not be laundered into an accepted divergence.', actions: [a('RECORD_LANE_GAP', A, { lane: 'linux', reason: 'Linux differs' })], expect: 'KELD-COMPAT-L10' },
+        { title: 'Fix Linux and re-claim', why: '', actions: [a('REPLAY', A, { lane: 'linux', outcome: 'match' }), a('CLAIM_RUNG', A)], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0, result: 'pass' } },
+        { title: 'Try to turn the passing Linux lane into a ▲ gap', why: 'A gap may not replace a pass: that would drop the lane to `fail` with no P1.', actions: [a('RECORD_LANE_GAP', A, { lane: 'linux', reason: 'tidier board' })], expect: 'KELD-COMPAT-L10' },
+        { title: 'Take `nativeTheme` `updated` to BEHAVIOR_MATCH, test green, control proven, Windows matching', why: 'Sets up the "or explicit ▲" half of CONFORMANCE_PASS. Linux has never been replayed.', actions: toBehaviorMatch(T).concat([a('RUN_OWNED_TEST', T), a('PROVE_NEGATIVE_CONTROL', T), a('REPLAY', T, { lane: 'windows', outcome: 'match' })]), expect: 'ok',
+          after: { cell: T, rung: 'BEHAVIOR_MATCH' } },
+        { title: 'Try to claim CONFORMANCE_PASS with the Linux lane silent', why: 'A missing lane is not a pass and not a ▲.', actions: [a('CLAIM_RUNG', T)], expect: 'KELD-COMPAT-L08' },
+        { title: 'Try to record the Linux ▲ gap without a reason', why: '', actions: [a('RECORD_LANE_GAP', T, { lane: 'linux', reason: ' ' })], expect: 'KELD-COMPAT-L10' },
+        { title: 'Record the explicit Linux ▲ gap with its reason, then claim CONFORMANCE_PASS', why: 'Accepted. Switch the score lane to linux: that lane reports `fail` with the gap reason and is never a pass. The reason text is demo data.', actions: [a('RECORD_LANE_GAP', T, { lane: 'linux', reason: 'DEMO reason, not a finding: lane gap documented for this member on Linux' }), a('CLAIM_RUNG', T)], expect: 'ok',
+          after: { cell: T, rung: 'CONFORMANCE_PASS', openP1: 0, result: 'pass', resultOn: { linux: 'fail' } } },
+        { title: 'Take the observed-only cell to BEHAVIOR_MATCH', why: '`ready-to-show` vs `did-finish-load`: the docs say either order can happen.', actions: toBehaviorMatch(B), expect: 'ok' },
+        { title: 'Try to claim CONFORMANCE_PASS for it', why: 'No doc sentence, no conformance claim. The cap is structural.', actions: [a('CLAIM_RUNG', B)], expect: 'KELD-COMPAT-L07' },
+        { title: 'Prepare the permission cell: implemented, test green, control proven', why: 'No handler installed: Electron approves, Keld denies.', actions: toPartial(C).concat([a('RUN_OWNED_TEST', C), a('PROVE_NEGATIVE_CONTROL', C)]), expect: 'ok' },
+        { title: 'Try to route the divergence as a quirks flag', why: 'Default-deny is a host constraint; no app may toggle it.', actions: [a('ACCEPT_DIVERGENCE', C, { routing: 'quirks-flag', kind: 'host-constraint', wording: DEF[C].divergence.wording })], expect: 'KELD-COMPAT-L13' },
+        { title: 'Accept it as a scoreboard ▲', why: 'Parallel accepted state: tested, worded, recorded. Its record is `fail` with `intentional_divergence`.', actions: [a('ACCEPT_DIVERGENCE', C, { routing: 'scoreboard', kind: 'host-constraint', wording: DEF[C].divergence.wording })], expect: 'ok' },
+        { title: 'Try to climb the ladder from ▲', why: 'A divergent cell cannot also claim to match.', actions: [a('CLAIM_RUNG', C)], expect: 'KELD-COMPAT-L15' },
+        { title: 'Prepare the `setWindowOpenHandler` demo cell: implemented, test green, control proven', why: 'A per-app choice, unlike default-deny. The quirk itself is demo data; the spec only names `windowOpenHandler` strictness as an example.', actions: toPartial(W).concat([a('RUN_OWNED_TEST', W), a('PROVE_NEGATIVE_CONTROL', W)]), expect: 'ok' },
+        { title: 'Accept it as a `keld.compat.ts` quirks flag', why: 'The other ▲ route: recorded as a per-app flag that narrows and never widens. Same record: `fail` with `intentional_divergence`.', actions: [a('ACCEPT_DIVERGENCE', W, { routing: 'quirks-flag', wording: DEF[W].divergence.wording })], expect: 'ok',
+          after: { cell: W, mark: 'divergence', result: 'fail' } },
+        { title: 'Scaffold `dialog.showMessageBoxSync()` and land its entry', why: '', actions: [a('LAND_SCAFFOLD', D), a('CLAIM_RUNG', D), a('LAND_CONFORMANCE_ENTRY', D)], expect: 'ok' },
+        { title: 'Try to implement it', why: 'Blocked by an open map gate, so it stays SCAFFOLDED with a typed throw.', actions: [a('IMPLEMENT', D)], expect: 'KELD-COMPAT-L18' },
+        { title: 'Waive it for two weeks', why: 'Owner, reason, expiry. The record becomes `waived`; nothing else moves.', actions: [a('WAIVE', D, WAIVER)], expect: 'ok' },
+        { title: 'Commit a four-cell showcase denominator', why: 'One pass, one unknown, one ▲ fail, one waived.', actions: [a('COMMIT_DENOMINATOR', null, { panel: 'showcase', corpusId: SHOWCASE_ID, cells: [A, B, C, D] })], expect: 'ok' },
+        { title: 'Try to publish a percentage', why: 'An `unknown` cell blocks the percentage; the claim string survives.', actions: [a('PUBLISH_PERCENT', null, { lane: 'macos' })], expect: 'KELD-COMPAT-L16' },
+        { title: 'Thirty days pass', why: 'The waiver expires. Nothing clears it.', actions: [a('ADVANCE_CLOCK', null, { days: 30 })], expect: 'ok' },
+        { title: 'Try to publish again', why: 'An expired waiver fails the whole score closed, with the live code.', actions: [a('PUBLISH_PERCENT', null, { lane: 'macos' })], expect: 'KELD-COMPAT-006' },
+        { title: 'Drop the waiver', why: 'The cell goes back to `fail` and the board scores again.', actions: [a('DROP_WAIVER', D)], expect: 'ok' },
+        { title: 'Commit a product denominator for draw.io', why: 'Two cells, no unknown, no missing.', actions: [a('COMMIT_DENOMINATOR', null, { panel: 'product', corpusId: 'drawio-desktop', cells: [A, D] })], expect: 'ok' },
+        { title: 'Try to publish the product percentage', why: 'Panel product without a documented committed corpus id: never.', actions: [a('PUBLISH_PERCENT', null, { lane: 'macos' })], expect: 'KELD-COMPAT-L16' },
+        { title: 'Document the product corpus id, then publish', why: 'Now 1/2 and 50% are allowed, with the digest attached.', actions: [a('DOCUMENT_PRODUCT_CORPUS', null, { id: 'drawio-desktop' }), a('PUBLISH_PERCENT', null, { lane: 'macos' })], expect: 'ok' },
+        { title: 'With the id documented and tooling hypothetically live, record the corpus run on panel `product` and claim CORPUS_VERIFIED', why: 'The same run is refused on panel `product` in the Illegal attempts tab, where no id is documented.', actions: [a('TOOLING_LANDS'), a('RUN_CORPUS', A, { app: 'drawio-desktop', via: 'migrate+dev', panel: 'product', profile: 'legacy_sandbox_off' }), a('CLAIM_RUNG', A)], expect: 'ok',
+          after: { cell: A, rung: 'CORPUS_VERIFIED', openP1: 0, result: 'pass' } }
+      ] },
+    { id: 'regress', title: 'Every gate regresses', intro: 'Each gate under a claimed rung is lost in turn. Every loss must demote the cell to the highest rung its evidence still supports and raise a P1; the step fails if it does not.',
+      steps: [
+        { title: 'Fast-forward `app.quit()` to CONFORMANCE_PASS', why: '', actions: toConformance(A), expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0, result: 'pass' } },
+        { title: 'The Keld-owned test goes red', why: 'Falls to BEHAVIOR_MATCH; the record goes from `pass` to `unknown`.', actions: [a('REGRESS', A, { gate: 'owned-test' })], expect: 'ok',
+          after: { cell: A, rung: 'BEHAVIOR_MATCH', openP1: 1, result: 'unknown' } },
+        { title: 'Restore and re-claim', why: 'A red test also un-proves its negative control, so both come back.', actions: [a('RUN_OWNED_TEST', A), a('PROVE_NEGATIVE_CONTROL', A), RECLAIM(A)], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'The Windows lane starts to differ', why: 'macOS still matches, so BEHAVIOR_MATCH survives.', actions: [a('REPLAY', A, { lane: 'windows', outcome: 'diff' })], expect: 'ok',
+          after: { cell: A, rung: 'BEHAVIOR_MATCH', openP1: 1 } },
+        { title: 'Restore and re-claim', why: '', actions: [a('REPLAY', A, { lane: 'windows', outcome: 'match' }), RECLAIM(A)], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'The normaliser declaration is removed', why: 'A match only means something under declared normalisers, so every replay result is void: PARTIAL.', actions: [a('REGRESS', A, { gate: 'normalisers' })], expect: 'ok',
+          after: { cell: A, rung: 'PARTIAL', openP1: 1, result: 'fail' } },
+        { title: 'Restore and re-claim', why: '', actions: [a('DECLARE_NORMALISERS', A, { set: 'fields' })].concat(ALL_LANES_MATCH(A), [RECLAIM(A)]), expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'The golden bytes stop matching their digest', why: 'No golden, no replay result: PARTIAL.', actions: [a('REGRESS', A, { gate: 'golden' })], expect: 'ok',
+          after: { cell: A, rung: 'PARTIAL', openP1: 1, result: 'fail' } },
+        { title: 'Restore and re-claim', why: '', actions: [a('RECORD_GOLDEN', A, { arm: 'electron' })].concat(ALL_LANES_MATCH(A), [RECLAIM(A)]), expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'The implementation is removed', why: 'Its test, control and replays go with it: SCAFFOLDED.', actions: [a('REGRESS', A, { gate: 'implementation' })], expect: 'ok',
+          after: { cell: A, rung: 'SCAFFOLDED', openP1: 1 } },
+        { title: 'Restore and re-claim', why: '', actions: [a('IMPLEMENT', A), a('RUN_OWNED_TEST', A), a('PROVE_NEGATIVE_CONTROL', A)].concat(ALL_LANES_MATCH(A), [RECLAIM(A)]), expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'The typed error is lost (a silent no-op creeps in)', why: 'The L0 gate is under everything: UNSUPPORTED.', actions: [a('REGRESS', A, { gate: 'typed-error' })], expect: 'ok',
+          after: { cell: A, rung: 'UNSUPPORTED', openP1: 1 } },
+        { title: 'Restore and re-claim', why: '', actions: [a('LAND_SCAFFOLD', A), RECLAIM(A)], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'The member disappears from the facade', why: '', actions: [a('REGRESS', A, { gate: 'member' })], expect: 'ok',
+          after: { cell: A, rung: 'UNSUPPORTED', openP1: 1 } },
+        { title: 'Restore, then (tooling hypothetically live) reach CORPUS_VERIFIED', why: '', actions: [a('LAND_SCAFFOLD', A), RECLAIM(A), a('TOOLING_LANDS'), a('RUN_CORPUS', A, DRAWIO), a('CLAIM_RUNG', A)], expect: 'ok',
+          after: { cell: A, rung: 'CORPUS_VERIFIED', openP1: 0 } },
+        { title: 'The draw.io corpus smoke fails', why: 'Only the top rung rested on it: CONFORMANCE_PASS.', actions: [a('REGRESS', A, { gate: 'corpus' })], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 1, result: 'pass' } },
+        { title: 'Try to waive the regression away', why: 'The cell still passes its oracle, and a waiver cannot pair with `pass`. The P1 stays open.', actions: [a('WAIVE', A, WAIVER)], expect: 'KELD-COMPAT-006' },
+        { title: 'Lower the manifest by reviewed decision', why: 'The other way a P1 closes: a named owner accepts the lower rung with a reason.', actions: [a('ACCEPT_LOWERED_MANIFEST', A, { owner: 'compat lane owner', reason: 'corpus smoke tracked separately' })], expect: 'ok',
+          after: { cell: A, rung: 'CONFORMANCE_PASS', openP1: 0 } },
+        { title: 'Accept the permission ▲, then its test goes red', why: 'A ▲ is tested, never asserted. Without its proof it stops being an accepted state and that is a P1 too.', actions: toPartial(C).concat([a('RUN_OWNED_TEST', C), a('PROVE_NEGATIVE_CONTROL', C), a('ACCEPT_DIVERGENCE', C, { routing: 'scoreboard', wording: DEF[C].divergence.wording }), a('REGRESS', C, { gate: 'owned-test' })]), expect: 'ok',
+          after: { cell: C, mark: 'none', openP1: 1, result: 'fail' } },
+        { title: 'Restore the proof and re-accept the ▲', why: '', actions: [a('RUN_OWNED_TEST', C), a('PROVE_NEGATIVE_CONTROL', C), a('ACCEPT_DIVERGENCE', C, { routing: 'scoreboard', wording: DEF[C].divergence.wording })], expect: 'ok',
+          after: { cell: C, mark: 'divergence', openP1: 0, result: 'fail' } }
+      ] },
+    { id: 'illegal', title: 'Illegal attempts', intro: 'Every shortcut returns the typed error the real system would give. None of them changes state.',
+      steps: [
+        { title: 'Claim CORPUS_VERIFIED on an untouched cell', why: 'The first unmet gate is named.', actions: [a('CLAIM_RUNG', A, { target: 'CORPUS_VERIFIED' })], expect: 'KELD-COMPAT-L08' },
+        { title: 'Scaffold as a silent no-op', why: '', actions: [a('LAND_SCAFFOLD', A, { silentNoop: true })], expect: 'KELD-COMPAT-L01' },
+        { title: 'Scaffold properly, then implement before any conformance entry', why: '', actions: [a('LAND_SCAFFOLD', A), a('IMPLEMENT', A)], expect: 'KELD-COMPAT-L02' },
+        { title: 'Re-record the golden from the Keld arm', why: '', actions: [a('RECORD_GOLDEN', A, { arm: 'keld' })], expect: 'KELD-COMPAT-L03' },
+        { title: 'Declare a normaliser that redacts all args', why: '', actions: [a('DECLARE_NORMALISERS', A, { set: 'redact-all-args' })], expect: 'KELD-COMPAT-L04' },
+        { title: 'Replay with no implementation and no golden', why: '', actions: [a('REPLAY', A, { lane: 'macos', outcome: 'match' })], expect: 'KELD-COMPAT-L05' },
+        { title: 'Set up properly, then label the replay `strict_bun`', why: '', actions: [a('LAND_CONFORMANCE_ENTRY', A), a('IMPLEMENT', A), a('RECORD_GOLDEN', A, { arm: 'electron' }), a('DECLARE_NORMALISERS', A, { set: 'fields' }), a('REPLAY', A, { lane: 'macos', outcome: 'match', profile: 'strict_bun' })], expect: 'KELD-COMPAT-L06' },
+        { title: 'Label the replay `unverified`', why: 'The live state of `keld dev`, but not a value the KEL-74 schema accepts.', actions: [a('REPLAY', A, { lane: 'macos', outcome: 'match', profile: 'unverified' })], expect: 'KELD-COMPAT-005' },
+        { title: 'Waive without an owner', why: '', actions: [a('WAIVE', A, { owner: '', reason: 'later', expiresOn: '2026-11-01' })], expect: 'KELD-COMPAT-006' },
+        { title: 'Waive with a date that does not exist', why: '', actions: [a('WAIVE', A, { owner: 'someone', reason: 'later', expiresOn: '2026-13-40' })], expect: 'KELD-COMPAT-006' },
+        { title: 'Waive with an expiry in the past', why: '', actions: [a('WAIVE', A, { owner: 'someone', reason: 'later', expiresOn: '2026-09-01' })], expect: 'KELD-COMPAT-006' },
+        { title: 'Reach CONFORMANCE_PASS, then try to waive the passing cell', why: 'A waiver object cannot pair with `pass`.', actions: [a('CLAIM_RUNG', A), a('CLAIM_RUNG', A), a('REPLAY', A, { lane: 'macos', outcome: 'match' }), a('REPLAY', A, { lane: 'windows', outcome: 'match' }), a('REPLAY', A, { lane: 'linux', outcome: 'match' }), a('RUN_OWNED_TEST', A), a('PROVE_NEGATIVE_CONTROL', A), a('CLAIM_RUNG', A), a('CLAIM_RUNG', A), a('WAIVE', A, { owner: 'someone', reason: 'just in case', expiresOn: '2026-11-01' })], expect: 'KELD-COMPAT-006' },
+        { title: 'Try to mark the passing cell ▲', why: 'Its transcript equals Electron\'s. Calling that a divergence would turn `pass` into `fail` with no regression raised.', actions: [a('ACCEPT_DIVERGENCE', A, { routing: 'scoreboard', wording: 'Keld differs here' })], expect: 'KELD-COMPAT-L15' },
+        { title: 'Lose macOS, lower the manifest, gap macOS, re-claim, then try to waive', why: 'macOS now reports `fail`, but Windows and Linux still pass and the waiver is cell-wide.', actions: [a('REPLAY', A, { lane: 'macos', outcome: 'diff' }), a('ACCEPT_LOWERED_MANIFEST', A, { owner: 'someone', reason: 'macOS gap accepted' }), a('RECORD_LANE_GAP', A, { lane: 'macos', reason: 'DEMO reason, not a finding' }), a('CLAIM_RUNG', A), a('WAIVE', A, { owner: 'someone', reason: 'hide the gap', expiresOn: '2026-11-01' })], expect: 'KELD-COMPAT-006' },
+        { title: 'Offer a hand port as corpus evidence', why: '', actions: [a('RUN_CORPUS', A, { app: 'drawio-desktop', via: 'hand-port', panel: 'showcase', profile: 'legacy_sandbox_off' })], expect: 'KELD-COMPAT-L11' },
+        { title: 'Offer a run of an app that is not a corpus clone', why: '', actions: [a('RUN_CORPUS', A, { app: 'my-hello-app', via: 'migrate+dev', panel: 'showcase', profile: 'legacy_sandbox_off' })], expect: 'KELD-COMPAT-L11' },
+        { title: 'Run the corpus app through migrate + dev today', why: '', actions: [a('RUN_CORPUS', A, DRAWIO)], expect: 'KELD-CLI-045' },
+        { title: 'With tooling live, record the corpus run on panel `product`', why: '', actions: [a('TOOLING_LANDS'), a('RUN_CORPUS', A, { app: 'drawio-desktop', via: 'migrate+dev', panel: 'product', profile: 'legacy_sandbox_off' })], expect: 'KELD-COMPAT-L12' },
+        { title: 'Add a quirks flag that widens authority', why: '', actions: [a('ACCEPT_DIVERGENCE', C, { routing: 'quirks-flag', kind: 'per-app-choice', wording: 'auto-approve like Electron', widensAuthority: true })], expect: 'KELD-COMPAT-L13' },
+        { title: 'Prove the permission ▲, then route default-deny as a quirks flag by relabelling it a per-app choice', why: 'The catalogue, not the caller, says it is a host constraint.', actions: toPartial(C).concat([a('RUN_OWNED_TEST', C), a('PROVE_NEGATIVE_CONTROL', C), a('ACCEPT_DIVERGENCE', C, { routing: 'quirks-flag', kind: 'per-app-choice', wording: 'default-deny, but as a toggle' })]), expect: 'KELD-COMPAT-L13' },
+        { title: 'Mark a member ✘ never that is on no never list, citing a made-up source', why: 'A typed source string is not a decision.', actions: [a('MARK_NEVER', T, { source: 'a list I just made up', reason: 'inconvenient', fixIt: 'n/a' })], expect: 'KELD-COMPAT-L17' },
+        { title: 'Try to implement `session.loadExtension()`', why: 'It is on the F05 never list, marked or not.', actions: [a('LAND_SCAFFOLD', X), a('LAND_CONFORMANCE_ENTRY', X), a('IMPLEMENT', X)], expect: 'KELD-COMPAT-L14' },
+        { title: 'Mark `session.loadExtension()` ✘ never without a fix-it', why: '', actions: [a('MARK_NEVER', X, { source: DEF[X].never.source, reason: DEF[X].never.reason, fixIt: '' })], expect: 'KELD-COMPAT-L17' },
+        { title: 'Mark it ✘ never properly, and land its typed stub', why: 'The only two things a never cell accepts: its L0 stub and being observed.', actions: [a('MARK_NEVER', X, { source: DEF[X].never.source, reason: DEF[X].never.reason, fixIt: DEF[X].fixIt }), a('LAND_SCAFFOLD', X)], expect: 'ok' },
+        { title: 'Try to claim a rung on the ✘ never cell', why: 'Terminal.', actions: [a('CLAIM_RUNG', X)], expect: 'KELD-COMPAT-L14' },
+        { title: 'Try to waive the ✘ never cell', why: 'Terminal.', actions: [a('WAIVE', X, WAIVER)], expect: 'KELD-COMPAT-L14' },
+        { title: 'Publish a percentage with no denominator', why: '', actions: [a('PUBLISH_PERCENT', null, { lane: 'macos' })], expect: 'KELD-COMPAT-L16' },
+        { title: 'Commit an empty denominator', why: '`0/0` is not complete.', actions: [a('COMMIT_DENOMINATOR', null, { panel: 'showcase', corpusId: SHOWCASE_ID, cells: [] })], expect: 'KELD-COMPAT-008' },
+        { title: 'Commit a denominator that lists one cell twice', why: 'One pass cannot become 2/2.', actions: [a('COMMIT_DENOMINATOR', null, { panel: 'showcase', corpusId: SHOWCASE_ID, cells: [A, A] })], expect: 'KELD-COMPAT-008' },
+        { title: 'Acknowledge a P1 that does not exist', why: '', actions: [a('ACCEPT_LOWERED_MANIFEST', A, { owner: 'someone', reason: 'tidy' })], expect: 'KELD-COMPAT-L19' }
+      ] }
+  ];
+
+  // Run one walkthrough step. Earlier actions in a step must succeed; `expect` applies to the last one.
+  function runStep(state, step) {
+    var results = [], s = state;
+    for (var i = 0; i < step.actions.length; i++) {
+      var r = dispatch(s, step.actions[i]);
+      results.push(r); s = r.state;
+      if (!r.ok && i < step.actions.length - 1) return { state: s, results: results, last: r, met: false };
+    }
+    var last = results[results.length - 1];
+    var met = step.expect === 'ok' ? last.ok : (!last.ok && last.error.code === step.expect);
+    // Optional postcondition, so a step cannot pass while the demotion or P1 it describes did not happen.
+    var why = '';
+    if (met && step.after) {
+      var c = s.cells[step.after.cell], q = step.after;
+      var open = s.p1.filter(function (p) { return p.status === 'open'; }).length;
+      if (q.rung !== undefined && c.rung !== q.rung) why = 'rung is ' + c.rung + ', expected ' + q.rung;
+      else if (q.mark !== undefined && c.mark !== q.mark) why = 'mark is ' + c.mark + ', expected ' + q.mark;
+      else if (q.openP1 !== undefined && open !== q.openP1) why = open + ' P1 open, expected ' + q.openP1;
+      else if (q.result !== undefined && ledger(c, 'macos').result !== q.result) why = 'macOS record is ' + ledger(c, 'macos').result + ', expected ' + q.result;
+      else if (q.resultOn) Object.keys(q.resultOn).forEach(function (l) {
+        if (!why && ledger(c, l).result !== q.resultOn[l]) why = l + ' record is ' + ledger(c, l).result + ', expected ' + q.resultOn[l];
+      });
+      if (why) met = false;
+    }
+    return { state: s, results: results, last: last, met: met, why: why };
+  }
+
+  return { RUNGS: RUNGS, RUNG_NOTE: RUNG_NOTE, LANES: LANES, PIN: PIN, CATALOGUE: CATALOGUE, DEF: DEF, WALKTHROUGHS: WALKTHROUGHS,
+    SHOWCASE_ID: SHOWCASE_ID, initialState: initialState, dispatch: dispatch, gates: gates, supported: supported, ledger: ledger,
+    score: score, observe: observe, runStep: runStep, addDays: addDays };
+})();
+</script>
+
+<!-- ====================================================================== -->
+<!-- PAGE. Rendering and event wiring only; every decision is made above.    -->
+<!-- ====================================================================== -->
+<script id="page">
+(function () {
+  'use strict';
+  var K = KeldCompatCell;
+  var state = K.initialState();
+  var selected = K.CATALOGUE[0].id;
+  var lane = 'macos';
+  var last = null;
+  var history = [];
+  var tab = 'happy';
+  var walk = { id: null, pointer: 0, results: [] };
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function fmt(s) {
+    return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+  function chip(text, cls) { return '<span class="chip ' + (cls || '') + '">' + esc(text) + '</span>'; }
+
+  function statusChips(cell) {
+    var out = '';
+    if (cell.mark === 'never') out += chip('✘ NEVER', 'on');
+    else out += chip(cell.rung, cell.rung === 'UNSUPPORTED' ? '' : 'out');
+    if (cell.mark === 'divergence') out += chip('▲ accepted', 'on');
+    if (cell.waiver) out += chip('waived', 'dash');
+    if (state.p1.some(function (p) { return p.cell === cell.id && p.status === 'open'; })) out += chip('P1 open', 'on');
+    return out;
+  }
+
+  function renderCells() {
+    return K.CATALOGUE.map(function (def) {
+      var cell = state.cells[def.id];
+      return '<button class="cellbtn" data-select="' + esc(def.id) + '" aria-pressed="' + (def.id === selected) + '">' +
+        '<span class="name">' + esc(def.member) + '</span>' +
+        '<span class="muted small">' + esc(def.family) + '</span><br>' + statusChips(cell) + '</button>';
+    }).join('');
+  }
+
+  function renderCellPanel() {
+    var def = K.DEF[selected], cell = state.cells[selected], f = cell.facts;
+    var sup = K.supported(cell, state);
+    var h = '<h2>' + esc(def.member) + '</h2>';
+    h += '<p class="small">' + fmt('Observable: ' + def.observable + '.') + ' ' + statusChips(cell) + '</p>';
+    h += '<blockquote>' + fmt(def.oracle.sentence) + '<br><span class="small">' + esc(def.oracle.page) + ' at v' + esc(K.PIN.version) + ' — ' +
+      (def.oracle.kind === 'doc' ? 'usable as the oracle sentence' : 'states that the order is not fixed, so there is no oracle sentence: observed-only') + '</span></blockquote>';
+
+    h += '<div class="ladder" role="list" aria-label="Maturity ladder">';
+    K.RUNGS.forEach(function (r, i) {
+      var cls = 'rung';
+      if (cell.mark === 'never') cls += ' frozen';
+      else if (r === cell.rung) cls += ' claimed';
+      else if (i < K.RUNGS.indexOf(cell.rung)) cls += ' below';
+      if (r === sup && cell.mark !== 'never') cls += ' supported';
+      h += '<div class="' + cls + '" role="listitem"><b>' + esc(r).replace(/_/g, '_<wbr>') + '</b>' + esc(K.RUNG_NOTE[r]) +
+        (r === sup && cell.mark !== 'never' ? '<span class="reach">evidence reaches here</span>' : '') + '</div>';
+    });
+    h += '</div>';
+    h += '<p class="small muted">' + (cell.mark === 'never'
+      ? 'Ladder frozen: ✘ never is terminal.'
+      : fmt('Filled: the rung the manifest claims (' + cell.rung + '). The evidence held right now supports up to ' + sup + '.')) + '</p>';
+
+    if (cell.mark === 'never') h += '<p class="small">' + fmt('**✘ never.** Source: ' + cell.never.source + '. Reason: ' + cell.never.reason + '. Fix-it: ' + cell.never.fixIt) + '</p>';
+    if (cell.mark === 'divergence') h += '<p class="small">' + fmt('**▲ accepted divergence** (' + (cell.divergence.routing === 'scoreboard' ? 'scoreboard ▲' : '`keld.compat.ts` quirks flag') + ', ' + cell.divergence.kind + '): ' + cell.divergence.wording) + '</p>';
+    if (cell.waiver) h += '<p class="small">' + fmt('**Waiver.** Owner: ' + cell.waiver.owner + '. Reason: ' + cell.waiver.reason + '. Expires: ' + cell.waiver.expiresOn + (cell.waiver.expiresOn < state.asOf ? ' — **expired**; `score()` fails closed.' : '.')) + '</p>';
+    if (def.never && cell.mark !== 'never') h += '<p class="small">' + fmt('**On a published never list** (' + def.never.source + '): it can get its L0 typed stub and be marked ✘, but it cannot be implemented.') + '</p>';
+    if (def.blockedBy) h += '<p class="small">' + fmt('**Blocked above SCAFFOLDED** by ' + def.blockedBy.key + ' (open on the map): ' + def.blockedBy.text + '.') + '</p>';
+
+    h += '<div class="two"><div><h3>Gates</h3>';
+    var list = K.gates(cell, state), current = '';
+    list.forEach(function (g) {
+      if (g.rung !== current) { if (current) h += '</ul>'; current = g.rung; h += '<p class="small" style="margin:8px 0 2px"><strong>' + esc(g.rung) + '</strong></p><ul class="gates">'; }
+      h += '<li class="' + (g.met ? 'met' : 'unmet') + '">' + fmt(g.label) + '</li>';
+    });
+    h += '</ul></div><div><h3>KEL-74 record per OS lane</h3><div class="scroll"><table><tr><th>Lane</th><th>Replay</th><th><code>result</code></th></tr>';
+    K.LANES.forEach(function (l) {
+      var v = K.ledger(cell, l);
+      var rep = f.lanes[l] === 'match' ? 'equals golden' : f.lanes[l] === 'diff' ? 'differs' : f.lanes[l] === 'gap' ? '▲ gap: ' + f.laneGap[l] : 'not run';
+      h += '<tr><td>' + esc(l) + '</td><td>' + esc(rep) + '</td><td><code>' + esc(v.result || 'no record') + '</code></td></tr>';
+    });
+    h += '</table></div><p class="small muted" style="margin-top:6px">' + fmt(K.ledger(cell, lane).why) + '</p>';
+    h += '<h3>Evidence held</h3><dl class="kv">' +
+      '<dt>Conformance entry</dt><dd>' + esc(f.entry) + '</dd>' +
+      '<dt>Keld-owned test</dt><dd>' + esc(f.ownedTest) + '</dd>' +
+      '<dt>Negative control</dt><dd>' + esc(f.negativeControl) + '</dd>' +
+      '<dt>Golden</dt><dd>' + esc(f.golden ? f.golden.arm + ' @ ' + f.golden.commit.slice(0, 8) : 'none') + '</dd>' +
+      '<dt>Normalisers</dt><dd>' + esc(f.normalisers ? f.normalisers.join(', ') : 'none declared') + '</dd>' +
+      '<dt>Authority profile</dt><dd>' + esc(f.authorityProfile || 'none recorded') + '</dd>' +
+      '<dt>Corpus run</dt><dd>' + esc(f.corpus ? f.corpus.app + ' via ' + f.corpus.via + ', panel ' + f.corpus.panel + ', ' + f.corpus.profile + (f.corpus.ok ? ', matched' : ', FAILED') : 'none') + '</dd>' +
+      '</dl></div></div>';
+    return h;
+  }
+
+  function renderResult(r) {
+    if (!r) return '<p class="muted">Nothing yet. Press a button or start a walkthrough.</p>';
+    if (r.ok) {
+      return '<div class="callout"><span class="verdict">Accepted</span><ul>' +
+        r.changes.map(function (c) { return '<li>' + fmt(c) + '</li>'; }).join('') + '</ul></div>';
+    }
+    var e = r.error;
+    return '<div class="callout refused"><span class="verdict">Refused — state unchanged</span><p style="margin:6px 0 4px">' +
+      '<span class="errcode">' + esc(e.code) + '</span> ' + chip(e.allocation === 'live' ? 'live code' : 'proposed code', e.allocation === 'live' ? 'on' : 'dash') +
+      (e.name ? ' <span class="muted small">' + esc(e.name) + '</span>' : '') + '</p>' +
+      '<p style="margin:0 0 4px">' + fmt(e.message) + '</p>' +
+      '<p style="margin:0 0 4px"><strong>Fix:</strong> ' + fmt(e.fix) + '</p>' +
+      '<p class="small muted" style="margin:0">Source: ' + fmt(e.source) + '</p></div>';
+  }
+
+  function renderLog() {
+    return history.slice(0, 12).map(function (hst, i) {
+      return '<li>#' + (history.length - i) + ' ' + esc(hst.label) + ' — ' + (hst.ok ? 'accepted' : 'refused with <span class="mono">' + esc(hst.code) + '</span>') + '</li>';
+    }).join('');
+  }
+
+  function renderBoard() {
+    var sc = K.score(state, lane);
+    var h = '<div class="two"><div><dl class="kv">' +
+      '<dt><code>as_of</code></dt><dd>' + esc(state.asOf) + '</dd>' +
+      '<dt>Electron pin</dt><dd>' + esc(K.PIN.version + ' @ ' + K.PIN.commit.slice(0, 8)) + '…</dd>' +
+      '<dt>migrate + dev smoke</dt><dd>' + (state.tooling.migrateDevLive ? 'live (hypothetical)' : 'not live (<span class="mono">KELD-CLI-045</span>)') + '</dd>' +
+      '<dt>Committed product corpus ids</dt><dd>' + (state.committedProductCorpora.length ? esc(state.committedProductCorpora.join(', ')) : 'none (the live list is empty)') + '</dd>' +
+      '<dt>Denominator</dt><dd>' + (state.denominator ? fmt('panel `' + state.denominator.panel + '`, corpus `' + state.denominator.corpusId + '`, kind `' + state.denominator.kind + '`, N = ' + state.denominator.cells.length) : 'none committed') + '</dd>' +
+      '</dl><div class="btnrow" style="margin-top:8px">Score lane: ' + K.LANES.map(function (l) {
+        return '<button data-lane="' + l + '"' + (l === lane ? ' class="primary"' : '') + '>' + l + '</button>'; }).join('') + '</div>';
+    if (sc.status === 'none') {
+      h += '<p style="margin-top:10px">' + fmt('**No claim and no percentage.** ' + sc.reasons[0] + '.') + '</p>';
+    } else if (sc.status === 'error') {
+      h += '<p style="margin-top:10px"><strong>score() failed closed.</strong> <span class="errcode">' + esc(sc.error.code) + '</span>: ' + fmt(sc.error.message) + ' ' + fmt(sc.error.fix) + '</p>';
+    } else {
+      h += '<p style="margin-top:10px"><strong>Claim:</strong> <span class="mono">' + esc(sc.claim) + '</span></p>' +
+        '<p>' + fmt('passed ' + sc.passed + ' · failed ' + sc.failed + ' · unknown ' + sc.unknown + ' · waived ' + sc.waived + ' · missing ' + sc.missing + ' · complete: `' + sc.complete + '`') + '</p>' +
+        '<p>' + (sc.percent === null
+          ? fmt('**Percentage: omitted.** ' + sc.reasons.join('; ') + '.')
+          : fmt('**Percentage: ' + sc.percent + '%** of this corpus at this digest on ' + sc.lane + '.')) + '</p>';
+    }
+    h += '</div><div>';
+    if (sc.status === 'ok') {
+      h += '<div class="scroll"><table><tr><th>Cell</th><th><code>result</code></th></tr>' + sc.rows.map(function (r) {
+        return '<tr><td>' + esc(K.DEF[r.cell].member) + '</td><td><code>' + esc(r.result || 'missing') + '</code>' + (r.intentional ? ' ▲' : '') + '</td></tr>'; }).join('') + '</table></div>';
+    }
+    h += '<h3>P1 regressions</h3>';
+    if (state.p1.length === 0) h += '<p class="muted small">None raised.</p>';
+    else {
+      h += '<div class="scroll"><table><tr><th>Id</th><th>Cell</th><th>Fell</th><th>Status</th></tr>' + state.p1.map(function (p) {
+        return '<tr><td class="nw">' + esc(p.id) + '</td><td>' + esc(K.DEF[p.cell].member) + '<br><span class="muted small">' + fmt(p.cause) + '</span></td><td>' + esc(p.from + ' → ' + p.to) + '</td><td>' +
+          (p.status === 'open' ? chip('open', 'on') : chip('closed') + '<br><span class="muted small">' + esc(p.closedBy) + '</span>') + '</td></tr>'; }).join('') + '</table></div>';
+    }
+    h += '</div></div>';
+    return h;
+  }
+
+  // ---- free play: one button per action; nothing is ever disabled ----
+  function nev() { var d = K.DEF[selected]; return d.never ? { source: d.never.source, reason: d.never.reason, fixIt: d.fixIt } : { source: '', reason: '', fixIt: d.fixIt }; }
+  function div(routing, widen) {
+    var d = K.DEF[selected];
+    return { routing: routing, kind: d.divergence ? d.divergence.kind : 'per-app-choice', widensAuthority: !!widen,
+      wording: d.divergence ? d.divergence.wording : 'Keld behaves differently from Electron for ' + d.member + ' (free-play wording).' };
+  }
+  function c(type, extra) { return function () { var o = { type: type, cell: selected }; Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; }); return o; }; }
+  function g(type, extra) { return function () { var o = { type: type }; Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; }); return o; }; }
+  var ALL = K.CATALOGUE.map(function (d) { return d.id; });
+  var FREEPLAY = [
+    { group: 'Evidence for the selected cell', items: [
+      ['Land L0 scaffold (typed KELD-COMPAT throw)', c('LAND_SCAFFOLD')],
+      ['Land conformance entry (red)', c('LAND_CONFORMANCE_ENTRY')],
+      ['Implement behaviour (macOS corpus path)', c('IMPLEMENT')],
+      ['Run Keld-owned doc-cited test', c('RUN_OWNED_TEST')],
+      ['Prove negative control', c('PROVE_NEGATIVE_CONTROL')],
+      ['Record golden under Electron 44.4.5', c('RECORD_GOLDEN', { arm: 'electron' })],
+      ['Declare normalisers', c('DECLARE_NORMALISERS', { set: 'fields' })],
+      ['Replay macOS: equals golden', c('REPLAY', { lane: 'macos', outcome: 'match' })],
+      ['Replay Windows: equals golden', c('REPLAY', { lane: 'windows', outcome: 'match' })],
+      ['Replay Linux: equals golden', c('REPLAY', { lane: 'linux', outcome: 'match' })],
+      ['Record explicit ▲ gap for the Windows lane', c('RECORD_LANE_GAP', { lane: 'windows', reason: 'engine limit on WebView2, documented' })],
+      ['Record explicit ▲ gap for the Linux lane', c('RECORD_LANE_GAP', { lane: 'linux', reason: 'engine limit on WebKitGTK, documented' })],
+      ['Corpus run: draw.io via migrate + dev (showcase, legacy printed)', c('RUN_CORPUS', { app: 'drawio-desktop', via: 'migrate+dev', panel: 'showcase', profile: 'legacy_sandbox_off' })],
+      ['Call the member from an app (observe)', c('CALL_FROM_APP')] ] },
+    { group: 'Manifest claims and marks', items: [
+      ['Claim the next rung', c('CLAIM_RUNG')],
+      ['Accept ▲ on the scoreboard', function () { var o = div('scoreboard'); o.type = 'ACCEPT_DIVERGENCE'; o.cell = selected; return o; }],
+      ['Accept ▲ as a keld.compat.ts quirks flag', function () { var o = div('quirks-flag'); o.type = 'ACCEPT_DIVERGENCE'; o.cell = selected; return o; }],
+      ['Retire ▲', c('RETIRE_DIVERGENCE')],
+      ['Mark ✘ never (never-list source + fix-it)', function () { var o = nev(); o.type = 'MARK_NEVER'; o.cell = selected; return o; }] ] },
+    { group: 'Regressions', items: [
+      ['Replay macOS: differs from golden', c('REPLAY', { lane: 'macos', outcome: 'diff' })],
+      ['Replay Windows: differs from golden', c('REPLAY', { lane: 'windows', outcome: 'diff' })],
+      ['Replay Linux: differs from golden', c('REPLAY', { lane: 'linux', outcome: 'diff' })],
+      ['Member disappears from the facade', c('REGRESS', { gate: 'member' })],
+      ['Typed error lost (silent no-op creeps in)', c('REGRESS', { gate: 'typed-error' })],
+      ['Implementation removed', c('REGRESS', { gate: 'implementation' })],
+      ['Normaliser declaration removed', c('REGRESS', { gate: 'normalisers' })],
+      ['Keld-owned test goes red', c('REGRESS', { gate: 'owned-test' })],
+      ['Negative control stops failing', c('REGRESS', { gate: 'negative-control' })],
+      ['Golden bytes no longer match their digest', c('REGRESS', { gate: 'golden' })],
+      ['Corpus smoke fails', c('REGRESS', { gate: 'corpus' })],
+      ['Lower the manifest by reviewed decision (closes P1)', c('ACCEPT_LOWERED_MANIFEST', { owner: 'compat lane owner', reason: 'rung lowered on purpose; tracked for re-promotion' })] ] },
+    { group: 'Waivers and clock', items: [
+      ['Waive (owner, reason, expires in 14 days)', function () { return { type: 'WAIVE', cell: selected, owner: 'compat lane owner', reason: 'known gap, tracked', expiresOn: K.addDays(state.asOf, 14) }; }],
+      ['Drop waiver', c('DROP_WAIVER')],
+      ['Advance the clock 30 days', g('ADVANCE_CLOCK', { days: 30 })] ] },
+    { group: 'Scoreboard', items: [
+      ['Commit showcase denominator (every cell)', g('COMMIT_DENOMINATOR', { panel: 'showcase', corpusId: K.SHOWCASE_ID, cells: ALL })],
+      ['Commit showcase denominator (selected cell only)', function () { return { type: 'COMMIT_DENOMINATOR', panel: 'showcase', corpusId: K.SHOWCASE_ID, cells: [selected] }; }],
+      ['Commit product denominator drawio-desktop (2 cells)', g('COMMIT_DENOMINATOR', { panel: 'product', corpusId: 'drawio-desktop', cells: ['app.quit.order', 'dialog.showMessageBoxSync'] })],
+      ['Document drawio-desktop as committed product corpus id', g('DOCUMENT_PRODUCT_CORPUS', { id: 'drawio-desktop' })],
+      ['Publish a percentage', function () { return { type: 'PUBLISH_PERCENT', lane: lane }; }],
+      ['Hypothetical: keld migrate + dev smoke go live', g('TOOLING_LANDS')] ] },
+    { group: 'Shortcuts the real system refuses', items: [
+      ['Scaffold as a silent no-op', c('LAND_SCAFFOLD', { silentNoop: true })],
+      ['Re-record the golden from the Keld arm', c('RECORD_GOLDEN', { arm: 'keld' })],
+      ['Normaliser that redacts all args', c('DECLARE_NORMALISERS', { set: 'redact-all-args' })],
+      ['Label the replay strict_bun', c('REPLAY', { lane: 'macos', outcome: 'match', profile: 'strict_bun' })],
+      ['Label the replay unverified', c('REPLAY', { lane: 'macos', outcome: 'match', profile: 'unverified' })],
+      ['Claim CORPUS_VERIFIED directly', c('CLAIM_RUNG', { target: 'CORPUS_VERIFIED' })],
+      ['Corpus evidence from a hand port', c('RUN_CORPUS', { app: 'drawio-desktop', via: 'hand-port', panel: 'showcase', profile: 'legacy_sandbox_off' })],
+      ['Corpus run on panel product', c('RUN_CORPUS', { app: 'drawio-desktop', via: 'migrate+dev', panel: 'product', profile: 'legacy_sandbox_off' })],
+      ['Quirks flag that widens authority', function () { var o = div('quirks-flag', true); o.type = 'ACCEPT_DIVERGENCE'; o.cell = selected; return o; }],
+      ['Mark ✘ never without a fix-it', function () { var o = nev(); o.fixIt = ''; if (!o.source) { o.source = 'none'; o.reason = 'none'; } o.type = 'MARK_NEVER'; o.cell = selected; return o; }],
+      ['Waive without an owner', c('WAIVE', { owner: '', reason: 'later', expiresOn: '2027-01-01' })],
+      ['Waive with a past expiry', c('WAIVE', { owner: 'someone', reason: 'later', expiresOn: '2026-01-01' })],
+      ['Commit an empty denominator', g('COMMIT_DENOMINATOR', { panel: 'showcase', corpusId: K.SHOWCASE_ID, cells: [] })],
+      ['Commit a denominator with a duplicate cell', function () { return { type: 'COMMIT_DENOMINATOR', panel: 'showcase', corpusId: K.SHOWCASE_ID, cells: [selected, selected] }; }] ] }
+  ];
+  var FLAT = [];
+  function renderFreeplay() {
+    FLAT = [];
+    return FREEPLAY.map(function (grp) {
+      return '<h3>' + esc(grp.group) + '</h3><div class="btnrow">' + grp.items.map(function (it) {
+        FLAT.push(it);
+        return '<button data-free="' + (FLAT.length - 1) + '">' + esc(it[0]) + '</button>';
+      }).join('') + '</div>';
+    }).join('');
+  }
+
+  // ---- walkthroughs ----
+  function currentWalk() { return K.WALKTHROUGHS.filter(function (w) { return w.id === tab; })[0]; }
+  function renderTabs() {
+    return K.WALKTHROUGHS.map(function (w) {
+      return '<button role="tab" data-tab="' + w.id + '" aria-selected="' + (w.id === tab) + '">' + esc(w.title) + '</button>';
+    }).join('');
+  }
+  function renderWalk() {
+    var w = currentWalk(), active = walk.id === w.id;
+    var h = '<p>' + fmt(w.intro) + '</p><div class="btnrow">' +
+      '<button class="primary" data-walk="start">Reset to the initial state and start</button>' +
+      '<button data-walk="next">Next step</button><button data-walk="all">Run all remaining steps</button></div>';
+    if (!active) h += '<p class="muted small">Starting resets every cell to UNSUPPORTED, clears the denominator, waivers and P1s, and sets <code>as_of</code> to 2026-10-06.</p>';
+    h += '<ol class="steps">' + w.steps.map(function (st, i) {
+      var res = active ? walk.results[i] : null;
+      var line = '';
+      if (res) {
+        line = res.last.ok ? 'accepted' : 'refused with <span class="mono">' + esc(res.last.error.code) + '</span>';
+        line = '<span class="res">' + (res.met ? '' : '<strong>UNEXPECTED' + (res.why ? ' (' + esc(res.why) + ')' : '') + ': </strong>') + 'Result: ' + line +
+          (st.expect !== 'ok' && res.met ? ' — the expected refusal' : '') + '</span>';
+      }
+      return '<li class="' + (active && i === walk.pointer ? 'next' : '') + '">' + fmt(st.title) +
+        (st.why ? '<span class="why">' + fmt(st.why) + '</span>' : '') + line + '</li>';
+    }).join('') + '</ol>';
+    return h;
+  }
+  function startWalk() {
+    state = K.initialState(); history = []; last = null;
+    walk = { id: tab, pointer: 0, results: [] };
+  }
+  function stepWalk() {
+    var w = currentWalk();
+    if (walk.id !== w.id) startWalk();
+    if (walk.pointer >= w.steps.length) return false;
+    var st = w.steps[walk.pointer];
+    var r = K.runStep(state, st);
+    state = r.state; last = r.last;
+    walk.results[walk.pointer] = r; walk.pointer += 1;
+    var lastAction = st.actions[st.actions.length - 1];
+    for (var i = st.actions.length - 1; i >= 0; i--) { if (st.actions[i].cell) { selected = st.actions[i].cell; break; } }
+    history.unshift({ label: 'Walkthrough: ' + st.title.replace(/`/g, ''), ok: r.last.ok, code: r.last.ok ? '' : r.last.error.code });
+    return lastAction !== undefined;
+  }
+
+  // ---- assumptions table ----
+  var ASSUME = [
+    ['Six status names UNSUPPORTED, SCAFFOLDED, PARTIAL, BEHAVIOR_MATCH, CONFORMANCE_PASS, CORPUS_VERIFIED', 'Untracked `Electron Compatibility Reference for KELD.md` §25 ("Suggested status values"); scratchpad `compat-matrix.tsv` column `keld_status` uses them (2,088 UNSUPPORTED, 33 NEVER, 3 BEHAVIOR_MATCH, 2 BEHAVIOR_MATCH ▲, 1 SCAFFOLDED, 1 PARTIAL)', 'PROPOSED', 'The names are in use, but only as suggestions. No spec or code owns the lower three.'],
+    ['Top three rungs and their gates: BEHAVIOR_MATCH (equals golden under normalisers, ≥1 OS, `legacy_sandbox_off`), CONFORMANCE_PASS (doc sentence + Keld-owned test independent of the diff + named negative control + three OS lanes or explicit ▲), CORPUS_VERIFIED (real corpus app through migrate + dev smoke, product panel once an id is committed, profile printed)', 'X01-EPIC body, "Maturity ladder (this is the ladder every family uses)"', 'FACT', 'Published map text. The X01-T1 spec that will own it is not written or approved.'],
+    ['SCAFFOLDED = L0: the member exists and unsupported calls throw a typed `KELD-COMPAT` error, never a silent no-op', 'F01/F05/F06 epics, maturity ladder L0', 'INFERENCE', 'The L0 definition is fact; mapping the name SCAFFOLDED onto it is this task\'s reading.'],
+    ['PARTIAL = L1: works for the corpus path on macOS', 'F01/F05/F06 epics, maturity ladder L1', 'INFERENCE', 'Same: the L1 text is fact, the name mapping is not stated anywhere.'],
+    ['A conformance entry citing the pinned doc sentence lands before the implementation', 'Root `AGENTS.md` working invariants; `crates/keld-compat/AGENTS.md`', 'FACT', ''],
+    ['The oracle is the pinned doc sentence; the golden transcript is evidence-of-record', 'X01-EPIC scope; `crates/keld-compat/AGENTS.md` line 5; docs/specs/kel77 §4.1', 'FACT', ''],
+    ['Goldens come only from the pinned Electron arm; never re-recorded from the Keld arm; never `latest`', 'X01-EPIC never list', 'FACT', ''],
+    ['Normalisers are declared per cell; an over-broad normaliser is rejected; the set is pid, window id, paths, Error.stack', 'X01-EPIC ("normalises declared nondeterministic fields"); X01-A5 ticket', 'PROPOSED', 'X01-A5 is open on the map: the normaliser set and the over-broad rule are unproven until the ten-run experiment.'],
+    ['Observed-only cells cap at BEHAVIOR_MATCH and are recorded `unknown` with an oracle id naming the unspecified path', 'X01-EPIC scope; X01-T1 acceptance criterion 3', 'FACT', ''],
+    ['A doc-cited cell at BEHAVIOR_MATCH is also `unknown` until its Keld-owned test and negative control hold', 'X01 refuter finding: a `pass` for a golden-only match would let `score()` count a mirror-oracle match as conformance', 'INFERENCE', 'The refuters state it for observed-only cells; extending it to every BEHAVIOR_MATCH cell is this prototype\'s step.'],
+    ['The rung is a claimed field of the manifest cell; the KEL-74 verdict set stays pass | fail | unknown | waived', 'Refuter corrections on X01-A1; `evidence.rs` `Verdict`', 'PROPOSED', 'The verdict set is live fact. Where the rung lives is a refuter correction, not yet in any spec.'],
+    ['"All three OS lanes or explicit ▲" means: a lane without a pass needs an explicit ▲ gap with a reason, and at least one lane really passes', 'X01-EPIC ladder; ticket template "Windows/Linux lanes or explicit documented gap"', 'INFERENCE', 'The sentence can also be read as "the whole cell may be a ▲ instead". Both readings are encoded: lane gaps here, cell-level ▲ below.'],
+    ['Lane-level ▲ gaps report `fail` with the gap reason on that lane; each platform is scored separately', 'KEL-237 lifecycle corpus `report.md` ("Each platform is scored separately against the same committed three-cell denominator")', 'INFERENCE', ''],
+    ['CORPUS_VERIFIED is unreachable today: `keld migrate` is reserved verb KELD-CLI-045 and `keld dev --headless --smoke` is not live', '`crates/keld-cli/src/verb.rs`; X01 research open unknowns', 'FACT', 'The "tooling goes live" button is a hypothetical, not a decision.'],
+    ['A corpus run may ask for panel `product` only when the corpus id is documented as committed', 'X01-EPIC ladder wording; `evidence.rs` `DOCUMENTED_COMMITTED_PRODUCT_CORPORA = []`', 'INFERENCE', 'Live code is looser: product rows may exist and simply publish no percentage. Refusing the row at the rung is this task\'s reading.'],
+    ['The only honest authority profile today is `legacy_sandbox_off`; `strict_bun` is refused; `unverified` is not in the KEL-74 closed set', 'docs/specs/kel78-strict-profile-sandbox.md profile states; `evidence.rs` `parse_authority`; PANEL-D12 (resolved)', 'FACT', 'The `unverified` vocabulary gap between KEL-78 and KEL-74 is unresolved.'],
+    ['Losing any gate under a claimed rung demotes the cell to the highest rung still supported and raises a P1', '`docs/architecture/04-electron-compat.md` §6 ("A compat regression is a P1"); `crates/keld-compat/AGENTS.md` ("any score drop = P1 regression")', 'INFERENCE', 'P1 on regression is fact. Per-cell automatic demotion is how this prototype makes it mechanical. The weekly-lane failure sink is unowned (X01-EPIC fog), so drift regressions are unenforced today.'],
+    ['A P1 closes when the lost rung is re-claimed on restored evidence, or when the manifest is lowered by a reviewed decision with owner and reason', 'none', 'PROPOSED', 'Nothing on the map says what closes a compat P1.'],
+    ['A waiver, a ▲ relabel or a ✘ mark never closes a P1; a lane with an open regression cannot be relabelled as a ▲ gap', 'none', 'PROPOSED', 'Found by attacking the design: without this rule a regression can be laundered into an accepted state.'],
+    ['▲ is recorded as `fail` with `intentional_divergence` and is never counted in `passed`', 'Live cell `app.quit.return-contract` in `crates/keld-compat/fixtures/lifecycle-corpus/` (corpus.json, evidence records, report.md "Oracle matches 2/3, intentional divergence 1")', 'FACT', 'Fact for the live precedent; applying it to every future ▲ is the natural extension.'],
+    ['▲ routing: host or kipc constraints no app can toggle go to the scoreboard; per-app choices may be a `keld.compat.ts` quirks flag; a quirk never widens authority; never prose-only', 'PANEL-D9 and PANEL-D10 (resolved); `docs/engineering/compat-scoreboard.md` "Recorded divergences"', 'FACT', ''],
+    ['Accepting a ▲ needs a doc-cited oracle, a green Keld-owned test of the divergent behaviour and a proven negative control', 'PANEL-D9 ("scoreboard ▲ with a conformance test"); live corpus cell fields', 'INFERENCE', ''],
+    ['A cell marked ▲ cannot also claim a higher rung; split the member into one cell per observable', 'none; contradicts `compat-matrix.tsv`, which prints `BEHAVIOR_MATCH ▲ (Promise<void>)` for `app.quit`', 'PROPOSED', 'The matrix treats ▲ as a suffix on a rung. The live ledger treats the same member as a `fail` cell. The map does not reconcile them.'],
+    ['A cell with a lane that equals the golden cannot be marked ▲, and a ▲ lane gap cannot replace a passing lane', '`crates/keld-compat/AGENTS.md` ("any score drop = P1 regression")', 'PROPOSED', 'Found by attacking the design: both moves turned a `pass` into a `fail` without a demotion or a P1.'],
+    ['Whether a divergence is a host constraint is a property of the catalogue cell, not of the action that proposes it', 'PANEL-D9 (resolved): host/kipc constraints go to the scoreboard', 'PROPOSED', 'Without it, omitting `kind` routed default-deny to a per-app quirks flag. Whether a quirk widens authority is still self-declared in this model (`widensAuthority`); the real check belongs to review and to `keld-guard` never reading `keld.compat.ts`.'],
+    ['Quirks-flag demo: `webContents.setWindowOpenHandler()` strictness (an unrecognised handler return throws a typed error instead of a console error; the window is still denied)', '`docs/architecture/04-electron-compat.md` §3 item 5 names "`windowOpenHandler` strictness" as an example quirk', 'PROPOSED', 'Demo data. No per-app quirk is decided on the map; only the Electron sentence is a receipt.'],
+    ['Missing permission handler is a deny (▲ against Electron auto-approve)', 'F05-EPIC design facts (F05-D2 survived both refuters); briefing invariant', 'FACT', ''],
+    ['✘ never needs a published never-list source and a fix-it, and reports `fail`', 'PANEL-D9 and PANEL-D10 (resolved); per-epic "Never list (documented ✘)"', 'FACT', ''],
+    ['✘ never is terminal: only its L0 typed stub and observation are accepted; reopening needs a new approved spec', 'Bounded question; root `AGENTS.md` ("record the new invariant"); map note "reopen by comment if evidence contradicts"', 'INFERENCE', 'The map says resolved decisions can be reopened with evidence; "terminal inside the state machine" is the reading encoded.'],
+    ['A member on a published never list cannot be implemented, marked or not, and only such a member can be marked ✘', 'PANEL-D10 (resolved); F05-EPIC "Never list (documented ✘)"', 'PROPOSED', 'The lists are fact; enforcing them in the reducer is this prototype\'s rule. Before it, any passing cell could be frozen as ✘ by typing a source string. Contradiction left open: `compat-matrix.tsv` prints `Session.loadExtension` as UNSUPPORTED while the F05 never list names it.'],
+    ['Waivers need owner, reason and expiry; an expired waiver makes `score()` return an error; a waiver object cannot pair with `pass`', '`evidence.rs` `parse_waiver`, `validate_scored_waiver`; compat-scoreboard.md rule 5', 'FACT', 'Live detail: the check is `expires_on < as_of`, so a waiver expiring today is still valid.'],
+    ['A waiver is cell-wide here, so it is refused when any OS lane\'s record is `pass`', '`evidence.rs` `validate_scored_waiver` (per record)', 'INFERENCE', 'Live waivers sit on one record per platform. Whether a waiver may cover a single lane is not specified.'],
+    ['Waiving an `unknown` cell (for example an observed-only one) removes the `unknown` that was blocking the percentage', '`evidence.rs` `score()`: `may_publish_percent` needs `unknown == 0`, and `waived` is not `unknown`', 'FACT', 'Live behaviour, reproduced here. The waived cell still counts in N and not in `passed`, and the waiver carries an owner and an expiry, but nothing on the map says whether this is intended.'],
+    ['Losing the implementation also voids its test, control, replays and corpus run; removing the normaliser declaration voids every replay; a committed golden is immutable at the pin', 'X01-EPIC design facts ("each golden is its own immutable blob"; "normalises declared nondeterministic fields")', 'INFERENCE', 'Couplings between gates made explicit so that stale evidence cannot hold a rung up.'],
+    ['A corpus run may name only a pinned corpus clone: drawio-desktop, zettlr, electron-quick-start', 'Map #391 corpus list; GitHub #313 (draw.io first, Zettlr second)', 'INFERENCE', 'The ladder says "a real corpus app" without listing them.'],
+    ['A waived cell counts in N, not in `passed`; the board is not `complete` while any cell is waived; a waiver does not move the rung', '`evidence.rs` `score()`', 'FACT', 'The rung part is inference; the counting is live code.'],
+    ['A percentage exists only against a committed denominator; it is omitted when any cell is missing or `unknown`, or when the panel is `product` without a documented committed id; the only claim shape is `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`', '`evidence.rs` `score()`; compat-scoreboard.md rules 1–4', 'FACT', 'Identity mismatch (digest, profile, engine) also omits it; not modelled here because every record in the prototype shares one identity.'],
+    ['`dialog.showMessageBoxSync()` stays SCAFFOLDED until the S0 link-drain gate reports', 'F06-EPIC design facts; PANEL-D3, PANEL-D4 (resolved); PANEL-P1 (open)', 'FACT', 'The gate is open; the prototype does not model its outcome.'],
+    ['Demo denominators, the corpus id `electron-44.4.5-cell-demo-v1`, kind `primary_workflow`, and the digest stand-in', 'X01-A6 naming pattern; live `electron-lifecycle-v0` uses `primary_workflow`', 'PROPOSED', 'Demo data. The digest is a labelled stand-in, not sha256.'],
+    ['Error codes `KELD-COMPAT-L01` to `L19`', 'none', 'PROPOSED', 'Not allocated. Live codes shown are `KELD-COMPAT-005`, `-006`, `-008` and `KELD-CLI-045`, with their real fix text.'],
+    ['KEL-74 is Done; its acceptance box "Every cell is pass / partial with named divergence / fail with exact oracle / excluded with reason / unknown" is unchecked while code implements pass | fail | unknown | waived', 'Linear KEL-74, fetched 2026-10-06; `evidence.rs`', 'FACT', 'Linear text and code disagree on the cell-state vocabulary ("partial", "excluded" vs "waived"). Unresolved.']
+  ];
+  function renderAssume() {
+    return '<tr><th>Semantic encoded</th><th>Source</th><th>Label</th><th>Note</th></tr>' + ASSUME.map(function (r) {
+      var cls = r[2] === 'FACT' ? 'on' : r[2] === 'INFERENCE' ? 'out' : 'dash';
+      return '<tr><td>' + fmt(r[0]) + '</td><td class="small">' + fmt(r[1]) + '</td><td>' + chip(r[2], cls) + '</td><td class="small muted">' + fmt(r[3]) + '</td></tr>';
+    }).join('');
+  }
+  var RECEIPTS = [
+    ['docs/api/app.md', '49238ddf50585d8a581bd7b5141ec825216cd9b82e6bc82bd97cad4200593ebf', '`app.quit()`: "Try to close all windows. The `before-quit` event will be emitted first. If all windows are successfully closed, the `will-quit` event will be emitted and by default the application will terminate."'],
+    ['docs/api/native-theme.md', '5da32f0af52f3edaa35f00ea6258e59f38f770451fc17d561b04194e38f2e1cd', 'Event `updated`: "Emitted when something in the underlying NativeTheme has changed."'],
+    ['docs/api/browser-window.md', '49061d5eebfc1ef617d77fa71b13d79f0995bec92eaa518c2d06c8a1dbf29b9b', '`ready-to-show`: "This event is usually emitted after the `did-finish-load` event, but for pages with many remote resources, it may be emitted before the `did-finish-load` event."'],
+    ['docs/tutorial/security.md', '9bec21b1e4e451fb710685d09e0cdfd1770df02ffd44ad6afebf976f4cbac50a', '"By default, Electron will automatically approve all permission requests unless the developer has manually configured a custom handler."'],
+    ['docs/api/dialog.md', 'bc0b63b7775fcaff5fd74b1649d8b9e6247f8cc2cfd26fc7a7b080ffb0cffeba', '`dialog.showMessageBoxSync`: "Shows a message box, it will block the process until the message box is closed."'],
+    ['docs/api/extensions.md', '3ea8920444e24cf42cc3ef7862121775a059e4bbe3e7487965b970274936e34e', '"Electron only supports loading unpacked extensions"; "it is a **non-goal** of the Electron project to be perfectly compatible with Chrome\'s implementation of Extensions."'],
+    ['docs/api/web-contents.md', '449abaddbbc32e59be58e9fe0e44e8b3eb4c62ea1272b2a0171b206caed2b252', '`contents.setWindowOpenHandler`: "Returning an unrecognized value such as a null, undefined, or an object without a recognized \'action\' value will result in a console error and have the same effect as returning `{action: \'deny\'}`."']
+  ];
+  function renderReceipts() {
+    return '<tr><th>Pinned page (raw.githubusercontent.com/electron/electron/v44.4.5/…), retrieved 2026-10-06</th><th>sha256 of fetched bytes</th><th>Exact claim relied on</th></tr>' +
+      RECEIPTS.map(function (r) { return '<tr><td class="mono small">' + esc(r[0]) + '</td><td class="mono small">' + esc(r[1].slice(0, 16)) + '…</td><td class="small">' + fmt(r[2]) + '</td></tr>'; }).join('') +
+      '<tr><td class="small" colspan="3">' + fmt('Keld repository read at `b4b907c3` on 2026-10-06: `crates/keld-compat/src/evidence.rs`, `crates/keld-compat/AGENTS.md`, `crates/keld-compat/fixtures/lifecycle-corpus/`, `docs/engineering/compat-scoreboard.md`, `docs/architecture/04-electron-compat.md` §6, `crates/keld-cli/src/verb.rs`, `crates/keld-guard/src/lib.rs`. Linear (team KELD) reachable and read on 2026-10-06: KEL-74 Done, KEL-237 In Progress.') + '</td></tr>';
+  }
+
+  // ---- render + events ----
+  function render() {
+    $('cells').innerHTML = renderCells();
+    $('cellpanel').innerHTML = renderCellPanel();
+    $('changed').innerHTML = renderResult(last);
+    $('log').innerHTML = renderLog();
+    $('board').innerHTML = renderBoard();
+    $('tabs').innerHTML = renderTabs();
+    $('walk').innerHTML = renderWalk();
+  }
+  function act(label, action) {
+    var r = K.dispatch(state, action);
+    state = r.state; last = r;
+    history.unshift({ label: label, ok: r.ok, code: r.ok ? '' : r.error.code });
+    render();
+  }
+  function closest(el, attr) { while (el && el !== document.body) { if (el.getAttribute && el.getAttribute(attr) !== null) return el; el = el.parentNode; } return null; }
+
+  document.addEventListener('click', function (ev) {
+    var el;
+    if ((el = closest(ev.target, 'data-select'))) { selected = el.getAttribute('data-select'); render(); return; }
+    if ((el = closest(ev.target, 'data-lane'))) { lane = el.getAttribute('data-lane'); render(); return; }
+    if ((el = closest(ev.target, 'data-free'))) { var it = FLAT[+el.getAttribute('data-free')]; act(it[0], it[1]()); return; }
+    if ((el = closest(ev.target, 'data-tab'))) { tab = el.getAttribute('data-tab'); render(); return; }
+    if ((el = closest(ev.target, 'data-walk'))) {
+      var mode = el.getAttribute('data-walk');
+      if (mode === 'start') startWalk();
+      else if (mode === 'next') stepWalk();
+      else { if (walk.id !== tab) startWalk(); while (walk.pointer < currentWalk().steps.length) stepWalk(); }
+      render(); return;
+    }
+  });
+  $('resetall').addEventListener('click', function () {
+    state = K.initialState(); last = null; history = []; walk = { id: null, pointer: 0, results: [] }; render();
+  });
+
+  $('freeplay').innerHTML = renderFreeplay();
+  $('assume').innerHTML = renderAssume();
+  $('receipts').innerHTML = renderReceipts();
+  render();
+})();
+</script>
+</body>
+</html>

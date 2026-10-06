@@ -1,0 +1,107 @@
+{
+ "PANEL-D19": {
+  "status": "decided",
+  "resolution": "Adopt A and close the ticket as decided. Correct the F02-T3 and PANEL-D5 wording from 'closes when the generation is revoked' to 'closes only in ordered Quit or when no successor generation will be provisioned; a recoverable generation loss gives the pending close one terminal outcome and keeps the window'. Drop spike arm C as source-determined. Leave arm D to S0 arm E and KEL-143. Park the user-visible affordance. This discharges the F02-T2 dependency on PANEL-D19.",
+  "milestone": "first-proof"
+ },
+ "PANEL-D20": {
+  "status": "decided",
+  "resolution": "Adopt A. Record the ranking as: (1) link-stall, a measured mechanism that blocks workflow step 4 and is settled by S0; (2) legacy-only headline, a claim-honesty constraint already handled by the printed forfeit and LegacySandboxOff in every record; (3) renderer sendSync on WKWebView, Zettlr-gated; (4) IPC hop latency, which only narrows claims. Close #440 and let #418 and #420 carry the live work.",
+  "milestone": "parked"
+ },
+ "PANEL-D21": {
+  "status": "decided",
+  "resolution": "Adopt A and close the world question. Carry the relay shape into the KEL-142 revision as option A's world-scoped handler, with C recorded as the rejected alternative. Keep Side B's conditions as F07-T1 acceptance: re-run the KEL-142 negative tests with draw.io's real preload installed, add the adversarial-preload case as a named test, and record the per-call cost as a diagnostic.",
+  "milestone": "first-proof"
+ },
+ "F04-A4": {
+  "status": "decided",
+  "resolution": "Option A, recorded in the same KEL-102 amendment as F04-A1. Evidence determines both halves: the approved specs already name the host navigation state as the only minter, the code already has exactly one rotating counter, and commit is both the live engine-observed rotation point and Electron's frame boundary. Add three conformance entries to F04-T1: stale reply after cross-document navigation is dropped; a hash change during a pending request does not drop the reply; a cancelled renderer-initiated navigation keeps the bridge usable.",
+  "milestone": "first-proof"
+ },
+ "F01-A4": {
+  "status": "decided",
+  "resolution": "Choose (a) and park it. `keld migrate` should print, for strict: 'userData is role-private storage; raw node:fs outside it is OS-denied; call sites touching other paths need the fs+ facade or a dialog-minted grant, otherwise declare legacy'. For legacy it should print: 'userData = Electron default path, raw node:fs, containment forfeited'. Separately, narrow the F01-T4 and X02-T3 edges so the first proof is not blocked: under legacy, F01-T4 needs only the host-minted Electron-default path value.",
+  "milestone": "parked"
+ },
+ "F01-A5": {
+  "status": "decided",
+  "resolution": "Park it. Correct the ticket text (keld-pack is no longer name-only; the emitter is what is missing). Point F01-T6's diagnostic at this ticket rather than KEL-72. Re-open only when a committed corpus app has a resolved call site, and then write one spec under the KEL-19 packaging track that settles the config file question first.",
+  "milestone": "parked"
+ },
+ "F03-D4": {
+  "status": "decided",
+  "resolution": "Choose A. Owner: the @keld/electron package under keld-compat rules. v0 domain: the JSON domain plus undefined, Date, Error (name, message, stack) and class instances flattened to own enumerable properties with the prototype dropped, as the Electron sentence states. Functions, Promises, Symbols, WeakMaps and WeakSets throw as in Electron. Map, Set, RegExp, TypedArray/Buffer and bulk-lane refs throw a typed KELD-COMPAT error and are parked until a denominator cell needs them; add bounded inline bytes only if the E1 census shows a binary value on the workflow. Amend arch 02 section 5 in the F04 ipc spec PR to say the value codec is an endpoint codec that is opaque to the host. The exact spec text still needs its own review-gate approval; this packet determines the direction only.",
+  "milestone": "first-proof"
+ },
+ "F05-D3": {
+  "status": "decided",
+  "resolution": "Take A. Mark the enforcement-location question resolved by the approved KEL-78 text, retitle the ticket to drop 'host proxy', and park the broker shape. Reopen only when two predicates both hold: KEL-78 archives a complete strict admission on at least one OS, and a committed denominator contains a net row that must run strict.",
+  "milestone": "parked"
+ },
+ "F08-D6": {
+  "status": "decided",
+  "resolution": "Take A and park D. The honest per-engine answer today is that nothing can be reported, so the getters stay unsupported with a typed error until a denominator app calls them. Fold disableHardwareAcceleration into F01-T6 with Electron's exact post-ready message as an acceptance line. If per-engine honouring is ever scheduled, it goes to KEL-132 with two named receipts first: the Microsoft page for ICoreWebView2EnvironmentOptions AdditionalBrowserArguments, and the WebKitGTK WebKitSettings hardware-acceleration-policy page.",
+  "milestone": "parked"
+ },
+ "F06-D3": {
+  "status": "decided",
+  "resolution": "Adopt A. Current evidence determines it: the owning spec already shows the shape, the live matcher allows and denies it correctly with followable fix text and no accidental wildcard (probe), and D5 forbids C and D. Record B as the considered alternative and keep the web.* sentinel for webview-principal media only. For the first proof, add only the dialog and menu literals and register only those channels; everything else in the ticket title is parked. Replace the stale blockers (KEL-16, KEL-15) with KEL-102 and its D9 permission-model gate.",
+  "milestone": "first-proof"
+ },
+ "F07-A6": {
+  "status": "decided",
+  "resolution": "Decided: A. The evidence that determines it: keld migrate is not live; the first proof is a fresh install with no pre-existing state; the KEL-135 spec excludes store migration and Apple owns the physical store; and the engine change means origin preservation alone carries nothing. Reject B. Record C as the only import shape worth specifying, and only when an in-place upgrade (the arch 04 bridge release) is actually scheduled. Correct the ticket text so it no longer attributes the loss to the origin change alone.",
+  "milestone": "parked"
+ },
+ "F07-E1": {
+  "status": "decided",
+  "resolution": "Decided: A. The evidence that determines it: the first-proof app never reads process.env in its preload; no corpus renderer reads NODE_ENV; the only real consumer (Zettlr) degrades without throwing; and the role environment verifiably contains the app-link possession secret. Reject C and D. Specify B only when a committed Zettlr cell reads one of the five names, and then source values from the main role (not the host) with unconditional KELD_* exclusion and a negative control. The first-proof renderer shim should define process.env as an empty object so the field exists.",
+  "milestone": "next"
+ },
+ "F09-A6": {
+  "status": "decided",
+  "resolution": "Take option 1. Mark the ticket resolved with the Linear receipt, and change F09-T2's blocker from 'locate the RFC' to 'approved keld.build.ts schema spec, written when the keld build slice starts'. For the first proof, omit keld.build.ts from the draw.io artefact in X02-T3 (#499) and have the migrate report say 'not generated: keld build is reserved (KELD-CLI-045)'. Route the discovered drift between the hello keld.config.ts and the arch 04 sketch to the X02-T1 (#497) spec; do not fix it here.",
+  "milestone": "parked"
+ },
+ "X02-A1": {
+  "status": "decided",
+  "resolution": "Choose A as the single resolver; no plugin and no bunfig alias. Record it in arch 04 section 2 (the package.json row carries the 'electron' dependency; the bunfig.toml alias row is removed) and section 3 item 1 with its v0 note, inside the X02-T1 spec PR. X03-T1 adds the four subpath exports to the one entry. The KEL-72 fixtures keep tsconfig paths only until @keld/electron is consumable as a package, then switch to the same dependency form. Evidence that determines it: Electron's own one-resolver contract, the working-directory and Node probes re-run today showing B and C fail silently, and arch 04 section 2 already admitting the package.json edit. Any further use of bunfig.toml (for example disabling auto-install) is a separate decision.",
+  "milestone": "first-proof"
+ },
+ "X03-A5": {
+  "status": "decided",
+  "resolution": "Close the open question as decided and parked. Owner is KEL-76 per architecture 05; nothing is designed before the first proof. Correct the ticket's corpus fact (fc-list on macOS and Linux, failure tolerated). Record the four unknowns above as required contents of the future KEL-76 spec, with brokered launches labelled user_approved_tool_child. Under legacy, the only first-proof action is that the PANEL-P3 boot trace records the execFile row and its outcome under Bun.",
+  "milestone": "parked"
+ },
+ "X03-A6": {
+  "status": "decided",
+  "resolution": "Resolve as: no `package` panel and no package cells in the product denominator. The inventory becomes conformance leads on the family tickets. Retitle X03-T2 to drop 'package panel candidates'. A showcase package corpus is a parked option that needs an explicit owner yes.",
+  "milestone": "parked"
+ },
+ "F04-A1": {
+  "status": "owner-decision-delegated",
+  "resolution": "Option A: amend the KEL-102 spec with one scoped task unit for per-window channel grants; narrowest grammar = exact-literal el:<channel> entries, KELD-GUARD003 on miss, keld migrate refuses wildcards; fold the F04-A4 generation contract into the same amendment. Exact-content approval of the amendment text remains a separate owner step.",
+  "milestone": "first-proof"
+ },
+ "F06-D1": {
+  "status": "owner-decision-delegated",
+  "resolution": "Park. First proof takes option A (legacy profile, dialogs return paths, no scope minting). The published FsBroker-registration mechanism, the <name>.* sibling glob and the dialog-only/never-persisted lifetime are refuted and withdrawn. Reopen when strict-profile draw.io is scheduled: propose guard-owned session grants as a KEL-102 spec amendment after the boot/authority trace; persistence across launches stays an owner question.",
+  "milestone": "parked"
+ },
+ "F09-A2": {
+  "status": "owner-decision-delegated",
+  "resolution": "Park (option D now): the facade exposes no feed base; owner of the eventual field is architecture 06 section 4a under KEL-53. F09-A2 no longer blocks the inert updater-adapter slice. Reopen when the KEL-53 feed-orchestration slice is specified (preferred carrier: the signed ExpectedAppIdentity payload, new format version).",
+  "milestone": "parked"
+ },
+ "X04-D4": {
+  "status": "owner-decision-delegated",
+  "resolution": "Option A is the standing behaviour: exact literal origins only; every other URL is a typed refusal recorded as a declared divergence. A confirm-class token and scheme-wide globs are rejected. If a scored cell ever needs scheme-class opening, specify option C (a distinct capability key for scheme classes) under KEL-102 with a permission-model gate; consent-as-authority-mint stays rejected until an approved spec says otherwise.",
+  "milestone": "next"
+ },
+ "F06-D4": {
+  "status": "duplicate-of-X04-D4",
+  "resolution": "Option A is the standing behaviour: exact literal origins only; every other URL is a typed refusal recorded as a declared divergence. A confirm-class token and scheme-wide globs are rejected. If a scored cell ever needs scheme-class opening, specify option C (a distinct capability key for scheme classes) under KEL-102 with a permission-model gate; consent-as-authority-mint stays rejected until an approved spec says otherwise.",
+  "milestone": "parked"
+ }
+}

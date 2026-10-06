@@ -1,0 +1,1355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keld window lifecycle - logic prototype</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1c1d1f; --muted: #5e636b; --line: #d9dcdf;
+    --soft: #f1f2f3; --accent: #0b6b6b; --accent-ink: #ffffff; --accent-soft: #e2f1f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141516; --panel: #1b1d1f; --ink: #e7e8ea; --muted: #a0a6ad; --line: #34383c;
+      --soft: #232629; --accent: #63c9c2; --accent-ink: #0c1414; --accent-soft: #1d3231;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1240px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 8px; }
+  h2 { font-size: 1.1rem; margin: 0 0 10px; }
+  h3 { font-size: .78rem; margin: 16px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  p { margin: 0 0 10px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+  .lede { max-width: 78ch; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); margin-top: 18px; }
+  @media (min-width: 1000px) { .grid { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; } }
+  section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .question { border-left: 4px solid var(--accent); padding: 4px 0 4px 12px; margin: 12px 0; max-width: 84ch; }
+  button { font: inherit; color: var(--ink); background: var(--soft); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 9px; cursor: pointer; text-align: left; }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, [role=tab]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 100%; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .btns button { font-size: .84rem; }
+  .btns button .t { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  label.opt { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .86rem; max-width: 100%; min-width: 0; }
+  label.opt select { min-width: 0; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 12px; flex-wrap: wrap; }
+  [role=tab] { border: 1px solid transparent; border-bottom: none; background: none; border-radius: 6px 6px 0 0; padding: 6px 12px; color: var(--muted); }
+  [role=tab][aria-selected=true] { color: var(--ink); border-color: var(--line); background: var(--panel); font-weight: 600; box-shadow: inset 0 3px 0 var(--accent); }
+  ol.steps { list-style: none; margin: 0; padding: 0; }
+  ol.steps li { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+  ol.steps li.current { border-color: var(--accent); background: var(--accent-soft); }
+  ol.steps li.todo { color: var(--muted); }
+  ol.steps .st { font-weight: 600; }
+  ol.steps .say { font-size: .9rem; margin-top: 2px; }
+  ul.checks { margin: 6px 0 0; padding: 0; list-style: none; font-size: .84rem; }
+  ul.checks li { border: none; padding: 0 0 0 1.6em; margin: 0; position: relative; }
+  ul.checks li::before { position: absolute; left: 0; font-weight: 700; }
+  ul.checks li.ok::before { content: "ok"; color: var(--accent); }
+  ul.checks li.bad::before { content: "NO"; }
+  ul.checks li.bad { font-weight: 700; text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: .86rem; }
+  th, td { text-align: left; vertical-align: top; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+  .scroll { overflow-x: auto; }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; font-size: .88rem; margin: 0; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: .76rem; white-space: nowrap; }
+  .pill.on { border-color: var(--accent); background: var(--accent-soft); }
+  .changes { list-style: none; margin: 0; padding: 0; }
+  .changes li, .log li { padding: 4px 8px; border-left: 3px solid var(--line); margin-bottom: 3px; font-size: .86rem; overflow-wrap: anywhere; }
+  .log { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+  .k { display: inline-block; min-width: 5.2em; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  li.k-event { border-left-color: var(--accent); background: var(--accent-soft); }
+  li.k-event .k { color: var(--accent); font-weight: 700; }
+  li.k-error, li.k-reject { border-left: 3px double var(--ink); background: var(--soft); }
+  li.k-error .k, li.k-reject .k { color: var(--ink); font-weight: 700; }
+  li.k-diag { border-left-style: dashed; border-left-color: var(--ink); }
+  li.fresh { box-shadow: inset 0 0 0 1px var(--accent); }
+  .errbox { border: 2px solid var(--ink); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; background: var(--soft); }
+  .errbox .code { font-weight: 700; }
+  .lab { display: inline-block; font-size: .7rem; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--ink); white-space: nowrap; }
+  .lab.FACT { background: var(--ink); color: var(--bg); }
+  .lab.INFERENCE { background: none; }
+  .lab.PROPOSED { border-style: dashed; border-color: var(--accent); color: var(--accent); }
+  .title-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; justify-content: space-between; }
+  details summary { cursor: pointer; color: var(--muted); font-size: .86rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Keld window lifecycle: can a host-owned window model reproduce Electron's?</h1>
+    <p class="lede muted">Logic prototype for the Electron compatibility map (units F01 app lifecycle, F02 windowing, F03 webContents). It is a model you can drive, not product code and not OS evidence.</p>
+    <div class="question">
+      <strong>The question.</strong> When the Rust host owns every native window and the Electron-shaped objects live in a supervised Bun role, does the app still observe Electron's <code>BrowserWindow</code> lifecycle
+      (<code>ready-to-show</code>, <code>show</code>, <code>close</code> with <code>preventDefault()</code>, <code>closed</code>, <code>destroy()</code>, <code>isDestroyed()</code>, the <code>window-all-closed</code> default quit,
+      and <code>app.quit()</code>: <code>before-quit</code>, then per-window <code>close</code>, then <code>will-quit</code>, then <code>quit</code>) while the Bun role can crash and be replaced without the window disappearing?
+    </div>
+    <p class="lede">Every button below calls one pure state machine. The panel on the right is the whole state; the transcript shows each Electron-observable event, each kipc message and each native effect in order.
+      Illegal moves return the error the real system would return, with its fix text. Labels on the last section say which semantics are Electron facts, which are decided Keld design, and which are still open.</p>
+  </header>
+
+  <div class="grid">
+    <div>
+      <section class="card" aria-labelledby="h-walk">
+        <div class="title-line"><h2 id="h-walk">Guided walkthroughs</h2><span class="muted" id="selfcheck"></span></div>
+        <div class="tabs" role="tablist" id="tabs"></div>
+        <div class="row" style="margin-bottom:10px">
+          <button class="primary" id="next">Run next step</button>
+          <button id="restart">Restart this walkthrough</button>
+          <span class="muted" id="progress"></span>
+        </div>
+        <ol class="steps" id="steps"></ol>
+      </section>
+
+      <section class="card" aria-labelledby="h-free">
+        <div class="title-line"><h2 id="h-free">Free play</h2><button id="reset">Reset to initial state</button></div>
+        <p class="muted" style="font-size:.86rem">Every action is always available. Window-targeted actions use the selected window.</p>
+        <div class="row">
+          <label class="opt">Target window <select id="target"></select></label>
+        </div>
+        <div id="buttons"></div>
+        <h3>Model options (open decisions)</h3>
+        <div class="row">
+          <label class="opt">Unanswered close at generation loss
+            <select id="opt-revoke">
+              <option value="host-closes">host closes the window (map text: PANEL-D5, F02-T3)</option>
+              <option value="keep-window">window stays, request released (alternative, PROPOSED)</option>
+            </select>
+          </label>
+          <label class="opt">Quit sweep
+            <select id="opt-sweep">
+              <option value="all-at-once">ask every window in one sweep (Electron source)</option>
+              <option value="serialized">serialized, stop at first veto (PANEL-D23 fallback)</option>
+            </select>
+          </label>
+        </div>
+      </section>
+    </div>
+
+    <div>
+      <section class="card" aria-labelledby="h-changed" aria-live="polite">
+        <h2 id="h-changed">What just changed</h2>
+        <div id="changed"></div>
+      </section>
+      <section class="card" aria-labelledby="h-state">
+        <h2 id="h-state">Current state</h2>
+        <div id="state"></div>
+      </section>
+      <section class="card" aria-labelledby="h-log">
+        <div class="title-line"><h2 id="h-log">Transcript</h2>
+          <label class="opt"><input type="checkbox" id="only-events"> Electron-observable events only</label></div>
+        <ol class="log" id="log"></ol>
+      </section>
+    </div>
+  </div>
+
+  <section class="card" aria-labelledby="h-assume">
+    <h2 id="h-assume">Assumptions and decisions encoded</h2>
+    <p class="muted" style="max-width:86ch">FACT = stated by a pinned Electron v44.4.5 doc or source line, an Apple doc, Keld repository text at <code>b4b907c3</code>, or a Linear issue, each re-opened on 2026-10-06.
+      INFERENCE = Keld design resolved on map gyldlab/keld#391, derived from evidence but not yet proven on an OS. PROPOSED = open or contested on the map, or a choice this prototype had to make to run; none of these is decided.</p>
+    <div class="scroll"><table id="assumptions"></table></div>
+  </section>
+</main>
+
+<!-- ====================================================================== -->
+<!-- 1. LOGIC MODULE. Pure state machine: no DOM, no globals, no timers.     -->
+<!--    dispatch(state, action) -> { state, result }. State is plain JSON.  -->
+<!-- ====================================================================== -->
+<script id="logic">
+const KeldWindowLifecycle = (() => {
+  'use strict';
+
+  const DESTROYED_TEXT = 'Object has been destroyed';
+  const DEFAULT_OPTIONS = { pendingCloseOnRevoke: 'host-closes', quitSweep: 'all-at-once' };
+  const OPTION_VALUES = {
+    pendingCloseOnRevoke: ['host-closes', 'keep-window'],
+    quitSweep: ['all-at-once', 'serialized']
+  };
+  // In-flight renderer invokes admitted per window before the sender suspends.
+  // The number is a placeholder (PROPOSED); the rule "no unbounded queue" is not.
+  const CALL_CREDIT = 4;
+
+  // ---- typed errors -------------------------------------------------------
+  // registered:true  = the code exists in the Keld repository today.
+  // registered:false = placeholder name; the owning crate allocates the number.
+  const ERRORS = {
+    OBJECT_DESTROYED: {
+      code: 'TypeError', registered: true, layer: '@keld/electron facade fence',
+      message: () => DESTROYED_TEXT,
+      fix: 'Guard with win.isDestroyed() and drop the reference inside the `closed` listener. The fence throws locally: zero kipc frames are sent for a dead (WindowId, WindowGeneration).'
+    },
+    STALE_GENERATION: {
+      code: 'KELD-IPC-007', registered: true, layer: 'keld-ipc admission (HELLO)',
+      message: p => `HELLO presented the token of retired Bun generation g${p.retired}; its endpoint, token and stream were revoked before g${p.current} was provisioned. Nothing it sends can address the window registry.`,
+      fix: 'No app fix: only the supervisor-admitted generation holds a link. A successor re-acquires windows from the adoption snapshot delivered before Ready.'
+    },
+    GENERATION_RETIRED: {
+      code: 'KELD-IPC-GENERATION-RETIRED', registered: false, layer: 'renderer bridge (local rejection)',
+      message: p => p.atAdmission
+        ? `ipcRenderer.invoke('${p.channel}') from w${p.win} rejected before delivery: Bun generation g${p.generation} is retired and no successor is admitted. Outcome known: no handler ran. The call is not held for a successor.`
+        : `ipcRenderer.invoke('${p.channel}') from w${p.win} rejected: Bun generation g${p.generation} was retired while the call was in flight. Outcome unknown: the handler may or may not have committed its effect. The call is not replayed into a successor.`,
+      fix: 'Treat as ambiguous, not as failure: after the successor is Ready, read back the state, then retry only if the effect is absent or the handler is idempotent.'
+    },
+    WINDOW_STALE: {
+      code: 'KELD-IPC-WINDOW-STALE', registered: false, layer: 'host window registry',
+      message: p => `window.${p.op}{window: w${p.win}, generation: wg${p.wgen}} names ${p.dead ? 'a window the host already destroyed' : 'a generation the host never minted for this window'}. Rejected before any native call: no window is shown, closed or re-targeted.`,
+      fix: 'Use the BrowserWindow object the facade returned: its fence throws locally once the handle is dead. The host checks every window command again, because a (WindowId, WindowGeneration) pair is never minted twice.'
+    },
+    CLOSE_SEQ: {
+      code: 'KELD-IPC-CLOSE-SEQ', registered: false, layer: 'host window registry',
+      message: p => `CloseAllow{window: w${p.win}, seq: ${p.seq}} answers no outstanding CloseRequested (${p.pending === null ? 'none is pending' : 'pending seq is ' + p.pending}). The window stays open.`,
+      fix: 'Reply only to a CloseRequested you received, echoing its seq. To close without asking, call win.destroy().'
+    },
+    NOT_APP_PROCESS: {
+      code: 'KELD-GUARD006', registered: true, layer: 'keld-guard',
+      message: p => `window command from principal Webview(w${p.win}) denied: only the AppProcess principal may issue window commands; window-level grants do not exist yet. No side effect.`,
+      fix: "Send a message on an enumerated el:<channel> grant and call win.close() or win.destroy() from the app's main code."
+    },
+    PRIVILEGED_WEBPREFS: {
+      code: 'KELD-COMPAT-WEBPREFS', registered: false, layer: '@keld/electron BrowserWindow constructor',
+      message: () => 'webPreferences.nodeIntegration is privilege-escalating and is never honoured. No window was minted.',
+      fix: 'Remove nodeIntegration and expose the needed functions from a preload through contextBridge.'
+    },
+    PRECONDITION: {
+      code: 'PROTOTYPE-PRECONDITION', registered: false, layer: 'prototype (not a product error)',
+      message: p => p.why,
+      fix: 'This move has no actor in the real system in the current state, so nothing would be sent. The state is unchanged.'
+    }
+  };
+  function makeError(key, p) {
+    const d = ERRORS[key];
+    return { key, code: d.code, registered: d.registered, layer: d.layer, message: d.message(p || {}), fix: (p && p.fix) || d.fix };
+  }
+  const fail = (key, p) => ({ error: makeError(key, p) });
+  const precondition = (why, fix) => fail('PRECONDITION', { why, fix });
+
+  // ---- action catalogue (labels use Electron API names and Keld terms) ----
+  const CATALOGUE = [
+    { group: 'App code in Bun main (@keld/electron)', label: 'new BrowserWindow({ show: false })', action: { type: 'newWindow', show: false } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'new BrowserWindow({ show: true })', action: { type: 'newWindow', show: true } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.show()', needsWindow: true, action: { type: 'winShow' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.hide()', needsWindow: true, action: { type: 'winHide' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.close()', needsWindow: true, action: { type: 'winClose' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.close() twice, same tick', needsWindow: true, sameTick: 2, action: { type: 'winClose' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.destroy()', needsWindow: true, action: { type: 'winDestroy' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.destroy() then win.isDestroyed(), same tick', needsWindow: true, sequence: [{ type: 'winDestroy' }, { type: 'winIsDestroyed' }] },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.isDestroyed()', needsWindow: true, action: { type: 'winIsDestroyed' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'win.getBounds()', needsWindow: true, action: { type: 'winGetBounds' } },
+    { group: 'App code in Bun main (@keld/electron)', label: 'app.quit()', action: { type: 'appQuit' } },
+    { group: 'App listeners (what the app code registered)', label: "win.on('close', e => e.preventDefault())", needsWindow: true, action: { type: 'setCloseListener', mode: 'prevent' } },
+    { group: 'App listeners (what the app code registered)', label: "win.removeAllListeners('close')", needsWindow: true, action: { type: 'setCloseListener', mode: 'none' } },
+    { group: 'App listeners (what the app code registered)', label: "before-quit: preventDefault on", action: { type: 'setAppListener', key: 'beforeQuitPrevent', value: true } },
+    { group: 'App listeners (what the app code registered)', label: "before-quit: preventDefault off", action: { type: 'setAppListener', key: 'beforeQuitPrevent', value: false } },
+    { group: 'App listeners (what the app code registered)', label: "will-quit: preventDefault on", action: { type: 'setAppListener', key: 'willQuitPrevent', value: true } },
+    { group: 'App listeners (what the app code registered)', label: "will-quit: preventDefault off", action: { type: 'setAppListener', key: 'willQuitPrevent', value: false } },
+    { group: 'App listeners (what the app code registered)', label: "window-all-closed: subscribe (app stays alive)", action: { type: 'setAppListener', key: 'windowAllClosedSubscribed', value: true } },
+    { group: 'App listeners (what the app code registered)', label: "window-all-closed: unsubscribe (default quit)", action: { type: 'setAppListener', key: 'windowAllClosedSubscribed', value: false } },
+    { group: 'User and OS (AppKit hooks on the host)', label: 'click the close button (windowShouldClose:)', needsWindow: true, action: { type: 'userClose' } },
+    { group: 'User and OS (AppKit hooks on the host)', label: 'Cmd+Q (applicationShouldTerminate:)', action: { type: 'cmdQ' } },
+    { group: 'User and OS (AppKit hooks on the host)', label: 'time passes (one deadline period)', action: { type: 'tick' } },
+    { group: 'Renderer (page in the webview)', label: 'first paint (host paint beacon)', needsWindow: true, action: { type: 'paint' } },
+    { group: 'Renderer (page in the webview)', label: "ipcRenderer.invoke('save'), handler stays pending", needsWindow: true, action: { type: 'rendererInvoke' } },
+    { group: 'Bun role and supervisor', label: 'ipcMain handler resolves oldest invoke', action: { type: 'bunReply' } },
+    { group: 'Bun role and supervisor', label: 'park Bun main thread (dialog.showMessageBoxSync)', action: { type: 'park' } },
+    { group: 'Bun role and supervisor', label: 'unpark Bun main thread', action: { type: 'unpark' } },
+    { group: 'Bun role and supervisor', label: 'crash the Bun generation', action: { type: 'crash' } },
+    { group: 'Bun role and supervisor', label: 'supervisor admits successor generation', action: { type: 'admitSuccessor' } },
+    { group: 'Broken or hostile callers', label: 'new BrowserWindow({ webPreferences: { nodeIntegration: true } })', action: { type: 'newWindowNodeIntegration' } },
+    { group: 'Broken or hostile callers', label: 'renderer asks the host to destroy its own window', needsWindow: true, action: { type: 'rendererWindowCommand' } },
+    { group: 'Broken or hostile callers', label: 'Bun sends CloseAllow with a seq nobody asked for', needsWindow: true, action: { type: 'forgedCloseAllow' } },
+    { group: 'Broken or hostile callers', label: 'Bun bypasses the facade: raw window.show with a dead or forged handle', needsWindow: true, action: { type: 'rawWindowCall' } },
+    { group: 'Broken or hostile callers', label: 'retired generation reconnects with its old token', action: { type: 'staleHello' } }
+  ];
+
+  // ---- small helpers ------------------------------------------------------
+  const clone = x => JSON.parse(JSON.stringify(x));
+  const W = id => 'w' + id;
+  const handleOf = w => `(w${w.id}, wg${w.wgen})`;
+  const winById = (s, id) => s.windows.find(w => w.id === id);
+  const facadeFor = (s, id) => s.facades.find(f => f.id === id);
+  const liveWindows = s => s.windows.filter(w => !w.destroyed);
+  const bunCanReceive = s => s.bun.status === 'alive' || s.bun.status === 'parked';
+
+  function log(s, kind, who, text, extra) {
+    const e = Object.assign({ n: ++s.counters.log, kind, who, text }, extra || {});
+    s.log.push(e);
+    return e;
+  }
+  // An Electron-observable event delivered to app listeners in the Bun role.
+  function emitE(s, target, name, suffix) {
+    const subject = target === 'app' ? 'app' : `BrowserWindow ${target}`;
+    return log(s, 'event', '@keld/electron', `${subject} '${name}'${suffix || ''}`, { ev: `${target}:${name}` });
+  }
+  const toBun = (s, ev, text) => { s.inbox.push(ev); log(s, 'wire', 'host to Bun', text); };
+
+  // ---- initial state ------------------------------------------------------
+  function initialState(options) {
+    const s = {
+      options: Object.assign({}, DEFAULT_OPTIONS, options || {}),
+      clock: 0,
+      counters: { win: 0, wgen: 0, closeSeq: 0, call: 0, log: 0 },
+      host: { phase: 'running', quit: null, lastWindowClosedOwed: false, retired: [] },
+      bun: { generation: 1, status: 'alive', flagged: false, isQuitting: false },
+      app: { beforeQuitPrevent: false, willQuitPrevent: false, windowAllClosedSubscribed: false },
+      windows: [],   // host window registry: the native truth
+      facades: [],   // Electron-shaped objects held by the CURRENT Bun generation
+      inbox: [],     // host-to-Bun events not yet processed by the Bun main thread
+      calls: [],     // renderer-to-Bun invokes still in flight
+      log: []
+    };
+    log(s, 'host', 'host', 'Host initialised; Bun generation g1 spawned and authenticated (HELLO). No app window exists.');
+    log(s, 'wire', 'host to Bun', 'Ready(g1)');
+    emitE(s, 'app', 'ready', ' (host initialised, zero app windows)');
+    return s;
+  }
+
+  // ---- host side ----------------------------------------------------------
+  // Every window command is checked against the registry. The facade fence is a
+  // convenience for app code; the host is the authority on which handles live.
+  function hostAdmitWindowCall(s, op, id, wgen) {
+    const w = winById(s, id);
+    if (!w || w.destroyed || w.wgen !== wgen) {
+      return fail('WINDOW_STALE', { op, win: id, wgen, dead: !!(w && w.destroyed && w.wgen === wgen) });
+    }
+    return { w };
+  }
+
+  function hostRequestClose(s, w, source) {
+    if (w.pendingClose) {
+      w.pendingClose.attempts += 1;
+      log(s, 'host', 'host', `close attempt ${w.pendingClose.attempts} for ${W(w.id)} coalesced into unanswered CloseRequested seq ${w.pendingClose.seq}; no second request is sent`);
+      return;
+    }
+    if (s.bun.status === 'dead') {
+      if (s.options.pendingCloseOnRevoke === 'host-closes') {
+        log(s, 'diag', 'host', `close requested for ${W(w.id)} with no live Bun generation: nobody can veto, so the host closes it on its own and owes the successor a LastWindowClosed if this was the last window`);
+        hostDestroy(s, w, {});
+      } else {
+        log(s, 'diag', 'host', `close requested for ${W(w.id)} with no live Bun generation: request refused, the window stays until a successor can run its close listener`);
+      }
+      return;
+    }
+    const seq = ++s.counters.closeSeq;
+    w.pendingClose = { seq, attempts: 1, source, since: s.clock };
+    toBun(s, { type: 'CloseRequested', win: w.id, wgen: w.wgen, seq, source },
+      `CloseRequested{window: ${W(w.id)}, generation: wg${w.wgen}, seq: ${seq}} (the native window is still open)`);
+  }
+
+  function hostCloseReply(s, m, forged) {
+    const w = winById(s, m.win);
+    const p = w && !w.destroyed ? w.pendingClose : null;
+    if (!p || p.seq !== m.seq || w.wgen !== m.wgen) {
+      if (forged) return fail('CLOSE_SEQ', { win: m.win, seq: m.seq, pending: p ? p.seq : null });
+      log(s, 'host', 'host', `late Close${m.allow ? 'Allow' : 'Veto'}{seq: ${m.seq}} for ${W(m.win)} ignored: the request it answers was already released`);
+      return {};
+    }
+    if (m.allow) {
+      hostDestroy(s, w, {});
+    } else {
+      w.pendingClose = null;
+      log(s, 'host', 'host', `${W(w.id)} stays open: the close was vetoed (seq ${m.seq}${p.attempts > 1 ? ', covering ' + p.attempts + ' attempts' : ''})`);
+      if (s.host.quit && s.host.quit.phase === 'sweeping') hostCancelQuit(s, `${W(w.id)} vetoed its close`, true);
+    }
+    return {};
+  }
+
+  function hostDestroy(s, w, o) {
+    w.destroyed = true; w.visible = false; w.pendingClose = null;
+    const orphaned = s.calls.filter(c => c.win === w.id).length;
+    s.calls = s.calls.filter(c => c.win !== w.id);
+    log(s, 'host', 'host', `${o.skipUnload ? 'unload and beforeunload skipped; ' : 'page unload ran; '}webview destroyed before its window; native window ${W(w.id)} destroyed. ${handleOf(w)} is never minted again`);
+    if (orphaned) log(s, 'host', 'host', `${orphaned} in-flight invoke(s) from ${W(w.id)} dropped: the page that awaited them no longer exists`);
+    if (bunCanReceive(s)) toBun(s, { type: 'Destroyed', win: w.id, wgen: w.wgen }, `Destroyed{window: ${W(w.id)}, generation: wg${w.wgen}}`);
+    const live = liveWindows(s).length;
+    const q = s.host.quit;
+    if (q && q.phase === 'sweeping') {
+      if (live === 0) {
+        log(s, 'host', 'host', 'last window closed during a quit: LastWindowClosed is suppressed (no window-all-closed)');
+        hostSweepComplete(s);
+      } else if (s.options.quitSweep === 'serialized') {
+        hostSweepNext(s);
+      }
+    } else if (live === 0) {
+      if (bunCanReceive(s)) toBun(s, { type: 'LastWindowClosed' }, 'LastWindowClosed (host registry count reached zero)');
+      else { s.host.lastWindowClosedOwed = true; log(s, 'host', 'host', 'registry count reached zero with no live generation: LastWindowClosed is owed to the successor'); }
+    }
+  }
+
+  function hostBeginSweep(s) {
+    const q = s.host.quit;
+    q.phase = 'sweeping';
+    const order = liveWindows(s).slice().reverse();
+    if (!order.length) { log(s, 'host', 'host', 'quit sweep: no window is open'); return hostSweepComplete(s); }
+    log(s, 'host', 'host', `quit sweep over ${order.length} window(s), newest first (Electron on macOS walks its window list in reverse); each close is cancelable`);
+    if (s.options.quitSweep === 'serialized') { q.queue = order.map(w => w.id); hostSweepNext(s); }
+    else order.forEach(w => hostRequestClose(s, w, 'quit'));
+  }
+  function hostSweepNext(s) {
+    const q = s.host.quit;
+    while (q.queue && q.queue.length) {
+      const w = winById(s, q.queue.shift());
+      if (w && !w.destroyed) return hostRequestClose(s, w, 'quit');
+    }
+  }
+  function hostSweepComplete(s) {
+    s.host.quit.phase = 'will-quit-pending';
+    toBun(s, { type: 'QuitSweepComplete' }, 'QuitSweepComplete (every window is closed)');
+  }
+  function hostCancelQuit(s, reason, notifyBun) {
+    const q = s.host.quit;
+    if (!q) return;
+    if (q.source === 'cmd-q') log(s, 'host', 'host', 'replyToApplicationShouldTerminate:NO (termination cancelled)', { hook: 'terminateReply:NO' });
+    s.host.quit = null;
+    log(s, 'host', 'host', `quit cancelled: ${reason}. The host stays alive`);
+    if (notifyBun && bunCanReceive(s)) toBun(s, { type: 'QuitCancelled', reason }, 'QuitCancelled');
+  }
+  function hostTerminate(s, why) {
+    const q = s.host.quit;
+    if (q && q.source === 'cmd-q') log(s, 'host', 'host', 'replyToApplicationShouldTerminate:YES', { hook: 'terminateReply:YES' });
+    liveWindows(s).forEach(w => { w.destroyed = true; w.visible = false; w.pendingClose = null; });
+    s.host.phase = 'terminated'; s.host.quit = null;
+    s.bun.status = 'exited'; s.bun.isQuitting = false;
+    s.inbox = []; s.calls = [];
+    log(s, 'host', 'host', `host session ends (${why}): reply, quiesce and drain, revoke and close, terminate and reap, UI exit`);
+  }
+
+  // ---- Bun side: the @keld/electron facade handling one host event --------
+  function bunAppQuit(s, origin, hostInitiated) {
+    if (s.bun.isQuitting) {
+      log(s, 'note', 'facade', 'app.quit() ignored: a quit is already in flight');
+      return;
+    }
+    const prevented = s.app.beforeQuitPrevent;
+    emitE(s, 'app', 'before-quit', prevented ? ' (listener called event.preventDefault())' : '');
+    if (prevented) {
+      if (hostInitiated) {
+        log(s, 'wire', 'Bun to host', 'QuitCancelled{at: before-quit}');
+        hostCancelQuit(s, 'a before-quit listener called preventDefault()', false);
+      } else {
+        log(s, 'note', 'facade', 'quit cancelled inside the facade: the host was never asked and every window stays open');
+      }
+      return;
+    }
+    s.bun.isQuitting = true;
+    log(s, 'wire', 'Bun to host', 'Call QuitBegin (close every window through the cancelable close protocol)');
+    if (!s.host.quit) s.host.quit = { source: origin, phase: 'sweeping' };
+    hostBeginSweep(s);
+  }
+
+  function bunHandle(s, ev) {
+    const g = s.bun.generation;
+    const f = ev.win ? facadeFor(s, ev.win) : null;
+    switch (ev.type) {
+      case 'Ready':
+        emitE(s, 'app', 'ready', ` (Ready(g${g}); ${ev.adopted} surviving window(s) already in getAllWindows())`);
+        if (ev.adopted) log(s, 'note', 'facade', "adopted windows carry no app listeners: the previous generation's `close` listeners died with its process. Successor app code must re-attach them, and must not create a second window from its ready handler");
+        break;
+      case 'WindowAdopted':
+        s.facades.push({ id: ev.win, wgen: ev.wgen, role: g, destroyed: false, closedEmitted: false, visible: ev.visible, closeListener: 'none', adopted: true, readyToShow: ev.painted });
+        log(s, 'facade', 'facade', `mirror: BrowserWindow ${W(ev.win)} re-adopted by g${g} with the same host-minted handle (w${ev.win}, wg${ev.wgen}); win.id is still ${ev.win}`);
+        break;
+      case 'Shown':
+        if (f && !f.destroyed) { f.visible = true; emitE(s, W(ev.win), 'show'); }
+        break;
+      case 'Hidden':
+        if (f && !f.destroyed) { f.visible = false; emitE(s, W(ev.win), 'hide'); }
+        break;
+      case 'ReadyToShow':
+        if (f && !f.destroyed) { f.readyToShow = true; emitE(s, W(ev.win), 'ready-to-show', f.visible ? '' : ' (painted while hidden)'); }
+        break;
+      case 'CloseRequested': {
+        if (!f || f.destroyed) { log(s, 'note', 'facade', `CloseRequested seq ${ev.seq} for ${W(ev.win)} ignored: the object is already destroyed`); break; }
+        const prevented = f.closeListener === 'prevent';
+        emitE(s, W(ev.win), 'close', prevented ? ' (listener called event.preventDefault())' : ' (not prevented)');
+        log(s, 'wire', 'Bun to host', `${prevented ? 'CloseVeto' : 'CloseAllow'}{window: ${W(ev.win)}, generation: wg${ev.wgen}, seq: ${ev.seq}}`);
+        hostCloseReply(s, { win: ev.win, wgen: ev.wgen, seq: ev.seq, allow: !prevented }, false);
+        break;
+      }
+      case 'Destroyed':
+        if (!f || f.closedEmitted) break;
+        if (!f.destroyed) {
+          f.destroyed = true; f.visible = false;
+          log(s, 'facade', 'facade', `tombstone flipped for (w${ev.win}, wg${ev.wgen}): ${W(ev.win)}.isDestroyed() is now true`, { ev: `${W(ev.win)}:tombstone` });
+        }
+        f.closedEmitted = true;
+        emitE(s, W(ev.win), 'closed', ' (isDestroyed() is already true inside this listener)');
+        break;
+      case 'LastWindowClosed':
+        if (s.bun.isQuitting) {
+          log(s, 'note', 'facade', 'LastWindowClosed crossed a quit that this generation already began: window-all-closed is not emitted, the quit goes on to will-quit');
+          break;
+        }
+        emitE(s, 'app', 'window-all-closed');
+        if (s.app.windowAllClosedSubscribed) {
+          log(s, 'note', 'facade', 'the app subscribed to window-all-closed, so it decides; here it stays alive');
+        } else {
+          log(s, 'note', 'facade', 'no app listener for window-all-closed: the built-in default calls app.quit()');
+          bunAppQuit(s, 'window-all-closed default', false);
+        }
+        break;
+      case 'QuitRequested':
+        bunAppQuit(s, ev.source, true);
+        break;
+      case 'QuitSweepComplete': {
+        const prevented = s.app.willQuitPrevent;
+        emitE(s, 'app', 'will-quit', prevented ? ' (listener called event.preventDefault())' : '');
+        if (prevented) {
+          s.bun.isQuitting = false;
+          log(s, 'wire', 'Bun to host', 'QuitCancelled{at: will-quit}');
+          hostCancelQuit(s, 'a will-quit listener called preventDefault()', false);
+          log(s, 'note', 'facade', 'the app is alive with zero windows; window-all-closed is not emitted for a quit-initiated close');
+        } else {
+          log(s, 'wire', 'Bun to host', 'Call Quit (the existing correlated lifecycle Call)');
+          log(s, 'wire', 'host to Bun', 'Reply Quit');
+          emitE(s, 'app', 'quit', ' (exitCode 0)');
+          hostTerminate(s, 'quit accepted');
+        }
+        break;
+      }
+      case 'QuitCancelled':
+        s.bun.isQuitting = false;
+        log(s, 'note', 'facade', `quit cancelled (${ev.reason}); no Electron event reports this, app.quit() may be called again`);
+        break;
+      default:
+        log(s, 'note', 'facade', `unknown host event ${ev.type} ignored`);
+    }
+  }
+
+  // Deliver queued host events while the Bun main thread can run JavaScript.
+  function pump(s) {
+    let guard = 0;
+    while (s.host.phase === 'running' && s.bun.status === 'alive' && s.inbox.length && guard++ < 1000) {
+      bunHandle(s, s.inbox.shift());
+    }
+  }
+
+  // ---- action handlers ----------------------------------------------------
+  function needFacade(s, a) {
+    if (a.win == null) return precondition('Select a target window first.');
+    const f = facadeFor(s, a.win);
+    if (!f) return precondition(`Bun generation g${s.bun.generation} holds no BrowserWindow object for ${W(a.win)}: it was never minted for this generation, or it was destroyed before this generation was admitted and so was not adopted.`,
+      'Windows destroyed before a successor is admitted are not adopted. Use BrowserWindow.getAllWindows() in the successor to find survivors.');
+    return { f, w: winById(s, a.win) };
+  }
+  function needLiveWindow(s, a, what) {
+    if (a.win == null) return precondition('Select a target window first.');
+    const w = winById(s, a.win);
+    if (!w) return precondition(`${W(a.win)} was never minted by the host.`);
+    if (w.destroyed) return precondition(`${W(a.win)} no longer exists natively, so ${what}.`);
+    return { w };
+  }
+
+  const HANDLERS = {
+    newWindow(s, a) {
+      const g = s.bun.generation;
+      log(s, 'wire', 'Bun to host', `Call window.create{show: ${!!a.show}}`);
+      const w = { id: ++s.counters.win, wgen: ++s.counters.wgen, visible: !!a.show, painted: false, destroyed: false, pendingClose: null };
+      s.windows.push(w);
+      log(s, 'host', 'host', `native window minted as ${handleOf(w)}, ${w.visible ? 'ordered front' : 'created unmapped (hidden windows still count as open)'}`);
+      s.facades.push({ id: w.id, wgen: w.wgen, role: g, destroyed: false, closedEmitted: false, visible: w.visible, closeListener: 'none', adopted: false, readyToShow: false });
+      log(s, 'facade', 'facade', `new BrowserWindow() returned an object bound to host-minted ${handleOf(w)}; win.id is ${w.id}`);
+      return { value: `BrowserWindow { id: ${w.id} }` };
+    },
+    winShow(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      if (r.f.destroyed) return fail('OBJECT_DESTROYED');
+      log(s, 'wire', 'Bun to host', `Call window.show${handleOf(r.f)}`);
+      const h = hostAdmitWindowCall(s, 'show', r.f.id, r.f.wgen); if (h.error) return h;
+      if (r.w.visible) { log(s, 'note', 'host', `${W(a.win)} is already visible: no native change, no event`); return {}; }
+      r.w.visible = true;
+      toBun(s, { type: 'Shown', win: r.w.id }, `Shown{window: ${W(r.w.id)}} (mirror updates before any listener runs)`);
+      return {};
+    },
+    winHide(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      if (r.f.destroyed) return fail('OBJECT_DESTROYED');
+      log(s, 'wire', 'Bun to host', `Call window.hide${handleOf(r.f)}`);
+      const h = hostAdmitWindowCall(s, 'hide', r.f.id, r.f.wgen); if (h.error) return h;
+      if (!r.w.visible) { log(s, 'note', 'host', `${W(a.win)} is already hidden: no native change, no event`); return {}; }
+      r.w.visible = false;
+      toBun(s, { type: 'Hidden', win: r.w.id }, `Hidden{window: ${W(r.w.id)}}`);
+      return {};
+    },
+    winClose(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      if (r.f.destroyed) return fail('OBJECT_DESTROYED');
+      log(s, 'wire', 'Bun to host', `Call window.close${handleOf(r.f)} (same path as a click on the close button)`);
+      const h = hostAdmitWindowCall(s, 'close', r.f.id, r.f.wgen); if (h.error) return h;
+      hostRequestClose(s, r.w, 'api');
+      return {};
+    },
+    winDestroy(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      if (r.f.destroyed) {
+        // Electron installs destroy() and isDestroyed() apart from the throwing
+        // method template: on a destroyed object destroy() returns silently.
+        log(s, 'note', 'facade', `${W(a.win)}.destroy() on an already destroyed object: silent no-op, it never throws (zero kipc frames)`);
+        return {};
+      }
+      // The tombstone flips inside destroy(), so isDestroyed() is true as soon as
+      // the call returns. `closed` is still emitted once, after the host confirms.
+      r.f.destroyed = true; r.f.visible = false;
+      log(s, 'facade', 'facade', `tombstone flipped for ${handleOf(r.f)} inside destroy(): ${W(a.win)}.isDestroyed() is true when the call returns; \`closed\` follows once the host confirms`, { ev: `${W(a.win)}:tombstone` });
+      log(s, 'wire', 'Bun to host', `Call window.destroy${handleOf(r.f)} (no CloseRequested: destroy() skips close)`);
+      if (r.w.destroyed) return {};
+      if (r.w.pendingClose) log(s, 'host', 'host', `unanswered CloseRequested seq ${r.w.pendingClose.seq} released by destroy()`);
+      hostDestroy(s, r.w, { skipUnload: true });
+      return {};
+    },
+    winIsDestroyed(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      log(s, 'note', 'facade', `${W(a.win)}.isDestroyed() returned ${r.f.destroyed} (safe probe: never throws, zero kipc frames)`);
+      return { value: r.f.destroyed };
+    },
+    winGetBounds(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      if (r.f.destroyed) return fail('OBJECT_DESTROYED');
+      log(s, 'note', 'facade', `${W(a.win)}.getBounds() answered from the facade mirror (last host-delivered state, zero kipc frames)`);
+      return { value: '{ x: 0, y: 0, width: 800, height: 600 }' };
+    },
+    setCloseListener(s, a) {
+      const r = needFacade(s, a); if (r.error) return r;
+      if (r.f.destroyed) {
+        // on() and removeAllListeners() are plain EventEmitter JavaScript, not
+        // native members, so they do not throw on a destroyed object.
+        log(s, 'note', 'app', `listener change on destroyed ${W(a.win)}: EventEmitter methods do not throw, but \`close\` can never fire on this object again`);
+        return {};
+      }
+      r.f.closeListener = a.mode === 'prevent' ? 'prevent' : 'none';
+      log(s, 'note', 'app', a.mode === 'prevent'
+        ? `app code attached a close listener on ${W(a.win)} that always calls event.preventDefault() (the draw.io pattern)`
+        : `app code removed the close listener on ${W(a.win)}`);
+      return {};
+    },
+    setAppListener(s, a) {
+      if (!(a.key in s.app)) return precondition(`Unknown app listener setting ${a.key}.`);
+      s.app[a.key] = !!a.value;
+      const text = {
+        beforeQuitPrevent: `before-quit listener ${a.value ? 'now calls' : 'no longer calls'} event.preventDefault()`,
+        willQuitPrevent: `will-quit listener ${a.value ? 'now calls' : 'no longer calls'} event.preventDefault()`,
+        windowAllClosedSubscribed: a.value ? 'app subscribed to window-all-closed (it stays alive with zero windows)' : 'app has no window-all-closed listener (default quit applies)'
+      }[a.key];
+      log(s, 'note', 'app', text);
+      return {};
+    },
+    appQuit(s) {
+      bunAppQuit(s, 'app.quit()', false);
+      return {};
+    },
+    userClose(s, a) {
+      const r = needLiveWindow(s, a, 'there is no close button to click'); if (r.error) return r;
+      log(s, 'host', 'host', `user clicked the close button of ${W(a.win)}: windowShouldClose: returns NO, the window stays open while the app is asked`, { hook: 'windowShouldClose' });
+      hostRequestClose(s, r.w, 'user');
+      return {};
+    },
+    cmdQ(s) {
+      if (s.host.quit) { log(s, 'host', 'host', 'Cmd+Q again: a termination request is already pending, coalesced'); return {}; }
+      if (s.bun.status === 'dead') {
+        if (s.options.pendingCloseOnRevoke === 'host-closes') {
+          log(s, 'diag', 'host', 'Cmd+Q with no live Bun generation: no listener can veto, the host honours the quit');
+          s.host.quit = { source: 'cmd-q', phase: 'will-quit-pending' };
+          hostTerminate(s, 'user quit with no live generation');
+        } else {
+          log(s, 'diag', 'host', 'Cmd+Q with no live Bun generation: applicationShouldTerminate: returns NSTerminateCancel; retry once a successor is Ready', { hook: 'applicationShouldTerminate' });
+        }
+        return {};
+      }
+      log(s, 'host', 'host', 'Cmd+Q: applicationShouldTerminate: returns NSTerminateLater. No window delegate is consulted on quit; the host must ask the app itself', { hook: 'applicationShouldTerminate' });
+      s.host.quit = { source: 'cmd-q', phase: 'before-quit-pending' };
+      toBun(s, { type: 'QuitRequested', source: 'cmd-q' }, 'QuitRequested{source: cmd-q}');
+      return {};
+    },
+    tick(s) {
+      s.clock += 1;
+      const waiting = liveWindows(s).filter(w => w.pendingClose);
+      const quitWaiting = !!s.host.quit;
+      if (s.bun.status === 'parked' && (waiting.length || quitWaiting)) {
+        s.bun.flagged = true;
+        const what = waiting.map(w => `${W(w.id)} (seq ${w.pendingClose.seq}, ${s.clock - w.pendingClose.since} period(s))`).concat(quitWaiting ? ['a quit request'] : []).join(', ');
+        log(s, 'diag', 'host', `still waiting on Bun g${s.bun.generation} for ${what}. Nothing is closed: a host auto-close on timeout would be a fabricated completion. The role is flagged unhealthy`);
+      } else {
+        log(s, 'note', 'host', 'one deadline period passed; nothing is waiting on the Bun role');
+      }
+      return {};
+    },
+    paint(s, a) {
+      const r = needLiveWindow(s, a, 'there is no page to paint'); if (r.error) return r;
+      if (r.w.painted) { log(s, 'note', 'host', `${W(a.win)} already reported its first paint: ready-to-show fires at most once`); return {}; }
+      r.w.painted = true;
+      log(s, 'host', 'host', `first-paint beacon from the page in ${W(a.win)} ${r.w.visible ? '' : 'while the window is hidden'}`);
+      if (bunCanReceive(s)) toBun(s, { type: 'ReadyToShow', win: r.w.id }, `ReadyToShow{window: ${W(r.w.id)}}`);
+      else log(s, 'host', 'host', 'no live generation to notify; the adoption snapshot will carry painted: true and ready-to-show is not re-emitted');
+      return {};
+    },
+    rendererInvoke(s, a) {
+      const r = needLiveWindow(s, a, 'there is no page to call from'); if (r.error) return r;
+      const g = s.bun.generation;
+      if (s.bun.status === 'dead') return fail('GENERATION_RETIRED', { channel: 'save', win: a.win, generation: g, atAdmission: true,
+        fix: 'Nothing was delivered, so this outcome is not ambiguous: call again once the successor generation is Ready.' });
+      const inFlight = s.calls.filter(c => c.win === a.win).length;
+      if (inFlight >= CALL_CREDIT) {
+        log(s, 'diag', 'renderer bridge', `invoke on el:save from ${W(a.win)} not admitted: ${inFlight} call(s) in flight is the whole credit window (${CALL_CREDIT}). The sender suspends in the page; the host queues nothing and no frame is sent until a reply returns credit`);
+        return {};
+      }
+      const id = ++s.counters.call;
+      s.calls.push({ id, win: a.win, generation: g, channel: 'save' });
+      log(s, 'wire', 'renderer to Bun', `invoke #${id} on el:save from ${W(a.win)} admitted for g${g}; the ipcMain handler has not replied`);
+      return {};
+    },
+    rendererWindowCommand(s, a) {
+      const r = needLiveWindow(s, a, 'there is no page to send from'); if (r.error) return r;
+      return fail('NOT_APP_PROCESS', { win: a.win });
+    },
+    bunReply(s) {
+      if (!s.calls.length) return precondition('No renderer invoke is in flight. Calls rejected at generation loss are never replayed into the successor.');
+      const c = s.calls.shift();
+      log(s, 'wire', 'Bun to renderer', `invoke #${c.id} resolved; the page promise in ${W(c.win)} settles exactly once`);
+      return {};
+    },
+    park(s) {
+      s.bun.status = 'parked';
+      log(s, 'note', 'bun', `Bun g${s.bun.generation} main thread parked in a synchronous call (for example dialog.showMessageBoxSync). No JavaScript runs; the host UI thread keeps running and queues events`);
+      return {};
+    },
+    unpark(s) {
+      if (s.bun.status !== 'parked') return precondition(`Bun g${s.bun.generation} is not parked.`);
+      s.bun.status = 'alive';
+      if (s.bun.flagged) { s.bun.flagged = false; log(s, 'diag', 'host', `Bun g${s.bun.generation} is answering again; unhealthy flag cleared`); }
+      log(s, 'note', 'bun', `Bun g${s.bun.generation} main thread resumed; ${s.inbox.length} queued host event(s) are delivered in order`);
+      return {};
+    },
+    crash(s) {
+      if (s.bun.status === 'dead') return precondition(`Bun g${s.bun.generation} is already dead.`);
+      const g = s.bun.generation;
+      s.bun.status = 'dead'; s.bun.isQuitting = false; s.bun.flagged = false;
+      s.host.retired.push(g);
+      log(s, 'host', 'supervisor', `death of Bun generation g${g} confirmed: its endpoint, token, stream, routes and grants are revoked before any successor is provisioned`);
+      if (s.inbox.length) {
+        if (s.inbox.some(e => e.type === 'LastWindowClosed')) s.host.lastWindowClosedOwed = true;
+        log(s, 'host', 'host', `${s.inbox.length} undelivered host event(s) for g${g} discarded; they are not replayed into a successor`);
+        s.inbox = [];
+      }
+      s.calls.forEach(c => {
+        const e = makeError('GENERATION_RETIRED', { channel: c.channel, win: c.win, generation: g });
+        log(s, 'reject', 'renderer bridge', `${e.code}: ${e.message}`, { code: e.code, fix: e.fix });
+      });
+      s.calls = [];
+      if (s.facades.length) log(s, 'facade', 'facade', `${s.facades.length} BrowserWindow object(s) and every listener of g${g} died with the process`);
+      s.facades = [];
+      if (s.host.quit) hostCancelQuit(s, `Bun generation g${g} was lost while the quit was in flight`, false);
+      liveWindows(s).filter(w => w.pendingClose).forEach(w => {
+        if (s.options.pendingCloseOnRevoke === 'host-closes') {
+          log(s, 'diag', 'host', `CloseRequested seq ${w.pendingClose.seq} for ${W(w.id)} was unanswered when its owning generation was revoked: the host closes the window on its own. The app's close listener never ran, so any unsaved state in that page is lost`);
+          hostDestroy(s, w, {});
+        } else {
+          log(s, 'diag', 'host', `CloseRequested seq ${w.pendingClose.seq} for ${W(w.id)} released as not closed: the window stays and the user can ask again once a successor is Ready`);
+          w.pendingClose = null;
+        }
+      });
+      const live = liveWindows(s);
+      log(s, 'host', 'host', `${live.length} native window(s) remain on screen with their pages untouched: ${live.map(w => W(w.id)).join(', ') || 'none'}`);
+      return {};
+    },
+    admitSuccessor(s) {
+      if (s.bun.status !== 'dead') return precondition(`Bun g${s.bun.generation} is still admitted. Privileged generations never overlap: the old one must be revoked first.`);
+      const g = s.bun.generation + 1;
+      s.bun = { generation: g, status: 'alive', flagged: false, isQuitting: false };
+      log(s, 'host', 'supervisor', `successor Bun generation g${g} spawned and authenticated with a fresh endpoint, token and principal identity`);
+      const live = liveWindows(s);
+      live.forEach(w => toBun(s, { type: 'WindowAdopted', win: w.id, wgen: w.wgen, visible: w.visible, painted: w.painted },
+        `WindowAdopted{window: ${W(w.id)}, generation: wg${w.wgen}, visible: ${w.visible}, painted: ${w.painted}}`));
+      toBun(s, { type: 'Ready', adopted: live.length }, `Ready(g${g})`);
+      if (s.host.lastWindowClosedOwed) {
+        s.host.lastWindowClosedOwed = false;
+        toBun(s, { type: 'LastWindowClosed' }, 'LastWindowClosed (owed from the gap with no live generation)');
+      }
+      return {};
+    },
+    newWindowNodeIntegration() { return fail('PRIVILEGED_WEBPREFS'); },
+    forgedCloseAllow(s, a) {
+      if (a.win == null) return precondition('Select a target window first.');
+      const w = winById(s, a.win);
+      if (!w) return precondition(`${W(a.win)} was never minted by the host.`);
+      return hostCloseReply(s, { win: a.win, wgen: w.wgen, seq: 9999, allow: true }, true);
+    },
+    rawWindowCall(s, a) {
+      if (a.win == null) return precondition('Select a target window first.');
+      const w = winById(s, a.win);
+      if (!w) return precondition(`${W(a.win)} was never minted by the host.`);
+      // A destroyed window: replay its real, now dead handle. A live window:
+      // present a generation the host never minted for it.
+      const wgen = w.destroyed ? w.wgen : 0;
+      log(s, 'wire', 'Bun to host', `Call window.show(w${a.win}, wg${wgen}) sent without the facade fence`);
+      return hostAdmitWindowCall(s, 'show', a.win, wgen);
+    },
+    staleHello(s) {
+      if (!s.host.retired.length) return precondition('No retired generation exists yet. Crash the Bun generation first.');
+      return fail('STALE_GENERATION', { retired: s.host.retired[s.host.retired.length - 1], current: s.bun.generation });
+    },
+    setOption(s, a) {
+      if (!OPTION_VALUES[a.key] || OPTION_VALUES[a.key].indexOf(a.value) < 0) return precondition(`Unknown model option ${a.key}=${a.value}.`);
+      s.options[a.key] = a.value;
+      log(s, 'note', 'model', `model option ${a.key} set to ${a.value}`);
+      return {};
+    }
+  };
+
+  // Which actor must exist for an action to be issued at all.
+  const BUN_ACTIONS = ['newWindow', 'winShow', 'winHide', 'winClose', 'winDestroy', 'winIsDestroyed', 'winGetBounds',
+    'setCloseListener', 'setAppListener', 'appQuit', 'bunReply', 'newWindowNodeIntegration', 'forgedCloseAllow', 'rawWindowCall'];
+
+  function apply(s, a) {
+    const h = HANDLERS[a.type];
+    if (!h) return precondition(`Unknown action ${a.type}.`);
+    if (a.type === 'setOption') return h(s, a);
+    if (s.host.phase === 'terminated') return precondition('The host session has ended: the app quit.', 'Reset to the initial state to continue.');
+    if (BUN_ACTIONS.indexOf(a.type) >= 0 && s.bun.status !== 'alive') {
+      return precondition(s.bun.status === 'parked'
+        ? `The Bun g${s.bun.generation} main thread is parked in a synchronous call, so no app JavaScript runs and this call cannot be issued.`
+        : `Bun g${s.bun.generation} is dead and no successor is admitted: there is no app code to issue this call.`,
+        s.bun.status === 'parked' ? 'Unpark the Bun main thread first. The host is not blocked and keeps queuing events.' : 'Let the supervisor admit a successor generation first.');
+    }
+    if (a.type === 'park' && s.bun.status !== 'alive') return precondition(`Bun g${s.bun.generation} is ${s.bun.status}; only a running main thread can park.`);
+    return h(s, a) || {};
+  }
+
+  // dispatchAll runs several actions in the SAME Bun tick: every call reaches
+  // the host before the Bun main thread processes any queued host event.
+  function dispatchAll(state, actions) {
+    const s = clone(state);
+    const mark = s.log.length;
+    let error = null, value;
+    for (const a of actions) {
+      const r = apply(s, a);
+      if (r.error) {
+        error = r.error;
+        log(s, 'error', error.layer, `${error.code}: ${error.message}`, { code: error.code, fix: error.fix });
+        break;
+      }
+      if ('value' in r) value = r.value;
+    }
+    pump(s);
+    return { state: s, result: { ok: !error, error, value, entries: s.log.slice(mark) } };
+  }
+  const dispatch = (state, action) => dispatchAll(state, [action]);
+
+  // ---- selectors and invariants -------------------------------------------
+  const getAllWindows = s => s.facades.filter(f => !f.destroyed).map(f => f.id);
+  function invariants(s) {
+    const bad = [];
+    const ids = s.windows.map(w => w.id);
+    if (new Set(ids).size !== ids.length) bad.push('a WindowId was minted twice');
+    s.windows.forEach(w => {
+      const closed = s.log.filter(e => e.ev === `w${w.id}:closed`);
+      const tomb = s.log.filter(e => e.ev === `w${w.id}:tombstone`);
+      if (closed.length > tomb.length) bad.push(`w${w.id}: closed emitted without a tombstone`);
+      closed.forEach((c, i) => { if (!tomb[i] || tomb[i].n > c.n) bad.push(`w${w.id}: closed emitted before the tombstone flipped`); });
+      if (closed.length > s.host.retired.length + 1) bad.push(`w${w.id}: closed emitted more than once per generation`);
+      if (w.destroyed && w.pendingClose) bad.push(`w${w.id}: destroyed window still has a pending close`);
+    });
+    s.facades.forEach(f => {
+      const w = winById(s, f.id);
+      if (!f.destroyed && w.destroyed && !s.inbox.some(e => e.type === 'Destroyed' && e.win === f.id) && s.host.phase === 'running')
+        bad.push(`w${f.id}: facade is live but the native window is gone and no Destroyed event is queued`);
+      if (f.role !== s.bun.generation) bad.push(`w${f.id}: facade belongs to a retired generation`);
+      if (f.destroyed && !f.closedEmitted && s.host.phase === 'running' && !s.inbox.some(e => e.type === 'Destroyed' && e.win === f.id))
+        bad.push(`w${f.id}: tombstone flipped but closed was neither emitted nor queued (closed is guaranteed)`);
+    });
+    s.windows.forEach(w => { if (w.destroyed && w.visible) bad.push(`w${w.id}: a destroyed window is marked visible`); });
+    // Bounded queues: in-flight invokes stop at the credit window, and the
+    // host-to-Bun queue holds at most one event of a kind per target.
+    const perWin = {};
+    s.calls.forEach(c => { perWin[c.win] = (perWin[c.win] || 0) + 1; });
+    Object.keys(perWin).forEach(k => { if (perWin[k] > CALL_CREDIT) bad.push(`w${k}: ${perWin[k]} invokes in flight exceed the credit window of ${CALL_CREDIT}`); });
+    const queued = {};
+    s.inbox.forEach(e => {
+      const k = e.type + ':' + (e.win || 'app');
+      if (queued[k]) bad.push(`host-to-Bun queue holds two ${e.type} events for ${e.win ? 'w' + e.win : 'the app'}: coalescing failed, the queue is not bounded`);
+      queued[k] = true;
+    });
+    if (s.host.phase === 'terminated' && liveWindows(s).length) bad.push('host terminated with a live window');
+    return bad;
+  }
+
+  return { DESTROYED_TEXT, DEFAULT_OPTIONS, OPTION_VALUES, CALL_CREDIT, ERRORS, CATALOGUE, initialState, dispatch, dispatchAll, getAllWindows, liveWindows, invariants };
+})();
+</script>
+
+<!-- ====================================================================== -->
+<!-- 2. SCENARIOS. Also DOM-free: scripted steps plus the expectations each -->
+<!--    step must satisfy. runStep is shared by the page and by a headless  -->
+<!--    check.                                                             -->
+<!-- ====================================================================== -->
+<script id="scenarios">
+const KeldWindowLifecycleScenarios = (() => {
+  'use strict';
+  const A = (type, extra) => Object.assign({ type }, extra || {});
+  const same = (list, want) => list.length === want.length && list.every((x, i) => x === want[i]);
+  const seq = (c, want) => [same(c.events, want), `Electron events, in order: ${want.length ? want.join(' , ') : 'none'}${same(c.events, want) ? '' : ' (got: ' + (c.events.join(' , ') || 'none') + ')'}`];
+  const live = c => c.L.liveWindows(c.state).map(w => w.id);
+  const win = (c, id) => c.state.windows.find(w => w.id === id);
+  const count = (c, ev) => c.events.filter(e => e === ev).length;
+  const hooks = c => c.entries.filter(e => e.hook).map(e => e.hook);
+
+  const tabs = [
+    {
+      id: 'happy', title: 'Happy path',
+      steps: [
+        { title: 'Start: host ready, no windows', reset: {},
+          say: "The host is initialised and Bun generation g1 has received Ready. Unlike today's host, no window exists yet: the app creates its own.",
+          actions: [],
+          expect: c => [[live(c).length === 0, 'no native window exists'], [c.state.bun.generation === 1 && c.state.bun.status === 'alive', 'Bun g1 is alive']] },
+        { title: 'new BrowserWindow({ show: false })',
+          say: 'The facade asks the host to mint a window. The object it returns is bound to a host-minted (WindowId, WindowGeneration) pair. A hidden window still counts as open.',
+          actions: [A('newWindow', { show: false })],
+          expect: c => [[same(live(c), [1]), 'the host registry holds w1'], [win(c, 1).visible === false, 'w1 is not on screen'], seq(c, [])] },
+        { title: 'The page paints while hidden',
+          say: 'The host learns of the first paint and tells the facade, which emits ready-to-show.',
+          actions: [A('paint', { win: 1 })],
+          expect: c => [seq(c, ['w1:ready-to-show'])] },
+        { title: 'win.show()',
+          say: 'The app shows the window from its ready-to-show listener.',
+          actions: [A('winShow', { win: 1 })],
+          expect: c => [seq(c, ['w1:show']), [win(c, 1).visible, 'w1 is on screen']] },
+        { title: 'User clicks close; the app vetoes',
+          say: 'The app has unsaved work, so its close listener calls preventDefault(). The host never closed the window: it returned NO to AppKit and asked.',
+          actions: [A('setCloseListener', { win: 1, mode: 'prevent' }), A('userClose', { win: 1 })],
+          expect: c => [seq(c, ['w1:close']), [same(live(c), [1]), 'w1 is still open'], [win(c, 1).pendingClose === null, 'no close request is left pending']] },
+        { title: 'Saved; win.close() goes through; default quit',
+          say: 'With no veto, the host destroys the window. The tombstone flips before closed is emitted. The app has no window-all-closed listener, so the default quit runs the full app.quit() path.',
+          actions: [A('setCloseListener', { win: 1, mode: 'none' }), A('winClose', { win: 1 })],
+          expect: c => [seq(c, ['w1:close', 'w1:closed', 'app:window-all-closed', 'app:before-quit', 'app:will-quit', 'app:quit']),
+            [c.state.host.phase === 'terminated', 'the host session ended']] },
+        { title: 'Two windows: window-all-closed waits for the last closed', reset: {},
+          say: 'A fresh start with one visible and one hidden window. Closing the first emits no window-all-closed: the hidden window still counts as open. It fires once, after the closed event of the last window.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('newWindow', { show: false }), A('winClose', { win: 1 }), A('winClose', { win: 2 })],
+          expect: c => [seq(c, ['w1:close', 'w1:closed', 'w2:close', 'w2:closed', 'app:window-all-closed']),
+            [count(c, 'app:window-all-closed') === 1, 'window-all-closed emitted exactly once, after the last closed'], [c.state.host.phase === 'running', 'the app stays alive (it subscribed)']] },
+        { title: 'app.quit() with two windows', reset: {},
+          say: 'A fresh start with two windows. app.quit() emits before-quit, then every window gets a cancelable close, then will-quit, then quit. window-all-closed is not emitted for a quit.',
+          actions: [A('newWindow', { show: true }), A('newWindow', { show: true }), A('appQuit')],
+          expect: c => [seq(c, ['app:before-quit', 'w2:close', 'w1:close', 'w2:closed', 'w1:closed', 'app:will-quit', 'app:quit']),
+            [count(c, 'app:window-all-closed') === 0, 'window-all-closed was not emitted'], [c.state.host.phase === 'terminated', 'the host session ended']] },
+        { title: 'The Bun role crashes; the window stays', reset: {},
+          say: 'A fresh start with one visible, painted window. The Bun generation dies. Every Electron object died with it, but the native window and its page are untouched.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('paint', { win: 1 }), A('crash')],
+          expect: c => [[same(live(c), [1]) && win(c, 1).visible, 'w1 is still on screen'], [c.state.facades.length === 0, 'no BrowserWindow object exists'], [c.state.bun.status === 'dead', 'Bun g1 is dead']] },
+        { title: 'The supervisor admits a successor',
+          say: 'Generation g2 gets the surviving window in its mirror before Ready, with the same host-minted handle. ready-to-show is not replayed.',
+          actions: [A('admitSuccessor')],
+          expect: c => [seq(c, ['app:ready']), [same(c.L.getAllWindows(c.state), [1]), 'getAllWindows() in g2 returns w1'],
+            [c.state.facades[0].wgen === win(c, 1).wgen && c.state.facades[0].role === 2, 'same (w1, wg1), now held by g2']] },
+        { title: 'The successor closes the surviving window',
+          say: 'The adopted object behaves like any other: close, tombstone, closed, then window-all-closed.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('winClose', { win: 1 })],
+          expect: c => [seq(c, ['w1:close', 'w1:closed', 'app:window-all-closed']), [c.state.host.phase === 'running', 'the app stays alive (it subscribed)']] }
+      ]
+    },
+    {
+      id: 'edges', title: 'Tricky edges',
+      steps: [
+        { title: 'Close requested while Bun is parked', reset: {},
+          say: "The app's main thread is blocked in a synchronous dialog. The user clicks close. The host cannot ask, so the request waits and the window stays.",
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('setCloseListener', { win: 1, mode: 'prevent' }), A('park'), A('userClose', { win: 1 })],
+          expect: c => [seq(c, []), [same(live(c), [1]), 'w1 is still open'], [win(c, 1).pendingClose && win(c, 1).pendingClose.seq === 1, 'CloseRequested seq 1 is unanswered']] },
+        { title: 'Time passes: no auto-close',
+          say: 'Two deadline periods pass. The host flags the role as unhealthy but closes nothing.',
+          actions: [A('tick'), A('tick')],
+          expect: c => [[same(live(c), [1]), 'w1 is still open'], [c.state.bun.flagged, 'the role is flagged unhealthy'], seq(c, [])] },
+        { title: 'The user clicks close again',
+          say: 'The second click joins the unanswered request instead of queuing another.',
+          actions: [A('userClose', { win: 1 })],
+          expect: c => [[win(c, 1).pendingClose.attempts === 2, 'two attempts, one request'], [c.state.inbox.filter(e => e.type === 'CloseRequested').length === 1, 'one CloseRequested is queued']] },
+        { title: 'Bun resumes and answers',
+          say: 'The close listener runs once and vetoes. The window is kept.',
+          actions: [A('unpark')],
+          expect: c => [seq(c, ['w1:close']), [same(live(c), [1]), 'w1 is still open'], [!c.state.bun.flagged, 'the unhealthy flag cleared']] },
+        { title: 'destroy() after a vetoed close',
+          say: 'win.close() is vetoed again; then the app calls win.destroy(). destroy() emits no close, and closed arrives exactly once.',
+          actions: [A('winClose', { win: 1 }), A('winDestroy', { win: 1 })],
+          expect: c => [seq(c, ['w1:close', 'w1:closed', 'app:window-all-closed']), [count(c, 'w1:closed') === 1, 'closed emitted exactly once']] },
+        { title: 'destroy() alone: no close, closed once, isDestroyed() at once', reset: {},
+          say: 'The window has a vetoing close listener. win.destroy() and win.isDestroyed() run in the same tick: the tombstone flips inside destroy(), so the probe is already true. close is never emitted, closed arrives once when the host confirms, and a second destroy() is a silent no-op.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('setCloseListener', { win: 1, mode: 'prevent' }),
+            { sameTick: [A('winDestroy', { win: 1 }), A('winIsDestroyed', { win: 1 })] }, A('winDestroy', { win: 1 })],
+          expect: c => [seq(c, ['w1:closed', 'app:window-all-closed']), [count(c, 'w1:close') === 0, 'close was not emitted, even with a vetoing listener attached'],
+            [c.results[3].value === true, 'isDestroyed() returned true in the same tick as destroy()'], [c.codes.length === 0 && c.last.ok, 'the second destroy() did not throw']] },
+        { title: 'A close and Cmd+Q cross while Bun is parked', reset: {},
+          say: 'The user clicks close and then presses Cmd+Q while the main thread is blocked. When Bun resumes, the last window closes during a quit, so window-all-closed is not emitted.',
+          actions: [A('newWindow', { show: true }), A('park'), A('userClose', { win: 1 }), A('cmdQ'), A('unpark')],
+          expect: c => [seq(c, ['w1:close', 'app:before-quit', 'w1:closed', 'app:will-quit', 'app:quit']), [count(c, 'app:window-all-closed') === 0, 'window-all-closed was not emitted'],
+            [same(hooks(c), ['windowShouldClose', 'applicationShouldTerminate', 'terminateReply:YES']), 'the click went through windowShouldClose:, the quit through applicationShouldTerminate:']] },
+        { title: 'A page floods invoke while Bun is parked', reset: {},
+          say: 'The page calls invoke six times while no handler can run. Only the credit window is admitted. Later senders suspend in the page: the host queues nothing for them.',
+          actions: [A('newWindow', { show: true }), A('park'), A('rendererInvoke', { win: 1 }), A('rendererInvoke', { win: 1 }), A('rendererInvoke', { win: 1 }), A('rendererInvoke', { win: 1 }), A('rendererInvoke', { win: 1 }), A('rendererInvoke', { win: 1 })],
+          expect: c => [[c.state.calls.length === c.L.CALL_CREDIT, 'calls in flight stop at the credit window'], [c.codes.length === 0, 'suspension is backpressure, not an error'], [c.state.inbox.length === 0, 'nothing is queued toward Bun']] },
+        { title: 'win.close() twice in one tick', reset: {},
+          say: 'Both calls reach the host before the Bun main thread handles any event. The second joins the first.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), { sameTick: [A('winClose', { win: 1 }), A('winClose', { win: 1 })] }],
+          expect: c => [[count(c, 'w1:closed') === 1, 'closed emitted exactly once'], [count(c, 'w1:close') === 1, 'close emitted once in this model (Electron may emit it per attempt: open)'], [c.codes.length === 0, 'no error']] },
+        { title: 'app.quit() vetoed by one of two windows', reset: {},
+          say: 'w2 has unsaved work. Every window is asked; w1 closes, w2 vetoes, and the quit is cancelled. No will-quit.',
+          actions: [A('newWindow', { show: true }), A('newWindow', { show: true }), A('setCloseListener', { win: 2, mode: 'prevent' }), A('appQuit')],
+          expect: c => [seq(c, ['app:before-quit', 'w2:close', 'w1:close', 'w1:closed']), [same(live(c), [2]), 'w2 is still open'], [c.state.host.quit === null && c.state.host.phase === 'running', 'the quit was cancelled and the app is alive'], [!c.state.bun.isQuitting, 'app.quit() can be called again']] },
+        { title: 'Cmd+Q cancelled at before-quit',
+          say: 'A before-quit listener calls preventDefault(). The host answers AppKit with NO; no window is asked to close.',
+          actions: [A('setAppListener', { key: 'beforeQuitPrevent', value: true }), A('cmdQ')],
+          expect: c => [seq(c, ['app:before-quit']), [same(hooks(c), ['applicationShouldTerminate', 'terminateReply:NO']), 'applicationShouldTerminate: later, then reply NO'], [same(live(c), [2]), 'w2 is still open']] },
+        { title: 'Cmd+Q that goes through', reset: {},
+          say: 'Two clean windows. Quit arrives through applicationShouldTerminate:, never through a window delegate. The order the app sees is the same as app.quit().',
+          actions: [A('newWindow', { show: true }), A('newWindow', { show: true }), A('cmdQ')],
+          expect: c => [seq(c, ['app:before-quit', 'w2:close', 'w1:close', 'w2:closed', 'w1:closed', 'app:will-quit', 'app:quit']),
+            [same(hooks(c), ['applicationShouldTerminate', 'terminateReply:YES']), 'applicationShouldTerminate: later, then reply YES; windowShouldClose: never ran'], [count(c, 'app:window-all-closed') === 0, 'window-all-closed was not emitted']] },
+        { title: 'will-quit vetoed, then quit again', reset: {},
+          say: 'will-quit is cancellable too. The app stays alive with zero windows and no window-all-closed. A second app.quit() emits before-quit again.',
+          actions: [A('newWindow', { show: true }), A('setAppListener', { key: 'willQuitPrevent', value: true }), A('appQuit'), A('setAppListener', { key: 'willQuitPrevent', value: false }), A('appQuit')],
+          expect: c => [seq(c, ['app:before-quit', 'w1:close', 'w1:closed', 'app:will-quit', 'app:before-quit', 'app:will-quit', 'app:quit']), [count(c, 'app:window-all-closed') === 0, 'window-all-closed was not emitted']] },
+        { title: 'Serialized sweep (the contested fallback)', reset: { quitSweep: 'serialized' },
+          say: 'Same veto, three windows, but the host asks one window at a time and stops at the first veto. w1 is never asked. Electron asks all of them: this is the difference still to be settled.',
+          actions: [A('newWindow', { show: true }), A('newWindow', { show: true }), A('newWindow', { show: true }), A('setCloseListener', { win: 2, mode: 'prevent' }), A('appQuit')],
+          expect: c => [seq(c, ['app:before-quit', 'w3:close', 'w3:closed', 'w2:close']), [same(live(c), [1, 2]), 'w1 and w2 are open; w1 never got a close event']] },
+        { title: 'Crash with a call in flight and an unanswered close', reset: {},
+          say: 'w1 has a vetoing close listener and the user has clicked close while Bun was parked. The page in w2 is awaiting an invoke. Then the generation dies.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('newWindow', { show: true }), A('setCloseListener', { win: 1, mode: 'prevent' }),
+            A('rendererInvoke', { win: 2 }), A('park'), A('userClose', { win: 1 }), A('crash')],
+          expect: c => [[same(c.codes, ['KELD-IPC-GENERATION-RETIRED']), 'the invoke is rejected exactly once with an ambiguous-outcome error'], [c.state.calls.length === 0, 'nothing is left in flight'],
+            [same(live(c), [2]), 'map text encoded: the host closed w1 (its veto listener never ran); w2 survives'], seq(c, [])] },
+        { title: 'Successor after that crash',
+          say: 'g2 adopts w2 only. Its objects have no listeners until app code attaches them again, and the rejected invoke is not replayed.',
+          actions: [A('admitSuccessor')],
+          expect: c => [seq(c, ['app:ready']), [same(c.L.getAllWindows(c.state), [2]), 'getAllWindows() in g2 returns w2 only'], [c.state.facades[0].closeListener === 'none', 'the adopted window has no close listener'], [c.state.calls.length === 0, 'no call was replayed']] },
+        { title: 'Same crash under the alternative policy', reset: { pendingCloseOnRevoke: 'keep-window' },
+          say: 'Identical setup, but an unanswered close is released as not closed when the generation dies. Both windows survive. This option is not decided.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('newWindow', { show: true }), A('setCloseListener', { win: 1, mode: 'prevent' }),
+            A('rendererInvoke', { win: 2 }), A('park'), A('userClose', { win: 1 }), A('crash')],
+          expect: c => [[same(live(c), [1, 2]), 'w1 and w2 both survive'], [win(c, 1).pendingClose === null, 'the close request was released'], [same(c.codes, ['KELD-IPC-GENERATION-RETIRED']), 'the invoke is still rejected exactly once']] }
+      ]
+    },
+    {
+      id: 'illegal', title: 'Illegal attempts',
+      steps: [
+        { title: 'Use a window after closed', reset: {},
+          say: 'The window is closed. Any later member access throws the exact Electron text, from the facade, without a round trip.',
+          actions: [A('setAppListener', { key: 'windowAllClosedSubscribed', value: true }), A('newWindow', { show: true }), A('winClose', { win: 1 }), A('winGetBounds', { win: 1 })],
+          expect: c => [[same(c.codes, ['TypeError']), 'win.getBounds() threw a TypeError'], [c.last.error && c.last.error.message === c.L.DESTROYED_TEXT, 'message is exactly: Object has been destroyed']] },
+        { title: 'win.isDestroyed() is the safe probe',
+          say: 'It returns true and never throws.',
+          actions: [A('winIsDestroyed', { win: 1 })],
+          expect: c => [[c.last.ok && c.last.value === true, 'returned true'], [c.codes.length === 0, 'no error']] },
+        { title: 'show(), close() and destroy() on the dead object',
+          say: 'show() and close() throw. destroy() is the other member that never throws: on a dead object it returns silently. None of them reaches the host, so none can re-target a later window.',
+          actions: [A('winShow', { win: 1 }), A('winClose', { win: 1 }), A('winDestroy', { win: 1 })],
+          expect: c => [[same(c.codes, ['TypeError', 'TypeError']), 'show() and close() threw a TypeError each'], [c.last.ok, 'destroy() returned without throwing'], [count(c, 'w1:closed') === 0, 'closed was not emitted again'],
+            [c.entries.filter(e => e.kind === 'wire').length === 0, 'zero kipc messages were sent']] },
+        { title: 'Ask for nodeIntegration',
+          say: 'Privilege-escalating webPreferences fail loudly. No window is minted.',
+          actions: [A('newWindowNodeIntegration')],
+          expect: c => [[same(c.codes, ['KELD-COMPAT-WEBPREFS']), 'typed KELD-COMPAT error'], [c.state.windows.length === 1, 'no new window was minted']] },
+        { title: 'A page tries to destroy its own window through the host',
+          say: 'A new window w2. Its page sends a window command directly. Only the app role may issue window commands: default-deny.',
+          actions: [A('newWindow', { show: true }), A('rendererWindowCommand', { win: 2 })],
+          expect: c => [[same(c.codes, ['KELD-GUARD006']), 'denied with KELD-GUARD006'], [same(live(c), [2]), 'w2 is still open']] },
+        { title: 'Bun answers a close nobody asked about',
+          say: 'A CloseAllow whose seq matches no outstanding request is rejected. It cannot close a window.',
+          actions: [A('forgedCloseAllow', { win: 2 })],
+          expect: c => [[same(c.codes, ['KELD-IPC-CLOSE-SEQ']), 'rejected with a typed error'], [same(live(c), [2]), 'w2 is still open']] },
+        { title: 'Bun bypasses the facade with a dead handle, then a forged one',
+          say: 'Raw window.show calls skip the facade fence. The first replays the real handle of destroyed w1; the second names live w2 with a generation the host never minted. The registry rejects both: the fence is a convenience, the host is the authority.',
+          actions: [A('winHide', { win: 2 }), A('rawWindowCall', { win: 1 }), A('rawWindowCall', { win: 2 })],
+          expect: c => [[same(c.codes, ['KELD-IPC-WINDOW-STALE', 'KELD-IPC-WINDOW-STALE']), 'both rejected with a typed error'], [win(c, 1).destroyed && !win(c, 1).visible, 'w1 stays destroyed'],
+            [same(live(c), [2]) && !win(c, 2).visible, 'w2 is untouched: still hidden'], [count(c, 'w2:show') === 0, 'no show event']] },
+        { title: 'Call the facade while Bun is parked; wait out the deadline',
+          say: 'A parked main thread cannot issue calls. The user clicks close and three periods pass: the window is not auto-closed.',
+          actions: [A('setCloseListener', { win: 2, mode: 'prevent' }), A('park'), A('winShow', { win: 2 }), A('userClose', { win: 2 }), A('tick'), A('tick'), A('tick')],
+          expect: c => [[same(c.codes, ['PROTOTYPE-PRECONDITION']), 'the facade call could not be issued'], [same(live(c), [2]), 'w2 is still open after three periods'], [c.state.bun.flagged, 'the role is flagged unhealthy']] },
+        { title: 'Invoke with no live generation; reconnect with an old token',
+          say: 'Bun resumes and vetoes, then crashes. A page invoke is rejected at once instead of waiting for a successor. After g2 is admitted, the dead generation presents its old token.',
+          actions: [A('unpark'), A('crash'), A('rendererInvoke', { win: 2 }), A('admitSuccessor'), A('staleHello')],
+          expect: c => [[same(c.codes, ['KELD-IPC-GENERATION-RETIRED', 'KELD-IPC-007']), 'invoke rejection, then HELLO rejection'],
+            [c.entries.some(e => e.kind === 'error' && e.text.indexOf('rejected before delivery') >= 0 && e.text.indexOf('no handler ran') >= 0), 'the invoke was never delivered, so its rejection says the outcome is known'],
+            [same(c.L.getAllWindows(c.state), [2]), 'g2 holds w2']] },
+        { title: 'The successor reaches for a window that died earlier',
+          say: 'w1 was destroyed before g2 existed, so g2 has no object for it at all.',
+          actions: [A('winGetBounds', { win: 1 })],
+          expect: c => [[same(c.codes, ['PROTOTYPE-PRECONDITION']), 'no object to call: nothing is sent'], [c.L.invariants(c.state).length === 0, 'all model invariants hold']] }
+      ]
+    }
+  ];
+
+  // Run one scripted step. Returns the new state, everything it logged, and its checks.
+  function runStep(L, state, step) {
+    let s = step.reset ? L.initialState(step.reset) : state;
+    const entries = step.reset ? s.log.slice() : [];
+    let last = null;
+    const results = [];
+    for (const item of step.actions) {
+      const r = item.sameTick ? L.dispatchAll(s, item.sameTick) : L.dispatch(s, item);
+      s = r.state; last = r.result; results.push(r.result);
+      for (const e of r.result.entries) entries.push(e);
+    }
+    const stepEntries = step.reset ? entries.slice(3) : entries;   // drop the three boot lines
+    const c = {
+      L, state: s, entries: stepEntries, last, results,
+      events: stepEntries.filter(e => e.kind === 'event').map(e => e.ev),
+      codes: stepEntries.filter(e => e.kind === 'error' || e.kind === 'reject').map(e => e.code)
+    };
+    let checks;
+    try {
+      checks = (step.expect ? step.expect(c) : []).map(([ok, text]) => ({ ok: !!ok, text }));
+    } catch (err) {
+      checks = [{ ok: false, text: 'expectation could not be evaluated against this state: ' + err.message }];
+    }
+    const broken = L.invariants(s);
+    checks.push({ ok: broken.length === 0, text: broken.length ? 'model invariant broken: ' + broken.join('; ') : 'model invariants hold' });
+    return { state: s, entries, last, checks };
+  }
+
+  function runAll(L) {
+    let total = 0, passed = 0; const failures = [];
+    for (const tab of tabs) {
+      let s = null;
+      for (const step of tab.steps) {
+        const r = runStep(L, s, step); s = r.state;
+        for (const ch of r.checks) { total++; if (ch.ok) passed++; else failures.push(`${tab.id} / ${step.title}: ${ch.text}`); }
+      }
+    }
+    return { total, passed, failures };
+  }
+
+  return { tabs, runStep, runAll };
+})();
+</script>
+
+<!-- ====================================================================== -->
+<!-- 3. PAGE. Rendering only: it calls into the two modules above.          -->
+<!-- ====================================================================== -->
+<script id="page">
+(() => {
+  'use strict';
+  const L = KeldWindowLifecycle, SC = KeldWindowLifecycleScenarios;
+  const $ = id => document.getElementById(id);
+  const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+  let state = L.initialState();
+  let changed = { title: 'Initial state', entries: state.log.slice(), error: null, value: undefined, checks: null };
+  let target = null;
+  let tabIndex = 0, stepIndex = 0, done = [];
+
+  const KIND = { event: 'Electron', wire: 'kipc', host: 'host', facade: 'facade', note: 'note', diag: 'diagnostic', error: 'error', reject: 'rejected' };
+
+  function entryHtml(e, fresh) {
+    return `<li class="k-${e.kind}${fresh ? ' fresh' : ''}"><span class="k">${KIND[e.kind] || e.kind}</span> ` +
+      `<span class="muted mono">${esc(e.who)}</span> ${esc(e.text)}${e.fix ? `<br><span class="muted">Fix: ${esc(e.fix)}</span>` : ''}</li>`;
+  }
+
+  function renderChanged() {
+    let h = `<p><strong>${esc(changed.title)}</strong></p>`;
+    if (changed.error) {
+      const e = changed.error;
+      h += `<div class="errbox" role="alert"><div class="code mono">${esc(e.code)}${e.code === 'TypeError' ? ': ' + esc(e.message) : ''}</div>` +
+        (e.code === 'TypeError' ? '' : `<div>${esc(e.message)}</div>`) +
+        `<div class="muted" style="margin-top:4px">Raised by: ${esc(e.layer)}. ${e.registered ? 'This code or text exists today.' : 'Placeholder code: the owning crate allocates the real number.'}</div>` +
+        `<div style="margin-top:4px"><strong>Fix:</strong> ${esc(e.fix)}</div></div>`;
+    }
+    if (changed.value !== undefined) h += `<p>Returned: <code>${esc(changed.value)}</code></p>`;
+    const list = changed.entries.filter(e => e.kind !== 'error');
+    h += list.length ? `<ul class="changes">${list.map(e => entryHtml(e, false)).join('')}</ul>`
+      : (changed.error ? '<p class="muted">Nothing else changed: the state is exactly as before.</p>' : '<p class="muted">No state change.</p>');
+    $('changed').innerHTML = h;
+  }
+
+  function pill(text, on) { return `<span class="pill${on ? ' on' : ''}">${esc(text)}</span>`; }
+
+  function renderState() {
+    const s = state, q = s.host.quit;
+    const quitText = q ? `${q.source}: ${({ 'before-quit-pending': 'waiting for the app to run before-quit', sweeping: 'closing windows', 'will-quit-pending': 'waiting for the app to run will-quit' })[q.phase]}` : 'none';
+    const queued = s.inbox.map(e => e.type + (e.win ? '(w' + e.win + ')' : '')).join(', ') || 'empty';
+    let h = '<h3>Rust host (owns every native window)</h3><dl class="kv">' +
+      `<dt>Session</dt><dd>${pill(s.host.phase, s.host.phase === 'running')}</dd>` +
+      `<dt>Quit in flight</dt><dd>${esc(quitText)}</dd>` +
+      `<dt>Retired generations</dt><dd>${s.host.retired.length ? s.host.retired.map(g => 'g' + g).join(', ') : 'none'}</dd>` +
+      `<dt>LastWindowClosed owed</dt><dd>${s.host.lastWindowClosedOwed ? 'yes, to the next generation' : 'no'}</dd>` +
+      `<dt>Clock</dt><dd>${s.clock} deadline period(s)</dd></dl>`;
+    h += '<h3>Bun role (runs the app and @keld/electron)</h3><dl class="kv">' +
+      `<dt>Generation</dt><dd>g${s.bun.generation} ${pill(s.bun.status, s.bun.status === 'alive')} ${s.bun.flagged ? pill('flagged unhealthy', true) : ''}</dd>` +
+      `<dt>Host events queued</dt><dd class="mono">${esc(queued)}</dd>` +
+      `<dt>Invoke credit</dt><dd>${L.CALL_CREDIT} in flight per window, then the sender suspends</dd>` +
+      `<dt>app.quit() in flight</dt><dd>${s.bun.isQuitting ? 'yes' : 'no'}</dd>` +
+      `<dt>getAllWindows()</dt><dd class="mono">[${L.getAllWindows(s).map(i => 'w' + i).join(', ')}]</dd>` +
+      `<dt>App listeners</dt><dd>${pill('before-quit: ' + (s.app.beforeQuitPrevent ? 'preventDefault' : 'allow'), s.app.beforeQuitPrevent)} ` +
+      `${pill('will-quit: ' + (s.app.willQuitPrevent ? 'preventDefault' : 'allow'), s.app.willQuitPrevent)} ` +
+      `${pill('window-all-closed: ' + (s.app.windowAllClosedSubscribed ? 'subscribed' : 'default quit'), s.app.windowAllClosedSubscribed)}</dd></dl>`;
+    h += '<h3>Windows</h3>';
+    if (!s.windows.length) h += '<p class="muted">No window has been minted.</p>';
+    else {
+      h += '<div class="scroll"><table><tr><th>Handle</th><th>Native window (host)</th><th>Close request</th><th>BrowserWindow object (Bun g' + s.bun.generation + ')</th></tr>';
+      for (const w of s.windows) {
+        const f = s.facades.find(x => x.id === w.id);
+        const native = w.destroyed ? 'destroyed' : (w.visible ? 'open, visible' : 'open, hidden') + (w.painted ? ', painted' : '');
+        const pend = w.pendingClose ? `unanswered: seq ${w.pendingClose.seq}, ${w.pendingClose.attempts} attempt(s), from ${w.pendingClose.source}` : 'none';
+        const fac = !f ? 'no object in this generation'
+          : (f.destroyed ? 'tombstoned: isDestroyed() true' + (f.closedEmitted ? '' : ', closed not yet emitted') : 'live' + (f.adopted ? ', re-adopted' : '') + ', close listener: ' + (f.closeListener === 'prevent' ? 'preventDefault' : 'none'));
+        h += `<tr><td class="mono">(w${w.id}, wg${w.wgen})</td><td>${esc(native)}</td><td>${esc(pend)}</td><td>${esc(fac)}</td></tr>`;
+      }
+      h += '</table></div>';
+    }
+    h += '<h3>Renderer calls in flight</h3>' + (s.calls.length
+      ? `<p class="mono">${s.calls.map(c => `#${c.id} invoke('${c.channel}') from w${c.win} to g${c.generation}`).join('; ')}</p>` : '<p class="muted">None.</p>');
+    const bad = L.invariants(s);
+    h += `<p class="muted" style="font-size:.84rem">Model invariants: ${bad.length ? '<strong>BROKEN: ' + esc(bad.join('; ')) + '</strong>' : 'all hold (tombstone before closed, one closed per window, closed never owed, no reused handle, no orphan object, bounded queues).'}</p>`;
+    $('state').innerHTML = h;
+  }
+
+  function renderLog() {
+    const only = $('only-events').checked;
+    const freshFrom = state.log.length - changed.entries.length;
+    const items = state.log.map((e, i) => ({ e, fresh: i >= freshFrom })).filter(x => !only || x.e.kind === 'event');
+    $('log').innerHTML = items.map(x => entryHtml(x.e, x.fresh)).join('');
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+
+  function renderTarget() {
+    const sel = $('target');
+    if (!state.windows.length) { target = null; sel.innerHTML = '<option value="">no window minted yet</option>'; return; }
+    if (target == null || !state.windows.some(w => w.id === target)) target = state.windows[state.windows.length - 1].id;
+    sel.innerHTML = state.windows.map(w => `<option value="${w.id}"${w.id === target ? ' selected' : ''}>w${w.id} (${w.destroyed ? 'destroyed' : w.visible ? 'open, visible' : 'open, hidden'})</option>`).join('');
+  }
+
+  function renderButtons() {
+    const groups = [];
+    L.CATALOGUE.forEach((b, i) => { let g = groups.find(x => x.name === b.group); if (!g) groups.push(g = { name: b.group, items: [] }); g.items.push({ b, i }); });
+    $('buttons').innerHTML = groups.map(g => `<h3>${esc(g.name)}</h3><div class="btns">` +
+      g.items.map(x => `<button data-i="${x.i}"><span class="t">${esc(x.b.label)}</span>${x.b.needsWindow ? ' <span class="muted">on target</span>' : ''}</button>`).join('') + '</div>').join('');
+  }
+
+  function renderWalk() {
+    $('tabs').innerHTML = SC.tabs.map((t, i) => `<button role="tab" aria-selected="${i === tabIndex}" data-tab="${i}">${esc(t.title)}</button>`).join('');
+    const steps = SC.tabs[tabIndex].steps;
+    $('steps').innerHTML = steps.map((st, i) => {
+      const cls = i < stepIndex ? 'done' : i === stepIndex ? 'current' : 'todo';
+      const checks = done[i] ? `<ul class="checks">${done[i].map(c => `<li class="${c.ok ? 'ok' : 'bad'}">${esc(c.text)}</li>`).join('')}</ul>` : '';
+      return `<li class="${cls}"><div class="st">${i + 1}. ${esc(st.title)}${st.reset ? ' <span class="pill">resets state</span>' : ''}</div><div class="say">${esc(st.say)}</div>${checks}</li>`;
+    }).join('');
+    $('progress').textContent = stepIndex >= steps.length ? 'Walkthrough complete. Keep going in free play, or restart.' : `Step ${stepIndex + 1} of ${steps.length}`;
+    $('next').disabled = stepIndex >= steps.length;
+  }
+
+  function render() {
+    renderTarget(); renderChanged(); renderState(); renderLog(); renderWalk();
+    $('opt-revoke').value = state.options.pendingCloseOnRevoke;
+    $('opt-sweep').value = state.options.quitSweep;
+  }
+
+  function act(title, actions, sameTick) {
+    const r = sameTick ? L.dispatchAll(state, actions) : L.dispatch(state, actions[0]);
+    state = r.state;
+    changed = { title, entries: r.result.entries, error: r.result.error, value: r.result.value };
+    render();
+  }
+
+  $('buttons').addEventListener('click', ev => {
+    const btn = ev.target.closest('button[data-i]'); if (!btn) return;
+    const b = L.CATALOGUE[Number(btn.dataset.i)];
+    const a = Object.assign({}, b.action); if (b.needsWindow) a.win = target;
+    const label = b.label + (b.needsWindow ? (target == null ? '' : ` on w${target}`) : '');
+    if (b.sequence) act(label, b.sequence.map(x => Object.assign({}, x, b.needsWindow ? { win: target } : {})), true);
+    else if (b.sameTick) act(label, Array.from({ length: b.sameTick }, () => a), true);
+    else act(label, [a], false);
+  });
+  $('target').addEventListener('change', ev => { target = ev.target.value === '' ? null : Number(ev.target.value); });
+  $('only-events').addEventListener('change', renderLog);
+  $('opt-revoke').addEventListener('change', ev => act('Model option changed', [{ type: 'setOption', key: 'pendingCloseOnRevoke', value: ev.target.value }], false));
+  $('opt-sweep').addEventListener('change', ev => act('Model option changed', [{ type: 'setOption', key: 'quitSweep', value: ev.target.value }], false));
+  $('reset').addEventListener('click', () => {
+    state = L.initialState(state.options); target = null;
+    changed = { title: 'Reset to the initial state (model options kept)', entries: state.log.slice(), error: null };
+    render();
+  });
+
+  function startTab(i) {
+    tabIndex = i; stepIndex = 0; done = [];
+    state = L.initialState(); target = null;
+    changed = { title: `Walkthrough "${SC.tabs[i].title}" ready: state reset`, entries: state.log.slice(), error: null };
+    render();
+  }
+  $('tabs').addEventListener('click', ev => { const t = ev.target.closest('[data-tab]'); if (t) startTab(Number(t.dataset.tab)); });
+  $('restart').addEventListener('click', () => startTab(tabIndex));
+  $('next').addEventListener('click', () => {
+    const step = SC.tabs[tabIndex].steps[stepIndex]; if (!step) return;
+    const r = SC.runStep(L, state, step);
+    state = r.state; done[stepIndex] = r.checks; target = null;
+    changed = { title: `Step ${stepIndex + 1}: ${step.title}`, entries: r.entries, error: r.last && r.last.error, value: r.last ? r.last.value : undefined };
+    stepIndex += 1;
+    render();
+  });
+
+  // Assumptions table. status: where the semantic stands on map gyldlab/keld#391.
+  const ASSUMPTIONS = [
+    ['FACT', 'Electron contract', "`close` is emitted before the DOM beforeunload and unload; event.preventDefault() cancels the close.", "browser-window.md v44.4.5, Event: 'close'"],
+    ['FACT', 'Electron contract', 'win.destroy() emits no close, skips unload and beforeunload, and guarantees closed.', 'browser-window.md v44.4.5, win.destroy()'],
+    ['FACT', 'Electron contract', 'The object is marked destroyed before `closed` is emitted, so isDestroyed() is true inside the listener.', 'shell/browser/api/electron_api_base_window.cc v44.4.5 lines 171-184: MarkDestroyed() then Emit("closed")'],
+    ['FACT', 'Electron contract', 'Member access after destruction throws a TypeError whose message is exactly "Object has been destroyed"; isDestroyed() is the safe probe.', 'shell/common/gin_helper/function_template.h v44.4.5 lines 215-216; base-window.md line 607; browser-window.md line 519'],
+    ['FACT', 'Electron contract', 'destroy() and isDestroyed() are installed apart from the throwing method template and never throw: destroy() on an already destroyed object returns silently, and isDestroyed() is true as soon as destroy() returns. The docs say "most" members throw, not all.', 'shell/common/gin_helper/destroyable.cc v44.4.5, DestroyFunc (returns early when IsDestroyed, clears the internal field before returning) and MakeDestroyable; electron_api_base_window.cc line 1254; base-window.md line 607'],
+    ['INFERENCE', 'Electron source reading', 'On macOS Electron emits `close` before win.close() returns and emits `closed` before win.destroy() returns. Read from the call chain, not from a run.', 'native_window_mac.mm v44.4.5 Close() calls performClose:, whose delegate hook runs NotifyWindowCloseButtonClicked (native_window.cc lines 548-564, then BaseWindow::WillCloseWindow emits close); CloseImmediately() calls [window_ close], whose windowWillClose: runs NotifyWindowClosed. No fixture run'],
+    ['FACT', 'Electron contract', 'ready-to-show is emitted when the page has rendered while the window is not shown.', "browser-window.md v44.4.5, Event: 'ready-to-show'"],
+    ['FACT', 'Electron contract', 'window-all-closed is emitted when all windows are closed; with no app listener the default is app.quit(); it is not emitted when the quit came from Cmd+Q or app.quit().', "app.md v44.4.5, Event: 'window-all-closed'; lib/browser/init.ts lines 169-173; shell/browser/browser.cc Browser::OnWindowAllClosed"],
+    ['FACT', 'Electron contract', 'app.quit() emits before-quit first, tries to close all windows, then emits will-quit, then terminates; both events are cancellable; a second app.quit() during a quit returns early.', 'app.md v44.4.5, app.quit() and both events; browser.cc Browser::Quit lines 120-132, NotifyAndShutdown lines 287-299'],
+    ['FACT', 'Electron contract', 'A window that cancels its close cancels the quit, yet every window was asked; on macOS the list is walked in reverse.', 'browser.cc Browser::OnWindowCloseCancelled; shell/browser/window_list.cc CloseAllWindows lines 78-88'],
+    ['FACT', 'Electron contract', 'After a vetoed will-quit the app is alive with zero windows and no window-all-closed; the next app.quit() emits before-quit again.', 'browser.cc OnWindowAllClosed (quitting branch), NotifyAndShutdown, Quit. The F01 refuter note words this as "without a second before-quit to close cycle"; the source re-emits before-quit and only the close cycle is skipped'],
+    ['FACT', 'Electron contract', "Electron's own window delegate returns NO from windowShouldClose: and asks its observers; its Cmd+Q path overrides terminate: and calls Browser::Quit().", 'shell/browser/ui/cocoa/electron_ns_window_delegate.mm lines 411-414; shell/browser/mac/electron_application.mm lines 92-101'],
+    ['FACT', 'AppKit', 'windowShouldClose: is not called when the user quits the application. Returning NSTerminateLater makes Cocoa run the run loop in a modal-panel mode until the app replies.', 'developer.apple.com windowShouldClose(_:) and NSApplication.TerminateReply.terminateLater (JSON endpoints, fetched 2026-10-06)'],
+    ['FACT', 'Keld today', 'Neither AppKit hook exists in the host today; close is not cancelable; one host-created primary window per session.', 'grep for windowShouldClose, applicationShouldTerminate, NSTerminateLater in crates/keld-wv/src and crates/keld-core/src at b4b907c3: 0 files; F02-EPIC "Live today"'],
+    ['FACT', 'Keld owner', 'Recovery keeps the same native window and page; old endpoint, token, routes, grants and pending calls reject before a successor is provisioned; every affected pending call gets exactly one terminal outcome, makes no claim about commit, and is never replayed.', 'docs/specs/kel139-macos-product-spine.md AC5; Linear KEL-143 (Backlog, unassigned, blocked by KEL-142/140/134/133/118/139) and KEL-139 (Done), fetched 2026-10-06'],
+    ['FACT', 'Keld today', 'KELD-GUARD006 is the guard denial for a non-AppProcess principal; KELD-IPC-007 is the HELLO rejection for a foreign token.', 'crates/keld-guard/src/lib.rs (NotAppProcess); crates/keld-ipc/src/admission.rs (HelloAuth)'],
+    ['INFERENCE', 'Decided on map', 'Facade objects are host-minted (handle, generation) pairs; the facade keeps a synchronous mirror updated by ordered host events before any user listener runs.', 'PANEL-D6 resolution; F02-EPIC design facts; F02-T2'],
+    ['INFERENCE', 'Decided on map', 'Two-phase close: the host emits CloseRequested{window, generation, seq} without closing, the facade emits `close`, replies allow or veto; on allow the host destroys webview then window and reports it; the facade flips the tombstone and then emits `closed`.', 'F02-EPIC; F02-T3; PANEL-D5 resolution'],
+    ['INFERENCE', 'Decided on map', 'The host waits indefinitely while the owning Bun generation is alive. A host auto-close on timeout is refused as a fabricated completion.', 'PANEL-D5 resolution; F02-T3 negative control'],
+    ['INFERENCE', 'Decided on map', 'The host closes a window on its own only when the Bun generation is revoked (default model option). Finding from this prototype: with a vetoing listener and an unanswered close, this loses the page that recovery would otherwise have preserved.', 'PANEL-D5 resolution; F02-T3 acceptance criterion 3. The data-loss edge is INFERENCE from running the model, not an OS observation'],
+    ['INFERENCE', 'Decided on map', 'Quit is two-phase and host-owned: the facade emits before-quit, the host closes windows through the cancelable close protocol, then will-quit, then the existing Quit Call. Any preventDefault or window veto cancels and the host stays alive.', 'F01-T3; F01-EPIC design facts'],
+    ['INFERENCE', 'Decided on map', 'Cmd+Q does not route through windowShouldClose: the host uses applicationShouldTerminate: with a delayed reply. This is a different AppKit route from Electron\'s terminate: override, aiming at the same app-visible order.', 'PANEL-D5 resolution'],
+    ['INFERENCE', 'Decided on map', 'Ready means "host initialised, zero app windows"; a successor generation receives Ready again and can re-adopt the surviving window.', 'F01-T2 and its acceptance criteria'],
+    ['INFERENCE', 'Decided on map', 'Privilege-escalating webPreferences fail loudly; hidden windows count as open; LastWindowClosed is suppressed while a quit is in flight: by the host during its sweep, and by the facade when a LastWindowClosed crossed a quit this generation had already begun.', 'F02-EPIC design facts; F01 and F02 research traps; app.md v44.4.5 window-all-closed ("in this case the window-all-closed event would not be emitted"). The facade-side half is this prototype\'s reading, found by crossing a close with Cmd+Q while Bun was parked'],
+    ['INFERENCE', 'Prototype', 'A retired generation that reconnects is rejected at HELLO with KELD-IPC-007. The WindowGeneration does not rotate on Bun recovery; staleness is enforced by the role generation of the link.', 'Derived from arch 06 section 1 revocation order and the registered code; F02-T2 only says "a stale generation cannot address a window (typed error)"'],
+    ['INFERENCE', 'Prototype', 'show() and close() on an already destroyed object throw the same TypeError as getBounds(); win.on() and removeAllListeners() are plain EventEmitter JavaScript and do not throw; a page-initiated window command is denied with KELD-GUARD006 until window-level grants exist.', 'Shared destroyed-wrapper check in function_template.h; F02 refuter finding on KEL-102 window grants. No fixture run'],
+    ['PROPOSED', 'Not specified', 'Timing against Electron. The facade flips the tombstone inside destroy(), so isDestroyed() is true when the call returns, as in Electron. But `closed` after destroy() and `close` after win.close() are emitted only after the host round trip, later than Electron emits them. App code that expects the listener to have run by the line after close() or destroy() sees a different order.', 'F02-T3 fixes tombstone-before-closed and closed-after-destruction, but not when the tombstone flips relative to destroy() returning; no ticket records the later `close` and `closed` as a known difference'],
+    ['PROPOSED', 'Not specified', 'The host rejects a dead or forged (WindowId, WindowGeneration) on every window command with placeholder code KELD-IPC-WINDOW-STALE. The facade fence is a convenience; the registry is the authority.', 'F02-T2 acceptance criterion 4 asks for a typed error and names no code. WindowGeneration exists only in docs/specs/kel75-principalized-bun-child-roles.md at b4b907c3 (grep of crates and docs/architecture: 0 files)'],
+    ['PROPOSED', 'Not specified', 'Bounded queues. At most 4 invokes in flight per window (the number is invented); a sender beyond that suspends in the page and the model does not track it further. Host-to-Bun events are bounded by coalescing: one unanswered CloseRequested and one ReadyToShow per window, one QuitRequested.', 'docs/architecture/02-ipc.md lines 248-256 at b4b907c3: senders suspend at zero credit, the design goal is no unbounded queues, and GRANT has no live sender or receiver today. Map briefing: a parked Bun main thread stalls the link after 8 KiB (probe)'],
+    ['PROPOSED', 'Not specified', 'A renderer invoke made while no generation is admitted is rejected before delivery with the same placeholder code as an in-flight loss, but its outcome is known (no handler ran) and its fix text says to retry. Whether the two cases share one code is open.', 'docs/specs/kel139-macos-product-spine.md AC5 covers affected pending calls only; it does not say what a call made in the gap receives'],
+    ['PROPOSED', 'Open: PANEL-D19', 'The unhealthy-role signal: when the role is flagged, and the diagnostic shape. The model flags after one deadline period.', 'PANEL-D19 is contested and open; F02-T2 is blocked by it'],
+    ['PROPOSED', 'Open: PANEL-D23, PANEL-P2', 'How the quit sweep is sequenced on AppKit. The default model option asks every window in one sweep (what Electron\'s source does); the other option is the serialized fallback named in D23.', 'PANEL-D23 contested; PANEL-P2 harness not run'],
+    ['PROPOSED', 'Open: F02-A3', 'ready-to-show on system webviews. The model assumes a host paint beacon that fires while the window is unmapped, at most once, for hidden and visible windows alike.', 'F02-A3 is open ("not resolvable from current evidence")'],
+    ['PROPOSED', 'Open: PANEL-P2', 'Repeated close attempts coalesce into one unanswered CloseRequested, so two win.close() calls in one tick emit `close` once. Electron may emit `close` once per attempt.', 'F02-A2 refuter correction ("must coalesce", "CloseAllow must carry the seq"); F02-T3 says only "close() twice is idempotent"'],
+    ['PROPOSED', 'Not specified', 'The adoption contract: a WindowAdopted snapshot per surviving window before Ready(g2); adopted objects carry no listeners; ready-to-show is not replayed. An unmodified Electron app that creates its window in a ready handler would create a second one. App-level listener settings (before-quit, will-quit, window-all-closed) persist across generations in the model, standing for a successor that runs the same main script again.', 'F01 refuter finding (Ready re-base conflicts with KEL-143); F01-T2 says only "can re-adopt"'],
+    ['PROPOSED', 'Not specified', 'A close requested while no generation is alive, and the LastWindowClosed owed to a successor when the count reached zero in that gap.', 'F02-A2 refuter correction: "pick one in the registry spec"'],
+    ['PROPOSED', 'Not specified', 'A quit in flight when the generation is lost is cancelled; Cmd+Q with no live generation follows the same model option as a close.', 'Not on the map; chosen so the model never fabricates a completion'],
+    ['PROPOSED', 'Contradiction', 'win.id: the model uses the host-minted number so it survives recovery. F02-A1 proposes a facade-local counter that is never the host WindowId; F02-T2 requires that "id is host-minted".', 'F02-A1 proposed answer versus F02-T2 acceptance criterion and negative control'],
+    ['PROPOSED', 'Not specified', 'How `new BrowserWindow()` returns a host-minted identity synchronously when the Bun kipc client cannot block. The model treats minting as atomic.', 'PANEL-D2 (client cannot block) versus F02-T2; no ticket names the mechanism'],
+    ['PROPOSED', 'Prototype', 'Message names QuitBegin, QuitSweepComplete, QuitCancelled, QuitRequested, WindowAdopted, CloseVeto, and the placeholder codes KELD-IPC-GENERATION-RETIRED, KELD-IPC-CLOSE-SEQ, KELD-IPC-WINDOW-STALE, KELD-COMPAT-WEBPREFS.', 'F01-A2 refuter: the proceed message is missing and must be named; arch 02 section 7 requires a registered role-qualified code; KELD-COMPAT-001 to 009 are already taken'],
+    ['PROPOSED', 'Not modelled', 'Renderer beforeunload vetoes, app.exit(), quitAndInstall ordering, parent and modal windows, a throwing close listener, app.quit() called inside a close listener, JavaScript re-entrancy during a modal dialog (the parked role here runs nothing), and the interim rule where the first new BrowserWindow() adopts the host-created primary window.', 'F02-T3 out of scope; F01-T3; PANEL-D22 contested; F02 refuter findings']
+  ];
+  $('assumptions').innerHTML = '<tr><th>Label</th><th>Status</th><th>Semantic encoded</th><th>Source</th></tr>' +
+    ASSUMPTIONS.map(r => `<tr><td><span class="lab ${r[0]}">${r[0]}</span></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="muted">${esc(r[3])}</td></tr>`).join('');
+
+  const check = SC.runAll(L);
+  $('selfcheck').textContent = `Self-check: ${check.passed}/${check.total} scripted expectations hold in this model` + (check.failures.length ? ' (see console)' : '');
+  if (check.failures.length && typeof console !== 'undefined') console.warn(check.failures.join('\n'));
+
+  renderButtons();
+  render();
+})();
+</script>
+</body>
+</html>
