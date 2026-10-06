@@ -12,8 +12,21 @@ use windows_permissions::wrappers::{GetSecurityInfo, SetSecurityInfo};
 use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
+mod initiating_token;
+mod logon_session;
 mod uac_token;
-pub use uac_token::require_windows_machine_uac_owner_token;
+pub use initiating_token::{
+    WindowsInitiatingImpersonationToken, WindowsInitiatingPrimaryToken, WindowsInitiatingToken,
+    require_windows_initiating_token_profile,
+};
+pub use logon_session::{
+    WindowsLogonSessionError, WindowsLogonSessionId, WindowsLogonTime,
+    require_windows_logon_session_ended, windows_initiating_logon_time,
+};
+pub use uac_token::{
+    WindowsTokenError, require_windows_machine_uac_owner_token,
+    require_windows_own_impersonate_privilege, require_windows_own_token_session,
+};
 
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
