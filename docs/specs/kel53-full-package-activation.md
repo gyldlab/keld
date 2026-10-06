@@ -779,14 +779,20 @@ struct ActivationJournal {
     helper_image_blake3: [u8; 32],
     health_channel_id: [u8; 32],
     lifecycle_channel_id: [u8; 32],
-    // T4d schema revision `keld.activation-journal/v2` (wire-gated): both fields are
-    // required in every v2 record and phase. `Option` models the decoding of a v1 record,
-    // which has neither and therefore never admits a candidate claim, and the in-memory
+    // T4d schema revision `keld.activation-journal/v2` (wire-gated): both owner facts
+    // are required in every v2 record and phase. One `Option` holds both, so a record
+    // with only one is unrepresentable. `None` models the decoding of a v1 record, which
+    // has neither and therefore never admits a candidate claim, and the in-memory
     // identities the mint-then-journal seam minted before `WindowsMintedAttempt::journal`
     // supplies both facts; that minted state is never encoded.
-    initiating_logon: Option<InitiatingLogon>,
-    attempt_owner: Option<AttemptOwner>,
+    ownership: Option<AttemptOwnership>,
     phase: ActivationPhase,
+}
+
+/// The v2 owner facts of one attempt; the wire encodes them as two sibling objects.
+struct AttemptOwnership {
+    initiating_logon: InitiatingLogon,
+    attempt_owner: AttemptOwner,
 }
 
 /// The process that creates the connect-back endpoint and launches the candidate (§4
