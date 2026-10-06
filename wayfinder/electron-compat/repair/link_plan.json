@@ -1,0 +1,650 @@
+{
+ "KEL-237": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/444",
+   "title": "GH #444 \u00b7 F01-EPIC \u00b7 compat(app): Electron app lifecycle, single-instance, session facts and\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/445",
+   "title": "GH #445 \u00b7 F01-T1 \u00b7 conformance(app): pinned v44.4.5 macOS cells for the first-proof app su\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/454",
+   "title": "GH #454 \u00b7 F01-T6 \u00b7 task(app): facade-local shims with honest diagnostics \u2014 commandLine sto\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/448",
+   "title": "GH #448 \u00b7 F02-T1 \u00b7 conformance(window): pinned v44.4.5 KEL-74 cells for the draw.io window\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/533",
+   "title": "GH #533 \u00b7 F02-T7 \u00b7 conformance(window): pinned v44.4.5 KEL-74 cells for ready-to-show, sho\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/458",
+   "title": "GH #458 \u00b7 F03-T1 \u00b7 conformance(webContents): first-proof entries for did-finish-load, did-\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/537",
+   "title": "GH #537 \u00b7 F03-T6 \u00b7 conformance(webContents): next-tranche entries for navigation order, wi\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/470",
+   "title": "GH #470 \u00b7 F05-T1 \u00b7 conformance(session): pinned webRequest cells and the file:// / CSP pro\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/475",
+   "title": "GH #475 \u00b7 F05-T6 \u00b7 task(session): publish scoreboard rows for every F05 entity not owned b\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/554",
+   "title": "GH #554 \u00b7 F05-T8 \u00b7 conformance(session): Zettlr-tranche cells \u2014 protocol.handle/registerSc\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/477",
+   "title": "GH #477 \u00b7 F06-T1 \u00b7 conformance(native): pinned v44.4.5 cells for the first-proof slice \u2014 d\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/482",
+   "title": "GH #482 \u00b7 F06-T6 \u00b7 task(native): scoreboard rows with status and tracking for every F06 en\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/567",
+   "title": "GH #567 \u00b7 F07-T4 \u00b7 conformance(renderer): pinned v44.4.5 entries for preload ordering, abs\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/572",
+   "title": "GH #572 \u00b7 F07-T7 \u00b7 task(scoreboard): 113 webviewTag members as \u2718(tracked \u2192 F07-T3) scorebo\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/489",
+   "title": "GH #489 \u00b7 F08-T2 \u00b7 task(diagnostics): publish F08 scoreboard rows with explicit status and\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/573",
+   "title": "GH #573 \u00b7 F08-T3 \u00b7 conformance(diagnostics): pinned v44.4.5 entries for webContents and ap\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/580",
+   "title": "GH #580 \u00b7 F09-T3 \u00b7 conformance(update): electron-updater 6.8.9 adapter cells for the draw.\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/493",
+   "title": "GH #493 \u00b7 X01-EPIC \u00b7 program(conformance): evidence rules and differential oracle harness \u2014\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/494",
+   "title": "GH #494 \u00b7 X01-T1 \u00b7 spec(conformance): two-arm differential oracle harness spec \u2014 fixture p\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/495",
+   "title": "GH #495 \u00b7 X01-T2 \u00b7 feat(conformance): lifecycle-family tracer and shared Electron-arm reco\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/532",
+   "title": "GH #532 \u00b7 X01-T3 \u00b7 spec(conformance): first-proof evidence rules \u2014 one Electron oracle pin\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/566",
+   "title": "GH #566 \u00b7 X01-T4 \u00b7 test(compat): one shared corpus-manifest owner in keld-compat test supp\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/585",
+   "title": "GH #585 \u00b7 X01-T5 \u00b7 ci(conformance): scheduled Electron recorder drift lane with its own fa\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/411",
+   "title": "GH #411 \u00b7 X01-A5 \u00b7 Oracle nondeterminism: do repeated Electron 44.4.5 runs of the quit-ord\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/500",
+   "title": "GH #500 \u00b7 X02-T4 \u00b7 feat(corpus): electron-apps-v0 product corpus manifest for draw.io with\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/587",
+   "title": "GH #587 \u00b7 X02-T5 \u00b7 spec(corpus): electron-apps-v0 cell contract \u2014 app-run cell kind, insta\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/589",
+   "title": "GH #589 \u00b7 X02-T6 \u00b7 feat(corpus): first-proof scoring run \u2014 draw.io on a real Mac under exp\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/502",
+   "title": "GH #502 \u00b7 X03-T1 \u00b7 feat(runtime): @keld/electron as the single `electron` module \u2014 self-co\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/569",
+   "title": "GH #569 \u00b7 X03-T3 \u00b7 conformance(runtime): pinned v44.4.5 entries for the one-`electron`-mod\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/419",
+   "title": "GH #419 \u00b7 PANEL-P2 \u00b7 S1 close/quit veto oracle: objc2 harness (windowShouldClose:NO + applic\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/420",
+   "title": "GH #420 \u00b7 PANEL-P3 \u00b7 S2 draw.io boot and authority trace (E1): run its main under Bun 1.4.2\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/442",
+   "title": "GH #442 \u00b7 PANEL-D22 \u00b7 CONTESTED/UNKNOWN: Electron main-process re-entrancy during a Cocoa app\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/443",
+   "title": "GH #443 \u00b7 PANEL-D23 \u00b7 CONTESTED: close/quit veto sequencing with two dirty windows \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-96": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/446",
+   "title": "GH #446 \u00b7 F01-T2 \u00b7 feat(app): re-base host Ready to \"host initialized, window module avail\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/451",
+   "title": "GH #451 \u00b7 F01-T3 \u00b7 feat(app): cancelable two-phase quit \u2014 before-quit/will-quit preventDef\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/453",
+   "title": "GH #453 \u00b7 F01-T5 \u00b7 feat(app): host single-instance lock verdict \u2014 requestSingleInstanceLoc\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/523",
+   "title": "GH #523 \u00b7 F01-T7 \u00b7 feat(app): app.exit(exitCode) as a host-authorized exit Call with a rec\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/524",
+   "title": "GH #524 \u00b7 F01-T8 \u00b7 feat(app): second-instance, open-file and open-url delivery \u2014 exactly-o\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/521",
+   "title": "GH #521 \u00b7 F01-T10 \u00b7 feat(app): macOS activate(hasVisibleWindows) from a host reopen hook, c\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/563",
+   "title": "GH #563 \u00b7 F06-T16 \u00b7 feat(native): menu role quit enters the F01-T3 quit path \u2014 before-quit\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-75": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/452",
+   "title": "GH #452 \u00b7 F01-T4 \u00b7 feat(app): host-minted session facts at spawn for synchronous app gette\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/447",
+   "title": "GH #447 \u00b7 F02-EPIC \u00b7 compat(window): BrowserWindow over a host window registry \u2014 host-minted\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/449",
+   "title": "GH #449 \u00b7 F02-T2 \u00b7 feat(window): macOS host window registry with host-minted (WindowId, Wi\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/450",
+   "title": "GH #450 \u00b7 F02-T3 \u00b7 feat(window): macOS two-phase cancelable close \u2014 host holds tao's Close\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/531",
+   "title": "GH #531 \u00b7 F02-T6 \u00b7 spec(window): first-proof window registry, window wire contract, two-ph\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/468",
+   "title": "GH #468 \u00b7 F04-T5 \u00b7 task(ipc): scoreboard rows for deferred (MessageChannelMain, MessagePor\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/578",
+   "title": "GH #578 \u00b7 F08-T8 \u00b7 feat(diagnostics): app child-process-gone for named-role crash/kill-cla\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/570",
+   "title": "GH #570 \u00b7 X03-T4 \u00b7 feat(runtime): main-role process.* facts installed before the app entry\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/593",
+   "title": "GH #593 \u00b7 X03-T6 \u00b7 feat(runtime): role spawn disables Bun auto-install so an unresolved `e\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-78": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/525",
+   "title": "GH #525 \u00b7 F01-T9 \u00b7 task(app): strict-profile userData and logs inside the KEL-78 role-priv\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/455",
+   "title": "GH #455 \u00b7 F02-T4 \u00b7 feat(window): first-proof webPreferences triage \u2014 accept draw.io's fiel\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/526",
+   "title": "GH #526 \u00b7 F02-T10 \u00b7 task(window): full classification table for the 46 WebPreferences field\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/499",
+   "title": "GH #499 \u00b7 X02-T3 \u00b7 task(migrate): hand-authored draw.io first-proof artefact \u2014 keld.config\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/503",
+   "title": "GH #503 \u00b7 X03-T2 \u00b7 task(runtime): native addon policy record \u2014 KEL-78 four-outcome tree wi\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/586",
+   "title": "GH #586 \u00b7 X03-T5 \u00b7 spec(profile): explicit Keld `legacy` profile key \u2014 one location, parse\u2026 \u00b7 tracker: this Linear issue"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/588",
+   "title": "GH #588 \u00b7 X03-T7 \u00b7 feat(guard): parse the explicit Keld `legacy` key into admit(Legacy), p\u2026 \u00b7 tracker: this Linear issue"
+  }
+ ],
+ "KEL-135": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/522",
+   "title": "GH #522 \u00b7 F01-T11 \u00b7 feat(app): setPath and setAppLogsPath over session facts, with sessionD\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/474",
+   "title": "GH #474 \u00b7 F05-T5 \u00b7 feat(session): one live Session = KEL-135 profile; clearStorageData/cle\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-25": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/456",
+   "title": "GH #456 \u00b7 F02-T5 \u00b7 feat(window): macOS chrome and capability options for Zettlr (titleBarS\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/534",
+   "title": "GH #534 \u00b7 F02-T8 \u00b7 feat(window): remaining BrowserWindow registry members on macOS (show/h\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/535",
+   "title": "GH #535 \u00b7 F02-T9 \u00b7 feat(window): show:false, ready-to-show and paintWhenInitiallyHidden on\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/530",
+   "title": "GH #530 \u00b7 F02-T12 \u00b7 feat(window): Windows/Linux window lane \u2014 close veto hooks, chrome tier\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/394",
+   "title": "GH #394 \u00b7 F02-A3 \u00b7 Can `show:false` + `ready-to-show` + `backgroundColor` be honoured on s\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/395",
+   "title": "GH #395 \u00b7 F02-A6 \u00b7 Which Windows/Linux chrome options (frame:false, titleBarStyle hidden,\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-143": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/529",
+   "title": "GH #529 \u00b7 F02-T11 \u00b7 feat(window): close while the Bun role is parked in a blocking call, an\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-127": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/457",
+   "title": "GH #457 \u00b7 F03-EPIC \u00b7 compat(webContents): navigation events, guard-first navigation policy,\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/459",
+   "title": "GH #459 \u00b7 F03-T2 \u00b7 feat(webContents): first-proof macOS webContents facade \u2014 host-minted i\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/462",
+   "title": "GH #462 \u00b7 F03-T5 \u00b7 feat(webContents): executeJavaScript on macOS with a completion-backed\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/553",
+   "title": "GH #553 \u00b7 F05-T7 \u00b7 feat(session): session export + defaultSession.webRequest \u2014 draw.io's o\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/555",
+   "title": "GH #555 \u00b7 F05-T9 \u00b7 feat(net): net.online / net.isOnline under the legacy profile (Zettlr u\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/476",
+   "title": "GH #476 \u00b7 F06-EPIC \u00b7 compat(native): first-proof dialog, application menu and display/theme\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/565",
+   "title": "GH #565 \u00b7 F06-T8 \u00b7 feat(compat): @keld/electron exports every F06 binding draw.io imports\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/560",
+   "title": "GH #560 \u00b7 F06-T13 \u00b7 docs(native): reconcile architecture 05 section 3's `capture` (Tier 3)\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/487",
+   "title": "GH #487 \u00b7 F08-EPIC \u00b7 compat(diagnostics): engine process-gone and hang events, F08 scoreboar\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/575",
+   "title": "GH #575 \u00b7 F08-T5 \u00b7 feat(diagnostics): crashReporter local-state facade with no network pat\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/576",
+   "title": "GH #576 \u00b7 F08-T6 \u00b7 feat(diagnostics): Bun-side process.getHeapStatistics / getCPUUsage / g\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/579",
+   "title": "GH #579 \u00b7 F08-T9 \u00b7 task(diagnostics): contentTracing module whose Promise methods reject w\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/492",
+   "title": "GH #492 \u00b7 F09-T2 \u00b7 task(build): keld build config translation of electron-builder/forge co\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/496",
+   "title": "GH #496 \u00b7 X02-EPIC \u00b7 program(migrate): read-only analyzer, one package-manifest alias, a han\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/497",
+   "title": "GH #497 \u00b7 X02-T1 \u00b7 spec(migrate): first-proof output contract \u2014 files written and not writ\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/498",
+   "title": "GH #498 \u00b7 X02-T2 \u00b7 feat(migrate): analyzer v0 slice \u2014 read-only verb, import-binding-aware\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/590",
+   "title": "GH #590 \u00b7 X02-T7 \u00b7 spec(migrate): analyzer scan rules \u2014 input discovery, import-binding-aw\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/591",
+   "title": "GH #591 \u00b7 X02-T8 \u00b7 feat(migrate): `keld migrate --write` generator \u2014 reproduces the X02-T3\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/592",
+   "title": "GH #592 \u00b7 X02-T9 \u00b7 feat(migrate): remaining analyzer blocker classes \u2014 native-addon eviden\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/501",
+   "title": "GH #501 \u00b7 X03-EPIC \u00b7 program(runtime): Node/Bun runtime layer for migrated mains \u2014 one `elec\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-79": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/460",
+   "title": "GH #460 \u00b7 F03-T3 \u00b7 feat(webContents): guard-first navigation policy with deny-only will-na\u2026 \u00b7 tracker: this Linear issue"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/461",
+   "title": "GH #461 \u00b7 F03-T4 \u00b7 feat(webContents): setWindowOpenHandler \u2014 always invoke the handler, de\u2026 \u00b7 tracker: this Linear issue"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/538",
+   "title": "GH #538 \u00b7 F03-T8 \u00b7 feat(webContents): full macOS navigation vocabulary \u2014 provisional/fail/\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/539",
+   "title": "GH #539 \u00b7 F03-T9 \u00b7 feat(webContents): Windows (WebView2) and Linux (WebKitGTK) lanes for F\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/550",
+   "title": "GH #550 \u00b7 F04-T17 \u00b7 feat(ipc): webUtils.getPathForFile via host-mediated drop capture (Zett\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/469",
+   "title": "GH #469 \u00b7 F05-EPIC \u00b7 compat(session): webRequest recorded no-ops behind macOS file:// contai\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/471",
+   "title": "GH #471 \u00b7 F05-T2 \u00b7 feat(protocol): static host-owned scheme-name table + protocol.handle B\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/473",
+   "title": "GH #473 \u00b7 F05-T4 \u00b7 feat(webview): macOS file:// read containment to the app code directory\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/483",
+   "title": "GH #483 \u00b7 F07-EPIC \u00b7 compat(renderer): app preload in a separate content world, sandboxed-pr\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/484",
+   "title": "GH #484 \u00b7 F07-T1 \u00b7 feat(renderer): app preload runtime on macOS \u2014 separate app content wor\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/485",
+   "title": "GH #485 \u00b7 F07-T2 \u00b7 task(renderer): zero-<webview> contract \u2014 will-attach-webview never emi\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/486",
+   "title": "GH #486 \u00b7 F07-T3 \u00b7 feat(renderer): <webview> tag as a host-owned child webview with its ow\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/568",
+   "title": "GH #568 \u00b7 F07-T5 \u00b7 task(renderer): per-engine browser-quirk ledger for ten enumerated subs\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/571",
+   "title": "GH #571 \u00b7 F07-T6 \u00b7 feat(renderer): Zettlr preload tranche \u2014 process.platform/version/arch/\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/488",
+   "title": "GH #488 \u00b7 F08-T1 \u00b7 feat(diagnostics): engine web-content-process termination \u2192 webContents\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/574",
+   "title": "GH #574 \u00b7 F08-T4 \u00b7 feat(diagnostics): BrowserWindow/webContents unresponsive and responsiv\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/415",
+   "title": "GH #415 \u00b7 X04-D3 \u00b7 Custom-scheme privilege matrix and CSP profile prototype (P2): can a re\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-102": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/536",
+   "title": "GH #536 \u00b7 F03-T10 \u00b7 feat(webContents): devtools members mapped to the existing engine devto\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/397",
+   "title": "GH #397 \u00b7 F03-D6 \u00b7 How are print/printToPDF/devtools mapped per engine while release polic\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/541",
+   "title": "GH #541 \u00b7 F04-T7 \u00b7 spec(guard): KEL-102 amendment \u2014 exact-literal windows.<w>.channels gra\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/552",
+   "title": "GH #552 \u00b7 F04-T8 \u00b7 feat(guard): evaluate exact-literal windows.<w>.channels grants for web\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/542",
+   "title": "GH #542 \u00b7 F04-T9 \u00b7 feat(wv): one navigation-generation mint shared by the admitted bridge\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/472",
+   "title": "GH #472 \u00b7 F05-T3 \u00b7 feat(session): permission request/check facade as one guard decision (m\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/478",
+   "title": "GH #478 \u00b7 F06-T2 \u00b7 feat(native): guarded async dialog broker on macOS (showOpenDialog/show\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/479",
+   "title": "GH #479 \u00b7 F06-T3 \u00b7 feat(native): shell broker under the X04-D4 decision \u2014 openExternal for\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/480",
+   "title": "GH #480 \u00b7 F06-T4 \u00b7 feat(native): macOS application menu \u2014 Menu.buildFromTemplate + setAppl\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/481",
+   "title": "GH #481 \u00b7 F06-T5 \u00b7 feat(native): display work areas and nativeTheme.shouldUseDarkColors as\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/556",
+   "title": "GH #556 \u00b7 F06-T9 \u00b7 feat(native): menu click dispatch host\u2192Bun (menuItem, focusedWindow, Ke\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/557",
+   "title": "GH #557 \u00b7 F06-T10 \u00b7 feat(native): Tray and Menu.popup/closePopup with menu-will-show/menu-w\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/558",
+   "title": "GH #558 \u00b7 F06-T11 \u00b7 feat(native): remaining screen and nativeTheme members \u2014 display events\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/559",
+   "title": "GH #559 \u00b7 F06-T12 \u00b7 feat(native): clipboard W3C promise shape and nativeImage for draw.io's\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/561",
+   "title": "GH #561 \u00b7 F06-T14 \u00b7 feat(native): remaining dialog members \u2014 showOpenDialogSync/showSaveDia\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/562",
+   "title": "GH #562 \u00b7 F06-T15 \u00b7 spec(guard): strict-profile user-intent filesystem grants (dialog, open\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/504",
+   "title": "GH #504 \u00b7 X04-EPIC \u00b7 program(security): Electron security surfaces mapped onto their existin\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/505",
+   "title": "GH #505 \u00b7 X04-T1 \u00b7 spec(security): Electron security-surface \u2192 single Keld owner mapping t\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/594",
+   "title": "GH #594 \u00b7 X04-T2 \u00b7 spec(guard): window-level web grants: `windows.<w>.web.<name>` evaluate\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/595",
+   "title": "GH #595 \u00b7 X04-T3 \u00b7 spec(security): runtime-minted filesystem path scopes under a frozen ma\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-80": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/463",
+   "title": "GH #463 \u00b7 F04-EPIC \u00b7 compat(ipc): ipcMain/ipcRenderer/contextBridge over host-routed el:<cha\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/464",
+   "title": "GH #464 \u00b7 F04-T1 \u00b7 conformance(ipc): pinned v44.4.5 entries for the draw.io IPC path \u2014 sen\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/465",
+   "title": "GH #465 \u00b7 F04-T2 \u00b7 feat(bridge): renderer floor v2a \u2014 one-way window.keld.send in the exis\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/466",
+   "title": "GH #466 \u00b7 F04-T3 \u00b7 feat(ipc): ipcMain listener facade + webContents.send routing + IpcMain\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/467",
+   "title": "GH #467 \u00b7 F04-T4 \u00b7 feat(ipc): contextBridge.exposeInMainWorld value table + ipcRenderer se\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/540",
+   "title": "GH #540 \u00b7 F04-T6 \u00b7 spec(ipc): F04 compat IPC spec \u2014 wv-link v2 send/event kinds and credit\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/543",
+   "title": "GH #543 \u00b7 F04-T10 \u00b7 feat(bridge): renderer floor v2b \u2014 host\u2192renderer event delivery (window\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/544",
+   "title": "GH #544 \u00b7 F04-T11 \u00b7 feat(ipc): host-opaque endpoint value codec v0 in @keld/electron with s\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/545",
+   "title": "GH #545 \u00b7 F04-T12 \u00b7 feat(bridge): renderer payload bound for open and save chosen from meas\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/546",
+   "title": "GH #546 \u00b7 F04-T13 \u00b7 feat(bridge): N pending renderer invokes per WebView under a host credi\u2026 \u00b7 tracker: this Linear issue"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/547",
+   "title": "GH #547 \u00b7 F04-T14 \u00b7 feat(ipc): ipcRenderer.invoke / ipcMain.handle facade with Electron err\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/548",
+   "title": "GH #548 \u00b7 F04-T15 \u00b7 feat(ipc): ipcRenderer.sendSync scaffold (typed throw, fix-it to invoke\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/549",
+   "title": "GH #549 \u00b7 F04-T16 \u00b7 feat(ipc): contextBridge synchronous and function-valued returns, Promi\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/399",
+   "title": "GH #399 \u00b7 F04-A3 \u00b7 Synchronous cross-world function calls: can a contextBridge-exposed fun\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/401",
+   "title": "GH #401 \u00b7 F04-A5 \u00b7 Renderer sendSync mechanism on WKWebView (synchronous XHR to a host sch\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/528",
+   "title": "GH #528 \u00b7 F04-T18 \u00b7 feat(kipc): worker-owned single-link blocking host CALL transport for B\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/527",
+   "title": "GH #527 \u00b7 F04-T19 \u00b7 spec(kipc): worker-owned single-link blocking host CALL transport for B\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/551",
+   "title": "GH #551 \u00b7 F04-T20 \u00b7 conformance(ipc): recorded Electron v44.4.5 oracle comparison for the o\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/564",
+   "title": "GH #564 \u00b7 F06-T7 \u00b7 feat(native): dialog.showMessageBoxSync on macOS as a blocking host CAL\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/508",
+   "title": "GH #508 \u00b7 X05-T2 \u00b7 spec(ipc): minimum slice of the architecture 02 \u00a74 channel table \u2014 one\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/417",
+   "title": "GH #417 \u00b7 X05-A4 \u00b7 Hot-path cost model for chatty one-way IPC (webContents.send fan-out, i\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/597",
+   "title": "GH #597 \u00b7 X05-T4 \u00b7 task(ipc): implement the X05-T2 channel table in keld-ipc \u2014 every produ\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/418",
+   "title": "GH #418 \u00b7 PANEL-P1 \u00b7 S0 link-drain gate: worker-owned single-link transport prototype (arms\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-129": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/577",
+   "title": "GH #577 \u00b7 F08-T7 \u00b7 feat(diagnostics): app.getAppMetrics as a cold host Call over the arch\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-53": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/490",
+   "title": "GH #490 \u00b7 F09-EPIC \u00b7 compat(update): inert electron-updater adapter for the draw.io proof fi\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/491",
+   "title": "GH #491 \u00b7 F09-T1 \u00b7 feat(update): inert electron-updater 6.8.9 adapter for the draw.io proo\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/582",
+   "title": "GH #582 \u00b7 F09-T4 \u00b7 feat(update): Electron-core autoUpdater facade (10 members) with per-pl\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/581",
+   "title": "GH #581 \u00b7 F09-T5 \u00b7 feat(update): host update channel for the adapter's real path \u2014 guarded\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/583",
+   "title": "GH #583 \u00b7 F09-T6 \u00b7 task(update): bridge-release recipe per platform for draw.io's existing\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/584",
+   "title": "GH #584 \u00b7 F09-T7 \u00b7 docs(security): remove 'autoUpdater \u2192 net to feed URL' from arch 03 mig\u2026 \u00b7 tracker: GitHub"
+  }
+ ],
+ "KEL-90": [
+  {
+   "url": "https://github.com/gyldlab/keld/issues/506",
+   "title": "GH #506 \u00b7 X05-EPIC \u00b7 program(perf): attributed compat-overhead metric registry, the kipc cha\u2026 \u00b7 tracker: GitHub"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/507",
+   "title": "GH #507 \u00b7 X05-T1 \u00b7 task(perf): register compat-overhead metric ids and their admission rul\u2026 \u00b7 tracker: this Linear issue"
+  },
+  {
+   "url": "https://github.com/gyldlab/keld/issues/596",
+   "title": "GH #596 \u00b7 X05-T3 \u00b7 task(perf): run the registered compat-overhead lanes on macOS \u2014 Electro\u2026 \u00b7 tracker: this Linear issue"
+  }
+ ]
+}

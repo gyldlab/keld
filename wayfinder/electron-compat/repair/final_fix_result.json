@@ -1,0 +1,2284 @@
+{
+ "fixes": [
+  {
+   "cluster": "C1-transport",
+   "ops": [
+    {
+     "key": "F06-T7",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F04-T18"
+     ],
+     "why": "C1-transport residual 1: F04-T18 now owns the worker-owned single-link blocking CALL transport, so F06-T7 consumes it through an edge instead of landing its own transport."
+    },
+    {
+     "key": "F06-T7",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Worker-owned single-link blocking CALL transport implementation: no ticket exists. FACT (repaired units): X05 holds only X05-T1..T3 (metric registry, channel table, perf lanes) and F04's highest key is F04-T17; the cross-check recommends minting F04-T18 (IPC family) with blocked_by PANEL-P1 and wire-protocol + public-API gates. When minted it becomes a blocked_by_keys edge here. Candidate Linear reference KEL-80 (Backlog, unassigned; owner 'do not pick up' comment recorded in the PANEL-P1 packet) or KEL-97 (Backlog, unassigned) (Linear, fetched 2026-10-07)"
+     ],
+     "why": "C1-transport residual 1: the missing-transport-ticket blocker is stale because F04-T18 exists and is now a blocked_by_keys edge."
+    },
+    {
+     "key": "F06-T7",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "items": [
+      "Host events queued for the role during the park are delivered in order after the call returns, with zero drops or duplicates",
+      "A link close or generation retire during the park wakes the caller with a typed error and no fabricated button index"
+     ],
+     "why": "C1-transport residual 1: these repeat F04-T18 AC3 and AC4 word for word, which gives the transport atom two owners; F04-T18 is the single owner."
+    },
+    {
+     "key": "F06-T7",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "showMessageBoxSync uses the F04-T18 transport unchanged, with no dialog-local park, drain or replay path, and the F04-T18 park and typed-wake cells pass on the final diff"
+     ],
+     "why": "C1-transport residual 1: replaces the duplicated transport criteria with one criterion that consumes the F04-T18 transport (recommended fix wording, kept binary)."
+    },
+    {
+     "key": "F06-T7",
+     "field": "negative_controls",
+     "op": "remove",
+     "items": [
+      "Returning cancelId on link close fails the typed-error criterion",
+      "Dropping the in-order replay fails the event-ordering criterion"
+     ],
+     "why": "C1-transport residual 1: these controls belonged to the deleted transport criteria; the equivalent controls are owned by F04-T18 ('Returning a default result on link close', 'Dropping the replay queue')."
+    },
+    {
+     "key": "F06-T7",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Moving link draining back onto the main thread in the F04-T18 transport makes the parked showMessageBoxSync call stall, failing the F04-T18-transport criterion"
+     ],
+     "why": "C1-transport residual 1: the new transport-consumption criterion keeps exactly one negative control naming the single mutation that must fail it."
+    },
+    {
+     "key": "F06-T7",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "over the single-link transport PANEL-P1 selects;",
+     "new": "over the F04-T18 worker-owned single-link transport (the arm PANEL-P1 selects), used unchanged;",
+     "why": "C1-transport residual 1: names F04-T18 as the single transport owner so F06-T7 cannot land its own transport."
+    },
+    {
+     "key": "F06-T7",
+     "field": "key_interfaces",
+     "op": "replace",
+     "old": "PANEL-P1 transport contract;",
+     "new": "F04-T18 blocking host CALL transport (PANEL-P1 arm);",
+     "why": "C1-transport residual 1: the transport interface is owned by F04-T18."
+    },
+    {
+     "key": "F06-T7",
+     "field": "linear_owner",
+     "op": "replace",
+     "old": "transport owner unconfirmed (KEL-80 Backlog, unassigned)",
+     "new": "transport owned by F04-T18 (Linear reference on KEL-80, Backlog, unassigned; Linear, fetched 2026-10-07)",
+     "why": "C1-transport residual 1: the transport owner is now the minted F04-T18 ticket, not unconfirmed."
+    },
+    {
+     "key": "F06-T14",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F04-T18"
+     ],
+     "why": "C1-transport residual 1: showOpenDialogSync/showSaveDialogSync use the same blocking CALL transport, which F04-T18 owns."
+    },
+    {
+     "key": "F06-T14",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Worker-owned single-link blocking CALL transport implementation (same missing ticket as F06-T7; recommended F04-T18): becomes a blocked_by_keys edge when minted"
+     ],
+     "why": "C1-transport residual 1: F04-T18 exists, so the missing-ticket entry is replaced by the blocked_by_keys edge."
+    },
+    {
+     "key": "F02-T11",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F04-T18"
+     ],
+     "why": "C1-transport residual 1: close-during-park depends on the blocking CALL transport that F04-T18 owns."
+    },
+    {
+     "key": "F02-T11",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "BLOCKER \u2014 no ticket owns the blocking host CALL transport. FACT (PANEL-P1 title): PANEL-P1 is the S0 link-drain gate that prototypes the worker-owned single-link transport (arms A current, B worker+SAB/Atomics, C host credit frames, E revoke-during-park). No repaired unit has minted the implementation ticket for the arm it selects (F04, F06 and X02 each name another owner, and X05-T3 is already the parked perf-lane ticket). Who can act: the map orchestrator (single writer). Mint one first-proof ticket in the kipc transport family (for example F04-T18 or X05-T4), blocked by PANEL-P1, with wire protocol and public API gates, then add it to this ticket's blocked_by_keys. First check: the minted key appears in this ticket's blocked_by_keys."
+     ],
+     "why": "C1-transport residual 1: the blocker's own completion check (minted key in blocked_by_keys) is now met by F04-T18."
+    },
+    {
+     "key": "F04-T18",
+     "field": "notes",
+     "op": "replace",
+     "old": "Other units must take these edges (their edits): F06-T7 \u2190 F04-T18; F02-T11 \u2190 F04-T18 and F06-T14 \u2190 F04-T18 (both next); X02-T6 \u2190 F04-T18 for the close-with-unsaved-prompt cell, conditional on PANEL-P1 passing an arm.",
+     "new": "Consumer edges taken: F06-T7 \u2190 F04-T18; F02-T11 \u2190 F04-T18 and F06-T14 \u2190 F04-T18 (both next). X02-T6 reaches F04-T18 transitively through F06-T7, so it carries no direct edge. F06-T7 no longer restates the park/wake criteria; this ticket is their single owner.",
+     "why": "C1-transport residual 1: the deferred-edge instruction is now done, and X02-T6 inherits F04-T18 transitively per the recommended fix."
+    },
+    {
+     "key": "X02-T6",
+     "field": "notes",
+     "op": "replace",
+     "old": "The blocking-CALL transport PANEL-P1 selects has no ticket yet. Once the orchestrator mints it, this ticket reaches it through F06-T7.",
+     "new": "The blocking-CALL transport PANEL-P1 selects is owned by F04-T18; this ticket reaches it transitively through F06-T7, so no direct edge is needed.",
+     "why": "C1-transport residual 1: the transport ticket now exists and the F06-T7 \u2192 F04-T18 edge supplies X02-T6's transitive dependency."
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [
+    {
+     "key": "PANEL-D22",
+     "add": [
+      "milestone:first-proof"
+     ],
+     "remove": [
+      "milestone:next"
+     ],
+     "why": "C1-transport residual 2 (milestone inversion): first-proof F06-T7 is blocked by PANEL-D22 and its criterion 'Listener execution during the modal matches the behaviour PANEL-D22 records' sits on the draw.io close-with-unsaved step. #442 is OPEN and labelled milestone:next (gh issue view, read 2026-10-07). The F06-T7 edge and criterion are kept, as the residual requires."
+    }
+   ],
+   "rejected": []
+  },
+  {
+   "cluster": "C2-rolequit",
+   "ops": [
+    {
+     "key": "F01-T3",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "items": [
+      "Menu `role: quit` with a vetoing draw.io-shaped window emits before-quit, runs that window's close handler and leaves the host alive; the F06-T1/F06-T4 role-quit before-quit cell flips from `unknown` to `pass` in this change"
+     ],
+     "why": "C2-rolequit (high): one atom, two owners. F06-T16 AC1 flips the F06-T1 role-quit cell, and F06-T1 AC4 names F06-T16 as its implementing ticket, so F01-T3 AC7 is a duplicate owner and is deleted."
+    },
+    {
+     "key": "F01-T3",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "On macOS, Cmd+Q with a vetoing window never terminates the host",
+     "new": "On macOS, a host- or OS-initiated quit request with no menu dispatch (Dock Quit, or the host quit-requested event) with a vetoing window never terminates the host",
+     "why": "C2-rolequit (high): Cmd+Q dispatches the installed menu's role-quit item, so a Cmd+Q criterion here is the same atom as F06-T16's role quit. F01-T3 keeps only the quit sources that bypass the menu."
+    },
+    {
+     "key": "F01-T3",
+     "field": "negative_controls",
+     "op": "remove",
+     "items": [
+      "Routing role quit straight to the host Quit Call, bypassing before-quit, fails the role-quit criterion"
+     ],
+     "why": "C2-rolequit (high): the role-quit criterion moved to its single owner F06-T16, so its negative control is removed here."
+    },
+    {
+     "key": "F01-T3",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Letting a native terminate request end the host directly fails the Cmd+Q criterion",
+     "new": "Letting a native terminate request from Dock Quit end the host directly fails the no-menu-dispatch quit criterion",
+     "why": "C2-rolequit (high): this keeps the single negative control on the rewritten AC6, which now names Dock Quit and the host quit-requested event instead of Cmd+Q."
+    },
+    {
+     "key": "F01-T3",
+     "field": "blocked_by_keys",
+     "op": "remove",
+     "items": [
+      "F06-T4"
+     ],
+     "why": "C2-rolequit (high): the edge F01-T3 \u2190 F06-T4 existed only for the deleted AC7. F06-T16 already carries edges to both F06-T4 and F01-T3."
+    },
+    {
+     "key": "F01-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "- routing menu `role: quit` to the same host quit request as app.quit(), and `role: close` to the F02-T3 close path: F06-T4 (first-proof). Whether role quit then emits before-quit and enters the veto path is this ticket's atom: F06-T1/F06-T4 record it as an `unknown` cell naming F01-T3, and this ticket flips it;",
+     "new": "- menu roles: role close: F06-T4 (first-proof, through the F02-T3 close path); role quit, including Cmd+Q dispatched through the installed menu's role-quit item: F06-T16 (consumes F01-T3's quit-requested path and flips the F06-T1 role-quit cell, whose implementing ticket is F06-T16);",
+     "why": "C2-rolequit (high): the adjacent-atom list now reads 'role close: F06-T4; role quit: F06-T16 (consumes F01-T3)' and no longer says F01-T3 owns and flips the role-quit cell."
+    },
+    {
+     "key": "F01-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "Host- or OS-initiated quit sources (Cmd+Q, Dock Quit) arrive as one quit-requested event.",
+     "new": "Host- or OS-initiated quit sources with no menu dispatch (Dock Quit) arrive as one quit-requested event. INFERENCE: Cmd+Q is the key equivalent of the installed menu's role-quit item, so it reaches this path through F06-T16, not directly.",
+     "why": "C2-rolequit (high): this sentence listed Cmd+Q as a direct quit source of this ticket, which is the same atom as F06-T16's role quit."
+    },
+    {
+     "key": "F01-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "INFERENCE: until this lands, menu Quit with an unsaved draw.io document reaches today's one-shot Quit with no veto, so the unsaved edit is lost; that risk is outside the scored cells and is stated, not hidden.",
+     "new": "INFERENCE: until F06-T16 lands, menu Quit and Cmd+Q record F06-T4's KELD-COMPAT diagnostic and do not quit. Until this ticket lands, Dock Quit with an unsaved draw.io document can reach a native terminate with no veto, so the unsaved edit can be lost. That risk is outside the scored cells and is stated, not hidden.",
+     "why": "C2-rolequit (high): after the ownership split, menu Quit is F06-T4's diagnostic and then F06-T16's routing, so the stated risk now names the path this ticket owns."
+    },
+    {
+     "key": "F01-T3",
+     "field": "out_of_scope",
+     "op": "replace",
+     "old": "menu role execution (F06-T4);",
+     "new": "menu role execution: role close (F06-T4), role quit including Cmd+Q through the menu (F06-T16, consumes this ticket);",
+     "why": "C2-rolequit (high): out_of_scope now names F06-T16 as the single role-quit owner."
+    },
+    {
+     "key": "F01-T3",
+     "field": "notes",
+     "op": "replace",
+     "old": "Edge F01-T3 \u2190 F06-T4 is real: the role-quit criterion needs F06-T4's role routing and flips its recorded `unknown` cell.",
+     "new": "No edge to F06-T4. Role close belongs to F06-T4. Role quit belongs to F06-T16, which consumes this ticket and flips the F06-T1 role-quit cell. F01-T3 asserts only facade-initiated quit and quit sources with no menu dispatch.",
+     "why": "C2-rolequit (high): this note justified the removed edge and AC7 and is replaced by the single-owner statement."
+    },
+    {
+     "key": "F06-T16",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "With one window holding unsaved changes, that window's close veto cancels the quit and the app stays running with the window open",
+     "new": "With one window holding unsaved changes, invoking role quit from the menu item and from Cmd+Q each lets that window's close veto cancel the quit, and the app stays running with the window open",
+     "why": "C2-rolequit (high): F01-T3's Cmd+Q-with-vetoing-window criterion is the same atom as role quit and moves to its single owner, so the coverage is moved, not dropped."
+    },
+    {
+     "key": "F06-T16",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Letting Cmd+Q reach a native terminate instead of dispatching the role-quit item ends the host and fails the dirty-window criterion"
+     ],
+     "why": "C2-rolequit (high): this is the negative control for the Cmd+Q half of the dirty-window criterion that moved here from F01-T3 AC6."
+    },
+    {
+     "key": "F06-T16",
+     "field": "notes",
+     "op": "replace",
+     "old": "F01-T3's adjacent-atom list should name this ticket instead of F06-T4's acceptance (F01 owns that text).",
+     "new": "F01-T3's adjacent-atom list names this ticket as the single role-quit owner, including Cmd+Q dispatched through the menu. F01-T3 carries no role-quit criterion and no F06-T4 edge.",
+     "why": "C2-rolequit (high): the pending cross-unit note is resolved now that the F01-T3 side is applied."
+    },
+    {
+     "key": "F06-T1",
+     "field": "notes",
+     "op": "replace",
+     "old": "(F01-T3 owns quit).",
+     "new": "(F06-T16 flips the role-quit cell; F01-T3 owns the quit state machine it consumes).",
+     "why": "C2-rolequit (high): 'F01-T3 owns quit' read as F01-T3 owning the role-quit cell. AC4 already names F06-T16, and this aligns the note with it."
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": [
+    {
+     "residual": "C2-rolequit, sub-part: replace 'F01-T3 owns and flips the role-quit cell' in F01-T3's unapplied reason (unit F01 repair.unapplied_findings, finding 'critic yagni F01-T3: milestone first-proof ...')",
+     "reason": "Not rejected on substance. This text sits in the F01 unit's unapplied_findings, not in a ticket field, so ticket-level patch ops cannot reach it. The orchestrator must apply it directly. Exact old substring: \"Consistent with that, menu-role quit in the first proof (F06-T4) only raises the same host quit request as app.quit(); its before-quit and veto observation is an `unknown` cell naming F01-T3, not a scored first-proof cell (cross-check option (a)).\" Replacement: \"Consistent with that, menu roles split as follows. Role close: F06-T4. Role quit: F06-T16, which consumes F01-T3. In the first proof, F06-T4 records a KELD-COMPAT diagnostic for role quit and never terminates, and the F06-T1 role-quit cell stays expected `unknown` with implementing ticket F06-T16, not a scored first-proof cell (cross-check option (a)).\" The F01-T3 adjacent-atom part of the residual is applied through the what_to_build op. F06-T4 needs no change: its role-quit diagnostic, its 'unknown' criterion and its out_of_scope already name F06-T16."
+    }
+   ]
+  },
+  {
+   "cluster": "C3-redrule",
+   "ops": [
+    {
+     "key": "F01-T1",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): F01-T1 consumes the X01-T3 representation and pin rule and runs its manifest through the X01-T4 validator, so both are explicit edges.",
+     "items": [
+      "X01-T3",
+      "X01-T4"
+     ]
+    },
+    {
+     "key": "F01-T1",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): AC2 wrote a second runner rule (`unknown` plus ticket key); X01-T4 owns that rule, so the criterion now only consumes the X01-T3 representation.",
+     "old": "The runner accepts expected verdict `unknown` only with a named implementing ticket key, and fails when an `unknown` cell's mapped test observes the Electron behaviour",
+     "new": "Every new pending cell is recorded in the X01-T3 representation: expected verdict `fail` with its implementing-ticket key (F01-T2, F01-T4 or F01-T5) and a mapped test that asserts today's behaviour and passes, and the F01 manifest passes the X01-T4 validator"
+    },
+    {
+     "key": "F01-T1",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the manifest is validated by the X01-T4 shared owner, not the KEL-237 test-local schema, and its pin is the X01-T3 pin rule.",
+     "old": "Every new cell cites a pinned v44.4.5 sentence by tag commit and names one observable sequence, and the F01 manifest validates under the existing KEL-237 schema",
+     "new": "Every new cell cites a pinned v44.4.5 sentence by tag commit and names one observable sequence, and every cell's oracle revision equals the single corpus pin set by the X01-T3 pin rule (the v44.4.5 tag commit)"
+    },
+    {
+     "key": "F01-T1",
+     "field": "negative_controls",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): negative control restated for the X01-T3 expected-fail representation.",
+     "old": "Making an `unknown` cell's mapped test observe the Electron behaviour without flipping the cell to `pass` fails the runner",
+     "new": "Implementing a red cell's Electron behaviour without inverting its mapped test and flipping the cell to `pass` fails that mapped test and the required gate"
+    },
+    {
+     "key": "F01-T1",
+     "field": "negative_controls",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the implementing-ticket key check is the X01-T4 validator's.",
+     "old": "Deleting the implementing-ticket field from an `unknown` cell fails manifest validation",
+     "new": "Deleting the implementing-ticket key from a red cell makes the X01-T4 validator reject the F01 manifest"
+    },
+    {
+     "key": "F01-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the manifest is parsed and admitted by the X01-T4 shared owner and pinned by the X01-T3 pin rule, not by an in-place KEL-237 extension.",
+     "old": "The manifest reuses the KEL-237 lifecycle-corpus schema and runner in place, adds no second corpus format, and is pinned to Electron v44.4.5 (tag commit 694f458\u2026).",
+     "new": "The manifest is parsed, digest-checked and admitted by the X01-T4 shared corpus-manifest owner (the migrated KEL-237 validator), adds no second corpus format or parser, and carries the single pin the X01-T3 pin rule sets for new corpora: Electron v44.4.5 (tag commit 694f458\u2026)."
+    },
+    {
+     "key": "F01-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): removed F01-T1's own `unknown`-verdict runner rule; the ticket consumes the one X01-T3 representation.",
+     "old": "Red-until-implemented mechanism (contract):\n- The runner's expected-verdict vocabulary gains `unknown`, which maps to KEL-74 Verdict::Unknown and requires a named implementing ticket key.\n- The mapped test pins today's observable.\n- If the Electron observable appears while the cell is still `unknown`, the gate fails, which forces the implementing change to flip the cell to `pass` in the same diff.\n- No cell is skipped, ignored or retried.",
+     "new": "Red-until-implemented: this ticket adds no runner rule of its own. Each pending cell is recorded in the X01-T3 red-until-implemented representation: expected verdict `fail` with its implementing-ticket key, and a mapped test that asserts today's behaviour and passes; the implementing change inverts the test and flips the cell to `pass` in the same diff. The implementing tickets are F01-T2, F01-T4 and F01-T5. `unknown` is used only for uncited, observed-only or unrun-lane cells (here, the Windows and Linux records). No cell is skipped, ignored or retried."
+    },
+    {
+     "key": "F01-T1",
+     "field": "key_interfaces",
+     "op": "set",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the manifest owner is X01-T4 and the evidence rules are X01-T3's.",
+     "value": "X01-T4 shared corpus-manifest owner (manifest parsing, exact-bytes digest, pin consistency, execution admission); X01-T3 evidence rules (pin, red-until-implemented representation, uncited-cell rule); KEL-74 evidence records and Verdict; pinned Electron v44.4.5 app.md."
+    },
+    {
+     "key": "F01-T1",
+     "field": "blocked_by_external",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the KEL-237 validator is reused through the X01-T4 migration, not extended in place by this ticket.",
+     "old": "KEL-237 lifecycle-corpus manifest, validator and evidence report as present at origin/main 8678c0d1 (reuse and extend in place; no fork). FACT (gh, 2026-10-07): no open PR touches the lifecycle corpus or its validator",
+     "new": "KEL-237 lifecycle corpus as present at origin/main 8678c0d1, frozen at its 44.3.0 pin; its validator is reused through the X01-T4 migration and never forked. FACT (gh, 2026-10-07): no open PR touches the lifecycle corpus or its validator"
+    },
+    {
+     "key": "F01-T1",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the ticket now waits on its X01-T3 and X01-T4 edges.",
+     "old": "Takeable now: the agent posts",
+     "new": "Takeable once X01-T3 and X01-T4 land: the agent posts"
+    },
+    {
+     "key": "F01-T1",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the hidden coupling is now the explicit X01-T3/X01-T4 edges, not an in-place extension of KEL-237's validator.",
+     "old": "Hidden coupling made explicit: the runner's `unknown` verdict extends KEL-237's validator while KEL-237 is In Progress; the claim must re-check that no open PR touches the lifecycle corpus before the first edit.",
+     "new": "Hidden coupling made explicit: the red-cell representation and the validator are X01-T3's and X01-T4's (edges recorded); the claim must re-check that no open PR touches the lifecycle corpus or the shared validator before the first edit."
+    },
+    {
+     "key": "F01-T2",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited F01-T1 cells are expected `fail` in the X01-T3 representation, so the flip is from expected fail.",
+     "old": "The F01-T1 ready and whenReady cells flip from `unknown` to `pass` in this change",
+     "new": "The F01-T1 ready and whenReady cells flip from expected `fail` to `pass` in this change"
+    },
+    {
+     "key": "F01-T4",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited F01-T1 cells are expected `fail` in the X01-T3 representation, so the flip is from expected fail.",
+     "old": "The F01-T1 session-fact cells flip from `unknown` to `pass` in this change",
+     "new": "The F01-T1 session-fact cells flip from expected `fail` to `pass` in this change"
+    },
+    {
+     "key": "F01-T5",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited F01-T1 cells are expected `fail` in the X01-T3 representation, so the flip is from expected fail.",
+     "old": "The F01-T1 single-instance cells flip from `unknown` to `pass` in this change",
+     "new": "The F01-T1 single-instance cells flip from expected `fail` to `pass` in this change"
+    },
+    {
+     "key": "F01-T3",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): F01-T3's first deliverable is cited quit-sequence cells in the X01-T3 representation, so the edge is explicit.",
+     "items": [
+      "X01-T3"
+     ]
+    },
+    {
+     "key": "F01-T3",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): cited pending quit cells are expected `fail` with an implementing-ticket key, not `unknown`.",
+     "old": "Conformance cells citing the pinned v44.4.5 before-quit, will-quit and window-all-closed sentences land first, with expected status `unknown` naming this ticket",
+     "new": "Conformance cells citing the pinned v44.4.5 before-quit, will-quit and window-all-closed sentences land first in the X01-T3 representation: expected verdict `fail` with implementing-ticket key F01-T3 and a mapped test that asserts today's behaviour and passes"
+    },
+    {
+     "key": "F01-T3",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the X01-T3 representation carries one implementing-ticket key per cell, and F06-T1, F06-T4 and F06-T16 key the role-quit cell to F06-T16. F06-T16 is blocked by F01-T3, and after F06-T4 role quit only records a diagnostic, so F01-T3 cannot pass this criterion without doing F06-T16's work.",
+     "items": [
+      "Menu `role: quit` with a vetoing draw.io-shaped window emits before-quit, runs that window's close handler and leaves the host alive; the F06-T1/F06-T4 role-quit before-quit cell flips from `unknown` to `pass` in this change"
+     ]
+    },
+    {
+     "key": "F01-T3",
+     "field": "negative_controls",
+     "op": "remove",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): its criterion moved to F06-T16, which carries the same mutation as its own negative control.",
+     "items": [
+      "Routing role quit straight to the host Quit Call, bypassing before-quit, fails the role-quit criterion"
+     ]
+    },
+    {
+     "key": "F01-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the role-quit cell is expected `fail` with one implementing key, F06-T16.",
+     "old": "Whether role quit then emits before-quit and enters the veto path is this ticket's atom: F06-T1/F06-T4 record it as an `unknown` cell naming F01-T3, and this ticket flips it;",
+     "new": "Role quit entering this ticket's quit path (before-quit and the veto) is F06-T16's atom: the F06-T1 role-quit cell is expected `fail` keyed to F06-T16, which flips it;"
+    },
+    {
+     "key": "F01-T3",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the role-quit cell is keyed to F06-T16; the F06-T4 edge stays for the Cmd+Q criterion's menu.",
+     "old": "Edge F01-T3 \u2190 F06-T4 is real: the role-quit criterion needs F06-T4's role routing and flips its recorded `unknown` cell.",
+     "new": "Edge F01-T3 \u2190 F06-T4 is real: the Cmd+Q criterion needs F06-T4's installed menu and role routing. The role-quit cell is expected `fail` keyed to F06-T16, which flips it after this ticket lands."
+    },
+    {
+     "key": "F02-T1",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners) and C3-redrule residual 2 (F02 pin hold has no evidence behind it): F02-T1 consumes the X01-T3 pin rule and representation and runs its manifest through the X01-T4 validator.",
+     "items": [
+      "X01-T3",
+      "X01-T4"
+     ]
+    },
+    {
+     "key": "F02-T1",
+     "field": "ready_state",
+     "op": "set",
+     "why": "C3-redrule residual 2 (F02 pin hold has no evidence behind it): X01-T3 AC2 fixes the pin (v44.4.5 tag commit for new corpora) and no open decision blocks this ticket, so needs-info has no basis.",
+     "value": "ready-for-agent"
+    },
+    {
+     "key": "F02-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): one red-until-implemented representation (X01-T3), not 'fail or unknown'.",
+     "old": "- is recorded with an explicit expected status (fail or unknown) that the runner asserts, and is flipped to pass in the implementing change (F02-T2, F02-T3 or F02-T4).",
+     "new": "- is recorded in the X01-T3 red-until-implemented representation: expected verdict `fail` with its implementing-ticket key, and a mapped test that asserts today's behaviour and passes; the implementing change inverts the test and flips the cell to `pass`. The implementing tickets are F02-T2, F02-T3 and F02-T4. `unknown` is used only for uncited, observed-only or unrun-lane cells.\n- carries the corpus pin set by the X01-T3 pin rule (the v44.4.5 tag commit), and the manifest is validated by the X01-T4 shared owner."
+    },
+    {
+     "key": "F02-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): a cited pending cell needs an implementing-ticket key under X01-T3, and renderer beforeunload has no implementing ticket, so it cannot stay a cited `unknown` cell.",
+     "old": "The doc's ordering before the DOM beforeunload/unload events is recorded as a separate unknown cell (renderer beforeunload has 0 corpus demand).",
+     "new": "The doc's ordering before the DOM beforeunload/unload events is not a cell here: it is cited but has no implementing ticket (renderer beforeunload has 0 corpus demand and no owner), and X01-T3 admits a cited pending cell only with an implementing-ticket key. F02 lists it as not yet specified."
+    },
+    {
+     "key": "F02-T1",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cells consume the one X01-T3 representation and pin, each criterion with its own negative control.",
+     "items": [
+      "Every pending cited cell carries expected verdict `fail` with its implementing-ticket key (F02-T2, F02-T3 or F02-T4) and a mapped test that asserts today's behaviour and passes, and the manifest passes the X01-T4 validator.",
+      "Every cell's oracle revision equals the corpus pin set by the X01-T3 pin rule (the v44.4.5 tag commit)."
+     ]
+    },
+    {
+     "key": "F02-T1",
+     "field": "negative_controls",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): negative controls for the representation and pin criteria.",
+     "items": [
+      "Removing a pending cell's implementing-ticket key makes the X01-T4 validator reject the manifest.",
+      "Changing one cell's oracle revision to the 44.3.0 commit fails the X01-T4 pin-consistency check."
+     ]
+    },
+    {
+     "key": "F02-T1",
+     "field": "blocked_by_external",
+     "op": "replace",
+     "why": "C3-redrule residual 2 (F02 pin hold has no evidence behind it): X01-T3 AC2 decides the pin, so the KEL-237 pin hold is not a blocker.",
+     "old": "BLOCKER \u2014 Electron pin for new cells. FACT (keld origin/main 29a4cd70): the committed lifecycle corpus declares one corpus-level electron_version 44.3.0, and its oracle ids are electron-v44.3.0.*. This map's oracle is v44.4.5. The X06-D6 pin correction requires one pin to be chosen before new cells land, and no task artifact records that choice. The pin belongs to KEL-237 (In Progress, unassigned; Linear, fetched 2026-10-07). Who can act: the repository owner or the map orchestrator, recording the choice on KEL-237. Options: (a) re-pin the three existing cells to v44.4.5, whose oracle text is unchanged per the X06 correction (recommended, one pin for the program); (b) land the window cells in a separately pinned corpus instance (INFERENCE: the schema allows a second instance; not verified). First check: a KEL-237 comment naming the chosen pin.",
+     "new": "Electron pin (not a blocker): fixed by X01-T3 AC2. A new corpus pins the v44.4.5 tag commit 694f45852a0f1726cd23bfd379854de489cccb65, and electron-lifecycle-v0 stays frozen at its 44.3.0 pin until KEL-237 deliberately re-records it."
+    },
+    {
+     "key": "F02-T1",
+     "field": "linear_owner",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the pin rule for new corpora is X01-T3's, not KEL-237's.",
+     "old": "KEL-237 In Progress, unassigned, owns the lifecycle-corpus pin (Linear, fetched 2026-10-07)",
+     "new": "KEL-237 In Progress, unassigned, owns the frozen electron-lifecycle-v0 corpus (Linear, fetched 2026-10-07); the pin rule for new corpora is X01-T3's"
+    },
+    {
+     "key": "F02-T7",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners) and C3-redrule residual 2 (F02 pin hold has no evidence behind it): F02-T7 consumes the X01-T3 pin rule and representation.",
+     "items": [
+      "X01-T3"
+     ]
+    },
+    {
+     "key": "F02-T7",
+     "field": "ready_state",
+     "op": "set",
+     "why": "C3-redrule residual 2 (F02 pin hold has no evidence behind it): X01-T3 AC2 fixes the pin and no open decision blocks this ticket, so needs-info has no basis.",
+     "value": "ready-for-agent"
+    },
+    {
+     "key": "F02-T7",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): one red-until-implemented representation (X01-T3) and the X01-T3 pin.",
+     "old": "Land KEL-74 cells with runner-asserted expected status for the window behaviours that were moved out of F02-T1:",
+     "new": "Land KEL-74 cells, pinned by the X01-T3 pin rule (the v44.4.5 tag commit), for the window behaviours that were moved out of F02-T1. Each pending cell is recorded in the X01-T3 red-until-implemented representation: expected verdict `fail` with its implementing-ticket key, and a mapped test that asserts today's behaviour and passes; the implementing change inverts the test and flips the cell to `pass`; the implementing tickets are F02-T8 and F02-T9. `unknown` is used only for uncited, observed-only or unrun-lane cells. The cells cover:"
+    },
+    {
+     "key": "F02-T7",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cells consume the one X01-T3 representation and pin, each criterion with its own negative control.",
+     "items": [
+      "Every pending cited cell carries expected verdict `fail` with implementing-ticket key F02-T8 or F02-T9 and a mapped test that asserts today's behaviour and passes.",
+      "Every cell's oracle revision equals the corpus pin set by the X01-T3 pin rule (the v44.4.5 tag commit)."
+     ]
+    },
+    {
+     "key": "F02-T7",
+     "field": "negative_controls",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): negative controls for the representation and pin criteria.",
+     "items": [
+      "Removing a pending cell's implementing-ticket key fails the X01-T3 representation check.",
+      "A cell whose oracle revision names Electron 44.3.0 fails the pin-consistency check."
+     ]
+    },
+    {
+     "key": "F02-T7",
+     "field": "blocked_by_external",
+     "op": "replace",
+     "why": "C3-redrule residual 2 (F02 pin hold has no evidence behind it): X01-T3 AC2 decides the pin.",
+     "old": "BLOCKER \u2014 the Electron pin for new cells (see F02-T1). First check: a KEL-237 comment naming the chosen pin.",
+     "new": "Electron pin (not a blocker): fixed by X01-T3 AC2 (the v44.4.5 tag commit for new corpora)."
+    },
+    {
+     "key": "F02-T7",
+     "field": "linear_owner",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the pin rule for new corpora is X01-T3's, not KEL-237's.",
+     "old": "KEL-237 In Progress, unassigned, owns the lifecycle-corpus pin (Linear, fetched 2026-10-07)",
+     "new": "KEL-237 In Progress, unassigned, owns the frozen electron-lifecycle-v0 corpus (Linear, fetched 2026-10-07); the pin rule for new corpora is X01-T3's"
+    },
+    {
+     "key": "F02",
+     "field": "unapplied_findings.reason",
+     "op": "replace",
+     "why": "C3-redrule residual 2 (F02 pin hold has no evidence behind it): the pin hold is replaced by the X01-T3 AC2 pin. This is the unit-level F02 unapplied_findings entry for 'Cross-check X06-D7 fix (b)'.",
+     "old": "F02-T1 and F02-T7 keep needs-info for an independent blocker, the unrecorded Electron pin (KEL-237; X06-D6 pin correction), and F02-T10 for KEL-135.",
+     "new": "F02-T1 and F02-T7 are ready-for-agent: pin fixed by X01-T3 AC2. F02-T10 keeps needs-info for KEL-135."
+    },
+    {
+     "key": "F02",
+     "field": "not_yet_specified",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited beforeunload-ordering cell left F02-T1 because it has no implementing ticket. This is the unit-level F02 not_yet_specified list.",
+     "items": [
+      "The 'close' ordering before DOM beforeunload/unload (pinned v44.4.5 sentence): no cell until a ticket implements renderer beforeunload (0 corpus demand, no owner)."
+     ]
+    },
+    {
+     "key": "F03-T1",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): F03-T1 consumes the X01-T3 representation and pin and runs its manifest through the X01-T4 validator.",
+     "items": [
+      "X01-T3",
+      "X01-T4"
+     ]
+    },
+    {
+     "key": "F03-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): one red-until-implemented representation (X01-T3), not 'pass / fail / unknown'.",
+     "old": "Each cell carries an explicit expected status (pass / fail / unknown) that the runner asserts. An implementing ticket flips its cells to pass in its own change.",
+     "new": "Each pending cell is recorded in the X01-T3 red-until-implemented representation: expected verdict `fail` with its implementing-ticket key, and a mapped test that asserts today's behaviour and passes; the implementing change inverts the test and flips the cell to `pass` in its own change. `unknown` is used only for uncited, observed-only or unrun-lane cells. The manifest carries the corpus pin set by the X01-T3 pin rule and is validated by the X01-T4 shared owner."
+    },
+    {
+     "key": "F03-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): 'the input hook' is not a ticket key; a pending cell needs one, and before-input-event's behaviour is F03-T2's declared divergence row.",
+     "old": "Their behaviour cells are declared not-invoked (expected fail) until F03-T3 / F03-T4 / the input hook land.",
+     "new": "Their behaviour cells are expected `fail` keyed to F03-T3 (will-navigate, will-frame-navigate) and F03-T4 (setWindowOpenHandler). before-input-event's behaviour is the declared \u25b2 row (accepted, never emitted) that F03-T2 records, with its intentional divergence and no implementing key."
+    },
+    {
+     "key": "F03-T1",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cells consume the one X01-T3 representation.",
+     "items": [
+      "Every pending cited cell carries expected verdict `fail` with its implementing-ticket key and a mapped test that asserts today's behaviour and passes, and the manifest passes the X01-T4 validator"
+     ]
+    },
+    {
+     "key": "F03-T1",
+     "field": "negative_controls",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): negative control for the representation criterion.",
+     "items": [
+      "Removing a pending cell's implementing-ticket key makes the X01-T4 validator reject the manifest"
+     ]
+    },
+    {
+     "key": "F06-T1",
+     "field": "title",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited role-quit cell is expected `fail` keyed to F06-T16, not `unknown`.",
+     "old": "role-quit cell held at expected unknown",
+     "new": "role-quit cell held at expected fail (F06-T16)"
+    },
+    {
+     "key": "F06-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): one red-until-implemented representation (X01-T3), not 'fail or unknown'.",
+     "old": "whose expected verdict (fail or unknown) the runner asserts and which names its implementing ticket key,",
+     "new": "recorded in the X01-T3 representation: expected verdict fail with its implementing ticket key, and a mapped test that asserts today's behaviour and passes (`unknown` is used only for uncited, observed-only or unrun-lane cells),"
+    },
+    {
+     "key": "F06-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited role-quit cell is expected `fail` keyed to F06-T16.",
+     "old": "(expected unknown, implementing ticket F06-T16, which needs F01-T3; the first proof does not score quit)",
+     "new": "(expected fail, implementing ticket F06-T16, which needs F01-T3; the first proof does not score quit)"
+    },
+    {
+     "key": "F06-T1",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited role-quit cell is expected `fail` keyed to F06-T16.",
+     "old": "The role-quit cell is recorded with expected verdict unknown and implementing ticket F06-T16",
+     "new": "The role-quit cell is recorded with expected verdict fail and implementing ticket F06-T16"
+    },
+    {
+     "key": "F06-T1",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited role-quit cell is expected `fail` keyed to F06-T16.",
+     "old": "The role-quit cell stays expected unknown:",
+     "new": "The role-quit cell stays expected fail (keyed to F06-T16):"
+    },
+    {
+     "key": "F06-T1",
+     "field": "blocked_by_external",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the program pin rule is X01-T3's, not F04-T5's or KEL-237's.",
+     "old": "Program oracle pin: the lifecycle corpus is pinned to Electron 44.3.0 (commit 07e4607); if the program adopts one pin for all manifests (F04-T5 / KEL-237 fixture pin) these cells re-pin mechanically",
+     "new": "Program oracle pin (not a blocker): fixed by X01-T3 AC2, one pin per corpus with the v44.4.5 tag commit for new corpora; the 44.3.0 lifecycle corpus stays frozen"
+    },
+    {
+     "key": "F06-T4",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the role-quit cell stays expected `fail` keyed to F06-T16, with its mapped test following the current behaviour.",
+     "old": "The F06-T1 role cells (role ignores click, role close routing) flip from their expected fail to pass in this change, and the role-quit cell keeps its expected unknown verdict",
+     "new": "The F06-T1 role cells (role ignores click, role close routing) flip from their expected fail to pass in this change, and the role-quit cell keeps its expected fail verdict keyed to F06-T16, with its mapped test asserting the recorded KELD-COMPAT diagnostic"
+    },
+    {
+     "key": "F06-T16",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cited role-quit cell is expected `fail` in the X01-T3 representation.",
+     "old": "The F06-T1 role-quit cell flips from its expected unknown to pass in this change",
+     "new": "The F06-T1 role-quit cell flips from its expected fail to pass in this change"
+    },
+    {
+     "key": "F07-T4",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): F07-T4 consumes the X01-T3 representation and pin and runs its manifest through the X01-T4 validator.",
+     "items": [
+      "X01-T3",
+      "X01-T4"
+     ]
+    },
+    {
+     "key": "F07-T4",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): one red-until-implemented representation (X01-T3) with a named implementing-ticket key.",
+     "old": "Each cell cites the pinned Electron v44.4.5 sentence or source and carries an explicit expected status that the runner asserts; the implementing change flips it.",
+     "new": "Each cell cites the pinned Electron v44.4.5 sentence or source. Each pending cited cell is recorded in the X01-T3 red-until-implemented representation: expected verdict `fail` with its implementing-ticket key, and a mapped test that asserts today's behaviour and passes; the implementing change inverts the test and flips the cell to `pass`. The implementing tickets are F07-T1, F07-T2 and F07-T6. `unknown` is used only for the observation cells below and unrun engines. The manifest carries the corpus pin set by the X01-T3 pin rule and is validated by the X01-T4 shared owner."
+    },
+    {
+     "key": "F07-T4",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the cells consume the one X01-T3 representation.",
+     "items": [
+      "Every pending cited cell carries expected verdict `fail` with its implementing-ticket key (F07-T1, F07-T2 or F07-T6) and a mapped test that asserts today's behaviour and passes, and the manifest passes the X01-T4 validator."
+     ]
+    },
+    {
+     "key": "F07-T4",
+     "field": "negative_controls",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): negative control for the representation criterion.",
+     "items": [
+      "Removing a pending cell's implementing-ticket key makes the X01-T4 validator reject the manifest."
+     ]
+    },
+    {
+     "key": "F09-T3",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): F09-T3 consumes the X01-T3 pin rule and representation. X01-T4 is added too (a refinement): AC4's pin rejection and the per-cell negative-control validation are X01-T4 checks, so leaving it out would be hidden coupling.",
+     "items": [
+      "X01-T3",
+      "X01-T4"
+     ]
+    },
+    {
+     "key": "F09-T3",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): X01-T3 AC2 owns the pin rule, not KEL-237.",
+     "old": "Every cell's Electron-version dimension matches the corpus pin that KEL-237 owns; a cell with a different pin is rejected",
+     "new": "Every cell's Electron-version dimension matches the corpus pin set by the X01-T3 pin rule; a cell with a different pin is rejected"
+    },
+    {
+     "key": "F09-T3",
+     "field": "negative_controls",
+     "op": "add",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the pin criterion had no negative control.",
+     "items": [
+      "A cell whose Electron-version dimension names 44.3.0 is rejected by the X01-T4 pin-consistency check"
+     ]
+    },
+    {
+     "key": "F09-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the match cells use the one X01-T3 representation with implementing key F09-T1.",
+     "old": "Match cells start at an expected `fail` that F09-T1 flips to pass.",
+     "new": "Match cells are recorded in the X01-T3 red-until-implemented representation: expected verdict `fail` with its implementing-ticket key, and a mapped test that asserts today's behaviour and passes; the implementing change inverts the test and flips the cell to `pass`; the implementing-ticket key is F09-T1."
+    },
+    {
+     "key": "F09-T3",
+     "field": "blocked_by_external",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the pin choice is no longer open; X01-T3 AC2 decides it.",
+     "old": "Corpus Electron pin: the lifecycle corpus is pinned at 44.3.0 while the program oracle is 44.4.5, and the choice of pin is open on KEL-237 (In Progress, unassigned). These cells' oracle is electron-updater, so only the pin dimension waits on it",
+     "new": "Corpus Electron pin (not a blocker): fixed by X01-T3 AC2, the v44.4.5 tag commit for new corpora. These cells' oracle is electron-updater, so only their pin dimension follows it"
+    },
+    {
+     "key": "X01-T3",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the consumer list now names every ticket that takes the X01-T3 edge.",
+     "old": "Consumers (their edges are owned by those units' repairs): F01-T1, F03-T1, F04-T1 and X02-T5 consume these rules directly",
+     "new": "Consumers (their edges are owned by those units' repairs): F01-T1, F01-T3, F02-T1, F02-T7, F03-T1, F04-T1, F05-T1, F05-T8, F07-T4, F09-T3 and X02-T5 consume these rules directly, and F06-T1 consumes them through X01-T4"
+    },
+    {
+     "key": "X01-T3",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): moving every cited pending cell onto this representation shows that cells cited by a source receipt rather than a doc sentence cannot reach `pass` under rule (4). The gap is recorded as an UNKNOWN for this spec to decide; this residual does not decide it.",
+     "old": "None of them should be blocked by X01-T1.",
+     "new": "None of them should be blocked by X01-T1. UNKNOWN, for this spec to decide: some cells' oracle is a digest-bound pinned source receipt rather than a doc sentence: F02-T1 cell 8, the F06-T1 role-fallback cell, the F07-T4 require-map cell and every F09-T3 electron-updater cell. Under rule (4) these cells can never expect `pass` unless the citation rule admits such a receipt."
+    },
+    {
+     "key": "X01-T4",
+     "field": "key_interfaces",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the consumer list now names every corpus that takes the X01-T4 edge.",
+     "old": "F01-T1/F03-T1/F04-T1 conformance corpora",
+     "new": "F01-T1/F02-T1/F03-T1/F04-T1/F06-T1/F07-T4/F09-T3 conformance corpora"
+    },
+    {
+     "key": "X01-T4",
+     "field": "notes",
+     "op": "replace",
+     "why": "C3-redrule residual 1 (two red-until-implemented rules, two owners): the consumer list now names every corpus that takes the X01-T4 edge.",
+     "old": "Consumers that must take an edge on this ticket in their own repairs: F01-T1, F03-T1, F04-T1, X02-T4",
+     "new": "Consumers that must take an edge on this ticket in their own repairs: F01-T1, F02-T1, F03-T1, F04-T1, F06-T1, F07-T4, F09-T3, X02-T4"
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": []
+  },
+  {
+   "cluster": "C5-claimloc",
+   "ops": [
+    {
+     "key": "F04-T7",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-102 (In Progress, unassigned; Linear fetched 2026-10-07), the issue this amendment targets. KEL-102 is not the tracker today, because its approved spec lists channel grants and window grants as non-goals. KEL-102 becomes the tracker of record for this work only after the amendment that removes those non-goals is merged and the alignment record is changed to linear. Until then, claims and status go only on the GitHub issue, never on both. Exact-content approval of the amendment is a repository-owner step.",
+     "why": "C5-claimloc: linear_owner named KEL-102 as the 'aligned tracker of record' while alignment.json records tracker=github because KEL-102's non-goals exclude channel grants. The text now names one claim location and states the condition that would move it to KEL-102."
+    },
+    {
+     "key": "F04-T8",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-102 (In Progress, unassigned; Linear fetched 2026-10-07), which owns dispatch_privileged. KEL-102's approved spec lists channel grants as non-goals until the F04-T7 amendment lands. Claims and status go only on the GitHub issue.",
+     "why": "C5-claimloc: linear_owner called KEL-102 the 'aligned tracker of record (live, scope covers the work)', which contradicts alignment.json (tracker=github, excluded by KEL-102's current non-goals). This creates a second claim location."
+    },
+    {
+     "key": "F04-T9",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-102 (In Progress, unassigned; Linear fetched 2026-10-07), the contract owner and the decided F04-A4 amendment target. KEL-142 (Done 2026-10-01) is the keld-wv mint lineage, and KEL-79 (Backlog) is related. No live issue owns the shared navigation-generation mint today. KEL-102's spec lists navigation rotation as destination work, not as a task. Claims and status go only on the GitHub issue.",
+     "why": "C5-claimloc: linear_owner named KEL-102 the 'aligned tracker of record', but alignment.json records tracker=github with KEL-102 as the nearest reference. Only one claim location may exist."
+    },
+    {
+     "key": "F05-T3",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue, for every permission kind, media included (#517 owner decision, comment 6024917784). Linear reference: KEL-102 (In Progress, unassigned; Linear fetched 2026-10-07), the guard-decision owner this facade defers to. KEL-102's description does not cover session permission request or check handlers, and KEL-132 covers only media guard installation. Claims and status go only on the GitHub issue.",
+     "why": "C5-claimloc: linear_owner split the tracker, putting media kinds on KEL-102 and the rest on GitHub. alignment.json records tracker=github for the whole ticket, and no live issue covers the handler facade. A split tracker lets an agent claim on both trackers."
+    },
+    {
+     "key": "F05-T5",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-135 (In Progress, Amisha Ramani; Linear fetched 2026-10-07), which owns the host-validated profile identity this ticket binds Session to. KEL-135 has no typed clear operation and no Session facade, so it does not cover this work. Claims and status go only on the GitHub issue.",
+     "why": "C5-claimloc: linear_owner gave only 'KEL-135', which reads as the Linear owner and claim location, while alignment.json records tracker=github (KEL-135 is related but not covering)."
+    },
+    {
+     "key": "F09-T7",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-53 (In Progress, Amisha Ramani; Linear fetched 2026-10-07), which owns the rule that application permissions cannot grant update authority. Neither its description nor its recent comments scope this arch 03 seeding fix. Claims and status go only on the GitHub issue.",
+     "why": "C5-claimloc: linear_owner put KEL-53 first, with GitHub only as a fallback, while alignment.json records tracker=github. It also found that no agent claim had been posted on KEL-53."
+    },
+    {
+     "key": "F09-T7",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Agent claim posted on KEL-53 (In Progress, Amisha Ramani), which owns the rule. If KEL-53's scope does not cover this edit, this ticket's GitHub issue is the tracker of record under the X06-D7 rule (GitHub #517 comment 6024917784), with a reference link on KEL-53"
+     ],
+     "why": "C5-claimloc: this item is a conditional claim-location statement, not a blocker. It says a claim was posted on KEL-53, but alignment.json found none on 2026-10-07. Leaving it in would keep a second claim location next to the corrected linear_owner."
+    },
+    {
+     "key": "X01-T3",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-237 (In Progress, unassigned; Linear fetched 2026-10-07), whose lifecycle manifest contract these rules extend. KEL-237's scope is one bounded lifecycle corpus, and its non-goals exclude compatibility-surface expansion. No quoted KEL-237 sentence covers cross-corpus evidence rules. Claims and status go only on the GitHub issue, and KEL-237 carries a reference link to it.",
+     "why": "C5-claimloc: linear_owner told agents to 'claim with the workflow Agent claim on KEL-237' as the aligned tracker of record. alignment.json records tracker=github, with no quoted covering sentence on KEL-237."
+    },
+    {
+     "key": "X01-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "Write a short spec (spec template) under the KEL-237 claim.",
+     "new": "Write a short spec (spec template) under the claim on this ticket's GitHub issue.",
+     "why": "C5-claimloc: what_to_build put the work 'under the KEL-237 claim', a second claim location that contradicts the GitHub tracker of record in alignment.json."
+    },
+    {
+     "key": "X01-T4",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-237 (In Progress, unassigned; Linear fetched 2026-10-07), whose lifecycle corpus this ticket migrates byte-for-byte. No KEL-237 description or owner comment asks for one shared multi-corpus manifest owner. Claims and status go only on the GitHub issue, and KEL-237 carries a reference link to it.",
+     "why": "C5-claimloc: linear_owner told agents to claim with the workflow Agent claim on KEL-237 as the aligned tracker of record. alignment.json records tracker=github, because the shared owner is not in KEL-237's quoted scope."
+    },
+    {
+     "key": "F01-T9",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue (#517 owner decision, comment 6024917784). Linear reference: KEL-78 (In Progress, GYLDLAB; Linear fetched 2026-10-07), the owner of the role-private container. KEL-78 names no persistent per-user userData or logs location per OS, which is why this ticket needs a KEL-78 amendment. Claims and status go only on the GitHub issue.",
+     "why": "C5-claimloc: linear_owner gave only 'KEL-78', which reads as the Linear owner and claim location, while alignment.json records tracker=github (KEL-78 is related but not covering)."
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": []
+  },
+  {
+   "cluster": "C6-F08",
+   "ops": [
+    {
+     "key": "F08-T1",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: GitHub #488, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue's scope covers engine web-content-process termination or render-process-gone. KEL-132 (In Progress) is limited to the safe GPU probe and media guard installation. KEL-79 (Backlog) mentions crash/reload only for a resource-transport fixture and does not ask for an engine-gone event to reach the app. Linear reference: KEL-79 (Backlog), the nearest live cross-engine webview contract, which is related but does not cover this ticket. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies the closed X06-D7 (#517) tracker-of-record rule and deletes 'missing owner' and the X06-D3 item-2 routing. Refinement: the Linear reference is KEL-79, not KEL-132, because the alignment record for F08-T1 names KEL-79 as nearest live issue and records that KEL-132 is GPU/media only."
+    },
+    {
+     "key": "F08-T1",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Missing Linear owner for keld-wv engine process-failure hooks: no open KEL issue names this. The F08 research note says neither KEL-132 nor KEL-79 does; that was not re-verified. First action: route it to the X06-D3 item-2 Linear-owner decision packet."
+     ],
+     "why": "Residual 1 (C6-F08): X06-D7 resolved the owner question, so the missing-owner hold, which rested on the superseded X06-D3 item-2 packet, is gone."
+    },
+    {
+     "key": "F08-T1",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "The F03-T1 webContents `render-process-gone` cell and the F08-T3 app-level `render-process-gone` cell move from their recorded expected-fail status to pass in this change, with no other cell's expected status edited",
+     "new": "The F08-T3 webContents `render-process-gone` and app `render-process-gone` cells move from their recorded expected-fail status to pass in this change, with no other cell's expected status edited",
+     "why": "Residual 2 (C6-F08): F03-T1 no longer holds a render-process-gone cell, so the flip criterion pointed at a nonexistent cell. Both cells now live in F08-T3."
+    },
+    {
+     "key": "F08-T1",
+     "field": "blocked_by_keys",
+     "op": "remove",
+     "items": [
+      "F03-T1"
+     ],
+     "why": "Residual 2 (C6-F08): F03-T1 carries no render-process-gone cell, so the conformance-first edge comes from F08-T3 alone. F03-T2 (delegate) stays."
+    },
+    {
+     "key": "F08-T1",
+     "field": "notes",
+     "op": "replace",
+     "old": "- The webContents-level conformance entry belongs to F03-T1.\n- The app-level entry and the destroy() oracle cell belong to F08-T3.",
+     "new": "- The webContents-level and app-level conformance entries and the destroy() oracle cell belong to F08-T3. F03-T1 deliberately carries no render-process-gone cell.",
+     "why": "Residual 2 (C6-F08): the one-owner map still assigned the webContents render-process-gone entry to F03-T1, which removed it. It now has one owner, F08-T3."
+    },
+    {
+     "key": "F08-T1",
+     "field": "notes",
+     "op": "replace",
+     "old": "KEL-75 was removed because role generations moved to F08-T8.",
+     "new": "KEL-75 was removed because role generations moved to F08-T8.\n\nClaim: post the workflow `## Agent claim` block as a comment on GitHub #488 (earliest comment wins; the assignee mirrors it). Cite #517 as the documented exception, because root AGENTS.md and the workflow still describe Linear-only claims until the amendment that #520 holds lands. The orchestrator confirms or posts the KEL-79 reference link (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): an agent following the unamended Linear-only claim text would otherwise refuse a GitHub claim on this X06-D7 ticket. This matches the claim note the other units carry."
+    },
+    {
+     "key": "F08-T2",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: GitHub #489, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue's scope covers non-lifecycle diagnostics scoreboard rows: KEL-74 (scoreboard schema) is Done, and KEL-237 (In Progress) is scoped to the implemented lifecycle slice, with non-goals that exclude compatibility-surface expansion. Linear reference: KEL-237 (In Progress), the nearest live compat-evidence owner, related but not covering. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies X06-D7 and deletes 'missing owner' and 'The X06-D3 item-2 packet decides'. The Linear reference is KEL-237, per the F08-T2 alignment record (refines the residual's KEL-127 default)."
+    },
+    {
+     "key": "F08-T2",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Missing Linear owner for compat scoreboard rows: KEL-74 is Done (Linear, fetched 2026-10-07), so this ticket is not startable until X06-D3 item 2 designates an owner"
+     ],
+     "why": "Residual 1 (C6-F08): X06-D7 supersedes the X06-D3 item-2 owner packet. The ticket stays needs-triage only because its milestone is parked."
+    },
+    {
+     "key": "F08-T2",
+     "field": "notes",
+     "op": "replace",
+     "old": "The ticket is parked because no corpus app calls any covered member (FACT, grep).",
+     "new": "The ticket is parked because no corpus app calls any covered member (FACT, grep).\n\nClaim: post the workflow `## Agent claim` block as a comment on GitHub #489 (earliest comment wins; the assignee mirrors it). Cite #517 as the documented exception until the amendment that #520 holds lands. The orchestrator confirms or posts the KEL-237 reference link (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): gives the GitHub claim route that X06-D7 makes valid, so the unamended Linear-only text does not block a claim."
+    },
+    {
+     "key": "F08-T3",
+     "field": "title",
+     "op": "replace",
+     "old": "pinned v44.4.5 entries for app render-process-gone",
+     "new": "pinned v44.4.5 entries for webContents and app render-process-gone",
+     "why": "Residual 2 (C6-F08): F08-T3 now owns the webContents render-process-gone cell that had no owner."
+    },
+    {
+     "key": "F08-T3",
+     "field": "current_behavior",
+     "op": "set",
+     "value": "No conformance entry exists for any F08-ticketed event, including the webContents-level `render-process-gone`. F03-T1 deliberately carries no render-process-gone cell.",
+     "why": "Residual 2 (C6-F08): the old text claimed F03-T1 owns the webContents entry, but repaired F03-T1 removed it."
+    },
+    {
+     "key": "F08-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "- app `render-process-gone`:",
+     "new": "- WebContents `render-process-gone` (pinned web-contents.md): \"Emitted when the renderer process unexpectedly disappears. This is normally because it was crashed or killed.\"\n- app `render-process-gone` (pinned app.md):",
+     "why": "Residual 2 (C6-F08): adds the zero-owner webContents render-process-gone cell, citing its pinned v44.4.5 web-contents.md sentence (FACT: the v44.4.5 API model's WebContents instance event description is that sentence)."
+    },
+    {
+     "key": "F08-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "The webContents-level `render-process-gone` entry stays in F03-T1 and is not duplicated here.",
+     "new": "F03-T1 carries no render-process-gone cell. F08-T1 flips both render-process-gone cells to pass in its own change.",
+     "why": "Residual 2 (C6-F08): the old sentence pointed the cell at F03-T1, which no longer has it."
+    },
+    {
+     "key": "F08-T3",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "items": [
+      "No entry duplicates the F03-T1 webContents render-process-gone entry"
+     ],
+     "why": "Residual 2 (C6-F08): the F03-T1 entry it guarded against does not exist. The webContents cell is now one of F08-T3's own listed entries, and AC1 covers it."
+    },
+    {
+     "key": "F08-T3",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Adding a second webContents render-process-gone entry fails the one-entry-per-member check",
+     "new": "Deleting the webContents render-process-gone cell fails the one-entry-per-listed-event check",
+     "why": "Residual 2 (C6-F08): AC3 was deleted. The control is repointed at AC1 so the newly owned webContents cell has a single-mutation negative control."
+    },
+    {
+     "key": "F08-T3",
+     "field": "electron_members_covered",
+     "op": "add",
+     "items": [
+      "WebContents render-process-gone"
+     ],
+     "why": "Residual 2 (C6-F08): F08-T3 now owns the webContents render-process-gone cell."
+    },
+    {
+     "key": "F08-T3",
+     "field": "out_of_scope",
+     "op": "set",
+     "value": "Entries for parked tickets F08-T5..T9 (each lands its own entry first). child-process-gone (F08-T8).",
+     "why": "Residual 2 (C6-F08): removes the out-of-scope claim that the webContents render-process-gone entry belongs to F03-T1."
+    },
+    {
+     "key": "F08-T3",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Missing Linear owner for compat conformance entries: KEL-74 is Done; KEL-237 is In Progress, and per X06-D3 its non-goals exclude compat conformance (not re-verified). First action: X06-D3 item-2 Linear-owner decision packet"
+     ],
+     "why": "Residual 1 (C6-F08): X06-D7 resolved the owner hold that rested on the superseded X06-D3 item-2 packet."
+    },
+    {
+     "key": "F08-T3",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue's scope covers new diagnostics conformance cells: KEL-74 (schema) is Done, and KEL-237 (In Progress) covers only the implemented lifecycle slice, with non-goals that exclude compatibility-surface expansion. Linear reference: KEL-237 (In Progress), which holds the corpus format and the map #391 bridge comment, related but not covering. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies X06-D7 and deletes 'missing owner'. The Linear reference is KEL-237, per the F08-T3 alignment record (refines the residual's KEL-127 default)."
+    },
+    {
+     "key": "F08-T3",
+     "field": "ready_state",
+     "op": "set",
+     "value": "ready-for-agent",
+     "why": "Residual 1 (C6-F08): its only hold was the missing owner, which X06-D7 removes. It stays blocked by X01-T1 through blocked_by_keys."
+    },
+    {
+     "key": "F08-T3",
+     "field": "notes",
+     "op": "set",
+     "value": "This is the family conformance ticket that was missing. It is limited to the members that next-milestone tickets (F08-T1, F08-T4) implement. Parked tickets carry 'conformance entry lands first' as their first AC instead.\n\nClaim: post the workflow `## Agent claim` block as a comment on this ticket's GitHub issue (earliest comment wins; the assignee mirrors it). Cite #517 as the documented exception, because root AGENTS.md and the workflow still describe Linear-only claims until the amendment that #520 holds lands. The orchestrator posts the KEL-237 reference link once the issue number exists (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): now that the ticket is ready-for-agent under X06-D7, it needs the GitHub claim route, or an agent following the unamended text would refuse the claim."
+    },
+    {
+     "key": "F08-T4",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue covers webview hang signals (WebView2 RENDER_PROCESS_UNRESPONSIVE, WebKitGTK is-web-process-responsive, the WKWebView gap). KEL-132 (In Progress) is GPU and media only. Linear reference: KEL-79 (Backlog), the nearest live cross-engine webview contract, whose acceptance does not include hang or responsiveness events. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies X06-D7 and deletes 'missing owner (same packet as F08-T1)'. Refinement: the reference is KEL-79, not KEL-132, per the F08-T4 alignment record."
+    },
+    {
+     "key": "F08-T4",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "Missing Linear owner for keld-wv engine hooks (same gap as F08-T1). First action: X06-D3 item-2 Linear-owner decision packet"
+     ],
+     "why": "Residual 1 (C6-F08): X06-D7 superseded the X06-D3 item-2 owner packet. The ticket stays needs-spec as a feature."
+    },
+    {
+     "key": "F08-T4",
+     "field": "notes",
+     "op": "replace",
+     "old": "the window/webContents objects are owned by F02-T2/F03-T2.",
+     "new": "the window/webContents objects are owned by F02-T2/F03-T2.\n\nClaim: post the workflow `## Agent claim` block as a comment on this ticket's GitHub issue (earliest comment wins; the assignee mirrors it). Cite #517 as the documented exception until the amendment that #520 holds lands. The orchestrator posts the KEL-79 reference link once the issue number exists (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): gives the GitHub claim route that X06-D7 makes valid."
+    },
+    {
+     "key": "F08-T5",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue covers a crashReporter facade: the only crashReporter matches, KEL-10 and KEL-51, are Done, and the facade owners KEL-17 and KEL-72 are Done. Linear reference: KEL-127 (Todo), the program fallback. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies X06-D7 and deletes 'missing owner (X06-D3 item-2 packet)'. KEL-127 is the reference, per the F08-T5 alignment record."
+    },
+    {
+     "key": "F08-T5",
+     "field": "notes",
+     "op": "replace",
+     "old": "- setUploadToServer before start() is a no-op.",
+     "new": "- setUploadToServer before start() is a no-op.\n\nClaim: post the workflow `## Agent claim` block as a comment on this ticket's GitHub issue (earliest comment wins). Cite #517 as the documented exception until the amendment that #520 holds lands. The orchestrator posts the KEL-127 reference link once the issue number exists (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): gives the GitHub claim route that X06-D7 makes valid."
+    },
+    {
+     "key": "F08-T6",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue covers a Bun-side process-stats facade: KEL-90 (In Progress) is limited to keld-benches fixtures, and KEL-129 (In Progress) owns budget feasibility only. Linear reference: KEL-127 (Todo), the program fallback. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies X06-D7 and deletes 'missing owner (X06-D3 item-2 packet)'. KEL-127 is the reference, per the F08-T6 alignment record."
+    },
+    {
+     "key": "F08-T6",
+     "field": "notes",
+     "op": "replace",
+     "old": "Parked: zero call sites.",
+     "new": "Parked: zero call sites.\n\nClaim: post the workflow `## Agent claim` block as a comment on this ticket's GitHub issue (earliest comment wins). Cite #517 as the documented exception until the amendment that #520 holds lands. The orchestrator posts the KEL-127 reference link once the issue number exists (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): gives the GitHub claim route that X06-D7 makes valid."
+    },
+    {
+     "key": "F08-T9",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: this ticket's GitHub issue, per the X06-D7 owner decision (GitHub #517, closed; owner decision comment 6024917784, option D). No live Linear issue covers a contentTracing module or the arch 07 \u00a72 structured compat error: KEL-17 and KEL-72 are Done, and KEL-237 excludes compatibility-surface expansion. Linear reference: KEL-127 (Todo), the program fallback. Linear, fetched 2026-10-07 (alignment record)",
+     "why": "Residual 1 (C6-F08): applies X06-D7 and replaces 'none, missing owner'. KEL-127 is the reference, per the F08-T9 alignment record. The separate map-level blocker for the structured-error owner is not a Linear-owner hold, so it is kept."
+    },
+    {
+     "key": "F08-T9",
+     "field": "notes",
+     "op": "set",
+     "value": "Parked: zero call sites.\n\nClaim: post the workflow `## Agent claim` block as a comment on this ticket's GitHub issue (earliest comment wins). Cite #517 as the documented exception until the amendment that #520 holds lands. The orchestrator posts the KEL-127 reference link once the issue number exists (X06-D7 rule 3).",
+     "why": "Residual 1 (C6-F08): gives the GitHub claim route that X06-D7 makes valid."
+    },
+    {
+     "key": "F03-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "render-process-gone cells belong to F08-T1.",
+     "new": "render-process-gone cells (webContents and app) belong to F08-T3, and F08-T1 implements them.",
+     "why": "Residual 2 (C6-F08): the cell's single owner is now F08-T3. The old pointer named F08-T1, an implementation ticket that holds no cell."
+    },
+    {
+     "key": "F03-T1",
+     "field": "out_of_scope",
+     "op": "replace",
+     "old": "render-process-gone (F08-T1).",
+     "new": "render-process-gone (entries in F08-T3, implementation in F08-T1).",
+     "why": "Residual 2 (C6-F08): keeps F03-T1's out-of-scope pointer consistent with the single owner F08-T3."
+    },
+    {
+     "key": "F08-EPIC",
+     "field": "epic_body",
+     "op": "replace",
+     "old": "Both consume conformance entries from F08-T3 and F03-T1.",
+     "new": "Both consume conformance entries from F08-T3, which owns the webContents and app render-process-gone cells.",
+     "why": "Residual 2 (C6-F08): the epic maturity ladder still pointed render-process-gone conformance at F03-T1. Apply this op if the orchestrator accepts epic_body patches; it is not one of the listed ticket fields."
+    },
+    {
+     "key": "F08-EPIC",
+     "field": "epic_body",
+     "op": "replace",
+     "old": "No open KEL issue owns keld-wv engine process-failure hooks or F08 conformance/scoreboard rows. Tickets that write to the repo are therefore needs-triage or needs-spec until the owner acts. The route is the Linear-owner decision packet in X06-D3 item 2: lift the cap, archive to free a slot, or designate an existing open issue.",
+     "new": "No open KEL issue owns keld-wv engine process-failure hooks or F08 conformance/scoreboard rows (Linear, fetched 2026-10-07, alignment record). Under the X06-D7 owner decision (GitHub #517, owner decision comment 6024917784), each F08 ticket's own GitHub issue is its tracker of record. Its Linear reference is the nearest live issue: KEL-79 for F08-T1/T4, KEL-237 for F08-T2/T3, KEL-129 for F08-T7, KEL-75 for F08-T8, and KEL-127 for F08-T5/T6/T9.",
+     "why": "Residual 1 (C6-F08): the epic still routed F08 owner holds to the superseded X06-D3 item-2 packet. Apply this op if the orchestrator accepts epic_body patches; it is not one of the listed ticket fields."
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": [
+    {
+     "residual": "Residual 1 recommended fix, sub-clause 'Linear reference: KEL-132 (In Progress) for F08-T1/T4 ... otherwise KEL-127'",
+     "reason": "Refined, not weakened. The task rule says the Linear reference is the nearest live issue from the alignment record. That record names KEL-79 (Backlog) for F08-T1 and F08-T4, and records that KEL-132 is limited to the GPU probe and media guard installation. It names KEL-237 (In Progress) for F08-T2 and F08-T3, and KEL-127 for F08-T5, T6 and T9. The ops use those references. Everything else in the residual is applied in full: the tracker-of-record text, deletion of 'missing owner' and the X06-D3 routing, and F08-T3 set to ready-for-agent while still blocked by X01-T1. F08-T7 (KEL-129) and F08-T8 (KEL-75) are outside this cluster's affected keys and are left unchanged."
+    }
+   ]
+  },
+  {
+   "cluster": "C7-F07",
+   "ops": [
+    {
+     "key": "F07-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "- `versions` comes from the X03-T1 boot-fact table (one source of truth).",
+     "new": "- `versions` deep-equals the main-role `process.versions` that X03-T4 maps from the F01-T4 session-facts payload (one source of truth; nothing is invented in the renderer).",
+     "why": "C7-F07 residual 1 (wrong owner): X03-T1 owns only module resolution and has no boot-fact table. F01-T4 owns the payload and X03-T4 owns the process.* value mapping."
+    },
+    {
+     "key": "F07-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "X05-T1, parked, adopts this id when pulled.",
+     "new": "X05-T1, parked, excludes this id and never re-registers or redefines it.",
+     "why": "C7-F07 residual 3 (two metric-registration owners): F07-T1 stays the single registrant of the PANEL-D21 diagnostic id. 'Adopts' read as a second registration by X05-T1."
+    },
+    {
+     "key": "F07-T1",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "In the preload, `process.type === 'renderer'`, `process.sandboxed === true`, `process.contextIsolated === true`, `process.versions` deep-equals the X03-T1 boot-fact table, and `process.env` is an own-property-free object (a fixture role environment containing `KELD_APP_LINK` is not visible).",
+     "new": "In the preload, `process.type === 'renderer'`, `process.sandboxed === true`, `process.contextIsolated === true`, `process.versions` deep-equals the F01-T4 session-facts payload, as mapped by X03-T4, and `process.env` is an own-property-free object (a fixture role environment containing `KELD_APP_LINK` is not visible).",
+     "why": "C7-F07 residual 1: AC6 named a non-existent X03-T1 boot-fact table. The value source is the F01-T4 payload as mapped by X03-T4."
+    },
+    {
+     "key": "F07-T1",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Hard-coding `process.versions` in the renderer runtime instead of reading the X03-T1 table fails the equality check when the fixture table changes.",
+     "new": "Hard-coding `process.versions` in the renderer runtime instead of reading the F01-T4 session-facts payload as mapped by X03-T4 fails the equality check when the fixture payload changes.",
+     "why": "C7-F07 residual 1: the AC6 negative control must name the real value source (the F01-T4 payload via X03-T4), not the absent X03-T1 table."
+    },
+    {
+     "key": "F07-T1",
+     "field": "blocked_by_keys",
+     "op": "remove",
+     "items": [
+      "X03-T1"
+     ],
+     "why": "C7-F07 residual 1: the X03-T1 edge carries no needed artifact. The renderer require map belongs to F07-T1, and no F07-T1 criterion needs the main-role electron package entry. AC3's require('electron') goes through the renderer map."
+    },
+    {
+     "key": "F07-T1",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "X03-T4"
+     ],
+     "why": "C7-F07 residual 1: the process.versions source F07-T1 needs had no edge. X03-T4 maps it and already depends on F01-T4. No cycle: X03-T4 reaches only X03-T3, F01-T4, F01-T1 and PANEL-P3."
+    },
+    {
+     "key": "F07-T1",
+     "field": "electron_members_covered",
+     "op": "replace",
+     "old": "renderer process.versions (values owned by X03-T1)",
+     "new": "renderer process.versions (values from the F01-T4 session-facts payload, mapped by X03-T4)",
+     "why": "C7-F07 residual 1: the value owner was mislabelled as X03-T1."
+    },
+    {
+     "key": "F07-T1",
+     "field": "key_interfaces",
+     "op": "replace",
+     "old": "the X03-T1 boot-fact table",
+     "new": "the F01-T4 session-facts payload as mapped by X03-T4 (process.versions)",
+     "why": "C7-F07 residual 1: no X03-T1 boot-fact table exists."
+    },
+    {
+     "key": "F07-T1",
+     "field": "notes",
+     "op": "replace",
+     "old": "- X03-T1 owns the boot-fact values.",
+     "new": "- F01-T4 owns the session-facts payload and X03-T4 owns its process.versions mapping. X03-T1 owns only main-role module resolution and is not an edge: the renderer require map belongs to this ticket, and no criterion here needs the electron package entry.",
+     "why": "C7-F07 residual 1: corrected the adjacent-owner note and recorded why the X03-T1 edge was dropped."
+    },
+    {
+     "key": "F07-T1",
+     "field": "notes",
+     "op": "replace",
+     "old": "It adopts this ticket's single diagnostic id and does not redefine it, so F07-T1 is not blocked by X05-T1.",
+     "new": "It excludes this ticket's single diagnostic id and neither re-registers nor redefines it, so F07-T1 is not blocked by X05-T1.",
+     "why": "C7-F07 residual 3: one registering owner for the PANEL-D21 diagnostic id."
+    },
+    {
+     "key": "F07-T6",
+     "field": "title",
+     "op": "replace",
+     "old": "from host-minted boot facts",
+     "new": "from the host-minted session facts (F01-T4, mapped by X03-T4)",
+     "why": "C7-F07 residual 1: names the real value source in place of the non-existent X03-T1 boot-fact table."
+    },
+    {
+     "key": "F07-T6",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "Values come from the X03-T1 boot-fact table and the host; nothing is invented in the renderer.",
+     "new": "platform, version and arch come from the F01-T4 session-facts payload, as mapped by X03-T4. `uptime()` and `getSystemVersion()` come from the host. Nothing is invented in the renderer. UNKNOWN: X03-T4's member list does not name platform, arch or version, so whether its mapping carries them is open. If it does not, this ticket's spec adds them through F01-T4's field set and X03-T4's mapping, never as a renderer-side constant.",
+     "why": "C7-F07 residual 1: 'Values come from the X03-T1 boot-fact table' named the wrong owner. This also discloses the gap that X03-T4 does not list platform, arch or version today."
+    },
+    {
+     "key": "F07-T6",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "Zettlr's bundled preload evaluates past its process exposure with no TypeError: `getSystemVersion()` returns a non-empty string, `uptime()` returns a non-negative number, and platform, arch and version equal the host-minted table.",
+     "new": "Zettlr's bundled preload evaluates past its process exposure with no TypeError: `getSystemVersion()` returns a non-empty string, `uptime()` returns a non-negative number, and platform, arch and version equal the F01-T4 session-facts payload values as mapped by X03-T4.",
+     "why": "C7-F07 residual 1: the equality oracle must be the F01-T4 payload via X03-T4, not an unowned table."
+    },
+    {
+     "key": "F07-T6",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Reading platform from a renderer-side constant instead of the X03-T1 table fails the equality check when the fixture table changes.",
+     "new": "Reading platform from a renderer-side constant instead of the F01-T4 session-facts payload as mapped by X03-T4 fails the equality check when the fixture payload changes.",
+     "why": "C7-F07 residual 1: the negative control must name the real value source."
+    },
+    {
+     "key": "F07-T6",
+     "field": "blocked_by_keys",
+     "op": "remove",
+     "items": [
+      "X03-T1"
+     ],
+     "why": "C7-F07 residual 1: X03-T1 owns module resolution only and supplies no process value. No F07-T6 criterion needs the electron package entry."
+    },
+    {
+     "key": "F07-T6",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "X03-T4"
+     ],
+     "why": "C7-F07 residual 1: X03-T4 owns the process.* mapping of the F01-T4 payload that F07-T6 reads. A next ticket may be blocked by a first-proof ticket, and there is no cycle."
+    },
+    {
+     "key": "F07-T6",
+     "field": "key_interfaces",
+     "op": "set",
+     "value": "F07-T1 renderer process object; the F01-T4 session-facts payload as mapped by X03-T4.",
+     "why": "C7-F07 residual 1: replaces the non-existent 'X03-T1 boot facts'."
+    },
+    {
+     "key": "X03-T4",
+     "field": "notes",
+     "op": "replace",
+     "old": "Consumed by the X02-T6 scoring run",
+     "new": "Consumed by F07-T1 (renderer process.versions deep-equals this mapping) and by F07-T6 (next; renderer platform, arch and version). Both are blocked by this ticket and define no second value source. Consumed by the X02-T6 scoring run",
+     "why": "C7-F07 residual 1: records the new F07-T1/F07-T6 consumer edges on the owner of the process.* mapping."
+    },
+    {
+     "key": "F07-T2",
+     "field": "title",
+     "op": "set",
+     "value": "task(renderer): zero-<webview> contract \u2014 will-attach-webview never emitted, <webview> stays an undefined element",
+     "why": "C7-F07 residual 2: the 113 webviewTag rows moved to new next-milestone F07-T7 (YAGNI for the four-step first-proof workflow). Listener registrability is now F03-T2's."
+    },
+    {
+     "key": "F07-T2",
+     "field": "what_to_build",
+     "op": "set",
+     "value": "Prove the zero-webview contract that draw.io relies on:\n- A `will-attach-webview` listener registered on a window's webContents is never emitted, including when a page inserts `<webview>`. F03-T2's facade accepts the registration, and F02-T2 announces the window through `app.on('web-contents-created')`.\n- `<webview>` is never defined, so no custom element and no child webview exist.\n\nAdjacent owners:\n- Accepting `webPreferences.webviewTag` (default false) is F02-T4's row.\n- Emitting `web-contents-created` is F02-T2's.\n- Accepting the listener registration is F03-T2's.\n- X02-T6 scores the workflow-wide zero-emission observation.\n- The 113 webviewTag scoreboard rows are F07-T7 (next).\n- Reporting `<webview>` usage in migrate output is X02-T2's, which classifies against the F07-T7 rows.",
+     "why": "C7-F07 residual 2: F03-T2 now owns facade registration, the full-workflow observable moved to X02-T6, and the 113 rows were split to F07-T7."
+    },
+    {
+     "key": "F07-T2",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "On macOS, draw.io's `web-contents-created` handler registers `will-attach-webview` without throwing, for every window draw.io creates in the first-proof workflow.",
+     "new": "On macOS, a fixture that copies draw.io's `web-contents-created` handler registers `will-attach-webview` on the created window's webContents without throwing.",
+     "why": "C7-F07 residual 2: narrowed to a local fixture observable. Facade acceptance is F03-T2 AC7, and the whole workflow is X02-T6's."
+    },
+    {
+     "key": "F07-T2",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "Across the full first-proof workflow (install, activation, open, edit, save, close with unsaved prompt), the runner observes zero `will-attach-webview` emissions.",
+     "new": "On macOS, a `will-attach-webview` listener registered on a fixture window is invoked zero times while that window's page inserts and then removes a `<webview>` element.",
+     "why": "C7-F07 residual 2: the full-first-proof-workflow count is an X02-T6 integration observable and moved there. F07-T2 keeps a local binary zero-emission check."
+    },
+    {
+     "key": "F07-T2",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "items": [
+      "The scoreboard holds exactly 113 webviewTag rows, each \u2718 with a receipt and the F07-T3 tracking key."
+     ],
+     "why": "C7-F07 residual 2: the four-step first-proof workflow does not need the 113 rows (YAGNI). They moved to new F07-T7 (next)."
+    },
+    {
+     "key": "F07-T2",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Emitting `will-attach-webview` for any window fails the zero-emission count.",
+     "new": "Emitting `will-attach-webview` when the fixture page inserts `<webview>` fails the zero-invocation criterion.",
+     "why": "C7-F07 residual 2: re-targeted to the local zero-invocation AC after the workflow-wide count moved to X02-T6."
+    },
+    {
+     "key": "F07-T2",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Deleting one webviewTag row (112 rows) fails the row-count check.",
+     "new": "Dropping `will-attach-webview` from the F03-T2 registration-safe set makes the draw.io-handler fixture throw, which fails the registration criterion.",
+     "why": "C7-F07 residual 2: the row-count control moves to F07-T7 with the rows. The registration AC gets its own single-mutation control now that F03-T2 owns the listener."
+    },
+    {
+     "key": "F07-T2",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F03-T2"
+     ],
+     "why": "C7-F07 residual 2: the registration AC needs a webContents facade that accepts on('will-attach-webview'), which F03-T2 owns. No cycle: F03-T2 does not reach F07-T2."
+    },
+    {
+     "key": "F07-T2",
+     "field": "electron_members_covered",
+     "op": "replace",
+     "old": "webContents event will-attach-webview (registrable, never emitted)",
+     "new": "webContents event will-attach-webview (never emitted; registration accepted by F03-T2)",
+     "why": "C7-F07 residual 2: registrability is owned by F03-T2."
+    },
+    {
+     "key": "F07-T2",
+     "field": "electron_members_covered",
+     "op": "remove",
+     "items": [
+      "webviewTag element: all 113 members as \u2718(tracked \u2192 F07-T3) rows (65 methods, 35 events, 13 attributes)"
+     ],
+     "why": "C7-F07 residual 2: the 113 webviewTag rows moved to F07-T7 (next)."
+    },
+    {
+     "key": "F07-T2",
+     "field": "platforms",
+     "op": "set",
+     "value": "macOS for the first-proof observation.",
+     "why": "C7-F07 residual 2: the engine-independent row clause moved with the rows to F07-T7."
+    },
+    {
+     "key": "F07-T2",
+     "field": "key_interfaces",
+     "op": "set",
+     "value": "webContents facade event registration (F03-T2) on windows announced by web-contents-created (F02-T2); the F07-T4 renderer conformance entries.",
+     "why": "C7-F07 residual 2: facade registration belongs to F03-T2, and the scoreboard schema interface moved with the rows."
+    },
+    {
+     "key": "F07-T2",
+     "field": "out_of_scope",
+     "op": "set",
+     "value": "webviewTag WebPreferences acceptance (F02-T4). web-contents-created emission (F02-T2). Facade acceptance of the listener registration (F03-T2). The workflow-wide zero-emission scoring (X02-T6). The 113 webviewTag scoreboard rows (F07-T7, next). Migrate reporting (X02-T2). A real <webview> mapping (F07-T3). The browser-quirk ledger (F07-T5).",
+     "why": "C7-F07 residual 2: records where each moved atom now lives."
+    },
+    {
+     "key": "F07-T2",
+     "field": "notes",
+     "op": "set",
+     "value": "Coverage-gap dependency: if F02-T2 never emits `web-contents-created`, draw.io's handler and the draw.io hooks of F03-T3 and F03-T4 are unreachable. F02-T2 owns that emission and F03-T2 owns the listener registration. This ticket holds honesty observations with no feature behind it. It is ready-for-agent, and an agent can take it once F07-T4, F02-T2 and F03-T2 land.",
+     "why": "C7-F07 residual 2: the F03-T2 edge is added and the rows are gone, so ready-for-agent still holds: the ticket builds no facade code, and its only holds are its blockers."
+    },
+    {
+     "key": "F03-T2",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "- on('will-navigate') and on('will-frame-navigate'): accepted, not invoked until F03-T3.",
+     "new": "- on('will-navigate') and on('will-frame-navigate'): accepted, not invoked until F03-T3.\n- on('will-attach-webview'): accepted and never emitted, because Keld defines no <webview>. Its never-emitted contract is F07-T2's, and its conformance entry is F07-T4's. It has no \u25b2 row here.",
+     "why": "C7-F07 residual 2: F07-T2 needs a facade that accepts on('will-attach-webview'), and F03-T2's registration-safe list did not include it."
+    },
+    {
+     "key": "F03-T2",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "Registering will-navigate, will-frame-navigate, before-input-event and setWindowOpenHandler does not throw. A page window.open() returns null and the host creates no window",
+     "new": "Registering will-navigate, will-frame-navigate, before-input-event, will-attach-webview and setWindowOpenHandler does not throw. A page window.open() returns null and the host creates no window",
+     "why": "C7-F07 residual 2: adds will-attach-webview to the AC7 registration list, as the recommended fix requires."
+    },
+    {
+     "key": "F03-T2",
+     "field": "electron_members_covered",
+     "op": "add",
+     "items": [
+      "will-attach-webview (registration; never emitted, F07-T2)"
+     ],
+     "why": "C7-F07 residual 2: F03-T2 now owns facade acceptance of the will-attach-webview registration."
+    },
+    {
+     "key": "F03-T2",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F07-T4"
+     ],
+     "why": "C7-F07 residual 2: F03-T1 cell 8 does not cite will-attach-webview, so the newly owned registration needs its conformance entry (F07-T4) to land first. F07-T4 has no blockers, so there is no cycle."
+    },
+    {
+     "key": "X02-T6",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "Every activation and primary_workflow record carries the runner-observed `will-attach-webview` emission count across all draw.io windows, and a record whose count is nonzero cannot be scored pass"
+     ],
+     "why": "C7-F07 residual 2: moved F07-T2's former AC3 (zero emissions across the full first-proof workflow) here as a scored observation, because it is an integration observable. The install cell stays unknown and is excluded."
+    },
+    {
+     "key": "X02-T6",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Emitting `will-attach-webview` on any draw.io window during the run makes the affected activation or workflow record fail the zero-webview rule, not pass"
+     ],
+     "why": "C7-F07 residual 2: a single-mutation negative control for the moved zero-webview scoring criterion."
+    },
+    {
+     "key": "X02-T6",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F07-T2"
+     ],
+     "why": "C7-F07 residual 2: X02-T6 now scores F07-T2's zero-webview contract workflow-wide. No cycle: F07-T2 reaches only F07-T4, F02-T2, F03-T2 and their predecessors."
+    },
+    {
+     "key": "X02-T6",
+     "field": "notes",
+     "op": "replace",
+     "old": "X01-T4 (the manifest validator the corpus runs under).",
+     "new": "X01-T4 (the manifest validator the corpus runs under); F07-T2 (the zero-<webview> contract whose workflow-wide emission count this run scores).",
+     "why": "C7-F07 residual 2: per-edge rationale for the new F07-T2 gate."
+    },
+    {
+     "key": "F07-T3",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F07-T7"
+     ],
+     "why": "C7-F07 residual 2: the 113 \u2718 rows that F07-T3 flips moved from F07-T2 to new F07-T7. Parked blocked by next is order-consistent, and F07-T7 has no blockers."
+    },
+    {
+     "key": "F07-T3",
+     "field": "current_behavior",
+     "op": "set",
+     "value": "Nothing exists. The rows are \u2718 via F07-T7.",
+     "why": "C7-F07 residual 2: the rows now live in F07-T7, so the 'via F07-T2' text would be stale."
+    },
+    {
+     "key": "X05-T1",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "- **PRELOAD-HANDLER-COST:** per-call cost of the F07-T1 app-world compat handler. Claim class is diagnostic only, with no threshold and no pass/fail.",
+     "new": "- Excluded: the PANEL-D21 app-world per-call diagnostic id is registered by F07-T1 and excluded here. This ticket neither re-registers nor redefines it.",
+     "why": "C7-F07 residual 3 (two owners of metric registration): F07-T1 AC12 registers the id, so X05-T1 drops its PRELOAD-HANDLER-COST entry and gets the one exclusion sentence."
+    },
+    {
+     "key": "X05-T1",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "items": [
+      "PRELOAD-HANDLER-COST is registered with claim class diagnostic and no threshold field"
+     ],
+     "why": "C7-F07 residual 3: duplicate registration of the PANEL-D21 diagnostic id. F07-T1 AC12 is the single owner."
+    },
+    {
+     "key": "X05-T1",
+     "field": "negative_controls",
+     "op": "remove",
+     "items": [
+      "Adding a pass/fail threshold to PRELOAD-HANDLER-COST makes the registry validation fail"
+     ],
+     "why": "C7-F07 residual 3: this control belonged to the removed duplicate AC. F07-T1 keeps the equivalent control for its own registry entry."
+    },
+    {
+     "key": "X05-T1",
+     "field": "notes",
+     "op": "set",
+     "value": "Parked by the YAGNI test: the draw.io first proof ships correctly without any performance claim. Held at needs-triage until pulled. Pull trigger: a facade one-way path and BrowserWindow exist (F02-T2, F04-T3). Other units' unattributed performance criteria, such as mirror-read cost and event-stream ordering rates, are re-homed here as metric ids rather than kept as ACs. The one exception is below.\n\nGate rule: X05-T1 gates no first-proof ticket. The PANEL-D21 app-world per-call diagnostic id is registered by F07-T1 and excluded here, for three reasons:\n- F07-T1 (first-proof) needs it to satisfy the closed PANEL-D21 condition.\n- A parked owner cannot gate a first-proof ticket.\n- It is a single-ticket diagnostic with no threshold, not a comparative compat-overhead metric.\nThe keld-benches registry remains the single owner of metric ids, and each id has exactly one registering ticket.",
+     "why": "C7-F07 residual 3: the old note reserved PRELOAD-HANDLER-COST here and rejected registration in F07-T1, which contradicted F07-T1 AC12. One owner (F07-T1) is now recorded."
+    }
+   ],
+   "new_tickets": [
+    {
+     "unit": "F07",
+     "ticket": {
+      "key": "F07-T7",
+      "title": "task(scoreboard): 113 webviewTag members as \u2718(tracked \u2192 F07-T3) scoreboard rows with pinned receipts",
+      "kind": "task",
+      "tier": "Tier 3",
+      "maturity_target": "L0",
+      "milestone": "next",
+      "ready_state": "ready-for-agent",
+      "size": "S",
+      "current_behavior": "Nothing exists. No webviewTag row is on the scoreboard.",
+      "what_to_build": "Publish one scoreboard row for each of the 113 `webviewTag` members in the pinned Electron v44.4.5 API model (65 methods, 35 events, 13 attributes). Each row has status \u2718, the tracking key F07-T3, and a receipt citing the pinned v44.4.5 webview-tag page. The rows are engine-independent (\u2718 on all three engines). This ticket publishes rows only; the runtime zero-<webview> contract is F07-T2's.",
+      "acceptance_criteria": [
+       "The scoreboard holds exactly 113 webviewTag rows, one per member of the pinned v44.4.5 webviewTag model (65 methods, 35 events, 13 attributes), and no model member lacks a row.",
+       "Every webviewTag row has status \u2718, a receipt citing the pinned v44.4.5 webview-tag page, and the tracking key F07-T3."
+      ],
+      "negative_controls": [
+       "Deleting one webviewTag row (112 rows) fails the row-count check.",
+       "A row with no receipt, or with a tracking key other than F07-T3, fails the row-schema check."
+      ],
+      "blocked_by_keys": [],
+      "blocked_by_external": [],
+      "linear_owner": "Tracker of record: this ticket's own GitHub issue, numbered at publish (X06-D7; owner decision on #517, comment 6024917784). Linear reference: a link on KEL-79 (Backlog), the nearest live issue the alignment names for the zero-<webview> work these rows came from (Linear, fetched 2026-10-07). No live Linear issue covers webviewTag scoreboard rows. KEL-74 (Done, GYLDLAB) owns the row schema and is consumed.",
+      "review_gates": [
+       "none"
+      ],
+      "platforms": "Engine-independent rows (\u2718 on WKWebView, WebView2 and WebKitGTK); no native observation required.",
+      "electron_members_covered": [
+       "webviewTag element: all 113 members as \u2718(tracked \u2192 F07-T3) rows (65 methods, 35 events, 13 attributes)"
+      ],
+      "key_interfaces": "KEL-74 scoreboard row schema; the pinned Electron v44.4.5 webview-tag page and API model.",
+      "out_of_scope": "The runtime zero-<webview> contract (F07-T2). A real <webview> mapping (F07-T3). Migrate reporting (X02-T2), which classifies against these rows. webviewTag WebPreferences acceptance (F02-T4).",
+      "notes": "Split from F07-T2. The four-step first-proof workflow never reads these rows: draw.io disables <webview> everywhere. Consumers: X02-T2 (next) classifies <webview> usage against them, and F07-T3 (parked) flips them and is blocked by this ticket. FACT: the census of 65 methods, 13 properties and 35 events comes from the pinned v44.4.5 electron-api model (re-counted 2026-10-07).",
+      "change_log": [
+       "New ticket split from F07-T2: its 113 webviewTag rows are not needed by the four-step first-proof workflow (C7-F07 residual 2, YAGNI). Milestone next, with the row-count AC and negative control carried over."
+      ]
+     }
+    }
+   ],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": []
+  },
+  {
+   "cluster": "C8-roleenv",
+   "ops": [
+    {
+     "key": "F01-T4",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "So a declared key whose name starts with `KELD_` is rejected with a typed error, and no declared value changes any guard decision or role-policy record.",
+     "new": "Declared keys are default-deny:\n- The declared list is a closed set of exact literal names: an uppercase letter followed by uppercase letters, digits or underscores, with no pattern or wildcard. Only names listed in the reviewed artefact are applied (X02-T3, permission-model gate). For the first proof that list is exactly DRAWIO_DISABLE_UPDATE (PANEL-D14). The host hard-codes no app name.\n- Beneath that list the host enforces a reserved-name floor that no declaration can override. Any name starting with KELD_ (KEL-75 keeps KELD_APP_LINK as the sole bootstrap variable), BUN_, NODE_, DYLD_ or LD_, or equal in any letter case to HTTP_PROXY, HTTPS_PROXY, ALL_PROXY or NO_PROXY, is rejected before spawn with a typed KELD-* error naming the key. No role process is created.\n- INFERENCE: loader-, runtime- and network-affecting names (NODE_OPTIONS, BUN_OPTIONS, NODE_TLS_REJECT_UNAUTHORIZED, DYLD_INSERT_LIBRARIES, the proxy variables) could re-enable preload or install behaviour or redirect traffic, undoing X03-T6's fail-closed guarantee.\n- UNKNOWN: the full set of environment names Bun 1.4.2 honours. Before approval, the spec cites Bun's primary documentation for that set and adds to the floor any honoured name outside these prefixes.\n- No declared value changes any guard decision or role-policy record. Role behaviour outside keld-guard is proved by the X03-T6 cell, where a spawn with a declared key still fails closed.",
+     "why": "C8-roleenv residual 1: the declared role environment rejected only KELD_ names and applied every other app-declared key (NODE_OPTIONS, BUN_*, DYLD_*, proxies) at spawn. It is now default-deny: exact literal names from the reviewed artefact only, plus a host-enforced reserved floor"
+    },
+    {
+     "key": "F01-T4",
+     "field": "key_interfaces",
+     "op": "replace",
+     "old": "applied through the existing RoleConfig per-key environment setter.",
+     "new": "applied through the existing RoleConfig per-key environment setter after the host reserved-name floor and literal-name check.",
+     "why": "C8-roleenv residual 1: names the host reserved-name floor as part of the declared-environment interface"
+    },
+    {
+     "key": "F01-T4",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "A declared role-environment key whose name starts with `KELD_` (for example KELD_APP_LINK) is rejected before spawn with a typed KELD-* error naming the key",
+     "new": "Each reserved-floor fixture is rejected before spawn with a typed KELD-* error naming the key, and no role process is created. Each fixture declares one key: KELD_APP_LINK, NODE_OPTIONS, BUN_OPTIONS, NODE_TLS_REJECT_UNAUTHORIZED, DYLD_INSERT_LIBRARIES, LD_PRELOAD or https_proxy",
+     "why": "C8-roleenv residual 1: the floor must reject loader-, runtime- and proxy-affecting names, not only KELD_"
+    },
+    {
+     "key": "F01-T4",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "A declared key that is not an exact literal name (for example `DRAWIO_*`, or a name containing `=`) is rejected before spawn with a typed KELD-* error naming the key"
+     ],
+     "why": "C8-roleenv residual 1: default-deny needs a closed list of exact literal names, never a pattern"
+    },
+    {
+     "key": "F01-T4",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Accepting a declared KELD_APP_LINK key fails the KELD_-rejection criterion",
+     "new": "Dropping the NODE_ and BUN_ prefixes from the reserved floor lets the declared NODE_OPTIONS and BUN_OPTIONS fixtures spawn, and the reserved-name criterion fails",
+     "why": "C8-roleenv residual 1: the recommended negative control (a declared NODE_OPTIONS or BUN_OPTIONS key is rejected)"
+    },
+    {
+     "key": "F01-T4",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Accepting the wildcard declared name `DRAWIO_*` fails the literal-name criterion"
+     ],
+     "why": "C8-roleenv residual 1: negative control for the new literal-name criterion"
+    },
+    {
+     "key": "F01-T4",
+     "field": "notes",
+     "op": "set",
+     "value": "Re-verified at origin/main 8678c0d1 (2026-10-07). PANEL-P3 output is the field-set artifact. F06-T4, F09-T1 and X03-T4 consume the same trace; those edges belong to their units. Found here but not owned here: on macOS and Windows the child inherits the host environment minus removals (FACT, origin/main 8678c0d1). An operator-shell NODE_OPTIONS or proxy variable therefore reaches the role regardless of the declared-key floor. Route: the KEL-75 removal list, as a separate spawn-contract change. That ambient path is not covered by this ticket's criteria.",
+     "why": "C8-roleenv residual 1: keeps the declared-key floor separate from ambient inheritance, so that criterion is not read as also covering operator-shell variables (doctrine scope rule)"
+    },
+    {
+     "key": "X03-T6",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "A role spawned with a declared role-environment key (the F01-T4 field, DRAWIO_DISABLE_UPDATE=true) that imports an unaliased `electron` still exits with the typed KELD-COMPAT diagnostic and never evaluates a module from the Bun install cache"
+     ],
+     "why": "C8-roleenv residual 1: the recommended cell, where a role spawned with a declared key still fails closed on an unaliased electron import, covers role behaviour outside keld-guard that F01-T4's policy-identity criterion does not"
+    },
+    {
+     "key": "X03-T6",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Skipping the auto-install guard when the spawn carries a declared role-environment key makes the declared-key fixture load the install-cache `electron`, and the cell fails"
+     ],
+     "why": "C8-roleenv residual 1: one negative control for the new declared-key fail-closed cell"
+    },
+    {
+     "key": "X03-T6",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "F01-T4"
+     ],
+     "why": "C8-roleenv residual 1: the declared-key cell needs F01-T4's declared role environment delivery. Checked: F01-T4's blockers (F01-T1, PANEL-P3) have no path to X03-T6, so there is no cycle"
+    },
+    {
+     "key": "X03-T6",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "Adjacent atoms owned elsewhere: X03-T1 owns the alias contract;",
+     "new": "Adjacent atoms owned elsewhere: F01-T4 owns the declared role environment and its reserved-name floor, and this ticket proves that the guard holds when a declared key is present; X03-T1 owns the alias contract;",
+     "why": "C8-roleenv residual 1: makes the F01-T4 to X03-T6 coupling an explicit edge, not a hidden one"
+    },
+    {
+     "key": "X03-T6",
+     "field": "notes",
+     "op": "replace",
+     "old": "\n\nThis ticket, not X03-T1, owns the fail-closed spawn without auto-install. X02-T3's ownership line currently names X03-T1 for it.",
+     "new": "\n\nThis ticket, not X03-T1, owns the fail-closed spawn without auto-install. X02-T3's ownership line names this ticket.",
+     "why": "C8-roleenv residual 1: the fail-closed owner is now consistent across X02-T3 and X03-T6"
+    },
+    {
+     "key": "X02-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "the declared role environment carrying exactly `DRAWIO_DISABLE_UPDATE=true` (an F01-T4 field under a KEL-75 spawn-contract amendment; PANEL-D14).",
+     "new": "the declared role environment carrying exactly `DRAWIO_DISABLE_UPDATE=true` (an F01-T4 field under a KEL-75 spawn-contract amendment; PANEL-D14). This list is the reviewed allowlist that F01-T4's default-deny applies. Each name is an exact literal, outside the F01-T4 reserved-name floor, reviewed under this ticket's permission-model gate.",
+     "why": "C8-roleenv residual 1: the recommended fix has the allowlist written by keld migrate and reviewed in X02-T3"
+    },
+    {
+     "key": "X02-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "Resolution of the five specifiers, the self-contained CJS-requirable @keld/electron entry and the fail-closed spawn without auto-install are X03-T1.",
+     "new": "Resolution of the five specifiers and the self-contained CJS-requirable @keld/electron entry are X03-T1. The fail-closed spawn without auto-install is X03-T6.",
+     "why": "C8-roleenv residual 1: X03-T6 owns the fail-closed guarantee this residual protects, and X03-T6's notes record that X02-T3 named the wrong owner"
+    },
+    {
+     "key": "X02-T3",
+     "field": "out_of_scope",
+     "op": "replace",
+     "old": "specifier resolution and fail-closed spawn (X03-T1);",
+     "new": "specifier resolution (X03-T1); fail-closed spawn without auto-install (X03-T6);",
+     "why": "C8-roleenv residual 1: aligns out-of-scope ownership with X03-T6"
+    },
+    {
+     "key": "X02-T3",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "The artefact declares the legacy profile key exactly once, in the file X03-T5 selected, and its declared role environment holds exactly `DRAWIO_DISABLE_UPDATE=true` with no name beginning `KELD_`",
+     "new": "The artefact declares the legacy profile key exactly once, in the file X03-T5 selected. Its declared role environment holds exactly `DRAWIO_DISABLE_UPDATE=true`: one exact literal name, outside the F01-T4 reserved-name floor",
+     "why": "C8-roleenv residual 1: the artefact check follows the full reserved floor, not only the KELD_ prefix"
+    },
+    {
+     "key": "X02-T3",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Moving the profile key to the other config file, or adding `KELD_APP_LINK` to the declared role environment, makes the declaration check fail",
+     "new": "Moving the profile key to the other config file, or adding `NODE_OPTIONS` to the declared role environment, makes the declaration check fail",
+     "why": "C8-roleenv residual 1: the negative control uses a loader-affecting reserved name that the old KELD_-only rule accepted"
+    },
+    {
+     "key": "F05-T7",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "draw.io's main under the facade on macOS (legacy profile) completes its whenReady callback: every ipcMain registration that follows the webRequest calls is present",
+     "new": "On macOS, a fixture whenReady callback reaches its recorder marker on the statement after both webRequest registrations. The fixture makes draw.io's two registrations with draw.io's argument shapes",
+     "why": "C8-roleenv residual 2: the old criterion needed F04-T3's ipcMain facade, which F05-T7 is not blocked by. It moves to X02-T6, and the replacement can pass at F05-T7's own commit"
+    },
+    {
+     "key": "F05-T7",
+     "field": "negative_controls",
+     "op": "replace",
+     "old": "Making registration throw leaves draw.io's later ipcMain handlers unregistered \u2014 the whenReady completion test fails",
+     "new": "Making either registration throw stops the fixture callback before the recorder marker, and the next-statement test fails",
+     "why": "C8-roleenv residual 2: the negative control now targets the replacement recorder-marker criterion"
+    },
+    {
+     "key": "F05-T7",
+     "field": "notes",
+     "op": "replace",
+     "old": "Consumer that must add the edge in its own unit: X02-T6 (first-proof scoring run). Its activation cell cannot pass unless draw.io's whenReady callback gets past the webRequest calls, and this ticket's whenReady-completion criterion is the only F05 observable for that. FACT (repaired X02 unit): X02-T6 does not yet list this ticket.",
+     "new": "Consumer: X02-T6 (first-proof scoring run), which lists this ticket and F04-T3 as gates. X02-T6 owns the integration criterion that draw.io's whenReady callback completes with every later ipcMain registration present. This ticket's observable is the recorder marker after both registrations, so it needs no ipcMain facade.",
+     "why": "C8-roleenv residual 2: records where the moved criterion now lives, and drops the stale claim that X02-T6 does not list F05-T7"
+    },
+    {
+     "key": "X02-T6",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "On real macOS under the explicit legacy profile, draw.io's unmodified main completes its whenReady callback: every ipcMain registration that follows the two webRequest calls is present"
+     ],
+     "why": "C8-roleenv residual 2: criterion moved from F05-T7. X02-T6 already depends on both F04-T3 and F05-T7, so the criterion can pass here"
+    },
+    {
+     "key": "X02-T6",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Making either webRequest registration throw leaves draw.io's later ipcMain handlers unregistered, and the whenReady-completion criterion fails"
+     ],
+     "why": "C8-roleenv residual 2: the negative control moves with its criterion from F05-T7"
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": []
+  },
+  {
+   "cluster": "C9-recordings",
+   "ops": [
+    {
+     "key": "X05-T2",
+     "field": "title",
+     "op": "set",
+     "value": "spec(ipc): minimum slice of the architecture 02 \u00a74 channel table \u2014 one keld-ipc-owned table of kipc channel ids, its entry fields, consumers and live/destination split (no per-family ranges)",
+     "why": "C9-recordings residual 1 (X05-T2 spec+task combined): X05-T2 becomes the spec half; the slice moves to new X05-T4"
+    },
+    {
+     "key": "X05-T2",
+     "field": "kind",
+     "op": "set",
+     "value": "spec",
+     "why": "C9-recordings residual 1: split X05-T2 into the spec (this key) and the implementation slice (X05-T4)"
+    },
+    {
+     "key": "X05-T2",
+     "field": "ready_state",
+     "op": "set",
+     "value": "ready-for-agent",
+     "why": "C9-recordings residual 1: the 'missing owner' hold was resolved by X06-D7 (#517); alignment gives tracker=github (#508) with reference KEL-80, and the spec half has no blocking keys, so it can be pulled"
+    },
+    {
+     "key": "X05-T2",
+     "field": "size",
+     "op": "set",
+     "value": "S",
+     "why": "C9-recordings residual 1: implementation work moved to X05-T4, leaving only the spec document"
+    },
+    {
+     "key": "X05-T2",
+     "field": "what_to_build",
+     "op": "set",
+     "value": "Write the spec (spec template) for the minimum slice of the architecture 02 \u00a74 channel table. X05-T4 implements it.\n\nThe spec defines one channel table owned by keld-ipc. Each entry holds:\n- a host-lifecycle-neutral name;\n- the u16 id;\n- the receive-policy class;\n- the required capability, named by reference to the keld-guard manifest vocabulary or marked host-internal (no new capability-name registry).\n\nIt lists the current entries (echo = 1, fs = 2, lifecycle = 3) and states the rule by which a new channel obtains an id and an entry.\n\nIt names every production consumer that must derive its id from the table: keld-ipc echo/lifecycle, keld-native fs, the macOS renderer bridge, and the TypeScript app-link transport. It records whether the bridge gets the id from the host at construction or through a crate edge, and why.\n\nIt specifies that the TypeScript transport constants are generated from the table by cold maintainer tooling, following the KEL-98 pattern, and checked in with a drift check.\n\nThe same PR amends architecture 02 \u00a74 to state the split: a static table is live now; handshake-time resolution and full `keld gen` remain destination.\n\nNo per-Electron-family id ranges. Electron channel names travel as data under `el:<channel>` grants. Wire bytes and protocol version 2 stay unchanged.",
+     "why": "C9-recordings residual 1: X05-T2 keeps only the spec half; the table implementation, generated constants and hand-copy retirement move to X05-T4"
+    },
+    {
+     "key": "X05-T2",
+     "field": "acceptance_criteria",
+     "op": "remove",
+     "items": [
+      "An approved spec exists that names the table's single owner (keld-ipc), the entry fields, the live/destination split against architecture 02 \u00a74, and the rejected alternatives (parity-test-only mirror; per-family ranges; handshake resolution now). Architecture 02 \u00a74 is amended in the same PR",
+      "Every production channel-id use (echo, fs, lifecycle, macOS bridge echo) resolves to a table entry; a test finds zero numeric channel-id literals in production code outside the table",
+      "The TypeScript transport's channel constants are generated from the table and checked in; the drift check fails the build when they differ",
+      "The table rejects two entries with the same id",
+      "Every table entry declares a keld-guard capability name or an explicit host-internal marker",
+      "The table contains no per-family id range and no Electron API or family name",
+      "Existing kipc golden vectors and the hostile receiver corpus pass unmodified, and the protocol version stays 2"
+     ],
+     "why": "C9-recordings residual 1: the implementation criteria move unchanged to X05-T4; the spec half gets document-checkable criteria"
+    },
+    {
+     "key": "X05-T2",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "Every section of the spec template is filled; no section is empty or a placeholder (approval is the PR gate, not a criterion)",
+      "The spec names keld-ipc as the table's single owner and defines the entry fields as name, u16 id, receive-policy class, and a keld-guard capability reference or an explicit host-internal marker",
+      "The spec's initial table lists echo = 1, fs = 2 and lifecycle = 3, and states the rule by which a new channel obtains its id",
+      "The spec names the production consumers (keld-ipc echo/lifecycle, keld-native fs, the macOS renderer bridge, the TypeScript app-link transport) and records the macOS bridge's id source (host at construction or crate edge) with its reason",
+      "The rejected-alternatives section names a parity-test-only mirror, per-family id ranges, and handshake-time resolution now",
+      "Architecture 02 \u00a74 is amended in the same PR to state the live static table and the destination handshake resolution and full `keld gen`",
+      "The spec states that wire bytes and protocol version 2 are unchanged and that no table entry carries an Electron API or family name"
+     ],
+     "why": "C9-recordings residual 1: binary, document-observable criteria for the spec half of the split"
+    },
+    {
+     "key": "X05-T2",
+     "field": "negative_controls",
+     "op": "remove",
+     "items": [
+      "Hand-editing the generated TypeScript channel constant makes the drift check fail",
+      "Reintroducing a literal echo id in the macOS renderer bridge makes the no-literal test fail",
+      "Adding a second entry with id 2 makes the uniqueness test fail",
+      "Renumbering echo from 1 to 4 in the table makes the golden-vector replay fail",
+      "An entry with neither a capability name nor the host-internal marker makes table validation fail"
+     ],
+     "why": "C9-recordings residual 1: the implementation negative controls move unchanged to X05-T4"
+    },
+    {
+     "key": "X05-T2",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Dropping the capability-or-host-internal field from the entry definition fails the entry-fields criterion",
+      "Listing fs at an id other than 2 fails the initial-table criterion",
+      "Removing the macOS bridge's id-source decision fails the consumer criterion",
+      "Deleting 'per-family id ranges' from the rejected-alternatives section fails the rejected-alternatives criterion",
+      "Leaving architecture 02 \u00a74 unamended in the spec PR fails the amendment criterion"
+     ],
+     "why": "C9-recordings residual 1: one single-mutation negative control per key spec criterion"
+    },
+    {
+     "key": "X05-T2",
+     "field": "blocked_by_external",
+     "op": "remove",
+     "items": [
+      "BLOCKER missing owner: no open Linear issue owns the kipc channel table (Linear search 'channel'/'schema', fetched 2026-10-07; KEL-13 RFC Done, KEL-98 Done 2026-09-20, KEL-136 Done 2026-09-11). First action: the repository owner (@0monish) designates an existing open KEL issue (candidate KEL-80, Backlog, unassigned) and posts the workflow Agent-claim block there"
+     ],
+     "why": "C9-recordings residual 1: the X06-D7 owner decision (#517) resolved the 'repository owner designates' hold; GitHub #508 is the tracker of record"
+    },
+    {
+     "key": "X05-T2",
+     "field": "linear_owner",
+     "op": "set",
+     "value": "Tracker of record: its GitHub issue (#508), per the X06-D7 owner decision (#517). Linear reference KEL-80 (Backlog, unassigned; Linear, fetched 2026-10-07), the nearest live kipc transport issue; KEL-80's scope does not cover the table, so it carries the reference link, not the claim. Claim with an `## Agent claim` comment on #508. KEL-98 and KEL-136 are Done and consumed as landed artifacts, not as owners.",
+     "why": "C9-recordings residual 1: owner field rewritten to the tracker-of-record rule (alignment.json: tracker github, reference KEL-80)"
+    },
+    {
+     "key": "X05-T2",
+     "field": "key_interfaces",
+     "op": "set",
+     "value": "Spec text: keld-ipc channel table entry shape, initial entries and allocation rule; consumer list including the macOS renderer bridge id source; architecture 02 \u00a74 live/destination amendment; keld-guard capability names by reference.",
+     "why": "C9-recordings residual 1: the spec half's interfaces are document contracts; code interfaces move to X05-T4"
+    },
+    {
+     "key": "X05-T2",
+     "field": "out_of_scope",
+     "op": "replace",
+     "old": "Handshake-time channel resolution and HELLO changes",
+     "new": "Implementation of the table, the generated TypeScript constants and retirement of the three hand copies (X05-T4). Handshake-time channel resolution and HELLO changes",
+     "why": "C9-recordings residual 1: the slice is now X05-T4"
+    },
+    {
+     "key": "X05-T2",
+     "field": "notes",
+     "op": "set",
+     "value": "Spec half of the channel table. The implementation slice is X05-T4, which is blocked by this ticket.\n\nEdges: the first-proof dependants that add a table entry and consume generated constants list X05-T4: F02-T2, F04-T3, F06-T2 and F06-T4. Next and parked dependants (F06-T12, F08-T1, F08-T4, X04-T2; F08-T7, F08-T8, F09-T5) still list X05-T2; each of their units repoints the edge to X05-T4 when it consumes a table entry or a generated constant. F04-T2 and F06-T5 list neither; if either allocates a new kipc channel id, its unit adds the X05-T4 edge.\n\nResolution path: (1) an agent claims #508 with an `## Agent claim` comment; (2) the spec PR lands with the architecture 02 \u00a74 amendment and the three review gates; (3) X05-T4 implements it.\n\nFirst completion check: the merged spec PR names keld-ipc as the table owner and architecture 02 \u00a74 states the live/destination split.\n\nThe closed decision X04-D4 cited 'the X05-T2 naming rule' for a new capability name. That rule no longer exists here: a new capability name goes through the keld-guard / architecture 03 owner.",
+     "why": "C9-recordings residual 1: notes restate the split, the repointed first-proof edges and a claimable resolution path under X06-D7 instead of the owner-designation hold"
+    },
+    {
+     "key": "F02-T2",
+     "field": "blocked_by_keys",
+     "op": "replace",
+     "old": "X05-T2",
+     "new": "X05-T4",
+     "why": "C9-recordings residual 1: F02-T2 adds a window-state channel entry and its TS facade needs the generated constant, which the X05-T4 slice produces"
+    },
+    {
+     "key": "F02-T2",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "on the channel id allocated under X05-T2's rule",
+     "new": "on a channel entry added to the X05-T4 table under X05-T2's rule",
+     "why": "C9-recordings residual 1: the channel id comes from the X05-T4 table; X05-T2 owns the allocation rule"
+    },
+    {
+     "key": "F04-T3",
+     "field": "blocked_by_keys",
+     "op": "replace",
+     "old": "X05-T2",
+     "new": "X05-T4",
+     "why": "C9-recordings residual 1: F04-T3 consumes the generated el control-channel constant, produced by the X05-T4 slice"
+    },
+    {
+     "key": "F04-T3",
+     "field": "key_interfaces",
+     "op": "replace",
+     "old": "constant from X05-T2",
+     "new": "constant generated from the X05-T4 table",
+     "why": "C9-recordings residual 1: the generated constant is produced by the slice half"
+    },
+    {
+     "key": "F06-T2",
+     "field": "blocked_by_keys",
+     "op": "replace",
+     "old": "X05-T2",
+     "new": "X05-T4",
+     "why": "C9-recordings residual 1: the guarded dialog channel needs its table entry and generated constant, produced by the X05-T4 slice (the X05-T2 rule is reached transitively)"
+    },
+    {
+     "key": "F06-T4",
+     "field": "blocked_by_keys",
+     "op": "replace",
+     "old": "X05-T2",
+     "new": "X05-T4",
+     "why": "C9-recordings residual 1: the guarded menu channel needs its table entry and generated constant, produced by the X05-T4 slice"
+    },
+    {
+     "key": "X01-T2",
+     "field": "title",
+     "op": "set",
+     "value": "feat(conformance): lifecycle-family tracer and shared Electron-arm recorder for the two-arm harness \u2014 main-process lifecycle fixtures (including first-launch activate) recorded under verified Electron 44.4.5 on macOS arm64, replayed under @keld/electron, compared and scored",
+     "why": "C9-recordings residual 2 (nobody owns producing the recordings): X01-T2 now records first-launch activate and its recorder command is the one family tickets record through"
+    },
+    {
+     "key": "X01-T2",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "quit order, before-ready, and the window-all-closed control.",
+     "new": "quit order, before-ready, the window-all-closed control, and whether activate is emitted at first launch on macOS (the F01-T10 launch-time cell).",
+     "why": "C9-recordings residual 2: F01-T10 AC4 says the activate cell stays unknown until X01-T2 records it, but activate was not in X01-T2's fixture list"
+    },
+    {
+     "key": "X01-T2",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "It refuses to run when the zip is absent or mismatched.",
+     "new": "It refuses to run when the zip is absent or mismatched.\n- The recorder command accepts any fixture packaged per X01-T1, including one with a CommonJS preload and a static page, and captures its renderer rows. F03-T6, F04-T20 and F08-T3 own their family fixtures and record them through this command. Keld-arm replay and comparison here stay main-process-only.",
+     "why": "C9-recordings residual 2: no ticket recorded webContents, IPC or diagnostics transcripts; the family tickets own their fixtures, and this recorder must be able to run them on the Electron arm"
+    },
+    {
+     "key": "X01-T2",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "The committed lifecycle goldens include a first-launch activate fixture whose transcript records whether activate is emitted at first launch and its position relative to ready",
+      "The recorder command records a fixture with a CommonJS preload and a static page, and the resulting golden contains rows whose process field is the renderer"
+     ],
+     "why": "C9-recordings residual 2: makes the activate recording and the renderer-capable recorder observable"
+    },
+    {
+     "key": "X01-T2",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Deleting the first-launch activate fixture fails the activate-golden criterion",
+      "Capturing only main-process output drops the renderer rows and fails the renderer-capture criterion"
+     ],
+     "why": "C9-recordings residual 2: one single-mutation negative control per new criterion"
+    },
+    {
+     "key": "X01-T2",
+     "field": "out_of_scope",
+     "op": "replace",
+     "old": "Renderer/preload/BrowserWindow cells (no Keld arm exists yet).",
+     "new": "Keld-arm replay, comparison and scoring of renderer/preload/BrowserWindow cells (no Keld arm exists yet). The family fixtures and their cells, owned by F03-T6, F04-T20 and F08-T3.",
+     "why": "C9-recordings residual 2: only the Keld arm stays main-process-only; the Electron-arm recorder accepts renderer fixtures that the family tickets own"
+    },
+    {
+     "key": "X01-T2",
+     "field": "notes",
+     "op": "replace",
+     "old": "(ready, before-quit, will-quit, quit, window-all-closed)",
+     "new": "(ready, before-quit, will-quit, quit, window-all-closed, and first-launch activate)",
+     "why": "C9-recordings residual 2: activate at first launch joins the recorded members (owned by F01-T10)"
+    },
+    {
+     "key": "X01-T1",
+     "field": "notes",
+     "op": "replace",
+     "old": "INFERENCE from their ticket text: F03-T6 and F08-T3 (both next) record undocumented or UNKNOWN Electron behaviour and so genuinely consume this spec.",
+     "new": "F03-T6, F04-T20 and F08-T3 (all next) record undocumented or UNKNOWN Electron behaviour: they consume this spec for fixture packaging and cell format, own their family fixtures, and record them through the X01-T2 recorder command.",
+     "why": "C9-recordings residual 2: states who produces the recordings that consume this spec"
+    },
+    {
+     "key": "F03-T6",
+     "field": "ready_state",
+     "op": "set",
+     "value": "needs-spec",
+     "why": "C9-recordings residual 2: the recorded cells cannot exist until the X01-T1 spec is approved and the X01-T2 recorder lands"
+    },
+    {
+     "key": "F03-T6",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "X01-T2"
+     ],
+     "why": "C9-recordings residual 2: the recorded cells are produced by the X01-T2 recorder command"
+    },
+    {
+     "key": "F03-T6",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "Oracle-recorded cells, where the docs are silent and Electron 44.4.5 recordings are required:",
+     "new": "Oracle-recorded cells, where the docs are silent and Electron 44.4.5 recordings are required; this ticket owns their webContents fixtures, packaged per X01-T1 and recorded through the X01-T2 recorder command on macOS arm64:",
+     "why": "C9-recordings residual 2: names the owner of the webContents fixtures and the recorder that produces their goldens"
+    },
+    {
+     "key": "F03-T6",
+     "field": "acceptance_criteria",
+     "op": "add",
+     "items": [
+      "Every recorded cell has a committed webContents fixture owned by this ticket and a golden plus receipt produced from it by the X01-T2 recorder command; the receipt carries the darwin-arm64 zip SHA-256"
+     ],
+     "why": "C9-recordings residual 2: makes recording ownership observable"
+    },
+    {
+     "key": "F03-T6",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Removing a recorded cell's committed fixture while keeping its golden fails the fixture-provenance criterion"
+     ],
+     "why": "C9-recordings residual 2: single-mutation control for the new fixture-provenance criterion"
+    },
+    {
+     "key": "F03-T6",
+     "field": "key_interfaces",
+     "op": "set",
+     "value": "KEL-74 cells; X01-T1 fixture packaging and the X01-T2 recorder command for the recorded cells; the webContents fixtures this ticket owns.",
+     "why": "C9-recordings residual 2: replaces the vague 'X01 recorder conventions' with the named recorder"
+    },
+    {
+     "key": "F03-T6",
+     "field": "notes",
+     "op": "replace",
+     "old": "The cells are startable once X01-T1 lands.",
+     "new": "ready_state is needs-spec until X01-T1 is approved and the X01-T2 recorder lands: the doc-cited cells need X01-T1's cell format, and the recorded cells need the recorder.",
+     "why": "C9-recordings residual 2: F03-T6 moved to needs-spec until the recorder exists"
+    },
+    {
+     "key": "F04-T20",
+     "field": "what_to_build",
+     "op": "set",
+     "value": "This ticket owns the IPC fixtures for the F04-T1 observed-only entries, packaged per X01-T1 (ESM main, CommonJS preload, static page) and recorded through the X01-T2 recorder command against verified Electron v44.4.5 on macOS arm64. Compare the Keld arm, capped at BEHAVIOR_MATCH: (8) per-channel order of N sends; (9) webContents.send with no renderer listener dropped; (10) stale event.reply after cross-document navigation dropped without throwing; (11) hash change during a pending request keeps the reply; (12) cancelled renderer-initiated navigation keeps IPC usable; (13) reply with unserializable args throws and reply after render-frame disposal throws (drop-versus-throw boundary \u25b2).",
+     "why": "C9-recordings residual 2: 'record under the X01-T1 harness' named a spec, not a recorder; this ticket now owns its IPC fixtures and records them through X01-T2"
+    },
+    {
+     "key": "F04-T20",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "Each of entries 8\u201313 carries a recorded v44.4.5 transcript with its digest produced by the X01-T1 harness",
+     "new": "Each of entries 8\u201313 carries a recorded v44.4.5 transcript with its digest, produced by the X01-T2 recorder command from an IPC fixture this ticket commits",
+     "why": "C9-recordings residual 2: names the recorder implementation and the fixture owner"
+    },
+    {
+     "key": "F04-T20",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Removing an entry's committed fixture while keeping its transcript fails the recorded-transcript criterion"
+     ],
+     "why": "C9-recordings residual 2: single-mutation control for the recorded-transcript criterion"
+    },
+    {
+     "key": "F04-T20",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "X01-T2"
+     ],
+     "why": "C9-recordings residual 2: the transcripts are produced by the X01-T2 recorder command"
+    },
+    {
+     "key": "F04-T20",
+     "field": "notes",
+     "op": "replace",
+     "old": "needs-info: X01-T1 (next) is itself needs-info pending X01-A5.",
+     "new": "needs-info: X01-T1 (next) is itself needs-info pending X01-A5, and the X01-T2 recorder (next, needs-spec) must land before any transcript exists.",
+     "why": "C9-recordings residual 2: records the recorder dependency"
+    },
+    {
+     "key": "F08-T3",
+     "field": "what_to_build",
+     "op": "replace",
+     "old": "when the app destroys the window. This is UNKNOWN today.",
+     "new": "when the app destroys the window. This is UNKNOWN today. This ticket owns the destroy-window fixture, packaged per X01-T1 and recorded through the X01-T2 recorder command on macOS arm64.",
+     "why": "C9-recordings residual 2: names the owner of the destroy-time oracle fixture and the recorder that produces its transcript"
+    },
+    {
+     "key": "F08-T3",
+     "field": "acceptance_criteria",
+     "op": "replace",
+     "old": "The destroy-time oracle cell carries a recorded Electron v44.4.5 transcript, or stays UNKNOWN with the missing run named",
+     "new": "The destroy-time oracle cell carries an Electron v44.4.5 transcript produced by the X01-T2 recorder command from the destroy-window fixture this ticket commits, or stays UNKNOWN with the missing run named",
+     "why": "C9-recordings residual 2: names the recorder implementation and the fixture owner"
+    },
+    {
+     "key": "F08-T3",
+     "field": "negative_controls",
+     "op": "add",
+     "items": [
+      "Marking the destroy-time cell as recorded with no X01-T2 recorder receipt fails the destroy-time oracle criterion"
+     ],
+     "why": "C9-recordings residual 2: single-mutation control for the destroy-time oracle criterion"
+    },
+    {
+     "key": "F08-T3",
+     "field": "blocked_by_keys",
+     "op": "add",
+     "items": [
+      "X01-T2"
+     ],
+     "why": "C9-recordings residual 2: the destroy-time transcript is produced by the X01-T2 recorder command"
+    },
+    {
+     "key": "F08-T3",
+     "field": "key_interfaces",
+     "op": "replace",
+     "old": "KEL-74 conformance cells in the X01-T1 cell and normaliser format.",
+     "new": "KEL-74 conformance cells in the X01-T1 cell and normaliser format; the X01-T2 recorder command for the destroy-time oracle cell.",
+     "why": "C9-recordings residual 2: names the recorder interface"
+    }
+   ],
+   "new_tickets": [
+    {
+     "unit": "X05",
+     "ticket": {
+      "key": "X05-T4",
+      "title": "task(ipc): implement the X05-T2 channel table in keld-ipc \u2014 every production consumer derives its id from it, generated TypeScript constants with a drift check, the three hand copies retired",
+      "kind": "task",
+      "tier": "n/a (program ticket; owns no Electron member)",
+      "maturity_target": "L0",
+      "milestone": "first-proof",
+      "ready_state": "needs-spec",
+      "size": "M",
+      "current_behavior": "FACT (origin/main 29a4cd70):\n- echo = 1 and lifecycle = 3 are defined in keld-ipc; fs = 2 is defined in keld-native.\n- The TypeScript app-link transport mirrors 1 and 3, checked by a source-text parity test.\n- The macOS renderer bridge carries its own hand copy of echo = 1, with no parity test and no keld-ipc dependency.\n- No single table lists the allocated ids.",
+      "what_to_build": "Implement the channel table the approved X05-T2 spec defines.\n- One keld-ipc-owned table holding the existing entries (echo, fs, lifecycle), each with name, u16 id, receive-policy class and a keld-guard capability reference or host-internal marker.\n- keld-ipc echo/lifecycle, keld-native fs and the macOS renderer bridge derive their ids from the table, the bridge by the mechanism the spec chose.\n- The TypeScript transport constants are generated from the table by cold maintainer tooling, following the KEL-98 pattern, and checked in with a drift check; the source-text parity test is retired.\n- Table validation rejects duplicate ids and entries without a capability reference or host-internal marker.\nWire bytes and protocol version 2 stay unchanged. This ticket adds no entry beyond the three existing channels: each dependant adds its own entry under the X05-T2 rule when it lands.",
+      "key_interfaces": "keld-ipc channel table; generated TypeScript channel constants and drift check; macOS renderer bridge construction; keld-guard capability names by reference.",
+      "acceptance_criteria": [
+       "Every production channel-id use (echo, fs, lifecycle, macOS bridge echo) resolves to a table entry; a test finds zero numeric channel-id literals in production code outside the table",
+       "The TypeScript transport's channel constants are generated from the table and checked in; the drift check fails the build when they differ",
+       "The table rejects two entries with the same id",
+       "Every table entry declares a keld-guard capability name or an explicit host-internal marker",
+       "The table contains no per-family id range and no Electron API or family name",
+       "Existing kipc golden vectors and the hostile receiver corpus pass unmodified, and the protocol version stays 2"
+      ],
+      "negative_controls": [
+       "Hand-editing the generated TypeScript channel constant makes the drift check fail",
+       "Reintroducing a literal echo id in the macOS renderer bridge makes the no-literal test fail",
+       "Adding a second entry with id 2 makes the uniqueness test fail",
+       "An entry with neither a capability name nor the host-internal marker makes table validation fail",
+       "Inserting a per-family id range entry makes the no-family-name test fail",
+       "Renumbering echo from 1 to 4 in the table makes the golden-vector replay fail"
+      ],
+      "blocked_by_keys": [
+       "X05-T2"
+      ],
+      "blocked_by_external": [
+       "Pattern consumed: KEL-98 echo codegen landed at bde521c4 (#265), spec closed at e328446f (#266)",
+       "Transport consumed: KEL-136 unified TypeScript transport landed at 3fb9417a (#221)"
+      ],
+      "linear_owner": "Tracker of record: this ticket's GitHub issue (number assigned at publish), per the X06-D7 owner decision (#517). No live Linear issue covers the kipc channel table (alignment for X05-T2; Linear, fetched 2026-10-07); Linear reference link on KEL-80 (Backlog, unassigned), the nearest live kipc transport issue. Claim with an `## Agent claim` comment on the GitHub issue.",
+      "review_gates": [
+       "wire protocol",
+       "permission model",
+       "public API"
+      ],
+      "platforms": "OS-independent (wire-constant ownership); the macOS renderer bridge copy is the first platform consumer",
+      "electron_members_covered": [],
+      "out_of_scope": "Writing the spec (X05-T2). New channel entries for window state, the el control channel, dialog and menu (each dependant adds its own entry under the X05-T2 rule). Handshake-time channel resolution and HELLO changes; general schema codegen and `keld gen`; per-family reserved ranges (refused); a capability-name registry (keld-guard manifest schema stays the single owner); any el:<channel> grant shape (F04-T3, X04-T1).",
+      "notes": "Gate for the first-proof dependants F02-T2, F04-T3, F06-T2 and F06-T4, which add table entries and consume generated constants. Next and parked dependants still list X05-T2; their units repoint to this ticket when they consume a table entry or a generated constant.\n\nFirst completion check: the drift check and no-literal test are green on origin/main, and the TypeScript constant is no longer hand-written.",
+      "change_log": [
+       "New ticket: the implementation half split out of X05-T2 so the spec can be pulled on its own; criteria and negative controls moved unchanged from X05-T2, plus a single-mutation control for the no-family-name criterion (residual C9-recordings: X05-T2 combined spec and slice with no pullable state)"
+      ]
+     }
+    }
+   ],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": []
+  },
+  {
+   "cluster": "C10-states",
+   "ops": [
+    {
+     "key": "F04-T5",
+     "field": "ready_state",
+     "op": "set",
+     "old": "ready-for-agent",
+     "value": "needs-triage",
+     "why": "C10-states residual: a milestone 'parked' ticket must carry ready_state needs-triage. The current value in repair_final_pre.json is 'ready-for-agent', not 'parked' as the residual says. It is still wrong: it would let an agent claim a parked ticket that has zero corpus demand. The 'parked' milestone label keeps the hold."
+    },
+    {
+     "key": "F07-T5",
+     "field": "ready_state",
+     "op": "set",
+     "old": "ready-for-agent",
+     "value": "needs-triage",
+     "why": "C10-states residual: a milestone 'parked' ticket must carry ready_state needs-triage. The current value in repair_final_pre.json is 'ready-for-agent', not 'parked' as the residual says. It is still wrong, because it marks a parked ticket as claimable. The 'parked' milestone label keeps the hold, and the notes already say the ticket becomes ready-for-agent only when it leaves parked."
+    }
+   ],
+   "new_tickets": [],
+   "supersede": [],
+   "label_changes": [],
+   "rejected": [
+    {
+     "residual": "C10-states problem statement: 'ready_state is parked, which is not a valid state' for F04-T5 and F07-T5",
+     "reason": "The problem statement is partly wrong, but the fix stands. In repair_final_pre.json (repaired[].repair.tickets), both F04-T5 and F07-T5 have ready_state 'ready-for-agent', not 'parked'. That value is valid on its own but breaks the rule that a milestone 'parked' ticket is needs-triage. The recommended fix (set needs-triage) is applied in full. Only the description of the old value is corrected here."
+    }
+   ]
+  }
+ ]
+}

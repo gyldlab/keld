@@ -1,0 +1,182 @@
+{
+ "sites": {
+  "sites": [
+   {
+    "path": "tools/workspace.py",
+    "quote": "def start(...): require(re.fullmatch(r\"kel-[1-9][0-9]*\", issue), \"Invalid issue. Use kel-<positive number>.\") (line 356); def task_name: require(re.fullmatch(r\"kel-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*\", value), \"Invalid task. Use kel-<positive issue number>-<lowercase-kebab-slug>.\") (lines 69-70)",
+    "kind": "tool-enforced",
+    "breaks": "`just work-start gh-520 <slug> --session <id>` exits with \"Invalid issue\". coordination.md says new task trees MUST use `just work-start`, so the agent/gh-520-<slug> branch and .keld-work/worktrees/gh-520-<slug> tree cannot be created in a compliant way. A hand-made gh-* record also fails task_name() in status/run/finish/clean/check (lines 133, 314). `tools/workspace.py check` runs in `just agent-context` and CI ci.yml:527, so the bad record fails there too. load_task (line 329) builds the issue as `\"-\".join(name.split(\"-\")[:2]).upper()`, so it already works for GH-520 once the regexes accept the prefix.",
+    "minimal_fix": "In both regexes, change `kel-` to `(?:kel|gh)-` and update the two error messages to say `kel-<n>|gh-<n>`. In tools/test_workspace.py, add a positive `gh-520` start/finish case and a negative `gh-0` case. Then regenerate .codex/hooks.json (see that site) because this file's SHA-256 is pinned there."
+   },
+   {
+    "path": "tools/session_closeout.py",
+    "quote": "require(isinstance(issue, str) and re.fullmatch(r\"KEL-[1-9][0-9]*\", issue), \"tracked finding requires KEL issue\") ... require(parsed.scheme == \"https\" and parsed.hostname == \"linear.app\" and ... re.search(r\"/issue/\" + re.escape(issue) + r\"(?:/|$)\", parsed.path), \"remote receipt must link the matching Linear issue\") (lines 233-244)",
+    "kind": "tool-enforced",
+    "breaks": "A receipt finding with status tracked or implemented whose owning issue is GitHub (for example `GH-520` and https://github.com/gyldlab/keld/issues/520#issuecomment-\u2026) is rejected. `just session-closeout <receipt>` fails. The Codex Stop/UserPromptSubmit hook (.codex/hooks.json \u2192 session_closeout_hook.main) then returns {continue:false, \"HANDOFF REQUIRED\"}, so the session cannot close as complete. The only accepted alternative, `blocked`, marks the session unresolved. workflow.md:41-42 makes this validator the owner of the receipt format.",
+    "minimal_fix": "Accept the pair (issue `KEL-n`, linear.app `/issue/KEL-n`) OR the pair (issue `GH-n`, host github.com, path matching `^/gyldlab/keld/issues/n(?:/|$)`, with any fragment allowed). Keep the issue and URL bound to each other. In tools/test_session_closeout.py, add a positive GitHub case and negatives for a mismatched number, a wrong repo, and a GH issue paired with a Linear URL. Regenerate .codex/hooks.json."
+   },
+   {
+    "path": ".codex/hooks.json",
+    "quote": "specs=[('session_closeout', 'fc55f760\u2026802d'), ('workspace', '09e0a1d8\u2026f2a7'), ('session_closeout_hook', '327d2a4e\u2026b3f0')] ... raise ValueError('Closeout hook source changed; review and refresh trusted registration')",
+    "kind": "ci-enforced",
+    "breaks": "Not Linear-specific, but it is coupled to both fixes above. Editing workspace.py or session_closeout.py changes their SHA-256. tools/test_session_closeout_hook.py asserts `config == hook.configuration()` and assertIn(sha256(source)) for all three files. That test runs in `just agent-context-test` and CI ci.yml:526. Until the file is regenerated, the live Codex hook also fails closed with \"HANDOFF REQUIRED\".",
+    "minimal_fix": "In the same PR, regenerate with `python3 -B tools/session_closeout_hook.py --print-config --harness codex`, which must equal hook.configuration(), including commandWindows. Review the result, then re-trust it in the Codex /hooks UI. Locally generated Claude/Cursor registrations must also be regenerated (dev guide \u00a7agent-session-hooks)."
+   },
+   {
+    "path": "tools/ci_hygiene.rs",
+    "quote": "const PR_NEEDLES: &[&str] = &[ ... \"agent/kel-\", ... ]; fn check_pr_template: if !text.contains(needle) { return Err(\"CI-HYGIENE: `.github/PULL_REQUEST_TEMPLATE.md` is missing `{needle}`...\") }",
+    "kind": "ci-enforced",
+    "breaks": "Today this does not block GitHub-tracked PRs. It does lock the template: if the PR template's branch line is replaced with a tracker-neutral form that drops the substring `agent/kel-`, `just hygiene` fails (ci.yml:533-539 runs ci_hygiene). It blocks the template fix only when the fix is done by replacement.",
+    "minimal_fix": "Fix the template by adding text, not replacing it: keep `agent/kel-<n>-<slug>` and append `or agent/gh-<n>-<slug>`. Optionally add `\"agent/gh-\"` to PR_NEEDLES, with a fixture update at ci_hygiene.rs:2804."
+   },
+   {
+    "path": "tools/atomic_protocol.rs",
+    "quote": "CURRENT_DOCUMENTATION_COORDINATION_REQUIREMENTS: \"record these exact fields under the required receipt heading in the relevant Linear decision, OS handoff, or branch handoff.\" (line 139); WORKFLOW_PUBLIC_INTAKE_REQUIREMENTS: \"Maintainers bridge accepted public scope into internal Linear linkage, spec and acceptance publication, claims, implementation and merge coordination.\" (line 197); WORKFLOW_REQUIREMENTS[..3] must be in the `1. **Pick up and refresh.**` block and unique (require_unique_normalized)",
+    "kind": "ci-enforced",
+    "breaks": "Editing the pinned sentences in coordination.md:40-41 or workflow.md:12-13 to drop or replace `Linear` fails `just atomic-protocol` (also CI ci.yml:513-517). Duplicating \"same first comment MUST record the decision-bearing atoms\" or the owner/boundary sentence in a separate GitHub variant of step 1 also fails the uniqueness check. The pickup block must keep the `1. **Pick up and refresh.**` \u2026 `2. **Spec gate.**` markers.",
+    "minimal_fix": "Leave the pinned sentences byte-identical. Add the GitHub tracker rule as one separate sentence, not a copy of these. If the coordination receipt sentence must name GitHub, edit coordination.md:40 and the constant at atomic_protocol.rs:139 together, then run `just atomic-protocol`."
+   },
+   {
+    "path": "tools/product_status.rs",
+    "quote": "fn parse_issues: let Some(number) = issue.strip_prefix(\"KEL-\") else { return Err(invalid(line, format!(\"malformed issue `{issue}`\"))) }; ... \"issues must be sorted by numeric KEL id\" (lines 305-331)",
+    "kind": "ci-enforced",
+    "breaks": "A row in docs/engineering/product-status.tsv cannot cite a GitHub-tracked issue in its `issues` column. A value such as `GH-520` fails `product-status check` (CI ci.yml:66-68/142 and `just product-status-check`). The only workaround is `-`, which loses the tracker link the status ledger is meant to carry.",
+    "minimal_fix": "Accept `GH-<n>` alongside `KEL-<n>`: dedupe and sort within each prefix, put KEL before GH, and add a GH positive fixture. Keep the existing `LINEAR-1` negative test. Regenerate product-status.md and run `just llms-check`, because product-status.md is in the llms corpus. Defer this if no GitHub-tracked item changes a ledger row yet."
+   },
+   {
+    "path": "docs/agents/workflow.md",
+    "quote": "1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first), ... Set only the agent's own issue to `In Progress` ... An agent MAY pick up only a `Todo` and unassigned issue ... it MUST record the ownership conflict on its own Linear issue (or the handoff if Linear is unavailable) ... That first comment MUST open with an `## Agent claim` block ... **The earliest claim by Linear's own `createdAt` wins**. ... Record that delta in this first Linear comment. (lines 56-76)",
+    "kind": "must-text",
+    "breaks": "For a GitHub-tracked item (#517), the MUSTs require fetching a Linear issue that does not exist. GitHub issues have only open/closed, with no `Todo`/`In Progress`, so the only permitted pickup path (\"MAY pick up only a `Todo` and unassigned issue\") cannot be satisfied and the agent must refuse. Claim arbitration by \"Linear's own `createdAt`\" has no source.",
+    "minimal_fix": "Make it tracker-neutral in place: \"Fetch the tracker issue (Linear KELD; else its GitHub issue per #517)\". Map the states once, preferably in coordination.md: open + unassigned = Todo, self-assigned + claim comment = In Progress, a `blocked` label = Blocked, closed = Done. Change the arbitration to \"the tracker's own comment timestamp (Linear `createdAt` / GitHub `created_at`)\". Workflow.md has only 31 bytes free under a 16384-byte hard cap, so every addition needs an equal trim; replacing \"Linear\" with \"issue\" saves 1 byte per use."
+   },
+   {
+    "path": "docs/agents/workflow.md",
+    "quote": "3. **Isolate.** `just work-start kel-<n> <slug> --session <id>` creates a task; coordination owns `.keld-work/worktrees/` placement. Use `agent/kel-<n>-<slug>` from `origin/main`. (lines 90-92)",
+    "kind": "must-text",
+    "breaks": "It prescribes only the kel- form. Together with the workspace.py regex, a GitHub-tracked item has no valid command or branch name. Naming the branch agent/gh-520-<slug> departs from the written step.",
+    "minimal_fix": "Write `kel-<n>|gh-<n>` in both places, for example `just work-start <kel|gh>-<n> <slug>` and `agent/<kel|gh>-<n>-<slug>`. Land it with the workspace.py change."
+   },
+   {
+    "path": "docs/agents/workflow.md",
+    "quote": "## Agent claim (mandatory, before any edit) \u2014 Agents run on more than one machine against one Linear board. Ownership is therefore declared in Linear before work starts ... - Worktree: .keld-work/worktrees/kel-<n>-<slug> - Branch: agent/kel-<n>-<slug> (lines 152-165)",
+    "kind": "template",
+    "breaks": "Ownership must be declared \"in Linear\", so a claim comment on a GitHub issue does not satisfy the mandatory claim. The template fields only describe kel- paths. This is the conflict #520 targets: agents following this text refuse a GitHub claim.",
+    "minimal_fix": "Change it to \"declared on the item's tracker issue (Linear, or GitHub per #517)\". Change the template fields to `.keld-work/worktrees/<kel|gh>-<n>-<slug>` and `agent/<kel|gh>-<n>-<slug>`."
+   },
+   {
+    "path": "docs/agents/workflow.md",
+    "quote": "reconcile conversation, current Linear and resources (l.25); Within authorized scope, persist Linear findings/acceptance updates this session (l.34); refresh Linear to pick up other-agent changes. Post a Linear progress comment after every contract decision ... (l.95); Refresh Linear once more ... leave the Linear branch/OS handoff owned by coordination (l.136,146); leave the issue In Progress/Blocked (l.150); MUST hand off the OS criterion in Linear (l.204)",
+    "kind": "must-text",
+    "breaks": "Closeout, progress, handoff and OS-handoff duties all name Linear. For GitHub-tracked work, they either cannot be met or push the record into a Linear issue that does not track the item, and that split record is what #517 avoids. `In Progress/Blocked` has no GitHub state.",
+    "minimal_fix": "Replace \"Linear\" with \"tracker\"/\"issue\" in these clauses. Each swap is about byte-neutral; \"issue\" is 1 byte shorter. Use the status mapping from coordination.md. Line 49 (\"CI checks validator/policy, not live Linear\") is cosmetic and can become \"live tracker\"."
+   },
+   {
+    "path": "AGENTS.md",
+    "quote": "- Features require an approved `docs/agents/spec-template.md` spec plus Linear (KELD).",
+    "kind": "must-text",
+    "breaks": "Root-floor requirement. A feature tracked only on GitHub (no Linear issue covers it and the free-plan cap blocks a new one) fails a literal reading, and agents MUST refuse. The always-loaded floor contradicts #517.",
+    "minimal_fix": "\"plus Linear (KELD).\" \u2192 \"plus a KEL/GH issue.\" (+1 byte). AGENTS.md has only 7 bytes free (13305/13312). Line 204 \"Workflow/Linear/worktree/\u2026\" is a routing mention and can stay."
+   },
+   {
+    "path": ".agents/coordination.md",
+    "quote": "# Linear, worktree, OS and merge coordination (l.1); `## OS acceptance` in the first Linear comment records each criterion (l.21); - Ticket status: In Progress | Blocked (l.33); Post each branch in Linear; research follows `.agents/research.md`. (l.51)",
+    "kind": "must-text",
+    "breaks": "The OS acceptance record and the branch handoff are bound to a Linear comment. For GitHub-tracked work they would land on an issue that does not track the item. The `Ticket status` template field has no GitHub value.",
+    "minimal_fix": "Add the single #517 owner rule here, worded as close to the #520 proposal as the budget allows: \"Tracker of record: the covering live KELD Linear issue; if none exists and Linear cannot take a new one, the item's GitHub issue, linked from the nearest live Linear issue. GitHub states: open+unassigned=Todo, self-assigned+claim=In Progress, `blocked` label=Blocked, closed=Done.\" Change l.21 and l.51 to \"tracker\" and leave l.40 untouched (pinned by atomic_protocol). There are 55 bytes free (4297/4352), so this needs a budget raise with an instructions.md change record (the ROUTED_MAX cap is 16384) or trims elsewhere."
+   },
+   {
+    "path": ".agents/review.md",
+    "quote": "Maintainer feature branches are `agent/kel-<n>-<slug>` in one issue worktree. (l.8); use `.agents/coordination.md` for Linear branch/OS handoff and merge intent (l.33)",
+    "kind": "must-text",
+    "breaks": "The branch contract names only kel-. agent/gh-520-<slug> departs from the written contract, and PR reviewers or CodeRabbit could flag it. The handoff is directed to Linear.",
+    "minimal_fix": "Change to `agent/<kel|gh>-<n>-<slug>` and \"tracker branch/OS handoff\". There are 397 bytes free (1907/2304)."
+   },
+   {
+    "path": ".agents/instructions.md",
+    "quote": "Budget changes require named Linear scope, measured semantic benefit, before/after eval and independent instruction review. (l.25-26); agents MUST make the smallest Linear-scoped repair without repeat approval (l.35)",
+    "kind": "must-text",
+    "breaks": "If #520 is itself GitHub-tracked, its required instruction-budget changes and self-repair fail the \"named Linear scope\" condition, so the fix for this conflict is blocked by the same conflict. Raising the coordination.md budget is one such change.",
+    "minimal_fix": "\"Linear scope\" \u2192 \"tracker scope\", and \"Linear-scoped\" \u2192 \"issue-scoped\" (saves 1 byte). There are 10 bytes free (3062/3072). An alternative is to run the #520 edit under its covering Linear issue (KEL-124 owns workflow.md edits), which avoids this until the rule lands."
+   },
+   {
+    "path": ".agents/ci.md",
+    "quote": "CI routing is an independently reviewed shared-file concern and lands in its own Linear-scoped PR unless CI is already the owning issue.",
+    "kind": "must-text",
+    "breaks": "A CI routing change for a GitHub-tracked item cannot be \"Linear-scoped\". The first clause, \"CI routing is an independently reviewed shared-file concern\", is pinned by atomic_protocol (CI_MERGE_REQUIREMENT), but `Linear-scoped` comes after the pinned substring.",
+    "minimal_fix": "\"Linear-scoped PR\" \u2192 \"issue-scoped PR\" (saves 1 byte) and keep the pinned prefix. There are 160 bytes free (3936/4096)."
+   },
+   {
+    "path": ".agents/index.md",
+    "quote": "| Using Linear, creating/using a branch or worktree, OS-scoped acceptance, or handoff | `docs/agents/workflow.md`, `coordination.md`, and `review.md` for branch operations |",
+    "kind": "must-text",
+    "breaks": "The route trigger names only Linear. GitHub-tracked work still matches through \"branch or worktree \u2026 handoff\", but a GitHub-only claim or status action does not match the trigger exactly, so coordination.md, where the #517 rule should live, may not load.",
+    "minimal_fix": "\"Using Linear\" \u2192 \"Using the tracker (Linear/GitHub)\" (+21 bytes) or \"Using an issue tracker\" (+10). There are 40 bytes free (4056/4096) under the ROUTER_MAX hard cap of 4096. Run `just agent-context`."
+   },
+   {
+    "path": ".github/PULL_REQUEST_TEMPLATE.md",
+    "quote": "Branch: `agent/kel-<n>-<slug>` from `origin/main` ... Optional (only if they have content): `## Linear` (KEL-n), `## Rollback`, `## Screenshots`.",
+    "kind": "template",
+    "breaks": "The template shows no branch form or tracker section for GitHub-tracked work. KeldBot (keldbot.yml REQUIRED headings) does not check these, so nothing fails, but authors are steered to Linear. Changing the branch line must keep the `agent/kel-` substring (ci_hygiene PR_NEEDLES).",
+    "minimal_fix": "\"Branch: `agent/kel-<n>-<slug>` (or `agent/gh-<n>-<slug>` per #517)\" and \"`## Linear` (KEL-n) or `## Tracker` (GitHub #n)\"."
+   },
+   {
+    "path": "docs/agents/spec-template.md",
+    "quote": "Linear: KEL-<n> \u00b7 Owner: <human> \u00b7 Updated: YYYY-MM-DD",
+    "kind": "template",
+    "breaks": "A spec for GitHub-tracked work has no valid value for this header. No validator checks it (grep of tools/ and .github found no `Linear:` check), so nothing fails mechanically, but the feature MUST in AGENTS.md:17 depends on it.",
+    "minimal_fix": "\"Tracker: KEL-<n> | gh-<n> \u00b7 Owner: \u2026\" (+11 bytes; 340 bytes free, 2732/3072)."
+   },
+   {
+    "path": ".agents/memory.md",
+    "quote": "(5) current Linear ownership/status and Git history;",
+    "kind": "must-text",
+    "breaks": "The precedence ladder places GitHub tracker ownership/status nowhere, so a GitHub claim or status could be outranked by a memory lead or ignored during conflicts.",
+    "minimal_fix": "\"current tracker (Linear/GitHub) ownership/status\" (+17 bytes; 546 bytes free, 6622/7168)."
+   },
+   {
+    "path": ".agents/research.md",
+    "quote": "Use the `## Current-documentation receipt` template in coordination.md on the relevant Linear decision, OS handoff, or branch handoff.",
+    "kind": "must-text",
+    "breaks": "The receipt location for a GitHub-tracked decision is a Linear decision. This sentence is not pinned (atomic_protocol pins only the research.md receipt requirements listed in CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS).",
+    "minimal_fix": "\"relevant Linear decision\" \u2192 \"relevant tracker decision\" (+1 byte; 49 bytes free, 6095/6144). Line 99 `branch-linear-handoff.md` is a Prompt Tracker file name and is cosmetic."
+   },
+   {
+    "path": "docs/onboarding/05-development-guide.md",
+    "quote": "Git remains the worktree authority and Linear the issue/claim authority. (l.467); These records do not replace the Linear claim. (l.490); on `agent/kel-<n>-<slug>` from `origin/main` (l.337)",
+    "kind": "cosmetic",
+    "breaks": "The human-facing guide states that Linear is the sole claim authority, which contradicts #517. It is not budgeted and not in the llms corpus. The line 474-492 examples use kel-245, which is fine.",
+    "minimal_fix": "\"Linear the issue/claim authority\" \u2192 \"the tracker of record (Linear, or GitHub per #517) the issue/claim authority\". \"the Linear claim\" \u2192 \"the tracker claim\". Add `|gh-<n>` at l.337."
+   },
+   {
+    "path": "docs/architecture/01-overview.md",
+    "quote": "only; Linear continues to own execution state.",
+    "kind": "cosmetic",
+    "breaks": "Normative spec prose contradicts #517 for GitHub-tracked items. AGENTS.md says a code/spec mismatch is a bug. The file is in the llms corpus, so an edit requires regenerating llms-full.txt and running `just llms-check`. The same applies to the generated product-status.md text from product_status.rs:1026, \"Linear owns live issue status\u2026\".",
+    "minimal_fix": "\"Linear (or, per #517, the item's GitHub issue) continues to own execution state.\" Regenerate llms and run `just llms-check`. Optional, but needed to avoid silent drift."
+   },
+   {
+    "path": ".github/ISSUE_TEMPLATE/feature.yml (and bug.yml)",
+    "quote": "id: linear ... description: Public issue/PR link or an existing KEL-n if known. ... placeholder: KEL-00",
+    "kind": "cosmetic",
+    "breaks": "Nothing fails. The field already accepts a public issue/PR link. atomic_protocol only pins FORM_CONTRIBUTING_REQUIREMENT in these forms.",
+    "minimal_fix": "None required. Optionally relabel the id to `related`."
+   },
+   {
+    "path": ".codex/config.toml / .mcp.json",
+    "quote": "[mcp_servers.linear] url = \"https://mcp.linear.app/mcp\"",
+    "kind": "cosmetic",
+    "breaks": "Nothing. It only makes the Linear MCP available, and there is no GitHub requirement.",
+    "minimal_fix": "None."
+   }
+  ],
+  "notes": "I read origin/main at 80143cd0 after a fresh `git fetch`. I made no writes and ran no tests or checks. Every enforcement claim below rests on quoted check code, not on running the check.\n\n**Checks that actually fail today for GitHub-tracked work:**\n1. `tools/workspace.py` rejects any issue id that is not `kel-<n>`, so `just work-start gh-520 \u2026` exits with \"Invalid issue\".\n2. `tools/session_closeout.py` accepts a tracked finding only as `KEL-n` plus a linear.app URL. A GitHub-tracked finding is rejected, and the Codex closeout hook then blocks the session.\n3. `tools/product_status.rs` accepts only `KEL-` ids in the ledger's issues column.\n\n**Coupled edit you must not miss:** changing workspace.py or session_closeout.py changes their SHA-256 hashes, which are pinned in `.codex/hooks.json`. You must regenerate hooks.json in the same PR; otherwise `tools/test_session_closeout_hook.py` fails in CI and the live Codex hook fails closed.\n\n**Wording that is locked by checks:**\n- `tools/ci_hygiene.rs` requires the PR template to contain the text `agent/kel-`, so extend that branch line rather than replace it.\n- `tools/atomic_protocol.rs` pins coordination.md:40-41 (\"\u2026relevant Linear decision, OS handoff, or branch handoff.\") and workflow.md:12-13 (\"\u2026internal Linear linkage\u2026\") word for word. It also requires the step-1 atom sentences to appear exactly once, so a GitHub copy of step 1 would fail.\n\n**Nothing in GitHub CI checks branch names, PR titles or PR bodies for KEL ids.** KeldBot only checks the six PR headings and the conventional title format, and ci.yml has no head_ref check.\n\n**Byte budgets** (current size / budget from `.agents/instruction-budget.tsv`, then free bytes):\n\n| File | Size / budget | Free | Notes |\n|---|---|---|---|\n| AGENTS.md | 13305/13312 | 7 | always; ROOT_MAX 16384; whole always chain capped at 24 KiB |\n| docs/agents/workflow.md | 16353/16384 | 31 | budget already equals the hard 16 KiB cap, so additions must be offset by trims |\n| .agents/index.md | 4056/4096 | 40 | hard cap 4096 |\n| .agents/coordination.md | 4297/4352 | 55 | |\n| .agents/instructions.md | 3062/3072 | 10 | |\n| .agents/research.md | 6095/6144 | 49 | |\n| .agents/ci.md | 3936/4096 | 160 | |\n| .agents/review.md | 1907/2304 | 397 | |\n| .agents/memory.md | 6622/7168 | 546 | |\n| docs/agents/spec-template.md | 2732/3072 | 340 | |\n\nThe development guide and architecture 01 are not budgeted. Architecture 01 and the generated product-status.md are in the llms corpus, so editing either needs `just llms-check`.\n\n**Order and process:**\n- Recommended order: first the one #517 owner rule in coordination.md, including the GitHub status mapping (open+unassigned=Todo, self-assigned+claim=In Progress, `blocked` label=Blocked, closed=Done); then the workflow.md, AGENTS.md, review.md and index.md wording; then workspace.py and session_closeout.py plus the hooks.json regeneration, under a separate tooling review.\n- `.agents/instructions.md` itself requires \"named Linear scope\" for budget changes. Either run #520 under its covering Linear issue (KEL-124) or fix that line first.\n- The instruction-file edits need `just agent-context`, `just atomic-protocol`, `just hygiene`, and an instruction-review per root AGENTS.md.\n\n**Could not inspect:**\n- `.coderabbit.yaml`, `hooks/`, `.claude/**` and labeler configs are not in origin/main.\n- The local `.claude/settings.local.json` has no hooks, only permissions.\n- I did not check the private Prompt Tracker (`prompts/SHARED/branch-linear-handoff.md`), the `docs/research` checkout, live Linear or GitHub state, or locally generated Cursor/Claude hook registrations on other machines.\n- I only grepped `learnings.md`. It has 3 Linear mentions; l.121 repeats `agent/kel-<n>-<slug>`, which is evidence only.\n- Nested crate AGENTS.md files and ci.yml step names cite KEL issues only as history; those are cosmetic and need no change."
+ },
+ "conflicts": {
+  "kel124_claims": "KEL-124: status In Progress, assignee none, updatedAt 2026-10-06T20:51:16Z. It has 20 comments with no further page, and the newest comment is dated 2026-09-23T04:02:42Z. The 2026-10-06 updatedAt comes from a metadata change such as a link, not from a comment. \"## Agent claim\" comments:\n(1) 2026-08-27T13:50:14Z by GYLDLAB. Agent codex on CENTILLIONAIREs-Mac-mini.local, gpt-5.6-sol@xhigh. Branch agent/kel-124-agent-operating-contract. Expected paths: .agents/index.md, docs/agents/workflow.md, conditionally docs/agents/learnings.md, llms.txt/llms-full.txt, and 4 Prompt Tracker prompts/SHARED files. Keys: shared:agent-workflow and shared:prompt-chrome; it states root AGENTS.md is not claimed. Expires 2026-08-28T01:49:51Z. EXPIRED. A later comment (53602d63, per the 2026-09-03 claim) says this claim was released.\n(2) 2026-09-03T07:22:29Z by Amisha Ramani. Agent codex on the Ramani device (Windows 11), gpt-5.6-sol@max. Claim c899ca38. Branch agent/kel-124-actionable-resolution-reporting. Expected paths: AGENTS.md only. Expires 2026-09-03T15:20:00Z. EXPIRED. The PR #142 final handoff (2026-09-03T07:54Z) followed it.\nNo claim on KEL-124 is unexpired as of 2026-10-07T00:00Z. The newest comment (2026-09-23, CRMT-20260923) is research only and says no instruction change is authorized by that handoff.\n\nKEL-31: status In Progress, assignee GYLDLAB, updatedAt 2026-10-06T20:51:19Z. It has 24 comments, and the newest is dated 2026-09-26T08:54:24Z. Claims:\n(a) 2026-09-22T23:01:40Z by thop tv, a ChatGPT connector session. Paths: Linear tracking and conventions doc. Expired 2026-09-23T02:00Z, and explicitly released at 23:26Z (claim c886064b).\n(b) 2026-09-23T00:12:16Z by GYLDLAB, codex on CENTILLIONAIREs-Mac-mini. Claim 8225910d. Paths: Linear UI, product-status.tsv/.md, Prompt Tracker card. Expired 2026-09-24T00:00Z.\n(c) 2026-09-26T08:41:50Z by Amisha Ramani, native Codex on the Mac. Path: .keld-work/worktrees/kel-31-evidence-ledger/target/debug only. Expired 2026-09-26T10:00Z and RELEASED at 08:54Z (claim 94956a5a).\nNo claim on KEL-31 is unexpired. None of the KEL-31 claims ever covered AGENTS.md or workflow.md.",
+  "open_prs": "There are 12 open PRs in gyldlab/keld. Only one touches a watched path:\n- #512 agent/kel-270-learnings-target-and-path \"docs(learnings): shared-target false green and elevated PowerShell res...\" changes .agents/instruction-budget.tsv (one line, +1/-1; its other changes are learnings content). It does not touch AGENTS.md, CLAUDE.md, docs/agents/workflow.md, any .agents/*.md, tools/agent_context*, or the PR template.\nThe other open PRs (#516, #515, #514, #511, #510, #509, #339, #338, #287, #264, #252) touch none of the watched paths.",
+  "remote_branches": "Branches not in origin/main that touched the watched paths in the last 14 days:\n- origin/agent/ci-local-routing (author amishabenramani, last commit b52b31a8 on 2026-10-03). Its diff against main changes AGENTS.md (7 lines), docs/agents/workflow.md (6) and .agents/ci.md (7). Its PR #361 is CLOSED, unmerged, last updated 2026-10-03. This is stale work, not an active writer, but the same files may get reopened from it later.\n- origin/agent/kel-270-learnings-target-and-path is the branch of open PR #512. Its only change to a watched path is the one line in .agents/instruction-budget.tsv.\n- origin/agent/kel-270-machine-uac (86ac8b37) and origin/agent/kel-255-linux-test-layout (afc17b94) were merged through #358 and #292.\n- origin/agent/kel-252-test-architecture (cf60141f) touched .agents/testing.md on 2026-09-25. It is the branch of PR #338, whose diff against main no longer contains any watched path.\nLocal main (b4b907c3) is 4 commits behind origin/main (80143cd0, 2026-10-06T22:57Z). None of those 4 commits touch the watched paths.",
+  "recent_changes": "origin/main changes to the watched paths since 2026-09-25 (newest first):\n- b4b907c3 #389 (2026-10-06): .agents/instruction-budget.tsv\n- ca2e3787 #387 (2026-10-06): .agents/instruction-budget.tsv\n- 619bec8b #358 (2026-10-02): .agents/instruction-budget.tsv\n- a373ee1c \"ci: route Mermaid rendering by changed inputs\" (2026-09-28): AGENTS.md, docs/agents/workflow.md, .agents/ci.md\n- f2c206dd #329 (2026-09-27): AGENTS.md, .agents/instruction-budget.tsv\n- 699e2709 #292 (2026-09-26): .agents/index.md, .agents/instruction-budget.tsv, .agents/test-layout.md, .agents/testing.md\n- 3a43a628 (2026-09-26): AGENTS.md, .agents/instruction-budget.tsv\nIn the window, CLAUDE.md, tools/agent_context*, .github/pull_request_template.md, .agents/coordination.md, .agents/review.md and .agents/instructions.md were not changed on main. Any edit should start from a fresh origin/main (80143cd0), not local main.",
+  "verdict": "clear, with two caveats. Neither KEL-124 nor KEL-31 has an unexpired claim; all five claims expired or were released by 2026-09-26. No open PR touches AGENTS.md, CLAUDE.md, docs/agents/workflow.md, .agents/coordination.md, .agents/review.md, .agents/instructions.md, tools/agent_context* or the PR template.\nCaveat 1: open PR #512 (agent/kel-270-learnings-target-and-path) changes one line of .agents/instruction-budget.tsv. The budget update for this change will conflict with that line, so whichever PR merges second has to rebase and recompute its budget row.\nCaveat 2: the closed, unmerged branch origin/agent/ci-local-routing (PR #361, amishabenramani, 2026-10-03) has edits to AGENTS.md, workflow.md and .agents/ci.md that are not on main. This is not an active conflict, but tell its owner before taking over those sections.\nUnder the routing rules, a new \"## Agent claim\" for shared:agent-workflow still has to be posted on KEL-124 before editing. This check posted nothing: no comment, claim, push or edit. Only fetch and read commands were run."
+ }
+}

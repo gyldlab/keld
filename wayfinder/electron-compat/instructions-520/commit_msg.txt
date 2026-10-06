@@ -1,0 +1,21 @@
+docs(agents): bind GitHub tracker claims to declarations and push access
+
+Three review rounds on the first revision found that:
+- agents re-deriving the tracker could win the same work on two trackers;
+- a public GitHub issue let anyone post or revoke claims, briefs or scope;
+- the GitHub status mapping overlapped.
+
+Now:
+- the tracker of record is the one the GitHub issue body declares;
+- claims post and order only there, by creation time, and a same-work
+  claim elsewhere is a conflict;
+- only comments and changes by push-access accounts count.
+
+.agents/coordination.md § GitHub tracker issue maps GitHub states
+first-match to Done, Canceled, Blocked, In Progress and Todo
+(ready-for-agent), and forbids posting private or security-sensitive
+detail on the public issue (coordination budget 4352 -> 5120). The
+branch contract, the KEL-245 spec, the generated status ledger, the
+llms description and the onboarding guides now name the tracker issue.
+
+Refs #520

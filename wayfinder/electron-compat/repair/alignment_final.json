@@ -1,0 +1,1483 @@
+{
+ "alignment": [
+  {
+   "unit": "F01",
+   "items": [
+    {
+     "key": "F01-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 scope is limited to 'a bounded, measurable lifecycle corpus/report for the currently implemented `@keld/electron` lifecycle slice' and its non-goals read 'No new Electron API implementation, no compatibility-surface expansion'. It does not cover the 160-member app/CommandLine/Dock/process epic. KEL-72 (the original app lifecycle shim) is Done. KEL-237 is the nearest live issue because it owns the live @keld/electron app-lifecycle evidence, and the orchestrator's 2026-10-06 bridge comment there already names this family's first conformance ticket (#445). KEL-127 (Todo) is the program fallback.",
+     "reason": "Epics are always tracker github (rule 4). GitHub #444 is the tracker of record. KEL-237 is the nearest live reference for the app-lifecycle compat surface."
+    },
+    {
+     "key": "F01-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 reuses the KEL-74 schema to 'Freeze explicit lifecycle operation cells' for 'the currently implemented `@keld/electron` lifecycle slice'. Its non-goals exclude 'no compatibility-surface expansion'. F01-T1 adds red-until-implemented cells for unimplemented members (session facts, single-instance lock) and a new `unknown` expected verdict, so it falls outside that scope. No recorded scope comment extends it: the 2026-10-06 bridge comment only announces #445 and does not designate scope. KEL-237 is still the nearest live issue, because T1 reuses its manifest schema and runner in place.",
+     "reason": "No live Linear issue's description covers new unimplemented-surface conformance cells, and KEL-237's non-goals exclude surface expansion. GitHub #445 is the tracker of record. KEL-237 is the reference, since T1 extends its corpus format."
+    },
+    {
+     "key": "F01-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-96's goal is 'Ship Unique #1: the prebuilt host runs as the app process with no CLI flag'. Neither its acceptance nor any recent comment mentions re-basing Ready for facade boots, removing CreateInitialWindow, or a facade-boot declaration. KEL-139, which owns the spine ACs, is Done and therefore not live. KEL-143 (Backlog) owns renderer continuity across Bun generation recovery, not who creates window #1. KEL-96 is nearest because it owns boot order and the descriptor schema this amendment changes (\u00a74.4/\u00a74.5 of its spec).",
+     "reason": "No live issue explicitly covers the facade-boot Ready re-base. GitHub #446 is the tracker of record. KEL-96 (In Progress, GYLDLAB) is the reference as the boot-order owner."
+    },
+    {
+     "key": "F01-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): the KEL-96 decision comment of 2026-10-06 amends \u00a74.5 Quit only to 'on Quit, stop admitting new work, drain admitted privileged work to its terminal Reply/Err, then enter Quitting, attribute, and send the correlated reply before closing the link'. That is the host's ordered Quit tail. It does not cover cancelable before-quit/will-quit preventDefault, a pre-Quitting state entered before the first window close, or a host quit-requested event from Cmd+Q/Dock. KEL-139 AC6 is Done. No live issue owns the AppKit terminate hook. KEL-96 is nearest because it owns the ordered Quit that this ticket amends.",
+     "reason": "The covering text addresses ordered Quit, not the cancelable two-phase quit, so this is a related issue only. GitHub #451 is the tracker of record. KEL-96 is the reference."
+    },
+    {
+     "key": "F01-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-75 freezes the role spawn contract ('Per-role listener/token, grants, restart/backoff/crash-loop policy, stdio/log tags, window affinity and graceful shutdown') and reconciles 'boot descriptors, closed configuration schema'. It names no host-minted session-facts payload, synchronous app getters, or defaultApp/argv shape. KEL-96 (descriptor schema) does not cover it either. KEL-75 is nearest because the payload is delivered at spawn beside KELD_APP_LINK under its role spawn contract.",
+     "reason": "No live issue explicitly covers the session-facts payload. GitHub #452 is the tracker of record. KEL-75 (In Progress) is the reference as the spawn-delivery owner; KEL-96 is secondary for version/productName schema fields."
+    },
+    {
+     "key": "F01-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): a KELD team search for 'single instance' returned no issue whose title or description covers an OS single-instance lock or requestSingleInstanceLock. The hits were KEL-89, KEL-75, KEL-135 and others on unrelated surfaces. KEL-96's description covers no-flag host boot, and its non-goals are 'RoleRegistry wiring (separate child), schema codegen, named-pipe, keld-auth'. It never mentions an instance lock. KEL-96 is nearest because the single-instance declaration must reach the host through the compiled keld.boot.json schema it owns, and the host acquires the lock before spawn.",
+     "reason": "No live owner exists for the lock primitive or verdict. GitHub #453 is the tracker of record. KEL-96 is the reference as the boot-descriptor and pre-spawn host owner."
+    },
+    {
+     "key": "F01-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-72, the @keld/electron app shim, is Done and not live. No live issue's description covers commandLine/enableSandbox/protocol-client/login-item shims or L0 typed-unsupported rows. KEL-237's non-goals exclude 'No new Electron API implementation, no compatibility-surface expansion'. KEL-132 (In Progress) covers GPU env mutation soundness, not a facade disableHardwareAcceleration diagnostic. KEL-237 is nearest because every out-of-scope member in this ticket gets a scoreboard row through the compatibility-evidence owner it represents. The ticket is parked.",
+     "reason": "No live issue covers it. GitHub #454 is the tracker of record. KEL-237 is the reference for its scoreboard-row half."
+    },
+    {
+     "key": "F01-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-96's description and 2026-10-06 \u00a74.5 decision comment cover ordered Quit ('Step 4 keeps the enforced oracle: reply before link close; link revocation before forced reap'). Neither mentions an app-requested exit Call, exit-code propagation, or a no-recovery invariant for app exit. KEL-75 owns supervisor classification but does not name app.exit. KEL-19 (CLI) is Done. KEL-96 is nearest because the amendment targets its \u00a74.5 step 4 'exits', which carries no exit code today.",
+     "reason": "Related issues only. The GitHub issue is the tracker of record; no GitHub number was found in publish_state.json for this key. KEL-96 is the reference, with KEL-75 secondary for recovery classification."
+    },
+    {
+     "key": "F01-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live issue covers second-instance, open-file or open-url delivery, or deeplink admission. KEL-89 (In Progress) is the keld-auth OS-broker spec. It mentions custom-scheme redirects only as an auth fallback and does not own deeplink admission or handoff delivery. KEL-96 is nearest because it owns the host-as-app process, which would receive OS open events and the loser instance's handoff. It is also the descriptor owner for the single-instance declaration that this ticket builds on.",
+     "reason": "No live owner for handoff or deeplink admission. The GitHub issue is the tracker of record; no GitHub number was found in publish_state.json for this key. KEL-96 is the reference."
+    },
+    {
+     "key": "F01-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-78 asks to 'Define authority over files, secrets, network, devices, IPC/process control, inherited objects, code loading, brokers, persistence/update state and descendants'. It defines containment authority but names no persistent per-user, role-private userData/logs location per OS and no keld migrate profile messages. The ticket itself requires a KEL-78 amendment, which shows the work is not covered today. Under F01-A4 (decided, parked) the ticket is parked. KEL-78 is the nearest owner of the role-private container.",
+     "reason": "Related but not explicitly covering. The GitHub issue is the tracker of record; no GitHub number was found in publish_state.json for this key. KEL-78 is the reference."
+    },
+    {
+     "key": "F01-T10",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live issue mentions a macOS reopen hook or an Electron activate(hasVisibleWindows) translation. KEL-96's description covers no-flag host-as-app boot, with no reopen or activate behaviour. KEL-139, which held the spine contract, is Done. KEL-96 is nearest because the host app process owns the AppKit application delegate that receives reopen events.",
+     "reason": "No live owner. The GitHub issue is the tracker of record; no GitHub number was found in publish_state.json for this key. KEL-96 is the candidate host reference."
+    },
+    {
+     "key": "F01-T11",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-135",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-135 requires 'WebEngine creation requires a host-validated opaque app/profile identity; page/Bun input cannot choose another app's store'. This covers only the invariant that keeps setPath('sessionData') a no-op. It does not cover facade setPath/setAppLogsPath over session facts. KEL-72 (the facade) is Done. KEL-135 is nearest because the ticket's one non-trivial rule, that sessionData stays under the engine-profile owner, is KEL-135's invariant.",
+     "reason": "Related only: it constrains part of the ticket without covering its work. The GitHub issue is the tracker of record; no GitHub number was found in publish_state.json for this key. KEL-135 is the reference."
+    }
+   ]
+  },
+  {
+   "unit": "F02",
+   "items": [
+    {
+     "key": "F02-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "Epics are always tracked on GitHub (gyldlab/keld#447). Searching Linear for 'BrowserWindow' and 'window' on 2026-10-07 found no live issue covering a BrowserWindow facade over a host window registry. The BrowserWindow hits that came back are all Done (KEL-17, KEL-72, KEL-139, KEL-238). KEL-75 is the nearest live surface. Its description freezes 'window affinity' and requires that 'Sequence/state diagrams cover spawn, authenticated handshake, port routing, crash, restart and window close'. Its T4a comment names 'KEL-75/T4 shipping host-window integration' as a future owner. That scope is window-bound roles, not the Electron window registry.",
+     "reason": "Epic: GitHub is the tracker by rule. KEL-75 owns role and window-generation lifecycle, which is where an agent on this surface would start, so the reference link goes there."
+    },
+    {
+     "key": "F02-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 owns the committed KEL-74 lifecycle corpus and its fixture pin: 'Freeze explicit lifecycle operation cells to exact Keld/Bun/upstream/OS/arch/artifact/authority dimensions'. Its non-goals say 'No new Electron API implementation, no compatibility-surface expansion', which excludes new BrowserWindow cells. KEL-74, the schema owner, is Done and so not live.",
+     "reason": "No live issue covers new window conformance cells. KEL-237 is the nearest because it is the live owner of the corpus these cells extend and of the Electron 44.3.0 pin."
+    },
+    {
+     "key": "F02-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "No live Linear issue describes a host window registry, a (WindowId, WindowGeneration) wire contract, or BrowserWindow members (a 'window' search on 2026-10-07 found none). KEL-75's description is about Bun role principals, with 'window affinity'. Its comments limit T4 to 'shipping host-window integration' for window-bound roles. KEL-96's non-goals are 'RoleRegistry wiring (separate child), schema codegen, named-pipe, keld-auth', and its scope is no-flag boot.",
+     "reason": "KEL-75 is related but does not explicitly cover this work. It is the nearest because its approved spec places window-generation minting in the app-session registry, which this ticket consumes."
+    },
+    {
+     "key": "F02-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers an Electron-style two-phase cancelable close (CloseRequested, veto/allow by seq, tombstone before 'closed'). KEL-75 requires diagrams covering 'window close', and its T4a artifact defers 'native window close, renderer continuity and platform tree reap' to KEL-75/T4. That is role teardown on window close, not the facade close veto. KEL-139 (the spine constraints) is Done.",
+     "reason": "KEL-75 is only related. It is the nearest live owner of the window-close lifecycle that this state machine must line up with."
+    },
+    {
+     "key": "F02-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "KEL-78 owns strict versus legacy profile semantics: 'sandbox-off legacy tier is explicit in build output, doctor, scoreboard and release metadata and forfeits the zero-authority claim'. Nothing in it covers refusing Electron webPreferences values (nodeIntegration, contextIsolation:false, webSecurity:false and so on) at BrowserWindow construction. No other live issue covers that.",
+     "reason": "KEL-78 is related and its rule is a constraint on this ticket, but it does not cover construction triage. It is the nearest because the triage must not let any option select or widen a profile."
+    },
+    {
+     "key": "F02-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-25",
+     "linear_status": "In Progress",
+     "evidence": "KEL-25 (Hello-world window on every OS) sets the bar at 'Basic window controls work: resize, minimize, close, title set from config'. It does not cover macOS chrome or capability options (titleBarStyle, trafficLightPosition, frame:false, alwaysOnTop and the rest) for the Electron facade. KEL-139, the earlier lead, is Done.",
+     "reason": "No live issue owns chrome options. KEL-25 is the nearest live native-window-controls issue."
+    },
+    {
+     "key": "F02-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "No live issue owns a spec for the window registry, window wire contract, close state machine or constructor triage. A 'window' search on 2026-10-07 found no registry spec. KEL-75's spec scope is 'Named roles and lifecycle: primary app, window-bound extension/watcher...' plus window affinity, which does not explicitly include an Electron window registry spec. KEL-98 (contract codegen) is Done.",
+     "reason": "KEL-75's approved spec already fixes window-generation minting in the app-session registry, and this spec must stay consistent with it, so KEL-75 is the nearest. It does not cover the work."
+    },
+    {
+     "key": "F02-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 is the live owner of the KEL-74 corpus. Its non-goals, 'No new Electron API implementation, no compatibility-surface expansion', exclude new cells for ready-to-show, show/hide, state-event sequences, fromId and fromWebContents. KEL-74 is Done.",
+     "reason": "No live issue covers these cells. KEL-237 is the nearest because it owns the corpus and the pin."
+    },
+    {
+     "key": "F02-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-25",
+     "linear_status": "In Progress",
+     "evidence": "KEL-25's done criteria, 'Basic window controls work: resize, minimize, close, title set from config', describe a native hello-world window, not the BrowserWindow facade members (show/hide/focus/blur/minimize/restore, bounds setters, setTitle/getTitle, fromId, fromWebContents) over a host registry. No live issue covers those members.",
+     "reason": "KEL-25 is related only. It is the nearest live issue for native window controls such as minimize, resize and title."
+    },
+    {
+     "key": "F02-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-25",
+     "linear_status": "In Progress",
+     "evidence": "No live issue owns show:false, ready-to-show or paintWhenInitiallyHidden. KEL-142, which owns the isolated-world seam, and KEL-139 are both Done. KEL-25 covers opening visible hello-world windows and does not cover hidden creation or a first-paint event.",
+     "reason": "KEL-25 is the nearest live native-window issue. The ready-to-show event source decision is tracked on F02-A3 on GitHub."
+    },
+    {
+     "key": "F02-T10",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "KEL-78 covers the legacy and strict profile (the leftover sandbox row this table consumes) but not a classification table for the 46 WebPreferences fields and 54 constructor options. KEL-135 (In Progress) covers 'WebEngine creation requires a host-validated opaque app/profile identity' but has no session/partition mapping. Neither covers the table.",
+     "reason": "Both issues are related, and neither covers the table. KEL-78 is the nearest because the table's security-bearing rows (escalating values, sandbox:false) answer to its profile rule. KEL-135 is the secondary reference for session/partition."
+    },
+    {
+     "key": "F02-T11",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-143",
+     "linear_status": "Backlog",
+     "evidence": "KEL-143's goal: 'After the admitted primary Bun generation dies, keep the same native window/renderer alive, fully revoke old authority, provision a successor...'. Its acceptance: 'Old endpoint/token/link/port/grants/pending calls reject before successor provisioning'. It does not cover host-to-role close requests pending across a role park or role loss, or the single-terminal-outcome and no-replay rule for a pending close.",
+     "reason": "KEL-143 is related and is a predecessor, but it does not cover this item. It is the nearest because it owns keeping the same window across recovery, which this ticket extends."
+    },
+    {
+     "key": "F02-T12",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-25",
+     "linear_status": "In Progress",
+     "evidence": "KEL-25 (Hello-world window on every OS) and its Linux child KEL-28 (Backlog) cover basic native windows on each OS. They do not cover Win32 WM_CLOSE or GTK delete-event veto hooks, chrome tiering, or hidden-paint arms for the Electron facade. KEL-27 (Windows) is Done.",
+     "reason": "This is a parked lane, and no live issue covers it. KEL-25 is the nearest live cross-OS window parent, and KEL-28 is the Linux-specific live child."
+    },
+    {
+     "key": "F02-A3",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-25",
+     "linear_status": "In Progress",
+     "evidence": "This is a decision ticket (choosing the ready-to-show event source: an isolated-world double-rAF reporter or a recorded load-finished divergence), so GitHub tracks it by rule. KEL-142, which owns the injection seam, is Done. No live issue owns hidden-window first paint. KEL-25 is the nearest live native-window issue.",
+     "reason": "Decision: GitHub is the tracker by rule. The reference goes to KEL-25, the same nearest issue named for F02-T9, which this decision gates."
+    },
+    {
+     "key": "F02-A6",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-25",
+     "linear_status": "In Progress",
+     "evidence": "This is a decision ticket (Windows/Linux chrome tiering receipts), so GitHub tracks it by rule. KEL-25 is the live cross-OS window parent. KEL-28 (Linux, Backlog) is its live child. KEL-27 (Windows) is Done. None of them covers chrome tiering.",
+     "reason": "Decision: GitHub is the tracker by rule. KEL-25 is the nearest live cross-OS window issue."
+    }
+   ]
+  },
+  {
+   "unit": "F03",
+   "items": [
+    {
+     "key": "F03-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "Epics are always tracked on GitHub (gyldlab/keld#457). FACT (Linear, fetched 2026-10-07): no live KEL issue covers a webContents facade. Searches for 'webContents', 'executeJavaScript', 'devtools', 'window.open' and 'navigation' returned only Done issues (KEL-14, KEL-17, KEL-26, KEL-142, KEL-168) or ones that are merely related. KEL-127 (Todo, 'Program: post-audit convergence and Mac no-Rust product proof') is the program parent and the required fallback reference for the reference link.",
+     "reason": "Epic, so the rule sends it to GitHub. KEL-127 is the fallback program reference. A parent issue is never the tracker of record."
+    },
+    {
+     "key": "F03-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237's Non-goals read \"No new Electron API implementation, no compatibility-surface expansion\". New webContents conformance cells expand the compatibility surface, so KEL-237 is excluded as tracker. KEL-74, the owner of the evidence schema, is Done, so it is not live. No other live issue's description covers webContents cells. KEL-237 is still the nearest live reference: its Scope says \"Reuse the existing KEL-74 machine-readable evidence schema and docs/engineering/compat-scoreboard.md; do not create a second scoreboard\", and these cells must land in that scoreboard.",
+     "reason": "The conformance cells are excluded by KEL-237's non-goals, and the schema owner KEL-74 is Done. GitHub #458 is the tracker of record, and the reference link goes on KEL-237 as the live compat-corpus owner."
+    },
+    {
+     "key": "F03-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live issue describes a webContents facade (id, loadURL, did-finish-load, did-navigate, destroyed). KEL-142, the renderer bridge and navigation-generation mint, is Done. KEL-139, the macOS product spine spec, is Done. KEL-79 (Backlog) covers origin and navigation policy, not the Electron facade or its event synthesis. KEL-237's non-goals exclude new Electron API. With no surface-specific live issue, KEL-127 (Todo, the Mac product-proof program parent) is the fallback reference.",
+     "reason": "No live Linear issue covers the facade, so GitHub #459 is the tracker of record, with the reference on the fallback program parent KEL-127."
+    },
+    {
+     "key": "F03-T3",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): an acceptance bullet in KEL-79's description reads \"Per-extension origin/data-store isolation and navigation/popup/download/permission policy are explicit.\" Its framework-first scope says \"Portable principal is host-owned WebView plus navigation generation.\" Its only out-of-scope item is \"Building a clean-room browser engine or making CEF the default\", which does not exclude navigation policy. The 2026-09-26 scope comment defers only \"VS Code extension-webview behavior; Service Worker lifecycle; Monaco/xterm smoke; full three-engine differential acceptance; per-extension isolation and broad resource/media matrices\". It does not defer navigation policy. The 2026-08-20 GYLDLAB comment ('post-v0 / YAGNI ... do not pick up') is a scheduling note, not a scope exclusion. The web.navigate grant key also needs an amendment that KEL-102 does not yet contain: KEL-102's description has no navigation key.",
+     "reason": "KEL-79's acceptance explicitly names navigation policy for webviews, and F03-T3 implements it (guard-first, pre-commit, guard AND app hook). Caveat: the Electron will-navigate hook invocation goes beyond what KEL-79 states, and it is still unassigned."
+    },
+    {
+     "key": "F03-T4",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): an acceptance bullet in KEL-79's description reads \"Per-extension origin/data-store isolation and navigation/popup/download/permission policy are explicit.\" Popup policy is named explicitly, and F03-T4 is the popup and window-open policy (deny without a handler, guard AND app on allow). The out-of-scope list, \"Building a clean-room browser engine or making CEF the default\", does not exclude it, and the 2026-09-26 scope comment does not defer popup policy. KEL-168 (the WebView2 popup deny) is Done and consumed only by the parked Windows lane.",
+     "reason": "KEL-79's acceptance explicitly covers popup policy, so it is the tracker of record. KEL-168 is Done and is not a candidate."
+    },
+    {
+     "key": "F03-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "FACT (Linear, fetched 2026-10-07): a search for 'executeJavaScript' returned zero issues. 'eval' and 'command queue' returned no live issue that describes WebEngine eval completion or a result envelope. KEL-142 (the bridge) is Done. KEL-38 (the keld-wv backend layout) and KEL-14 (the webview RFC) are Done. KEL-80 (Backlog) covers the kipc/virtual-channel queues, not webview eval completion. KEL-127 (Todo) is the fallback reference.",
+     "reason": "No live issue covers executeJavaScript or eval completion. GitHub #462 is the tracker of record, with the fallback reference on KEL-127."
+    },
+    {
+     "key": "F03-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237's Non-goals read \"No new Electron API implementation, no compatibility-surface expansion\", which excludes the next-tranche webContents cells: navigation order, will-navigate veto, window-open, fail/title. KEL-74 is Done. No other live issue scopes these cells. KEL-237 is the nearest live reference because it owns the canonical compat corpus over the KEL-74 schema ('do not create a second scoreboard').",
+     "reason": "Same position as F03-T1: KEL-237's non-goals exclude the work and the schema owner is Done. The tracker of record is GitHub (this repair ticket is not yet published to GitHub), and the reference goes on KEL-237."
+    },
+    {
+     "key": "F03-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-80 ('Bridge: bounded virtual channels and traffic-replay conformance', Backlog) covers host-mediated ordering, credits and frame bytes across WebView to Rust to Bun. It says \"KEL-98 retains generated-contract ownership; no wire/ABI change ... is approved here\", and it does not mention an Electron structured-clone value codec. KEL-98 (codegen) and KEL-136 (the TS app-link transport) are Done. A search for 'codec' found no live issue that covers an @keld/electron endpoint value codec. KEL-80 is still the nearest live bridge and value-transport issue that an agent on this surface would open.",
+     "reason": "No live issue explicitly covers the host-opaque endpoint codec, so the tracker of record is GitHub. KEL-80 is the nearest live bridge-transport reference."
+    },
+    {
+     "key": "F03-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live issue covers the provisional/commit/fail/in-page/title engine-neutral signal set or the Electron navigation vocabulary built from it. KEL-79 is related because its framework-first scope says \"Portable principal is host-owned WebView plus navigation generation\" and its negative tests include \"stale navigation principal\". It does not describe navigation event delivery, so it is related, not covering. KEL-142 is Done.",
+     "reason": "KEL-79 is only related. The tracker of record is GitHub (this repair ticket is not yet published to GitHub), and the reference goes on KEL-79 as the live webview navigation-identity owner."
+    },
+    {
+     "key": "F03-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): this is a parked ticket for the Windows and Linux lanes. KEL-168 (WebView2 popups) is Done. KEL-28 (Linux WebKitGTK window, Backlog) covers window creation, not webContents signals or executeJavaScript. KEL-79 (Backlog), titled 'Webview: secure-origin and resource-transport contract across system engines', is the live issue that spans WKWebView, WebView2 and WebKitGTK. Its 2026-09-26 comment defers \"full three-engine differential acceptance\", and it does not describe webContents lane work.",
+     "reason": "The ticket is parked and no live issue covers it. The tracker of record is GitHub (this repair ticket is not yet published to GitHub), and the reference goes on KEL-79 as the cross-engine webview owner."
+    },
+    {
+     "key": "F03-T10",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): a search for 'devtools' returned only Done issues (KEL-14, KEL-19, KEL-26, KEL-38, KEL-29, KEL-10, KEL-3, KEL-8, KEL-6, KEL-54) and the unrelated KEL-25. KEL-102 (In Progress) is the guard-wiring spec. Its description scopes manifest loading and guard evaluator placement, and it contains no web.devtools key. A grep of its comments found 0 hits for 'devtool'. Because the web.devtools grant key would be a KEL-102 guard-vocabulary amendment, KEL-102 is the nearest live reference.",
+     "reason": "No live issue covers the devtools mapping, so the tracker of record is GitHub (this repair ticket is not yet published to GitHub). KEL-102 is the nearest reference as the guard-vocabulary owner."
+    },
+    {
+     "key": "F03-D6",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "Decision tickets are always tracked on GitHub (gyldlab/keld#397). F03-D6 is open: it is absent from adopted_decisions.json. Of this unit's decisions, F03-D4 is decided and was skipped. Its devtools half depends on a release-gating grant (arch 03 \u00a74.3) owned by the guard vocabulary. KEL-102 (In Progress, fetched 2026-10-07) is the live guard spec issue, although its description does not mention devtools or print. No live issue covers print.",
+     "reason": "Decision ticket, so the rule sends it to GitHub. The reference goes on KEL-102 as the nearest live owner of the web.devtools grant question."
+    }
+   ]
+  },
+  {
+   "unit": "F04",
+   "items": [
+    {
+     "key": "F04-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "Epics are always tracked on GitHub (rule 4). KEL-80 is the nearest live owner: it is the bridge issue whose description reads 'Prove host-mediated ordering, cancellation, disconnect, backpressure, principal binding and copy accounting across WebView to Rust to Bun.' KEL-142 (the renderer floor seam), KEL-72 (the @keld/electron bootstrap) and KEL-74 (the scoreboard schema) are all Done. KEL-237 is In Progress but its non-goals exclude 'compatibility-surface expansion'. Linear, fetched 2026-10-07.",
+     "reason": "Epics are always tracked on GitHub. KEL-80 is the live bridge owner that an agent on the renderer\u2194host\u2194Bun IPC surface would open."
+    },
+    {
+     "key": "F04-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue owns compat IPC conformance entries. KEL-74 (the evidence schema) is Done. KEL-237 is In Progress, but its Non-goals say 'No new Electron API implementation, no compatibility-surface expansion'. KEL-80 is the nearest: its 2026-09-17 comment 2cbb81cb records 'Compatibility fixtures should cover Map/Set/Date/typed arrays/BigInt/cycles/shared references/errors' and names 'KEL-80 compat value-domain conformance'. That comment is a research finding and does not record scope for the draw.io IPC conformance cells. Linear, fetched 2026-10-07.",
+     "reason": "No live Linear description covers pinned ipcMain/ipcRenderer/contextBridge conformance entries. KEL-80 is the bridge conformance owner that already holds the IPC value-domain fixture finding."
+    },
+    {
+     "key": "F04-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "KEL-80 covers half of this ticket in its description: 'Host-enforced credits bound control requests, queued bytes and chunked logical blobs; cooperative JS backpressure is not a security control.' It does not cover the new one-way send kind in the wv-link envelope, which is the main thing this ticket builds. Slice comment 54a36489 also limits the current KEL-80 contribution to 'only the bridge semantics needed by one real renderer call' ('one typed nonzero-correlation renderer -> host -> Bun CALL/REPLY'). The seam owner KEL-142 is Done. Linear, fetched 2026-10-07.",
+     "reason": "The new message kind is not explicitly in KEL-80 scope; only the credit constraint is. KEL-80 is the nearest live bridge owner."
+    },
+    {
+     "key": "F04-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue owns the @keld/electron ipcMain listener facade or webContents.send routing. KEL-72 (the lifecycle shim) and KEL-142 (the renderer bridge) are Done. KEL-102 (In Progress) owns only the guard check this ticket consumes. KEL-80 owns the bridge path these messages ride, but its description and slice comment 54a36489 do not mention an Electron listener facade. Linear, fetched 2026-10-07.",
+     "reason": "Facade work has no live Linear owner. KEL-80 is the nearest live bridge issue."
+    },
+    {
+     "key": "F04-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue owns the renderer compat runtime: contextBridge.exposeInMainWorld, the ipcRenderer facade and IpcRendererEvent. KEL-142, which owned the isolated-world relay seam, is Done (2026-10-01), and KEL-72 is Done. KEL-80 covers bridge semantics across WebView to Rust to Bun, not a preload/contextBridge facade. Linear, fetched 2026-10-07.",
+     "reason": "No live description covers the contextBridge/ipcRenderer facade. KEL-80 is the nearest live renderer-bridge owner."
+    },
+    {
+     "key": "F04-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "KEL-75 lists among the decisions its spec must freeze 'Renderer routing and Electron utilityProcess / MessageChannelMain / MessagePortMain observable semantics'. That is the semantics owner for the deferred members. Publishing UNSUPPORTED scoreboard rows and amending the documented-never list in arch 04 \u00a74 is not stated anywhere in KEL-75, and its Non-goals say 'No implementation in the spec PR'. KEL-74 (the scoreboard) is Done. Linear, fetched 2026-10-07.",
+     "reason": "KEL-75 is related but does not explicitly cover scoreboard rows or the documented-never amendment. It is the nearest live owner of the deferred port/utilityProcess members."
+    },
+    {
+     "key": "F04-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers the F04 compat IPC spec: the wv-link v2 send/event kinds, el control-channel carriage, the host-opaque codec and the arch 02 \u00a72/\u00a75 amendment. KEL-80 has no approved spec. Its 2026-08-19 owner comment says 'No approved KEL-80 spec', and its 2026-08-20 owner comment says 'do not pick up'. Later slice comment 54a36489 covers one renderer CALL/REPLY only. KEL-98 (the generator owner) and KEL-13 are Done. Linear, fetched 2026-10-07.",
+     "reason": "No live Linear description covers this spec. KEL-80 is the bridge owner whose scope the spec would extend."
+    },
+    {
+     "key": "F04-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "The KEL-102 Linear description is about loading the manifest and wiring the guard evaluator, and it does not mention webview channel grants. Its approved spec (docs/specs/kel102-host-guard-enforcement.md at origin/main) lists as a non-goal: 'Adding `roles`, window grants, channel grants, manifest generation ... Those are destination work'. The spec's task order is T2\u2192T3\u2192T4\u2192T5 (+T6 reload), with no channel-grant unit. Closed decision F04-A1 decided to add a new task unit by amendment; that amendment is not recorded on KEL-102 yet. Linear and repo, fetched 2026-10-07.",
+     "reason": "KEL-102 non-goals currently exclude channel grants, so it cannot be the tracker until the amendment lands. It is the issue the amendment targets and the nearest reference."
+    },
+    {
+     "key": "F04-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "Same reason as F04-T7: the KEL-102 approved spec says 'Adding `roles`, window grants, channel grants ... Those are destination work', and the Linear description does not cover evaluating windows.<w>.channels for webview principals. The latest KEL-102 comments (fd9d0b91, 2026-10-06) cover only reconciling the T3 landing. Linear and repo, fetched 2026-10-07.",
+     "reason": "Excluded by KEL-102's current non-goals until the F04-T7 amendment is approved. KEL-102 owns dispatch_privileged and is the nearest reference."
+    },
+    {
+     "key": "F04-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "The KEL-102 spec only anticipates this work: 'Current backends use generation `0`; a later navigation registry must increment it before a post-navigation request can dispatch.' It lists 'navigation rotation' under the destination column, not as a task. The Linear description does not cover a navigation-generation mint. KEL-79 (Backlog) states 'Portable principal is host-owned WebView plus navigation generation' as a contract to falsify, but it is about origin/resource transport, not the bridge/guard mint. Closed decision F04-A4 routes this into the KEL-102 amendment. Linear and repo, fetched 2026-10-07.",
+     "reason": "No live issue explicitly owns the shared navigation-generation mint. KEL-102 is the decided amendment target and the nearest reference; KEL-79 is related."
+    },
+    {
+     "key": "F04-T10",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "KEL-80 describes 'Ordering is per channel/link generation' and host-enforced credits, but it does not cover a host\u2192renderer event kind or a window.keld.on page facade. Slice comment 54a36489 limits current scope to 'one typed nonzero-correlation renderer -> host -> Bun CALL/REPLY and reply to the renderer'. KEL-142 is Done. Linear, fetched 2026-10-07.",
+     "reason": "Host\u2192renderer event delivery is not explicitly in any live issue. KEL-80 is the nearest live bridge owner."
+    },
+    {
+     "key": "F04-T11",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue owns an endpoint value codec. KEL-98 (generated contracts) and KEL-13 (the typed IPC RFC) are Done. KEL-80 comment 2cbb81cb (2026-09-17) records 'Keep KEL-98 native-schema representability and KEL-80 compat value-domain conformance separate' and says 'This does not block the current minimum TS path or require a new codec today'. That is a finding, not a scope record for building a codec. Linear, fetched 2026-10-07.",
+     "reason": "No live description covers building the codec. KEL-80 holds the compat value-domain finding and is the nearest reference."
+    },
+    {
+     "key": "F04-T12",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "KEL-80 slice comment 54a36489 defers 'large-payload matrices not admitted by this product path'. Its Cloudflare acceptance section says '4 KiB is the present virtual-port inline ceiling; 1 MiB/16 MiB arms belong only to protocols that actually admit them.' Neither commits KEL-80 to choosing a renderer open/save payload bound from measured draw.io sizes. Linear, fetched 2026-10-07.",
+     "reason": "Payload-bound selection is not explicitly in KEL-80 scope, and large payloads are deferred there. KEL-80 is the nearest live owner of payload and credit bounds."
+    },
+    {
+     "key": "F04-T13",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "The KEL-80 description (Framework-first bridge scope, 2026-08-19) reads: 'Host-enforced credits bound control requests, queued bytes and chunked logical blobs; cooperative JS backpressure is not a security control.' The goal it serves is 'Prove host-mediated ordering, cancellation, disconnect, backpressure, principal binding and copy accounting across WebView to Rust to Bun.' Slice comment 54a36489 adds 'bounded pending calls/bytes for this path'. KEL-80's Out of scope ('Rewriting VS Code service semantics, claiming zero-copy from codec selection, or bypassing host mediation') does not exclude N pending renderer invokes under a host credit window. Linear, fetched 2026-10-07.",
+     "reason": "KEL-80's description explicitly owns host-enforced credit bounds on renderer control requests, which is this ticket's whole deliverable. Caveat: owner comment e7551e5c (2026-08-20) says 'do not pick up'. The later 2026-09-26 slice comment partly supersedes it, so pickup sequencing needs the owner's confirmation."
+    },
+    {
+     "key": "F04-T14",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue owns the ipcRenderer.invoke / ipcMain.handle facade or Electron error text. KEL-142, which owns the \u00a77 handler-failure text being amended, is Done. KEL-72 is Done. KEL-80 covers bridge CALL/REPLY semantics ('disconnect/cancellation yields one terminal caller outcome') but not an Electron handler registry or error rendering. Linear, fetched 2026-10-07.",
+     "reason": "No live Linear description covers this facade. KEL-80 is the nearest live owner of renderer CALL/REPLY semantics."
+    },
+    {
+     "key": "F04-T15",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No non-program live issue owns the sendSync scaffold. KEL-127 (Todo) records 'A silent asynchronous replacement changes the caller contract', but KEL-127 is a program issue and can never be the tracker of record. KEL-80 comment 2cbb81cb covers sendSync only as value domain ('ipcRenderer.send, invoke, and sendSync use the Structured Clone Algorithm'), not a scaffold or returnValue cells. Linear, fetched 2026-10-07.",
+     "reason": "No live description covers the scaffold. KEL-80 is the nearest live bridge issue; KEL-127 also holds the no-silent-downgrade direction."
+    },
+    {
+     "key": "F04-T16",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers contextBridge synchronous or function-valued returns, Promise returns, or setMaxListeners. KEL-142, which owned the relay, is Done, and the KEL-80 description and comments do not mention contextBridge return shapes. Linear, fetched 2026-10-07.",
+     "reason": "No live Linear description covers this. KEL-80 is the nearest live renderer-bridge owner."
+    },
+    {
+     "key": "F04-T17",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live issue owns webUtils.getPathForFile or host-mediated drop capture. KEL-79 is the nearest webview owner. Its acceptance names 'IME, accessibility, clipboard/DnD and Monaco/xterm smoke remain green' and 'per-view state', but it does not cover returning OS paths from host-captured drop state. Linear, fetched 2026-10-07.",
+     "reason": "KEL-79 is related through webview DnD and per-view state but does not cover this API. It is the issue an agent on webview drop handling would open."
+    },
+    {
+     "key": "F04-A3",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "Decision and prototype tickets are always tracked on GitHub (rule 4). The question is whether a contextBridge-exposed function can return synchronously across worlds; its fixture is the KEL-142 bridge, which is Done. The nearest live owner of renderer-bridge semantics is KEL-80, whose description is 'Prove host-mediated ordering, cancellation, disconnect, backpressure, principal binding ... across WebView to Rust to Bun.' Not closed per adopted_decisions.json. Linear, fetched 2026-10-07.",
+     "reason": "Open prototype decision, so it stays on GitHub. KEL-80 is the nearest live bridge reference."
+    },
+    {
+     "key": "F04-A5",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "Decision and prototype tickets are always tracked on GitHub (rule 4). KEL-80 is the nearest live owner of renderer-to-host CALL semantics; its comment 2cbb81cb covers sendSync value semantics. KEL-127 (Todo, program) records the sendSync direction, 'sendSync blocks awaiting its reply; invoke returns a Promise. A silent asynchronous replacement changes the caller contract', but as a program issue it is a fallback reference only. Not closed per adopted_decisions.json. Linear, fetched 2026-10-07.",
+     "reason": "Open WKWebView sync-XHR prototype decision, so it stays on GitHub. KEL-80 is the nearest live bridge reference; KEL-127 holds the program direction."
+    },
+    {
+     "key": "F04-T18",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-80 'Bridge: bounded virtual channels and traffic-replay conformance' is Backlog with no assignee. Its description covers 'Host-enforced credits bound control requests, queued bytes and chunked logical blobs' and 'Ordering is per channel/link generation', and its Cloudflare section owns the TS WriteQueue/DrainSignal/parked-frame ownership ledger. Neither the description nor any of its 7 comments mentions a blocking host CALL from the Bun main thread, a worker-owned link, SharedArrayBuffer/Atomics, or replaying events after a park. Two KEL-80 texts constrain it instead: comment 1e9cf3c4 (2026-09-23) says 'No protocol/shared-memory/executor/allocator change ... is authorized', and owner comment e7551e5c (2026-08-20) says 'do not pick up'. FACT (Linear, fetched 2026-10-07): KEL-97 (Backlog, unassigned), the other candidate PANEL-P1 names, is limited to 'Bind the host-owned app-link to a RoleRegistry-minted principal before dispatch'. That is principal binding, not a blocking transport. A KELD search for 'sync' returned no live issue that covers this. The PANEL-P1 alignment also records that no live issue covers the prototype.",
+     "reason": "No live Linear issue explicitly covers the worker-owned single-link blocking CALL transport, so this ticket's GitHub issue is the tracker of record. KEL-80 is the nearest live issue: it owns kipc credits, ordering and Bun-side queue ownership, and PANEL-P1 names it as where the follow-on lands. KEL-97 is an adjacent reference for the one-principal-per-role edge."
+    },
+    {
+     "key": "F04-T19",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-80 is Backlog and unassigned, and it has no approved spec. Owner comment 23cf8c57 (2026-08-19) says 'No approved KEL-80 spec' and 'Preserve live protocol version 2'. Its description says 'Preserve the live 16-byte/postcard version until a measured wire review approves change' and 'no wire/ABI change ... is approved here'. No description text or comment covers a spec for a blocking host CALL, moving the link handle to a worker, park-time event retention and replay, or typed wake on link close or generation retire. FACT (Linear, fetched 2026-10-07): KEL-97 (Backlog, unassigned) covers only RoleRegistry principal binding ('Host mints role principal and binds accepted link as trusted metadata'). PANEL-P1's text names 'KEL-80/KEL-97' only as candidate homes for a spec if arm B passes. That is a routing hint, not a scope record on either Linear issue.",
+     "reason": "Neither KEL-80 nor KEL-97 has a description or recorded scope comment that covers this transport spec, so the GitHub issue is the tracker of record. KEL-80 is the nearest live reference because it is the kipc bridge/transport owner whose scope the spec would extend, and PANEL-P1 names it first."
+    },
+    {
+     "key": "F04-T20",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-80 (Backlog, unassigned) comment 2cbb81cb records 'Compatibility fixtures should cover Map/Set/Date/typed arrays/BigInt/cycles/shared references/errors'. That is a value-domain research finding, not a scope record for recording Electron v44.4.5 transcripts of send order, listener-less drop, stale reply, hash change, cancelled navigation or the reply-throw boundary. FACT (Linear, fetched 2026-10-07): KEL-237 (In Progress, unassigned) is the nearest recorder/corpus owner, but its scope is 'the currently implemented @keld/electron lifecycle slice' and its non-goals read 'No new Electron API implementation, no compatibility-surface expansion'. It has no recorder or comparator acceptance item, and alignment already recorded X01-T1/X01-T2 as GitHub-tracked with KEL-237 as reference. KEL-74 (the schema) is Done. F04-T1, which this ticket completes, is aligned to GitHub with KEL-80 as reference.",
+     "reason": "No live issue covers recorded-oracle comparison of the IPC observed-only entries, so the GitHub issue is the tracker of record. KEL-80 stays the reference, matching F04-T1, whose entries 8\u201313 this ticket records. KEL-237 is the adjacent reference for the X01 recorder path."
+    }
+   ]
+  },
+  {
+   "unit": "F05",
+   "items": [
+    {
+     "key": "F05-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "Epics are always tracked on GitHub (#469). FACT (Linear, fetched 2026-10-07): no live KEL issue covers the Electron session/protocol/net/webRequest family. KEL-74 (the scoreboard schema) is Done. KEL-72 (the @keld/electron lifecycle shim) is Done. KEL-237 says 'No new Electron API implementation, no compatibility-surface expansion'. KEL-79 is the nearest live owner: KEL-127 lists it as 'KEL-79: renderer origin/resource transport'. Its acceptance names CSP and 'production custom-scheme behavior', which are the epic's first-proof file:// containment + CSP slice and its protocol.handle work. KEL-135 (profile identity) owns only the Session = profile slice.",
+     "reason": "Epic, so GitHub by rule. KEL-79 owns the renderer origin/resource contract that the epic's first-proof and protocol tickets build on, so a reference link belongs there."
+    },
+    {
+     "key": "F05-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-74 owns the cell schema but is Done, so it is not live. KEL-237 is live and reuses the KEL-74 schema and compat-scoreboard.md. Its scope is the 'currently implemented @keld/electron lifecycle slice', and its Non-goals say 'No new Electron API implementation, no compatibility-surface expansion'. That excludes new webRequest/file:// probe cells. No other live issue mentions webRequest. KEL-237 is still the nearest live issue: an agent adding KEL-74 conformance cells would open it as the owner of the corpus/scoreboard records.",
+     "reason": "No live Linear issue's description covers the webRequest cells or the file:// / CSP probe list. KEL-237 is the live scoreboard-records owner, and its non-goals exclude this work."
+    },
+    {
+     "key": "F05-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-79's goal is to 'Define and falsify Keld's engine-agnostic webview origin/resource contract'. It asks to 'Compare authenticated HTTPS, host-backed resource transport and production custom-scheme behavior'. That is a comparison and research contract with a decision table. It does not cover implementing a static scheme-name table, a protocol.handle Bun producer or migrate lifting. Its 2026-08-19 comment says the resource adapter choice is still open ('ticket asks to compare them, not freeze one'). KEL-79 is the nearest reference because it owns the resource adapter this ticket sits behind. KEL-80 (Backlog) is needed only for the virtual-port lane.",
+     "reason": "KEL-79 is related (it owns the resource-adapter contract) but does not explicitly cover the protocol.handle facade or the scheme table."
+    },
+    {
+     "key": "F05-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-102 is the live guard-enforcement spec. Its scope is where the manifest loads and how keld-core/keld-host hold a keld-guard evaluator. It does not mention Electron session permission request/check handlers. KEL-132 (In Progress) covers only media guard installation ('proves empty manifest => deny'). No live issue covers a setPermissionRequestHandler/CheckHandler facade. KEL-102 is nearest because the facade must be 'one guard decision' consulted after a guard Allow, and KEL-78 records 'KEL-102 remains the live authorization owner'.",
+     "reason": "No live issue covers the permission-handler facade, which is parked. KEL-102 owns the guard decision the facade must defer to."
+    },
+    {
+     "key": "F05-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): the bounded product-spine slice in KEL-79's 2026-09-26 comment requires 'current app HTML/assets load through the supported path' and 'focused negative control for path/origin confusion'. That is adjacent work but not explicit coverage. Neither the description nor any comment names a file:// read root confined to the app code directory, CSP injection from the per-window web.csp manifest entry, or committed-URL identity. KEL-79's acceptance lists CSP only as one of many behaviors to exercise across three engines. KEL-102 has no CSP task. KEL-79 is still the nearest live owner of the renderer origin/resource and CSP surface.",
+     "reason": "KEL-79 is the nearest owner of renderer origin/resource and CSP, but no live sentence covers macOS file:// containment plus host CSP injection."
+    },
+    {
+     "key": "F05-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-135",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-135's acceptance says 'WebEngine creation requires a host-validated opaque app/profile identity; page/Bun input cannot choose another app's store'. That is the profile-identity invariant this ticket binds Session to. However, neither the description nor any comment (grep for clear/partition/electron/session) covers a clear(types) operation, clearStorageData/clearData mapping, fromPartition or isPersistent facade behavior. KEL-135's comments record only exact-identity whole-profile purge. KEL-135 is the nearest live owner, and this ticket needs a KEL-135 spec amendment.",
+     "reason": "Related but not covering: KEL-135 owns profile identity, but its text has no typed clear operation and no Session facade."
+    },
+    {
+     "key": "F05-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-74 (the scoreboard schema owner) is Done. KEL-237 is the live issue that reuses 'the existing KEL-74 machine-readable evidence schema and docs/engineering/compat-scoreboard.md'. Its rows are bounded to the lifecycle slice, and its Non-goals exclude 'compatibility-surface expansion'. No live issue covers publishing session/net/protocol/DownloadItem never/\u25b2/\u2718/unknown rows. KEL-237 is the nearest live owner of the scoreboard records these rows land in.",
+     "reason": "No live Linear issue covers F05 scoreboard rows. KEL-237 is the live scoreboard consumer, but it is limited to lifecycle."
+    },
+    {
+     "key": "F05-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live issue covers a @keld/electron session export or webRequest facade. KEL-72 (the @keld/electron shim) is Done. KEL-237's Non-goals say 'No new Electron API implementation'. KEL-79 and KEL-102 own host containment, not facade members. No closer live issue exists, so the reference falls back to KEL-127, whose delegated direction says 'Electron compatibility is the principal adoption contract'. KEL-127 is a program parent and is never the tracker of record.",
+     "reason": "No live issue covers the session/webRequest facade, so the reference falls back to KEL-127 (program parent)."
+    },
+    {
+     "key": "F05-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-74 is Done and is not live. KEL-237 is limited to 'the currently implemented @keld/electron lifecycle slice', and its Non-goals exclude 'compatibility-surface expansion'. So the protocol/session/net.online conformance cells are not covered by any live issue. KEL-237 is nearest because it is the live owner of committed KEL-74-schema records.",
+     "reason": "These are conformance cells outside the only live corpus issue's scope. KEL-237 is the nearest live scoreboard-records owner."
+    },
+    {
+     "key": "F05-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live issue mentions net.online/isOnline or a host connectivity fact. A search for 'network' returned only KEL-78 (strict-profile OS sandbox, In Progress). KEL-78 covers strict network authority, which this ticket records as unknown per closed F05-D3, not the legacy-profile facade. No closer live issue exists, so the reference falls back to KEL-127, the program parent for Electron compatibility. It is never the tracker of record.",
+     "reason": "No live issue covers the net.online facade, and KEL-78 covers only the strict-net cell this ticket leaves unknown. The reference falls back to KEL-127."
+    }
+   ]
+  },
+  {
+   "unit": "F06",
+   "items": [
+    {
+     "key": "F06-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "Epics are always tracked on GitHub (rule 4). Searches of team KELD for 'dialog', 'menu', 'native', 'compat', 'clipboard' and 'shell' (fetched 2026-10-07) found no live issue that owns the F06 native compat surface. KEL-127 is the program fallback reference, and its non-goals also govern when this epic can land: 'No shared memory, CEF, broad Electron API expansion, additional native-module names, or updater implementation before G2.'",
+     "reason": "Epics are always GitHub. KEL-127 is the program-level reference; it cannot be the tracker of record."
+    },
+    {
+     "key": "F06-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 owns the KEL-74-schema lifecycle corpus/runner pattern these cells reuse, but its non-goals exclude this work: 'No new Electron API implementation, no compatibility-surface expansion, no release publication'. Its scope is 'the currently implemented `@keld/electron` lifecycle slice'. KEL-74 (the schema owner) is Done. No live issue admits F06 v44.4.5 cells.",
+     "reason": "Closest live issue is the compat-corpus runner owner, but its non-goals exclude adding new compat surface, so it is a reference only."
+    },
+    {
+     "key": "F06-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "KEL-102 owns guarded privileged dispatch and the T3 guarded-channel pattern this broker reuses. Its description only asks the question and does not take on the work: 'Whether `keld-native` module brokers become reachable through `keld-core`/`keld-host` in this same effort, or stay tracked as separate per-module work (menu/tray/dialog/etc. are already scoped as SKELETON in the repo map).' None of its 50 comments record a dialog-channel task. KEL-130 and KEL-71 (FsBroker) are Done.",
+     "reason": "KEL-102 is the permission and privileged-dispatch owner an agent would open, but nothing in it covers a dialog broker."
+    },
+    {
+     "key": "F06-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers a shell broker. KEL-102 owns guarded privileged channels and lists native module brokers only as an open question ('menu/tray/dialog/etc. are already scoped as SKELETON'). KEL-212 (In Progress) owns only the inert-grant deny text and the doctor check ('A grant that can never match produces a deny reason that says so'). It constrains the shell.open spelling but does not cover openExternal or the openPath/trashItem broker.",
+     "reason": "KEL-102 is the nearest owner for guarded channel admission. KEL-212 is a constraint on the wording, not an owner."
+    },
+    {
+     "key": "F06-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "KEL-102 names menu brokers only as an open scoping question: 'or stay tracked as separate per-module work (menu/tray/dialog/etc. are already scoped as SKELETON in the repo map)'. None of its comments record a menu-channel task; T4\u2013T6 are unstarted with other scopes. A KELD search for 'menu' found no other live owner.",
+     "reason": "No live issue owns the application menu. KEL-102 is the nearest guarded-channel owner."
+    },
+    {
+     "key": "F06-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "No live issue owns host-pushed display or theme facts. KEL-75 (In Progress) is about role identity and lifecycle and never mentions a mirror or display facts. KEL-143 (Backlog) is about recovery continuity. KEL-142 is Done. The decision this ticket still needs is the guard ruling on whether host-pushed facts need a grant, which falls to KEL-102 as the live authorization owner (KEL-78: 'KEL-102 remains the live authorization owner').",
+     "reason": "Nothing covers this. KEL-102 is nearest because the guard-admission ruling is the open question."
+    },
+    {
+     "key": "F06-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 says to 'Reuse the existing KEL-74 machine-readable evidence schema and docs/engineering/compat-scoreboard.md', but limits itself to 'the currently implemented @keld/electron lifecycle slice'. Its non-goals add 'no compatibility-surface expansion'. KEL-74 (scoreboard schema) is Done. No live issue admits F06 scoreboard rows.",
+     "reason": "KEL-237 is the scoreboard/report owner an agent would open, but its scope excludes F06 rows."
+    },
+    {
+     "key": "F06-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers a blocking showMessageBoxSync CALL. KEL-80 (Backlog) owns the bounded transport this would run on ('Trace all WriteQueue producers ... declare one authoritative budget'). It does not cover a worker-owned blocking link or sync dialog emulation, and per the PANEL-P1 packet it is only an unconfirmed candidate owner for that follow-on. The dialog side follows F06-T2, which has no Linear owner either.",
+     "reason": "KEL-80 is the nearest live transport owner, but it does not cover synchronous blocking CALLs."
+    },
+    {
+     "key": "F06-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "KEL-72 (facade bootstrap) is Done and stays lifecycle-only (KEL-75: 'KEL-72 remains lifecycle-only'). KEL-237 non-goals: 'No new Electron API implementation'. No live issue owns new @keld/electron bindings, so this falls back to the program parent, whose non-goal 'broad Electron API expansion ... before G2' governs it.",
+     "reason": "No live owner for new facade bindings; KEL-127 is the fallback reference."
+    },
+    {
+     "key": "F06-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "No live issue owns host-to-Bun menu click events or menu item state. KEL-102 owns privileged channel admission and treats menu brokers only as an open scoping question ('menu/tray/dialog/etc. are already scoped as SKELETON'). KEL-80 is about bounded channels and replay conformance, not native UI events.",
+     "reason": "KEL-102 is the nearest owner for the menu channel. Nothing explicitly covers click dispatch."
+    },
+    {
+     "key": "F06-T10",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers Tray or Menu.popup. KEL-102 mentions 'menu/tray/dialog/etc.' only as an open question about separate per-module work, not as scope it has taken on. The ticket is parked to the Zettlr tranche.",
+     "reason": "A parked native module with no live owner. KEL-102 is the nearest guarded-channel reference."
+    },
+    {
+     "key": "F06-T11",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers screen or nativeTheme events and getters. This extends F06-T5, which has no Linear owner. KEL-75 and KEL-143 do not mention display or theme facts. KEL-102 is the live authorization owner for the open grant ruling.",
+     "reason": "Not covered. The nearest reference is the same as F06-T5."
+    },
+    {
+     "key": "F06-T12",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "A KELD search for 'clipboard' (fetched 2026-10-07) returned only Done research issues plus KEL-68, KEL-31, KEL-79 and KEL-57, none of which owns a clipboard broker. The clipboard.read/write literals are architecture 03 permission-model text, and KEL-102 is the live owner of that model. Its description does not cover a clipboard channel.",
+     "reason": "No live clipboard owner. KEL-102 is the nearest permission/dispatch reference."
+    },
+    {
+     "key": "F06-T13",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live issue owns keld-native docs (KEL-130 Done, KEL-71 Done). The reconciliation is bounded by KEL-127's non-goal 'additional native-module names ... before G2', so KEL-127 is the nearest reference. As a parent program issue it cannot be the tracker of record.",
+     "reason": "Docs-only reconciliation with no live owner; it falls back to the program reference."
+    },
+    {
+     "key": "F06-T14",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "This extends the F06-T2 dialog broker, which has no Linear owner. KEL-102 raises dialog brokers only as an open question ('menu/tray/dialog/etc. are already scoped as SKELETON'). A KELD search for 'dialog' found no live owner for the remaining dialog members.",
+     "reason": "Not covered. The nearest reference is the same as F06-T2."
+    },
+    {
+     "key": "F06-T15",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "The ticket proposes a KEL-102 spec amendment, but KEL-102's own scope (manifest load, guard handle, broker reachability, relation to KEL-78) has no sentence on user-intent filesystem grants. KEL-78 (In Progress) is only related: 'macOS candidate: App Sandbox ... Enumerate XPC/Powerbox/security-scoped grants.' That is OS containment enumeration, not guard-owned session grants. The ticket is parked.",
+     "reason": "Parked spec amendment that neither issue covers. KEL-102 is the named amendment owner and the nearest reference; KEL-78 is related."
+    },
+    {
+     "key": "F06-T16",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-96",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-96 'Unique #1: no-flag host-as-app boot' is In Progress, assigned GYLDLAB. Its 2026-10-06 decision comment e02ae585 amends \u00a74.5 Quit to 'on Quit, stop admitting new work, drain admitted privileged work to its terminal Reply/Err, then enter Quitting, attribute, and send the correlated reply before closing the link'. That is the host's ordered Quit tail. It does not cover menu role quit, Cmd+Q dispatch through a menu item, before-quit emission, or a window close veto cancelling quit. The F01-T3 alignment already records KEL-96 as the reference for this quit path. FACT (Linear, fetched 2026-10-07): KEL-102 (In Progress) mentions menus only as an open question ('menu/tray/dialog/etc. are already scoped as SKELETON in the repo map'). A KELD search for 'menu' and 'quit' found no live issue that owns menu roles or role quit. KEL-127 (Todo), the fallback named in the ticket text, is a program issue and never the tracker of record.",
+     "reason": "No live issue covers routing role quit into the cancelable quit path, so the GitHub issue is the tracker of record. KEL-96 is the nearest live reference because it owns the ordered host Quit that F01-T3, which this ticket enters, amends. KEL-102 is the menu-channel reference shared with sibling F06-T4. The ticket's linear_owner text names KEL-127, so it should be updated to KEL-96, with KEL-127 kept only as the program fallback."
+    }
+   ]
+  },
+  {
+   "unit": "F07",
+   "items": [
+    {
+     "key": "F07-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "Rule 4 applies: epics always use GitHub as tracker. No live Linear issue owns the renderer preload runtime or the <webview> surface. A search of team KELD for preload, content world, contextBridge, renderer and webview (fetched 2026-10-07) returned only KEL-142 (Done 2026-10-01), KEL-17, KEL-72 and KEL-139 (all Done), plus live issues that do not cover this work. KEL-79 (Backlog) is the nearest live renderer/webview owner. Its 2026-09-26 product-spine comment covers 'host-owned document/navigation identity for the macOS product path; bridge injection bound to the admitted document/generation', which is the seam this epic's preload runtime extends. KEL-127 (Todo) is the program parent and only the fallback.",
+     "reason": "Epic, so GitHub #483 is the tracker of record. A reference link goes on KEL-79 as the nearest live webview/renderer-origin owner."
+    },
+    {
+     "key": "F07-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers app-preload injection into a separate content world, the sandboxed require map or the renderer process object. KEL-142, which owns the bridge seam spec this work revises, is Done (completed 2026-10-01T01:04Z, fetched 2026-10-07) and cannot be the tracker. KEL-80 (Backlog) was suggested as a host, but its description and its 2026-09-26 product-spine comment cover only bridge CALL/REPLY ordering, cancellation and bounded queues. Nothing in it mentions a preload or a content world. KEL-79 (Backlog) is nearest because its product-spine slice requires 'bridge injection bound to the admitted document/generation' and 'page code cannot obtain/select Bun or app-link authority'. Those are the injection and isolation invariants that F07-T1's app world must preserve. Its goal, though, is the origin/resource-transport contract, not preload execution.",
+     "reason": "Only a related issue exists, nothing covering, so GitHub #484 is the tracker of record. Place a reference on KEL-79, the injection/document-identity seam an agent would open."
+    },
+    {
+     "key": "F07-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers the zero-<webview> contract: registering will-attach-webview without ever emitting it, keeping <webview> undefined, and the 113 webviewTag rows. KEL-74, which owns the row schema, is Done. KEL-237 (In Progress) covers the scoreboard but is limited to the lifecycle slice, and its non-goals state 'No new Electron API implementation, no compatibility-surface expansion'. KEL-79 (Backlog) is nearest because its acceptance includes 'Per-extension origin/data-store isolation and navigation/popup/download/permission policy are explicit'. That is the webview child-surface policy closest to the attach/no-attach contract, but it does not name <webview> or will-attach-webview.",
+     "reason": "Related only, so GitHub #485 is the tracker of record. Place a reference on KEL-79."
+    },
+    {
+     "key": "F07-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers mapping the <webview> element to a host-owned child webview. KEL-79 (Backlog) is nearest because its framework-first scope states 'Portable principal is host-owned WebView plus navigation generation', which is the principal model this parked ticket would give each guest. It does not cover a child-webview element. KEL-135 (In Progress, Amisha Ramani) covers only per-app persistent store binding ('WebEngine creation requires a host-validated opaque app/profile identity'), not named partitions or guests. KEL-75 (In Progress, unassigned) covers role principals, not webview guests.",
+     "reason": "Parked feature with no covering issue, so GitHub #486 is the tracker of record. Place a reference on KEL-79, with KEL-135 and KEL-75 as adjacent consumed owners."
+    },
+    {
+     "key": "F07-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers renderer-family conformance cells: preload ordering, the require map, the renderer process subset, the webviewTag default and will-attach-webview. KEL-74, which owns the evidence schema, is Done. KEL-237 (In Progress, unassigned) is the live owner of committed KEL-74-schema conformance records ('Freeze explicit lifecycle operation cells ... retain pass/fail/unknown/waived states'). That makes it the nearest issue an agent adding cells would open. Its scope is limited to 'the currently implemented @keld/electron lifecycle slice', and its non-goals say 'no compatibility-surface expansion', so it does not cover these renderer cells.",
+     "reason": "Non-goals exclude it, so GitHub is the tracker of record. Place a reference on KEL-237 as the live conformance-record owner."
+    },
+    {
+     "key": "F07-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers a per-engine ledger of ten enumerated browser-quirk subsystems. KEL-79 (Backlog) is nearest because its 2026-09-17 addition asks to 'Run the same semantic case across the three supported engine lanes and classify divergence as engine limitation | Keld resource/origin bridge defect | unsupported/not promised | unresolved'. Its acceptance also names Service Worker, clipboard/DnD and IME smoke. It is limited to standards cases 'only for browser behaviors Keld actually advertises or its showcase requires', and it is not a scoreboard ledger for WebGL/WebGPU, codecs, media capture or WebRTC.",
+     "reason": "Only partly overlapping, so GitHub is the tracker of record. Place a reference on KEL-79, the three-engine divergence owner."
+    },
+    {
+     "key": "F07-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live issue covers the extra renderer process members Zettlr needs (platform, version, arch, uptime(), getSystemVersion()) or running Zettlr's bundled preload. This is the same gap as F07-T1, which it extends, so the nearest live issue is the same: KEL-79 (Backlog), whose product-spine slice covers 'bridge injection bound to the admitted document/generation'. KEL-75 (In Progress, unassigned) is adjacent only as the owner of the role environment that the process.env exclusion depends on. Its description covers role principals and grants, not the renderer process object.",
+     "reason": "No covering issue, so GitHub is the tracker of record. Place a reference on KEL-79, next to F07-T1's link."
+    },
+    {
+     "key": "F07-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 'Open-source: publish measurable lifecycle compatibility corpus and report' is In Progress and unassigned. It says to 'Reuse the existing KEL-74 machine-readable evidence schema and docs/engineering/compat-scoreboard.md', but its scope is 'the currently implemented `@keld/electron` lifecycle slice', and its non-goals read 'No new Electron API implementation, no compatibility-surface expansion'. That excludes 113 webviewTag scoreboard rows. KEL-74 (the row schema) is Done. FACT (Linear, fetched 2026-10-07): KEL-79 (Backlog, unassigned), the reference the ticket text names, covers the webview origin and resource-transport contract. Its acceptance names navigation/popup/download/permission policy but never <webview> or scoreboard rows. A KELD search for 'scoreboard' and 'webview' found no live issue covering webviewTag rows.",
+     "reason": "No live issue covers publishing webviewTag scoreboard rows, so the GitHub issue is the tracker of record. The work is scoreboard rows, which is the same surface as sibling F06-T6 and F07-T4, both referenced at KEL-237. So KEL-237, the live scoreboard and report owner, is the nearest reference. The ticket text names KEL-79 (inherited from F07-T2), so the orchestrator should either put the reference link on KEL-237 or keep KEL-79 as a secondary reference."
+    }
+   ]
+  },
+  {
+   "unit": "F08",
+   "items": [
+    {
+     "key": "F08-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "Epics are always tracked on GitHub (gyldlab/keld#487). I searched Linear on 2026-10-07 for ProcessFailed, web content process, crash, diagnostic, unresponsive, metrics, crashReporter, conformance and unsupported. No live KELD issue covers engine process-gone or hang events, diagnostics scoreboard rows, or the crashReporter, process-stats, getAppMetrics or contentTracing facades. KEL-132 (In Progress) is about GPU env mutation and media guard installation. KEL-79 (Backlog) is about the secure-origin and resource-transport contract. Neither one matches this epic. The epic spans webview engine, scoreboard and facade owners, so the program fallback KEL-127 (Todo, fetched 2026-10-07) is the nearest reference.",
+     "reason": "Epic, so the rule requires GitHub. No single live Linear issue owns the diagnostics surface, so the reference falls back to the program issue KEL-127."
+    },
+    {
+     "key": "F08-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live Linear issue names WKWebView webContentProcessDidTerminate, WebView2 ProcessFailed or WebKitGTK web-process-terminated, and none names mapping them to render-process-gone. A search for ProcessFailed returned no issues. KEL-132 (In Progress) is limited to 'Public safe probe_gpu_stack ... unsafe environment mutation' and media guard installation. KEL-79 (Backlog) is the nearest live cross-engine webview contract. Its acceptance only lists 'crash/reload' among exercised behaviors and 'crash restoration and per-view state' in its observable contract, for a resource-transport fixture. It does not ask for an engine-gone event to reach the app. That makes it related rather than covering. A 2026-08-20 GYLDLAB comment also marks it 'post-v0 / YAGNI ... do not pick up'.",
+     "reason": "Related only: KEL-79 is the nearest live multi-engine webview contract that mentions crashes, but it does not own engine-termination observables or render-process-gone."
+    },
+    {
+     "key": "F08-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-74, the scoreboard owner, is Done (fetched 2026-10-07). KEL-237 (In Progress) owns compat evidence in practice, and the orchestrator posted the map #391 bridge comment there. Its scope is 'a bounded, measurable lifecycle corpus/report for the currently implemented @keld/electron lifecycle slice', and its non-goals say 'no compatibility-surface expansion'. Diagnostics scoreboard rows for crashReporter, contentTracing, the process and GPU getters and getAppMetrics fall outside the lifecycle slice. So KEL-237 is the nearest reference, but it does not cover this ticket.",
+     "reason": "No live issue owns non-lifecycle scoreboard rows. KEL-237 is limited to the lifecycle slice and KEL-74 is Done."
+    },
+    {
+     "key": "F08-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 (In Progress, fetched 2026-10-07) covers lifecycle conformance cells for 'the currently implemented @keld/electron lifecycle slice'. Its non-goals are 'No new Electron API implementation, no compatibility-surface expansion'. The planned expected-fail conformance entries for app render-process-gone, unresponsive/responsive, and the destroy-time oracle are diagnostics members that have not been implemented. KEL-74 is Done. KEL-237 is the nearest reference: it holds the corpus format and the map bridge comment, and that comment already points at red-until-implemented cells written in this format.",
+     "reason": "KEL-237 is related but scoped to the implemented lifecycle slice, so new diagnostics conformance cells are not covered."
+    },
+    {
+     "key": "F08-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "No live Linear issue covers webview hang signals: WebView2 RENDER_PROCESS_UNRESPONSIVE, WebKitGTK is-web-process-responsive, or the WKWebView gap. A search for 'unresponsive' returned only unrelated test and perf issues. KEL-132 is about GPU and media only. KEL-79 (Backlog) is the nearest live cross-engine webview contract, which an agent working on keld-wv engine observables would open first, but its acceptance does not include hang or responsiveness events.",
+     "reason": "Related only. No live issue owns the engine hang observable."
+    },
+    {
+     "key": "F08-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "Searching Linear for 'crashReporter' returns only KEL-10 and KEL-51, and both are Done. No live issue covers a crashReporter facade. The @keld/electron facade owners KEL-72 and KEL-17 are Done. That leaves the program fallback KEL-127 (Todo, fetched 2026-10-07) as the nearest reference.",
+     "reason": "No live Linear owner exists for the crashReporter facade, so the reference falls back to KEL-127."
+    },
+    {
+     "key": "F08-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live issue covers a Bun-side facade for process.getHeapStatistics, getCPUUsage, getProcessMemoryInfo or getSystemMemoryInfo. KEL-90 (In Progress) owns the keld-benches metric-runner fixtures, and its boundary is 'Fixtures and runner land in keld-benches, never in the Keld monorepo'. KEL-129 (In Progress) owns budget feasibility. Neither covers a compat facade. The program fallback KEL-127 (Todo) is the nearest reference.",
+     "reason": "No live Linear owner exists for the process-stats facade. Bench and perf issues are related but exclude it."
+    },
+    {
+     "key": "F08-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-129",
+     "linear_status": "In Progress",
+     "evidence": "KEL-129 (In Progress, assignee GYLDLAB, fetched 2026-10-07) owns the arch 01 \u00a75.1 census that this Call consumes. It requires each budget row to 'State the logical component and exact process/artifact census', and it states 'no benchmark headline is published here'. KEL-129 does not cover an app.getAppMetrics host Call or the ProcessMetric rows. KEL-90 is limited to keld-benches fixtures. So KEL-129 is the nearest reference, but it does not cover this ticket.",
+     "reason": "KEL-129 owns the census definition only. No live issue owns the getAppMetrics Call."
+    },
+    {
+     "key": "F08-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "KEL-75 (In Progress, fetched 2026-10-07) is a spec issue covering 'Renderer routing and Electron utilityProcess / MessageChannelMain / MessagePortMain observable semantics' and 'Cross-role cancellation, disconnect, parent death, PID reuse, stale principal and crash isolation'. Its non-goals include 'No implementation in the spec PR'. It never mentions the app child-process-gone event or recording the terminating signal. KEL-105 (In Progress) covers a silent window-phase Bun crash in keld dev, and its non-goals exclude RoleRegistry and principal binding. So KEL-75 is the nearest reference, and it does not cover this ticket.",
+     "reason": "KEL-75 owns role generations and the utilityProcess spec, but not the child-process-gone facade. This ticket is related only."
+    },
+    {
+     "key": "F08-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live Linear issue covers a contentTracing module or the arch 07 \u00a72 structured compat error shape. Searches for unsupported, conformance and @keld/electron returned no matching live owner. KEL-17 and KEL-72 are Done, and KEL-237 excludes 'compatibility-surface expansion'. The program fallback KEL-127 (Todo) is the nearest reference.",
+     "reason": "No live Linear owner exists for the contentTracing rejection surface or the structured compat error, so the reference falls back to KEL-127."
+    }
+   ]
+  },
+  {
+   "unit": "F09",
+   "items": [
+    {
+     "key": "F09-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-53",
+     "linear_status": "In Progress",
+     "evidence": "Rule 4 makes every epic tracker github. KEL-53 (fetched 2026-10-07, In Progress, Amisha Ramani) is the nearest live issue because it owns real updater authority. Its own description says 'Implement `keld-update` in two evidence-gated slices: first signed manifest verification plus verified full-package activation, health confirmation and safe rollback'. Every F09 slice (the inert adapter, the facade, the host channel, the bridge recipe and the arch 03 fix) defers to that ownership.",
+     "reason": "Epics are always tracked on GitHub (#490). An agent working on the updater surface opens KEL-53 first, so the reference link goes there."
+    },
+    {
+     "key": "F09-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-53",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers an inert electron-updater 6.8.9 adapter package. KEL-53 (fetched 2026-10-07, In Progress) covers only host-side keld-update: manifest verification, activation and rollback. It never mentions an Electron or electron-updater facade. KEL-237 (In Progress) excludes this work in its non-goals: 'No new Electron API implementation, no compatibility-surface expansion'. KEL-127 (Todo) is a program issue, and its non-goals bar 'broad Electron API expansion ... or updater implementation before G2'. KEL-72, the compat bootstrap, is Done. KEL-53 is the nearest reference because the adapter's setFeedURL divergence ('feed is host-declared') rests on KEL-53 / arch 06 \u00a74a host feed ownership.",
+     "reason": "No live Linear issue scopes the adapter, so it stays on GitHub (#491). The reference goes on KEL-53, which owns the updater authority the adapter must never fake."
+    },
+    {
+     "key": "F09-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live issue covers translating electron-builder/forge configs into a Keld build config. KEL-19, the CLI RFC that includes keld build, is Done (fetched 2026-10-07), so it is not live. KEL-15, the config schema RFC, is also Done. KEL-141 (Backlog) covers only Keld's own CLI and host artifacts: 'This owns artifact acquisition, verification, install location, and launch only.' KEL-53's 2026-10-06 comment covers only the release-feed contract that 'Windows `keld build` T3 (KEL-19)' consumes, not config translation. KEL-137 (In Progress) owns only the package tree representation. None of them is nearer than the program fallback. KEL-127 sequences 'G4 distribution and wider compatibility'.",
+     "reason": "This is a parked task with no live Linear owner, and the build RFC owner KEL-19 is Done. It stays on GitHub (#492), with the fallback reference on KEL-127."
+    },
+    {
+     "key": "F09-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 (fetched 2026-10-07, In Progress, unassigned) owns the corpus-runner pattern these cells reuse. Its scope is limited to 'the currently implemented `@keld/electron` lifecycle slice', and its non-goals say 'No new Electron API implementation, no compatibility-surface expansion'. So it does not cover electron-updater adapter cells. KEL-74, the schema owner, is Done. KEL-237 is still the nearest reference, because an agent landing these cells must follow its runner pattern and KEL-74 schema semantics.",
+     "reason": "These conformance cells add new compat surface that KEL-237 excludes, so they stay on GitHub. The reference goes on KEL-237 as the runner-pattern owner."
+    },
+    {
+     "key": "F09-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-53",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers the 10-member Electron-core autoUpdater facade on @keld/electron. KEL-53 (fetched 2026-10-07, In Progress) is host keld-update only, and no part of its description covers an Electron API facade. KEL-237 excludes 'new Electron API implementation'. KEL-53 is the nearest reference because the facade would drive the KEL-53 host updater.",
+     "reason": "This facade is parked and has zero corpus demand. It stays on GitHub, with the reference on the host updater owner KEL-53."
+    },
+    {
+     "key": "F09-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-53",
+     "linear_status": "In Progress",
+     "evidence": "KEL-53 (fetched 2026-10-07, In Progress) owns the host semantics, but its description does not cover giving a Bun role check/download/install operations or an info-only host-to-Bun event stream. Its relevant criterion is about isolation: 'The updater, trusted manifest state, staging, runtime/supervisor binaries and next-launch policy are outside every Bun role/webview writable authority.' KEL-102 (In Progress, unassigned) owns guard wiring but has no update operation ids. KEL-53 is the nearest reference because this channel needs its trigger-vs-authority amendment first.",
+     "reason": "The Bun-facing channel is not explicitly scoped by any live issue, so it stays on GitHub. The reference goes on KEL-53, which must amend its own rules before this work."
+    },
+    {
+     "key": "F09-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-53",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers a bridge-release recipe for clients that already have electron-updater installed. KEL-53's description (fetched 2026-10-07) covers Keld's own signed manifest, activation and rollback, not migrating from an Electron feed. KEL-270 (In Progress, MachineUacDirect journal), KEL-137 and KEL-103 are only predecessors. KEL-53 is the nearest reference because it owns the feed and activation semantics the recipe hands off to.",
+     "reason": "This distribution task is parked until after the migration proof (#312) and no live owner exists, so it stays on GitHub. The reference goes on KEL-53."
+    },
+    {
+     "key": "F09-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-53",
+     "linear_status": "In Progress",
+     "evidence": "KEL-53 (fetched 2026-10-07, In Progress, Amisha Ramani) owns the rule that apps cannot hold update authority. Neither its description nor its 50 most recent comments, the newest dated 2026-10-06, explicitly scope an arch 03 \u00a75 migrate-seeding docs fix. I found no F09/#391 agent claim on KEL-53. Its closest acceptance sentence is about write authority, not network grants: 'The updater, trusted manifest state, staging, runtime/supervisor binaries and next-launch policy are outside every Bun role/webview writable authority.' KEL-16, the security RFC, is Done. KEL-53 is still the nearest reference, because the fix enforces its 'host is the only feed client' rule.",
+     "reason": "KEL-53 is closely related but does not explicitly cover this docs edit, so it stays on GitHub. The reference goes on KEL-53. A planned agent claim there had not been posted when checked on 2026-10-07."
+    }
+   ]
+  },
+  {
+   "unit": "X01",
+   "items": [
+    {
+     "key": "X01-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "Epics are always GitHub-tracked (rule 4); GitHub #493 is the tracker of record. FACT (Linear, fetched 2026-10-07): KEL-237 'Open-source: publish measurable lifecycle compatibility corpus and report' is In Progress and owns the only committed compat-evidence corpus ('Freeze explicit lifecycle operation cells to exact Keld/Bun/upstream/OS/arch/artifact/authority dimensions'). The orchestrator's 2026-10-06 bridge comment c13866bd on KEL-237 already names epic #493 and spec #494. That makes KEL-237 the nearest live issue for the X01 surface. KEL-74 (schema and scorer) is Done, so it is not live. KEL-77 is the VS Code extension-host lane, and its out-of-scope line excludes 'Keld host/webview integration'.",
+     "reason": "Program epic; never a Linear tracker of record. KEL-237 is the live owner of the compat-evidence corpus this epic extends."
+    },
+    {
+     "key": "X01-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "No live Linear issue explicitly covers a two-arm Electron recorder/replayer harness spec. FACT (Linear, fetched 2026-10-07): KEL-237's goal is limited to 'a bounded, measurable lifecycle corpus/report for the currently implemented `@keld/electron` lifecycle slice'. Its non-goals say 'No new Electron API implementation, no compatibility-surface expansion'. KEL-77 (In Progress) is 'Node-versus-Bun' for the VS Code extension host. Its differential arms are 'Node 24/Electron-as-Node, stock Bun stable, pinned Bun canary', and it marks 'Keld host/webview integration' out of scope. So KEL-77 is a consumed spec source (\u00a74.1/\u00a74.3/\u00a74.5), not an owner. KEL-237 is the nearest reference: its bridge comment c13866bd already points at #494, and the spec reuses KEL-237's manifest and runner pattern. Note for whoever places links: item (e) migrates the KEL-77 fixture-set digest caller, so a secondary reference on KEL-77 is warranted.",
+     "reason": "Spec ticket with no covering live Linear scope. GitHub #494 is the tracker of record; KEL-237 is the nearest reference."
+    },
+    {
+     "key": "X01-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "No live Linear issue covers recording Electron 44.4.5 goldens and replaying them under @keld/electron. FACT (Linear, fetched 2026-10-07): KEL-237 covers 'Existing lifecycle conformance evidence is reused', but its non-goals exclude 'compatibility-surface expansion'. It has no recorder, golden or comparator acceptance item. KEL-77's arms are Node versus Bun for the VS Code extension host, not Electron versus Keld. KEL-72 (lifecycle shim) is Done. KEL-237 is nearest: this tracer's main-process lifecycle cells (quit order, before-ready, window-all-closed) are the same app-lifecycle surface as KEL-237's electron-lifecycle-v0 corpus, and they are scored through the same KEL-74 records.",
+     "reason": "Feature work that no live Linear issue covers. GitHub #495 is the tracker of record; KEL-237 is the nearest reference."
+    },
+    {
+     "key": "X01-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "Treat the ticket's 'claim on KEL-237 under #517 option C' as a lead only. The live text does not explicitly cover this work. FACT (Linear, fetched 2026-10-07): KEL-237's scope is one bounded corpus, 'Freeze explicit lifecycle operation cells ... Generate a readable report from those committed records', for 'the currently implemented `@keld/electron` lifecycle slice'. It has no sentence covering cross-corpus evidence rules: one pin per new corpus at v44.4.5, red-until-implemented cells, observed-only = unknown, or rules governing the X02-T4 product corpus. Its non-goals exclude 'compatibility-surface expansion'. The only KEL-237 text that mentions promoting the manifest helpers is the orchestrator's bridge comment c13866bd, posted through the connector account. That comment is an announcement that says 'This is an open question on the map', not an owner-recorded scope. INFERENCE: the rules extend KEL-237's manifest contract, which makes KEL-237 the nearest reference, but it is not a covering owner.",
+     "reason": "Rules spec that goes beyond KEL-237's single-corpus scope, with no quoted covering sentence. The GitHub issue is the tracker of record; KEL-237 is the nearest reference. Note: no GitHub number is recorded for X01-T3 in publish_state.json."
+    },
+    {
+     "key": "X01-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 owns the lifecycle manifest, the exact-bytes digest and the execution admission that this ticket would promote. Its description says only 'Freeze explicit lifecycle operation cells' and 'Negative-control coverage demonstrates that a broken lifecycle observable makes the corresponding row fail'. Nothing in its description or recorded comments asks for one shared multi-corpus manifest owner, a pin-consistency or red-until-implemented validator, or a per-corpus test-target registry. Its non-goals exclude 'compatibility-surface expansion'. Comment c13866bd ('the spec asks for them to be promoted into keld-compat') is the orchestrator's bridge announcement, not a scope record by the owner. Under rule 3 this is merely related, so GitHub is the tracker of record. KEL-237 is the nearest reference because the work migrates its lifecycle corpus test byte-for-byte.",
+     "reason": "Shared test-support owner not covered by KEL-237's quoted scope. The GitHub issue is the tracker of record; KEL-237 is the nearest reference. Note: no GitHub number is recorded for X01-T4 in publish_state.json."
+    },
+    {
+     "key": "X01-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "No live Linear issue covers a scheduled Electron recorder drift lane. FACT (Linear, fetched 2026-10-07): KEL-81 (changed-path CI routing) and KEL-88 (Bun pin, KEL-77 qualification) are Done, so they are not live. Live CI issues (KEL-82 WebKitGTK environment, KEL-169 CI-required minting, KEL-240 Dependabot pins) cover unrelated surfaces. KEL-68 (In Progress) is release surveillance of new upstream versions. It says 'Preserve moving main/canary surveillance separately from scoreable compatibility results', which separates it from a same-pin recorder lane. KEL-237 is the nearest reference as the owner of the compat-evidence corpus whose goldens and receipts this lane would protect.",
+     "reason": "Parked CI lane with no live Linear owner. The GitHub issue is the tracker of record; KEL-237 is the nearest reference. Note: no GitHub number is recorded for X01-T5 in publish_state.json."
+    },
+    {
+     "key": "X01-A5",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "Decision tickets are always GitHub-tracked (rule 4); GitHub #411 is the tracker of record. It is open: there is no X01-A5 entry in adopted_decisions.json. The decision concerns whether Electron 44.4.5's main-process quit order is stable from run to run, and which fields need normalisers. FACT (Linear, fetched 2026-10-07): KEL-237 is the live owner of the lifecycle corpus. Its pinned-oracle receipt comment 24294690 cites the app-lifecycle sentences ('`app.quit()` starts the application quit lifecycle'). That makes it the nearest live issue for this surface. KEL-72 (lifecycle shim) and KEL-185 (lifecycle shutdown) are Done.",
+     "reason": "Open decision ticket; always GitHub. KEL-237 is the nearest live lifecycle-evidence reference."
+    }
+   ]
+  },
+  {
+   "unit": "X02",
+   "items": [
+    {
+     "key": "X02-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "Epics are always tracker github (rule 4). Nearest live reference: KEL-127 (Todo, fetched 2026-10-07), whose delegated direction says \"A future migration analyzer starts read-only, reports compatibility/security/engine/native-dependency blockers separately and emits reviewable reversible changes only after authorization.\" No live KEL issue owns `keld migrate`: KEL-17, KEL-19, KEL-15 and KEL-74 are Done, and a full 'migrate' search of team KELD returned no live issue scoped to the verb. KEL-127 comment c11c3729 (2026-10-06) records that the map lives on GitHub (#391).",
+     "reason": "Epic, so GitHub is the tracker. KEL-127 is the program fallback that already states the analyzer direction this epic implements; place the reference link there."
+    },
+    {
+     "key": "X02-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live Linear issue's description covers the `keld migrate` output contract spec. KEL-17 (\"RFC: Electron compat layer and migration path\") and KEL-19 (\"RFC: CLI design \u2014 keld create, dev, build, doctor, migrate\") are both Done. KEL-237 (In Progress) has the non-goals \"No new Electron API implementation, no compatibility-surface expansion\" and covers only the lifecycle corpus. No KEL-127 comment designates an owner for X02-T1 (all 21 comments searched 2026-10-07). KEL-127 is the nearest reference because it carries the read-only/reversible-changes analyzer sentence that this spec makes concrete. It is a parent program issue, so it can only be the reference.",
+     "reason": "Spec ticket with no live covering issue, so GitHub is the tracker. KEL-127 is the nearest live reference."
+    },
+    {
+     "key": "X02-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "KEL-127 (Todo) says \"A future migration analyzer starts read-only, reports compatibility/security/engine/native-dependency blockers separately\". That is a program-level direction, not a task scope, and rule 3 bars KEL-127 as tracker of record. The MCP owners KEL-36 and KEL-42 and the migrate RFCs KEL-17 and KEL-19 are Done. A search of live KEL issues for 'analyzer' (2026-10-07) returned none scoped to a migrate analyzer.",
+     "reason": "No live task issue covers the analyzer v0 slice, so GitHub is the tracker. KEL-127 holds the analyzer direction and is the nearest reference."
+    },
+    {
+     "key": "X02-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers hand-authoring the migrated draw.io config, permissions file and package-manifest artefact. KEL-78 (In Progress, GYLDLAB, fetched 2026-10-07) is the nearest live reference. The artefact's unowned blocker is the explicit legacy profile key, and KEL-78's acceptance includes \"sandbox-off legacy tier is explicit in build output, doctor, scoreboard and release metadata and forfeits the zero-authority claim\". KEL-78 does not name the keld.config.ts key as a deliverable, and its scope is strict-profile containment, so it does not cover this work. KEL-102 (In Progress) owns the channel-grant evaluator but not the migrate artefact.",
+     "reason": "Not covered by any live issue, so GitHub is the tracker. KEL-78 owns the missing legacy-profile key this artefact depends on, which makes it the issue an agent on this surface would open first."
+    },
+    {
+     "key": "X02-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 (In Progress, fetched 2026-10-07) is the live corpus owner. Its scope excludes this item: \"The current bounded lifecycle corpus must not be represented as broad Electron/application compatibility or as the median-app product denominator.\" Its acceptance also requires \"without redefining the median-app product panel\". X02-T4 is the separate `electron-apps-v0` panel: product manifest. Bridge comment c13866bd on KEL-237 records that the app corpus \"is a separate manifest with its own corpus id (`electron-apps-v0`, `panel: product`), not an extension of `electron-lifecycle-v0`\". KEL-74 (the schema owner) is Done.",
+     "reason": "KEL-237's scope excludes product-panel corpora, so GitHub is the tracker. KEL-237 is the nearest live reference: it owns the runner and manifest pattern being reused, and its bridge comment already records this manifest."
+    },
+    {
+     "key": "X02-T5",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "The product-corpus cell-contract spec (app-run cell kind, install/activation/four-step observables, committed-id procedure) is outside KEL-237's bounded lifecycle scope: \"must not be represented as ... the median-app product denominator\". KEL-74 (schema) is Done. KEL-141 (Backlog), named for the install cell, owns only \"artifact acquisition, verification, install location, and launch\", not cell contracts. KEL-237 is nearest because it is the live owner of compatibility-corpus evidence.",
+     "reason": "Spec ticket with no live covering issue, so GitHub is the tracker. KEL-237 is the nearest live reference for corpus-cell semantics."
+    },
+    {
+     "key": "X02-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "No live issue covers the draw.io real-Mac scoring run or adding `electron-apps-v0` to the committed product-corpus list. KEL-237 bridge comment c13866bd item 3 states: \"No owner for the committed product corpus id ... nobody owns adding its id\". KEL-237's own scope excludes the product denominator. KEL-144 (Backlog) covers a clean-Mac run of \"the approved small app\" product spine, not draw.io corpus cells. KEL-141 (Backlog) covers the install artefact only.",
+     "reason": "Not covered, so GitHub is the tracker. KEL-237 is the nearest live reference: it is the compatibility-evidence owner where the missing product-id owner is already recorded."
+    },
+    {
+     "key": "X02-T7",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live issue covers the analyzer scan-rule spec. KEL-127 (Todo) carries the four-blocker-class direction (\"reports compatibility/security/engine/native-dependency blockers separately\") that this spec turns into rules. KEL-127 is a parent program issue and cannot be the tracker of record (rule 3). The migrate RFCs KEL-17 and KEL-19 are Done.",
+     "reason": "Spec ticket with no live covering issue, so GitHub is the tracker. KEL-127 is the nearest reference because its blocker-class sentence is this spec's source."
+    },
+    {
+     "key": "X02-T8",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live issue covers the `keld migrate --write` generator. KEL-127 (Todo) states the analyzer \"emits reviewable reversible changes only after authorization\", which is direction only, and KEL-127 is a parent program issue. KEL-19 (CLI design, includes migrate) is Done. KEL-102 (In Progress) owns guard enforcement, not the migrate emitter.",
+     "reason": "Not covered, so GitHub is the tracker. KEL-127 is the nearest reference for the reversible-write direction."
+    },
+    {
+     "key": "X02-T9",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "No live issue covers the remaining analyzer blocker classes (native addon, spawn/exec, scheme privileges, dynamic openExternal, YAML, unenumerable dispatchers). KEL-215 (the native-addon evidence-row shape) is Done, so it is not live. KEL-127 (Todo) names the blocker classes reported separately, but it is a parent program issue, not a tracker of record.",
+     "reason": "Not covered, so GitHub is the tracker. KEL-127 is the nearest live reference."
+    }
+   ]
+  },
+  {
+   "unit": "X03",
+   "items": [
+    {
+     "key": "X03-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-127",
+     "linear_status": "Todo",
+     "evidence": "Epics are always tracked on GitHub (rule 4). The epic covers several surfaces: @keld/electron module resolution, main-role process facts, the legacy profile key, X03 conformance entries and the auto-install guard. Each of those maps to a different Linear owner (KEL-75, KEL-78, KEL-237), so no single live issue covers the epic. KEL-127 (Todo, fetched 2026-10-07) is the program parent that sequences this runtime layer. It lists KEL-72 as 'current Electron lifecycle shim' and KEL-75/KEL-78 as consumed owners, and it states 'an opt-in, visibly labeled existing legacy profile where allowed, never a silent downgrade'. That makes it the nearest reference link.",
+     "reason": "Epic: always GitHub. KEL-127 is the program-level fallback reference because the epic spans several Linear owners."
+    },
+    {
+     "key": "X03-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "No live Linear issue covers packaging @keld/electron as the single `electron` module (five specifiers resolving to one object for ESM and CJS, plus a one-instance guard). KEL-72 shipped the alias and lifecycle shim and is Done (fetched 2026-10-07), so it is not live. KEL-75 says 'KEL-72 remains lifecycle-only' and owns role spawn, not module resolution. KEL-237 is the only live issue whose scope names the package: 'publishing a bounded, measurable lifecycle corpus/report for the currently implemented `@keld/electron` lifecycle slice'. Its non-goals exclude this work ('No new Electron API implementation, no compatibility-surface expansion'), so it cannot be the tracker of record. It is still the issue an agent working on @keld/electron would open.",
+     "reason": "No live Linear issue owns @keld/electron packaging (KEL-72 is Done). KEL-237 is the nearest live @keld/electron issue, but its non-goals exclude this work."
+    },
+    {
+     "key": "X03-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "KEL-78 (In Progress, GYLDLAB, fetched 2026-10-07) owns the outcome tree this record applies: 'Decision tree: reuse in worker, replace behind guarded Rust service, upstream Bun fix, or reject/exclude.' It defines the tree, not per-package corpus evidence rows (nodehun, fsevents). Its non-goals exclude 'Claiming arbitrary unchanged addons work under denied authority'. KEL-127 also lists 'additional native-module names ... before G2' as a non-goal, and this ticket is parked behind G2. KEL-215 is Done (row shape only). No live issue covers the new rows, so the tracker is GitHub, with KEL-78 as the nearest reference because it owns the tree.",
+     "reason": "Parked policy record. KEL-78 covers the decision tree, not new per-package rows, so no live issue covers the item."
+    },
+    {
+     "key": "X03-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "KEL-237 (In Progress, unassigned, fetched 2026-10-07) is the live KEL-74-schema conformance/corpus owner. Its scope is limited to the 'currently implemented `@keld/electron` lifecycle slice', and its non-goals are 'No new Electron API implementation, no compatibility-surface expansion'. Conformance entries for the five-specifier module contract and the main-role process.* facts fall outside the lifecycle slice. KEL-74 owns the record schema but is Done. No live issue covers these entries. KEL-237 is the nearest reference because it reuses the same KEL-74 cells and runner.",
+     "reason": "Conformance entries fall outside KEL-237's lifecycle-only scope, and KEL-74 is Done, so no live issue covers them."
+    },
+    {
+     "key": "X03-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "KEL-75 (In Progress, unassigned, fetched 2026-10-07) owns role spawn and lifecycle. Its spec freezes 'Per-role listener/token, grants, restart/backoff/crash-loop policy, stdio/log tags, window affinity and graceful shutdown' and 'Electron utilityProcess / MessageChannelMain / MessagePortMain observable semantics'. Nothing in its description or its 30 comments covers installing Electron process.* facts before the app entry evaluates. It also states 'Electron utilityProcess and VS Code roles are facades/showcase consumers, not keld-runtime branches.' The required pre-entry bootstrap is a proposed KEL-75 amendment, so KEL-75 is the nearest reference, but it does not cover the work yet.",
+     "reason": "The pre-entry install mechanism needs a KEL-75 role-spawn amendment that does not yet exist. KEL-75 is related but does not cover the process.* facts."
+    },
+    {
+     "key": "X03-T5",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "KEL-78 (In Progress, assignee GYLDLAB, fetched 2026-10-07) acceptance: 'sandbox-off legacy tier is explicit in build output, doctor, scoreboard and release metadata and forfeits the zero-authority claim.' Delegated direction: 'Preserve the explicit existing legacy profile as a disclosed exception. No automatic strict\u2192legacy fallback ... Build/doctor/release evidence identifies the exact weaker profile; it cannot carry a strict-containment claim.' The X03-T5 spec amendment defines that explicit legacy declaration (key, grammar, ProfileState\u2192authority_profile mapping, forfeit printing) inside the KEL-78 spec. Non-goals (arbitrary addons; syscall interposition/container/VM) do not exclude it.",
+     "reason": "KEL-78's own acceptance covers an explicit, disclosed legacy tier with forfeit printing. This spec amendment defines how that tier is declared."
+    },
+    {
+     "key": "X03-T6",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-75",
+     "linear_status": "In Progress",
+     "evidence": "KEL-75 (In Progress, unassigned, fetched 2026-10-07) owns the role spawn contract. Neither its description nor any of its 30 comments mentions disabling Bun auto-install, or failing closed on an unresolved `electron` import (keyword search of the comments returned no hits). The ticket's mechanism is itself a proposed KEL-75 amendment, so KEL-75 is the nearest reference, but it does not cover the item.",
+     "reason": "No live issue covers the auto-install guard. KEL-75 owns role spawn and is the nearest reference."
+    },
+    {
+     "key": "X03-T7",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-78",
+     "linear_status": "In Progress",
+     "evidence": "KEL-78 (In Progress, assignee GYLDLAB, fetched 2026-10-07) acceptance: 'sandbox-off legacy tier is explicit in build output, doctor, scoreboard and release metadata and forfeits the zero-authority claim.' Delegated direction: 'Build/doctor/release evidence identifies the exact weaker profile; it cannot carry a strict-containment claim.' KEL-78 already carries implementation tiers ('PR #41 \u2014 KEL-78 T1 admit API + synthetic probe'). The item, the parsed key reaching admit(Legacy) with forfeit printed on build/doctor/scoreboard and legacy_sandbox_off records, is the implementation of that acceptance line. Non-goals do not exclude it.",
+     "reason": "KEL-78 explicitly requires the legacy tier and its forfeit on build, doctor and scoreboard, and already holds admit() implementation slices."
+    }
+   ]
+  },
+  {
+   "unit": "X04",
+   "items": [
+    {
+     "key": "X04-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "Epics always use tracker github (rule 4), so this stays on GitHub #504. KEL-102 is the nearest live Linear issue (In Progress, fetched 2026-10-07). It is the keld-guard permission-model enforcement spec that every X04 row maps onto. Its description defines the scope as 'Where and when `keld.permissions.jsonc` is loaded ... How `keld-core` obtains and holds a `keld-guard` evaluator instance'. That covers the shared owner, not a mapping of Electron security surfaces. KEL-237 (In Progress) is a poorer reference because its non-goals say 'No new Electron API implementation, no compatibility-surface expansion'. KEL-127 is the program fallback only.",
+     "reason": "Epics are always github. KEL-102 is the live permission-model owner an agent working on X04 security surfaces would open, so the reference link goes there."
+    },
+    {
+     "key": "X04-T1",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "No live Linear issue covers an Electron security-surface-to-Keld-owner mapping spec. KEL-102's description scopes a spec for loading the manifest and wiring the guard evaluator into keld-core, keld-host, keld-native and keld-runtime. It says nothing about Electron surfaces, per-engine permission-hook tables or negative-test ids per row. Its approved spec (origin/main) puts 'Per-window grants, navigation rotation, origin context, channel grants and CSP' under 'Destination, not implied by v0'. KEL-102 is still the nearest reference: X04-T1 consumes its D5/D6/D9 rows and is limited to the permission-model review gate. KEL-237 (In Progress) excludes 'compatibility-surface expansion'. KEL-127 and KEL-177 are program issues and cannot be the tracker of record.",
+     "reason": "A related issue does not mean a covering one. KEL-102 owns the permission model the mapping cites, but it does not scope the mapping spec, so GitHub #505 is the tracker of record and KEL-102 is the reference."
+    },
+    {
+     "key": "X04-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "KEL-102's approved spec explicitly excludes this work. Its non-goals list says: 'Adding `roles`, window grants, channel grants, manifest generation, ... Those are destination work and must not be faked by applying `/app` grants to another principal.' Its T4 row keeps webview media default-deny 'until a separately approved window-grant slice exists'. D9 states: 'This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change.' No KEL-102 comment (latest page of 50, fetched 2026-10-07) records a scope change that adds window-level web grants. KEL-102 is the nearest reference because the slice would be proposed as its amendment and evaluated by keld-guard. KEL-132 (In Progress) only covers media guard installation proof.",
+     "reason": "The candidate owner's non-goals exclude window grants, so the GitHub issue is the tracker of record. KEL-102 is the reference where an agent would land the amendment."
+    },
+    {
+     "key": "X04-T3",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-102",
+     "linear_status": "In Progress",
+     "evidence": "KEL-130, the landed literal-scope owner, is Done and so not live. Its spec non-goals also exclude 'dialog grant'. KEL-102's description covers loading the startup manifest snapshot and wiring the evaluator, not filesystem scopes minted at runtime. Its spec table says 'Reload: None; full session restart is required' and lists window/role grants as destination work. No live issue scopes dialog-derived, OS-delivered or persisted roots. KEL-102 is the nearest live reference because the closed F06-D1 route proposes guard-owned session grants as a KEL-102 amendment.",
+     "reason": "No live issue covers runtime-minted path scopes, and the ticket is parked, so the GitHub issue is the tracker of record. KEL-102 is the reference, following the F06-D1 amendment route."
+    },
+    {
+     "key": "X04-D3",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-79",
+     "linear_status": "Backlog",
+     "evidence": "This is a decision/prototype ticket, which always uses tracker github (rule 4), so it stays on GitHub #415. KEL-79 is the nearest live Linear issue (Backlog, fetched 2026-10-07). Its framework-first scope says: 'Compare authenticated HTTPS, host-backed resource transport and production custom-scheme behavior' and 'Observable contract covers URI identity, MIME/range, CORS/CORP, CSP'. That is the same engine-level CSP and resource-transport surface that D3 tests for draw.io on WKWebView, comparing an injected meta policy, a host scheme handler and the app's own policy. KEL-79 is broader than D3, which is about choosing a first-proof CSP delivery arm, and KEL-79 does not own that choice.",
+     "reason": "Decision tickets are always github. KEL-79 is the live owner of the webview CSP and resource-transport contract, which is where an agent on this surface would look."
+    }
+   ]
+  },
+  {
+   "unit": "X05",
+   "items": [
+    {
+     "key": "X05-EPIC",
+     "kind": "epic",
+     "tracker": "github",
+     "linear_issue": "KEL-90",
+     "linear_status": "In Progress",
+     "evidence": "Epics are always tracker github (rule 4). FACT (Linear, fetched 2026-10-07): KEL-90 'bench: cross-OS metric-runner standard + native baselines (winui/gtk4) + keld fixture' is In Progress, assigned GYLDLAB. It owns 'Keep the established result.v2 runner and publication gates. This adds mode fields and conditional fixtures, not a second benchmarking system', which is the surface for two of the epic's three tickets (X05-T1, X05-T3). The third ticket, X05-T2 (channel table), has no live Linear owner and is referenced at KEL-80. KEL-127 (Todo) is the program parent and is used only as a fallback.",
+     "reason": "The epic is a planning container. KEL-90 is the nearest live issue: it owns the metric registry and runner that most X05 work lands in, so an agent working on X05 perf would open it first."
+    },
+    {
+     "key": "X05-T1",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-90",
+     "linear_status": "In Progress",
+     "evidence": "FACT (KEL-90 description, Linear, fetched 2026-10-07), section 'Electron/Tauri and backend-mode comparison gates': 'Tag each comparator by actual mode and immutable artifact: Electron main/renderer, Tauri Rust-core, Tauri + packaged JS runtime when relevant, Keld Bun-primary...'; 'Separate host-to-host IPC, real Bun-to-host IPC, renderer round trip, user-input-to-render response, startup-to-interactive, idle and loaded resource use.'; 'Keep the established result.v2 runner and publication gates. This adds mode fields and conditional fixtures, not a second benchmarking system.' Also: 'Reuse result.v2, existing metric registry, provenance/statistics owners and publication gate.' Its boundaries ('Fixtures and runner land in keld-benches') match this ticket and exclude nothing in it. No KEL-90 comment narrows scope against Electron-comparator metrics (checked 50 comments). UNKNOWN: KEL-90 does not name the FACADE-DELTA layer (@keld/electron minus @keld/api) explicitly. It is carried under the 'conditional fixtures' clause.",
+     "reason": "The ticket registers Electron-vs-Keld comparator metric ids (renderer round trip, startup, RSS) with mode tags and admission rules in KEL-90's existing registry. KEL-90's comparison-gate text explicitly covers that, and KEL-129 keeps budget authority."
+    },
+    {
+     "key": "X05-T2",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "No live Linear issue owns a kipc channel-id table. FACT (Linear, fetched 2026-10-07): a KELD search for 'channel table' returns only issues that are Done or out of scope. KEL-13 RFC, KEL-98 echo codegen, KEL-142 renderer bridge and KEL-133 are Done. KEL-102 (In Progress) is a guard-wiring spec. KEL-140 (Backlog) owns only the TS fs adapter and says KEL-102/T3 'owns Rust channel registration'. Neither covers a channel table. KEL-80 (Backlog, unassigned) is the nearest live kipc bridge/transport issue and is related to KEL-98 and KEL-142, but it does not cover this work: its text says 'KEL-98 retains generated-contract ownership; no wire/ABI change...is approved here', and its scope is queue/credit/copy bounds.",
+     "reason": "This is a first-proof spec+task with no covering live issue, so GitHub #508 is the tracker of record. Place the reference link on KEL-80, the open kipc bridge issue an agent touching kipc channel ids would open."
+    },
+    {
+     "key": "X05-T3",
+     "kind": "ticket",
+     "tracker": "linear",
+     "linear_issue": "KEL-90",
+     "linear_status": "In Progress",
+     "evidence": "FACT (KEL-90 description, Linear, fetched 2026-10-07): 'Tag each comparator by actual mode and immutable artifact: Electron main/renderer, ... Keld Bun-primary...'; 'Report cold/warm startup, distributions/tails, ... as different observables.'; 'Reuse result.v2, existing metric registry, provenance/statistics owners and publication gate. Qualify cache/load/power conditions; obtain at least30 balanced independent launches with uncertainty for the first matched comparison.' Also from the Scope section: 'Fixtures and runner land in keld-benches, never in the Keld monorepo'. The ticket's out-of-scope items (optimisation, publication campaigns, Windows/Linux arms) do not conflict with any KEL-90 non-goal.",
+     "reason": "Running the Electron arm against the Keld arm on macOS through result.v2 into keld-benches, held at the publication gate, is the matched Electron/Keld comparison that KEL-90 explicitly owns."
+    },
+    {
+     "key": "X05-A4",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "Decision and research tickets are always tracker github (rule 4). X05-A4 (#417) asks for a per-hop serialise/copy count, per-frame allocations in the TS reader/writer and the Rust frame read, and rules for bounded batching with no reordering. FACT (KEL-80 description, Linear, fetched 2026-10-07): 'Every copy across JS/browser/host/Bun is recorded per engine.' Also: 'Profile copies and repeated codecs before changing them.' Also: 'Trace all WriteQueue producers ... declare one authoritative budget for pending bytes AND calls'. KEL-80 is the closest live owner of hop copy/queue/allocation accounting. X05-T1 also routes the per-hop census to KEL-80.",
+     "reason": "This is an open research decision, so GitHub #417 is the tracker of record. KEL-80 is the nearest live issue for the copy/allocation/queue cost model, so the reference link goes there."
+    },
+    {
+     "key": "X05-T4",
+     "kind": "ticket",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): a KELD search for 'channel' returned no live issue that owns a kipc channel-id table. The codegen and transport owners this ticket reuses are Done: KEL-98 (schema codegen) and KEL-136 (generated TS app-link transport), as are KEL-13 and KEL-142. KEL-102 (In Progress) is the guard-wiring spec and does not mention a channel table. KEL-140 (Backlog) covers one fs operation only. KEL-80 (Backlog, unassigned) is the nearest live kipc issue, but its description explicitly disclaims this: 'KEL-98 retains generated-contract ownership; no wire/ABI change, unsafe packing, new dependency or shared-memory path is approved here'. Its scope is queue, credit and copy bounds. The parent spec X05-T2 is already aligned to GitHub with KEL-80 as reference.",
+     "reason": "No live Linear issue covers implementing the channel table, so the GitHub issue is the tracker of record. KEL-80 is the nearest reference, matching X05-T2 whose spec this ticket implements. KEL-98 and KEL-136 are Done and are consumed as patterns, not trackers."
+    }
+   ]
+  },
+  {
+   "unit": "program-level open decision tickets (PANEL-P1, PANEL-P2, PANEL-P3, PANEL-D22, PANEL-D23) of map gyldlab/keld#391",
+   "items": [
+    {
+     "key": "PANEL-P1",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-80",
+     "linear_status": "Backlog",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-80 'Bridge: bounded virtual channels and traffic-replay conformance' is Backlog. Its acceptance covers the transport properties this gate measures: 'Host-enforced credits bound control requests, queued bytes and chunked logical blobs; cooperative JS backpressure is not a security control.' and 'Ordering is per channel/link generation'. Its Cloudflare follow-through also owns the TS WriteQueue/DrainSignal/parked-frame ownership ledger. The ticket body itself names KEL-80/KEL-97 as the place a passing arm B would land as a spec. No live issue covers the prototype. KEL-80 does not mention a worker-owned transport, SAB/Atomics or parking the Bun main thread, and it says 'Shared memory remains absent by default'. KEL-97 (Backlog) owns only RoleRegistry principal binding. KEL-136 and KEL-133 are Done, so neither can be returned.",
+     "reason": "This is a prototype/decision ticket, so it stays on GitHub. KEL-80 is the nearest live owner of kipc backpressure, credits, ordering and queue ownership on the Bun side, which is what arms A, B, C and E measure. It is also the spec destination the ticket names if arm B passes."
+    },
+    {
+     "key": "PANEL-P2",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 'Open-source: publish measurable lifecycle compatibility corpus and report' is In Progress. It owns lifecycle compatibility evidence for '@keld/electron': 'Freeze explicit lifecycle operation cells to exact Keld/Bun/upstream/OS/arch/artifact/authority dimensions'. Its 2026-10-06 bridge comment already ties map ticket #445 ('ordering of ready, before-quit, will-quit, quit; cancellation; window-all-closed') to this corpus format. It does not cover this item, because its non-goals say 'No new Electron API implementation, no compatibility-surface expansion', and it has no close-veto, AppKit windowShouldClose/applicationShouldTerminate or modal re-entrancy cells. Alternatives checked: KEL-143 (Backlog) has only Keld-internal quit teardown ('Quit ordering is reply -> quiesce/drain -> revoke/close -> terminate/reap -> UI exit'). KEL-139, KEL-142 and KEL-72 are Done.",
+     "reason": "This is a prototype/decision ticket, so it stays on GitHub. The prototype's output is a diffed Electron 44.4.5 lifecycle transcript scored as compatibility marks. KEL-237 is the live owner of lifecycle oracle cells and their evidence format, and it is already bridged to the map's app-ordering conformance ticket."
+    },
+    {
+     "key": "PANEL-P3",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 is In Progress and is the live compatibility-evidence owner. It reuses the KEL-74 schema and denominators and says 'do not create a second scoreboard, denominator model'. Its 2026-10-06 bridge comment item 3 already records the gap this prototype feeds: 'No owner for the committed product corpus id ... GitHub #313 chose draw.io first, but nobody owns adding its id.' It does not cover the draw.io trace, because its scope says the bounded lifecycle corpus 'must not be represented as broad Electron/application compatibility or as the median-app product denominator'. KEL-74, which defines the install/activation/primary-workflow denominators, is Done. For the authority-classification half, KEL-78 (In Progress) is the secondary reference: 'sandbox-off legacy tier is explicit in build output, doctor, scoreboard and release metadata'. KEL-102 (In Progress) owns grant enforcement.",
+     "reason": "This is a prototype/decision ticket, so it stays on GitHub. Its deciding output is the committed draw.io denominator plus a fix-it list for the first proof, and KEL-237 is the live denominator/corpus owner where that gap is already recorded. Link KEL-78 as a secondary reference for the legacy-profile authority classification."
+    },
+    {
+     "key": "PANEL-D22",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): no live KELD issue covers dialog.showMessageBoxSync or main-process re-entrancy during a Cocoa modal. A 'dialog' search returned only Done RFCs/teardowns (KEL-10, KEL-2, KEL-14, KEL-72, KEL-71) and unrelated live items (KEL-102, KEL-132, KEL-89, KEL-217). The question is settled by an Electron 44.4.5 fixture (E3) that records a mark, which is a lifecycle oracle cell. KEL-237 (In Progress) owns those cells: 'Freeze explicit lifecycle operation cells ... retain pass/fail/unknown/waived states and immutable evidence locators.' It does not cover this item, because of its non-goal 'no compatibility-surface expansion'. KEL-72, which owned the @keld/electron lifecycle shim, is Done.",
+     "reason": "This is a contested decision ticket, so it stays on GitHub. KEL-237 is the nearest live issue an agent would open: it owns the lifecycle oracle cells that the E3 re-entrancy fixture result would populate. No live Linear issue owns modal dialogs."
+    },
+    {
+     "key": "PANEL-D23",
+     "kind": "decision",
+     "tracker": "github",
+     "linear_issue": "KEL-237",
+     "linear_status": "In Progress",
+     "evidence": "FACT (Linear, fetched 2026-10-07): KEL-237 is In Progress. Its 2026-10-06 bridge comment states that map ticket #445 adds the app-family ordering cells 'ready, before-quit, will-quit, quit; cancellation' to this corpus, and its published report already records an intentional 'app.quit()' divergence per platform (comment 2026-09-16). Per-window close-veto interleaving under NSTerminateLater is not in its scope, and its non-goals exclude 'compatibility-surface expansion'. Secondary reference: KEL-143 (Backlog) owns Keld host quit teardown ('Quit ordering is reply -> quiesce/drain -> revoke/close -> terminate/reap -> UI exit'), but not Electron before-quit/close/will-quit sequencing or vetoes. The 'Quit has one ordered owner' AC cited in the ticket belongs to the KEL-139 spec, and KEL-139 is Done.",
+     "reason": "This is a contested decision ticket, so it stays on GitHub. KEL-237 is the live owner of Electron quit-event ordering evidence for @keld/electron. Link KEL-143 as a secondary reference, because any change to host quit sequencing touches its teardown-order acceptance."
+    }
+   ]
+  }
+ ]
+}

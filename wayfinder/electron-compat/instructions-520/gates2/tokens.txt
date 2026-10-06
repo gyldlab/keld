@@ -1,0 +1,7 @@
+AGENTS.md: 13305 -> 13307 bytes (cap 13312); 2952 -> 2950 tokens
+docs/agents/workflow.md: 16353 -> 16292 bytes (cap 16384); 3586 -> 3571 tokens
+.agents/coordination.md: 4297 -> 4916 bytes (cap 4992); 922 -> 1083 tokens
+.agents/index.md: 4056 -> 4066 bytes (cap 4096); 898 -> 900 tokens
+.agents/ci.md: 3936 -> 4002 bytes (cap 4096); 869 -> 887 tokens
+.agents/review.md: 1907 -> 1958 bytes (cap 2304); 438 -> 456 tokens
+docs/agents/spec-template.md: 2732 -> 2755 bytes (cap 3072); 662 -> 673 tokens

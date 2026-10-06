@@ -1,0 +1,13 @@
+[
+ {
+  "key": "PANEL-D22",
+  "add": [
+   "milestone:first-proof"
+  ],
+  "remove": [
+   "milestone:next"
+  ],
+  "why": "C1-transport residual 2 (milestone inversion): first-proof F06-T7 is blocked by PANEL-D22 and its criterion 'Listener execution during the modal matches the behaviour PANEL-D22 records' sits on the draw.io close-with-unsaved step. #442 is OPEN and labelled milestone:next (gh issue view, read 2026-10-07). The F06-T7 edge and criterion are kept, as the residual requires.",
+  "cluster": "C1-transport"
+ }
+]

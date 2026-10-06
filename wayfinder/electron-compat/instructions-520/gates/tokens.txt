@@ -1,0 +1,7 @@
+tiktoken 0.12.0 o200k_base
+AGENTS.md: bytes 13305 -> 13307; tokens 2952 -> 2950
+docs/agents/workflow.md: bytes 16353 -> 16381; tokens 3586 -> 3605
+.agents/index.md: bytes 4056 -> 4066; tokens 898 -> 900
+docs/agents/spec-template.md: bytes 2732 -> 2755; tokens 662 -> 673
+automatic chain before: root 13315 bytes / 2956 tokens; largest nested chain (crates/keld-wv/AGENTS.md) 17411 bytes / 4033 tokens (cap 24576 bytes)
+automatic chain after: root 13317 bytes / 2954 tokens; largest nested chain (crates/keld-wv/AGENTS.md) 17413 bytes / 4031 tokens (cap 24576 bytes)

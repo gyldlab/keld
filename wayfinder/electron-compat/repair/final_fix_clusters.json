@@ -1,0 +1,309 @@
+[
+ {
+  "cluster": "C1-transport",
+  "residuals": [
+   {
+    "keys": [
+     "F06-T7",
+     "F06-T14",
+     "F02-T11",
+     "F04-T18",
+     "X02-T6"
+    ],
+    "problem": "F04 minted F04-T18 (first-proof, worker-owned single-link blocking host CALL transport). Its consumers still carry no edge to it: F06-T7.blocked_by is [F06-T1, F06-T2, PANEL-P1, PANEL-D22], F06-T14 is [F06-T2, PANEL-P1] and F02-T11 is [F02-T3, PANEL-P1]. F06 and F02 deferred the edge to 'the orchestrator once F04-T18 exists', and it now exists. F06-T7 AC3 (events queued during the park arrive in order, zero drops or duplicates) and AC4 (link close or generation retire wakes the caller with a typed error) repeat F04-T18 AC3 and AC4 word for word. The transport atom therefore has two owners, and F06-T7 (first-proof, draw.io close-with-unsaved step) can land its own transport. X02-T6 reaches F04-T18 only through this missing edge.",
+    "fix": "Add F04-T18 to blocked_by_keys of F06-T7, F06-T14 and F02-T11, and delete their 'missing transport ticket' blocked_by_external entries. In F06-T7, delete AC3 and AC4 and replace them with: 'showMessageBoxSync uses the F04-T18 transport unchanged; the F04-T18 park/wake cells pass on the final diff.' X02-T6 then inherits F04-T18 transitively, so no direct edge is needed.",
+    "severity": "high"
+   },
+   {
+    "keys": [
+     "F06-T7",
+     "PANEL-D22"
+    ],
+    "problem": "Milestone inversion. F06-T7 is first-proof and consumes PANEL-D22: it is in blocked_by, and AC5 reads 'Listener execution during the modal matches the behaviour PANEL-D22 records'. PANEL-D22 (#442) is labelled milestone:next (GitHub, read 2026-10-07). The draw.io close-with-unsaved prompt calls showMessageBoxSync inside a close listener, so re-entrancy during the Cocoa modal is on the first-proof path. As labelled, the first proof cannot complete.",
+    "fix": "Relabel #442 (PANEL-D22) to milestone:first-proof and keep the F06-T7 edge. Do not instead drop the edge and AC5: that would leave modal re-entrancy unverified on the scored close step.",
+    "severity": "high"
+   }
+  ],
+  "keys": [
+   "F02-T11",
+   "F04-T18",
+   "F06-T14",
+   "F06-T7",
+   "X02-T6"
+  ]
+ },
+ {
+  "cluster": "C2-rolequit",
+  "residuals": [
+   {
+    "keys": [
+     "F01-T3",
+     "F06-T16",
+     "F06-T4",
+     "F06-T1"
+    ],
+    "problem": "One atom, two owners. F01-T3 AC7 says 'Menu role: quit ... the F06-T1/F06-T4 role-quit before-quit cell flips from unknown to pass in this change'. F06-T16 AC1 says 'The F06-T1 role-quit cell flips from its expected unknown to pass in this change', and F06-T1 AC4 records that cell's implementing ticket as F06-T16. F01-T3 also carries the edge F01-T3 \u2190 F06-T4 only to support AC7. F01-T3 AC6 (Cmd+Q with a vetoing window) is the same atom once the app installs a menu, because Cmd+Q dispatches the role-quit item.",
+    "fix": "Delete F01-T3 AC7. Remove F06-T4 from F01-T3.blocked_by_keys. Rewrite F01-T3 AC6 as 'a host- or OS-initiated quit request with no menu dispatch (Dock Quit, or the host quit-requested event) with a vetoing window never terminates the host'. In F01-T3's adjacent atoms and its unapplied reason, replace 'F01-T3 owns and flips the role-quit cell' with 'role close: F06-T4; role quit: F06-T16 (consumes F01-T3)'.",
+    "severity": "high"
+   }
+  ],
+  "keys": [
+   "F01-T3",
+   "F06-T1",
+   "F06-T16",
+   "F06-T4"
+  ]
+ },
+ {
+  "cluster": "C3-redrule",
+  "residuals": [
+   {
+    "keys": [
+     "F01-T1",
+     "F02-T1",
+     "F02-T7",
+     "F03-T1",
+     "F06-T1",
+     "F07-T4",
+     "F09-T3",
+     "X01-T3",
+     "X01-T4"
+    ],
+    "problem": "Two red-until-implemented rules with two owners. X01-T3 (first-proof spec, ready-for-agent) owns one representation: expected fail plus an implementing-ticket key, with unknown only for uncited cells. X01-T4 owns the validator. F04-T1, F05-T1 and F05-T8 follow it. F01-T1 has no X01-T3/X01-T4 edge and writes its own runner rule (AC2: 'The runner accepts expected verdict unknown only with a named implementing ticket key'), and its cited cells are expected unknown (F01-T2/T4/T5 flip 'unknown to pass'). F02-T1 ('fail or unknown'), F03-T1 ('pass / fail / unknown'), F06-T1 ('fail or unknown ... names its implementing ticket key'; F06-T16 flips from unknown) and F07-T4 do the same with no X01-T3 edge. F09-T3 cites 'the corpus pin that KEL-237 owns', but X01-T3 AC2 owns the pin rule. Under X01-T4 AC4, these cited cells either fail validation or force a second representation.",
+    "fix": "Add X01-T3 to blocked_by_keys of F01-T1, F02-T1, F02-T7, F03-T1, F07-T4 and F09-T3. Add X01-T4 to those that run manifests through the validator: F01-T1, F02-T1, F03-T1, F07-T4. Delete F01-T1 AC2 because X01-T4 owns that rule. Restate every cited pending cell as 'expected fail + implementing-ticket key (X01-T3 representation)'. Change the 'flip from unknown' wording to 'flip from expected fail' in F01-T2/T4/T5, F06-T16 and the F06-T1 role-quit cell; keep unknown only for uncited or observed-only cells. In F09-T3 AC4, replace 'KEL-237 owns' with 'the X01-T3 pin rule'.",
+    "severity": "high"
+   },
+   {
+    "keys": [
+     "F02-T1",
+     "F02-T7",
+     "X01-T3"
+    ],
+    "problem": "An unapplied reason with no evidence behind it. F02's unapplied entry keeps F02-T1 and F02-T7 at needs-info for 'the unrecorded Electron pin (KEL-237; X06-D6 pin correction)'. X01-T3 AC2 now decides the pin: the v44.4.5 tag commit 694f45852a0f\u2026 is the default for new corpora. F01-T1 and F03-T1 use that pin and are ready-for-agent. No open decision ticket blocks F02-T1 or F02-T7, so needs-info has no basis.",
+    "fix": "Add X01-T3 to blocked_by_keys of F02-T1 and F02-T7. Set both to ready-for-agent. Replace the pin hold in F02's unapplied reason with 'pin fixed by X01-T3 AC2'.",
+    "severity": "medium"
+   }
+  ],
+  "keys": [
+   "F01-T1",
+   "F02-T1",
+   "F02-T7",
+   "F03-T1",
+   "F06-T1",
+   "F07-T4",
+   "F09-T3",
+   "X01-T3",
+   "X01-T4"
+  ]
+ },
+ {
+  "cluster": "C5-claimloc",
+  "residuals": [
+   {
+    "keys": [
+     "F04-T7",
+     "F04-T8",
+     "F04-T9",
+     "X01-T3",
+     "X01-T4",
+     "F09-T7",
+     "F01-T9",
+     "F05-T5",
+     "F05-T3"
+    ],
+    "problem": "The claim location has two owners. Each ticket's linear_owner text names a Linear tracker of record: KEL-102 'aligned tracker of record (live, scope covers the work)' for F04-T7/T8/T9; 'claim with the workflow Agent claim on KEL-237' for X01-T3/T4; KEL-53 for F09-T7, KEL-78 for F01-T9, KEL-135 for F05-T5 and KEL-102 for F05-T3. alignment.json, which drives the reconcile and gate passes, records tracker=github for all of them. It quotes 'KEL-102 non-goals currently exclude channel grants' and, for X01-T3/T4, 'no quoted covering sentence'. #517 rule 4 requires one source of truth for the claim, so an agent could claim on both trackers.",
+    "fix": "Rewrite each linear_owner to the alignment result: 'Tracker of record: this ticket's GitHub issue. Linear reference: KEL-n (status)'. For F04-T7, add that KEL-102 becomes the tracker only after its non-goals are amended. If a reviewer can quote a covering sentence from KEL-102 or KEL-237, change alignment.json to linear for that key instead. Either way, ticket text and alignment.json must name the same tracker before publishing.",
+    "severity": "medium"
+   }
+  ],
+  "keys": [
+   "F01-T9",
+   "F04-T7",
+   "F04-T8",
+   "F04-T9",
+   "F05-T3",
+   "F05-T5",
+   "F09-T7",
+   "X01-T3",
+   "X01-T4"
+  ]
+ },
+ {
+  "cluster": "C6-F08",
+  "residuals": [
+   {
+    "keys": [
+     "F08-T1",
+     "F08-T2",
+     "F08-T3",
+     "F08-T4",
+     "F08-T5",
+     "F08-T6",
+     "F08-T9"
+    ],
+    "problem": "Unit F08 never applied the closed owner decision X06-D7 (#517). Its linear_owner fields still read 'none, missing owner ... The X06-D3 item-2 packet decides' or 'the orchestrator decides through the Linear-owner decision packet'. X06-D7 resolved that question; every other F-unit rewrote this text. F08's unapplied list has no X06-D7 entry, so its stated holds rest on a superseded packet.",
+    "fix": "Rewrite each F08 linear_owner as 'Tracker of record: this ticket's GitHub issue (X06-D7, #517 comment 6024917784). Linear reference: KEL-132 (In Progress) for F08-T1/T4, KEL-129 for F08-T7, KEL-75 for F08-T8, otherwise KEL-127'. Delete 'missing owner' and the X06-D3 item-2 routing. Set F08-T3 (conformance) to ready-for-agent once its owner hold is gone; it remains blocked by X01-T1.",
+    "severity": "medium"
+   },
+   {
+    "keys": [
+     "F08-T1",
+     "F08-T3",
+     "F03-T1"
+    ],
+    "problem": "The webContents render-process-gone conformance cell has zero owners. Repaired F03-T1 removed it (its change log says 'render-process-gone cells belong to F08-T1'). F08-T1 AC1 still says 'The F03-T1 webContents render-process-gone cell ... move from expected-fail to pass' and keeps F08-T1 \u2190 F03-T1. F08-T3 AC3 says 'No entry duplicates the F03-T1 webContents render-process-gone entry' and covers only the app-level event. F08-T1's flip criterion points at a cell that does not exist.",
+    "fix": "Add the webContents render-process-gone cell (pinned web-contents.md sentence) to F08-T3's cell list. Delete F08-T3 AC3. Change F08-T1 AC1 to 'The F08-T3 webContents and app render-process-gone cells move to pass'. Drop F03-T1 from F08-T1.blocked_by_keys; F03-T2 stays.",
+    "severity": "medium"
+   }
+  ],
+  "keys": [
+   "F03-T1",
+   "F08-T1",
+   "F08-T2",
+   "F08-T3",
+   "F08-T4",
+   "F08-T5",
+   "F08-T6",
+   "F08-T9"
+  ]
+ },
+ {
+  "cluster": "C7-F07",
+  "residuals": [
+   {
+    "keys": [
+     "F07-T1",
+     "F07-T6",
+     "X03-T1",
+     "X03-T4",
+     "F01-T4"
+    ],
+    "problem": "Edge to the wrong owner. F07-T1 AC6 asserts 'process.versions deep-equals the X03-T1 boot-fact table', and F07-T6 says 'Values come from the X03-T1 boot-fact table'; both are blocked by X03-T1. Repaired X03-T1 owns only module resolution: its out of scope lists 'process.* values (X03-T4)', and it has no boot-fact table. F01-T4 owns the payload and X03-T4 owns the process.* value mapping. The renderer require map is F07-T1's own, so the X03-T1 edge carries no needed artifact, and the process-fact source F07 needs has no edge.",
+    "fix": "In F07-T1 AC6 and F07-T6, replace 'X03-T1 boot-fact table' with 'the F01-T4 session-facts payload, as mapped by X03-T4'. Replace X03-T1 with X03-T4 in blocked_by_keys of F07-T1 and F07-T6; X03-T4 already depends on F01-T4. Keep X03-T1 only if a F07 criterion needs the electron package entry itself, and name that criterion.",
+    "severity": "medium"
+   },
+   {
+    "keys": [
+     "F07-T2",
+     "F03-T2",
+     "X02-T6"
+    ],
+    "problem": "F07-T2 is a ready-for-agent 'task' that needs facade code and the whole first proof. AC2 needs a webContents facade that accepts on('will-attach-webview'). F03-T2's registration-safe list does not include that listener, and F07-T2 has no F03-T2 edge. AC3 ('across the full first-proof workflow ... zero emissions') is an X02-T6 integration observable. The 113 \u2718 scoreboard rows are not needed by the four-step workflow (YAGNI).",
+    "fix": "Add F03-T2 to F07-T2.blocked_by_keys and add will-attach-webview to F03-T2 AC7's registration list, or set F07-T2 to needs-spec. Move AC3 into X02-T6 as a scored cell. Split the 113 webviewTag rows into a next-milestone scoreboard task.",
+    "severity": "medium"
+   },
+   {
+    "keys": [
+     "F07-T1",
+     "X05-T1"
+    ],
+    "problem": "Metric registration has two owners. F07-T1 AC12 requires 'the keld-benches metric registry holds exactly one diagnostic id for the app-world handler's per-call cost'. X05-T1 (parked) owns metric-id registration in that registry and states that other units' performance criteria are 're-homed here as metric ids rather than kept as ACs'. PANEL-D21 (closed) requires only that the cost is recorded as a diagnostic.",
+    "fix": "Add one sentence to X05-T1: 'the PANEL-D21 app-world per-call diagnostic id is registered by F07-T1 and excluded here'. Alternatively, reword F07-T1 AC12 to 'per-call samples are emitted as diagnostic records with no threshold' and register the id in X05-T1. Either way, one owner.",
+    "severity": "low"
+   }
+  ],
+  "keys": [
+   "F01-T4",
+   "F03-T2",
+   "F07-T1",
+   "F07-T2",
+   "F07-T6",
+   "X02-T6",
+   "X03-T1",
+   "X03-T4",
+   "X05-T1"
+  ]
+ },
+ {
+  "cluster": "C8-roleenv",
+  "residuals": [
+   {
+    "keys": [
+     "F01-T4",
+     "X03-T6",
+     "X02-T3"
+    ],
+    "problem": "Authority-widening default-allow. F01-T4's declared role environment rejects only names starting with KELD_. Every other app-declared key is applied to the supervised Bun role at spawn, including loader- and runtime-affecting variables: DYLD_*, BUN_*/BUN_OPTIONS, NODE_OPTIONS, NODE_TLS_REJECT_UNAUTHORIZED, proxy variables. INFERENCE: some of these could re-enable install or preload behaviour and undo X03-T6's 'auto-install disabled, fail closed' guarantee. Which names Bun 1.4.2 honours is UNKNOWN. AC9 ('guard decisions identical') does not cover role behaviour outside keld-guard. Only one key is needed: DRAWIO_DISABLE_UPDATE per PANEL-D14.",
+    "fix": "Make the declared role environment default-deny. Accept only keys matching an allowlist pattern written by keld migrate and reviewed in X02-T3, starting with the exact name DRAWIO_DISABLE_UPDATE, or at minimum reject KELD_*, BUN_*, NODE_*, DYLD_* and LD_* before spawn with a typed KELD-* error. Add negative controls: a declared NODE_OPTIONS or BUN_OPTIONS key is rejected; a role spawned with any declared key still fails closed on an unaliased electron import (X03-T6 cell).",
+    "severity": "medium"
+   },
+   {
+    "keys": [
+     "F05-T7",
+     "F04-T3"
+    ],
+    "problem": "Hidden coupling. F05-T7 AC7 ('draw.io's main ... completes its whenReady callback: every ipcMain registration that follows the webRequest calls is present') needs the ipcMain facade from F04-T3. F05-T7 is not blocked by F04-T3, so the criterion cannot pass at F05-T7's own commit.",
+    "fix": "Move F05-T7 AC7 to X02-T6, which already depends on F04-T3 and F05-T7. Replace it with: 'after both webRequest registrations, the next top-level statement executes (recorder marker)'.",
+    "severity": "low"
+   }
+  ],
+  "keys": [
+   "F01-T4",
+   "F04-T3",
+   "F05-T7",
+   "X02-T3",
+   "X03-T6"
+  ]
+ },
+ {
+  "cluster": "C9-recordings",
+  "residuals": [
+   {
+    "keys": [
+     "X05-T2",
+     "F02-T2",
+     "F04-T3",
+     "F06-T2",
+     "F06-T4"
+    ],
+    "problem": "Source: repair_result.json, because the X05 unit was not in the truncated prompt. X05-T2 (first-proof spec+task, the kipc channel table) is needs-triage with the stated hold 'BLOCKER missing owner ... the repository owner designates'. X06-D7 resolved that hold; alignment.json gives tracker=github with reference KEL-80. X05-T2 gates four first-proof features. Spec and slice are combined in one 'task' with no state that lets anyone pull the spec half.",
+    "fix": "Rewrite X05-T2's owner field to 'Tracker of record: its GitHub issue (#508); Linear reference KEL-80'. Split it into X05-T2 (spec, ready-for-agent) and a new slice key (needs-spec, blocked by the spec). Point the F02-T2, F04-T3, F06-T2 and F06-T4 edges at whichever half produces the channel ids they consume; the slice if they need generated constants.",
+    "severity": "medium"
+   },
+   {
+    "keys": [
+     "F03-T6",
+     "F04-T20",
+     "F08-T3",
+     "F01-T10",
+     "X01-T1",
+     "X01-T2"
+    ],
+    "problem": "Nobody owns producing the recordings. F03-T6 (recorded undocumented behaviour, ready-for-agent), F04-T20 ('Record each ... under the X01-T1 two-arm harness') and F08-T3 (destroy-time oracle transcript) depend only on X01-T1, which is a needs-info spec. The only implementation, X01-T2, is limited to 'main-process-only lifecycle fixtures: quit order, before-ready, window-all-closed'. F01-T10 AC4 says the activate cell 'stays unknown until X01-T2 records it', but activate is not in X01-T2's scope. No ticket records webContents, IPC or diagnostics transcripts.",
+    "fix": "Add 'activate at first launch' to X01-T2's fixture list, or reword F01-T10 AC4 to name a ticket that records it. For F03-T6, F04-T20 and F08-T3, either add the recorder implementation (X01-T2) as a blocker and widen X01-T2 to renderer fixtures, or have each ticket own its family fixtures 'run through the X01-T2 recorder' and add X01-T2 to its blocked_by_keys. Then move F03-T6 to needs-spec until that recorder exists.",
+    "severity": "medium"
+   }
+  ],
+  "keys": [
+   "F01-T10",
+   "F02-T2",
+   "F03-T6",
+   "F04-T20",
+   "F04-T3",
+   "F06-T2",
+   "F06-T4",
+   "F08-T3",
+   "X01-T1",
+   "X01-T2",
+   "X05-T2"
+  ]
+ },
+ {
+  "cluster": "C10-states",
+  "residuals": [
+   {
+    "keys": [
+     "F04-T5",
+     "F07-T5"
+    ],
+    "problem": "ready_state is 'parked', which is not a valid state. validate_repair.py and merge_reconcile.py accept only ready-for-agent, ready-for-human, needs-spec, needs-info and needs-triage, so these two tickets will be refused or mislabelled at publish.",
+    "fix": "Set ready_state to needs-triage for F04-T5 and F07-T5. Their milestone label 'parked' already carries the hold.",
+    "severity": "low"
+   }
+  ],
+  "keys": [
+   "F04-T5",
+   "F07-T5"
+  ]
+ }
+]

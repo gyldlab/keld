@@ -1,0 +1,191 @@
+{
+ "residual": [
+  {
+   "keys": [
+    "F03-T7",
+    "F04-T11",
+    "F03-T5",
+    "F04-T6",
+    "F04-T3",
+    "F04-T4"
+   ],
+   "problem": "One atom, two owners. F03-T7 ('@keld/electron endpoint value codec v0 (host-opaque) shared by the facade, the renderer compat script and the executeJavaScript envelope') and F04-T11 ('host-opaque endpoint value codec v0 in @keld/electron with shared golden vectors') both implement the closed F03-D4 resolution, both are first-proof, both claim to be 'the only encoder/decoder', both carry the Function/Promise/Symbol throw ACs and the Map/Set typed-error ACs, and both claim the arch 02 \u00a75 'opaque to the host' amendment (F03-T7 AC7 vs F04-T6 item (c)). F04's own unapplied note says 'F03 should point at F04-T11'; F03 instead minted a duplicate instead of taking the edge.",
+   "fix": "Delete F03-T7. Set F03-T5.blocked_by += F04-T11 (and keep F04-T6 as the single arch 02 \u00a75 amendment owner). Move the one F03-only AC (executeJavaScript envelope encoded by the codec) into F03-T5. Remove 'and the executeJavaScript envelope' from nowhere else; F04-T11 already states 'later the executeJavaScript envelope'.",
+   "severity": "high"
+  },
+  {
+   "keys": [
+    "X01-T1",
+    "X01-T2",
+    "X01-T5",
+    "X06-D7"
+   ],
+   "problem": "blocked_by names a closed decision. X06-D7 (#517) is CLOSED on GitHub (gh, fetched 2026-10-07) and carries an adopted resolution in adopted_decisions.json; repair rule 4 forbids a closed decision as a blocker. The three X01 tickets are the only ones that carry it.",
+   "fix": "Remove X06-D7 from X01-T1, X01-T2 and X01-T5 blocked_by_keys and consume its resolution as text in linear_owner (claim route), exactly as the other 13 units did for closed keys.",
+   "severity": "medium"
+  },
+  {
+   "keys": [
+    "X06-D7",
+    "F01-T1",
+    "F02-T1",
+    "F02-T6",
+    "F03-T1",
+    "F04-T1",
+    "F04-T6",
+    "F05-T1",
+    "F06-T1",
+    "F07-T4",
+    "F09-T3",
+    "X03-T3",
+    "X02-T1",
+    "X02-T5",
+    "F05-T6",
+    "F05-T8"
+   ],
+   "problem": "The adopted X06-D7 text and the unit repairs disagree on what a missing Linear owner means, and that disagreement decides the first-proof frontier. adopted_decisions.json says: 'otherwise the GitHub issue is the tracker of record ... and no Linear issue is created' (= #517 option D). #517's own body recommends option C ('Owner-less slices wait') and states D 'changes the claim protocol in docs/agents/workflow.md' and needs the .agents/instructions.md change protocol. Every unit applied C: ~16 conformance/spec tickets are held at needs-info / needs-owner / ready-for-human solely for 'no live KEL owner', and several unapplied reasons (F01-T1, X02-T1) cite an 'X06-D6' rule that X06-D7 supersedes. If the adopted D text is binding, those ready_states and reasons are stale and the whole first-proof conformance layer is takeable now; if C is binding, adopted_decisions.json misstates the decision and the workflow.md gate still blocks every one of them with no resolution path (critic MAP invariant finding reappears unresolved).",
+   "fix": "Orchestrator (single writer) resolves the contradiction in one place: either (a) correct adopted_decisions.json X06-D7 to option C and record the owner's A/B archive action as the blocker with its first observable (a created KELD issue), or (b) keep D and add the workflow.md claim-protocol change as a named predecessor ticket under .agents/instructions.md, then relabel the listed conformance/spec tickets ready-for-agent with 'GitHub #<n> is the tracker of record; link on KEL-127'. Until then every 'needs-owner' ticket must name #517 as its blocker, not X06-D6.",
+   "severity": "high"
+  },
+  {
+   "keys": [
+    "F04-T1",
+    "X02-T4",
+    "X02-T5",
+    "X01-T1",
+    "X01-T3",
+    "X01-T4",
+    "X01-A5"
+   ],
+   "problem": "Needed first-proof slices gated on a next-milestone spec. F04-T1 (first-proof conformance, root of the entire F04 chain and of X02-T6), X02-T4 and X02-T5 (first-proof) are blocked by X01-T1, which is milestone next, needs-info, and itself gated on the open X01-A5 nondeterminism prototype. What they actually consume is X01-T3 (pin rule, red-until-implemented rule, artifact digest meaning: first-proof, ready-for-agent) and X01-T4 (the shared manifest helpers: first-proof). F04-T1 AC3 says 'the single Electron oracle pin recorded by X01-T1' but X01-T3 AC2 owns the pin rule; X02-T4's title says 'reused through the X01-T1 shared helpers' but X01-T3 AC6 names X01-T4 as the helper owner and X01's unapplied note says 'X01-T4 is named as an edge X02-T4 should take'.",
+   "fix": "Replace X01-T1 with X01-T3 (+ X01-T4 where helpers are consumed) in F04-T1, X02-T4 and X02-T5 blocked_by_keys; reword F04-T1 AC3 and the X02-T4 title to cite X01-T3/X01-T4. Leave F03-T6 and F08-T3 (next) on X01-T1 if they truly need the two-arm recorder, else same substitution.",
+   "severity": "high"
+  },
+  {
+   "keys": [
+    "F06-T2",
+    "F06-T4",
+    "F06-T5",
+    "X04-T1",
+    "F06-D3"
+   ],
+   "problem": "First-proof tickets blocked by a next-milestone, owner-less spec. F06-T2, F06-T4 and F06-T5 (all first-proof) list X04-T1 (milestone next, needs-info, no owner) as a blocker. For F06-T2/F06-T4 the only thing consumed is 'spelling recorded as an X04-T1 row' while the closed F06-D3 already fixes the dialog/menu literals, so the edge gates nothing. For F06-T5 the input is real ('the guard owner's ruling ... on whether these host-pushed facts are gated'), so the first proof needs a decision that lives in a next-milestone ticket.",
+   "fix": "Drop X04-T1 from F06-T2 and F06-T4 (closed F06-D3 determines the literals; X04-T1 records the row afterwards). For F06-T5 either relabel X04-T1 milestone first-proof (it is a spec consumed by a first-proof ticket) or move the single ungated-vs-app.system ruling into the F06-T5 spec with a permission-model gate and drop the edge.",
+   "severity": "medium"
+  },
+  {
+   "keys": [
+    "F06-T4",
+    "F06-T1",
+    "F01-T3",
+    "PANEL-D23"
+   ],
+   "problem": "First-proof ticket asserts an observable owned by a next-milestone ticket, contradicting the unapplied reason that keeps it next. F06-T4 (first-proof) AC5: 'role quit produces the same host quit request as app.quit(), and before-quit is observed by the app'; F06-T1 (first-proof) has a 'close/quit routing' cell. F01-T3 (next, blocked by open PANEL-D23) owns quit and states that host/OS-initiated sources (menu role quit is one: drawio electron.js:2042, verified) need the host\u2192app quit-requested path. The F01 unapplied reason for F01-T3 says 'the first proof does not exercise quit' and 'Cmd+Q with a dirty window: not scored, unknown' - but F06-T4 scores menu-role quit \u2192 before-quit in the first proof with no edge to F01-T3.",
+   "fix": "Either (a) remove the before-quit half from F06-T4 AC5 and the quit-routing half from the F06-T1 cell, recording them as expected `unknown` cells naming F01-T3, and have F06-T4's role quit raise the same host quit request as app.quit() only; or (b) pull the 'host-initiated quit enters the veto path' slice of F01-T3 into first-proof with edge F06-T4 \u2190 F01-T3. The F01 unapplied reason must then be rewritten to match whichever is chosen.",
+   "severity": "medium"
+  },
+  {
+   "keys": [
+    "F06-T7",
+    "F02-T11",
+    "F06-T14",
+    "PANEL-P1",
+    "F04-T3",
+    "X02-T6"
+   ],
+   "problem": "Coverage gap with zero owners after repair: the 'blocking host CALL from a Bun role' transport (worker-owned single-link transport that PANEL-P1 selects) has no implementation ticket. F06 unapplied: 'Creating it belongs to the X05/F04 repair'; F04 unapplied: 'belongs to the PANEL-P1 outcome and the F06/transport owner'; X02 unapplied: 'belongs to the PANEL-P1 follow-on spec (owner unconfirmed)'. F06-T7 (first-proof, 'a typed throw is not an acceptable interim') consumes it directly, as do F02-T11 and F06-T14. The X05 unit text was not in my input, so whether X05 minted it is UNKNOWN; none of the thirteen units I can read did.",
+   "fix": "Mint one first-proof ticket (recommended X05-T3 or F04-T18): 'feat(kipc): worker-owned single-link blocking CALL transport per the PANEL-P1 arm selected' with blocked_by [PANEL-P1], review gates wire protocol + public API, owner candidate KEL-80/KEL-97 per the critic. Add it to blocked_by of F06-T7, F02-T11 and F06-T14, and to X02-T6 (close-with-unsaved-prompt cell).",
+   "severity": "high"
+  },
+  {
+   "keys": [
+    "X02-T6",
+    "F02-T4",
+    "F04-T12",
+    "F05-T7",
+    "F06-T7",
+    "F06-T8",
+    "X03-T4",
+    "X03-T7",
+    "X01-T4"
+   ],
+   "problem": "The scoring run's gate set is incomplete: eight first-proof tickets that the draw.io activation or the four steps require are not upstream of X02-T6 (computed transitive closure). F02-T4 (draw.io's webPreferences set must be accepted or no window is created), F04-T12 (open/save payloads above 4096 bytes - the save step), F05-T7 (its AC7 is the only ticket asserting draw.io's whenReady completes past the webRequest calls), F06-T7 (showMessageBoxSync on the close path when PANEL-P1 arm B passes), F06-T8 (draw.io's ES module cannot link without the eight bindings), X03-T4 (process.* facts before the entry evaluates), X03-T7 (every record must carry authority_profile legacy_sandbox_off, which only X03-T7 produces), X01-T4 (the manifest validator the corpus runs under).",
+   "fix": "Add F02-T4, F04-T12, F05-T7, F06-T7, F06-T8, X03-T4, X03-T7 and X01-T4 to X02-T6.blocked_by_keys (F06-T7 conditionally: 'required when PANEL-P1 arm B passes, otherwise the declared one-edit patch path'). Also rename the 'X02-T4 consumes ...' notes in F01/F02/F03/F05/F06/F07/F09/X01 to X02-T6, which is now the flipping ticket.",
+   "severity": "high"
+  },
+  {
+   "keys": [
+    "F01-T4",
+    "X03-T4",
+    "X03-T1",
+    "X03-T3"
+   ],
+   "problem": "Overlapping owners for the process.* facts. F01-T4's title and AC5 own 'process.resourcesPath/defaultApp/argv' and assert 'process.defaultApp is true and process.argv from index 2 equals the user arguments'; X03-T4 owns '(argv, defaultApp) as one atom, type/versions/resourcesPath' and asserts the same observable (AC3). F01-T4 also names X03-T1 as the process.* consumer, but X03 moved that work to X03-T4. Two tickets assert one observable; F01-T1 cells and X03-T3 entry (c) would both cover it.",
+   "fix": "Narrow F01-T4 to payload minting/delivery and the app.* getters: drop process.* from its title and delete AC5; keep X03-T4 \u2190 F01-T4 as the sole process.* owner and change F01-T4's consumer note from X03-T1 to X03-T4. Keep the (argv, defaultApp) cell only in X03-T3.",
+   "severity": "medium"
+  },
+  {
+   "keys": [
+    "F01-T4",
+    "X02-T1",
+    "X02-T3",
+    "F09-T1",
+    "PANEL-D14"
+   ],
+   "problem": "The declared role environment (DRAWIO_DISABLE_UPDATE=true) has contradictory owners. F01-T4 AC7 and X02-T1/X02-T3 say it is 'an F01-T4 payload field'; F09's unapplied reason says 'the variable is an explicit role-environment key delivered through KEL-75's RoleConfig, not an F01-T4 boot fact'. The KEL-75 spec (docs/specs/kel75-principalized-bun-child-roles.md:138) says 'KELD_APP_LINK remains the sole child bootstrap variable', and its \u00a7(199) forbids capability exceptions arising from 'an environment value'; no live schema carries a declared role environment, so whichever ticket owns it is making an unowned KEL-75/KEL-96 schema change that neither ticket's review gates name as such.",
+   "fix": "Pick one owner: F01-T4 (session-facts payload under KEL-75 spawn contract) adds a 'declared role environment' field as an explicit KEL-75 schema amendment with a permission-model gate and the AC that KELD_* names are rejected; X02-T1's key\u2192owner row and F09's reason then both cite F01-T4. Delete the contrary sentence from F09's unapplied reason.",
+   "severity": "medium"
+  },
+  {
+   "keys": [
+    "X02-T3",
+    "X02-T1",
+    "X03-T5",
+    "X03-T7"
+   ],
+   "problem": "X02-T3 pre-decides a key location that X03-T5 is still deciding, with no edge. X02-T3 hand-authors 'keld.config.ts: ... the explicit legacy profile declaration (KEL-78 key)' while X03-T5 (first-proof, ready-for-agent) names the single owner question 'keld.permissions.jsonc or the Keld app config' and recommends keld.permissions.jsonc. X02-T1's key\u2192owner table maps the key to the parent issue 'KEL-78 (it does not exist yet)' rather than to the task artifact X03-T5/X03-T7, repeating the parent-issue-as-artifact defect the critic flagged.",
+   "fix": "X02-T1 and X02-T3 blocked_by += X03-T5; X02-T3 text: 'the profile key in the file X03-T5 selects'; X02-T1 key\u2192owner row for profile \u2192 X03-T5 (spec) / X03-T7 (implementation).",
+   "severity": "medium"
+  },
+  {
+   "keys": [
+    "F06-T3",
+    "F06-T8",
+    "X06-D2"
+   ],
+   "problem": "Unapplied reason is under-evidenced. F06 rejects X06-D2's first-proof pull of shell.openExternal because 'None of draw.io's three openExternal sites (two Help-menu items, the window-open handler) is on ... the four steps (FACT, re-read)'. The corpus has a fourth site: the rendererReq multiplexer action 'openExternal' (drawio-desktop src/main/electron.js:4515-4516 \u2192 openExternal() at :4350), reachable from the web app over IPC during any step. Whether the four-step workflow triggers it is UNKNOWN (PANEL-P3 falsifier), not FACT.",
+   "fix": "Correct the reason to four sites and label the workflow reach UNKNOWN pending PANEL-P3; keep F06-T3 at next but record in F06-T8 that the 'openExternal' rendererReq action must reject with the typed unsupported error (not hang) until F06-T3 lands, and add that to X02-T6's never-reached list.",
+   "severity": "low"
+  },
+  {
+   "keys": [
+    "F07-T2",
+    "X02-T6"
+   ],
+   "problem": "First-proof task that the four-step workflow does not need in its stated size: F07-T2 publishes 113 \u2718 scoreboard rows for webviewTag members and a '<webview> stays an undefined element' probe. The only first-proof need is that draw.io's web-contents-created handler can register will-attach-webview without throwing, which F03-T2 AC7 already covers for the sibling listeners. F07-T2 is also not upstream of X02-T6, confirming the proof does not consume it.",
+   "fix": "Move the registration-does-not-throw AC into F03-T2 (add will-attach-webview to its registration-safe list) and relabel F07-T2 milestone next.",
+   "severity": "low"
+  },
+  {
+   "keys": [
+    "X05-T1",
+    "X05-T2",
+    "F07-T1",
+    "F02-T2",
+    "F04-T3",
+    "F06-T2",
+    "F06-T4"
+   ],
+   "problem": "Unverifiable gates: the repaired X05 unit was not in my input (plan text truncated after X04). X05-T2 gates five first-proof tickets and X05-T1 gates F07-T1; their repaired milestone and ready_state are UNKNOWN. In the published state X05-T1 was ready-for-agent (a task that writes keld-benches, flagged by the critic as needing a hold) and X05-T2 was needs-spec with no milestone; if either is not first-proof the milestone mismatch set above grows.",
+   "fix": "Orchestrator re-runs this check with the X05 unit included; minimum requirement: X05-T2 milestone first-proof, and X05-T1 either first-proof or removed from F07-T1 (a diagnostic metric id can be allocated inside F07-T1).",
+   "severity": "medium"
+  }
+ ],
+ "verdict": "defects remain",
+ "edge_cycles": [],
+ "unresolved_keys": [
+  "X06-D7 (used as blocker by X01-T1, X01-T2, X01-T5 but CLOSED on GitHub #517)",
+  "X05-T1 (repaired state not in input; gates F07-T1)",
+  "X05-T2 (repaired state not in input; gates F02-T2, F04-T3, F06-T2, F06-T4, F06-T12, F08-T1, F08-T4, F08-T7, F08-T8, F09-T5, X04-T2)"
+ ]
+}
