@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::error::hex_digest;
+use crate::error::{hex_digest, is_lowercase_hex};
 use crate::{
     ArtifactIdentity, Channel, DirectInstallationIdentity, InstallOwner, InstallProvenance,
     PrincipalModel, SigningKeyId, UpdateError,
@@ -763,10 +763,7 @@ fn artifact(wire: WireArtifact) -> Result<ArtifactIdentity, UpdateError> {
 }
 
 fn digest(text: &str) -> Result<[u8; 32], UpdateError> {
-    if text
-        .bytes()
-        .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
-    {
+    if !is_lowercase_hex(text) {
         return Err(invalid("digest must use lowercase hexadecimal"));
     }
     crate::manifest::parse_digest("local digest", text)
@@ -776,11 +773,7 @@ fn digest(text: &str) -> Result<[u8; 32], UpdateError> {
 /// Parses an `h16`: exactly 16 lowercase hexadecimal digits of an unsigned 64-bit value.
 fn h16(text: &str) -> Result<u64, UpdateError> {
     let malformed = || invalid("value must be exactly 16 lowercase hexadecimal digits");
-    if text.len() != 16
-        || text
-            .bytes()
-            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
-    {
+    if text.len() != 16 || !is_lowercase_hex(text) {
         return Err(malformed());
     }
     u64::from_str_radix(text, 16).map_err(|_| malformed())

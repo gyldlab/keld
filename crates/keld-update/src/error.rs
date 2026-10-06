@@ -499,3 +499,10 @@ pub(crate) fn hex_digest(digest: &[u8; 32]) -> String {
     }
     output
 }
+
+/// Whether every byte of `text` is a lowercase hexadecimal digit, the alphabet
+/// [`hex_digest`] writes. Callers check the length their format requires.
+pub(crate) fn is_lowercase_hex(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}

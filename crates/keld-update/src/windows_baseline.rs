@@ -763,12 +763,7 @@ pub(crate) fn random_leaf_name(prefix: &str) -> io::Result<String> {
 pub(crate) fn is_generated_leaf(name: &str, prefix: &str) -> bool {
     name.strip_prefix(prefix)
         .and_then(|rest| rest.strip_prefix('-'))
-        .is_some_and(|suffix| {
-            suffix.len() == 64
-                && suffix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
+        .is_some_and(|suffix| suffix.len() == 64 && crate::error::is_lowercase_hex(suffix))
 }
 
 fn seal_child(parent: &Dir, leaf: &str, directory: bool) -> io::Result<()> {
