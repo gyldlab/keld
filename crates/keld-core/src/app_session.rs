@@ -2426,13 +2426,24 @@ fn validate_installed_from_verified(
 }
 
 /// Reports a KEL-53 installed-package refusal under its own `KELD-UPDATE-*` code.
+///
+/// The refusal's text already opens with that code and closes with its own
+/// correction, so the host error carries the code once, as its prefix, and drops
+/// the closing period its own sentence break supplies.
 #[cfg(windows)]
 fn installed_package_error(source: &keld_update::UpdateError) -> HostAppError {
+    let code = source.code();
+    let rendered = source.to_string();
+    let message = rendered
+        .strip_prefix(code)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(&rendered);
+    let message = message.strip_suffix('.').unwrap_or(message);
     HostAppError::new(
-        source.code(),
+        code,
         "Windows installed package selection",
-        source.to_string(),
-        "Apply the keld-update correction above, then relaunch the installed host.",
+        message,
+        "Then relaunch the installed host.",
     )
 }
 
@@ -6282,6 +6293,31 @@ mod tests {
             unselected.to_string().contains("synthetic staged layout"),
             "{unselected}"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_package_refusal_carries_its_code_once() {
+        let error = installed_package_error(&keld_update::UpdateError::ExecutableBinding {
+            step: "locator",
+            detail: "synthetic staged layout".to_owned(),
+        });
+        let rendered = error.to_string();
+        println!("KELD_KEL254_INSTALLED_PACKAGE_REFUSAL {rendered}");
+        // The resource snapshot reads process-wide counters other tests advance.
+        let (message, _resources) = rendered
+            .split_once(" [startup-resource-attempts ")
+            .expect("a host error ends with its startup-resource snapshot");
+        assert_eq!(
+            message,
+            "KELD-UPDATE-018: no-flag host failed during Windows installed package selection \
+             — installed executable locator refused (synthetic staged layout). Launch \
+             keld-host.exe from its installation's selected version tree; repair or reinstall \
+             through the trusted installer if the layout is damaged. Then relaunch the \
+             installed host."
+        );
+        assert_eq!(rendered.matches("KELD-UPDATE-").count(), 1, "{rendered}");
+        assert!(!rendered.contains(".."), "{rendered}");
     }
 
     #[test]
