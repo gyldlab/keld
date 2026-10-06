@@ -1,12 +1,8 @@
-## Electron compatibility program — public wayfinder map opened on GitHub (2026-10-06)
+# Linear bridge comments for map gyldlab/keld#391
 
-_PENDING — not posted. The Linear connector was unavailable in the session that produced this text. When posted through the Linear MCP connector, the posting account is the connector's identity (Amisha Ramani), acting on @0monish's explicit delegation. Planning only; no implementation or status change is claimed. Intended targets: KEL-127 (program sequencing owner) and KEL-237 (active compatibility-evidence owner)._
+POSTED 2026-10-06 (16:54 UTC) through the Linear MCP connector; author identity on both records is the connector account (Amisha Ramani, 49ccfebb), acting on @0monish's delegation. No issue status, assignee or relation was changed.
 
-The deferred Electron migration effort (GitHub #319) now has its own public Wayfinder map: https://github.com/gyldlab/keld/issues/391.
-
-- 14 epics covering all 180 Electron v44.4.5 entities (1,941 direct members) by capability family, each with a maturity ladder, the Linear owners it consumes and a never list.
-- 51 tracer-bullet tickets (conformance entries first; 18 `ready-for-agent`, 33 `needs-spec`).
-- 52 decision tickets: 18 resolved with evidence and closed, 34 open with decision packets.
-- Research branch `research/electron-compat-map` (never merged): per-member compatibility matrix, sync-semantics census, probes, research notes, panel rounds, the execution doctrine.
-
-Decisions that touch Linear-owned surfaces consume task-level artifacts, never parent completion: KEL-75/76/77/78/79/80/53/74/102/135/139–144. The workspace is at its issue cap, so GitHub holds the planning issues; please bridge or object here. First gating experiments: the Bun kipc link-drain gate (worker-owned single-link transport), the close/quit veto oracle, and the draw.io boot/authority trace.
+| Linear issue | Comment id | Subject |
+|---|---|---|
+| KEL-127 | c11c3729-10ee-4c6e-9bc4-3d38d09d0a18 | Program-level announcement: map link, verified counts, sequencing consequences, three gating experiments (#418, #419, #420) |
+| KEL-237 | c13866bd-28e0-4558-840f-d552e2c1947d | What touches the lifecycle-corpus surface: reuse of the manifest schema (#493/#494), new app-corpus manifest (#500), missing product-corpus id owner, oracle pin drift (#468), first app conformance entries (#445) |

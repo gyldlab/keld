@@ -68,7 +68,20 @@ uses contextBridge + ipcRenderer.send/on/once, electron-store constructed at mod
 outside the disable guard, `disableBlinkFeatures` on every window, file:// loads + two session.webRequest listeners.
 Zettlr: 186 ipcRenderer.invoke, 49 webContents.send, 6 sendSync, protocol.handle('safe-file'), sandbox:false ×2, nodehun/chokidar.
 
+## Live Linear state — AVAILABLE in this session (read-only for you)
+Linear (team KELD) is connected. Load its tools with ToolSearch, query
+`select:mcp__claude_ai_Linear__get_issue,mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__list_comments,mcp__claude_ai_Linear__get_document,mcp__claude_ai_Linear__list_documents`,
+and treat it as a primary source for live owner state: status, assignee, relations/blockers (`get_issue` with `includeRelations: true`),
+claims and decisions recorded in comments, and documents (RFC/spec text that is not in the repo).
+- Doctrine rule 1 applies: before you name a Linear owner, call something blocked/unblocked, or say a spec/RFC text is missing,
+  READ the issue now. The owner list in this briefing is a snapshot, not current truth.
+- Label Linear-derived statements FACT with the issue id and "Linear, fetched 2026-10-06"; a status you did not fetch is an ASSUMPTION.
+- READS ONLY. Never create or update issues, comments, labels, relations or status in Linear: the orchestrator is the single
+  writer, the workspace is at its free issue cap, and connector writes post under the connector account's identity.
+- If a Linear call fails, record the exact failure, continue with the last recorded state, and label it as such.
+- Already posted by the orchestrator today (do not duplicate): bridge comments on KEL-127 and KEL-237 announcing map #391.
+
 ## Rules of engagement
-Do NOT write to the Keld repo, GitHub or Linear. Write only inside this scratchpad (prototypes/, notes/). Return only the
+Do NOT write to the Keld repo, GitHub or Linear (Linear and GitHub reads are allowed and expected). Write only inside this scratchpad (prototypes/, notes/). Return only the
 structured object asked for. Ticket text is behavioral and durable: name contracts/observables, never file paths or line numbers.
 Record a receipt (source + retrieved 2026-10-06 + exact claim) for every external semantic you rely on.
