@@ -18,5 +18,18 @@ keld-guard = { workspace = true }
 blake3 = { workspace = true }
 zstd = { workspace = true }
 
+[dev-dependencies]
+# KEL-19 container spec AC7: the synthetic writer output's SHA-256 equals one checked-in
+# golden digest on every CI OS. Owner decision: Linear KEL-19 comment `dbddd923`.
+# Rejected: hand-rolled SHA-256 (forbidden duplicate of a primitive), checked-in golden
+# bytes (would change AC7's text), a blake3 dev-dependency (would change AC7 and §8).
+# Workspace-pinned and already in Cargo.lock; no new crate.
+sha2 = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+# KEL-19 container spec §5: the AC10 anonymous-file and failed-read tests and the
+# real-host round trip. Already workspace-pinned and in Cargo.lock; no new crate.
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
