@@ -161,6 +161,17 @@ independent unsafe, privilege/security and wire review before implementation; §
 the new `crates/keld-updater-helper` crate and the owner of each call, §6 T4d orders the
 slices, and §8 records the gates.
 
+KEL-270 T4d wire-layout amendment (draft; independent wire review and owner approval
+pending, so no code may depend on it yet): it fixes the bytes that the T4d wire review
+owed before code. "Candidate connect-back" gains the locator function with its single
+owner, `keld-ipc` (*Locator*), and the `keld-attempt` record table with its transcript
+rules (*Messages*). Every value that earlier approved text left open is listed once,
+with its rationale, under *Proposals* there. §6 moves the locator into S4 and the
+bootstrap records into S11, and §8 records the new `keld-ipc` edge to the
+workspace-pinned `blake3` and the health-receipt digest that the candidate computes.
+The journal-v2 golden vectors are not part of it; the S3 pull request fixes them under
+that slice's wire review.
+
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
 `a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
@@ -1348,6 +1359,41 @@ ID and the minted attempt and health-channel IDs, in the dedicated
 function with its own purpose and nonce. The name conveys no authority, and the
 keeper's rendezvous locator is never a health endpoint.
 
+*Locator.* The name is `\\.\pipe\keld-attempt-` followed by the 32-byte BLAKE3 digest of
+`UTF8("keld.attempt-endpoint/v1\0") || purpose || installation_id || a || b`, rendered
+as 64 lowercase hexadecimal digits, each byte in digest order with its high nibble first
+(the landed lifecycle rendering, `bootstrap.rs:2104-2113`). `purpose` is one byte and
+every other input is exactly 32 bytes, so no input needs a length prefix. Purpose `1`
+(connect-back) takes `a` = attempt ID and `b` = health-channel ID. Purpose `2`
+(bootstrap) takes `a` = the bootstrap nonce and `b` = 32 zero bytes. The function
+refuses an all-zero installation ID, attempt ID, health-channel ID or nonce and any two
+equal inputs other than that zero `b`, as the landed lifecycle binding does
+(`bootstrap.rs:829-846`). `keld-ipc` alone owns the whole function (prefix, domain,
+purpose values, input order, hash, rendering and refusals), together with its
+`is_attempt_endpoint` predicate and the codec whose `BH1` purpose byte uses the same
+purpose values. It hashes only what its callers pass: `keld-update` keeps the
+installation-ID derivation and the sole minting of the attempt and health-channel IDs.
+The attempt server derives its name from the same IDs that its `AC1` carries, and the
+attempt client performs the locator check before it sends `AA1`, so no caller can skip
+it. The crates' `Cargo.toml` edges decide the owner. `keld-update` and `keld-ipc` have
+no normal edge in either direction; §5 keeps `keld-update`'s edges to `keld-ipc`
+dev-only, and a `keld-ipc -> keld-update` edge would pull the updater into every
+`keld-ipc` consumer. A digest in `keld-update` would therefore leave the prefix and the
+purpose values mirrored in `keld-ipc` and the check before `AA1` to every caller.
+`keld-core` cannot own it, because the helper's edge set excludes `keld-core` ("Helper
+launch and self-anchor"), and `keld-runtime` and `keld-pack` own no pipe namespace.
+Every caller already links `keld-ipc`: the host through `keld-core` and
+`keld-runtime`, and the helper through its §5 edge. The cost is one Windows-only
+`keld-ipc` edge to the workspace-pinned `blake3` (`=1.8.7`), which `keld-update` and
+`keld-pack` already lock (§8). The locator runs once per endpoint or claim, off the
+kipc hot path. Golden vectors, which the workspace-pinned `blake3` crate and an
+independent implementation reproduce: with installation ID `11`×32, attempt ID
+`22`×32 and health-channel ID `33`×32, purpose `1` gives
+`a56a565b56c571bd19b06b8e62845fa5a14c28fecd5611c94e4c90e8a1641ba3`; with installation
+ID `11`×32 and bootstrap nonce `44`×32, purpose `2` gives
+`879bfdd74649e498f349aafd7a7661d46bceddc4f2ddd0e6a78edde68cb3f555`; exchanging `a` and
+`b` in the first vector changes the digest.
+
 *Order.* `keld-update` first mints the identities without writing anything, through the
 mint-then-journal seam that splits `WindowsExtractionRoot::begin_activation` and
 `resume_unlaunched` (§8). The owner then creates and holds the endpoint and reads its
@@ -1494,10 +1540,111 @@ lifecycle records in `bootstrap.rs`), with the Windows pipe primitives in
   class: bootstrap read refused, application exit before Ready, or boot error), and the
   owner's `KELD-AK1` health result (accepted or rolled back).
 
-The records follow the lifecycle records' fixed-size, little-endian style; the T4d wire
-review fixes their byte layouts before code. Clients reject the other `\\.\pipe\keld-*`
-namespaces before connecting, which is the `keld-ipc` rule for a separate-version
-protocol; Architecture 02 points here.
+The records follow the lifecycle records' fixed-size, little-endian style, and the table
+fixes their bytes. Offsets are `start..end` byte ranges. As in the `LC1` record above, a
+magic is its 8 ASCII bytes and a PID is a little-endian `u32`. An ID, nonce or digest is
+a raw 32-byte value, matching the 32-byte IDs of the journal and of the installation
+binding above. A purpose, class or result byte is a closed set, like the `LC1` purpose
+and the closed classes of the lists above, and any other value refuses. Each record
+carries exactly the fields that its bootstrap, claim or health list above names, and a
+receipt carries the transcript that it confirms (*Transcript*). Fields keep the order of
+the `LC1` record (purpose, installation ID, attempt ID, channel ID, client nonce, server
+nonce, client PID, server PID; `bootstrap.rs:1471-1504`), and a field that `LC1` lacks
+comes last.
+
+| Record (sender) | Bytes | Layout |
+|---|---|---|
+| `KELD-AH1` (candidate) | 76 | `0..8` magic, `8..40` installation ID, `40..72` client nonce, `72..76` client PID |
+| `KELD-AC1` (owner) | 108 | `0..8` magic, `8..40` attempt ID, `40..72` health-channel ID, `72..104` server nonce, `104..108` server PID |
+| `KELD-AA1` (candidate), `KELD-AR1` (owner) | 176 | `0..8` magic, `8..40` installation ID, `40..72` attempt ID, `72..104` health-channel ID, `104..136` client nonce, `136..168` server nonce, `168..172` client PID, `172..176` server PID |
+| `KELD-AB1` (candidate) | 104 | `0..8` magic, `8..40` attempt ID, `40..72` health-channel ID, `72..104` health-receipt digest |
+| `KELD-AY1` (candidate) | 8 | `0..8` magic |
+| `KELD-AF1` (candidate) | 9 | `0..8` magic, `8` class: `1` bootstrap read refused, `2` application exit before Ready, `3` boot error |
+| `KELD-AK1` (owner) | 9 | `0..8` magic, `8` result: `1` accepted, `2` rolled back |
+| `KELD-BH1` (helper; S11) | 77 | `0..8` magic, `8` purpose `2`, `9..41` installation ID, `41..73` client nonce, `73..77` client PID |
+| `KELD-BQ1` (host), `KELD-BA1` (helper), `KELD-BR1` (host); S11 | 113 + locator | `0..8` magic, `8` purpose `2`, `9..41` installation ID, `41..73` client nonce, `73..105` server nonce, `105..109` client PID, `109..113` server PID, `113..` bounded source locator (encoding fixed by S11) |
+| `KELD-BO1` (helper; S11) | 9 | `0..8` magic, `8` closed outcome class (values fixed by S11) |
+
+*Transcript.* `AA1` acknowledges the whole transcript, the fields of `AH1` and `AC1`
+together. `AR1` is its same-context receipt, as `LR1` is for `LA1`: the two share one
+layout, differ only in magic, and each receiver compares the whole record with the one
+it expects (`bootstrap.rs:1506-1600`). That is what makes the exchange bind all three
+IDs, both nonces and both PIDs (*Acceptance*). The owner accepts `AH1` only when its
+installation ID is the owner's own and its client PID is the connected client's process
+ID. The claimant accepts `AC1` only when its server PID equals
+`GetNamedPipeServerProcessId` and the locator check passes. The owner accepts `AA1` only
+when it equals the record that the owner builds from the accepted `AH1` and its own
+`AC1`; it then consumes its one-shot and sends `AR1`, which the claimant requires
+exactly. The bootstrap differs only where its field lists do: `BQ1` repeats the binding
+of `BH1`, and `BA1` and `BR1` repeat `BQ1`. The host accepts `BH1` only when its client
+PID is the process ID of `hProcess` ("Machine-UAC bootstrap" item 2) and its
+installation ID is the host's own. The helper accepts `BQ1` only when its purpose,
+installation ID, client nonce and client PID equal those of its own `BH1`, and its
+server PID equals `GetNamedPipeServerProcessId`.
+
+*Nonces and purpose.* Each client and server nonce is 32 bytes drawn for one connection
+from the landed `keld-ipc` `SessionToken` generator (`token.rs:10`, `:49`), the reused
+nonce utility (criterion 17). The bootstrap nonce comes from the same generator once per
+bootstrap endpoint, is a locator input only, and appears in no record, because no field
+list names it. Only the bootstrap records carry a purpose byte, because only the `BH1`
+field list names one. The claim records carry none: their magic separates them from the
+bootstrap records, and the locator purpose separates their endpoint names.
+
+*Health records.* `AB1` carries the fields of the §4 health receipt: the attempt, the
+health channel and the artifact. Criterion 8 and Architecture 06 require the receipt to
+repeat the attempt ID and the full artifact identity. The last field of `AB1` is the §4
+health-receipt digest (`records.rs:265-280`) over the attempt ID, the health-channel ID
+and the candidate artifact identity that the candidate matched to its own version tree
+(*After acceptance*). The owner recomputes that digest from the journal, refuses a
+mismatch, and on exact health `HealthAccepted` records the same value. `AY1`, `AF1` and
+`AK1` carry only what their field lists name and repeat no ID: they travel on the
+connection whose acceptance consumed the one-shot before `AR1`, and its handles are
+non-inheritable and in no role's handle list (*Creation*, *Claim*). A reader reads the
+magic first, refuses a magic that is not admitted at that position, and then reads the
+rest of that record under its deadline. The owner reads `AB1`, or `AF1` with class `1`
+or `3`; after `AB1` it reads `AY1`, or `AF1` with class `2` or `3`. The candidate sends
+nothing after `AY1` or `AF1` and reads exactly one `AK1`. A malformed, truncated,
+out-of-position or mismatched record ends the exchange. Before `AR1` it refuses the
+claimant (*Refusal*); after `AR1` it cannot commit health (criterion 8).
+
+*Bootstrap records.* `BH1` to `BO1` land with S11, not S4 (§6). S6 and every
+`PerUserDirect` cell use none of them. Before S11, S1's stop rule can still change the
+bootstrap. Two of their fields also lack an approved definition. KEL-53 ("Machine-UAC
+bootstrap" item 5) and KEL-254 criterion 14 name the bounded source lookup locator but
+fix no grammar, bound or user-side staging-root layout. The `BO1` field list names only
+"a closed outcome class". S11's wire review fixes the source-locator encoding, which
+also fixes the size of `BQ1`, `BA1` and `BR1`, and keeps these records fixed-size. The
+same review fixes the `BO1` class values.
+
+*Proposals.* The approved field lists above leave the following values open. Each is
+this amendment's proposal for the wire review, with its rationale:
+- the locator's BLAKE3 hash and NUL-terminated `keld.<name>/v1` domain, the style of the
+  landed domain-separated derivations (`records.rs:19-22`, `:239-280`; `keld-pack`
+  `expected_identity.rs:16`); its purposes `1` and `2`, numbered from `1` as the landed
+  lifecycle purposes are (`bootstrap.rs:815-820`); the zero `b` of purpose `2`, which
+  keeps one input shape and one encoder; and the refusals of the landed lifecycle
+  binding;
+- the locator's single owner, `keld-ipc`, and its Windows-only `blake3` edge, for the
+  `Cargo.toml` facts under *Locator*;
+- the 32-byte nonce width, that of `SessionToken` and of the `LC1` nonces;
+- the `LC1` field order, and `AR1` and `BR1` as copies of the transcript that they
+  confirm, as `LR1` copies `LA1`;
+- the class and result values, numbered from `1` in their field-list order so that a
+  zeroed byte never decodes, and the one `BH1` purpose value `2`, the bootstrap locator
+  purpose: the recovery role uses no bootstrap, so one value suffices, and one set of
+  purpose values serves the locator and `BH1`;
+- the health-receipt digest as `AB1`'s artifact field, because the canonical artifact
+  identity varies in length and the digest commits to all of it at a fixed size through
+  the derivation that `HealthAccepted` already records;
+- the S11 placement of the bootstrap records (*Bootstrap records*).
+
+Rejected: repeating the `AH1` fields in `AC1`, and the attempt and health-channel IDs in
+`AY1`, `AF1` and `AK1`, as the lifecycle challenge and receipts do
+(`bootstrap.rs:1471-1504`; `keld-runtime` `windows_job.rs:2521-2532`, `:2699-2709`). No
+field list names them, and the exchange binds without them.
+
+Clients reject the other `\\.\pipe\keld-*` namespaces before connecting, which is the
+`keld-ipc` rule for a separate-version protocol; Architecture 02 points here.
 
 ### Trust, package and channel ownership
 
@@ -1919,7 +2066,8 @@ Implement in:
     listed. The pipe impersonation is used only to read the claim writer's token at
     identification level; it never pins a source. The descriptor code uses
     `Win32_Security_Authorization`, which the workspace pin already enables. The new
-    safe module `src/attempt.rs` holds the `keld-attempt` codec, server and client;
+    safe module `src/attempt.rs` holds the `keld-attempt` codec, server and client and
+    the endpoint locator of "Candidate connect-back";
   - `keld-runtime`, `src/windows_job.rs` (its KEL-270 whitelist): `CreateProcessWithTokenW`
     with `CREATE_SUSPENDED`; `AssignProcessToJobObject` on that suspended process (a
     listed call with a new scope); `CompareObjectHandles`; clearing
@@ -2015,8 +2163,11 @@ Must not touch in Slice A:
     `windows_baseline/activate.rs`). Gates: wire, public API. Evidence: v2 golden
     vectors, v1 decoding that admits no claim, unchanged crash cuts.
   - S4, the `keld-attempt` codec, server and client in `keld-ipc` (`attempt.rs`,
-    `windows_named_pipe.rs`). Gates: wire, unsafe (`keld-ipc` amendment), public API.
-    Evidence: codec goldens and fuzzing, cross-namespace negatives, descriptor readback.
+    `windows_named_pipe.rs`) for the claim and health records, with the attempt-endpoint
+    locator; the bootstrap records land with S11 (*Messages*). Gates: wire, unsafe
+    (`keld-ipc` amendment), public API, dependency (the `keld-ipc` `blake3` edge).
+    Evidence: codec goldens and fuzzing, the locator golden vectors, cross-namespace
+    negatives, descriptor readback.
   - S5, the `CompareObjectHandles` binding in `keld-runtime` (`windows_job.rs`),
     reusing the generalized LPAC suspended-child path. Gates: unsafe (`keld-runtime`
     amendment), public API (breaking rename `WindowsLpacChild`→`WindowsSuspendedChild`;
@@ -2024,8 +2175,10 @@ Must not touch in Slice A:
     process-object cells of the claimant-binding row at the binding; pipe, token,
     deadline and one-shot cells close in S6/S11.
   - S6, `PerUserDirect` connect-back end to end (`keld-update`, `keld-core` as the host
-    coordinator owner, `keld-runtime`, `keld-ipc`). Gates: permission model. Evidence:
-    the `PerUserDirect` cells of the connect-back, claimant-binding and squatting rows.
+    coordinator owner, `keld-runtime`, `keld-ipc`). Gates: permission model; public API
+    for the `keld-update` health-receipt digest that the candidate computes for `AB1`
+    ("Candidate connect-back"). Evidence: the `PerUserDirect` cells of the connect-back,
+    claimant-binding and squatting rows.
   - S7, `keld-guard` token, logon-session and token-impersonation wrappers
     (`uac_token.rs`, `initiating_token.rs`, `logon_session.rs`). Gates: unsafe
     (`keld-guard` amendment), dependency (`Win32_Security_Authentication_Identity`).
@@ -2055,7 +2208,9 @@ Must not touch in Slice A:
     crash-cut and recovery-required rows.
   - S11, the activation role with the D2 bootstrap (`keld-updater-helper`, the host
     side in `keld-core`, Machine-UAC admission in `load_windows_activation_write_snapshot`
-    reusing `require_windows_machine_uac_owner_token`, `keld-ipc`). Gates: all five.
+    reusing `require_windows_machine_uac_owner_token`, `keld-ipc` with the bootstrap
+    records `BH1` to `BO1`, whose source-locator encoding and `BO1` classes its wire
+    review fixes under *Messages*). Gates: all five.
     Evidence: the bootstrap rows under the UAC operator evidence protocol, including
     the second ordinary account and alternate-administrator rows. It starts only after
     S1 showed that the helper can open the host process and its token after
@@ -2142,28 +2297,32 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   executable-located entry point's closed
   image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:21`);
   the helper role entry points; the `keld-guard` Authenticode owner moved
-  under D4; the `keld-ipc` `attempt` module; and the new safe wrappers that
-  `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate, with the
-  breaking rename of `keld-runtime`'s `WindowsLpacChild` to `WindowsSuspendedChild`
-  (S5);
+  under D4; the `keld-ipc` `attempt` module with its endpoint locator; the `keld-update`
+  health-receipt digest that the candidate computes for `AB1`; and the new safe
+  wrappers that `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate,
+  with the breaking rename of `keld-runtime`'s `WindowsLpacChild` to
+  `WindowsSuspendedChild` (S5);
 - permission model: yes — the install-mode protection profiles, UAC elevation and
   hostile-role denial decide who can mutate executable state, though no app grant is
   added. T4d adds the elevated helper principal, its recovery-only role and the
   initiating-user-only connect-back DACL;
 - dependency addition: none in Slice A; yes for T4d — the new workspace member
   `crates/keld-updater-helper` with internal edges only to `keld-update`, `keld-ipc`,
-  `keld-runtime` and `keld-guard`, and the `windows-sys` features `Win32_UI_Shell` and
+  `keld-runtime` and `keld-guard`; the `windows-sys` features `Win32_UI_Shell` and
   `Win32_System_Com` (`keld-runtime`) and `Win32_Security_Authentication_Identity`
-  (`keld-guard`). `Win32_Security_Authorization`, which the descriptor code uses, and the
-  WinTrust and Cryptography features that the D4 move carries into `keld-guard` are
-  already in the workspace `windows-sys` pin and are not new features. No third-party
-  crate is added;
+  (`keld-guard`); and a Windows-only `keld-ipc` edge to the workspace-pinned `blake3`
+  (`=1.8.7`) for the attempt-endpoint locator, a crate that `keld-update` and
+  `keld-pack` already lock. `Win32_Security_Authorization`, which the descriptor code
+  uses, and the WinTrust and Cryptography features that the D4 move carries into
+  `keld-guard` are already in the workspace `windows-sys` pin and are not new features.
+  No third-party crate is added to the workspace;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
   and canonical package content are narrowed and require exact independent review; any
   new host/coordinator authentication channel remains separately owned and gated. T4d is
   wire-gated: the journal schema revision `keld.activation-journal/v2`
   (`initiating_logon`, `attempt_owner`, with the canonical encoding in §4); the
-  `keld-attempt-<64 hex>` subprotocol namespace with its closed message set (`BH1`,
+  `keld-attempt-<64 hex>` subprotocol namespace with its locator function, record
+  layouts and closed message set (`BH1`,
   `BQ1`, `BA1`, `BR1`, `BO1`, `AH1`, `AC1`, `AA1`, `AR1`, `AB1`, `AY1`, `AF1`, `AK1`,
   owned by "Candidate connect-back" and pointed to from Architecture 02); and the
   canonical package content, which now requires `keld-updater-helper.exe`.
