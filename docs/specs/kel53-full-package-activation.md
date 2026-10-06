@@ -1709,7 +1709,7 @@ amendment's proposal for the wire review, with its rationale:
 (proposed; pending owner approval in the KEL-270 T4d wire-layout decision) Rejected:
 repeating the `AH1` fields in `AC1`, and the attempt and health-channel IDs in `AY1`,
 `AF1` and `AK1`, as the lifecycle challenge and receipts do (`bootstrap.rs:1471-1504`;
-`keld-runtime` `windows_job.rs:2521-2532`, `:2699-2709`). No field list names them, and
+`keld-runtime` `windows_job.rs:2780-2791`, `:2958-2968`). No field list names them, and
 the exchange binds without them.
 
 Clients reject the other `\\.\pipe\keld-*` namespaces before connecting, which is the
