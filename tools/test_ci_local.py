@@ -439,6 +439,8 @@ class ProductionConsumerTests(unittest.TestCase):
             "docs/architecture/03-security.md": ("input_rust", "local_llms-check", "local_test"),
             "docs/engineering/keld-error-codes.md": ("input_rust", "local_llms-check"),
             "crates/keld-compat/fixtures/lifecycle-corpus/report.md": ("input_rust", "local_test"),
+            "docs/specs/kel53-full-package-activation.md": (
+                "input_rust", "input_package_keld-update", "local_test"),
             "crates/keld-host/tests/fixtures/t1b_harness.ts": ("input_ts", "local_typescript"),
             "llms-full.txt": ("input_rust", "local_llms-check"),
             "docs/engineering/product-status.tsv": ("local_product-status-check",),

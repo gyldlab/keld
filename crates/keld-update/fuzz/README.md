@@ -16,7 +16,8 @@ native Windows; this target does not claim those APIs ran under Linux.
 The decoder enforces the local-record size bound, canonical serialization, strict
 schema and complete journal invariants. Fuzz success proves neither native storage
 protection nor safe process-family recovery; those remain separate Windows gates.
-Its retained corpus includes one canonical record for each transaction phase so
+Its retained corpus includes one canonical v1 and one canonical v2 record for each
+transaction phase (the v2 seeds are the checked-in golden vectors), so
 mutations begin from every valid phase-specific shape.
 
 `host_identity` feeds raw bytes to `keld_pack::read_host_identity_bytes`, the

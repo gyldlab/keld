@@ -83,7 +83,10 @@ amendment. Its exact content was approved by owner approval comment
 `659a40449d06c10aba04e6c3e8f3f7e7dc2277e7547fe65389cc3c9b153311f3`. The review
 resolutions made after the split (claimant binding, endpoint squatting, the typed
 `MachineRecoveryRequired` effect, the helper crate and its FFI owners, and the review
-batches of rounds 1 to 3) are part of that approved content. It optimizes for least privilege and the
+batches of rounds 1 to 3) are part of that approved content. The SHA-256 above binds the
+PR #384 head only: a later reviewed PR may amend this file, and every such amendment
+cites its authority (an owner decision, a Linear coordination record or the review that
+required it) in the amended text itself. It optimizes for least privilege and the
 smallest privileged surface:
 1. Candidate launch uses the exact initiating-process token, which the helper takes from
    the verified host process object ("Machine-UAC bootstrap").
@@ -114,7 +117,7 @@ paragraph:
   `retirement_due` change, all listed in §5, and leaves the ordinary intent unchanged.
   Rationale: the landed step order advances the floor before
   `AwaitingHealth` (`AdvanceFloor`, `SelectCandidate`, `EnterAwaitingHealth`:
-  `windows_baseline/activate.rs:609-629`, `activation.rs:280-297`), so the first D1
+  `windows_baseline/activate.rs:745-765`, `activation.rs:280-297`), so the first D1
   route through `resume_unlaunched` and `roll_back` always consumed the signed version,
   even when the floor had not moved, and left a crash window from `AwaitingHealth`
   through `RollbackPending` until journal removal that looks launched. Rejected: letting
@@ -343,7 +346,8 @@ open of the verified host process instead.
    not the token's
    ([CreateProcessWithTokenW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw),
    `ms.date` 2018-12-05). Every launch-readiness proof that needs no created process (the
-   token facts, the session, `SeImpersonatePrivilege`, failed reversion, a zero logon
+   token facts, the session, `SeImpersonatePrivilege`, failed reversion, a zero
+   `AuthenticationId` (owner decision 2026-10-06 (zero LUID refused)) or a zero logon
    time of the initiating session, and desktop and profile availability) runs before the
    mint-then-journal seam writes `PublishPending`,
    so its refusal is `ProtectedStateUnchanged`. Only process creation and the
@@ -755,7 +759,7 @@ version and report the missing predecessor or owning update mechanism.
 **Target boundary:** `keld-update` remains the common transaction and recovery owner,
 and it alone mints attempt, health and lifecycle identities, inside the lease-holding
 attempt owner; config, roles, environment and the feed never supply them (landed
-`activate.rs:322`, `:558`). That owner creates the connect-back endpoint and the
+`activate.rs:480`, `:697`). That owner creates the connect-back endpoint and the
 candidate only connects back to it ("Candidate connect-back"). The
 mode-specific adapter obtains the one temporary write lease for that attempt: the
 ordinary user-owned updater for `PerUserDirect`, an explicitly elevated signed helper
@@ -780,7 +784,10 @@ direct modes ship.
 
 ### Internal state and transition contract
 
-These internal shapes are not public Rust API or manifest wire:
+These internal shapes are not public Rust API or manifest wire, except the owner-fact
+value types `AttemptOwner` and `InitiatingLogon`: the attempt owner constructs them,
+with private fields, to call `WindowsMintedAttempt::journal`, so they are public API
+(§8; amended for the KEL-270 T4d S3 independent public-API review):
 
 ```rust
 struct ArtifactIdentity {
@@ -807,12 +814,20 @@ struct ActivationJournal {
     helper_image_blake3: [u8; 32],
     health_channel_id: [u8; 32],
     lifecycle_channel_id: [u8; 32],
-    // T4d schema revision `keld.activation-journal/v2` (wire-gated): both fields are
-    // required in every v2 record and phase. `Option` models only the decoding of a v1
-    // record, which has neither and therefore never admits a candidate claim.
-    initiating_logon: Option<InitiatingLogon>,
-    attempt_owner: Option<AttemptOwner>,
+    // T4d schema revision `keld.activation-journal/v2` (wire-gated): both owner facts
+    // are required in every v2 record and phase. One `Option` holds both, so a record
+    // with only one is unrepresentable. `None` models the decoding of a v1 record, which
+    // has neither and therefore never admits a candidate claim, and the in-memory
+    // identities the mint-then-journal seam minted before `WindowsMintedAttempt::journal`
+    // supplies both facts; that minted state is never encoded.
+    ownership: Option<AttemptOwnership>,
     phase: ActivationPhase,
+}
+
+/// The v2 owner facts of one attempt; the wire encodes them as two sibling objects.
+struct AttemptOwnership {
+    initiating_logon: InitiatingLogon,
+    attempt_owner: AttemptOwner,
 }
 
 /// The process that creates the connect-back endpoint and launches the candidate (§4
@@ -824,7 +839,7 @@ struct AttemptOwner {
 
 /// The initiating process token's logon session ("Machine-UAC owner-loss retirement").
 struct InitiatingLogon {
-    authentication_id: Luid, // `TokenStatistics.AuthenticationId`
+    authentication_id: Luid, // `TokenStatistics.AuthenticationId`; zero refuses launch
     logon_time: i64,         // `SECURITY_LOGON_SESSION_DATA.LogonTime`; zero refuses launch
 }
 
@@ -847,9 +862,54 @@ bytes). It adds `"initiating_logon": {"authentication_id": h16, "logon_time": h1
 `"attempt_owner": {"owner_process_id": n, "owner_creation_time": h16}`, where `h16` is a
 string of exactly 16 lowercase hexadecimal digits of an unsigned 64-bit value, and `n`
 is a JSON integer in `1..=4294967295`. `authentication_id` is the LUID as
-`(HighPart << 32) | LowPart`; `logon_time` and `owner_creation_time` are the FILETIME
-values, nonzero, and a negative `LogonTime` refuses. The wire review fixes golden
-vectors for these fields before code.
+`(HighPart << 32) | LowPart`, nonzero by owner decision 2026-10-06 (zero LUID refused)
+("Machine-UAC owner-loss retirement" fact 2); `logon_time` and `owner_creation_time`
+are the FILETIME values, nonzero, and a negative `LogonTime` refuses. The wire review
+fixes these golden vectors. The two objects follow `lifecycle_channel_id` and precede
+`phase`, in the order above, under schema `keld.activation-journal/v2`. The fixture's
+logon session has `HighPart` 1 and `LowPart` `0x0002a5f3`, its `LogonTime` is
+2026-10-06T08:00:00Z, and its owner is process 4242, created 42 seconds later. The exact
+accepted records, one per phase, are checked in as
+`crates/keld-update/src/records/golden/journal-v2-<phase>.json`. Each is one line with no
+trailing newline; they differ only in `phase`, as in v1.
+
+`journal-v2-publish-pending.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"publish-pending"}}
+```
+
+`journal-v2-awaiting-health.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"awaiting-health"}}
+```
+
+`journal-v2-health-accepted.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"health-accepted","health_receipt_digest":"7777777777777777777777777777777777777777777777777777777777777777"}}
+```
+
+`journal-v2-rollback-pending.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"rollback-pending","failure":"health-rejected"}}
+```
+
+| Field | Accepted | Refused (`journal-v2-refusals.txt` beside the goldens) |
+|---|---|---|
+| `authentication_id` | `0000000000000001` to `ffffffffffffffff` | `0000000000000000` (owner decision 2026-10-06 (zero LUID refused)); uppercase, 15 or 17 digits, a non-hex digit, a `0x` or sign prefix, a JSON number, an escaped digit |
+| `logon_time` | `0000000000000001` to `7fffffffffffffff` | `0000000000000000`; `8000000000000000` to `ffffffffffffffff`, the two's complement of a negative `LogonTime`; uppercase, 15 digits, a JSON number |
+| `owner_process_id` | `1` to `4294967295` | `0`, `4294967296`, `-1`, `4242.0`, `4.242e3`, `04242`, `"4242"` |
+| `owner_creation_time` | `0000000000000001` to `ffffffffffffffff` | `0000000000000000`; uppercase, 17 digits, a non-hex digit |
+| record shape | both objects in v2, neither in v1 | an object missing or `null` in v2; either present in v1; another schema; swapped objects or keys, an object after `phase`, whitespace; a key missing from either object; a duplicate or unknown key at either level |
+
+A v1 record still decodes, with neither object, and admits no claim. The phase writes
+that finish a decoded v1 attempt keep its v1 encoding, because no owner facts exist for
+it. Each record that first reveals minted identities, `PublishPending` for a fresh
+attempt or the re-mint record for a resumed one, carries the writing owner's own
+`attempt_owner` and `initiating_logon` and is therefore v2.
 
 The journal is a strict versioned local record. Unknown versions, duplicate fields,
 noncanonical values and pointer/artifact mismatches fail closed. `keld-update` mints the
@@ -1143,8 +1203,11 @@ owner was lost resolves only when two independent facts hold. An unlaunched
    ([TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess),
    `ms.date` 2025-12-30), so closing the last handle of a kill-on-close Job only starts
    the family's termination. The journal records the initiating user's logon session
-   (`AuthenticationId` and its logon time) durably before launch; a zero logon time
-   refuses before `PublishPending` ("Machine-UAC bootstrap" item 6). Every family process must run with a primary token that references
+   (`AuthenticationId` and its logon time) durably before launch; a zero logon time or,
+   by owner decision 2026-10-06 (zero LUID refused), a zero `AuthenticationId` refuses
+   before `PublishPending` ("Machine-UAC bootstrap" item 6), because the session query
+   below would trivially report no such logon session for a LUID that no live session
+   can hold. Every family process must run with a primary token that references
    that session (the census below). Microsoft documents, for the authentication-package
    callback, that a logon session terminates when the last token referencing it is
    deleted
@@ -1192,7 +1255,7 @@ expected way to end the session; the query decides. The same proof covers
 `health-accepted`, where the healthy application legitimately outlives the helper,
 because the landed `WindowsRecoveryInspection::recover` requires an exact
 process-family retirement binding for every phase
-(`crates/keld-update/src/windows_baseline/activate.rs:385-399`).
+(`crates/keld-update/src/windows_baseline/activate.rs:526-541`).
 
 Kill-on-close is kept only for prompt termination. The UAC helper, which launches the
 candidate, alone holds the attempt's unnamed `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job,
@@ -1429,7 +1492,7 @@ If the name already exists, or creation or readback fails, a fresh attempt refus
 `ProtectedStateUnchanged` before any protected write, and a resumed owner, which only
 `PerUserDirect` has, refuses with the journal unchanged and the effect
 `JournalBoundRecoveryRequired` that the landed `Transaction::fault` gives every
-journaled refusal (`windows_baseline/activate.rs:911-921`). A launch refusal after
+journaled refusal (`windows_baseline/activate.rs:1047-1057`). A launch refusal after
 `AwaitingHealth` is durable rolls the attempt back with `CandidateLaunch` under the same
 lease, composing the retirement binding from the owner's own retained Job-zero
 observation; "Machine-UAC bootstrap" item 6 owns which refusals come before
@@ -2412,7 +2475,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   guidance enum with pinned texts; the mint-then-journal seam, which changes
   `WindowsExtractionRoot::begin_activation` and the signatures of
   `WindowsRecoveryInspection::recover` and `resume_unlaunched` so that minting and the
-  first name-revealing record are separate calls; Machine-UAC admission in
+  first name-revealing record are separate calls, with its `WindowsMintedAttempt` and
+  `WindowsJournaledAttempt` handles and its `AttemptOwner` and `InitiatingLogon`
+  inputs (named for the KEL-270 T4d S3 public-API review); Machine-UAC admission in
   `load_windows_activation_write_snapshot` and `load_windows_recovery_inspection`,
   which today admit only `PerUserDirect` (`windows_baseline/load.rs:353`, `:382-385`),
   through the existing `require_windows_machine_uac_owner_token` predicate rather than a

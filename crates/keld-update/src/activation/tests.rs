@@ -20,6 +20,8 @@ fn journal(phase: ActivationPhase) -> ActivationJournal {
         helper_image_blake3: [0x55; 32],
         health_channel_id: [0x66; 32],
         lifecycle_channel_id: [0x88; 32],
+        // The step mapping is independent of the v2 owner facts.
+        ownership: None,
         phase: ActivationPhase::PublishPending,
     };
     set_phase(&mut journal, phase);
