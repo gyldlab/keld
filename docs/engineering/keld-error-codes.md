@@ -812,6 +812,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The running executable is not bound to the installation it locates
 - fix: Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged.
 
+## KELD-UPDATE-019
+
+- crate: keld-update
+- message: The verified host image does not carry exactly one readable, canonical expected-identity container
+- fix: Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

@@ -58,7 +58,7 @@ use keld_guard::verified_manifest::VerifiedManifest;
 use keld_guard::verified_manifest::load_verified_manifest;
 use keld_guard::{ManifestError, Principal};
 #[cfg(windows)]
-use keld_guard::{WindowsAuthenticodeError, WindowsAuthenticodeImage};
+use keld_guard::{VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeImage};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::CallError;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -146,7 +146,7 @@ const WINDOWS_SHARING_VIOLATION: i32 = 32;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_STDIN_V1: &str = "stdin-v1";
 /// Fix guidance for `KELD-CORE-034`, shared by every site that refuses no-flag boot.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 const NO_FLAG_UNAVAILABLE_FIX: &str =
     "Complete and prove the named KEL-96/T4 platform slice before launching the host.";
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -179,7 +179,8 @@ struct SessionShutdownState {
     generation_reader_stops: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     tail_started: Arc<AtomicBool>,
 }
-/// Opaque host-owned selection minted only from the staged executable layout.
+/// Opaque host-owned selection minted only from a validated owner-private dev stage
+/// or, on Windows, from the authenticated installed package that holds the host.
 pub struct ValidatedBootSelection {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     app: AppBootSelection,
@@ -201,6 +202,25 @@ struct AppBootSelection {
     entry_path: PathBuf,
     entry_file: File,
     renderer_html: Vec<u8>,
+    #[cfg(windows)]
+    mode: WindowsBootMode,
+}
+
+/// Which of the two admitted Windows boot states minted the selection (KEL-254 A3 AC2).
+#[cfg(windows)]
+#[derive(Debug)]
+enum WindowsBootMode {
+    /// A valid dev lease routed boot to the owner-private stage validator.
+    DevStage,
+    /// KEL-53 selected the installed package that holds the KEL-135-verified host.
+    Installed {
+        /// The identity verified at boot; it alone selects the persistent profile.
+        identity: ValidatedAppIdentity,
+        /// Pins the selected version tree and its protected ancestry while the
+        /// session runs from it. Only keld-update can mint it; boxed because it is
+        /// far larger than the dev variant.
+        active: Box<keld_update::ActivePackageSelection>,
+    },
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -564,17 +584,19 @@ impl ValidatedBootSelection {
     /// Validates the no-flag app staged beside the current executable.
     ///
     /// On platforms whose first KEL-96 host slice has not landed, this fails
-    /// before reading the executable path or any boot file. On Windows only a
-    /// valid dev lease reaches stage validation; a lease-less launch verifies
-    /// the executable's KEL-135 identity and is refused until installed-root
-    /// boot lands (KEL-254 A3 AC2).
+    /// before reading the executable path or any boot file. Windows admits
+    /// exactly two boot states (KEL-254 A3 AC2): a valid dev lease reaches only
+    /// stage validation, and a lease-less launch boots only the authenticated
+    /// installed package that holds the KEL-135-verified executable.
     ///
     /// # Errors
     ///
     /// Returns [`HostAppError`] for unsupported platforms, invalid descriptor
     /// bytes, an unsafe staged root, a missing/escaping/non-regular target, or,
-    /// on Windows, an invalid dev lease, an unverified executable, or a
-    /// lease-less launch.
+    /// on Windows, an invalid dev lease, an unverified executable, a missing or
+    /// invalid embedded expectation (`KELD-UPDATE-019`/`KELD-UPDATE-017`), an
+    /// unadmitted installation (`KELD-UPDATE-*`), or installed provenance naming
+    /// another publisher or app (`KELD-WV-009`).
     pub fn from_current_exe_unprivileged() -> Result<Self, HostAppError> {
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
@@ -590,7 +612,7 @@ impl ValidatedBootSelection {
             select_windows_boot_route_with(
                 windows_dev_lease_requested()?,
                 validate_current_exe_stage,
-                verified_windows_identity_from_current_exe,
+                validate_installed_current_exe,
             )
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -995,6 +1017,20 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     }
     validate_windows_dev_stage_acl(&root)
         .map_err(|source| target_error("app root DACL", source.to_string()))?;
+    validate_windows_boot_files(root, WindowsBootMode::DevStage)
+}
+
+/// Opens the strict descriptor and its fixed targets beneath `root`, the dev stage
+/// or the KEL-53-selected installed tree, through the one Windows path owner.
+///
+/// The descriptor, path and digest rules are those of every boot state; only the
+/// caller's admission of `root` differs (the owner-private DACL for a dev stage, the
+/// KEL-53 selection and its recorded-mode protection for an installed tree).
+#[cfg(windows)]
+fn validate_windows_boot_files(
+    root: PathBuf,
+    mode: WindowsBootMode,
+) -> Result<ValidatedBootSelection, HostAppError> {
     let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
@@ -1012,6 +1048,7 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             entry_path: parsed.entry,
             entry_file,
             renderer_html,
+            mode,
         },
         permissions_file,
         permissions_digest: parsed.permissions_digest,
@@ -1308,8 +1345,9 @@ fn open_relative_file_windows(
         }
     }
     // Open the leaf reparse point itself instead of following it. The
-    // owner-private root makes component replacement by another principal
-    // unavailable; same-user mutation remains outside this dev-only boundary.
+    // owner-private dev root, or the selected installed tree's recorded-mode
+    // protection, makes component replacement by another principal unavailable;
+    // same-user mutation remains outside the dev and per-user boundaries.
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
@@ -2248,6 +2286,32 @@ impl ValidatedAppIdentity {
         })
     }
 
+    /// Requires the selected installation's protected record to name exactly this
+    /// verified publisher and app (KEL-254 AC11): signature success never boots
+    /// another publisher's or app's installation.
+    fn require_recorded(
+        &self,
+        publisher_scope: &[u8; 32],
+        app_id: &str,
+    ) -> Result<(), HostAppError> {
+        if *publisher_scope != self.publisher_scope {
+            return Err(windows_identity_error(
+                "the installation's protected provenance records a different publisher than the verified signer",
+                "Reinstall the package from the publisher its installer recorded; a host signed by another publisher never boots this installation.",
+            ));
+        }
+        if app_id != &*self.app_id {
+            return Err(windows_identity_error(
+                format!(
+                    "the installation's protected provenance records app id `{app_id}`, not the verified `{}`",
+                    self.app_id
+                ),
+                "Reinstall the package whose signed app id its installer recorded; a host signed for another app never boots this installation.",
+            ));
+        }
+        Ok(())
+    }
+
     fn into_profile_selection(self) -> Result<WebProfileSelection, HostAppError> {
         debug_assert_eq!(
             ProfileIdentity::from_host_verified_parts(self.publisher_scope, &self.app_id),
@@ -2299,29 +2363,88 @@ fn windows_authenticode_error(error: &WindowsAuthenticodeError) -> HostAppError 
 /// Routes Windows boot to exactly one of its two admitted states (KEL-254 A3 AC2).
 ///
 /// A valid dev lease routes only to the `DevStage` validator: the lease grants no
-/// authority, the owner-private stage checks do. Without one, the executable's
-/// KEL-135 identity is verified first and only authenticated installed provenance
-/// may select a package; until that consumer lands (KEL-254 T3 Part B) the
-/// verified host is refused. A lease-less staged layout never reaches the
-/// `DevStage` validator.
+/// authority, the owner-private stage checks do. Without one, only the
+/// authenticated installed package that holds the verified executable may boot,
+/// and every other launch, including a lease-less staged layout, is refused there.
 #[cfg(windows)]
 fn select_windows_boot_route_with(
     dev_lease: bool,
     dev_stage: impl FnOnce() -> Result<ValidatedBootSelection, HostAppError>,
-    release_identity: impl FnOnce() -> Result<ValidatedAppIdentity, HostAppError>,
+    installed: impl FnOnce() -> Result<ValidatedBootSelection, HostAppError>,
 ) -> Result<ValidatedBootSelection, HostAppError> {
-    if dev_lease {
-        return dev_stage();
-    }
-    // Installed-root selection (T3 Part B) consumes this verified identity.
-    let _verified = release_identity()?;
-    Err(HostAppError::new(
-        "KELD-CORE-034",
-        "Windows installed boot",
-        "without a valid dev lease Windows admits only an authenticated installed package, \
-         and installed-root boot is not available yet; launch a dev stage through `keld dev`",
-        NO_FLAG_UNAVAILABLE_FIX,
-    ))
+    if dev_lease { dev_stage() } else { installed() }
+}
+
+/// Boots the authenticated installed package that holds the running executable
+/// (KEL-254 A3 §4, T3).
+///
+/// The executable is verified once through the `keld-guard` KEL-135 owner, which
+/// pins its image without write or delete sharing; that one handle then supplies
+/// the embedded expectation and the executable identity. The canonical path only
+/// locates the installation.
+#[cfg(windows)]
+fn validate_installed_current_exe() -> Result<ValidatedBootSelection, HostAppError> {
+    let executable = current_windows_executable()?;
+    let (verified, identity) = verified_windows_image(&executable)?;
+    let locator = executable.canonicalize().map_err(|source| {
+        HostAppError::io(
+            "KELD-CORE-036",
+            "installed executable locator",
+            &source,
+            "Launch keld-host.exe from its installation's selected version tree.",
+        )
+    })?;
+    validate_installed_from_verified(&locator, verified.file(), identity)
+}
+
+/// Selects and validates the installed package for `image`, which must be the
+/// handle whose image produced `identity`.
+///
+/// The expectation is read from `image` before any installation is located; KEL-53
+/// then binds `image` to the selected tree by file identity, and the record's
+/// publisher and app must equal `identity`. Every refusal precedes any listener,
+/// child or window.
+#[cfg(windows)]
+fn validate_installed_from_verified(
+    locator: &Path,
+    image: &File,
+    identity: ValidatedAppIdentity,
+) -> Result<ValidatedBootSelection, HostAppError> {
+    let expected = keld_update::ExpectedAppIdentity::from_signed_image(image)
+        .map_err(|source| installed_package_error(&source))?;
+    let active = keld_update::select_active_package_for_executable(locator, image, &expected)
+        .map_err(|source| installed_package_error(&source))?;
+    identity.require_recorded(active.publisher_scope(), &active.install_identity().app_id)?;
+    let root = active.tree_root().to_path_buf();
+    validate_windows_boot_files(
+        root,
+        WindowsBootMode::Installed {
+            identity,
+            active: Box::new(active),
+        },
+    )
+}
+
+/// Reports a KEL-53 installed-package refusal under its own `KELD-UPDATE-*` code.
+///
+/// The refusal's text already opens with that code and closes with its own
+/// correction, so the host error carries the code once, as its prefix, and drops
+/// the closing period its own sentence break supplies.
+#[cfg(windows)]
+fn installed_package_error(source: &keld_update::UpdateError) -> HostAppError {
+    let code = source.code();
+    let rendered = source.to_string();
+    let message = rendered
+        .strip_prefix(code)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(&rendered);
+    let message = message.strip_suffix('.').unwrap_or(message);
+    HostAppError::new(
+        code,
+        "Windows installed package selection",
+        message,
+        "Then relaunch the installed host.",
+    )
 }
 
 /// Whether this launch presents the KEL-96 dev lease: the one Windows parser of
@@ -2343,52 +2466,54 @@ fn windows_dev_lease_requested() -> Result<bool, HostAppError> {
     Ok(true)
 }
 
+/// Selects the `WebView2` profile from the boot route's own result: a dev stage
+/// runs only under its live lease with an ephemeral profile, and an installed
+/// package runs without one under the persistent profile of the identity KEL-135
+/// verified at boot, never a second verification.
 #[cfg(windows)]
-fn select_windows_profile_mode_with(
-    has_authenticated_dev_lease: bool,
-    release_identity: impl FnOnce() -> Result<ValidatedAppIdentity, HostAppError>,
+fn select_windows_profile_mode(
+    installed_identity: Option<ValidatedAppIdentity>,
+    has_dev_lease: bool,
 ) -> Result<WindowsProfileMode, HostAppError> {
-    if has_authenticated_dev_lease {
-        return Ok(WindowsProfileMode::EphemeralDev);
+    match (installed_identity, has_dev_lease) {
+        (None, true) => Ok(WindowsProfileMode::EphemeralDev),
+        (Some(identity), false) => identity
+            .into_profile_selection()
+            .map(WindowsProfileMode::Persistent),
+        (None, false) => Err(app_detail(
+            "Windows boot mode",
+            "a dev-stage boot has no live dev lease",
+        )),
+        (Some(_), true) => Err(app_detail(
+            "Windows boot mode",
+            "an installed-package boot presented a dev lease",
+        )),
     }
-    let identity = release_identity()?;
-    identity
-        .into_profile_selection()
-        .map(WindowsProfileMode::Persistent)
 }
 
 #[cfg(windows)]
-fn windows_profile_mode(
-    dev_lease: Option<&WindowsDevLeaseMonitor>,
-) -> Result<WindowsProfileMode, HostAppError> {
-    select_windows_profile_mode_with(
-        dev_lease.is_some(),
-        verified_windows_identity_from_current_exe,
-    )
-}
-
-#[cfg(windows)]
-fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, HostAppError> {
-    let executable = std::env::current_exe().map_err(|source| {
+fn current_windows_executable() -> Result<PathBuf, HostAppError> {
+    std::env::current_exe().map_err(|source| {
         windows_identity_error(
             format!("the current executable path is unavailable: {source}"),
             "Restore the signed package executable and relaunch it.",
         )
-    })?;
-    verified_windows_identity_from_executable(&executable)
+    })
 }
 
 /// Verifies `executable` through the single `keld-guard` KEL-135 Authenticode owner
-/// (KEL-270 D4), holding the verified pinned image until the profile identity is built.
+/// (KEL-270 D4) and returns the pinned verified image with the identity it proved.
 #[cfg(windows)]
-fn verified_windows_identity_from_executable(
+fn verified_windows_image(
     executable: &Path,
-) -> Result<ValidatedAppIdentity, HostAppError> {
+) -> Result<(VerifiedWindowsImage, ValidatedAppIdentity), HostAppError> {
     let verified = WindowsAuthenticodeImage::open(executable)
         .and_then(WindowsAuthenticodeImage::verify)
         .map_err(|error| windows_authenticode_error(&error))?;
     let identity = verified.identity();
-    ValidatedAppIdentity::from_verified_parts(*identity.publisher_scope(), identity.app_id())
+    let identity =
+        ValidatedAppIdentity::from_verified_parts(*identity.publisher_scope(), identity.app_id())?;
+    Ok((verified, identity))
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -2404,7 +2529,16 @@ fn run_app_direct(
         entry_path,
         entry_file,
         renderer_html,
+        #[cfg(windows)]
+        mode,
     } = boot;
+    // Held until this session returns, so the installed version tree it runs from
+    // stays pinned through teardown.
+    #[cfg(windows)]
+    let (installed_identity, _installed_package) = match mode {
+        WindowsBootMode::DevStage => (None, None),
+        WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active)),
+    };
     let html = String::from_utf8(renderer_html).map_err(|source| {
         HostAppError::new(
             "KELD-CORE-036",
@@ -2417,7 +2551,8 @@ fn run_app_direct(
     #[cfg(windows)]
     let dev_lease = prepare_windows_dev_lease(&shutdown)?;
     #[cfg(windows)]
-    let windows_profile_mode = windows_profile_mode(dev_lease.as_ref())?;
+    let windows_profile_mode =
+        select_windows_profile_mode(installed_identity, dev_lease.is_some())?;
     #[cfg(target_os = "linux")]
     let mut dev_lease = DevHostLease::from_environment()?;
     #[cfg(target_os = "linux")]
@@ -6077,28 +6212,38 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn windows_release_selection_never_falls_back_after_identity_failure() {
-        let error = select_windows_profile_mode_with(false, || {
-            Err(windows_identity_error(
-                "synthetic verifier rejection",
-                "Use a real signed package fixture.",
-            ))
-        })
-        .expect_err("release must fail closed");
-        assert_eq!(error.code(), "KELD-WV-009");
-        assert!(error.to_string().contains("synthetic verifier rejection"));
-
-        let persistent = select_windows_profile_mode_with(false, || {
-            ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
-        })
-        .expect("synthetic verified release selection");
-        assert!(matches!(persistent, WindowsProfileMode::Persistent(_)));
-
-        let development = select_windows_profile_mode_with(true, || {
-            panic!("explicit dev must not inspect release identity")
-        })
-        .expect("explicit dev profile mode");
+    fn windows_profile_follows_the_boot_route() {
+        let development =
+            select_windows_profile_mode(None, true).expect("a dev stage runs under its lease");
         assert!(matches!(development, WindowsProfileMode::EphemeralDev));
+
+        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
+            .expect("synthetic verified identity");
+        let verified_profile = identity.profile_identity;
+        let installed = select_windows_profile_mode(Some(identity), false)
+            .expect("an installed package runs without a lease");
+        let WindowsProfileMode::Persistent(selection) = installed else {
+            panic!("an installed package selected an ephemeral profile")
+        };
+        assert_eq!(
+            selection,
+            WebProfileSelection::Persistent(verified_profile),
+            "the profile is the identity verified at boot"
+        );
+
+        let error = select_windows_profile_mode(None, false)
+            .expect_err("a dev stage without a live lease must not run");
+        assert_eq!(error.code(), "KELD-CORE-037");
+        assert!(error.to_string().contains("no live dev lease"), "{error}");
+        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
+            .expect("synthetic verified identity");
+        let error = select_windows_profile_mode(Some(identity), true)
+            .expect_err("an installed package must not run under a dev lease");
+        assert_eq!(error.code(), "KELD-CORE-037");
+        assert!(
+            error.to_string().contains("presented a dev lease"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -6107,7 +6252,7 @@ mod tests {
         let error = select_windows_boot_route_with(
             true,
             || Err(target_error("app root", "synthetic dev-stage refusal")),
-            || panic!("a dev lease must not inspect release identity"),
+            || panic!("a dev lease must not reach installed-package boot"),
         )
         .expect_err("the synthetic dev-stage validator decides the dev route");
         assert_eq!(error.code(), "KELD-CORE-036");
@@ -6116,7 +6261,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn windows_lease_less_boot_verifies_identity_and_never_reaches_the_dev_stage() {
+    fn windows_lease_less_boot_reaches_only_installed_package_boot() {
         let unsigned = select_windows_boot_route_with(
             false,
             || panic!("a lease-less launch must not reach the dev-stage validator"),
@@ -6130,18 +6275,214 @@ mod tests {
         .expect_err("an unverified lease-less executable is refused");
         assert_eq!(unsigned.code(), "KELD-WV-009");
 
-        let signed = select_windows_boot_route_with(
+        let unselected = select_windows_boot_route_with(
             false,
             || panic!("a lease-less launch must not reach the dev-stage validator"),
-            || ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic"),
+            || {
+                Err(installed_package_error(
+                    &keld_update::UpdateError::ExecutableBinding {
+                        step: "locator",
+                        detail: "synthetic staged layout".to_owned(),
+                    },
+                ))
+            },
         )
-        .expect_err("installed-root boot is not available yet");
-        assert_eq!(signed.code(), "KELD-CORE-034");
+        .expect_err("a verified host outside an installation is refused");
+        assert_eq!(unselected.code(), "KELD-UPDATE-018");
         assert!(
-            signed
-                .to_string()
-                .contains("authenticated installed package")
+            unselected.to_string().contains("synthetic staged layout"),
+            "{unselected}"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_package_refusal_carries_its_code_once() {
+        let error = installed_package_error(&keld_update::UpdateError::ExecutableBinding {
+            step: "locator",
+            detail: "synthetic staged layout".to_owned(),
+        });
+        let rendered = error.to_string();
+        println!("KELD_KEL254_INSTALLED_PACKAGE_REFUSAL {rendered}");
+        // The resource snapshot reads process-wide counters other tests advance.
+        let (message, _resources) = rendered
+            .split_once(" [startup-resource-attempts ")
+            .expect("a host error ends with its startup-resource snapshot");
+        assert_eq!(
+            message,
+            "KELD-UPDATE-018: no-flag host failed during Windows installed package selection \
+             — installed executable locator refused (synthetic staged layout). Launch \
+             keld-host.exe from its installation's selected version tree; repair or reinstall \
+             through the trusted installer if the layout is damaged. Then relaunch the \
+             installed host."
+        );
+        assert_eq!(rendered.matches("KELD-UPDATE-").count(), 1, "{rendered}");
+        assert!(!rendered.contains(".."), "{rendered}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_boot_of_an_unsigned_host_refuses_before_resources() {
+        let before = startup_resource_snapshot();
+        let error = validate_installed_current_exe()
+            .expect_err("the unsigned test executable is not an installed package");
+        assert_eq!(error.code(), "KELD-WV-009");
+        // The running image opened as a pinned trust image and was refused by its owner.
+        assert!(
+            error
+                .to_string()
+                .contains("rejected the current executable with status"),
+            "{error}"
+        );
+        assert_eq!(
+            error.resources, before,
+            "installed boot advanced app resources"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_boot_reads_the_expectation_from_the_handle_before_selection() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let executable = std::env::current_exe().expect("test executable path");
+        // The test executable carries no `.keldeai` container and lies in no installation.
+        let image = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&executable)
+            .expect("open the test executable as the verified-image owner does");
+        let locator = executable.canonicalize().expect("canonical locator");
+        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
+            .expect("synthetic verified identity");
+        let before = startup_resource_snapshot();
+        let error = validate_installed_from_verified(&locator, &image, identity)
+            .expect_err("a host without an embedded expectation is refused");
+        // KELD-UPDATE-019, not the locator's KELD-UPDATE-018: the expectation is read from
+        // the handle before any installation is located.
+        assert_eq!(error.code(), "KELD-UPDATE-019");
+        assert!(error.to_string().contains("KELD-PACK-007"), "{error}");
+        assert_eq!(
+            error.resources, before,
+            "installed boot advanced app resources"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_boot_reads_the_verified_handle_never_the_locator_path() {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+
+        // The locator names this test executable, a valid PE image without a container
+        // (KELD-PACK-007 if anything reopened it). The handle is an anonymous file, with
+        // no path to reopen and its cursor at end of file, holding no PE image at all.
+        let locator = std::env::current_exe()
+            .expect("test executable path")
+            .canonicalize()
+            .expect("canonical locator");
+        let mut image = tempfile::tempfile().expect("anonymous image handle");
+        image
+            .write_all(b"MZ is not a host image")
+            .expect("write the malformed image");
+        image.seek(SeekFrom::End(0)).expect("cursor to end of file");
+        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
+            .expect("synthetic verified identity");
+        let before = startup_resource_snapshot();
+        let error = validate_installed_from_verified(&locator, &image, identity)
+            .expect_err("a malformed verified image is refused");
+        // KELD-PACK-006 is the handle's malformed image; a locator reopen would report the
+        // test executable's missing container instead.
+        assert_eq!(error.code(), "KELD-UPDATE-019");
+        assert!(error.to_string().contains("KELD-PACK-006"), "{error}");
+        assert_eq!(
+            error.resources, before,
+            "installed boot advanced app resources"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_record_must_name_the_verified_publisher_and_app() {
+        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.app")
+            .expect("synthetic verified identity");
+        identity
+            .require_recorded(&[9; 32], "com.example.app")
+            .expect("the record names the verified publisher and app");
+
+        let error = identity
+            .require_recorded(&[8; 32], "com.example.app")
+            .expect_err("another recorded publisher refuses");
+        assert_eq!(error.code(), "KELD-WV-009");
+        assert!(error.to_string().contains("different publisher"), "{error}");
+
+        let error = identity
+            .require_recorded(&[9; 32], "com.example.other")
+            .expect_err("another recorded app refuses");
+        assert_eq!(error.code(), "KELD-WV-009");
+        assert!(
+            error
+                .to_string()
+                .contains("records app id `com.example.other`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_boot_files_validate_without_the_dev_stage_dacl() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let root = temp.path().join("tree");
+        fs::create_dir(&root).expect("tree");
+        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
+        fs::write(root.join("index.html"), "<p>installed</p>\n").expect("renderer");
+        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
+
+        // The inherited temporary-directory DACL is not owner-private: the dev route
+        // still refuses this tree, so its predicate is unchanged.
+        let error = must_err(validate_from_root(&root), "a non-private stage must fail");
+        assert_eq!(error.code(), "KELD-CORE-036");
+        assert!(error.to_string().contains("app root DACL"), "{error}");
+
+        let selection = validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage)
+            .expect("the selected tree's boot files validate");
+        assert_eq!(selection.app.root, root);
+        assert_eq!(selection.app.name, "Fixture");
+        assert_eq!(selection.app.entry_path, Path::new("main.ts"));
+        assert_eq!(selection.app.renderer_html, b"<p>installed</p>\n");
+        assert_eq!(
+            selection.permissions_digest,
+            decode_digest(DIGEST).expect("fixture digest")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_boot_files_keep_the_strict_descriptor_and_target_rules() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let root = temp.path().join("tree");
+        fs::create_dir(&root).expect("tree");
+        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
+        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+        fs::write(root.join(BOOT_FILE), br#"{"schema":1,"foreign":true}"#).expect("boot");
+        let error = must_err(
+            validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
+            "a malformed descriptor must fail",
+        );
+        assert_eq!(error.code(), "KELD-CORE-035");
+
+        let outside = temp.path().join("outside.html");
+        fs::write(&outside, "<p>outside</p>\n").expect("outside renderer");
+        std::os::windows::fs::symlink_file(&outside, root.join("index.html"))
+            .expect("renderer symlink");
+        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
+        let error = must_err(
+            validate_windows_boot_files(root, WindowsBootMode::DevStage),
+            "a reparse-point renderer must fail",
+        );
+        assert_eq!(error.code(), "KELD-CORE-036");
+        assert!(error.to_string().contains("reparse point"), "{error}");
     }
 
     #[test]
@@ -6154,8 +6495,7 @@ mod tests {
         std::os::windows::fs::symlink_file(&target, &link).expect("create a leaf symlink");
 
         // keld-guard refuses the leaf reparse point; keld-core owns the code.
-        let error = verified_windows_identity_from_executable(&link)
-            .expect_err("a leaf reparse point is refused");
+        let error = verified_windows_image(&link).expect_err("a leaf reparse point is refused");
         assert_eq!(error.code(), "KELD-WV-009");
         assert!(error.to_string().contains("reparse point"), "{error}");
     }
@@ -6217,7 +6557,8 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn current_test_executable_is_rejected_as_a_release_carrier() {
-        let error = verified_windows_identity_from_current_exe()
+        let executable = current_windows_executable().expect("test executable path");
+        let error = verified_windows_image(&executable)
             .expect_err("the test executable is not an approved signed Keld package carrier");
         assert_eq!(error.code(), "KELD-WV-009");
         // The running image opened as a pinned trust image and was refused by its owner.
@@ -6234,11 +6575,10 @@ mod tests {
     #[ignore = "requires a trusted Authenticode-signed fixture executable"]
     #[cfg(windows)]
     fn kel135_signed_package_acceptance_fixture() {
-        let carrier = std::env::var_os("KELD_KEL135_CARRIER_UNDER_TEST");
-        let identity = carrier
-            .map_or_else(verified_windows_identity_from_current_exe, |path| {
-                verified_windows_identity_from_executable(Path::new(&path))
-            })
+        let carrier = std::env::var_os("KELD_KEL135_CARRIER_UNDER_TEST")
+            .map_or_else(current_windows_executable, |path| Ok(PathBuf::from(path)))
+            .expect("the signed fixture carrier path");
+        let (_verified, identity) = verified_windows_image(&carrier)
             .expect("the signed fixture must produce a verified Windows identity");
         let app_id = identity.app_id.clone();
         let publisher_scope = identity.publisher_scope.iter().fold(
@@ -6250,7 +6590,7 @@ mod tests {
             },
         );
         let profile_namespace = identity.profile_identity.namespace_segment();
-        let mode = select_windows_profile_mode_with(false, || Ok(identity))
+        let mode = select_windows_profile_mode(Some(identity), false)
             .expect("the verified signed fixture must select a persistent profile");
         assert!(matches!(mode, WindowsProfileMode::Persistent(_)));
         println!(
@@ -6263,7 +6603,8 @@ mod tests {
     #[ignore = "requires a trusted Authenticode-signed fixture executable"]
     #[cfg(windows)]
     fn kel135_signed_package_purge_acceptance_fixture() {
-        let identity = verified_windows_identity_from_current_exe()
+        let executable = current_windows_executable().expect("signed fixture path");
+        let (_verified, identity) = verified_windows_image(&executable)
             .expect("the signed fixture must produce a verified Windows identity");
         let profile_namespace = identity.profile_identity.namespace_segment();
         WebView2Engine::purge_persistent_profile(identity.profile_identity)
