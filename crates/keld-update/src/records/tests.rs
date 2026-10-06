@@ -400,86 +400,214 @@ fn a_v1_journal_decodes_without_owner_facts_and_keeps_its_landed_bytes() {
     );
 }
 
-#[test]
-fn every_v2_refusal_vector_refuses_as_an_invalid_local_record() {
-    const EXPECTED: [&str; 52] = [
-        "v2-missing-initiating-logon",
-        "v2-missing-attempt-owner",
-        "v2-missing-both-owner-fields",
-        "v2-null-initiating-logon",
-        "v2-null-attempt-owner",
-        "v1-with-owner-fields",
-        "v1-with-initiating-logon-only",
-        "v1-with-attempt-owner-only",
-        "unknown-schema-v3",
-        "owner-objects-swapped",
-        "owner-after-phase",
-        "logon-keys-swapped",
-        "owner-keys-swapped",
-        "whitespace-in-owner",
-        "missing-authentication-id",
-        "missing-logon-time",
-        "missing-owner-process-id",
-        "missing-owner-creation-time",
-        "duplicate-initiating-logon",
-        "duplicate-attempt-owner",
-        "duplicate-authentication-id",
-        "duplicate-logon-time",
-        "duplicate-owner-process-id",
-        "duplicate-owner-creation-time",
-        "unknown-field-in-initiating-logon",
-        "unknown-field-in-attempt-owner",
-        "unknown-top-level-owner-field",
-        "zero-logon-time",
-        "zero-owner-creation-time",
-        "zero-owner-process-id",
-        "negative-logon-time-min",
-        "negative-logon-time-minus-one",
-        "owner-process-id-above-u32",
-        "owner-process-id-negative",
-        "owner-process-id-fraction",
-        "owner-process-id-exponent",
-        "owner-process-id-leading-zero",
-        "owner-process-id-string",
-        "authentication-id-uppercase",
-        "authentication-id-15-digits",
-        "authentication-id-17-digits",
-        "authentication-id-non-hex",
-        "authentication-id-0x-prefix",
-        "authentication-id-signed",
-        "authentication-id-number",
-        "authentication-id-escaped",
-        "logon-time-uppercase",
-        "logon-time-15-digits",
-        "logon-time-number",
-        "owner-creation-time-uppercase",
-        "owner-creation-time-17-digits",
-        "owner-creation-time-non-hex",
+/// Refusal reasons of the v2 refusal vectors. Each vector must refuse for its own reason,
+/// so a vector that refused only because of an unrelated defect would fail this table.
+mod refusal {
+    /// The schema binds the owner objects: neither in v1, both in v2.
+    pub(super) const SHAPE: &str =
+        "activation journal owner fields must be absent from v1 and both present in v2";
+    /// Decoding admits only the exact canonical re-encoding of the typed record.
+    pub(super) const CANONICAL: &str = "record differs from its canonical typed encoding";
+    pub(super) const SCHEMA: &str = "unsupported record schema";
+    pub(super) const H16: &str = "value must be exactly 16 lowercase hexadecimal digits";
+    pub(super) const LOGON_TIME: &str = "initiating logon time must be positive";
+    pub(super) const CREATION_TIME: &str = "attempt owner creation time must be nonzero";
+    pub(super) const PROCESS_ID: &str = "attempt owner process ID must be in 1..=4294967295";
+
+    /// Each refusal vector's label, in file order, with the reason it must refuse for.
+    /// Strict-codec reasons come from the typed JSON decoder; each is a detail prefix.
+    pub(super) const EXPECTED: [(&str, &str); 52] = [
+        ("v2-missing-initiating-logon", SHAPE),
+        ("v2-missing-attempt-owner", SHAPE),
+        ("v2-missing-both-owner-fields", SHAPE),
+        ("v2-null-initiating-logon", CANONICAL),
+        ("v2-null-attempt-owner", CANONICAL),
+        ("v1-with-owner-fields", SHAPE),
+        ("v1-with-initiating-logon-only", SHAPE),
+        ("v1-with-attempt-owner-only", SHAPE),
+        ("unknown-schema-v3", SCHEMA),
+        ("owner-objects-swapped", CANONICAL),
+        ("owner-after-phase", CANONICAL),
+        ("logon-keys-swapped", CANONICAL),
+        ("owner-keys-swapped", CANONICAL),
+        ("whitespace-in-owner", CANONICAL),
+        (
+            "missing-authentication-id",
+            "missing field `authentication_id`",
+        ),
+        ("missing-logon-time", "missing field `logon_time`"),
+        (
+            "missing-owner-process-id",
+            "missing field `owner_process_id`",
+        ),
+        (
+            "missing-owner-creation-time",
+            "missing field `owner_creation_time`",
+        ),
+        (
+            "duplicate-initiating-logon",
+            "duplicate field `initiating_logon`",
+        ),
+        ("duplicate-attempt-owner", "duplicate field `attempt_owner`"),
+        (
+            "duplicate-authentication-id",
+            "duplicate field `authentication_id`",
+        ),
+        ("duplicate-logon-time", "duplicate field `logon_time`"),
+        (
+            "duplicate-owner-process-id",
+            "duplicate field `owner_process_id`",
+        ),
+        (
+            "duplicate-owner-creation-time",
+            "duplicate field `owner_creation_time`",
+        ),
+        (
+            "unknown-field-in-initiating-logon",
+            "unknown field `session_id`",
+        ),
+        (
+            "unknown-field-in-attempt-owner",
+            "unknown field `owner_image`",
+        ),
+        (
+            "unknown-top-level-owner-field",
+            "unknown field `owner_session`",
+        ),
+        ("zero-logon-time", LOGON_TIME),
+        ("zero-owner-creation-time", CREATION_TIME),
+        ("zero-owner-process-id", PROCESS_ID),
+        ("negative-logon-time-min", LOGON_TIME),
+        ("negative-logon-time-minus-one", LOGON_TIME),
+        (
+            "owner-process-id-above-u32",
+            "invalid value: integer `4294967296`, expected u32",
+        ),
+        (
+            "owner-process-id-negative",
+            "invalid value: integer `-1`, expected u32",
+        ),
+        (
+            "owner-process-id-fraction",
+            "invalid type: floating point `4242.0`, expected u32",
+        ),
+        (
+            "owner-process-id-exponent",
+            "invalid type: floating point `4242.0`, expected u32",
+        ),
+        ("owner-process-id-leading-zero", "invalid number"),
+        (
+            "owner-process-id-string",
+            "invalid type: string \"4242\", expected u32",
+        ),
+        ("authentication-id-uppercase", H16),
+        ("authentication-id-15-digits", H16),
+        ("authentication-id-17-digits", H16),
+        ("authentication-id-non-hex", H16),
+        ("authentication-id-0x-prefix", H16),
+        ("authentication-id-signed", H16),
+        (
+            "authentication-id-number",
+            "invalid type: integer `4295140851`, expected a string",
+        ),
+        ("authentication-id-escaped", CANONICAL),
+        ("logon-time-uppercase", H16),
+        ("logon-time-15-digits", H16),
+        (
+            "logon-time-number",
+            "invalid type: integer `134357472000000000`, expected a string",
+        ),
+        ("owner-creation-time-uppercase", H16),
+        ("owner-creation-time-17-digits", H16),
+        ("owner-creation-time-non-hex", H16),
     ];
+}
+
+#[test]
+fn every_v2_refusal_vector_refuses_for_its_own_reason() {
     let fixture = std::str::from_utf8(include_bytes!("golden/journal-v2-refusals.txt"))
         .expect("UTF-8 refusal vectors");
     assert!(
-        !fixture.contains('\r'),
-        "refusal vectors are exact LF-separated bytes"
+        !fixture.contains('\r') && fixture.ends_with('\n'),
+        "refusal vectors are exact LF-terminated lines"
+    );
+    assert_eq!(
+        fixture.lines().count(),
+        refusal::EXPECTED.len(),
+        "every refusal vector has exactly one expected reason"
     );
     let golden = golden_phases()[0].2;
-    let mut labels = Vec::new();
-    for line in fixture.lines() {
-        let (label, record) = line.split_once('\t').expect("label<TAB>record");
+    for (line, (label, reason)) in fixture.lines().zip(refusal::EXPECTED) {
+        let (found, record) = line.split_once('\t').expect("label<TAB>record");
+        assert_eq!(
+            found, label,
+            "the refusal vectors keep their reviewed order"
+        );
         assert_ne!(
             record.as_bytes(),
             golden,
             "{label}: a refusal vector differs"
         );
-        let error = decode_activation_journal(record.as_bytes())
-            .expect_err("every refusal vector must refuse");
-        assert_eq!(error.code(), "KELD-UPDATE-014", "{label}: {error}");
-        labels.push(label);
+        match decode_activation_journal(record.as_bytes()) {
+            Err(UpdateError::LocalRecordInvalid { detail }) => assert!(
+                detail.starts_with(reason),
+                "{label}: refused for `{detail}`, not for `{reason}`"
+            ),
+            other => panic!("{label}: expected an invalid local record, got {other:?}"),
+        }
     }
-    assert_eq!(
-        labels, EXPECTED,
-        "every refusal vector is checked exactly once"
+}
+
+/// Splits a canonical journal at its trailing `phase` object.
+fn split_at_phase(record: &[u8]) -> (&str, &str) {
+    let record = std::str::from_utf8(record).expect("UTF-8 journal");
+    let at = record
+        .find(r#""phase":{"#)
+        .expect("a canonical journal ends with its phase object");
+    record.split_at(at)
+}
+
+#[test]
+fn v2_goldens_extend_the_landed_v1_records_and_differ_only_in_phase() {
+    // KEL-53 §4: the two objects follow `lifecycle_channel_id` and precede `phase`, and
+    // the four phases differ only in `phase`, as in v1. The oracle is the landed v1 bytes
+    // and the owner objects as the spec states them, never the encoder under test.
+    const OWNER_OBJECTS: &str = concat!(
+        r#""initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"#,
+        r#""attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"#,
     );
+    let landed: [&[u8]; 4] = [
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-publish-pending"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-awaiting-health"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-health-accepted"),
+        include_bytes!("../../fuzz/corpus/activation_journal/canonical-rollback-pending"),
+    ];
+    let (stated_context, _) = split_at_phase(golden_phases()[0].2);
+    for (v1, (name, _, golden)) in landed.into_iter().zip(golden_phases()) {
+        let (context, phase) = split_at_phase(golden);
+        assert_eq!(
+            context, stated_context,
+            "{name}: every phase shares the stated context and owner objects"
+        );
+        let (v1_context, v1_phase) = split_at_phase(v1);
+        assert_eq!(
+            phase, v1_phase,
+            "{name}: the phase object is unchanged from v1"
+        );
+        // The landed publish-pending seed is a separate fuzzer fixture; the other three
+        // share the golden fixture, so v2 adds exactly the schema and the owner objects.
+        if name != "publish-pending" {
+            let schema = r#"{"schema":"keld.activation-journal/v"#;
+            let v1_rest = v1_context
+                .strip_prefix(&format!("{schema}1\""))
+                .expect("a landed v1 record");
+            assert_eq!(
+                context,
+                format!("{schema}2\"{v1_rest}{OWNER_OBJECTS}"),
+                "{name}: v2 is the landed v1 record with the owner objects before phase"
+            );
+        }
+    }
 }
 
 #[test]

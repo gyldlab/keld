@@ -1400,6 +1400,76 @@ fn minting_writes_nothing_until_the_owner_journals_its_facts() {
 }
 
 #[test]
+fn journal_bound_recovery_re_mints_an_unlaunched_attempt_without_writing() {
+    let fixture = tempfile::tempdir().expect("recovery re-mint fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
+    plant_stale_record_preparation(&trust);
+    let before = observe(&trust);
+    assert_eq!(before.pending_records, 1);
+    let lost_journal = before
+        .journal
+        .clone()
+        .expect("the lost attempt is journaled");
+    assert_eq!(lost_journal.phase, ActivationPhase::PublishPending);
+
+    let inspection = load_windows_recovery_inspection(&trust, &verifier(&trust))
+        .expect("inspect the unlaunched attempt");
+    let retirement = ProcessFamilyRetirement::from_exact_zero_observation(
+        *inspection.lifecycle_installation_id(),
+        *inspection.attempt_id(),
+        *inspection.lifecycle_channel_id(),
+    );
+    let WindowsRecoveryOutcome::Reminted(minted) = inspection
+        .recover(&retirement, COORDINATOR)
+        .expect("an exact binding admits journal-bound recovery")
+    else {
+        panic!("a publish-pending journal re-mints its channels");
+    };
+    assert_eq!(
+        observe(&trust),
+        before,
+        "re-minting through recovery writes no record and removes no record sibling"
+    );
+    assert_eq!(
+        std::fs::read(trust.installation.update_root.join("activation-journal"))
+            .expect("journal after re-minting"),
+        lost,
+        "the lost owner's journal stays byte-identical until the resumed owner journals"
+    );
+    assert_eq!(minted.attempt_id(), &lost_journal.attempt_id);
+    assert_ne!(minted.health_channel_id(), &lost_journal.health_channel_id);
+    let minted_health = *minted.health_channel_id();
+
+    let attempt = awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON));
+    let resumed = observe(&trust);
+    assert_eq!(
+        resumed.pending_records, 0,
+        "the journal step removes stale siblings before its first record"
+    );
+    let journal = resumed.journal.expect("the resumed attempt is journaled");
+    assert_eq!(
+        (journal.attempt_id, journal.health_channel_id),
+        (lost_journal.attempt_id, minted_health),
+        "the re-mint record reveals the kept attempt and the freshly minted channel"
+    );
+    assert_ne!(
+        journal.lifecycle_channel_id,
+        lost_journal.lifecycle_channel_id
+    );
+    assert_eq!(journal.ownership, Some(OWNERSHIP));
+    let health = receipt(&attempt);
+    assert_eq!(
+        attempt
+            .accept_health(&health)
+            .expect("exact health commits")
+            .outcome(),
+        WindowsActivationOutcome::Committed
+    );
+    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
+}
+
+#[test]
 fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
     let fixture = tempfile::tempdir().expect("fresh endpoint refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
