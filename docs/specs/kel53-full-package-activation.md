@@ -161,23 +161,32 @@ independent unsafe, privilege/security and wire review before implementation; §
 the new `crates/keld-updater-helper` crate and the owner of each call, §6 T4d orders the
 slices, and §8 records the gates.
 
-KEL-270 T4d wire-layout amendment (proposed; pending owner approval in the KEL-270 T4d
-wire-layout decision, after an independent wire review; no code may depend on it until
-then): it proposes the byte layouts that approved text left to the T4d wire review
-before code. "Candidate connect-back" gains the locator function with its single owner,
-`keld-ipc` (*Locator*), and the `keld-attempt` record table with its transcript and
-health-sequence rules (*Messages*). Every value that earlier approved text left open,
-and every rule that this amendment adds, is listed once, with its rationale, under
-*Proposals* there. The same approval binds the rewording of criterion 8 and of
-Architecture 06 §4a "Health identity", which then say that the receipt binds the attempt
-id and the full artifact identity through the §4 receipt digest, and binds that
-Architecture 06 paragraph's statement of the candidate-mode generation-exit rule of the
-*Health sequence* paragraph. §6 assigns the purpose-`1` locator and the
-`is_attempt_endpoint` predicate to S4 and the bootstrap records and the purpose-`2`
-locator to S11, §7 adds the codec and health-sequence rows, and §8 records the new
-`keld-ipc` edge to the workspace-pinned `blake3` and the health-receipt digest that the
-candidate computes. The journal-v2 golden vectors are not part of it; the S3 pull
-request fixes them under that slice's wire review.
+KEL-270 T4d wire-layout amendment: owner approval comment
+`eff8e2fb-9efd-46dd-bd8c-390d66ea04f2` (Linear KEL-270, 2026-10-06), after three rounds
+of independent wire review, takes the recommended option of each of its four decisions
+(the single `keld-ipc` locator owner, strict field lists, the §4 receipt digest in `AB1`
+and the candidate-mode generation-exit rule) and binds approved content head
+`df65f5c5a7dd3ee059798ed1d1f404b400aa82a7`, spec SHA-256
+`33547073694aab5494d71226e273f895837a80a550a549c8c2454088a4bd8d64` and Architecture 06
+SHA-256 `89ebc48b71fd6bf6767123ebb94e782140708cbd23f6132c2cbd077043bdc2ed`. The commit
+that records this approval only replaces the pending tags with the approval citation
+(approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) and the wording that described
+the draft as proposed; it changes no rule, byte layout or other citation. The amendment
+fixes the byte layouts that approved text left to the T4d wire review before code.
+"Candidate connect-back" gains the locator function with its single owner, `keld-ipc`
+(*Locator*), and the `keld-attempt` record table with its transcript and health-sequence
+rules (*Messages*). Every value that earlier approved text left open, and every rule
+that this amendment adds, is listed once, with its rationale, under *Proposals* there.
+The same approval binds the rewording of criterion 8 and of Architecture 06 §4a "Health
+identity", which then say that the receipt binds the attempt id and the full artifact
+identity through the §4 receipt digest, and binds that Architecture 06 paragraph's
+statement of the candidate-mode generation-exit rule of the *Health sequence* paragraph.
+§6 assigns the purpose-`1` locator and the `is_attempt_endpoint` predicate to S4 and the
+bootstrap records and the purpose-`2` locator to S11, §7 adds the codec and
+health-sequence rows, and §8 records the new `keld-ipc` edge to the workspace-pinned
+`blake3` and the health-receipt digest that the candidate computes. The journal-v2
+golden vectors are not part of it; the S3 pull request fixes them under that slice's
+wire review.
 
 KEL-266 AC4–6 completion: delegated approval comment
 `bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
@@ -530,7 +539,7 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
 8. Candidate health is accepted only over a private channel whose identity `keld-update`
    mints inside the lease-holding attempt owner for the journaled attempt. The receipt
    binds the attempt id and the full artifact identity through the §4 receipt digest
-   (proposed; pending owner approval in the KEL-270 T4d wire-layout decision); the
+   (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06); the
    candidate host
    must have booted from that exact version, reached application `Ready`, and
    remained alive for 30 monotonic seconds with no unexpected generation exit. A generic
@@ -1368,7 +1377,7 @@ ID and the minted attempt and health-channel IDs, in the dedicated
 function with its own purpose and nonce. The name conveys no authority, and the
 keeper's rendezvous locator is never a health endpoint.
 
-*Locator.* (proposed; pending owner approval in the KEL-270 T4d wire-layout decision)
+*Locator.* (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06)
 The name is `\\.\pipe\keld-attempt-` followed by the 32-byte BLAKE3 digest of
 `UTF8("keld.attempt-endpoint/v1\0") || purpose || installation_id || a || b`, rendered
 as 64 lowercase hexadecimal digits, each byte in digest order with its high nibble first
@@ -1555,8 +1564,8 @@ lifecycle records in `bootstrap.rs`), with the Windows pipe primitives in
   class: bootstrap read refused, application exit before Ready, or boot error), and the
   owner's `KELD-AK1` health result (accepted or rolled back).
 
-(proposed; pending owner approval in the KEL-270 T4d wire-layout decision) The records
-follow the lifecycle records' fixed-size, little-endian style, and the table proposes
+(approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) The records
+follow the lifecycle records' fixed-size, little-endian style, and the table fixes
 their bytes (*Proposals*). Offsets are `start..end` byte ranges. As in the `LC1` record
 above, a magic is its 8 ASCII bytes and a PID is a little-endian `u32`. An ID, nonce or
 digest is a raw 32-byte value, matching the 32-byte IDs of the journal and of the
@@ -1582,7 +1591,7 @@ nonce, server nonce, client PID, server PID; `bootstrap.rs:1471-1504`), and a fi
 | `KELD-BA1` (helper), `KELD-BR1` (host); S11 | 113 + locator | `0..8` magic, `8` purpose `2`, `9..41` installation ID, `41..73` client nonce, `73..105` server nonce, `105..109` client PID, `109..113` server PID, `113..` bounded source locator (encoding fixed by S11) |
 | `KELD-BO1` (helper; S11) | 9 | `0..8` magic, `8` closed outcome class (values fixed by S11) |
 
-*Transcript.* (proposed; pending owner approval in the KEL-270 T4d wire-layout decision)
+*Transcript.* (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06)
 `AA1` acknowledges the whole transcript, the fields of `AH1` and `AC1` together. `AR1`
 is its same-context receipt, as `LR1` is for `LA1`: the two share one layout, differ
 only in magic, and each receiver compares the whole record with the one it expects
@@ -1600,8 +1609,8 @@ bootstrap" item 2) and its installation ID is the host's own. The helper accepts
 only when the `BH1` fields that it repeats equal its own `BH1` and its server PID equals
 `GetNamedPipeServerProcessId`; S11 fixes which fields those are (*Bootstrap records*).
 
-*Nonces and purpose.* (proposed; pending owner approval in the KEL-270 T4d wire-layout
-decision) Each client and server nonce is 32 bytes drawn for one connection from the
+*Nonces and purpose.* (approved: KEL-270 owner decision `eff8e2fb`,
+2026-10-06) Each client and server nonce is 32 bytes drawn for one connection from the
 landed `keld-ipc` `SessionToken` generator (`token.rs:10`, `:49`), the reused nonce
 utility (criterion 17). The bootstrap nonce comes from the same generator once per
 bootstrap endpoint, is a locator input only, and appears in no record, because no field
@@ -1609,8 +1618,8 @@ list names it. Only the bootstrap records carry a purpose byte, because only the
 field list names one. The claim records carry none: their magic separates them from the
 bootstrap records, and the locator purpose separates their endpoint names.
 
-*Health records.* (proposed; pending owner approval in the KEL-270 T4d wire-layout
-decision) `AB1` carries the fields of the §4 health receipt: the attempt, the health
+*Health records.* (approved: KEL-270 owner decision `eff8e2fb`,
+2026-10-06) `AB1` carries the fields of the §4 health receipt: the attempt, the health
 channel and the artifact. Criterion 8 and Architecture 06 §4a "Health identity", as this
 amendment rewords them, require the receipt to bind the attempt ID and the full artifact
 identity through the §4 receipt digest. The last field of `AB1` is that health-receipt
@@ -1622,15 +1631,15 @@ mismatch, and on exact health `HealthAccepted` records the same value. `AY1`, `A
 connection whose acceptance consumed the one-shot before `AR1`, and its handles are
 non-inheritable and in no role's handle list (*Creation*, *Claim*).
 
-*Health sequence.* (proposed; pending owner approval in the KEL-270 T4d wire-layout
-decision) A reader reads the 8-byte magic first, refuses a magic that is not admitted at
-that position, and only then reads the rest of that record under its deadline. After
-`AR1` the owner admits `AB1`, or `AF1` with class `1` or `3`; after `AB1`, `AY1`, or
-`AF1` with class `2` or `3`; after `AY1`, no record. The candidate sends nothing after
-`AY1` or `AF1` and reads exactly one `AK1`. In candidate mode the host neither arms its
-landed recovery gate at `Ready` nor treats the revocation of an application generation
-after `Ready` as recoverable until it reads `AK1` accepted: from its `AY1` until then it
-handles such a revocation as it already handles one before `Ready` (`keld-core`
+*Health sequence.* (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) A reader
+reads the 8-byte magic first, refuses a magic that is not admitted at that position, and
+only then reads the rest of that record under its deadline. After `AR1` the owner admits
+`AB1`, or `AF1` with class `1` or `3`; after `AB1`, `AY1`, or `AF1` with class `2` or
+`3`; after `AY1`, no record. The candidate sends nothing after `AY1` or `AF1` and reads
+exactly one `AK1`. In candidate mode the host neither arms its landed recovery gate at
+`Ready` nor treats the revocation of an application generation after `Ready` as
+recoverable until it reads `AK1` accepted: from its `AY1` until then it handles such a
+revocation as it already handles one before `Ready` (`keld-core`
 `app_session.rs:4994-4999`): it denies the gate, which then provisions no successor
 (`role.rs:731-744`), and ends the host, so the owner observes end of file or its
 signaled launch handle. On such a revocation the host first closes its attempt
@@ -1656,8 +1665,8 @@ open, the owner sends `AK1` rolled back once and then ends the candidate family 
 waiting for the candidate to read it; after end of file or a signaled launch handle it
 sends none. A failed `AK1` write changes neither outcome.
 
-*Bootstrap records.* (proposed; pending owner approval in the KEL-270 T4d wire-layout
-decision) `BH1` to `BO1` land with S11, not S4 (§6). S6 and every `PerUserDirect` cell
+*Bootstrap records.* (approved: KEL-270 owner decision `eff8e2fb`,
+2026-10-06) `BH1` to `BO1` land with S11, not S4 (§6). S6 and every `PerUserDirect` cell
 use none of them. Before S11, S1's stop rule can still change the bootstrap. Two of
 their fields also lack an approved definition, and one phrase has two readings. KEL-53
 ("Machine-UAC bootstrap" item 5) and KEL-254 criterion 14 name the bounded source lookup
@@ -1670,9 +1679,9 @@ a binding. S11's wire review fixes the source-locator encoding, which also fixes
 size of `BQ1`, `BA1` and `BR1`, and keeps these records fixed-size. The same review
 fixes the `BQ1` field set and the `BO1` class values.
 
-*Proposals.* (proposed; pending owner approval in the KEL-270 T4d wire-layout decision)
-The approved field lists above leave the following values and rules open. Each is this
-amendment's proposal for the wire review, with its rationale:
+*Proposals.* (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) The approved
+field lists above leave the following values and rules open. Each was this amendment's
+proposal for the wire review and is approved with it; its rationale follows:
 - the locator's BLAKE3 hash and NUL-terminated `keld.<name>/v1` domain, the style of the
   landed domain-separated derivations (`records.rs:19-22`, `:239-280`; `keld-pack`
   `expected_identity.rs:16`); its purposes `1` and `2`, numbered from `1` as the landed
@@ -1737,7 +1746,7 @@ amendment's proposal for the wire review, with its rationale:
 - the S11 placement of the bootstrap records and of the `BQ1` field set
   (*Bootstrap records*).
 
-(proposed; pending owner approval in the KEL-270 T4d wire-layout decision) Rejected:
+(approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) Rejected:
 repeating the `AH1` fields in `AC1`, and the attempt and health-channel IDs in `AY1`,
 `AF1` and `AK1`, as the lifecycle challenge and receipts do (`bootstrap.rs:1471-1504`;
 `keld-runtime` `windows_job.rs:2780-2791`, `:2958-2968`). No field list names them, and
@@ -2167,8 +2176,8 @@ Implement in:
     identification level; it never pins a source. The descriptor code uses
     `Win32_Security_Authorization`, which the workspace pin already enables. The new
     safe module `src/attempt.rs` holds the `keld-attempt` codec, server and client and
-    the endpoint locator of "Candidate connect-back" (proposed; pending owner approval
-    in the KEL-270 T4d wire-layout decision);
+    the endpoint locator of "Candidate connect-back" (approved: KEL-270 owner decision
+    `eff8e2fb`, 2026-10-06);
   - `keld-runtime`, `src/windows_job.rs` (its KEL-270 whitelist): `CreateProcessWithTokenW`
     with `CREATE_SUSPENDED`; `AssignProcessToJobObject` on that suspended process (a
     listed call with a new scope); `CompareObjectHandles`; clearing
@@ -2263,7 +2272,7 @@ Must not touch in Slice A:
   - S3, journal v2 and the mint-then-journal seam in `keld-update` (`records.rs`,
     `windows_baseline/activate.rs`). Gates: wire, public API. Evidence: v2 golden
     vectors, v1 decoding that admits no claim, unchanged crash cuts.
-  - S4 (proposed; pending owner approval in the KEL-270 T4d wire-layout decision), the
+  - S4 (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06), the
     `keld-attempt` codec, server and client in `keld-ipc` (`attempt.rs`, `bootstrap.rs`,
     `windows_named_pipe.rs`) for the claim and health records, with the purpose-`1`
     endpoint locator and the `is_attempt_endpoint` exact-shape predicate, which share
@@ -2286,7 +2295,7 @@ Must not touch in Slice A:
     candidate computes for `AB1` ("Candidate connect-back"). Evidence: the
     `PerUserDirect` cells of the connect-back, claimant-binding and squatting rows, and
     the "8 (health sequence)" row with the measurement that fixes the margin G
-    (proposed; pending owner approval in the KEL-270 T4d wire-layout decision).
+    (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06).
   - S7, `keld-guard` token, logon-session and token-impersonation wrappers
     (`uac_token.rs`, `initiating_token.rs`, `logon_session.rs`). Gates: unsafe
     (`keld-guard` amendment), dependency (`Win32_Security_Authentication_Identity`).
@@ -2304,8 +2313,7 @@ Must not touch in Slice A:
     replaces the fixed `HOST` constant), loader hardening and static runtime, the
     `keld-pack` helper member, the helper's argument check, which calls the S4
     `is_attempt_endpoint` predicate and itself parses only the fixed recovery-role
-    selector (proposed; pending owner approval in the KEL-270 T4d wire-layout
-    decision), and the
+    selector (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06), and the
     `keld-runtime` launch calls; the recovery role stays disabled (`RecoveryDisabled`).
     Gates: dependency (new crate, `Win32_UI_Shell`, `Win32_System_Com`), unsafe
     (`keld-runtime`), wire (canonical package content), public API (the locator's image
@@ -2322,8 +2330,8 @@ Must not touch in Slice A:
     reusing `require_windows_machine_uac_owner_token`, `keld-ipc` with the bootstrap
     records `BH1` to `BO1` and the purpose-`2` locator with its golden vector, whose
     source-locator encoding, `BQ1` field set and `BO1` classes its wire review fixes
-    under *Bootstrap records*; proposed; pending owner approval in the KEL-270 T4d
-    wire-layout decision). Gates: all five.
+    under *Bootstrap records*; approved: KEL-270 owner decision `eff8e2fb`,
+    2026-10-06). Gates: all five.
     Evidence: the bootstrap rows under the UAC operator evidence protocol, including
     the second ordinary account and alternate-administrator rows. It starts only after
     S1 showed that the helper can open the host process and its token after
@@ -2364,8 +2372,8 @@ Must not touch in Slice A:
 | 8 (claimant binding) | only the exact launched and retained process is accepted. Two separate observables cover a copy of the candidate image started during `AwaitingHealth`: a same-user Medium copy, like a second instance from the candidate tree that connects first, opens the endpoint, is refused by `CompareObjectHandles`, is disconnected and refuses with a typed `WriterActive`, after which the same pipe instance accepts the real candidate; an LPAC copy that a hostile role starts is denied at pipe open by the DACL and the label and never reaches `CompareObjectHandles`. A peer whose process ID equals the launched one but whose process object differs (seam-injected), a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, integrity or elevation each refuse, as does a token from another session that otherwise matches (administrator-constructed); a connector that sends nothing is dropped at its per-connection deadline; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner (seam-injected); the candidate's connected handle is non-inheritable and in no role's handle list |
 | 8 (endpoint squatting) | at every durable step a test reader of the journal finds the named endpoint already held; a name that exists when a fresh owner creates its endpoint (seam-injected, since the order makes it otherwise unobservable) refuses with `ProtectedStateUnchanged` and no protected write, and for a resumed owner leaves the journal unchanged; a second creation of a live owner's name fails; after owner death, a squatter that creates the name as the same user and one that creates it as a second ordinary user, including one whose process ID equals the journaled owner's (seam-injected), are refused by the claimant on descriptor owner, DACL, label, session or image before it sends anything, or on the journaled owner fields after acceptance; in `MachineUacDirect` a Medium process cannot create the endpoint with an `O:BA` owner; a squatting server receives only an identification-level token; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label, a wrong owner and remote-client admission; the observed default label of an unlabelled pipe that an elevated process creates is recorded; a v1 journal admits no claim |
 | 8 (connect-back in every direct mode) | separately for `PerUserDirect` with the host coordinator as owner, `PerUserDirect` with a criterion-10 post-exit helper if one is used, and `MachineUacDirect` with `keld-updater-helper.exe` as owner: the candidate inherits no endpoint, receives only its rendezvous name, connects back, is accepted, reports Ready and commits after 30 seconds, and the claimant-binding and endpoint-squatting rows pass in that cell; no `MachineUacDirect` cell uses a post-exit helper; `MachineSeamlessDirect` is refusal-only, so no claim is accepted before its authority is selected; a pass in one cell does not close another |
-| 8 (keld-attempt codec) | proposed; pending owner approval in the KEL-270 T4d wire-layout decision: each S4 record's golden bytes, and one negative per byte rule, each refused: each out-of-set purpose (with S11), class or result byte, including `0`; each magic at a position where it is not admitted; a truncated record and a record with one extra trailing byte; a one-field mutation of `AA1`, of `AR1` and of `AB1`; an `AC1` whose IDs fail the locator check, refused before `AA1`; an `AH1` with a foreign installation ID or client PID; locator calls with an all-zero or a duplicated input; an `AC1` whose server PID differs from `GetNamedPipeServerProcessId`; an `AF1` whose class is not admitted at its position (class `1` after `AB1`, class `2` before it); and a non-admitted magic followed by no further byte, refused before its deadline |
-| 8 (health sequence) | proposed; pending owner approval in the KEL-270 T4d wire-layout decision: in candidate mode an unexpected application-generation exit after `AY1` and before `AK1` ends the candidate host with no successor generation, and the owner rolls back; a negative control that arms the recovery gate at `Ready` instead fails this row, and a second negative control that defers the arm but keeps the `Ready`-keyed revocation predicate also fails this row; one byte after `AY1` fails health; an exit injected in the last G of the window fails health; an `AK1` accepted that the candidate loses to end of file, a read failure or its deadline leaves its gate unarmed, so a later generation exit ends the host; after `AK1` accepted the same exit is replaced in-process; an owner killed between the end of the window and the durable `HealthAccepted` has sent no `AK1`, and recovery rolls back; on rollback, `AK1` rolled back is written before the candidate family ends, and the rollback completes when the candidate never reads it; the owner disconnects only after the candidate's end of file or its deadline; a negative control that disconnects right after writing `AK1` accepted leaves the candidate unarmed |
+| 8 (keld-attempt codec) | (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) each S4 record's golden bytes, and one negative per byte rule, each refused: each out-of-set purpose (with S11), class or result byte, including `0`; each magic at a position where it is not admitted; a truncated record and a record with one extra trailing byte; a one-field mutation of `AA1`, of `AR1` and of `AB1`; an `AC1` whose IDs fail the locator check, refused before `AA1`; an `AH1` with a foreign installation ID or client PID; locator calls with an all-zero or a duplicated input; an `AC1` whose server PID differs from `GetNamedPipeServerProcessId`; an `AF1` whose class is not admitted at its position (class `1` after `AB1`, class `2` before it); and a non-admitted magic followed by no further byte, refused before its deadline |
+| 8 (health sequence) | (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) in candidate mode an unexpected application-generation exit after `AY1` and before `AK1` ends the candidate host with no successor generation, and the owner rolls back; a negative control that arms the recovery gate at `Ready` instead fails this row, and a second negative control that defers the arm but keeps the `Ready`-keyed revocation predicate also fails this row; one byte after `AY1` fails health; an exit injected in the last G of the window fails health; an `AK1` accepted that the candidate loses to end of file, a read failure or its deadline leaves its gate unarmed, so a later generation exit ends the host; after `AK1` accepted the same exit is replaced in-process; an owner killed between the end of the window and the durable `HealthAccepted` has sent no `AK1`, and recovery rolls back; on rollback, `AK1` rolled back is written before the candidate family ends, and the rollback completes when the candidate never reads it; the owner disconnects only after the candidate's end of file or its deadline; a negative control that disconnects right after writing `AK1` accepted leaves the candidate unarmed |
 | 8, 17 (D5 fallback) | when the Medium claimant cannot open the elevated owner, the claim binds on the `O:BA` owner and the session before sending and on the journaled owner process ID after acceptance; when the open is admitted, creation time and `helper_image_blake3` are checked as well |
 | 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL and its own user SID as owner before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS and, before sending, verifies that the host process image is its installation's selected `keld-host.exe`, the session, and a descriptor owned by that host's user SID; it takes the initiating token only from that host process object and refuses an elevated or non-Medium initiating token before any protected write; a forged rendezvous argument, a squatting server that is not that `keld-host.exe` (same-user code is outside the boundary and is not claimed), a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted with the initiating token unchanged once S1 shows the open works, and otherwise refuses with a typed `ProtectedStateUnchanged` before any protected write; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
 | 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
@@ -2413,8 +2421,8 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:21`);
   the helper role entry points; the `keld-guard` Authenticode owner moved
   under D4; the `keld-ipc` `attempt` module with its endpoint locator; the `keld-update`
-  health-receipt digest that the candidate computes for `AB1` (proposed; pending owner
-  approval in the KEL-270 T4d wire-layout decision); and the new safe
+  health-receipt digest that the candidate computes for `AB1` (approved: KEL-270 owner
+  decision `eff8e2fb`, 2026-10-06); and the new safe
   wrappers that `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate,
   with the breaking rename of `keld-runtime`'s `WindowsLpacChild` to
   `WindowsSuspendedChild` (S5);
@@ -2427,8 +2435,8 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `keld-runtime` and `keld-guard`; the `windows-sys` features `Win32_UI_Shell` and
   `Win32_System_Com` (`keld-runtime`) and `Win32_Security_Authentication_Identity`
   (`keld-guard`); and a Windows-only `keld-ipc` edge to the workspace-pinned `blake3`
-  (`=1.8.7`) for the attempt-endpoint locator (proposed; pending owner approval in the
-  KEL-270 T4d wire-layout decision), a crate that `keld-update` and
+  (`=1.8.7`) for the attempt-endpoint locator (approved: KEL-270 owner decision
+  `eff8e2fb`, 2026-10-06), a crate that `keld-update` and
   `keld-pack` already lock. `Win32_Security_Authorization`, which the descriptor code
   uses, and the WinTrust and Cryptography features that the D4 move carries into
   `keld-guard` are already in the workspace `windows-sys` pin and are not new features.
@@ -2439,7 +2447,7 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   wire-gated: the journal schema revision `keld.activation-journal/v2`
   (`initiating_logon`, `attempt_owner`, with the canonical encoding in §4); the
   `keld-attempt-<64 hex>` subprotocol namespace with its locator function, record
-  layouts (proposed; pending owner approval in the KEL-270 T4d wire-layout decision)
+  layouts (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06)
   and closed message set (`BH1`,
   `BQ1`, `BA1`, `BR1`, `BO1`, `AH1`, `AC1`, `AA1`, `AR1`, `AB1`, `AY1`, `AF1`, `AK1`,
   owned by "Candidate connect-back" and pointed to from Architecture 02); and the

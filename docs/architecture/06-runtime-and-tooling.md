@@ -1134,7 +1134,7 @@ unsafe/security review.
 **Health identity.** A candidate reports over a private channel whose identity
 `keld-update` mints inside the lease-holding attempt owner for the journaled attempt.
 Its receipt binds the attempt id and the full artifact identity through the §4 receipt
-digest (proposed; pending owner approval in the KEL-270 T4d wire-layout decision). The
+digest (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06). The
 candidate host must
 prove it booted from that exact version, reached application `Ready`,
 and remained alive for 30 monotonic seconds with no unexpected application-generation
@@ -1146,7 +1146,7 @@ mode the host neither arms its pre-Ready recovery gate (§1) nor treats a genera
 revocation as recoverable until the owner's accepted health result; from `Ready` until
 then an unexpected generation exit denies the gate, installs no successor and ends the
 host, and the attempt owner's rollback, not an in-process successor, recovers from it
-(proposed; pending owner approval in the KEL-270 T4d wire-layout decision); KEL-53 §4
+(approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06); KEL-53 §4
 "Candidate connect-back" owns the sequence.
 
 The candidate inherits no endpoint and takes no authority from argv or environment; it
