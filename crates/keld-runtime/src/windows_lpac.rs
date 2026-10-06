@@ -499,6 +499,11 @@ pub struct WindowsSuspendedChild {
 
 impl WindowsSuspendedChild {
     /// Returns the process ID that process creation reported for this child.
+    ///
+    /// The ID is evidence correlation only, not an identity on its own: an ID
+    /// names a process only until that process exits. Bind a process by
+    /// comparing its process object, as
+    /// [`crate::windows_job::WindowsLaunchedProcess::bind_claimant`] does.
     #[must_use]
     pub fn id(&self) -> u32 {
         self.pid
