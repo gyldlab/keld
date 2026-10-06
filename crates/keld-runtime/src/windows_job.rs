@@ -23,7 +23,7 @@ use keld_ipc::{
     WindowsLifecycleRendezvousPeer,
 };
 
-use crate::windows_lpac::WindowsSuspendedChild;
+use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild};
 
 use windows_sys::Win32::Foundation::{
     CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NOT_SAME_OBJECT, FILETIME,
@@ -1057,6 +1057,12 @@ impl keld_ipc::WindowsLifecyclePeerPin for WindowsProcessPeer {
 /// launched and still retains may claim. A process ID identifies a process only
 /// until that process exits, so the binding compares kernel objects. Dropping
 /// this value drops the child, which terminates a process it has not reaped.
+///
+/// The record pairs the child with its creation time, so the child is never lent
+/// mutably: [`Self::child`] is a shared borrow of a type without interior
+/// mutability, and [`Self::resume`], [`Self::wait`] and [`Self::terminate`]
+/// forward to it. Safe code therefore cannot `mem::swap` or `mem::replace` the
+/// retained child under a record that stays fixed.
 #[derive(Debug)]
 pub struct WindowsLaunchedProcess {
     child: WindowsSuspendedChild,
@@ -1091,9 +1097,33 @@ impl WindowsLaunchedProcess {
         &self.child
     }
 
-    /// Mutably borrows the retained child to resume, wait for or terminate it.
-    pub const fn child_mut(&mut self) -> &mut WindowsSuspendedChild {
-        &mut self.child
+    /// Resumes the retained child's primary thread exactly once, through
+    /// [`WindowsSuspendedChild::resume`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if the child was already resumed or the kernel rejects resume.
+    pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
+        self.child.resume()
+    }
+
+    /// Waits for the retained child to terminate and returns its exact Windows
+    /// exit code, through [`WindowsSuspendedChild::wait`].
+    ///
+    /// # Errors
+    ///
+    /// Fails on timeout or process-status query failure.
+    pub fn wait(&mut self, timeout_ms: u32) -> Result<u32, WindowsLpacError> {
+        self.child.wait(timeout_ms)
+    }
+
+    /// Terminates the retained child, through [`WindowsSuspendedChild::terminate`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if Windows rejects termination.
+    pub fn terminate(&mut self, exit_code: u32) -> Result<(), WindowsLpacError> {
+        self.child.terminate(exit_code)
     }
 
     /// Binds a connected claimant to this exact launch.
@@ -3886,11 +3916,7 @@ mod tests {
             .bind_claimant(&claimant)
             .expect("the exact suspended launch binds");
 
-        launch
-            .launched
-            .child_mut()
-            .resume()
-            .expect("resume the launch once");
+        launch.launched.resume().expect("resume the launch once");
         assert!(
             !claimant
                 .has_exited()
@@ -3908,12 +3934,10 @@ mod tests {
 
         launch
             .launched
-            .child_mut()
             .terminate(0)
             .expect("terminate the resumed launch");
         launch
             .launched
-            .child_mut()
             .wait(10_000)
             .expect("reap the resumed launch");
     }
@@ -3967,15 +3991,10 @@ mod tests {
             .launched
             .bind_claimant(&claimant)
             .expect("the live launch binds before termination");
-        launch
-            .launched
-            .child_mut()
-            .terminate(7)
-            .expect("terminate the launch");
+        launch.launched.terminate(7).expect("terminate the launch");
         assert_eq!(
             launch
                 .launched
-                .child_mut()
                 .wait(10_000)
                 .expect("observe the signaled launch handle"),
             7
