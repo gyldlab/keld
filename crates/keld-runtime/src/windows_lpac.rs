@@ -309,7 +309,7 @@ impl WindowsLpacProfile {
     ///
     /// Fails closed on malformed input, attribute construction, inheritance
     /// preparation, or process creation. The child never runs on success until
-    /// [`WindowsLpacChild::resume`] is called.
+    /// [`WindowsSuspendedChild::resume`] is called.
     pub fn spawn_suspended(
         &self,
         program: &Path,
@@ -318,7 +318,7 @@ impl WindowsLpacProfile {
         current_dir: Option<&Path>,
         standard_handles: Option<WindowsLpacStdio<'_>>,
         extra_handles: &[BorrowedHandle<'_>],
-    ) -> Result<WindowsLpacChild, WindowsLpacError> {
+    ) -> Result<WindowsSuspendedChild, WindowsLpacError> {
         let application = wide_nul(program.as_os_str(), "application path")?;
         let mut command_line = encode_command_line(program.as_os_str(), args)?;
         let environment = encode_environment(environment)?;
@@ -419,7 +419,7 @@ fn create_suspended_process(
     current_dir: Option<&[u16]>,
     startup: &STARTUPINFOEXW,
     inherit_handles: bool,
-) -> Result<WindowsLpacChild, WindowsLpacError> {
+) -> Result<WindowsSuspendedChild, WindowsLpacError> {
     let mut process = PROCESS_INFORMATION::default();
     let creation_flags =
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
@@ -460,7 +460,7 @@ fn create_suspended_process(
         ));
     }
 
-    Ok(WindowsLpacChild {
+    Ok(WindowsSuspendedChild {
         // SAFETY: both handles are fresh, non-null owning handles returned by
         // CreateProcessW and each is converted exactly once.
         process: unsafe { OwnedHandle::from_raw_handle(process.hProcess.cast()) },
@@ -481,17 +481,24 @@ pub struct WindowsLpacStdio<'a> {
     pub stderr: BorrowedHandle<'a>,
 }
 
-/// Owning handle pair for a suspended or running LPAC child.
+/// Owning handle pair for one process that a Keld launch path created suspended.
+///
+/// This is the single suspended-child type (KEL-53 §5 reuse decisions). The LPAC
+/// launch creates it; any other suspended launch, such as the attempt owner's
+/// token launch, must adopt its created process into this same type, so the
+/// resume-once state and its one primary-thread resume are never duplicated. The
+/// process handle stays retained after resume; it is the launch handle that
+/// [`crate::windows_job::WindowsLaunchedProcess`] binds a connect-back claimant to.
 #[derive(Debug)]
-pub struct WindowsLpacChild {
+pub struct WindowsSuspendedChild {
     process: OwnedHandle,
     thread: Option<OwnedHandle>,
     pid: u32,
     terminated: bool,
 }
 
-impl WindowsLpacChild {
-    /// Returns the OS process identifier used only for evidence correlation.
+impl WindowsSuspendedChild {
+    /// Returns the process ID that process creation reported for this child.
     #[must_use]
     pub fn id(&self) -> u32 {
         self.pid
@@ -604,7 +611,7 @@ impl WindowsLpacChild {
     }
 }
 
-impl Drop for WindowsLpacChild {
+impl Drop for WindowsSuspendedChild {
     fn drop(&mut self) {
         if self.terminated {
             return;
