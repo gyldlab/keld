@@ -468,8 +468,9 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   journals them with the owner's process and initiating-logon facts, so an owner can hold
   its connect-back endpoint before any record reveals them. A landed v1 journal still
   decodes; it carries no owner facts, so it can admit no candidate claim. Its phase
-  writes keep v1, and only the re-mint record of a resumed unlaunched attempt, which
-  carries the resumed owner's facts, is v2. `select_windows_active_package` mints the
+  writes keep v1 until a resumed unlaunched attempt's re-mint record supplies the resumed
+  owner's facts; that record and every later write of the attempt are v2.
+  `select_windows_active_package` mints the
   journal-free `ActivePackageSelection` (KEL-254 AC4): under the shared snapshot lease it
   requires `current` to equal last-known-good or previous-known-good within the floor,
   admits only referenced versions, gives each the baseline loader's metadata admission
