@@ -2146,27 +2146,25 @@ impl WindowsNamedPipeBootstrapStream {
     /// Returns whether `endpoint` has the exact host-minted Keld pipe shape.
     #[must_use]
     pub fn is_keld_endpoint(endpoint: &str) -> bool {
-        endpoint
-            .strip_prefix(r"\\.\pipe\keld-")
-            .is_some_and(|nonce| {
-                nonce.len() == 64
-                    && nonce
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
+        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-")
     }
 
     /// Returns whether `endpoint` has the exact lifecycle-only pipe shape.
     #[must_use]
     pub fn is_lifecycle_endpoint(endpoint: &str) -> bool {
-        endpoint
-            .strip_prefix(r"\\.\pipe\keld-lifecycle-")
-            .is_some_and(|nonce| {
-                nonce.len() == 64
-                    && nonce
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
+        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-lifecycle-")
+    }
+
+    /// Returns whether `endpoint` has the exact `keld-attempt` pipe shape,
+    /// `\\.\pipe\keld-attempt-<64 lowercase hex>` (KEL-53 §4 "Machine-UAC
+    /// bootstrap" item 3 and "Candidate connect-back").
+    ///
+    /// This is the argument-shape check for the helper's rendezvous argument and
+    /// the candidate's: a UNC or remote path, a `\\?\` path, another `keld-*`
+    /// namespace, uppercase hex and any other length are refused before any open.
+    #[must_use]
+    pub fn is_attempt_endpoint(endpoint: &str) -> bool {
+        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-attempt-")
     }
 
     /// Opens a client handle to an exact named-pipe endpoint.
@@ -2199,6 +2197,22 @@ impl WindowsNamedPipeBootstrapStream {
         self.0.try_clone().map(Self)
     }
 }
+
+/// One owner for the exact Keld pipe-name rule: the namespace `prefix` followed
+/// by exactly 64 lowercase hexadecimal digits and nothing else. The prefix is
+/// the protocol discriminator, so the namespaces stay disjoint.
+#[cfg(windows)]
+fn has_exact_pipe_locator(endpoint: &str, prefix: &str) -> bool {
+    endpoint.strip_prefix(prefix).is_some_and(|locator| {
+        locator.len() == 64
+            && locator
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+#[cfg(all(test, windows))]
+mod endpoint_shape_tests;
 
 #[cfg(all(test, windows))]
 mod named_pipe_tests {
