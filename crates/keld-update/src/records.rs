@@ -14,7 +14,10 @@ pub(crate) const MAX_LOCAL_RECORD_BYTES: usize = 64 * 1024;
 const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";
 const FLOOR_SCHEMA: &str = "keld.version-floor/v1";
-const ACTIVATION_JOURNAL_SCHEMA: &str = "keld.activation-journal/v1";
+/// Landed T4b schema: decoded so its attempt can finish, but it never admits a claim.
+const ACTIVATION_JOURNAL_SCHEMA_V1: &str = "keld.activation-journal/v1";
+/// KEL-270 T4d schema: adds `initiating_logon` and `attempt_owner` to every phase.
+const ACTIVATION_JOURNAL_SCHEMA_V2: &str = "keld.activation-journal/v2";
 #[cfg(windows)]
 const LIFECYCLE_INSTALLATION_BINDING_DOMAIN: &[u8] =
     b"keld.installation-binding/provenance-v2/v1\0";
@@ -72,8 +75,77 @@ pub(crate) struct ActivationJournal {
     pub(crate) health_channel_id: [u8; 32],
     /// One-shot identity of the bounded lifecycle-keeper handoff channel.
     pub(crate) lifecycle_channel_id: [u8; 32],
+    /// Initiating logon session and attempt owner, required in every v2 record and phase.
+    ///
+    /// `None` only for a decoded `keld.activation-journal/v1` record, which has neither
+    /// and therefore never admits a candidate claim. Such a record keeps its v1 encoding
+    /// for the phase writes that finish it; a resumed owner's re-mint record supplies both
+    /// facts and is v2. One field holds both, so a record with only one is unrepresentable.
+    pub(crate) ownership: Option<AttemptOwnership>,
     /// One explicit durable phase; phase recovery is never inferred from filenames.
     pub(crate) phase: ActivationPhase,
+}
+
+/// The v2 owner facts of one attempt (KEL-53 §4 "Internal state and transition contract").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttemptOwnership {
+    /// Logon session of the initiating process token, recorded before any launch.
+    pub(crate) initiating_logon: InitiatingLogon,
+    /// Process that creates the connect-back endpoint and launches the candidate.
+    pub(crate) attempt_owner: AttemptOwner,
+}
+
+/// Logon session of the initiating process token, journaled before any launch.
+///
+/// keld-update records this value and cannot observe it: the attempt owner reads
+/// `TokenStatistics.AuthenticationId` from the initiating token and
+/// `SECURITY_LOGON_SESSION_DATA.LogonTime` from its logon session. Machine-UAC owner-loss
+/// retirement later proves that exactly this session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitiatingLogon {
+    authentication_id: u64,
+    logon_time: i64,
+}
+
+impl InitiatingLogon {
+    /// Records one initiating logon session.
+    ///
+    /// `authentication_id` is the session LUID as `(HighPart << 32) | LowPart`, and
+    /// `logon_time` its `LogonTime` FILETIME. Journaling refuses a zero or negative
+    /// `logon_time` before it writes.
+    #[cfg(any(windows, test))]
+    #[must_use]
+    pub const fn new(authentication_id: u64, logon_time: i64) -> Self {
+        Self {
+            authentication_id,
+            logon_time,
+        }
+    }
+}
+
+/// Process that creates an attempt's connect-back endpoint and launches its candidate.
+///
+/// keld-update records this value and cannot observe it: the owner supplies its own
+/// process ID and `GetProcessTimes` creation FILETIME. A claimant binds the journaled
+/// values to the endpoint's server process after acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttemptOwner {
+    owner_process_id: u32,
+    owner_creation_time: u64,
+}
+
+impl AttemptOwner {
+    /// Records the attempt owner's process ID and creation time.
+    ///
+    /// Journaling refuses a zero process ID or a zero creation time before it writes.
+    #[cfg(any(windows, test))]
+    #[must_use]
+    pub const fn new(owner_process_id: u32, owner_creation_time: u64) -> Self {
+        Self {
+            owner_process_id,
+            owner_creation_time,
+        }
+    }
 }
 
 /// Persisted phase of the common updater transaction.
@@ -182,7 +254,28 @@ struct WireActivationJournal {
     helper_image_blake3: String,
     health_channel_id: String,
     lifecycle_channel_id: String,
+    // Present exactly in `keld.activation-journal/v2`. A v1 record omits both keys; an
+    // explicit `null` decodes to `None` and then fails the canonical re-encoding check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initiating_logon: Option<WireInitiatingLogon>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempt_owner: Option<WireAttemptOwner>,
     phase: WireActivationPhase,
+}
+
+/// `h16` values: exactly 16 lowercase hexadecimal digits of an unsigned 64-bit value.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireInitiatingLogon {
+    authentication_id: String,
+    logon_time: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireAttemptOwner {
+    owner_process_id: u32,
+    owner_creation_time: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -376,8 +469,25 @@ pub(crate) fn encode_activation_journal(
     journal: &ActivationJournal,
 ) -> Result<Vec<u8>, UpdateError> {
     validate_activation_journal(journal)?;
+    // The schema follows the owner facts: a record carrying them is v2, and only a
+    // decoded v1 record, which has neither, keeps its v1 encoding.
+    let (schema, initiating_logon, attempt_owner) = match &journal.ownership {
+        Some(ownership) => (
+            ACTIVATION_JOURNAL_SCHEMA_V2,
+            Some(WireInitiatingLogon {
+                authentication_id: wire_h16(ownership.initiating_logon.authentication_id),
+                // Validation admitted only a positive time, so this is its exact value.
+                logon_time: wire_h16(ownership.initiating_logon.logon_time.cast_unsigned()),
+            }),
+            Some(WireAttemptOwner {
+                owner_process_id: ownership.attempt_owner.owner_process_id,
+                owner_creation_time: wire_h16(ownership.attempt_owner.owner_creation_time),
+            }),
+        ),
+        None => (ACTIVATION_JOURNAL_SCHEMA_V1, None, None),
+    };
     encode(&WireActivationJournal {
-        schema: ACTIVATION_JOURNAL_SCHEMA.to_owned(),
+        schema: schema.to_owned(),
         attempt_id: hex_digest(&journal.attempt_id),
         candidate: wire_artifact(&journal.candidate)?,
         rollback_target: wire_artifact(&journal.rollback_target)?,
@@ -391,13 +501,15 @@ pub(crate) fn encode_activation_journal(
         helper_image_blake3: hex_digest(&journal.helper_image_blake3),
         health_channel_id: hex_digest(&journal.health_channel_id),
         lifecycle_channel_id: hex_digest(&journal.lifecycle_channel_id),
+        initiating_logon,
+        attempt_owner,
         phase: wire_activation_phase(&journal.phase),
     })
 }
 
 pub(crate) fn decode_activation_journal(bytes: &[u8]) -> Result<ActivationJournal, UpdateError> {
     let wire: WireActivationJournal = decode(bytes)?;
-    schema(&wire.schema, ACTIVATION_JOURNAL_SCHEMA)?;
+    let ownership = attempt_ownership(&wire.schema, wire.initiating_logon, wire.attempt_owner)?;
     let journal = ActivationJournal {
         attempt_id: digest(&wire.attempt_id)?,
         candidate: artifact(wire.candidate)?,
@@ -408,10 +520,57 @@ pub(crate) fn decode_activation_journal(bytes: &[u8]) -> Result<ActivationJourna
         helper_image_blake3: digest(&wire.helper_image_blake3)?,
         health_channel_id: digest(&wire.health_channel_id)?,
         lifecycle_channel_id: digest(&wire.lifecycle_channel_id)?,
+        ownership,
         phase: activation_phase(wire.phase)?,
     };
     validate_activation_journal(&journal)?;
     Ok(journal)
+}
+
+/// Binds the owner facts to the schema: absent from v1, both present in v2.
+fn attempt_ownership(
+    schema: &str,
+    initiating_logon: Option<WireInitiatingLogon>,
+    attempt_owner: Option<WireAttemptOwner>,
+) -> Result<Option<AttemptOwnership>, UpdateError> {
+    match (schema, initiating_logon, attempt_owner) {
+        (ACTIVATION_JOURNAL_SCHEMA_V1, None, None) => Ok(None),
+        (ACTIVATION_JOURNAL_SCHEMA_V2, Some(logon), Some(owner)) => {
+            Ok(Some(AttemptOwnership {
+                initiating_logon: InitiatingLogon {
+                    authentication_id: h16(&logon.authentication_id)?,
+                    // `LogonTime` is a signed FILETIME carried as its 64-bit two's
+                    // complement, so an `h16` above `i64::MAX` is a negative time that
+                    // validation refuses.
+                    logon_time: h16(&logon.logon_time)?.cast_signed(),
+                },
+                attempt_owner: AttemptOwner {
+                    owner_process_id: owner.owner_process_id,
+                    owner_creation_time: h16(&owner.owner_creation_time)?,
+                },
+            }))
+        }
+        (ACTIVATION_JOURNAL_SCHEMA_V1 | ACTIVATION_JOURNAL_SCHEMA_V2, _, _) => Err(invalid(
+            "activation journal owner fields must be absent from v1 and both present in v2",
+        )),
+        _ => Err(invalid("unsupported record schema")),
+    }
+}
+
+/// Refuses owner facts that cannot name a launched process or its logon session.
+fn validate_attempt_ownership(ownership: &AttemptOwnership) -> Result<(), UpdateError> {
+    if ownership.attempt_owner.owner_process_id == 0 {
+        return Err(invalid(
+            "attempt owner process ID must be in 1..=4294967295",
+        ));
+    }
+    if ownership.attempt_owner.owner_creation_time == 0 {
+        return Err(invalid("attempt owner creation time must be nonzero"));
+    }
+    if ownership.initiating_logon.logon_time <= 0 {
+        return Err(invalid("initiating logon time must be positive"));
+    }
+    Ok(())
 }
 
 /// Raw-byte fuzzer hook for the canonical activation-journal decoder.
@@ -492,6 +651,9 @@ pub(crate) fn validate_activation_journal(journal: &ActivationJournal) -> Result
         return Err(invalid(
             "rollback target is not a recorded known-good artifact",
         ));
+    }
+    if let Some(ownership) = &journal.ownership {
+        validate_attempt_ownership(ownership)?;
     }
     Ok(())
 }
@@ -607,6 +769,24 @@ fn digest(text: &str) -> Result<[u8; 32], UpdateError> {
     }
     crate::manifest::parse_digest("local digest", text)
         .map_err(|_| invalid("digest must contain exactly 64 lowercase hexadecimal characters"))
+}
+
+/// Parses an `h16`: exactly 16 lowercase hexadecimal digits of an unsigned 64-bit value.
+fn h16(text: &str) -> Result<u64, UpdateError> {
+    let malformed = || invalid("value must be exactly 16 lowercase hexadecimal digits");
+    if text.len() != 16
+        || text
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(malformed());
+    }
+    u64::from_str_radix(text, 16).map_err(|_| malformed())
+}
+
+#[cfg(any(windows, test))]
+fn wire_h16(value: u64) -> String {
+    format!("{value:016x}")
 }
 
 fn channel(text: &str) -> Result<Channel, UpdateError> {

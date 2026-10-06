@@ -819,8 +819,32 @@ bytes). It adds `"initiating_logon": {"authentication_id": h16, "logon_time": h1
 string of exactly 16 lowercase hexadecimal digits of an unsigned 64-bit value, and `n`
 is a JSON integer in `1..=4294967295`. `authentication_id` is the LUID as
 `(HighPart << 32) | LowPart`; `logon_time` and `owner_creation_time` are the FILETIME
-values, nonzero, and a negative `LogonTime` refuses. The wire review fixes golden
-vectors for these fields before code.
+values, nonzero, and a negative `LogonTime` refuses. The wire review fixes these golden
+vectors. The two objects follow `lifecycle_channel_id` and precede `phase`, in the order
+above, under schema `keld.activation-journal/v2`. The fixture's logon session has
+`HighPart` 1 and `LowPart` `0x0002a5f3`, its `LogonTime` is 2026-10-06T08:00:00Z, and
+its owner is process 4242, created 42 seconds later. The exact accepted `publish-pending`
+record (one line, no trailing newline; the other phases differ only in `phase`, as in
+v1) is checked in with the other three as
+`crates/keld-update/src/records/golden/journal-v2-<phase>.json`:
+
+```json
+{"schema":"keld.activation-journal/v2","attempt_id":"1111111111111111111111111111111111111111111111111111111111111111","candidate":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.1.0","content_blake3":"4444444444444444444444444444444444444444444444444444444444444444"},"rollback_target":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_floor":"1.0.0","prior_last_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"1.0.0","content_blake3":"0101010101010101010101010101010101010101010101010101010101010101"},"prior_previous_known_good":{"app_id":"dev.keld.fixture","channel":"stable","target":"windows-x64","version":"0.9.0","content_blake3":"3333333333333333333333333333333333333333333333333333333333333333"},"helper_image_blake3":"5555555555555555555555555555555555555555555555555555555555555555","health_channel_id":"6666666666666666666666666666666666666666666666666666666666666666","lifecycle_channel_id":"8888888888888888888888888888888888888888888888888888888888888888","initiating_logon":{"authentication_id":"000000010002a5f3","logon_time":"01dd5568af7ac000"},"attempt_owner":{"owner_process_id":4242,"owner_creation_time":"01dd5568c8837100"},"phase":{"phase":"publish-pending"}}
+```
+
+| Field | Accepted | Refused (`journal-v2-refusals.txt` beside the goldens) |
+|---|---|---|
+| `authentication_id` | every `h16`, `0000000000000000` to `ffffffffffffffff` | uppercase, 15 or 17 digits, a non-hex digit, a `0x` or sign prefix, a JSON number, an escaped digit |
+| `logon_time` | `0000000000000001` to `7fffffffffffffff` | `0000000000000000`; `8000000000000000` to `ffffffffffffffff`, the two's complement of a negative `LogonTime`; uppercase, 15 digits, a JSON number |
+| `owner_process_id` | `1` to `4294967295` | `0`, `4294967296`, `-1`, `4242.0`, `4.242e3`, `04242`, `"4242"` |
+| `owner_creation_time` | `0000000000000001` to `ffffffffffffffff` | `0000000000000000`; uppercase, 17 digits, a non-hex digit |
+| record shape | both objects in v2, neither in v1 | an object missing or `null` in v2; either present in v1; another schema; swapped objects or keys, an object after `phase`, whitespace; a duplicate or unknown key at either level |
+
+A v1 record still decodes, with neither object, and admits no claim. The phase writes
+that finish a decoded v1 attempt keep its v1 encoding, because no owner facts exist for
+it. Each record that first reveals minted identities, `PublishPending` for a fresh
+attempt or the re-mint record for a resumed one, carries the writing owner's own
+`attempt_owner` and `initiating_logon` and is therefore v2.
 
 The journal is a strict versioned local record. Unknown versions, duplicate fields,
 noncanonical values and pointer/artifact mismatches fail closed. `keld-update` mints the

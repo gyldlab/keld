@@ -29,7 +29,8 @@ mod locate;
 pub(crate) use activate::CRASH_CUT_HOOK;
 pub use activate::{
     ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
-    WindowsActivationOutcome, WindowsActivationResolution, WindowsRecoveryOutcome,
+    WindowsActivationOutcome, WindowsActivationResolution, WindowsJournaledAttempt,
+    WindowsMintedAttempt, WindowsRecoveryOutcome,
 };
 pub use initialize::{
     initialize_windows_baseline, initialize_windows_machine_uac_baseline,
@@ -211,8 +212,9 @@ pub struct WindowsBaselineReceipt {
 /// Coherent protected activation snapshot held under the exclusive installation lease.
 ///
 /// It exposes only validated state and an extraction root. Journal, floor and pointer
-/// writes happen only through [`crate::WindowsExtractionRoot::begin_activation`] after
-/// a complete version is published under this same lease. The production loader
+/// writes happen only through [`crate::WindowsMintedAttempt::journal`] for the attempt
+/// that [`crate::WindowsExtractionRoot::begin_activation`] minted for a stage completed
+/// under this same lease. The production loader
 /// currently admits only `PerUserDirect`; machine-UAC and machine-seamless authority
 /// remain separate gates.
 #[derive(Debug)]

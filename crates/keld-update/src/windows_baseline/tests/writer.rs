@@ -1105,8 +1105,14 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
         }
         return;
     }
-    let crate::WindowsRecoveryOutcome::AwaitingHealth(attempt) =
+    let crate::WindowsRecoveryOutcome::Reminted(minted) =
         recovered.expect("the exact QF1 witness authorizes journal-bound recovery")
+    else {
+        panic!("a publish-pending journal re-mints its channels without writing");
+    };
+    let crate::WindowsJournaledAttempt::AwaitingHealth(attempt) = minted
+        .journal(support::ATTEMPT_OWNER, support::INITIATING_LOGON)
+        .expect("the resumed owner journals its re-mint record")
     else {
         panic!("a publish-pending journal resumes to a live awaiting-health attempt");
     };
@@ -1930,6 +1936,10 @@ fn seed_pending_activation_journal(
         helper_image_blake3: [0x55; 32],
         health_channel_id: [0x66; 32],
         lifecycle_channel_id,
+        ownership: Some(crate::records::AttemptOwnership {
+            initiating_logon: support::INITIATING_LOGON,
+            attempt_owner: support::ATTEMPT_OWNER,
+        }),
         phase,
     };
     if let ActivationPhase::HealthAccepted { .. } = journal.phase {

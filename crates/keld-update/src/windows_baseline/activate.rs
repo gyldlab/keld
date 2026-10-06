@@ -6,6 +6,11 @@
 //! taken. The only writes made outside it record an external fact: the attempt start,
 //! accepted health, a failure, or fresh channel identities for a resumed owner. Install
 //! mode changes how the share-zero lease was acquired, never this state machine.
+//!
+//! Minting and the first record that reveals the minted identities are separate calls
+//! (the mint-then-journal seam): [`WindowsMintedAttempt`] carries identities that no
+//! record names yet, so the attempt owner can create and hold its connect-back endpoint
+//! before [`WindowsMintedAttempt::journal`] durably records them with its owner facts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,7 +24,8 @@ use crate::activation::{
     ActivationStep, CandidateLocation, ProtectedSlots, next_activation_step, retirement_due,
 };
 use crate::records::{
-    self, ActivationFailureClass, ActivationJournal, ActivationPhase, PointerKind,
+    self, ActivationFailureClass, ActivationJournal, ActivationPhase, AttemptOwner,
+    AttemptOwnership, InitiatingLogon, PointerKind,
 };
 use crate::windows_fs::RecordSlot;
 use crate::{ActivationEffect, ArtifactIdentity, UpdateError};
@@ -144,10 +150,163 @@ impl WindowsActivationResolution {
 pub enum WindowsRecoveryOutcome {
     /// The attempt finished commit or rollback.
     Resolved(WindowsActivationResolution),
-    /// A publish-pending attempt resumed to `AwaitingHealth` with freshly minted health
-    /// and lifecycle channel identities; the recovering owner now holds the writer lease
-    /// and must launch the candidate and resolve its health.
+    /// A publish-pending attempt received freshly minted health and lifecycle channel
+    /// identities and nothing was written; the recovering owner holds the writer lease and
+    /// journals them with [`WindowsMintedAttempt::journal`] once its endpoint is held.
+    Reminted(Box<WindowsMintedAttempt>),
+}
+
+/// Result of journaling minted identities and continuing the common transaction.
+#[derive(Debug)]
+pub enum WindowsJournaledAttempt {
+    /// The candidate is published, verified, selected and journaled `AwaitingHealth`; the
+    /// owner now launches it and resolves its health.
     AwaitingHealth(Box<WindowsActivationAttempt>),
+    /// A resumed attempt resolved without a launch: its candidate was neither staged nor
+    /// published, so it was abandoned. A fresh attempt never resolves here.
+    Resolved(WindowsActivationResolution),
+}
+
+/// Attempt identities minted under the exclusive writer lease that no record names yet.
+///
+/// This is the mint-then-journal seam of KEL-53 §4 "Candidate connect-back". The attempt
+/// owner derives its connect-back endpoint from [`Self::lifecycle_installation_id`],
+/// [`Self::attempt_id`] and [`Self::health_channel_id`], creates and holds it and reads
+/// its descriptor back, and only then calls [`Self::journal`], which writes the first
+/// record that reveals them. Minting wrote nothing. Dropping this value, or
+/// [`Self::refuse`], releases the lease: a fresh attempt leaves only its completed stage
+/// and a resumed attempt leaves its journal unchanged.
+#[derive(Debug)]
+pub struct WindowsMintedAttempt {
+    transaction: Transaction,
+    installation_id: [u8; 32],
+    /// Fresh channels of a resumed attempt. A fresh attempt has none: its unwritten
+    /// journal already holds every identity it minted.
+    reminted: Option<RemintedChannels>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RemintedChannels {
+    health_channel_id: [u8; 32],
+    lifecycle_channel_id: [u8; 32],
+}
+
+impl WindowsMintedAttempt {
+    /// Attempt identity: freshly minted, or the journaled one that a resumed owner keeps.
+    #[must_use]
+    pub const fn attempt_id(&self) -> &[u8; 32] {
+        &self.transaction.journal.attempt_id
+    }
+
+    /// Freshly minted identity of this owner's private health channel.
+    #[must_use]
+    pub const fn health_channel_id(&self) -> &[u8; 32] {
+        match &self.reminted {
+            Some(channels) => &channels.health_channel_id,
+            None => &self.transaction.journal.health_channel_id,
+        }
+    }
+
+    /// Lifecycle installation ID that this transaction validated for its binding checks.
+    #[must_use]
+    pub const fn lifecycle_installation_id(&self) -> &[u8; 32] {
+        &self.installation_id
+    }
+
+    /// Durably writes the first record that reveals these identities, with the owner
+    /// facts, then continues the common transaction to the health decision.
+    ///
+    /// A fresh attempt writes its `PublishPending` journal. A resumed attempt replaces
+    /// its journal with the re-mint record, which keeps the attempt identity and phase and
+    /// records the fresh channels with this owner's facts. Both are
+    /// `keld.activation-journal/v2`. The transaction then renames the stage, verifies and
+    /// pins the candidate, advances the floor, selects `current` and journals
+    /// `AwaitingHealth`, as an uninterrupted owner would.
+    ///
+    /// # Errors
+    /// Owner facts that name no process or logon session (a zero process ID or creation
+    /// time, or a zero or negative logon time) refuse before any write: a fresh attempt
+    /// at step `start` with [`ActivationEffect::ProtectedStateUnchanged`], a resumed
+    /// attempt with its journal unchanged and
+    /// [`ActivationEffect::JournalBoundRecoveryRequired`]. A failed durable step refuses
+    /// with the effect its journal decides; a fresh attempt refused before its journal
+    /// exists leaves only its stage. A copy that fails verification after its rename is
+    /// retired under the journal and the next stage recording the exact candidate is
+    /// tried. With none left the journal is removed, and the refusal names step
+    /// `candidate verification` with [`ActivationEffect::ProtectedStateUnchanged`] (or
+    /// [`ActivationEffect::ResolvedWithLeftovers`] if cleanup is incomplete).
+    pub fn journal(
+        self,
+        attempt_owner: AttemptOwner,
+        initiating_logon: InitiatingLogon,
+    ) -> Result<WindowsJournaledAttempt, UpdateError> {
+        let Self {
+            mut transaction,
+            installation_id,
+            reminted,
+        } = self;
+        let mut journal = transaction.journal.clone();
+        journal.ownership = Some(AttemptOwnership {
+            initiating_logon,
+            attempt_owner,
+        });
+        if let Some(channels) = reminted {
+            journal.health_channel_id = channels.health_channel_id;
+            journal.lifecycle_channel_id = channels.lifecycle_channel_id;
+        }
+        // Encoding validates every journal fact, including the owner facts, before the
+        // first protected write of this call.
+        let bytes = records::encode_activation_journal(&journal)
+            .map_err(|cause| transaction.before_record(&cause))?;
+        remove_stale_record_preparations(&transaction.roots)
+            .map_err(|cause| transaction.before_record(&cause))?;
+        if reminted.is_some() {
+            transaction.write_record(
+                RecordTarget::Replace(RecordSlot::Journal),
+                &bytes,
+                "channels-reminted",
+            )?;
+            transaction.journal = journal;
+        } else {
+            transaction.journal = journal;
+            if let Err(cause) =
+                transaction.write_record(RecordTarget::Absent(JOURNAL), &bytes, "publish-pending")
+            {
+                if transaction.journal_present() {
+                    transaction.journaled = true;
+                    return Err(transaction.refault(&cause));
+                }
+                return Err(transaction.before_record(&cause));
+            }
+            transaction.journaled = true;
+        }
+        match transaction.advance()? {
+            Progress::AwaitingHealth => Ok(WindowsJournaledAttempt::AwaitingHealth(Box::new(
+                WindowsActivationAttempt {
+                    transaction,
+                    installation_id,
+                },
+            ))),
+            Progress::Resolved(resolution) if reminted.is_some() => {
+                Ok(WindowsJournaledAttempt::Resolved(resolution))
+            }
+            Progress::Resolved(_) => {
+                Err(transaction.fault("start", "a fresh attempt resolved before health"))
+            }
+        }
+    }
+
+    /// Consumes the minted identities when the owner cannot create, hold or read back
+    /// its endpoint, and returns the typed refusal for `step`.
+    ///
+    /// Nothing was written. A fresh attempt refuses with
+    /// [`ActivationEffect::ProtectedStateUnchanged`] and leaves only its completed stage;
+    /// a resumed attempt keeps its journal unchanged and refuses with
+    /// [`ActivationEffect::JournalBoundRecoveryRequired`]. The writer lease is released.
+    #[must_use]
+    pub fn refuse(self, step: &'static str, detail: impl std::fmt::Display) -> UpdateError {
+        self.transaction.fault(step, detail)
+    }
 }
 
 /// Live attempt in `AwaitingHealth` that retains the share-zero writer lease.
@@ -269,8 +428,8 @@ impl WindowsActivationAttempt {
 }
 
 impl WindowsActivationWriteSnapshot {
-    /// Journals an attempt for one stage completed under this exact lease, then publishes
-    /// and selects its candidate through the common transaction.
+    /// Mints the identities of an attempt for one stage completed under this exact lease,
+    /// writing nothing; [`WindowsMintedAttempt::journal`] journals and continues it.
     ///
     /// Nothing is renamed before the `PublishPending` journal is durable, so a refusal or
     /// crash before it leaves only the stage, which every census tolerates.
@@ -279,7 +438,7 @@ impl WindowsActivationWriteSnapshot {
         stage: String,
         candidate: &ArtifactIdentity,
         coordinator_image_blake3: [u8; 32],
-    ) -> Result<WindowsActivationAttempt, UpdateError> {
+    ) -> Result<WindowsMintedAttempt, UpdateError> {
         let Self {
             roots,
             lease,
@@ -318,7 +477,6 @@ impl WindowsActivationWriteSnapshot {
                     "the completed stage records a different candidate",
                 ));
             }
-            remove_stale_record_preparations(&roots)?;
             let [attempt_id, health_channel_id, lifecycle_channel_id] = mint_identities()?;
             let journal = ActivationJournal {
                 attempt_id,
@@ -330,67 +488,51 @@ impl WindowsActivationWriteSnapshot {
                 helper_image_blake3: coordinator_image_blake3,
                 health_channel_id,
                 lifecycle_channel_id,
+                // The owner supplies its facts when it journals these identities.
+                ownership: None,
                 phase: ActivationPhase::PublishPending,
             };
-            // The encoder validates the candidate strictly above the prior floor and the
-            // complete prior-context invariants before any journal byte exists.
-            let bytes = records::encode_activation_journal(&journal)?;
-            Ok((installation_id, journal, bytes))
+            // The candidate must be strictly above the prior floor and the prior context
+            // complete before any minted identity leaves this call.
+            records::validate_activation_journal(&journal)?;
+            Ok((installation_id, journal))
         })();
-        let (installation_id, journal, bytes) = preflight.map_err(|cause| {
+        let (installation_id, journal) = preflight.map_err(|cause| {
             UpdateError::activation(
                 "start",
                 ActivationEffect::ProtectedStateUnchanged,
                 refusal_detail(&cause),
             )
         })?;
-        let mut transaction = Transaction {
-            roots,
-            lease,
-            journal,
-            version_floor,
-            current,
-            last_known_good,
-            previous_known_good,
-            pins,
-            stage: Some(stage),
-            journaled: false,
-        };
-        if let Err(cause) =
-            transaction.write_record(RecordTarget::Absent(JOURNAL), &bytes, "publish-pending")
-        {
-            if transaction.journal_present() {
-                transaction.journaled = true;
-                return Err(transaction.refault(&cause));
-            }
-            return Err(UpdateError::activation(
-                "start",
-                ActivationEffect::ProtectedStateUnchanged,
-                refusal_detail(&cause),
-            ));
-        }
-        transaction.journaled = true;
-        match transaction.advance()? {
-            Progress::AwaitingHealth => Ok(WindowsActivationAttempt {
-                transaction,
-                installation_id,
-            }),
-            Progress::Resolved(_) => {
-                Err(transaction.fault("start", "a fresh attempt resolved before health"))
-            }
-        }
+        Ok(WindowsMintedAttempt {
+            transaction: Transaction {
+                roots,
+                lease,
+                journal,
+                version_floor,
+                current,
+                last_known_good,
+                previous_known_good,
+                pins,
+                stage: Some(stage),
+                journaled: false,
+            },
+            installation_id,
+            reminted: None,
+        })
     }
 }
 
 impl WindowsRecoveryInspection {
     /// Continues the inspected journal through the common transaction.
     ///
-    /// A publish-pending attempt re-mints its health and lifecycle channel identities and
-    /// resumes to a live `AwaitingHealth` attempt; an `AwaitingHealth` attempt is rolled
-    /// back because its owner was lost before health; `HealthAccepted` and
-    /// `RollbackPending` finish their recorded resolution. A publish-pending journal also
-    /// accepts [`Self::resume_unlaunched`], which needs no binding because nothing was
-    /// launched; this method checks the binding for every phase.
+    /// A publish-pending attempt receives freshly minted health and lifecycle channel
+    /// identities and nothing is written ([`WindowsRecoveryOutcome::Reminted`]); its
+    /// owner journals them with [`WindowsMintedAttempt::journal`]. An `AwaitingHealth`
+    /// attempt is rolled back because its owner was lost before health; `HealthAccepted`
+    /// and `RollbackPending` finish their recorded resolution. A publish-pending journal
+    /// also accepts [`Self::resume_unlaunched`], which needs no binding because nothing
+    /// was launched; this method checks the binding for every phase.
     ///
     /// # Errors
     /// A retirement binding or coordinator digest that differs from the protected
@@ -403,10 +545,12 @@ impl WindowsRecoveryInspection {
     ) -> Result<WindowsRecoveryOutcome, UpdateError> {
         let (mut transaction, installation_id) = self.into_transaction(coordinator_image_blake3)?;
         transaction.require_retirement_binding(retirement, &installation_id)?;
-        transaction.remove_stale_record_preparations()?;
         if transaction.journal.phase == ActivationPhase::PublishPending {
-            return transaction.resume_unlaunched(installation_id);
+            return transaction
+                .remint(installation_id)
+                .map(|minted| WindowsRecoveryOutcome::Reminted(Box::new(minted)));
         }
+        transaction.remove_stale_record_preparations()?;
         if transaction.journal.phase == ActivationPhase::AwaitingHealth {
             transaction.write_phase(
                 ActivationPhase::RollbackPending {
@@ -426,21 +570,20 @@ impl WindowsRecoveryInspection {
     /// transaction owner keeps the share-zero lease (or its keeper retains a duplicate),
     /// so acquiring this lease proves no prior owner can still write and no candidate
     /// family exists. The resumed owner receives freshly minted health and lifecycle
-    /// channel identities, so no witness from an earlier owner can bind to it. An
-    /// attempt whose candidate is neither staged nor published resolves as
-    /// [`WindowsActivationOutcome::Abandoned`].
+    /// channel identities, so no witness from an earlier owner can bind to it. This call
+    /// writes nothing; [`WindowsMintedAttempt::journal`] durably re-mints them with the
+    /// resumed owner's facts and continues. An attempt whose candidate is neither staged
+    /// nor published then resolves as [`WindowsActivationOutcome::Abandoned`].
     ///
     /// # Errors
     /// Refuses every other phase: a launched attempt needs
     /// [`Self::recover`] with an exact process-family retirement binding. A coordinator
-    /// digest that differs from the journal also refuses before any write. When every
-    /// exact copy fails verification, each is retired, the journal is removed, and the
-    /// refusal names step `candidate verification`. A fault reading a stage or an
-    /// unrelated census fault keeps the journal.
+    /// digest that differs from the journal also refuses. Every refusal writes nothing
+    /// and keeps the journal authoritative.
     pub fn resume_unlaunched(
         self,
         coordinator_image_blake3: [u8; 32],
-    ) -> Result<WindowsRecoveryOutcome, UpdateError> {
+    ) -> Result<WindowsMintedAttempt, UpdateError> {
         let (transaction, installation_id) = self.into_transaction(coordinator_image_blake3)?;
         if transaction.journal.phase != ActivationPhase::PublishPending {
             return Err(transaction.fault(
@@ -448,8 +591,7 @@ impl WindowsRecoveryInspection {
                 "a launched attempt requires an exact process-family retirement binding",
             ));
         }
-        transaction.remove_stale_record_preparations()?;
-        transaction.resume_unlaunched(installation_id)
+        transaction.remint(installation_id)
     }
 
     fn into_transaction(
@@ -550,32 +692,26 @@ impl Transaction {
         }
     }
 
-    /// Durably re-mints the channel identities of a never-launched attempt, then resumes it.
-    fn resume_unlaunched(
-        mut self,
-        installation_id: [u8; 32],
-    ) -> Result<WindowsRecoveryOutcome, UpdateError> {
+    /// Mints fresh channel identities for a never-launched attempt, writing nothing.
+    fn remint(self, installation_id: [u8; 32]) -> Result<WindowsMintedAttempt, UpdateError> {
         let [_, health_channel_id, lifecycle_channel_id] =
             mint_identities().map_err(|cause| self.refault(&cause))?;
-        let mut journal = self.journal.clone();
-        if health_channel_id == journal.attempt_id || lifecycle_channel_id == journal.attempt_id {
+        if health_channel_id == self.journal.attempt_id
+            || lifecycle_channel_id == self.journal.attempt_id
+        {
             return Err(self.fault(
                 "attempt identity",
                 "re-minted channels collide with the attempt identity",
             ));
         }
-        journal.health_channel_id = health_channel_id;
-        journal.lifecycle_channel_id = lifecycle_channel_id;
-        self.write_journal(journal, "channels-reminted")?;
-        match self.advance()? {
-            Progress::AwaitingHealth => Ok(WindowsRecoveryOutcome::AwaitingHealth(Box::new(
-                WindowsActivationAttempt {
-                    transaction: self,
-                    installation_id,
-                },
-            ))),
-            Progress::Resolved(resolution) => Ok(WindowsRecoveryOutcome::Resolved(resolution)),
-        }
+        Ok(WindowsMintedAttempt {
+            transaction: self,
+            installation_id,
+            reminted: Some(RemintedChannels {
+                health_channel_id,
+                lifecycle_channel_id,
+            }),
+        })
     }
 
     /// Applies durable steps until the health decision or journal removal.
@@ -924,6 +1060,16 @@ impl Transaction {
     fn refault(&self, cause: &UpdateError) -> UpdateError {
         let (step, detail) = cause.step_and_detail();
         self.fault(step, detail)
+    }
+
+    /// Refusal before this call's first journal record: a fresh attempt's is a refused
+    /// `start`, and a resumed attempt's keeps its journal authoritative.
+    fn before_record(&self, cause: &UpdateError) -> UpdateError {
+        if self.journaled {
+            self.refault(cause)
+        } else {
+            self.fault("start", refusal_detail(cause))
+        }
     }
 }
 
