@@ -1,0 +1,117 @@
+[
+ {
+  "name": "autoUpdater",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Enable apps to automatically update themselves.\n\nProcess: Main\n\n**See also: A detailed guide about how to implement updates in your application.**\n\n`autoUpdater` is an EventEmitter.\n\n### Platform Notices\n\nCurrently, only macOS and Windows are supported. There is no built-in support for auto-update",
+  "members": [
+   {
+    "name": "setFeedURL",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets the `url` and initialize the auto updater."
+   },
+   {
+    "name": "getFeedURL",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current update feed URL."
+   },
+   {
+    "name": "checkForUpdates",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Asks the server whether there is an update. You must call `setFeedURL` before using this API.\n\n> [!NOTE] If an update is available it will be downloaded automatically. Calling `autoUpdater.checkForUpd"
+   },
+   {
+    "name": "quitAndInstall",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Restarts the app and installs the update after it has been downloaded. It should only be called after `update-downloaded` has been emitted.\n\nUnder the hood calling `autoUpdater.quitAndInstall()` will "
+   },
+   {
+    "name": "error",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "error"
+    ],
+    "returns": null,
+    "desc": "Emitted when there is an error while updating."
+   },
+   {
+    "name": "checking-for-update",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when checking for an available update has started."
+   },
+   {
+    "name": "update-available",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when there is an available update. The update is downloaded automatically."
+   },
+   {
+    "name": "update-not-available",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when there is no available update."
+   },
+   {
+    "name": "update-downloaded",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "releaseNotes",
+     "releaseName",
+     "releaseDate",
+     "updateURL"
+    ],
+    "returns": null,
+    "desc": "Emitted when an update has been downloaded.\n\nWith Squirrel.Windows only `releaseName` is available.\n\n> [!NOTE] It is not strictly necessary to handle this event. A successfully downloaded update will "
+   },
+   {
+    "name": "before-quit-for-update",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "This event is emitted after a user calls `quitAndInstall()`.\n\nWhen this API is called, the `before-quit` event is not emitted before all windows are closed. As a result you should listen to this event"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/auto-updater"
+ }
+]

@@ -1,0 +1,1907 @@
+[
+ {
+  "name": "app",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Control your application's event lifecycle.\n\nProcess: Main\n\nThe following example shows how to quit the application when the last window is closed:",
+  "members": [
+   {
+    "name": "quit",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Try to close all windows. The `before-quit` event will be emitted first. If all windows are successfully closed, the `will-quit` event will be emitted and by default the application will terminate.\n\nT"
+   },
+   {
+    "name": "exit",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "exitCode"
+    ],
+    "returns": null,
+    "desc": "Exits immediately with `exitCode`. `exitCode` defaults to 0.\n\nAll windows will be closed immediately without asking the user, and the `before-quit` and `will-quit` events will not be emitted."
+   },
+   {
+    "name": "relaunch",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Relaunches the app when the current instance exits.\n\nBy default, the new instance will use the same working directory and command line arguments as the current instance. When `args` is specified, the "
+   },
+   {
+    "name": "isReady",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "`true` if Electron has finished initializing, `false` otherwise. See also `app.whenReady()`."
+   },
+   {
+    "name": "whenReady",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "fulfilled when Electron is initialized. May be used as a convenient alternative to checking `app.isReady()` and subscribing to the `ready` event if the app is not ready yet."
+   },
+   {
+    "name": "focus",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "On macOS, makes the application the active app. On Windows, focuses on the application's first window. On Linux, either focuses on the first visible window (X11) or requests focus but may instead show"
+   },
+   {
+    "name": "isActive",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "`true` if the application is active (i.e. focused)."
+   },
+   {
+    "name": "hide",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Hides all application windows without minimizing them."
+   },
+   {
+    "name": "isHidden",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "`true` if the application\u2014including all of its windows\u2014is hidden (e.g. with `Command-H`), `false` otherwise."
+   },
+   {
+    "name": "show",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Shows application windows after they were hidden. Does not automatically focus them."
+   },
+   {
+    "name": "setAppLogsPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "Sets or creates a directory your app's logs which can then be manipulated with `app.getPath()` or `app.setPath(pathName, newPath)`.\n\nCalling `app.setAppLogsPath()` without a `path` parameter will resu"
+   },
+   {
+    "name": "getAppPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current application directory."
+   },
+   {
+    "name": "getPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name"
+    ],
+    "returns": "String",
+    "desc": "A path to a special directory or file associated with `name`. On failure, an `Error` is thrown.\n\nIf `app.getPath('logs')` is called without calling `app.setAppLogsPath()` being called first, a default"
+   },
+   {
+    "name": "getFileIcon",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "fulfilled with the app's icon, which is a NativeImage.\n\nFetches a path's associated icon.\n\nOn _Windows_, there are 2 kinds of icons:\n\n* Icons associated with certain file extensions, like `.mp3`, `.pn"
+   },
+   {
+    "name": "setPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name",
+     "path"
+    ],
+    "returns": null,
+    "desc": "Overrides the `path` to a special directory or file associated with `name`. If the path specifies a directory that does not exist, an `Error` is thrown. In that case, the directory should be created w"
+   },
+   {
+    "name": "getVersion",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The version of the loaded application. If no version is found in the application's `package.json` file, the version of the current bundle or executable is returned."
+   },
+   {
+    "name": "getName",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current application's name, which is the name in the application's `package.json` file.\n\nUsually the `name` field of `package.json` is a short lowercase name, according to the npm modules spec. Yo"
+   },
+   {
+    "name": "setName",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name"
+    ],
+    "returns": null,
+    "desc": "Overrides the current application's name.\n\n> [!NOTE] This function overrides the name used internally by Electron; it does not affect the name that the OS uses."
+   },
+   {
+    "name": "setDesktopName",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_linux"
+    ],
+    "params": [
+     "name"
+    ],
+    "returns": null,
+    "desc": "Sets the `.desktop` filename on Linux. This must match the base filename of the app's installed `.desktop` file. The `.desktop` suffix is optional.\n\nThe name (without the `.desktop` suffix) is the app"
+   },
+   {
+    "name": "getLocale",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current application locale, fetched using Chromium's `l10n_util` library. Possible return values are documented here.\n\nTo set the locale, you'll want to use a command line switch at app startup, w"
+   },
+   {
+    "name": "getLocaleCountryCode",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "User operating system's locale two-letter ISO 3166 country code. The value is taken from native OS APIs.\n\n> [!NOTE] When unable to detect locale country code, it returns empty string."
+   },
+   {
+    "name": "getSystemLocale",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current system locale. On Windows and Linux, it is fetched using Chromium's `i18n` library. On macOS, `[NSLocale currentLocale]` is used instead. To get the user's current system language, which i"
+   },
+   {
+    "name": "getPreferredSystemLanguages",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The user's preferred system languages from most preferred to least preferred, including the country codes if applicable. A user can modify and add to this list on Windows or macOS through the Language"
+   },
+   {
+    "name": "addRecentDocument",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "Adds `path` to the recent documents list.\n\nThis list is managed by the OS. On Windows, you can visit the list from the task bar, and on macOS, you can visit it from dock menu."
+   },
+   {
+    "name": "clearRecentDocuments",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Clears the recent documents list."
+   },
+   {
+    "name": "getRecentDocuments",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "An array containing documents in the most recent documents list."
+   },
+   {
+    "name": "setAsDefaultProtocolClient",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "protocol",
+     "path",
+     "args"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the call succeeded.\n\nSets the current executable as the default handler for a protocol (aka URI scheme). It allows you to integrate your app deeper into the operating system. Once registered, "
+   },
+   {
+    "name": "removeAsDefaultProtocolClient",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "protocol",
+     "path",
+     "args"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the call succeeded.\n\nThis method checks if the current executable as the default handler for a protocol (aka URI scheme). If so, it will remove the app as the default handler."
+   },
+   {
+    "name": "isDefaultProtocolClient",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "protocol",
+     "path",
+     "args"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the current executable is the default handler for a protocol (aka URI scheme).\n\n> [!NOTE] On macOS, you can use this method to check if the app has been registered as the default protocol hand"
+   },
+   {
+    "name": "getApplicationNameForProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url"
+    ],
+    "returns": "String",
+    "desc": "Name of the application handling the protocol, or an empty string if there is no handler. For instance, if Electron is the default handler of the URL, this could be `Electron` on Windows and Mac. Howe"
+   },
+   {
+    "name": "getApplicationInfoForProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url"
+    ],
+    "returns": "Promise",
+    "desc": "Resolve with an object containing the following:\n\n* `icon` NativeImage - the display icon of the app handling the protocol.\n* `path` string  - installation path of the app handling the protocol.\n* `na"
+   },
+   {
+    "name": "setUserTasks",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "tasks"
+    ],
+    "returns": "boolean",
+    "desc": "Adds `tasks` to the Tasks category of the Jump List on Windows.\n\n`tasks` is an array of `Task` objects.\n\nWhether the call succeeded.\n\n> [!NOTE] If you'd like to customize the Jump List even more use `"
+   },
+   {
+    "name": "getJumpListSettings",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `minItems` Integer - The minimum number of items that will be shown in the Jump List (for a more detailed description of this value see the MSDN docs).\n* `removedItems` JumpListItem[] - Array of `Ju"
+   },
+   {
+    "name": "setJumpList",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "categories"
+    ],
+    "returns": "String",
+    "desc": "Sets or removes a custom Jump List for the application, and returns one of the following strings:\n\n* `ok` - Nothing went wrong.\n* `error` - One or more errors occurred, enable runtime logging to figur"
+   },
+   {
+    "name": "requestSingleInstanceLock",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "additionalData"
+    ],
+    "returns": "boolean",
+    "desc": "The return value of this method indicates whether or not this instance of your application successfully obtained the lock.  If it failed to obtain the lock, you can assume that another instance of you"
+   },
+   {
+    "name": "hasSingleInstanceLock",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "This method returns whether or not this instance of your app is currently holding the single instance lock.  You can request the lock with `app.requestSingleInstanceLock()` and release with `app.relea"
+   },
+   {
+    "name": "releaseSingleInstanceLock",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Releases all locks that were created by `requestSingleInstanceLock`. This will allow multiple instances of the application to once again run side by side."
+   },
+   {
+    "name": "setUserActivity",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "type",
+     "userInfo",
+     "webpageURL"
+    ],
+    "returns": null,
+    "desc": "Creates an `NSUserActivity` and sets it as the current activity. The activity is eligible for Handoff to another device afterward."
+   },
+   {
+    "name": "getCurrentActivityType",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "The type of the currently running activity."
+   },
+   {
+    "name": "invalidateCurrentActivity",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Invalidates the current Handoff user activity."
+   },
+   {
+    "name": "resignCurrentActivity",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Marks the current Handoff user activity as inactive without invalidating it."
+   },
+   {
+    "name": "updateCurrentActivity",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "type",
+     "userInfo"
+    ],
+    "returns": null,
+    "desc": "Updates the current activity if its type matches `type`, merging the entries from `userInfo` into its current `userInfo` dictionary."
+   },
+   {
+    "name": "setAppUserModelId",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Changes the Application User Model ID to `id`."
+   },
+   {
+    "name": "setToastActivatorCLSID",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Changes the Toast Activator CLSID to `id`. If one is not set via this method, it will be randomly generated for the app.\n\n* The value must be a valid GUID/CLSID in one of the following forms:\n  * Cano"
+   },
+   {
+    "name": "setActivationPolicy",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "policy"
+    ],
+    "returns": null,
+    "desc": "Sets the activation policy for a given app.\n\nActivation policy types:\n\n* 'regular' - The application is an ordinary app that appears in the Dock and may have a user interface.\n* 'accessory' - The appl"
+   },
+   {
+    "name": "importCertificate",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_linux"
+    ],
+    "params": [
+     "options",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Imports the certificate in pkcs12 format into the platform certificate store. `callback` is called with the `result` of import operation, a value of `0` indicates success while any other value indicat"
+   },
+   {
+    "name": "configureHostResolver",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Configures host resolution (DNS and DNS-over-HTTPS). By default, the following resolvers will be used, in order:\n\n* DNS-over-HTTPS, if the DNS provider supports it, then\n* the built-in resolver (enabl"
+   },
+   {
+    "name": "configureWebAuthn",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Configures platform authenticators for the Web Authentication API (`navigator.credentials.create()` / `navigator.credentials.get()`). Until this is called, `PublicKeyCredential.isUserVerifyingPlatform"
+   },
+   {
+    "name": "disableHardwareAcceleration",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Disables hardware acceleration for current app.\n\nThis method can only be called before app is ready."
+   },
+   {
+    "name": "isHardwareAccelerationEnabled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether hardware acceleration is currently enabled.\n\n> [!NOTE] This information is only usable after the `gpu-info-update` event is emitted."
+   },
+   {
+    "name": "disableDomainBlockingFor3DAPIs",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "By default, Chromium disables 3D APIs (e.g. WebGL) until restart on a per domain basis if the GPU process crashes too frequently. This function disables that behavior.\n\nThis method can only be called "
+   },
+   {
+    "name": "getAppMetrics",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "ProcessMetric",
+    "desc": "Array of `ProcessMetric` objects that correspond to memory and CPU usage statistics of all the processes associated with the app.\n\n> [!NOTE] `cpu.percentCPUUsage` and `cpu.idleWakeupsPerSecond` are av"
+   },
+   {
+    "name": "getGPUFeatureStatus",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "GPUFeatureStatus",
+    "desc": "The Graphics Feature Status from `chrome://gpu/`.\n\n> [!NOTE] This information is only usable after the `gpu-info-update` event is emitted."
+   },
+   {
+    "name": "getGPUInfo",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "infoType"
+    ],
+    "returns": "Promise",
+    "desc": "For `infoType` equal to `complete`: Promise is fulfilled with `Object` containing all the GPU Information as in chromium's GPUInfo object. This includes the version and driver information that's shown"
+   },
+   {
+    "name": "setBadgeCount",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_macos"
+    ],
+    "params": [
+     "count"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the call succeeded.\n\nSets the counter badge for current app. Setting the count to `0` will hide the badge.\n\nOn macOS, it shows on the Dock icon. On Linux, it shows on docks and taskbars that s"
+   },
+   {
+    "name": "getBadgeCount",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The current value displayed in the counter badge."
+   },
+   {
+    "name": "getLoginItemSettings",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": "Object",
+    "desc": "If you provided `path` and `args` options to `app.setLoginItemSettings`, then you need to pass the same arguments here for `openAtLogin` to be set correctly.\n\n\n* `openAtLogin` boolean - `true` if the "
+   },
+   {
+    "name": "setLoginItemSettings",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "settings"
+    ],
+    "returns": null,
+    "desc": "Set the app's login item settings.\n\nTo work with Electron's `autoUpdater` on Windows, which uses Squirrel, you'll want to set the launch path to your executable's name but a directory up, which is a s"
+   },
+   {
+    "name": "isAccessibilitySupportEnabled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "`true` if Chromium's accessibility support is enabled, `false` otherwise. This API will return `true` if the use of assistive technologies, such as screen readers, has been detected. See https://www.c"
+   },
+   {
+    "name": "setAccessibilitySupportEnabled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "enabled"
+    ],
+    "returns": null,
+    "desc": "Manually enables Chromium's accessibility support, allowing to expose accessibility switch to users in application settings. See Chromium's accessibility docs for more details. Disabled by default.\n\nT"
+   },
+   {
+    "name": "getAccessibilitySupportFeatures",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "Array of strings naming currently enabled accessibility support components. Possible values:\n\n* `nativeAPIs` - Native OS accessibility APIs integration enabled.\n* `webContents` - Web contents accessib"
+   },
+   {
+    "name": "setAccessibilitySupportFeatures",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "features"
+    ],
+    "returns": null,
+    "desc": "Possible values are:\n\n* `nativeAPIs` - Native OS accessibility APIs integration enabled.\n* `webContents` - Web contents accessibility tree exposure enabled.\n* `inlineTextBoxes` - Inline text boxes (ch"
+   },
+   {
+    "name": "showAboutPanel",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Show the app's about panel options. These options can be overridden with `app.setAboutPanelOptions(options)`. This function runs asynchronously."
+   },
+   {
+    "name": "setAboutPanelOptions",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Set the about panel options. This will override the values defined in the app's `.plist` file on macOS. See the Apple docs for more details. On Linux, values must be set in order to be shown; there ar"
+   },
+   {
+    "name": "isEmojiPanelSupported",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether or not the current OS version allows for native emoji pickers."
+   },
+   {
+    "name": "showEmojiPanel",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Show the platform's native emoji picker."
+   },
+   {
+    "name": "startAccessingSecurityScopedResource",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_mas"
+    ],
+    "params": [
+     "bookmarkData"
+    ],
+    "returns": "Function",
+    "desc": "This function **must** be called once you have finished accessing the security scoped file. If you do not remember to stop accessing the bookmark, kernel resources will be leaked and your app will los"
+   },
+   {
+    "name": "enableSandbox",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Enables full sandbox mode on the app. This means that all renderers will be launched sandboxed, regardless of the value of the `sandbox` flag in `WebPreferences`.\n\nThis method can only be called befor"
+   },
+   {
+    "name": "isInApplicationsFolder",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the application is currently running from the systems Application folder. Use in combination with `app.moveToApplicationsFolder()`"
+   },
+   {
+    "name": "moveToApplicationsFolder",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the move was successful. Please note that if the move is successful, your application will quit and relaunch.\n\nNo confirmation dialog will be presented by default. If you wish to allow the use"
+   },
+   {
+    "name": "isSecureKeyboardEntryEnabled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether `Secure Keyboard Entry` is enabled.\n\nBy default this API will return `false`."
+   },
+   {
+    "name": "setSecureKeyboardEntryEnabled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "enabled"
+    ],
+    "returns": null,
+    "desc": "Set the `Secure Keyboard Entry` is enabled in your application.\n\nBy using this API, important information such as password and other sensitive information can be prevented from being intercepted by ot"
+   },
+   {
+    "name": "setProxy",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "config"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves when the proxy setting process is complete.\n\nSets the proxy settings for networks requests made without an associated Session. Currently this will affect requests made with Net in the utility"
+   },
+   {
+    "name": "resolveProxy",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the proxy information for `url` that will be used when attempting to make requests using Net in the utility process."
+   },
+   {
+    "name": "setClientCertRequestPasswordHandler",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "The handler is called when a password is needed to unlock a client certificate for `hostname`."
+   },
+   {
+    "name": "will-finish-launching",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the application has finished basic startup. On Windows and Linux, the `will-finish-launching` event is the same as the `ready` event; on macOS, this event represents the `applicationWillF"
+   },
+   {
+    "name": "ready",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "launchInfo"
+    ],
+    "returns": null,
+    "desc": "Emitted once, when Electron has finished initializing. On macOS, `launchInfo` holds the `userInfo` of the `NSUserNotification` or information from `UNNotificationResponse` that was used to open the ap"
+   },
+   {
+    "name": "window-all-closed",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when all windows have been closed.\n\nIf you do not subscribe to this event and all windows are closed, the default behavior is to quit the app; however, if you subscribe, you control whether th"
+   },
+   {
+    "name": "before-quit",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted before the application starts closing its windows. Calling `event.preventDefault()` will prevent the default behavior, which is terminating the application.\n\n> [!NOTE] If application quit was "
+   },
+   {
+    "name": "will-quit",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when all windows have been closed and the application will quit. Calling `event.preventDefault()` will prevent the default behavior, which is terminating the application.\n\nSee the description "
+   },
+   {
+    "name": "quit",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "exitCode"
+    ],
+    "returns": null,
+    "desc": "Emitted when the application is quitting.\n\n> [!NOTE] On Windows, this event will not be emitted if the app is closed due to a shutdown/restart of the system or a user logout."
+   },
+   {
+    "name": "open-file",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "path"
+    ],
+    "returns": null,
+    "desc": "Emitted when the user wants to open a file with the application. The `open-file` event is usually emitted when the application is already open and the OS wants to reuse the application to open the fil"
+   },
+   {
+    "name": "open-url",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "url"
+    ],
+    "returns": null,
+    "desc": "Emitted when the user wants to open a URL with the application. Your application's `Info.plist` file must define the URL scheme within the `CFBundleURLTypes` key, and set `NSPrincipalClass` to `AtomAp"
+   },
+   {
+    "name": "activate",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "hasVisibleWindows"
+    ],
+    "returns": null,
+    "desc": "Emitted when the application is activated. Various actions can trigger this event, such as launching the application for the first time, attempting to re-launch the application when it's already runni"
+   },
+   {
+    "name": "did-become-active",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the application becomes active. This differs from the `activate` event in that `did-become-active` is emitted every time the app becomes active, not only when Dock icon is clicked or appl"
+   },
+   {
+    "name": "did-resign-active",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the app is no longer active and doesn\u2019t have focus. This can be triggered, for example, by clicking on another application or by using the macOS App Switcher to switch to another applicat"
+   },
+   {
+    "name": "continue-activity",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "type",
+     "userInfo",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted during Handoff when an activity from a different device wants to be resumed. You should call `event.preventDefault()` if you want to handle this event.\n\nA user activity can be continued only i"
+   },
+   {
+    "name": "will-continue-activity",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "type"
+    ],
+    "returns": null,
+    "desc": "Emitted during Handoff before an activity from a different device wants to be resumed. You should call `event.preventDefault()` if you want to handle this event."
+   },
+   {
+    "name": "continue-activity-error",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "type",
+     "error"
+    ],
+    "returns": null,
+    "desc": "Emitted during Handoff when an activity from a different device fails to be resumed."
+   },
+   {
+    "name": "activity-was-continued",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "type",
+     "userInfo"
+    ],
+    "returns": null,
+    "desc": "Emitted during Handoff after an activity from this device was successfully resumed on another one."
+   },
+   {
+    "name": "update-activity-state",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "type",
+     "userInfo"
+    ],
+    "returns": null,
+    "desc": "Emitted when Handoff is about to be resumed on another device. If you need to update the state to be transferred, you should call `event.preventDefault()` immediately, construct a new `userInfo` dicti"
+   },
+   {
+    "name": "new-window-for-tab",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the user clicks the native macOS new tab button. The new tab button is only visible if the current `BrowserWindow` has a `tabbingIdentifier`.\n\nYou must create a window in this handler in "
+   },
+   {
+    "name": "browser-window-blur",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "window"
+    ],
+    "returns": null,
+    "desc": "Emitted when a browserWindow gets blurred."
+   },
+   {
+    "name": "browser-window-focus",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "window"
+    ],
+    "returns": null,
+    "desc": "Emitted when a browserWindow gets focused."
+   },
+   {
+    "name": "browser-window-created",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "window"
+    ],
+    "returns": null,
+    "desc": "Emitted when a new browserWindow is created."
+   },
+   {
+    "name": "web-contents-created",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webContents"
+    ],
+    "returns": null,
+    "desc": "Emitted when a new webContents is created."
+   },
+   {
+    "name": "certificate-error",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webContents",
+     "url",
+     "error",
+     "certificate",
+     "callback",
+     "isMainFrame"
+    ],
+    "returns": null,
+    "desc": "Emitted when failed to verify the `certificate` for `url`, to trust the certificate you should prevent the default behavior with `event.preventDefault()` and call `callback(true)`."
+   },
+   {
+    "name": "select-client-certificate",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webContents",
+     "url",
+     "certificateList",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a client certificate is requested.\n\nThe `url` corresponds to the navigation entry requesting the client certificate and `callback` can be called with an entry filtered from the list. Usin"
+   },
+   {
+    "name": "login",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webContents",
+     "authenticationResponseDetails",
+     "authInfo",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when `webContents` or Utility process wants to do basic auth.\n\nThe default behavior is to cancel all authentications. To override this you should prevent the default behavior with `event.preve"
+   },
+   {
+    "name": "gpu-info-update",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted whenever there is a GPU info update."
+   },
+   {
+    "name": "render-process-gone",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webContents",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when the renderer process unexpectedly disappears.  This is normally because it was crashed or killed."
+   },
+   {
+    "name": "child-process-gone",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when the child process unexpectedly disappears. This is normally because it was crashed or killed. It does not include renderer processes."
+   },
+   {
+    "name": "accessibility-support-changed",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "accessibilitySupportEnabled"
+    ],
+    "returns": null,
+    "desc": "Emitted when Chromium's accessibility support changes. This event fires when assistive technologies, such as screen readers, are enabled or disabled. See https://www.chromium.org/developers/design-doc"
+   },
+   {
+    "name": "session-created",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "session"
+    ],
+    "returns": null,
+    "desc": "Emitted when Electron has created a new `session`."
+   },
+   {
+    "name": "second-instance",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "argv",
+     "workingDirectory",
+     "additionalData"
+    ],
+    "returns": null,
+    "desc": "This event will be emitted inside the primary instance of your application when a second instance has been executed and calls `app.requestSingleInstanceLock()`.\n\n`argv` is an Array of the second insta"
+   },
+   {
+    "name": "accessibilitySupportEnabled",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that's `true` if Chromium's accessibility support is enabled, `false` otherwise. This property will be `true` if the use of assistive technologies, such as screen readers, has bee"
+   },
+   {
+    "name": "applicationMenu",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Menu | null` property that returns `Menu` if one has been set and `null` otherwise. Users can pass a Menu to set this property."
+   },
+   {
+    "name": "badgeCount",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` property that returns the badge count for current app. Setting the count to `0` will hide the badge. Setting this with any nonzero integer shows the count on the Dock icon on macOS, or on"
+   },
+   {
+    "name": "commandLine",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `CommandLine` object that allows you to read and manipulate the command line arguments that Chromium uses."
+   },
+   {
+    "name": "dock",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Dock | undefined` property (`Dock` on macOS, `undefined` on all other platforms) that allows you to perform actions on your app icon in the user's dock."
+   },
+   {
+    "name": "isPackaged",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that returns  `true` if the app is packaged, `false` otherwise. For many apps, this property can be used to distinguish development and production environments."
+   },
+   {
+    "name": "toastActivatorCLSID",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that returns the app's Toast Activator CLSID."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that indicates the current application's name, which is the name in the application's `package.json` file.\n\nUsually the `name` field of `package.json` is a short lowercase name, ac"
+   },
+   {
+    "name": "userAgentFallback",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` which is the user agent string Electron will use as a global fallback.\n\nThis is the user agent that will be used when no user agent is set at the `webContents` or `session` level.  It is us"
+   },
+   {
+    "name": "runningUnderARM64Translation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` which when `true` indicates that the app is currently running under an ARM64 translator (like the macOS Rosetta Translator Environment or Windows WOW).\n\nYou can use this property to prompt"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/app"
+ },
+ {
+  "name": "CommandLine",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "appendSwitch",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "switch",
+     "value"
+    ],
+    "returns": null,
+    "desc": "Append a switch (with optional `value`) to Chromium's command line.\n\n> [!NOTE] This will not affect `process.argv`. The intended usage of this function is to control Chromium's behavior."
+   },
+   {
+    "name": "appendArgument",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "value"
+    ],
+    "returns": null,
+    "desc": "Append an argument to Chromium's command line. The argument will be quoted correctly. Switches will precede arguments regardless of appending order.\n\nIf you're appending an argument like `--switch=val"
+   },
+   {
+    "name": "hasSwitch",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "switch"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the command-line switch is present."
+   },
+   {
+    "name": "getSwitchValue",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "switch"
+    ],
+    "returns": "String",
+    "desc": "The command-line switch value.\n\nThis function is meant to obtain Chromium command line switches. It is not meant to be used for application-specific command line arguments. For the latter, please use "
+   },
+   {
+    "name": "removeSwitch",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "switch"
+    ],
+    "returns": null,
+    "desc": "Removes the specified switch from Chromium's command line.\n\n> [!NOTE] This will not affect `process.argv`. The intended usage of this function is to control Chromium's behavior."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/command-line"
+ },
+ {
+  "name": "Dock",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "bounce",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "type"
+    ],
+    "returns": "Integer",
+    "desc": "an ID representing the request.\n\nWhen `critical` is passed, the dock icon will bounce until either the application becomes active or the request is canceled.\n\nWhen `informational` is passed, the dock "
+   },
+   {
+    "name": "cancelBounce",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Cancel the bounce of `id`."
+   },
+   {
+    "name": "downloadFinished",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "filePath"
+    ],
+    "returns": null,
+    "desc": "Bounces the Downloads stack if the filePath is inside the Downloads folder."
+   },
+   {
+    "name": "setBadge",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "text"
+    ],
+    "returns": null,
+    "desc": "Sets the string to be displayed in the dock\u2019s badging area.\n\n> [!IMPORTANT] You need to ensure that your application has the permission to display notifications for this method to work."
+   },
+   {
+    "name": "getBadge",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "The badge string of the dock."
+   },
+   {
+    "name": "hide",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Hides the dock icon.\n\n> [!IMPORTANT] **Known issue:** Calling `dock.hide()` within one second of a previous call will have no effect. As a workaround, ensure at least one second has elapsed between ca"
+   },
+   {
+    "name": "show",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves when the dock icon is shown."
+   },
+   {
+    "name": "isVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the dock icon is visible."
+   },
+   {
+    "name": "setMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "menu"
+    ],
+    "returns": null,
+    "desc": "Sets the application's dock menu."
+   },
+   {
+    "name": "getMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Menu"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The application's dock menu."
+   },
+   {
+    "name": "setIcon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "image"
+    ],
+    "returns": null,
+    "desc": "Sets the `image` associated with this dock icon."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/dock"
+ },
+ {
+  "name": "process",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Extensions to process object.\n\nProcess: Main, Renderer\n\nElectron's `process` object is extended from the Node.js `process` object. It adds the following events, properties, and methods:\n\n### Sandbox\n\nIn sandboxed renderers the `process` object contains only a subset of the APIs:\n\n* `crash()`\n* `ha",
+  "members": [
+   {
+    "name": "crash",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Causes the main thread of the current process crash."
+   },
+   {
+    "name": "getCreationTime",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "number"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The number of milliseconds since epoch, or `null` if the information is unavailable\n\nIndicates the creation time of the application. The time is represented as number of milliseconds since epoch. It r"
+   },
+   {
+    "name": "getCPUUsage",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "CPUUsage",
+    "desc": "CPU usage of the process this is called in.\n\n> [!NOTE] `percentCPUUsage` and `idleWakeupsPerSecond` are averages over the time since the previous call to `process.getCPUUsage()` in this process, and e"
+   },
+   {
+    "name": "getHeapStatistics",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `totalHeapSize` Integer\n* `totalHeapSizeExecutable` Integer\n* `totalPhysicalSize` Integer\n* `totalAvailableSize` Integer\n* `usedHeapSize` Integer\n* `heapSizeLimit` Integer\n* `mallocedMemory` Integer"
+   },
+   {
+    "name": "getBlinkMemoryInfo",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `allocated` Integer - Size of all allocated objects in Kilobytes.\n* `total` Integer - Total allocated space in Kilobytes.\n\nReturns an object with Blink memory information. It can be useful for debug"
+   },
+   {
+    "name": "getProcessMemoryInfo",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves with a ProcessMemoryInfo\n\nReturns an object giving memory usage statistics about the current process. Note that all statistics are reported in Kilobytes. This api should be called after app r"
+   },
+   {
+    "name": "getSystemMemoryInfo",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `total` Integer - The total amount of physical memory in Kilobytes available to the system.\n* `free` Integer - The total amount of memory not being used by applications or disk cache.\n* `available` "
+   },
+   {
+    "name": "getSystemVersion",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The version of the host operating system.\n\nExample:\n\n> [!NOTE] It returns the actual operating system version instead of kernel version on macOS unlike `os.release()`."
+   },
+   {
+    "name": "takeHeapSnapshot",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filePath"
+    ],
+    "returns": "boolean",
+    "desc": "Indicates whether the snapshot has been created successfully.\n\nTakes a V8 heap snapshot and saves it to `filePath`."
+   },
+   {
+    "name": "hang",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Causes the main thread of the current process hang."
+   },
+   {
+    "name": "setFdLimit",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [
+     "maxDescriptors"
+    ],
+    "returns": null,
+    "desc": "Sets the file descriptor soft limit to `maxDescriptors` or the OS hard limit, whichever is lower for the current process."
+   },
+   {
+    "name": "loaded",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when Electron has loaded its internal initialization script and is beginning to load the web page or the main script."
+   },
+   {
+    "name": "defaultApp",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean`. When the app is started by being passed as parameter to the default Electron executable, this property is `true` in the main process, otherwise it is `undefined`. For example when running"
+   },
+   {
+    "name": "isMainFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean`, `true` when the current renderer context is the \"main\" renderer frame. If you want the ID of the current frame you should use `webFrame.routingId`."
+   },
+   {
+    "name": "mas",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean`. For Mac App Store build, this property is `true`, for other builds it is `undefined`."
+   },
+   {
+    "name": "noAsar",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that controls ASAR support inside your application. Setting this to `true` will disable the support for `asar` archives in Node's built-in modules."
+   },
+   {
+    "name": "noDeprecation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` (optional) that controls whether or not deprecation warnings are printed to `stderr`. Setting this to `true` will silence deprecation warnings. This property is used instead of the `--no-d"
+   },
+   {
+    "name": "resourcesPath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the path to the resources directory."
+   },
+   {
+    "name": "sandboxed",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean`. When the renderer process is sandboxed, this property is `true`, otherwise it is `undefined`."
+   },
+   {
+    "name": "contextIsolated",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that indicates whether the current renderer context has `contextIsolation` enabled. It is `undefined` in the main process."
+   },
+   {
+    "name": "throwDeprecation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that controls whether or not deprecation warnings will be thrown as exceptions. Setting this to `true` will throw errors for deprecations. This property is used instead of the `--throw-dep"
+   },
+   {
+    "name": "traceDeprecation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that controls whether or not deprecations printed to `stderr` include their stack trace. Setting this to `true` will print stack traces for deprecations. This property is used instead of t"
+   },
+   {
+    "name": "traceProcessWarnings",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that controls whether or not process warnings printed to `stderr` include their stack trace. Setting this to `true` will print stack traces for process warnings (including deprecations). T"
+   },
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the current process's type, can be:\n\n* `browser` - The main process\n* `renderer` - A renderer process\n* `service-worker` - In a service worker\n* `worker` - In a web worker\n* `u"
+   },
+   {
+    "name": "chrome",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing Chrome's version string."
+   },
+   {
+    "name": "electron",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing Electron's version string."
+   },
+   {
+    "name": "windowsStore",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean`. If the app is running as an MSIX package (including AppX for Windows Store), this property is `true`, otherwise it is `undefined`."
+   },
+   {
+    "name": "contextId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` (optional) representing a globally unique ID of the current JavaScript context. Each frame has its own JavaScript context. When contextIsolation is enabled, the isolated world also has a se"
+   },
+   {
+    "name": "parentPort",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Electron.ParentPort` property if this is a `UtilityProcess` (or `null` otherwise) allowing communication with the parent process."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/process"
+ }
+]

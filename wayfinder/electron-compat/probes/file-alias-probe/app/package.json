@@ -1,0 +1,1 @@
+{"name":"app","type":"module","dependencies":{"electron":"file:../shim","dep":"file:./dep"}}

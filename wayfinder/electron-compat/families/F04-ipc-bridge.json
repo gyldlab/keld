@@ -1,0 +1,1029 @@
+[
+ {
+  "name": "contextBridge",
+  "type": "Module",
+  "process": {
+   "main": false,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Create a safe, bi-directional, synchronous bridge across isolated contexts\n\nProcess: Renderer\n\nAn example of exposing an API to a renderer from an isolated preload script is given below:\n\n```\n// Preload (Isolated World)\nconst { contextBridge, ipcRenderer } = require('electron')\n\ncontextBridge.expo",
+  "members": [
+   {
+    "name": "exposeInMainWorld",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "apiKey",
+     "api"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "exposeInIsolatedWorld",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "worldId",
+     "apiKey",
+     "api"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "executeInMainWorld",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "executionScript"
+    ],
+    "returns": "any",
+    "desc": "A copy of the resulting value from executing the function in the main world. Refer to the table on how values are copied between worlds."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/context-bridge"
+ },
+ {
+  "name": "IpcMainServiceWorker",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "on",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Listens to `channel`, when a new message arrives `listener` would be called with `listener(event, args...)`."
+   },
+   {
+    "name": "once",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Adds a one time `listener` function for the event. This `listener` is invoked only the next time a message is sent to `channel`, after which it is removed."
+   },
+   {
+    "name": "removeListener",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Removes the specified `listener` from the listener array for the specified `channel`."
+   },
+   {
+    "name": "removeAllListeners",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel"
+    ],
+    "returns": null,
+    "desc": "Removes listeners of the specified `channel`."
+   },
+   {
+    "name": "handle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "handleOnce",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Handles a single `invoke`able IPC message, then removes the listener. See `ipcMainServiceWorker.handle(channel, listener)`."
+   },
+   {
+    "name": "removeHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel"
+    ],
+    "returns": null,
+    "desc": "Removes any handler for `channel`, if present."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/ipc-main-service-worker"
+ },
+ {
+  "name": "ipcMain",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "\n\n### ipcMain\n\n> Communicate asynchronously from the main process to renderer processes.\n\nProcess: Main\n\nThe `ipcMain` module is an Event Emitter. When used in the main process, it handles asynchronous and synchronous messages sent from a renderer process (web page). Messages sent from a renderer wi",
+  "members": [
+   {
+    "name": "on",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Listens to `channel`, when a new message arrives `listener` would be called with `listener(event, args...)`."
+   },
+   {
+    "name": "off",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Removes the specified `listener` from the listener array for the specified `channel`."
+   },
+   {
+    "name": "once",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Adds a one time `listener` function for the event. This `listener` is invoked only the next time a message is sent to `channel`, after which it is removed."
+   },
+   {
+    "name": "addListener",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Alias for `ipcMain.on`."
+   },
+   {
+    "name": "removeListener",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Alias for `ipcMain.off`."
+   },
+   {
+    "name": "removeAllListeners",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel"
+    ],
+    "returns": null,
+    "desc": "Removes all listeners from the specified `channel`. Removes all listeners from all channels if no channel is specified."
+   },
+   {
+    "name": "handle",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Adds a handler for an `invoke`able IPC. This handler will be called whenever a renderer calls `ipcRenderer.invoke(channel, ...args)`.\n\nIf `listener` returns a Promise, the eventual result of the promi"
+   },
+   {
+    "name": "handleOnce",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Handles a single `invoke`able IPC message, then removes the listener. See `ipcMain.handle(channel, listener)`."
+   },
+   {
+    "name": "removeHandler",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel"
+    ],
+    "returns": null,
+    "desc": "Removes any handler for `channel`, if present."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/ipc-main"
+ },
+ {
+  "name": "ipcRenderer",
+  "type": "Module",
+  "process": {
+   "main": false,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "\n\n### ipcRenderer\n\n> Communicate asynchronously from a renderer process to the main process.\n\nProcess: Renderer\n\n> [!IMPORTANT] If you want to call this API from a renderer process with context isolation enabled, place the API call in your preload script and expose it using the `contextBridge` API.\n",
+  "members": [
+   {
+    "name": "on",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Listens to `channel`, when a new message arrives `listener` would be called with `listener(event, args...)`.\n\n:::warning Do not expose the `event` argument to the renderer for security reasons! Wrap a"
+   },
+   {
+    "name": "off",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Removes the specified `listener` from the listener array for the specified `channel`."
+   },
+   {
+    "name": "once",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Adds a one time `listener` function for the event. This `listener` is invoked only the next time a message is sent to `channel`, after which it is removed."
+   },
+   {
+    "name": "addListener",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Alias for `ipcRenderer.on`."
+   },
+   {
+    "name": "removeListener",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "Alias for `ipcRenderer.off`."
+   },
+   {
+    "name": "removeAllListeners",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel"
+    ],
+    "returns": null,
+    "desc": "Removes all listeners from the specified `channel`. Removes all listeners from all channels if no channel is specified."
+   },
+   {
+    "name": "send",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Send an asynchronous message to the main process via `channel`, along with arguments. Arguments will be serialized with the Structured Clone Algorithm, just like `window.postMessage`, so prototype cha"
+   },
+   {
+    "name": "invoke",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the response from the main process.\n\nSend a message to the main process via `channel` and expect a result asynchronously. Arguments will be serialized with the Structured Clone Algorithm"
+   },
+   {
+    "name": "sendSync",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": "any",
+    "desc": "The value sent back by the `ipcMain` handler.\n\nSend a message to the main process via `channel` and expect a result synchronously. Arguments will be serialized with the Structured Clone Algorithm, jus"
+   },
+   {
+    "name": "postMessage",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "message",
+     "transfer"
+    ],
+    "returns": null,
+    "desc": "Send a message to the main process, optionally transferring ownership of zero or more `MessagePort` objects.\n\nThe transferred `MessagePort` objects will be available in the main process as `MessagePor"
+   },
+   {
+    "name": "sendToHost",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Like `ipcRenderer.send` but the event will be sent to the `<webview>` element in the host page instead of the main process."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/ipc-renderer"
+ },
+ {
+  "name": "MessageChannelMain",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "port1",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `MessagePortMain` property."
+   },
+   {
+    "name": "port2",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `MessagePortMain` property."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/message-channel-main"
+ },
+ {
+  "name": "MessagePortMain",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "postMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "message",
+     "transfer"
+    ],
+    "returns": null,
+    "desc": "Sends a message from the port, and optionally, transfers ownership of objects to other browsing contexts."
+   },
+   {
+    "name": "start",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Starts the sending of messages queued on the port. Messages will be queued until this method is called."
+   },
+   {
+    "name": "close",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Disconnects the port, so it is no longer active."
+   },
+   {
+    "name": "message",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "messageEvent"
+    ],
+    "returns": null,
+    "desc": "Emitted when a MessagePortMain object receives a message."
+   },
+   {
+    "name": "close",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the remote end of a MessagePortMain object becomes disconnected."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/message-port-main"
+ },
+ {
+  "name": "parentPort",
+  "type": "Module",
+  "process": {
+   "main": false,
+   "renderer": false,
+   "utility": true,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Interface for communication with parent process.\n\nProcess: Utility\n\n`parentPort` is an EventEmitter. _This object is not exported from the `'electron'` module. It is only available as a property of the process object in the Electron API._",
+  "members": [
+   {
+    "name": "postMessage",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "message"
+    ],
+    "returns": null,
+    "desc": "Sends a message from the process to its parent."
+   },
+   {
+    "name": "message",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "messageEvent"
+    ],
+    "returns": null,
+    "desc": "Emitted when the process receives a message. Messages received on this port will be queued up until a handler is registered for this event."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/parent-port"
+ },
+ {
+  "name": "utilityProcess",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "`utilityProcess` creates a child process with Node.js and Message ports enabled. It provides the equivalent of `child_process.fork` API from Node.js but instead uses Services API from Chromium to launch the child process.\n\nProcess: Main",
+  "members": [
+   {
+    "name": "fork",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "modulePath",
+     "args",
+     "options"
+    ],
+    "returns": "UtilityProcess",
+    "desc": "> [!NOTE] `utilityProcess.fork` can only be called after the `ready` event has been emitted on `App`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/utility-process"
+ },
+ {
+  "name": "UtilityProcess",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": true,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "postMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "message",
+     "transfer"
+    ],
+    "returns": null,
+    "desc": "Send a message to the child process, optionally transferring ownership of zero or more `MessagePortMain` objects.\n\nFor example:"
+   },
+   {
+    "name": "kill",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Terminates the process gracefully. On POSIX, it uses SIGTERM but will ensure the process is reaped on exit. This function returns true if the kill is successful, and false otherwise."
+   },
+   {
+    "name": "spawn",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted once the child process has spawned successfully."
+   },
+   {
+    "name": "error",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "type",
+     "location",
+     "report"
+    ],
+    "returns": null,
+    "desc": "Emitted when the child process needs to terminate due to non continuable error from V8.\n\nNo matter if you listen to the `error` event, the `exit` event will be emitted after the child process terminat"
+   },
+   {
+    "name": "exit",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "code"
+    ],
+    "returns": null,
+    "desc": "Emitted after the child process ends."
+   },
+   {
+    "name": "message",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "message"
+    ],
+    "returns": null,
+    "desc": "Emitted when the child process sends a message using `process.parentPort.postMessage()`."
+   },
+   {
+    "name": "login",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "authenticationResponseDetails",
+     "authInfo",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when the utility process encounters an HTTP 401 or 407 authentication challenge, if the process was created with both `respondToAuthRequestsFromMainProcess: true` and a `session` option. The `"
+   },
+   {
+    "name": "pid",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Integer | undefined` representing the process identifier (PID) of the child process. Until the child process has spawned successfully, the value is `undefined`. When the child process exits, then t"
+   },
+   {
+    "name": "stdout",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `NodeJS.ReadableStream | null` that represents the child process's stdout. If the child was spawned with options.stdio[1] set to anything other than 'pipe', then this will be `null`. When the child "
+   },
+   {
+    "name": "stderr",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `NodeJS.ReadableStream | null` that represents the child process's stderr. If the child was spawned with options.stdio[2] set to anything other than 'pipe', then this will be `null`. When the child "
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/utility-process"
+ },
+ {
+  "name": "webUtils",
+  "type": "Module",
+  "process": {
+   "main": false,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> A utility layer to interact with Web API objects (Files, Blobs, etc.)\n\nProcess: Renderer\n\n> [!IMPORTANT] If you want to call this API from a renderer process with context isolation enabled, place the API call in your preload script and expose it using the `contextBridge` API.",
+  "members": [
+   {
+    "name": "getPathForFile",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "file"
+    ],
+    "returns": "String",
+    "desc": "The file system path that this `File` object points to. In the case where the object passed in is not a `File` object an exception is thrown. In the case where the File object passed in was constructe"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-utils"
+ },
+ {
+  "name": "IpcMainEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "Event",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Possible values include `frame`"
+   },
+   {
+    "name": "processId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The internal ID of the renderer process that sent this message"
+   },
+   {
+    "name": "frameId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The ID of the renderer frame that sent this message"
+   },
+   {
+    "name": "returnValue",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Set this to the value to be returned in a synchronous message"
+   },
+   {
+    "name": "sender",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Returns the `webContents` that sent the message"
+   },
+   {
+    "name": "senderFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The frame that sent this message. May be `null` if accessed after the frame has either navigated or been destroyed."
+   },
+   {
+    "name": "ports",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A list of MessagePorts that were transferred with this message"
+   },
+   {
+    "name": "reply",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "A function that will send an IPC message to the renderer frame that sent the original message that you are currently handling.  You should use this method to \"reply\" to the sent message in order to gu"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/ipc-main-event"
+ },
+ {
+  "name": "IpcMainInvokeEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "Event",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Possible values include `frame`"
+   },
+   {
+    "name": "processId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The internal ID of the renderer process that sent this message"
+   },
+   {
+    "name": "frameId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The ID of the renderer frame that sent this message"
+   },
+   {
+    "name": "sender",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Returns the `webContents` that sent the message"
+   },
+   {
+    "name": "senderFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The frame that sent this message. May be `null` if accessed after the frame has either navigated or been destroyed."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/ipc-main-invoke-event"
+ },
+ {
+  "name": "IpcMainServiceWorkerEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "Event",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Possible values include `service-worker`."
+   },
+   {
+    "name": "serviceWorker",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The service worker that sent this message"
+   },
+   {
+    "name": "versionId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The service worker version ID."
+   },
+   {
+    "name": "session",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `Session` instance with which the event is associated."
+   },
+   {
+    "name": "returnValue",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Set this to the value to be returned in a synchronous message"
+   },
+   {
+    "name": "ports",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A list of MessagePorts that were transferred with this message"
+   },
+   {
+    "name": "reply",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "A function that will send an IPC message to the renderer frame that sent the original message that you are currently handling.  You should use this method to \"reply\" to the sent message in order to gu"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/ipc-main-service-worker-event"
+ },
+ {
+  "name": "IpcMainServiceWorkerInvokeEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "Event",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Possible values include `service-worker`."
+   },
+   {
+    "name": "serviceWorker",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The service worker that sent this message"
+   },
+   {
+    "name": "versionId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The service worker version ID."
+   },
+   {
+    "name": "session",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `Session` instance with which the event is associated."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/ipc-main-service-worker-invoke-event"
+ },
+ {
+  "name": "IpcRendererEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "Event",
+  "description": "",
+  "members": [
+   {
+    "name": "sender",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `IpcRenderer` instance that emitted the event originally"
+   },
+   {
+    "name": "ports",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A list of MessagePorts that were transferred with this message"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/ipc-renderer-event"
+ }
+]

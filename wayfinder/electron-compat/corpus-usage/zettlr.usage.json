@@ -1,0 +1,1338 @@
+{
+ "app": "zettlr",
+ "root": "corpus/zettlr",
+ "files_scanned": 569,
+ "electron_dep": "^43.6.0",
+ "modules": {
+  "app": {
+   "count": 37,
+   "files": [
+    "source/app/lifecycle.ts",
+    "source/app/service-providers/assets/index.ts",
+    "source/app/service-providers/cli-provider.ts",
+    "source/app/service-providers/commands/export.ts",
+    "source/app/service-providers/commands/exporter/index.ts",
+    "source/app/service-providers/commands/file-new.ts",
+    "source/app/service-providers/commands/import-lang-file.ts",
+    "source/app/service-providers/commands/importer/import-textbundle.ts",
+    "source/app/service-providers/commands/importer/index.ts",
+    "source/app/service-providers/commands/language-tool.ts",
+    "source/app/service-providers/commands/root-open.ts",
+    "source/app/service-providers/commands/tutorial-open.ts"
+   ],
+   "file_count": 37
+  },
+  "ipcMain": {
+   "count": 22,
+   "files": [
+    "source/app/service-providers/appearance/index.ts",
+    "source/app/service-providers/assets/index.ts",
+    "source/app/service-providers/citeproc/index.ts",
+    "source/app/service-providers/commands/index.ts",
+    "source/app/service-providers/commands/save-image-from-clipboard.ts",
+    "source/app/service-providers/config/index.ts",
+    "source/app/service-providers/config/onboarding-window.ts",
+    "source/app/service-providers/css/index.ts",
+    "source/app/service-providers/dictionary/index.ts",
+    "source/app/service-providers/documents/index.ts",
+    "source/app/service-providers/fsal/index.ts",
+    "source/app/service-providers/links/index.ts"
+   ],
+   "file_count": 22
+  },
+  "dialog": {
+   "count": 21,
+   "files": [
+    "source/app/app-service-container.ts",
+    "source/app/service-providers/commands/dir-delete.ts",
+    "source/app/service-providers/commands/dir-project-export.ts",
+    "source/app/service-providers/commands/file-delete.ts",
+    "source/app/service-providers/commands/file-rename.ts",
+    "source/app/service-providers/commands/importer/index.ts",
+    "source/app/service-providers/commands/rename-tag.ts",
+    "source/app/service-providers/config/index.ts",
+    "source/app/service-providers/documents/index.ts",
+    "source/app/service-providers/menu/menu.darwin.ts",
+    "source/app/service-providers/menu/menu.win32.ts",
+    "source/app/service-providers/updates/index.ts"
+   ],
+   "file_count": 21
+  },
+  "BrowserWindow": {
+   "count": 19,
+   "files": [
+    "source/app/service-providers/appearance/index.ts",
+    "source/app/service-providers/commands/exporter/pdf-exporter.ts",
+    "source/app/service-providers/config/onboarding-window.ts",
+    "source/app/service-providers/menu/index.ts",
+    "source/app/service-providers/windows/create-about-window.ts",
+    "source/app/service-providers/windows/create-assets-window.ts",
+    "source/app/service-providers/windows/create-error-modal.ts",
+    "source/app/service-providers/windows/create-log-window.ts",
+    "source/app/service-providers/windows/create-main-window.ts",
+    "source/app/service-providers/windows/create-paste-image-modal.ts",
+    "source/app/service-providers/windows/create-preferences-window.ts",
+    "source/app/service-providers/windows/create-print-window.ts"
+   ],
+   "file_count": 19
+  },
+  "shell": {
+   "count": 12,
+   "files": [
+    "source/app/service-providers/assets/index.ts",
+    "source/app/service-providers/commands/dir-project-export.ts",
+    "source/app/service-providers/commands/export.ts",
+    "source/app/service-providers/commands/open-attachment.ts",
+    "source/app/service-providers/dictionary/index.ts",
+    "source/app/service-providers/documents/index.ts",
+    "source/app/service-providers/fsal/util/safe-delete.ts",
+    "source/app/service-providers/menu/menu.darwin.ts",
+    "source/app/service-providers/menu/menu.win32.ts",
+    "source/app/service-providers/updates/index.ts",
+    "source/app/service-providers/windows/index.ts",
+    "source/app/util/attach-app-navigation-handlers.ts"
+   ],
+   "file_count": 12
+  },
+  "nativeImage": {
+   "count": 4,
+   "files": [
+    "source/app/service-providers/commands/fetch-link-preview.ts",
+    "source/app/service-providers/commands/index.ts",
+    "source/app/service-providers/commands/save-image-from-clipboard.ts",
+    "source/common/util/show-notification.ts"
+   ],
+   "file_count": 4
+  },
+  "nativeTheme": {
+   "count": 3,
+   "files": [
+    "source/app/service-providers/appearance/index.ts",
+    "source/app/service-providers/config/get-config-template.ts",
+    "source/app/service-providers/windows/set-window-chrome.ts"
+   ],
+   "file_count": 3
+  },
+  "systemPreferences": {
+   "count": 2,
+   "files": [
+    "source/app/service-providers/appearance/index.ts",
+    "source/common/util/get-system-colors.ts"
+   ],
+   "file_count": 2
+  },
+  "Menu": {
+   "count": 2,
+   "files": [
+    "source/app/service-providers/menu/index.ts",
+    "source/app/service-providers/tray/index.ts"
+   ],
+   "file_count": 2
+  },
+  "screen": {
+   "count": 2,
+   "files": [
+    "source/app/service-providers/tray/index.ts",
+    "source/app/service-providers/windows/index.ts"
+   ],
+   "file_count": 2
+  },
+  "clipboard": {
+   "count": 2,
+   "files": [
+    "source/app/service-providers/commands/index.ts",
+    "source/app/service-providers/commands/save-image-from-clipboard.ts"
+   ],
+   "file_count": 2
+  },
+  "protocol": {
+   "count": 1,
+   "files": [
+    "source/app/util/custom-protocols.ts"
+   ],
+   "file_count": 1
+  },
+  "Tray": {
+   "count": 1,
+   "files": [
+    "source/app/service-providers/tray/index.ts"
+   ],
+   "file_count": 1
+  },
+  "net": {
+   "count": 1,
+   "files": [
+    "source/app/service-providers/updates/index.ts"
+   ],
+   "file_count": 1
+  },
+  "Notification": {
+   "count": 1,
+   "files": [
+    "source/common/util/show-notification.ts"
+   ],
+   "file_count": 1
+  },
+  "contextBridge": {
+   "count": 1,
+   "files": [
+    "source/common/modules/preload/index.ts"
+   ],
+   "file_count": 1
+  },
+  "ipcRenderer": {
+   "count": 1,
+   "files": [
+    "source/common/modules/preload/index.ts"
+   ],
+   "file_count": 1
+  },
+  "webUtils": {
+   "count": 1,
+   "files": [
+    "source/common/modules/preload/index.ts"
+   ],
+   "file_count": 1
+  }
+ },
+ "members_top": [
+  {
+   "entity": "ipcRenderer",
+   "member": "invoke",
+   "count": 187,
+   "file_count": 65
+  },
+  {
+   "entity": "WebContents",
+   "member": "replace",
+   "count": 110,
+   "file_count": 51
+  },
+  {
+   "entity": "WebContents",
+   "member": "send",
+   "count": 84,
+   "file_count": 33
+  },
+  {
+   "entity": "WebFrameMain",
+   "member": "send",
+   "count": 84,
+   "file_count": 33
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "send",
+   "count": 84,
+   "file_count": 33
+  },
+  {
+   "entity": "app",
+   "member": "getPath",
+   "count": 40,
+   "file_count": 29
+  },
+  {
+   "entity": "ipcMain",
+   "member": "handle",
+   "count": 26,
+   "file_count": 23
+  },
+  {
+   "entity": "protocol",
+   "member": "handle",
+   "count": 26,
+   "file_count": 23
+  },
+  {
+   "entity": "WebContents",
+   "member": "focus",
+   "count": 26,
+   "file_count": 18
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "focus",
+   "count": 26,
+   "file_count": 18
+  },
+  {
+   "entity": "Tray",
+   "member": "focus",
+   "count": 26,
+   "file_count": 18
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "focus",
+   "count": 26,
+   "file_count": 18
+  },
+  {
+   "entity": "app",
+   "member": "focus",
+   "count": 26,
+   "file_count": 18
+  },
+  {
+   "entity": "dialog",
+   "member": "showMessageBox",
+   "count": 22,
+   "file_count": 16
+  },
+  {
+   "entity": "Menu",
+   "member": "append",
+   "count": 19,
+   "file_count": 9
+  },
+  {
+   "entity": "Notification",
+   "member": "show",
+   "count": 18,
+   "file_count": 17
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "show",
+   "count": 18,
+   "file_count": 17
+  },
+  {
+   "entity": "ipcMain",
+   "member": "once",
+   "count": 18,
+   "file_count": 17
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "show",
+   "count": 18,
+   "file_count": 17
+  },
+  {
+   "entity": "app",
+   "member": "show",
+   "count": 18,
+   "file_count": 17
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "once",
+   "count": 18,
+   "file_count": 17
+  },
+  {
+   "entity": "shell",
+   "member": "openPath",
+   "count": 16,
+   "file_count": 9
+  },
+  {
+   "entity": "Notification",
+   "member": "close",
+   "count": 15,
+   "file_count": 6
+  },
+  {
+   "entity": "MessagePortMain",
+   "member": "close",
+   "count": 15,
+   "file_count": 6
+  },
+  {
+   "entity": "WebContents",
+   "member": "close",
+   "count": 15,
+   "file_count": 6
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "close",
+   "count": 15,
+   "file_count": 6
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "close",
+   "count": 15,
+   "file_count": 6
+  },
+  {
+   "entity": "app",
+   "member": "exit",
+   "count": 14,
+   "file_count": 7
+  },
+  {
+   "entity": "WebContents",
+   "member": "loadURL",
+   "count": 14,
+   "file_count": 14
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "loadURL",
+   "count": 14,
+   "file_count": 14
+  },
+  {
+   "entity": "WebContents",
+   "member": "delete",
+   "count": 13,
+   "file_count": 6
+  },
+  {
+   "entity": "Notification",
+   "member": "remove",
+   "count": 12,
+   "file_count": 8
+  },
+  {
+   "entity": "Cookies",
+   "member": "remove",
+   "count": 12,
+   "file_count": 8
+  },
+  {
+   "entity": "Session",
+   "member": "clearStorageData",
+   "count": 12,
+   "file_count": 12
+  },
+  {
+   "entity": "WebContents",
+   "member": "selectAll",
+   "count": 11,
+   "file_count": 3
+  },
+  {
+   "entity": "clipboard",
+   "member": "writeText",
+   "count": 11,
+   "file_count": 7
+  },
+  {
+   "entity": "app",
+   "member": "quit",
+   "count": 10,
+   "file_count": 9
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "destroy",
+   "count": 10,
+   "file_count": 6
+  },
+  {
+   "entity": "Tray",
+   "member": "destroy",
+   "count": 10,
+   "file_count": 6
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "destroy",
+   "count": 10,
+   "file_count": 6
+  },
+  {
+   "entity": "clipboard",
+   "member": "clear",
+   "count": 8,
+   "file_count": 6
+  },
+  {
+   "entity": "dialog",
+   "member": "showErrorBox",
+   "count": 7,
+   "file_count": 5
+  },
+  {
+   "entity": "shell",
+   "member": "openExternal",
+   "count": 7,
+   "file_count": 3
+  },
+  {
+   "entity": "screen",
+   "member": "getPrimaryDisplay",
+   "count": 7,
+   "file_count": 2
+  },
+  {
+   "entity": "app",
+   "member": "getVersion",
+   "count": 6,
+   "file_count": 6
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "sendSync",
+   "count": 6,
+   "file_count": 2
+  },
+  {
+   "entity": "NativeImage",
+   "member": "isEmpty",
+   "count": 5,
+   "file_count": 3
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getAllWindows",
+   "count": 5,
+   "file_count": 3
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getAllWindows",
+   "count": 5,
+   "file_count": 3
+  },
+  {
+   "entity": "WebContents",
+   "member": "reload",
+   "count": 5,
+   "file_count": 4
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "reload",
+   "count": 5,
+   "file_count": 4
+  },
+  {
+   "entity": "WebFrameMain",
+   "member": "reload",
+   "count": 5,
+   "file_count": 4
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getFocusedWindow",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getFocusedWindow",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "contextBridge",
+   "member": "exposeInMainWorld",
+   "count": 5,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "relaunch",
+   "count": 4,
+   "file_count": 3
+  },
+  {
+   "entity": "clipboard",
+   "member": "readText",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "dialog",
+   "member": "showOpenDialog",
+   "count": 4,
+   "file_count": 2
+  },
+  {
+   "entity": "webUtils",
+   "member": "getPathForFile",
+   "count": 4,
+   "file_count": 3
+  },
+  {
+   "entity": "app",
+   "member": "getLocale",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "Menu",
+   "member": "buildFromTemplate",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "ClientRequest",
+   "member": "write",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "clipboard",
+   "member": "write",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "shell",
+   "member": "showItemInFolder",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "Menu",
+   "member": "getApplicationMenu",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getSize",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getSize",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "NativeImage",
+   "member": "getSize",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "NativeImage",
+   "member": "resize",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "nativeImage",
+   "member": "createFromPath",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "isMaximized",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "isMaximized",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "DownloadItem",
+   "member": "pause",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "blur",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "blur",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "WebContents",
+   "member": "getType",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "getName",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "toggleDevTools",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "minimize",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "minimize",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "WebContents",
+   "member": "paste",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "WebContents",
+   "member": "copy",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "Menu",
+   "member": "getMenuItemById",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "maximize",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "maximize",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getBounds",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "ipcMain",
+   "member": "removeAllListeners",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "Tray",
+   "member": "getBounds",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getBounds",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "removeAllListeners",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "dialog",
+   "member": "showSaveDialog",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "requestSingleInstanceLock",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "setAppLogsPath",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "setPath",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "setAppUserModelId",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "disableHardwareAcceleration",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "setAboutPanelOptions",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "whenReady",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "setWindowOpenHandler",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "setTitleBarOverlay",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "systemPreferences",
+   "member": "subscribeNotification",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "setTitleBarOverlay",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "addRecentDocument",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "getRecentDocuments",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "clearRecentDocuments",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Tray",
+   "member": "setToolTip",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Tray",
+   "member": "setContextMenu",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "redo",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "undo",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "getZoomFactor",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "pasteAndMatchStyle",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "getZoomLevel",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Menu",
+   "member": "setApplicationMenu",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Menu",
+   "member": "popup",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "isFullScreen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "setFullScreen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "isFullScreen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "setFullScreen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "ipcMain",
+   "member": "handleOnce",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "nativeImage",
+   "member": "createFromDataURL",
+   "count": 1,
+   "file_count": 1
+  }
+ ],
+ "events_top": [
+  {
+   "entity": "ClientRequest",
+   "event": "error",
+   "count": 86,
+   "file_count": 38
+  },
+  {
+   "entity": "UtilityProcess",
+   "event": "error",
+   "count": 86,
+   "file_count": 38
+  },
+  {
+   "entity": "Notification",
+   "event": "close",
+   "count": 67,
+   "file_count": 40
+  },
+  {
+   "entity": "ClientRequest",
+   "event": "close",
+   "count": 67,
+   "file_count": 40
+  },
+  {
+   "entity": "MessagePortMain",
+   "event": "close",
+   "count": 67,
+   "file_count": 40
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "close",
+   "count": 67,
+   "file_count": 40
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "close",
+   "count": 67,
+   "file_count": 40
+  },
+  {
+   "entity": "Notification",
+   "event": "click",
+   "count": 25,
+   "file_count": 15
+  },
+  {
+   "entity": "Tray",
+   "event": "click",
+   "count": 25,
+   "file_count": 15
+  },
+  {
+   "entity": "app",
+   "event": "open-file",
+   "count": 20,
+   "file_count": 15
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "closed",
+   "count": 14,
+   "file_count": 3
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "ready-to-show",
+   "count": 14,
+   "file_count": 14
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "closed",
+   "count": 14,
+   "file_count": 3
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "resize",
+   "count": 7,
+   "file_count": 4
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "resize",
+   "count": 7,
+   "file_count": 4
+  },
+  {
+   "entity": "ClientRequest",
+   "event": "abort",
+   "count": 6,
+   "file_count": 3
+  },
+  {
+   "entity": "MessagePortMain",
+   "event": "message",
+   "count": 6,
+   "file_count": 5
+  },
+  {
+   "entity": "UtilityProcess",
+   "event": "message",
+   "count": 6,
+   "file_count": 5
+  },
+  {
+   "entity": "WebContents",
+   "event": "blur",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "blur",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "blur",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "app",
+   "event": "quit",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "WebContents",
+   "event": "focus",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "focus",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "move",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "focus",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "move",
+   "count": 4,
+   "file_count": 4
+  },
+  {
+   "entity": "app",
+   "event": "activate",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "ClientRequest",
+   "event": "finish",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "Tray",
+   "event": "drop",
+   "count": 3,
+   "file_count": 3
+  },
+  {
+   "entity": "DownloadItem",
+   "event": "done",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "minimize",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "minimize",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "ClientRequest",
+   "event": "response",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "second-instance",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "will-quit",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "window-all-closed",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "will-navigate",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "web-contents-created",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "unresponsive",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "unresponsive",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "DownloadItem",
+   "event": "updated",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "nativeTheme",
+   "event": "updated",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "hide",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "hide",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Menu",
+   "event": "menu-will-close",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "before-quit",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "leave-full-screen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "enter-full-screen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "app-command",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "swipe",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "leave-full-screen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "enter-full-screen",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "app-command",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "swipe",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "unmaximize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "maximize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "unmaximize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "maximize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "console-message",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "ready",
+   "count": 1,
+   "file_count": 1
+  }
+ ],
+ "native_suspects": [
+  "chokidar",
+  "fsevents"
+ ],
+ "deps_count": 157,
+ "signals": {
+  "sandbox_false": 2,
+  "preload": 15,
+  "sendSync": 6,
+  "invoke": 187,
+  "handle": 25,
+  "protocol_handle": 1,
+  "electron-forge": 10,
+  "requestSingleInstanceLock": 1,
+  "second-instance": 1,
+  "setWindowOpenHandler": 1,
+  "contextBridge.exposeInMainWorld": 5,
+  "webContents.send": 49,
+  "nativeTheme": 18,
+  "systemPreferences": 4,
+  "printToPDF": 1,
+  "app.getPath": 40,
+  "shell.openExternal": 7,
+  "shell.showItemInFolder": 3,
+  "shell.trashItem": 1,
+  "dialog.showOpenDialog": 4,
+  "dialog.showSaveDialog": 2,
+  "dialog.showMessageBox": 24,
+  "Menu.buildFromTemplate": 3,
+  "Menu.setApplicationMenu": 1,
+  "popup": 1,
+  "Tray": 1,
+  "Notification": 1,
+  "clipboard": 26,
+  "screen": 9,
+  "nativeImage": 4,
+  "app.isPackaged": 7,
+  "app.setAboutPanelOptions": 1,
+  "app.on(activate)": 1,
+  "before-quit": 1,
+  "will-quit": 1,
+  "window-all-closed": 1,
+  "ready-to-show": 14,
+  "will-navigate": 1,
+  "web-contents-created": 1,
+  "loadFile": 1,
+  "loadURL": 14,
+  "file://": 48,
+  "custom scheme app://": 23
+ }
+}

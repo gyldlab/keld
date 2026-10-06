@@ -1,0 +1,4465 @@
+[
+ {
+  "name": "Debugger",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "attach",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "protocolVersion"
+    ],
+    "returns": null,
+    "desc": "Attaches the debugger to the `webContents`."
+   },
+   {
+    "name": "isAttached",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether a debugger is attached to the `webContents`."
+   },
+   {
+    "name": "detach",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Detaches the debugger from the `webContents`."
+   },
+   {
+    "name": "sendCommand",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "method",
+     "commandParams",
+     "sessionId"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the response defined by the 'returns' attribute of the command description in the remote debugging protocol or is rejected indicating the failure of the command.\n\nSend giv"
+   },
+   {
+    "name": "detach",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "reason"
+    ],
+    "returns": null,
+    "desc": "Emitted when the debugging session is terminated. This happens either when `webContents` is closed or DevTools is invoked for the attached `webContents`."
+   },
+   {
+    "name": "message",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "method",
+     "params",
+     "sessionId"
+    ],
+    "returns": null,
+    "desc": "Emitted whenever the debugging target issues an instrumentation event."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/debugger"
+ },
+ {
+  "name": "NavigationHistory",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "canGoBack",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the browser can go back to previous web page."
+   },
+   {
+    "name": "canGoForward",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the browser can go forward to next web page."
+   },
+   {
+    "name": "canGoToOffset",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "offset"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the web page can go to the specified relative `offset` from the current entry."
+   },
+   {
+    "name": "clear",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Clears the navigation history."
+   },
+   {
+    "name": "getActiveIndex",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The index of the current page, from which we would go back/forward or reload."
+   },
+   {
+    "name": "getEntryAtIndex",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "index"
+    ],
+    "returns": "NavigationEntry",
+    "desc": "Navigation entry at the given index.\n\nIf index is out of bounds (greater than history length or less than 0), null will be returned."
+   },
+   {
+    "name": "goBack",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Makes the browser go back a web page."
+   },
+   {
+    "name": "goForward",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Makes the browser go forward a web page."
+   },
+   {
+    "name": "goToIndex",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "index"
+    ],
+    "returns": null,
+    "desc": "Navigates browser to the specified absolute web page index."
+   },
+   {
+    "name": "goToOffset",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "offset"
+    ],
+    "returns": null,
+    "desc": "Navigates to the specified relative offset from the current entry."
+   },
+   {
+    "name": "length",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "History length."
+   },
+   {
+    "name": "removeEntryAtIndex",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "index"
+    ],
+    "returns": "boolean",
+    "desc": "Removes the navigation entry at the given index. Can't remove entry at the \"current active index\".\n\nWhether the navigation entry was removed from the webContents history."
+   },
+   {
+    "name": "getAllEntries",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "NavigationEntry",
+    "desc": "WebContents complete history."
+   },
+   {
+    "name": "restore",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "the promise will resolve when the page has finished loading the selected navigation entry (see `did-finish-load`), and rejects if the page fails to load (see `did-fail-load`). A noop rejection handler"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/navigation-history"
+ },
+ {
+  "name": "sharedTexture",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Import shared textures into Electron and converts platform specific handles into `VideoFrame`. Supports all Web rendering systems, and can be transferred across Electron processes. Read here for more information.\n\nProcess: Main, Renderer",
+  "members": [
+   {
+    "name": "importSharedTexture",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": "SharedTextureImported",
+    "desc": "Imports the shared texture from the given options.\n\n> [!NOTE] This method is only available in the main process.\n\nThe imported shared texture."
+   },
+   {
+    "name": "sendSharedTexture",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "options",
+     "...args"
+    ],
+    "returns": "Promise",
+    "desc": "Send the imported shared texture to a renderer process. You must register a receiver at renderer process before calling this method. This method has a 1000ms timeout. Ensure the receiver is set and th"
+   },
+   {
+    "name": "setSharedTextureReceiver",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Set a callback to receive imported shared textures from the main process.\n\n> [!NOTE] This method is only available in the renderer process."
+   },
+   {
+    "name": "subtle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `SharedTextureSubtle` property, provides subtle APIs for interacting with shared texture for advanced users."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/shared-texture"
+ },
+ {
+  "name": "webContents",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Render and control web pages.\n\nProcess: Main\n\n`webContents` is an EventEmitter. It is responsible for rendering and controlling a web page and is a property of the `BrowserWindow` object. An example of accessing the `webContents` object:\n\n### Navigation Events\n\nSeveral events can be used to monito",
+  "members": [
+   {
+    "name": "getAllWebContents",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "WebContents",
+    "desc": "An array of all `WebContents` instances. This will contain web contents for all windows, webviews, opened DevTools, and DevTools extension background pages."
+   },
+   {
+    "name": "getFocusedWebContents",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebContents"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The web contents that is focused in this application, otherwise returns `null`."
+   },
+   {
+    "name": "fromId",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebContents"
+     },
+     {
+      "collection": false,
+      "type": "undefined"
+     }
+    ],
+    "desc": "A WebContents instance with the given ID, or `undefined` if there is no WebContents associated with the given ID."
+   },
+   {
+    "name": "fromFrame",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "frame"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebContents"
+     },
+     {
+      "collection": false,
+      "type": "undefined"
+     }
+    ],
+    "desc": "A WebContents instance with the given WebFrameMain, or `undefined` if there is no WebContents associated with the given WebFrameMain."
+   },
+   {
+    "name": "fromDevToolsTargetId",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "targetId"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebContents"
+     },
+     {
+      "collection": false,
+      "type": "undefined"
+     }
+    ],
+    "desc": "A WebContents instance with the given TargetID, or `undefined` if there is no WebContents associated with the given TargetID.\n\nWhen communicating with the Chrome DevTools Protocol, it can be useful to"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-contents"
+ },
+ {
+  "name": "WebContents",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "loadURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "the promise will resolve when the page has finished loading (see `did-finish-load`), and rejects if the page fails to load (see `did-fail-load`). A noop rejection handler is already attached, which av"
+   },
+   {
+    "name": "loadFile",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filePath",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "the promise will resolve when the page has finished loading (see `did-finish-load`), and rejects if the page fails to load (see `did-fail-load`).\n\nLoads the given file in the window, `filePath` should"
+   },
+   {
+    "name": "downloadURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Initiates a download of the resource at `url` without navigating. The `will-download` event of `session` will be triggered."
+   },
+   {
+    "name": "getURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The URL of the current web page."
+   },
+   {
+    "name": "getTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The title of the current web page."
+   },
+   {
+    "name": "isDestroyed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the web page is destroyed."
+   },
+   {
+    "name": "close",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "opts"
+    ],
+    "returns": null,
+    "desc": "Closes the page, as if the web content had called `window.close()`.\n\nIf the page is successfully closed (i.e. the unload is not prevented by the page, or `waitForBeforeUnload` is false or unspecified)"
+   },
+   {
+    "name": "focus",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Focuses the web page."
+   },
+   {
+    "name": "isFocused",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the web page is focused."
+   },
+   {
+    "name": "isLoading",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether web page is still loading resources."
+   },
+   {
+    "name": "isLoadingMainFrame",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the main frame (and not just iframes or frames within it) is still loading."
+   },
+   {
+    "name": "isWaitingForResponse",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the web page is waiting for a first-response from the main resource of the page."
+   },
+   {
+    "name": "stop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Stops any pending navigation."
+   },
+   {
+    "name": "reload",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Reloads the current web page."
+   },
+   {
+    "name": "reloadIgnoringCache",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Reloads current page and ignores cache."
+   },
+   {
+    "name": "canGoBack",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the browser can go back to previous web page.\n\n**Deprecated:** Should use the new `contents.navigationHistory.canGoBack` API."
+   },
+   {
+    "name": "canGoForward",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the browser can go forward to next web page.\n\n**Deprecated:** Should use the new `contents.navigationHistory.canGoForward` API."
+   },
+   {
+    "name": "canGoToOffset",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "offset"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the web page can go to `offset`.\n\n**Deprecated:** Should use the new `contents.navigationHistory.canGoToOffset` API."
+   },
+   {
+    "name": "clearHistory",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Clears the navigation history.\n\n**Deprecated:** Should use the new `contents.navigationHistory.clear` API."
+   },
+   {
+    "name": "goBack",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Makes the browser go back a web page.\n\n**Deprecated:** Should use the new `contents.navigationHistory.goBack` API."
+   },
+   {
+    "name": "goForward",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Makes the browser go forward a web page.\n\n**Deprecated:** Should use the new `contents.navigationHistory.goForward` API."
+   },
+   {
+    "name": "goToIndex",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "index"
+    ],
+    "returns": null,
+    "desc": "Navigates browser to the specified absolute web page index.\n\n**Deprecated:** Should use the new `contents.navigationHistory.goToIndex` API."
+   },
+   {
+    "name": "goToOffset",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "offset"
+    ],
+    "returns": null,
+    "desc": "Navigates to the specified offset from the \"current entry\".\n\n**Deprecated:** Should use the new `contents.navigationHistory.goToOffset` API."
+   },
+   {
+    "name": "isCrashed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the renderer process has crashed."
+   },
+   {
+    "name": "forcefullyCrashRenderer",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Forcefully terminates the renderer process that is currently hosting this `webContents`. This will cause the `render-process-gone` event to be emitted with the `reason=killed || reason=crashed`. Pleas"
+   },
+   {
+    "name": "setUserAgent",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "userAgent"
+    ],
+    "returns": null,
+    "desc": "Overrides the user agent for this web page."
+   },
+   {
+    "name": "getUserAgent",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The user agent for this web page."
+   },
+   {
+    "name": "insertCSS",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "css",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with a key for the inserted CSS that can later be used to remove the CSS via `contents.removeInsertedCSS(key)`.\n\nInjects CSS into the current web page and returns a unique key "
+   },
+   {
+    "name": "removeInsertedCSS",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "key"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves if the removal was successful.\n\nRemoves the inserted CSS from the current web page. The stylesheet is identified by its key, which is returned from `contents.insertCSS(css)`."
+   },
+   {
+    "name": "executeJavaScript",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "code",
+     "userGesture"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the result of the executed code or is rejected if the result of the code is a rejected promise.\n\nEvaluates `code` in page.\n\nIn the browser window some HTML APIs like `requ"
+   },
+   {
+    "name": "executeJavaScriptInIsolatedWorld",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "worldId",
+     "scripts",
+     "userGesture"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the result of the executed code or is rejected if the result of the code is a rejected promise.\n\nWorks like `executeJavaScript` but evaluates `scripts` in an isolated cont"
+   },
+   {
+    "name": "setIgnoreMenuShortcuts",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "ignore"
+    ],
+    "returns": null,
+    "desc": "Ignore application menu shortcuts while this web contents is focused."
+   },
+   {
+    "name": "setWindowOpenHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Called before creating a window when a new window is requested by the renderer, e.g. by `window.open()`, a link with `target=\"_blank\"`, shift+clicking on a link, or submitting a form with `<form targe"
+   },
+   {
+    "name": "setAudioMuted",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "muted"
+    ],
+    "returns": null,
+    "desc": "Mute the audio on the current web page."
+   },
+   {
+    "name": "isAudioMuted",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether this page has been muted."
+   },
+   {
+    "name": "isCurrentlyAudible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether audio is currently playing."
+   },
+   {
+    "name": "setCaretBrowsingEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "enabled"
+    ],
+    "returns": null,
+    "desc": "Sets whether caret browsing is enabled on the current web page."
+   },
+   {
+    "name": "isCaretBrowsingEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether caret browsing is enabled for this page."
+   },
+   {
+    "name": "setZoomFactor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "factor"
+    ],
+    "returns": null,
+    "desc": "Changes the zoom factor to the specified factor. Zoom factor is zoom percent divided by 100, so 300% = 3.0.\n\nThe factor must be greater than 0.0."
+   },
+   {
+    "name": "getZoomFactor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "number",
+    "desc": "the current zoom factor."
+   },
+   {
+    "name": "setZoomLevel",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "level"
+    ],
+    "returns": null,
+    "desc": "Changes the zoom level to the specified level. The original size is 0 and each increment above or below represents zooming 20% larger or smaller to default limits of 300% and 50% of original size, res"
+   },
+   {
+    "name": "getZoomLevel",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "number",
+    "desc": "the current zoom level."
+   },
+   {
+    "name": "setZoomMode",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "mode"
+    ],
+    "returns": null,
+    "desc": "Sets the zoom mode for this web contents.\n\n* `default` - Zoom changes are handled automatically on a per-origin basis. Other webContents navigated to the same origin will share the same zoom level.\n* "
+   },
+   {
+    "name": "getZoomMode",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current zoom mode. Can be `default`, `isolated`, `manual`, or `disabled`."
+   },
+   {
+    "name": "setVisualZoomLevelLimits",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "minimumLevel",
+     "maximumLevel"
+    ],
+    "returns": "Promise",
+    "desc": "Sets the maximum and minimum pinch-to-zoom level.\n\n> [!NOTE] Visual zoom is disabled by default in Electron. To re-enable it, call:"
+   },
+   {
+    "name": "undo",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `undo` in web page."
+   },
+   {
+    "name": "redo",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `redo` in web page."
+   },
+   {
+    "name": "cut",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `cut` in web page."
+   },
+   {
+    "name": "copy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `copy` in web page."
+   },
+   {
+    "name": "centerSelection",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Centers the current text selection in web page."
+   },
+   {
+    "name": "copyImageAt",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y"
+    ],
+    "returns": null,
+    "desc": "Copy the image at the given position to the clipboard."
+   },
+   {
+    "name": "copyVideoFrameAt",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y"
+    ],
+    "returns": null,
+    "desc": "When executed on a video media element, copies the frame at (x, y) to the clipboard."
+   },
+   {
+    "name": "saveVideoFrameAs",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y"
+    ],
+    "returns": null,
+    "desc": "When executed on a video media element, shows a save dialog and saves the frame at (x, y) to disk."
+   },
+   {
+    "name": "paste",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `paste` in web page."
+   },
+   {
+    "name": "pasteAndMatchStyle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `pasteAndMatchStyle` in web page."
+   },
+   {
+    "name": "delete",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `delete` in web page."
+   },
+   {
+    "name": "selectAll",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `selectAll` in web page."
+   },
+   {
+    "name": "unselect",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Executes the editing command `unselect` in web page."
+   },
+   {
+    "name": "scrollToTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Scrolls to the top of the current `webContents`."
+   },
+   {
+    "name": "scrollToBottom",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Scrolls to the bottom of the current `webContents`."
+   },
+   {
+    "name": "adjustSelection",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Adjusts the current text selection starting and ending points in the focused frame by the given amounts. A negative amount moves the selection towards the beginning of the document, and a positive amo"
+   },
+   {
+    "name": "replace",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "text"
+    ],
+    "returns": null,
+    "desc": "Executes the editing command `replace` in web page."
+   },
+   {
+    "name": "replaceMisspelling",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "text"
+    ],
+    "returns": null,
+    "desc": "Executes the editing command `replaceMisspelling` in web page."
+   },
+   {
+    "name": "insertText",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "text"
+    ],
+    "returns": "Promise",
+    "desc": "Inserts `text` to the focused element."
+   },
+   {
+    "name": "findInPage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "text",
+     "options"
+    ],
+    "returns": "Integer",
+    "desc": "The request id used for the request.\n\nStarts a request to find all matches for the `text` in the web page. The result of the request can be obtained by subscribing to `found-in-page` event."
+   },
+   {
+    "name": "stopFindInPage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "action"
+    ],
+    "returns": null,
+    "desc": "Stops any `findInPage` request for the `webContents` with the provided `action`."
+   },
+   {
+    "name": "capturePage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "rect",
+     "opts"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with a NativeImage\n\nCaptures a snapshot of the page within `rect`. Omitting `rect` will capture the whole visible page. The page is considered visible when its browser window is hidden and th"
+   },
+   {
+    "name": "isBeingCaptured",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether this page is being captured. It returns true when the capturer count is greater than 0."
+   },
+   {
+    "name": "getPrintersAsync",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Get the system printer list.\n\nResolves with a `PrinterInfo[]`"
+   },
+   {
+    "name": "print",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "When a custom `pageSize` is passed, Chromium attempts to validate platform specific minimum values for `width_microns` and `height_microns`. Width and height must both be minimum 353 microns but may b"
+   },
+   {
+    "name": "printToPDF",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the generated PDF data.\n\nPrints the window's web page as PDF.\n\nThe `landscape` will be ignored if `@page` CSS at-rule is used in the web page.\n\nAn example of `webContents.printToPDF`:\n\nS"
+   },
+   {
+    "name": "addWorkSpace",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "Adds the specified path to DevTools workspace. Must be used after DevTools creation:"
+   },
+   {
+    "name": "removeWorkSpace",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "Removes the specified path from DevTools workspace."
+   },
+   {
+    "name": "setDevToolsWebContents",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "devToolsWebContents"
+    ],
+    "returns": null,
+    "desc": "Uses the `devToolsWebContents` as the target `WebContents` to show DevTools.\n\nThe `devToolsWebContents` must not have done any navigation, and it should not be used for other purposes after the call.\n"
+   },
+   {
+    "name": "openDevTools",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Opens the DevTools.\n\nWhen `contents` is a `<webview>` tag, the `mode` would be `detach` by default, explicitly passing an empty `mode` can force using last used dock state.\n\nOn Windows, if Window Cont"
+   },
+   {
+    "name": "closeDevTools",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Closes the DevTools view."
+   },
+   {
+    "name": "isDevToolsOpened",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the DevTools view is opened."
+   },
+   {
+    "name": "isDevToolsFocused",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the DevTools view is focused ."
+   },
+   {
+    "name": "getDevToolsTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "the current title of the DevTools window. This will only be visible if DevTools is opened in `undocked` or `detach` mode."
+   },
+   {
+    "name": "setDevToolsTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "title"
+    ],
+    "returns": null,
+    "desc": "Changes the title of the DevTools window to `title`. This will only be visible if DevTools is opened in `undocked` or `detach` mode."
+   },
+   {
+    "name": "toggleDevTools",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Toggles the developer tools."
+   },
+   {
+    "name": "inspectElement",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y"
+    ],
+    "returns": null,
+    "desc": "Starts inspecting element at position (`x`, `y`)."
+   },
+   {
+    "name": "inspectSharedWorker",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Opens the developer tools for the shared worker context."
+   },
+   {
+    "name": "inspectSharedWorkerById",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "workerId"
+    ],
+    "returns": null,
+    "desc": "Inspects the shared worker based on its ID."
+   },
+   {
+    "name": "getAllSharedWorkers",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "SharedWorkerInfo",
+    "desc": "Information about all Shared Workers."
+   },
+   {
+    "name": "inspectServiceWorker",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Opens the developer tools for the service worker context."
+   },
+   {
+    "name": "send",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Send an asynchronous message to the renderer process via `channel`, along with arguments. Arguments will be serialized with the Structured Clone Algorithm, just like `postMessage`, so prototype chains"
+   },
+   {
+    "name": "sendToFrame",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "frameId",
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Send an asynchronous message to a specific frame in a renderer process via `channel`, along with arguments. Arguments will be serialized with the Structured Clone Algorithm, just like `postMessage`, s"
+   },
+   {
+    "name": "postMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "message",
+     "transfer"
+    ],
+    "returns": null,
+    "desc": "Send a message to the renderer process, optionally transferring ownership of zero or more `MessagePortMain` objects.\n\nThe transferred `MessagePortMain` objects will be available in the renderer proces"
+   },
+   {
+    "name": "enableDeviceEmulation",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "parameters"
+    ],
+    "returns": null,
+    "desc": "Enable device emulation with the given parameters."
+   },
+   {
+    "name": "disableDeviceEmulation",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Disable device emulation enabled by `webContents.enableDeviceEmulation`."
+   },
+   {
+    "name": "sendInputEvent",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "inputEvent"
+    ],
+    "returns": null,
+    "desc": "Sends an input `event` to the page.\n\n> [!NOTE] The `BrowserWindow` containing the contents needs to be focused for `sendInputEvent()` to work."
+   },
+   {
+    "name": "beginFrameSubscription",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "onlyDirty",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Begin subscribing for presentation events and captured frames, the `callback` will be called with `callback(image, dirtyRect)` when there is a presentation event.\n\nThe `image` is an instance of Native"
+   },
+   {
+    "name": "endFrameSubscription",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "End subscribing for frame presentation events."
+   },
+   {
+    "name": "startDrag",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "item"
+    ],
+    "returns": null,
+    "desc": "Sets the `item` as dragging item for current drag-drop operation, `file` is the absolute path of the file to be dragged, and `icon` is the image showing under the cursor when dragging."
+   },
+   {
+    "name": "savePage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "fullPath",
+     "saveType"
+    ],
+    "returns": "Promise",
+    "desc": "resolves if the page is saved."
+   },
+   {
+    "name": "showDefinitionForSelection",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Shows pop-up dictionary that searches the selected word on the page."
+   },
+   {
+    "name": "isOffscreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Indicates whether _offscreen rendering_ is enabled."
+   },
+   {
+    "name": "startPainting",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "If _offscreen rendering_ is enabled and not painting, start painting."
+   },
+   {
+    "name": "stopPainting",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "If _offscreen rendering_ is enabled and painting, stop painting."
+   },
+   {
+    "name": "isPainting",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "If _offscreen rendering_ is enabled returns whether it is currently painting."
+   },
+   {
+    "name": "setFrameRate",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "fps"
+    ],
+    "returns": null,
+    "desc": "If _offscreen rendering_ is enabled sets the frame rate to the specified number. When `webPreferences.offscreen.useSharedTexture` is `false` only values between 1 and 240 are accepted."
+   },
+   {
+    "name": "getFrameRate",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "If _offscreen rendering_ is enabled returns the current frame rate."
+   },
+   {
+    "name": "invalidate",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Schedules a full repaint of the window this web contents is in.\n\nIf _offscreen rendering_ is enabled invalidates the frame and generates a new one through the `'paint'` event."
+   },
+   {
+    "name": "getWebRTCIPHandlingPolicy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "Returns the WebRTC IP Handling Policy."
+   },
+   {
+    "name": "setWebRTCIPHandlingPolicy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "policy"
+    ],
+    "returns": null,
+    "desc": "Setting the WebRTC IP handling policy allows you to control which IPs are exposed via WebRTC. See BrowserLeaks for more details."
+   },
+   {
+    "name": "getWebRTCUDPPortRange",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `min` Integer - The minimum UDP port number that WebRTC should use.\n* `max` Integer - The maximum UDP port number that WebRTC should use.\n\nBy default this value is `{ min: 0, max: 0 }` , which would"
+   },
+   {
+    "name": "setWebRTCUDPPortRange",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "udpPortRange"
+    ],
+    "returns": null,
+    "desc": "Setting the WebRTC UDP Port Range allows you to restrict the udp port range used by WebRTC. By default the port range is unrestricted.\n\n> [!NOTE] To reset to an unrestricted port range this value shou"
+   },
+   {
+    "name": "getMediaSourceId",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "requestWebContents"
+    ],
+    "returns": "String",
+    "desc": "The identifier of a WebContents stream. This identifier can be used with `navigator.mediaDevices.getUserMedia` using a `chromeMediaSource` of `tab`. The identifier is restricted to the web contents th"
+   },
+   {
+    "name": "getOrCreateDevToolsTargetId",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The Chrome DevTools Protocol TargetID associated with this WebContents. This is the reverse of `webContents.fromDevToolsTargetId()`.\n\n> [!NOTE] This method creates a new DevTools agent for this WebCon"
+   },
+   {
+    "name": "getOSProcessId",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The operating system `pid` of the associated renderer process."
+   },
+   {
+    "name": "getProcessId",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The Chromium internal `pid` of the associated renderer. Can be compared to the `frameProcessId` passed by frame specific navigation events (e.g. `did-frame-navigate`)"
+   },
+   {
+    "name": "clone",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "WebContents",
+    "desc": "A cloned WebContents instance. This method creates a copy of the WebContents with the following attributes:\n\n* **WebPreferences** - All preferences from the original WebContents are copied\n* **SiteIns"
+   },
+   {
+    "name": "takeHeapSnapshot",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filePath"
+    ],
+    "returns": "Promise",
+    "desc": "Indicates whether the snapshot has been created successfully.\n\nTakes a V8 heap snapshot and saves it to `filePath`."
+   },
+   {
+    "name": "getBackgroundThrottling",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether or not this WebContents will throttle animations and timers when the page becomes backgrounded. This also affects the Page Visibility API."
+   },
+   {
+    "name": "setBackgroundThrottling",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "allowed"
+    ],
+    "returns": null,
+    "desc": "Controls whether or not this WebContents will throttle animations and timers when the page becomes backgrounded. This also affects the Page Visibility API."
+   },
+   {
+    "name": "getType",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "the type of the webContent. Can be `backgroundPage`, `window`, `browserView`, `remote`, `webview` or `offscreen`."
+   },
+   {
+    "name": "setImageAnimationPolicy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "policy"
+    ],
+    "returns": null,
+    "desc": "Sets the image animation policy for this webContents.  The policy only affects _new_ images, existing images that are currently being animated are unaffected. This is a known limitation in Chromium, y"
+   },
+   {
+    "name": "did-finish-load",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the navigation is done, i.e. the spinner of the tab has stopped spinning, and the `onload` event was dispatched."
+   },
+   {
+    "name": "did-fail-load",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "errorCode",
+     "errorDescription",
+     "validatedURL",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "This event is like `did-finish-load` but emitted when the load failed. The full list of error codes and their meaning is available here."
+   },
+   {
+    "name": "did-fail-provisional-load",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "errorCode",
+     "errorDescription",
+     "validatedURL",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "This event is like `did-fail-load` but emitted when the load was cancelled (e.g. `window.stop()` was invoked)."
+   },
+   {
+    "name": "did-frame-finish-load",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted when a frame has done navigation."
+   },
+   {
+    "name": "did-start-loading",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Corresponds to the points in time when the spinner of the tab started spinning."
+   },
+   {
+    "name": "did-stop-loading",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Corresponds to the points in time when the spinner of the tab stopped spinning."
+   },
+   {
+    "name": "dom-ready",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the document in the top-level frame is loaded."
+   },
+   {
+    "name": "page-title-updated",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "title",
+     "explicitSet"
+    ],
+    "returns": null,
+    "desc": "Fired when page title is set during navigation. `explicitSet` is false when title is synthesized from file url."
+   },
+   {
+    "name": "page-favicon-updated",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "favicons"
+    ],
+    "returns": null,
+    "desc": "Emitted when page receives favicon urls."
+   },
+   {
+    "name": "content-bounds-updated",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "bounds"
+    ],
+    "returns": null,
+    "desc": "Emitted when the page calls `window.moveTo`, `window.resizeTo` or related APIs.\n\nBy default, this will move the window. To prevent that behavior, call `event.preventDefault()`."
+   },
+   {
+    "name": "did-create-window",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted _after_ successful creation of a window via `window.open` in the renderer. Not emitted if the creation of the window is canceled from `webContents.setWindowOpenHandler`.\n\nSee `window.open()` f"
+   },
+   {
+    "name": "will-navigate",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details",
+     "url",
+     "isInPlace",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted when a user or the page wants to start navigation on the main frame. It can happen when the `window.location` object is changed or a user clicks a link in the page.\n\nThis event will not emit w"
+   },
+   {
+    "name": "will-frame-navigate",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when a user or the page wants to start navigation in any frame. It can happen when the `window.location` object is changed or a user clicks a link in the page.\n\nUnlike `will-navigate`, `will-f"
+   },
+   {
+    "name": "did-start-navigation",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details",
+     "url",
+     "isInPlace",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted when any frame (including main) starts navigating."
+   },
+   {
+    "name": "will-redirect",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details",
+     "url",
+     "isInPlace",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted when a server side redirect occurs during navigation.  For example a 302 redirect.\n\nThis event will be emitted after `did-start-navigation` and always before the `did-redirect-navigation` even"
+   },
+   {
+    "name": "did-redirect-navigation",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details",
+     "url",
+     "isInPlace",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted after a server side redirect occurs during navigation.  For example a 302 redirect.\n\nThis event cannot be prevented, if you want to prevent redirects you should check out the `will-redirect` e"
+   },
+   {
+    "name": "did-navigate",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url",
+     "httpResponseCode",
+     "httpStatusText"
+    ],
+    "returns": null,
+    "desc": "Emitted when a main frame navigation is done.\n\nThis event is not emitted for in-page navigations, such as clicking anchor links or updating the `window.location.hash`. Use `did-navigate-in-page` event"
+   },
+   {
+    "name": "did-frame-navigate",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url",
+     "httpResponseCode",
+     "httpStatusText",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted when any frame navigation is done.\n\nThis event is not emitted for in-page navigations, such as clicking anchor links or updating the `window.location.hash`. Use `did-navigate-in-page` event fo"
+   },
+   {
+    "name": "did-navigate-in-page",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url",
+     "isMainFrame",
+     "frameProcessId",
+     "frameRoutingId"
+    ],
+    "returns": null,
+    "desc": "Emitted when an in-page navigation happened in any frame.\n\nWhen in-page navigation happens, the page URL changes but does not cause navigation outside of the page. Examples of this occurring are when "
+   },
+   {
+    "name": "will-prevent-unload",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when a `beforeunload` event handler is attempting to cancel a page unload.\n\nCalling `event.preventDefault()` will ignore the `beforeunload` event handler and allow the page to be unloaded.\n\n> "
+   },
+   {
+    "name": "render-process-gone",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when the renderer process unexpectedly disappears.  This is normally because it was crashed or killed."
+   },
+   {
+    "name": "unresponsive",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the web page becomes unresponsive."
+   },
+   {
+    "name": "responsive",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the unresponsive web page becomes responsive again."
+   },
+   {
+    "name": "destroyed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when `webContents` is destroyed."
+   },
+   {
+    "name": "input-event",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "inputEvent"
+    ],
+    "returns": null,
+    "desc": "Emitted when an input event is sent to the WebContents. See InputEvent for details."
+   },
+   {
+    "name": "before-input-event",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "input"
+    ],
+    "returns": null,
+    "desc": "Emitted before dispatching the `keydown` and `keyup` events in the page. Calling `event.preventDefault` will prevent the page `keydown`/`keyup` events and the menu shortcuts.\n\nTo only prevent the menu"
+   },
+   {
+    "name": "before-mouse-event",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "mouse"
+    ],
+    "returns": null,
+    "desc": "Emitted before dispatching mouse events in the page.\n\nCalling `event.preventDefault` will prevent the page mouse events."
+   },
+   {
+    "name": "enter-html-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window enters a full-screen state triggered by HTML API."
+   },
+   {
+    "name": "leave-html-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window leaves a full-screen state triggered by HTML API."
+   },
+   {
+    "name": "zoom-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "zoomDirection"
+    ],
+    "returns": null,
+    "desc": "Emitted when the user is requesting to change the zoom level using the mouse wheel."
+   },
+   {
+    "name": "blur",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the `WebContents` loses focus."
+   },
+   {
+    "name": "focus",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the `WebContents` gains focus.\n\nNote that on macOS, having focus means the `WebContents` is the first responder of window, so switching focus between windows would not trigger the `focus`"
+   },
+   {
+    "name": "devtools-open-url",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url"
+    ],
+    "returns": null,
+    "desc": "Emitted when a link is clicked in DevTools or 'Open in new tab' is selected for a link in its context menu."
+   },
+   {
+    "name": "devtools-search-query",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "query"
+    ],
+    "returns": null,
+    "desc": "Emitted when 'Search' is selected for text in its context menu."
+   },
+   {
+    "name": "devtools-opened",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when DevTools is opened."
+   },
+   {
+    "name": "devtools-closed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when DevTools is closed."
+   },
+   {
+    "name": "devtools-focused",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when DevTools is focused / opened."
+   },
+   {
+    "name": "certificate-error",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url",
+     "error",
+     "certificate",
+     "callback",
+     "isMainFrame"
+    ],
+    "returns": null,
+    "desc": "Emitted when failed to verify the `certificate` for `url`.\n\nThe usage is the same with the `certificate-error` event of `app`."
+   },
+   {
+    "name": "select-client-certificate",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url",
+     "certificateList",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a client certificate is requested.\n\nThe usage is the same with the `select-client-certificate` event of `app`."
+   },
+   {
+    "name": "login",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "authenticationResponseDetails",
+     "authInfo",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when `webContents` wants to do basic auth.\n\nThe usage is the same with the `login` event of `app`."
+   },
+   {
+    "name": "found-in-page",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "result"
+    ],
+    "returns": null,
+    "desc": "Emitted when a result is available for `webContents.findInPage` request."
+   },
+   {
+    "name": "media-started-playing",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when media starts playing."
+   },
+   {
+    "name": "media-paused",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when media is paused or done playing."
+   },
+   {
+    "name": "audio-state-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when media becomes audible or inaudible."
+   },
+   {
+    "name": "did-change-theme-color",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "color"
+    ],
+    "returns": null,
+    "desc": "Emitted when a page's theme color changes. This is usually due to encountering a meta tag:"
+   },
+   {
+    "name": "update-target-url",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "url"
+    ],
+    "returns": null,
+    "desc": "Emitted when mouse moves over a link or the keyboard moves the focus to a link."
+   },
+   {
+    "name": "cursor-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "type",
+     "image",
+     "scale",
+     "size",
+     "hotspot"
+    ],
+    "returns": null,
+    "desc": "Emitted when the cursor's type changes. The `type` parameter can be `pointer`, `crosshair`, `hand`, `text`, `wait`, `help`, `e-resize`, `n-resize`, `ne-resize`, `nw-resize`, `s-resize`, `se-resize`, `"
+   },
+   {
+    "name": "context-menu",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "params"
+    ],
+    "returns": null,
+    "desc": "Emitted when there is a new context menu that needs to be handled."
+   },
+   {
+    "name": "select-bluetooth-device",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "devices",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a bluetooth device needs to be selected when a call to `navigator.bluetooth.requestDevice` is made. `callback` should be called with the `deviceId` of the device to be selected.  Passing "
+   },
+   {
+    "name": "paint",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details",
+     "dirtyRect",
+     "image"
+    ],
+    "returns": null,
+    "desc": "Emitted when a new frame is generated. Only the dirty area is passed in the buffer.\n\nWhen using shared texture (set `webPreferences.offscreen.useSharedTexture` to `true`) feature, you can pass the tex"
+   },
+   {
+    "name": "devtools-reload-page",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the DevTools window instructs the webContents to reload"
+   },
+   {
+    "name": "will-attach-webview",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webPreferences",
+     "params"
+    ],
+    "returns": null,
+    "desc": "Emitted when a `<webview>`'s web contents is being attached to this web contents. Calling `event.preventDefault()` will destroy the guest page.\n\nThis event can be used to configure `webPreferences` fo"
+   },
+   {
+    "name": "did-attach-webview",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "webContents"
+    ],
+    "returns": null,
+    "desc": "Emitted when a `<webview>` has been attached to this web contents."
+   },
+   {
+    "name": "console-message",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details",
+     "level",
+     "message",
+     "line",
+     "sourceId"
+    ],
+    "returns": null,
+    "desc": "Emitted when the associated window logs a console message."
+   },
+   {
+    "name": "preload-error",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "preloadPath",
+     "error"
+    ],
+    "returns": null,
+    "desc": "Emitted when the preload script `preloadPath` throws an unhandled exception `error`."
+   },
+   {
+    "name": "ipc-message",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Emitted when the renderer process sends an asynchronous message via `ipcRenderer.send()`.\n\nSee also `webContents.ipc`, which provides an `IpcMain`-like interface for responding to IPC messages specifi"
+   },
+   {
+    "name": "ipc-message-sync",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Emitted when the renderer process sends a synchronous message via `ipcRenderer.sendSync()`.\n\nSee also `webContents.ipc`, which provides an `IpcMain`-like interface for responding to IPC messages speci"
+   },
+   {
+    "name": "preferred-size-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "preferredSize"
+    ],
+    "returns": null,
+    "desc": "Emitted when the `WebContents` preferred size has changed.\n\nThis event will only be emitted when `enablePreferredSizeMode` is set to `true` in `webPreferences`."
+   },
+   {
+    "name": "frame-created",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when the mainFrame, an `<iframe>`, or a nested `<iframe>` is loaded within the page."
+   },
+   {
+    "name": "ipc",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `IpcMain` scoped to just IPC messages sent from this WebContents.\n\nIPC messages sent with `ipcRenderer.send`, `ipcRenderer.sendSync` or `ipcRenderer.postMessage` will be delivered in the following "
+   },
+   {
+    "name": "audioMuted",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether this page is muted."
+   },
+   {
+    "name": "caretBrowsingEnabled",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether caret browsing is enabled for this page.\n\nWhen enabled, a movable cursor is placed in the page's text, allowing the user to navigate and select content wit"
+   },
+   {
+    "name": "userAgent",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the user agent for this web page."
+   },
+   {
+    "name": "zoomLevel",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` property that determines the zoom level for this web contents.\n\nThe original size is 0 and each increment above or below represents zooming 20% larger or smaller to default limits of 300% a"
+   },
+   {
+    "name": "zoomFactor",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` property that determines the zoom factor for this web contents.\n\nThe zoom factor is the zoom percent divided by 100, so 300% = 3.0."
+   },
+   {
+    "name": "zoomMode",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the zoom mode for this web contents.\n\nSee `contents.setZoomMode` for a description of the available modes."
+   },
+   {
+    "name": "frameRate",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` property that sets the frame rate of the web contents to the specified number. Only values between 1 and 240 are accepted.\n\nOnly applicable if _offscreen rendering_ is enabled."
+   },
+   {
+    "name": "id",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Integer` representing the unique ID of this WebContents. Each ID is unique among all `WebContents` instances of the entire Electron application."
+   },
+   {
+    "name": "session",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Session` used by this webContents."
+   },
+   {
+    "name": "navigationHistory",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `NavigationHistory` used by this webContents."
+   },
+   {
+    "name": "hostWebContents",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebContents | null` property that represents a `WebContents` instance that might own this `WebContents`."
+   },
+   {
+    "name": "devToolsWebContents",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebContents | null` property that represents the DevTools `WebContents` associated with a given `WebContents`.\n\n> [!NOTE] Users should never store this object because it may become `null` when the "
+   },
+   {
+    "name": "debugger",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Debugger` instance for this webContents."
+   },
+   {
+    "name": "backgroundThrottling",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether or not this WebContents will throttle animations and timers when the page becomes backgrounded. This also affects the Page Visibility API."
+   },
+   {
+    "name": "mainFrame",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain` property that represents the top frame of the page's frame hierarchy."
+   },
+   {
+    "name": "opener",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain | null` property that represents the frame that opened this WebContents, either with open(), or by navigating a link with a target attribute."
+   },
+   {
+    "name": "focusedFrame",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain | null` property that represents the currently focused frame in this WebContents. Can be the top frame, an inner `<iframe>`, or `null` if nothing is focused."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-contents"
+ },
+ {
+  "name": "webFrameMain",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Control web pages and iframes.\n\nProcess: Main\n\nThe `webFrameMain` module can be used to lookup frames across existing `WebContents` instances. Navigation events are the common use case.\n\n```\nconst { BrowserWindow, webFrameMain } = require('electron')\n\nconst win = new BrowserWindow({ width: 800, he",
+  "members": [
+   {
+    "name": "fromId",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "processId",
+     "routingId"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebFrameMain"
+     },
+     {
+      "collection": false,
+      "type": "undefined"
+     }
+    ],
+    "desc": "A frame with the given process and routing IDs, or `undefined` if there is no WebFrameMain associated with the given IDs."
+   },
+   {
+    "name": "fromFrameToken",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "processId",
+     "frameToken"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebFrameMain"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "A frame with the given process and frame token, or `null` if there is no WebFrameMain associated with the given IDs."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-frame-main"
+ },
+ {
+  "name": "WebFrameMain",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "executeJavaScript",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "code",
+     "userGesture"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the result of the executed code or is rejected if execution throws or results in a rejected promise.\n\nEvaluates `code` in page.\n\nIn the browser window some HTML APIs like "
+   },
+   {
+    "name": "reload",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the reload was initiated successfully. Only results in `false` when the frame has no history."
+   },
+   {
+    "name": "isDestroyed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the frame is destroyed."
+   },
+   {
+    "name": "send",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Send an asynchronous message to the renderer process via `channel`, along with arguments. Arguments will be serialized with the Structured Clone Algorithm, just like `postMessage`, so prototype chains"
+   },
+   {
+    "name": "postMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "channel",
+     "message",
+     "transfer"
+    ],
+    "returns": null,
+    "desc": "Send a message to the renderer process, optionally transferring ownership of zero or more `MessagePortMain` objects.\n\nThe transferred `MessagePortMain` objects will be available in the renderer proces"
+   },
+   {
+    "name": "collectJavaScriptCallStack",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Promise",
+      "innerTypes": [
+       {
+        "collection": false,
+        "type": "String",
+        "possibleValues": null
+       }
+      ]
+     },
+     {
+      "collection": false,
+      "type": "Promise",
+      "innerTypes": [
+       {
+        "collection": false,
+        "type": "void"
+       }
+      ]
+     }
+    ],
+    "desc": "A promise that resolves with the currently running JavaScript call stack. If no JavaScript runs in the frame, the promise will never resolve. In cases where the call stack is otherwise unable to be co"
+   },
+   {
+    "name": "copyVideoFrameAt",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y"
+    ],
+    "returns": null,
+    "desc": "When executed on a video media element, copies the frame at (x, y) to the clipboard."
+   },
+   {
+    "name": "saveVideoFrameAs",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y"
+    ],
+    "returns": null,
+    "desc": "When executed on a video media element, shows a save dialog and saves the frame at (x, y) to disk."
+   },
+   {
+    "name": "printToPDF",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the generated PDF data.\n\nPrints the frame's web page as PDF.\n\nUnlike `webContents.printToPDF`, this method prints only the contents of the frame it is called on. This can be used to prin"
+   },
+   {
+    "name": "dom-ready",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the document is loaded."
+   },
+   {
+    "name": "ipc",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `IpcMain` instance scoped to the frame.\n\nIPC messages sent with `ipcRenderer.send`, `ipcRenderer.sendSync` or `ipcRenderer.postMessage` will be delivered in the following order:\n\n* `contents.on('ip"
+   },
+   {
+    "name": "url",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the current URL of the frame."
+   },
+   {
+    "name": "origin",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the current origin of the frame, serialized according to RFC 6454. This may be different from the URL. For instance, if the frame is a child window opened to `about:blank`, the"
+   },
+   {
+    "name": "top",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain | null` representing top frame in the frame hierarchy to which `frame` belongs."
+   },
+   {
+    "name": "parent",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain | null` representing parent frame of `frame`, the property would be `null` if `frame` is the top frame in the frame hierarchy."
+   },
+   {
+    "name": "frames",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain[]` collection containing the direct descendents of `frame`."
+   },
+   {
+    "name": "framesInSubtree",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrameMain[]` collection containing every frame in the subtree of `frame`, including itself. This can be useful when traversing through all frames."
+   },
+   {
+    "name": "frameTreeNodeId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the id of the frame's internal FrameTreeNode instance. This id is browser-global and uniquely identifies a frame that hosts content. The identifier is fixed at the creation o"
+   },
+   {
+    "name": "name",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the frame name."
+   },
+   {
+    "name": "frameToken",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` which uniquely identifies the frame within its associated renderer process. This is equivalent to `webFrame.frameToken`."
+   },
+   {
+    "name": "osProcessId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the operating system `pid` of the process which owns this frame."
+   },
+   {
+    "name": "processId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the Chromium internal `pid` of the process which owns this frame. This is not the same as the OS process ID; to read that use `frame.osProcessId`."
+   },
+   {
+    "name": "routingId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the unique frame id in the current renderer process. Distinct `WebFrameMain` instances that refer to the same underlying frame will have the same `routingId`."
+   },
+   {
+    "name": "visibilityState",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the visibility state of the frame.\n\nSee also how the Page Visibility API is affected by other Electron APIs."
+   },
+   {
+    "name": "detached",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Boolean` representing whether the frame is detached from the frame tree. If a frame is accessed while the corresponding page is running any unload listeners, it may become detached as the newly nav"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-frame-main"
+ },
+ {
+  "name": "webFrame",
+  "type": "Module",
+  "process": {
+   "main": false,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Customize the rendering of the current web page.\n\nProcess: Renderer\n\n> [!IMPORTANT] If you want to call this API from a renderer process with context isolation enabled, place the API call in your preload script and expose it using the `contextBridge` API.\n\n`webFrame` export of the Electron module ",
+  "members": [
+   {
+    "name": "setZoomFactor",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "factor"
+    ],
+    "returns": null,
+    "desc": "Changes the zoom factor to the specified factor. Zoom factor is zoom percent divided by 100, so 300% = 3.0.\n\nThe factor must be greater than 0.0."
+   },
+   {
+    "name": "getZoomFactor",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "number",
+    "desc": "The current zoom factor."
+   },
+   {
+    "name": "setZoomLevel",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "level"
+    ],
+    "returns": null,
+    "desc": "Changes the zoom level to the specified level. The original size is 0 and each increment above or below represents zooming 20% larger or smaller to default limits of 300% and 50% of original size, res"
+   },
+   {
+    "name": "getZoomLevel",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "number",
+    "desc": "The current zoom level."
+   },
+   {
+    "name": "setVisualZoomLevelLimits",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "minimumLevel",
+     "maximumLevel"
+    ],
+    "returns": null,
+    "desc": "Sets the maximum and minimum pinch-to-zoom level.\n\n> [!NOTE] Visual zoom is disabled by default in Electron. To re-enable it, call:\n\n> [!NOTE] Visual zoom only applies to pinch-to-zoom behavior. Cmd+/"
+   },
+   {
+    "name": "setSpellCheckProvider",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "language",
+     "provider"
+    ],
+    "returns": null,
+    "desc": "Sets a provider for spell checking in input fields and text areas.\n\nIf you want to use this method you must disable the builtin spellchecker when you construct the window.\n\nThe `provider` must be an o"
+   },
+   {
+    "name": "insertCSS",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "css",
+     "options"
+    ],
+    "returns": "String",
+    "desc": "A key for the inserted CSS that can later be used to remove the CSS via `webFrame.removeInsertedCSS(key)`.\n\nInjects CSS into the current web page and returns a unique key for the inserted stylesheet."
+   },
+   {
+    "name": "removeInsertedCSS",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "key"
+    ],
+    "returns": null,
+    "desc": "Removes the inserted CSS from the current web page. The stylesheet is identified by its key, which is returned from `webFrame.insertCSS(css)`."
+   },
+   {
+    "name": "insertText",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "text"
+    ],
+    "returns": null,
+    "desc": "Inserts `text` to the focused element."
+   },
+   {
+    "name": "executeJavaScript",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "code",
+     "userGesture",
+     "callback"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the result of the executed code or is rejected if execution throws or results in a rejected promise.\n\nEvaluates `code` in page.\n\nIn the browser window some HTML APIs like "
+   },
+   {
+    "name": "executeJavaScriptInIsolatedWorld",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "worldId",
+     "scripts",
+     "userGesture",
+     "callback"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the result of the executed code or is rejected if execution could not start.\n\nWorks like `executeJavaScript` but evaluates `scripts` in an isolated context.\n\nNote that whe"
+   },
+   {
+    "name": "setIsolatedWorldInfo",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "worldId",
+     "info"
+    ],
+    "returns": null,
+    "desc": "Set the security origin, content security policy and name of the isolated world.\n\n> [!NOTE] If the `csp` is specified, then the `securityOrigin` also has to be specified."
+   },
+   {
+    "name": "getResourceUsage",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `images` MemoryUsageDetails\n* `scripts` MemoryUsageDetails\n* `cssStyleSheets` MemoryUsageDetails\n* `xslStyleSheets` MemoryUsageDetails\n* `fonts` MemoryUsageDetails\n* `other` MemoryUsageDetails\n\nRetu"
+   },
+   {
+    "name": "clearCache",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Attempts to free memory that is no longer being used (like images from a previous navigation).\n\nNote that blindly calling this method probably makes Electron slower since it will have to refill these "
+   },
+   {
+    "name": "getFrameForSelector",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "selector"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebFrame"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The frame element in `webFrame's` document selected by `selector`, `null` would be returned if `selector` does not select a frame or if the frame is not in the current renderer process."
+   },
+   {
+    "name": "findFrameByName",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebFrame"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "A child of `webFrame` with the supplied `name`, `null` would be returned if there's no such frame or if the frame is not in the current renderer process."
+   },
+   {
+    "name": "findFrameByRoutingId",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "routingId"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebFrame"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "that has the supplied `routingId`, `null` if not found.\n\n**Deprecated:** Use the new `webFrame.findFrameByToken` API."
+   },
+   {
+    "name": "findFrameByToken",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "frameToken"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "WebFrame"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "that has the supplied `frameToken`, `null` if not found."
+   },
+   {
+    "name": "isWordMisspelled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "word"
+    ],
+    "returns": "boolean",
+    "desc": "True if the word is misspelled according to the built in spellchecker, false otherwise. If no dictionary is loaded, always return false."
+   },
+   {
+    "name": "getWordSuggestions",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "word"
+    ],
+    "returns": "String",
+    "desc": "A list of suggested words for a given word. If the word is spelled correctly, the result will be empty."
+   },
+   {
+    "name": "top",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrame | null` representing top frame in frame hierarchy to which `webFrame` belongs, the property would be `null` if top frame is not in the current renderer process."
+   },
+   {
+    "name": "opener",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrame | null` representing the frame which opened `webFrame`, the property would be `null` if there's no opener or opener is not in the current renderer process."
+   },
+   {
+    "name": "parent",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrame | null` representing parent frame of `webFrame`, the property would be `null` if `webFrame` is top or parent is not in the current renderer process."
+   },
+   {
+    "name": "firstChild",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrame | null` representing the first child frame of `webFrame`, the property would be `null` if `webFrame` has no children or if first child is not in the current renderer process."
+   },
+   {
+    "name": "nextSibling",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebFrame | null` representing next sibling frame, the property would be `null` if `webFrame` is the last frame in its parent or if the next sibling is not in the current renderer process."
+   },
+   {
+    "name": "routingId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the unique frame id in the current renderer process. Distinct WebFrame instances that refer to the same underlying frame will have the same `routingId`.\n\n**Deprecated:** Use "
+   },
+   {
+    "name": "frameToken",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the unique frame token in the current renderer process. Distinct WebFrame instances that refer to the same underlying frame will have the same `frameToken`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-frame"
+ },
+ {
+  "name": "ColorSpace",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "primaries",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The color primaries of the color space. Can be one of the following values:"
+   },
+   {
+    "name": "transfer",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The transfer function of the color space. Can be one of the following values:"
+   },
+   {
+    "name": "matrix",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The color matrix of the color space. Can be one of the following values:"
+   },
+   {
+    "name": "range",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The color range of the color space. Can be one of the following values:"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/color-space"
+ },
+ {
+  "name": "InputEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `undefined`, `mouseDown`, `mouseUp`, `mouseMove`, `mouseEnter`, `mouseLeave`, `contextMenu`, `mouseWheel`, `rawKeyDown`, `keyDown`, `keyUp`, `char`, `gestureScrollBegin`, `gestureScrollEnd`, `g"
+   },
+   {
+    "name": "modifiers",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of modifiers of the event, can be `shift`, `control`, `ctrl`, `alt`, `meta`, `command`, `cmd`, `iskeypad`, `isautorepeat`, `leftbuttondown`, `middlebuttondown`, `rightbuttondown`, `capslock`,"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/input-event"
+ },
+ {
+  "name": "KeyboardInputEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "InputEvent",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of the event, can be `rawKeyDown`, `keyDown`, `keyUp` or `char`."
+   },
+   {
+    "name": "keyCode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The character that will be sent as the keyboard event. Should only use valid Accelerator key codes."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/keyboard-input-event"
+ },
+ {
+  "name": "MouseInputEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "InputEvent",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of the event, can be `mouseDown`, `mouseUp`, `mouseEnter`, `mouseLeave`, `contextMenu`, `mouseWheel` or `mouseMove`."
+   },
+   {
+    "name": "x",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "y",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "button",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The button pressed, can be `left`, `middle`, `right`."
+   },
+   {
+    "name": "globalX",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "globalY",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "movementX",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "movementY",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "clickCount",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/mouse-input-event"
+ },
+ {
+  "name": "MouseWheelInputEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "MouseInputEvent",
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of the event, can be `mouseWheel`."
+   },
+   {
+    "name": "deltaX",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "deltaY",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "wheelTicksX",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "wheelTicksY",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "accelerationRatioX",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "accelerationRatioY",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "hasPreciseScrollingDeltas",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "canScroll",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/mouse-wheel-input-event"
+ },
+ {
+  "name": "NavigationEntry",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "title",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "pageState",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A base64 encoded data string containing Chromium page state including information like the current scroll position or form values. It is committed by Chromium before a navigation event and on a regula"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/navigation-entry"
+ },
+ {
+  "name": "OffscreenSharedTexture",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "textureInfo",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The shared texture info."
+   },
+   {
+    "name": "release",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Release the resources. The `texture` cannot be directly passed to another process, users need to maintain texture lifecycles in main process, but it is safe to pass the `textureInfo` to another proces"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/offscreen-shared-texture"
+ },
+ {
+  "name": "PostBody",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "data",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The post data to be sent to the new window."
+   },
+   {
+    "name": "contentType",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `content-type` header used for the data. One of `application/x-www-form-urlencoded` or `multipart/form-data`. Corresponds to the `enctype` attribute of the submitted HTML form."
+   },
+   {
+    "name": "boundary",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The boundary used to separate multiple parts of the message. Only valid when `contentType` is `multipart/form-data`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/post-body"
+ },
+ {
+  "name": "PreloadScriptRegistration",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Context type where the preload script will be executed. Possible values include `frame` or `service-worker`."
+   },
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique ID of preload script. Defaults to a random UUID."
+   },
+   {
+    "name": "filePath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of the script file. Must be an absolute path."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/preload-script-registration"
+ },
+ {
+  "name": "PreloadScript",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Context type where the preload script will be executed. Possible values include `frame` or `service-worker`."
+   },
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique ID of preload script."
+   },
+   {
+    "name": "filePath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of the script file. Must be an absolute path."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/preload-script"
+ },
+ {
+  "name": "PrintToPDFMargins",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "top",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Top margin in inches. Defaults to 1cm (~0.4 inches)."
+   },
+   {
+    "name": "bottom",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Bottom margin in inches. Defaults to 1cm (~0.4 inches)."
+   },
+   {
+    "name": "left",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Left margin in inches. Defaults to 1cm (~0.4 inches)."
+   },
+   {
+    "name": "right",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Right margin in inches. Defaults to 1cm (~0.4 inches)."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/print-to-pdf-margins"
+ },
+ {
+  "name": "PrintToPDFOptions",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "landscape",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Paper orientation.`true` for landscape, `false` for portrait. Defaults to false."
+   },
+   {
+    "name": "displayHeaderFooter",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to display header and footer. Defaults to false."
+   },
+   {
+    "name": "printBackground",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to print background graphics. Defaults to false."
+   },
+   {
+    "name": "scale",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Scale of the webpage rendering. Defaults to 1."
+   },
+   {
+    "name": "pageSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Specify page size of the generated PDF. Can be `A0`, `A1`, `A2`, `A3`, `A4`, `A5`, `A6`, `Legal`, `Letter`, `Tabloid`, `Ledger`, or an Object containing `height` and `width` in inches. Defaults to `Le"
+   },
+   {
+    "name": "margins",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "pageRanges",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Page ranges to print, e.g., '1-5, 8, 11-13'. Defaults to the empty string, which means print all pages."
+   },
+   {
+    "name": "headerTemplate",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "HTML template for the print header. Should be valid HTML markup with following classes used to inject printing values into them: `date` (formatted print date), `title` (document title), `url` (documen"
+   },
+   {
+    "name": "footerTemplate",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "HTML template for the print footer. Should use the same format as the `headerTemplate`."
+   },
+   {
+    "name": "preferCSSPageSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether or not to prefer page size as defined by css. Defaults to false, in which case the content will be scaled to fit the paper size."
+   },
+   {
+    "name": "generateTaggedPDF",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether or not to generate a tagged (accessible) PDF. Defaults to false. As this property is experimental, the generated PDF may not adhere fully to PDF/UA and WCAG standards."
+   },
+   {
+    "name": "generateDocumentOutline",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether or not to generate a PDF document outline from content headers. Defaults to false."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/print-to-pdf-options"
+ },
+ {
+  "name": "PrinterInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "the name of the printer as understood by the OS."
+   },
+   {
+    "name": "displayName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "the name of the printer as shown in Print Preview."
+   },
+   {
+    "name": "description",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "a longer description of the printer's type."
+   },
+   {
+    "name": "options",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "an object containing a variable number of platform-specific printer information."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/printer-info"
+ },
+ {
+  "name": "Referrer",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "HTTP Referrer URL."
+   },
+   {
+    "name": "policy",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `default`, `unsafe-url`, `no-referrer-when-downgrade`, `no-referrer`, `origin`, `strict-origin-when-cross-origin`, `same-origin` or `strict-origin`. See the Referrer-Policy spec for more detail"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/referrer"
+ },
+ {
+  "name": "RenderProcessGoneDetails",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "reason",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The reason the render process is gone.  Possible values:"
+   },
+   {
+    "name": "exitCode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The exit code of the process, unless `reason` is `launch-failed`, in which case `exitCode` will be a platform-specific launch failure error code."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/render-process-gone-details"
+ },
+ {
+  "name": "SharedTextureHandle",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "ntHandle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "NT HANDLE holds the shared texture. Note that this NT HANDLE is local to current process.  Output textures of `rgba`, `bgra`, `rgbaf16` formats don't have a keyed mutex on the texture handle, but `nv1"
+   },
+   {
+    "name": "ioSurface",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "IOSurfaceRef holds the shared texture. Note that this IOSurface is local to current process (not global)."
+   },
+   {
+    "name": "nativePixmap",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_linux"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Structure contains planes of shared texture."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-handle"
+ },
+ {
+  "name": "SharedTextureImportTextureInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "pixelFormat",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The pixel format of the texture."
+   },
+   {
+    "name": "colorSpace",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The color space of the texture."
+   },
+   {
+    "name": "codedSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The full dimensions of the shared texture."
+   },
+   {
+    "name": "visibleRect",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A subsection of [0, 0, codedSize.width, codedSize.height]. In common cases, it is the full section area."
+   },
+   {
+    "name": "timestamp",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A timestamp in microseconds that will be reflected to `VideoFrame`."
+   },
+   {
+    "name": "handle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The shared texture handle."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-import-texture-info"
+ },
+ {
+  "name": "SharedTextureImportedSubtle",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "getVideoFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "VideoFrame",
+    "desc": "Create a `VideoFrame` that uses the imported shared texture in the current process. You can call `VideoFrame.close()` once you've finished using the object. The underlying resources will wait for GPU "
+   },
+   {
+    "name": "release",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Release the resources. If you transferred and get multiple `SharedTextureImported` objects, you have to `release` every one of them. The resource on the GPU process will be destroyed when the last one"
+   },
+   {
+    "name": "startTransferSharedTexture",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "SharedTextureTransfer",
+    "desc": "Create a `SharedTextureTransfer` that can be serialized and transferred to other processes."
+   },
+   {
+    "name": "getFrameCreationSyncToken",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "SharedTextureSyncToken",
+    "desc": "This method is for advanced users. If used, it is typically called after `finishTransferSharedTexture`, and should be passed to the object which was called `startTransferSharedTexture` to prevent the "
+   },
+   {
+    "name": "setReleaseSyncToken",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "syncToken"
+    ],
+    "returns": null,
+    "desc": "This method is for advanced users. If used, this object's underlying resource will not be released until the set sync token is fulfilled at gpu process. By using sync tokens, users are not required to"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-imported-subtle"
+ },
+ {
+  "name": "SharedTextureImported",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "textureId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The unique identifier of the imported shared texture."
+   },
+   {
+    "name": "getVideoFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "VideoFrame",
+    "desc": "Create a `VideoFrame` that uses the imported shared texture in the current process. You can call `VideoFrame.close()` once you've finished using the object. The underlying resources will wait for GPU "
+   },
+   {
+    "name": "release",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Release this object's reference of the imported shared texture. The underlying resource will be alive until every reference is released."
+   },
+   {
+    "name": "subtle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Provides subtle APIs to interact with the imported shared texture for advanced users."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-imported"
+ },
+ {
+  "name": "SharedTextureSubtle",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "importSharedTexture",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "textureInfo"
+    ],
+    "returns": "SharedTextureImportedSubtle",
+    "desc": "Imports the shared texture from the given options. Returns the imported shared texture."
+   },
+   {
+    "name": "finishTransferSharedTexture",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "transfer"
+    ],
+    "returns": "SharedTextureImportedSubtle",
+    "desc": "Finishes the transfer of the shared texture and gets the transferred shared texture. Returns the imported shared texture from the transfer object."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-subtle"
+ },
+ {
+  "name": "SharedTextureSyncToken",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "syncToken",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The opaque data for sync token."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-sync-token"
+ },
+ {
+  "name": "SharedTextureTransfer",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "Use `sharedTexture.subtle.finishTransferSharedTexture` to get `SharedTextureImportedSubtle` back.",
+  "members": [
+   {
+    "name": "transfer",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The opaque transfer data of the shared texture. This can be transferred across Electron processes."
+   },
+   {
+    "name": "syncToken",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The opaque sync token data for frame creation."
+   },
+   {
+    "name": "pixelFormat",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The pixel format of the transferring texture."
+   },
+   {
+    "name": "codedSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The full dimensions of the shared texture."
+   },
+   {
+    "name": "visibleRect",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A subsection of [0, 0, codedSize.width(), codedSize.height()]. In common cases, it is the full section area."
+   },
+   {
+    "name": "timestamp",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A timestamp in microseconds that will be reflected to `VideoFrame`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-texture-transfer"
+ },
+ {
+  "name": "UploadData",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "bytes",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Content being sent."
+   },
+   {
+    "name": "file",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of file being uploaded."
+   },
+   {
+    "name": "blobUUID",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "UUID of blob data. Use ses.getBlobData method to retrieve the data."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/upload-data"
+ },
+ {
+  "name": "UploadFile",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "`file`."
+   },
+   {
+    "name": "filePath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of file to be uploaded."
+   },
+   {
+    "name": "offset",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Defaults to `0`."
+   },
+   {
+    "name": "length",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Number of bytes to read from `offset`. Defaults to `0`."
+   },
+   {
+    "name": "modificationTime",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Last Modification time in number of seconds since the UNIX epoch. Defaults to `0`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/upload-file"
+ },
+ {
+  "name": "UploadRawData",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "`rawData`."
+   },
+   {
+    "name": "bytes",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Data to be uploaded."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/upload-raw-data"
+ },
+ {
+  "name": "WebSource",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "code",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/web-source"
+ }
+]

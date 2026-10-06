@@ -1,0 +1,632 @@
+[
+ {
+  "lens": "evidence quality: receipts to primary sources, fact/inference separation, no blended measured/target/projection claims, no invented Electron behavior",
+  "scores": [
+   {
+    "persona": "perf-engineer",
+    "score": 9,
+    "reason": "Every load-bearing claim re-verified: park-probe reproduced exactly (8,192 B accepted, 0 B seen during park; sysctl sendspace 8192) and sync-probe reproduced (wait ok, 42, ~57 ms) on Bun 1.4.2; 02 \u00a77 read correctly as a frame-stall clock with writer SO_SNDTIMEO 5 s and credit windows 'later work' (grep: 2 comment hits, frame.rs:46 names a credit kind); keld-wv/keld-core have no windowShouldClose/applicationShouldTerminate; Apple quotes exact ('not called when a user quits'; terminateLater + reply). Labels are disciplined: the KELD-IPC-006 consequence is marked inference from spec because the probe server is Bun, not the Rust host. Corrected its own counts (executeJavaScript 5 in electron.js/8 in src; webContents.send 9) and others' (Zettlr 35/49/6/186), all confirmed by grep. Correctly rejects a 1,000-sample p99 as publishable against 01 \u00a75.1 (\u226520\u00d7100k, bootstrap CI). Flags the reference doc's uncited '~1 ms' baseline (line 1244, verified uncited). Deductions: the two-dirty-window traffic-to-8-KiB claim is inference (labelled); changed_mind_on truncated in input."
+   },
+   {
+    "persona": "security-red-team",
+    "score": 8,
+    "reason": "Strongest receipt discipline on Keld sources: transport.ts 608/764/847, 02 \u00a77 364-388, 03-security 97/203-215/239-243, kel78 profile table, kel142 116-128/219-257/312-321/376-384, kel139 AC6/T1b, GUARD003, draw.io updater lines 74-86/92-141/2078/2092-2099, validateSender 694-700, openExternal regex 4348, Zettlr preload 25-74 and sandbox:false sites all verified exactly. Explicitly declares which Electron doc semantics it did not re-fetch rather than restating them as its own facts. The updater objection (a throwing setFeedURL lands in safeUpdaterCall\u2192notifyUpdateFailure\u2192user-facing dialog) is confirmed by code. Deductions: round-1 Zettlr counts 'ipcRenderer.send 84 / webContents.send 84' are wrong (grep 35/49) and q2 is left 'unchanged' without correcting them; evidence.rs variant is StrictBun, not Strict; 'a second authenticated link per role is refused outright' is presented as a rule, but KEL-75 only binds a link to a generation after HELLO and does not state admission policy for a second link, so that is inference stated as fact."
+   },
+   {
+    "persona": "electron-maintainer",
+    "score": 7,
+    "reason": "Retracted its false premise ('Bun client is already a blocking reader') after transport.ts evidence, and the new source-level facts hold: base_window.cc MarkDestroyed() before Emit('closed'), browser_window.cc OnCloseButtonClicked prevent_default + DispatchBeforeUnload, electron_ns_window_delegate.mm windowShouldClose: returns NO, message_box_mac.mm runModal/runModalForWindow, app.md pre-ready synchronous sentence, draw.io top-level Store (line 30) and pre-ready getPath (58), 0 beforeunload hits in both corpora, Zettlr event.reply 3. Inference labels are used where due (electron-store default cwd; webContents.send throws after destroy; no public WKWebView beforeunload primitive; E3 re-entrancy unknown). Deductions: round-1 'draw.io webContents.send 15 sites' is a token-scan count (grep 9) and is not corrected; the revised q1 still proposes 'host\u2192Bun CALL deadlines are suspended while Bun is parked' after perf-engineer showed the firing timer is the writer SO_SNDTIMEO on an 8 KiB kernel buffer, not a CALL deadline, so the suspension rule addresses a clock that does not exist while leaving the measured stall unaddressed; the revised position does not mention the park-probe result at all."
+   },
+   {
+    "persona": "migrating-app-dev",
+    "score": 5,
+    "reason": "Revised position was not delivered in the input (truncated); scored only on round-1 claims visible through the other personas' objections, so this is an [unknown]-heavy score. Credited: boot-static values must exist before the app module evaluates (verified: draw.io line 30 top-level Store; app.md pre-ready sentence; app.ts observeReady is lazy) and windowShouldClose:NO as an async host hook (verified against electron_ns_window_delegate.mm and Apple docs). Debited: 'webContents.send dropped after navigation' contradicts Electron (webContents.send targets the current main frame; frame-targeted event.reply is the stale path per web-frame-main.md); 'static compilation of session.webRequest' is impossible for JS closures over codeDir (electron.js 994-1023); a throwing setFeedURL yields a user-facing error dialog via safeUpdaterCall (92-141); blocking clipboard.readText is unnecessary since draw.io awaits clipboardAction (4497-4498); 'dedicated kipc thread' presumes a second link with no identity atom."
+   }
+  ],
+  "consensus_decisions": [
+   {
+    "decision": "Clone Electron's observable contract at three seams: @keld/electron (TS) as a pure consumer of @keld/api owning EventEmitter ordering, tombstones and lifecycle sequencing; keld-compat (Rust) only for what mints authority or needs a native handle (webview routing identity, host-minted event.sender/senderFrame, window parenting/modals, scheme declaration, nativeImage codecs); renderer compat user-script in the non-page WKContentWorld. No Electron-isms in keld-core/keld-ipc.",
+    "class": "fact",
+    "evidence": "docs/architecture/04-electron-compat.md \u00a73 five layers; docs/specs/kel142-macos-renderer-bridge-api.md:201 '@keld/electron becomes a compatibility consumer' and 219-257 isolated-world contract; crates/keld-wv/src/wkwebview/macos_bridge.rs:510 defaultClientWorld. Retrieved 2026-10-06."
+   },
+   {
+    "decision": "The shipped Bun kipc client cannot block: packages/@keld/kipc/src/transport.ts is a Bun.connect event-loop client with async receive() and one in-flight read. Any blocking main-process emulation (showMessageBoxSync, close veto reply, renderer sendSync's main-side) is an unbuilt client primitive, and parking the Bun main thread with the current client stops draining the link: 8,192 bytes of host\u2192Bun traffic then the writer stalls.",
+    "class": "fact",
+    "evidence": "transport.ts:600-612, 764-772, 925-962 (retrieved 2026-10-06); scratchpad/prototypes/park-probe re-run on Bun 1.4.2: bytesSeenDuringPark 0, acceptedBytes 8192, stalledAtBytes 8192; sysctl net.local.stream.sendspace=8192. The 5 s SO_SNDTIMEO \u2192 KELD-IPC-006 consequence is inference from docs/architecture/02-ipc.md:378-388 (probe server is Bun, not the Rust host)."
+   },
+   {
+    "decision": "02 \u00a75 requires sendSync to exist as a deadline-bounded, rate-limited, dev-warned blocking CALL (KEL-127); it is deferred past the draw.io proof (0 sites) and gated on a WKWebView synchronous-XHR-to-scheme-handler experiment before Zettlr (6 sites); never a silent async rewrite.",
+    "class": "fact",
+    "evidence": "docs/architecture/02-ipc.md:335-337; grep sendSync drawio-desktop/src = 0; zettlr/source sendSync( = 6 (preload/index.ts, pinia/config.ts:28,49). Retrieved 2026-10-06."
+   },
+   {
+    "decision": "Destroyed-object contract: facade objects are host-minted (handle, generation) pairs; the tombstone flips BEFORE 'closed' is emitted (so isDestroyed() is true inside a closed listener); every later member access throws the exact 'Object has been destroyed' text synchronously; destroy() skips close/beforeunload and guarantees closed.",
+    "class": "fact",
+    "evidence": "scratchpad/base_window.cc:171-183 (v44.4.5) MarkDestroyed() then Emit(\"closed\"); browser-window.v44.4.5.md:519, 660-662. Retrieved 2026-10-06."
+   },
+   {
+    "decision": "Host-side close and quit vetoes need no blocking on the host UI thread: Electron itself returns NO from windowShouldClose: and lets JS decide; AppKit offers windowShouldClose:NO + later programmatic close and applicationShouldTerminate: terminateLater + reply(toApplicationShouldTerminate:). windowShouldClose is not called on quit, so Cmd+Q must be tested via applicationShouldTerminate. Neither primitive exists in keld-wv/keld-core today.",
+    "class": "fact",
+    "evidence": "electron_ns_window_delegate.mm windowShouldClose: \u2192 NotifyWindowCloseButtonClicked(); return NO; browser_window.cc:158-176; Apple windowShouldClose(_:) 'not called when a user quits an application'; applicationShouldTerminate(_:) discussion; grep keld-wv/keld-core = 0 hits; kel142:321 'no UI thread blocks on Bun'. Retrieved 2026-10-06."
+   },
+   {
+    "decision": "Divergence routing as KEL-72 set it: host/kipc constraints no app can toggle \u2192 scoreboard \u25b2 with conformance test; two-defensible-behaviors per-app choices \u2192 keld.compat.ts quirks flag that may never widen authority; documented-never or tracked \u2192 \u2718 scored as a fail cell. Never prose-only.",
+    "class": "fact",
+    "evidence": "docs/engineering/compat-scoreboard.md:95-101 'Chosen as scoreboard \u25b2, not a keld.compat.ts quirks flag: these are host/kipc constraints, not per-app toggles'; briefing invariant 3. Retrieved 2026-10-06."
+   },
+   {
+    "decision": "Never-list is unanimous and grounded: missing permission handler is deny (Electron grants without handlers), registerSchemesAsPrivileged never mints privileges from app code, shell.openExternal always passes a host scope, second-instance argv/cwd/additionalData go through host-owned admission, utilityProcess \u2192 host-declared roles with PID diagnostic only, app-selected updater feeds never reach a privileged updater, remote/nodeIntegration:true/sandbox:false/Chromium flags/full CDP \u2718, no silent legacy downgrade, no Electron spec/ under Bun, no CI retries.",
+    "class": "fact",
+    "evidence": "docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md rows 2, 3, 4, 10; 214 verdict REFUSE/PARTIAL and ':217-219' three-retries note; docs/architecture/03-security.md:239-241. Retrieved 2026-10-06."
+   },
+   {
+    "decision": "Measured today: Windows host/main-process RSS 19,552 KB vs Electron 89,140 KB (Electron won total process tree); Windows paired host WS 22,788 vs 26,856 KiB (host lane only; host+Bun INCONCLUSIVE 81.8 vs 54.5 MiB); Windows host-only first paint 469/479/275 ms with Electron leading; macOS 342.911 ms untraced host-only proxy; Windows kipc diagnostic p99 101.6/100.5 \u00b5s with publication.eligible=false (1 session, 10k calls, 25-byte payload); Bun ext-host PoC 87.564 vs 187.588 ms Initialized, bootstrap-only. Targets are the 01 \u00a75 table; projections (75-87% smaller package) are arithmetic on targets. Forbidden: 'faster start', 'less memory', any IPC ratio, installer/patch bytes, any compat percentage, 'Rust makes it faster', PoC extrapolation, and the reference doc's uncited '~1 ms' Electron IPC baseline.",
+    "class": "fact",
+    "evidence": "docs/engineering/budget-scoreboard.md:26-29, 88-92, 490, 545-548; docs/architecture/01-overview.md:184-222 (\u00a75.1 census, \u226520 sessions \u00d7 100,000 calls, 30-sample classes); compat-scoreboard.md:3-6; Electron Compatibility Reference for KELD.md:1060-1065, 1203, 1244-1246, 1307, 1619-1640. Retrieved 2026-10-06."
+   },
+   {
+    "decision": "First proof runs drawio-desktop on macOS under an explicitly declared Keld `legacy` profile (printed forfeit), recorded as AuthorityProfile::LegacySandboxOff in every KEL-74 record, framed as 'brokers correct, containment forfeited'; score only install + activation + a 4-step primary_workflow against a committed denominator built from resolved call sites; spine order (#312; KEL-139 \u2192 KEL-141 \u2225 KEL-142 \u2192 KEL-140 \u2192 KEL-143 \u2192 KEL-144) is not reordered; strict-profile draw.io is its own spec.",
+    "class": "inference",
+    "evidence": "Supporting facts verified: docs/specs/kel78-strict-profile-sandbox.md:169-177 (legacy explicit, forfeit printed; unverified is default); crates/keld-compat/src/evidence.rs:257-265 LegacySandboxOff variant; 03-security.md:239-241; compat-scoreboard.md:17-34 denominator rules; kel139:348-357. The sequencing choice itself is a design inference all three delivered personas share."
+   },
+   {
+    "decision": "The renderer\u2192main authorization boundary in Keld is the per-window enumerated el:<channel> guard grant, not the preload: both corpus preloads expose arbitrary-channel send/invoke to the page, so keld migrate must emit enumerated grants from static analysis and refuse el:*; a webview minted for setWindowOpenHandler allow starts with channels: [] unless granted; the facade must expose host-minted event.senderFrame.url because draw.io's validateSender depends on it.",
+    "class": "inference",
+    "evidence": "Facts: drawio electron-preload.js:102-117 sendMessage \u2192 ipcRenderer.send(action, args); zettlr preload/index.ts:28-51 window.ipc.{send,sendSync,invoke}(channel,...); 03-security.md:97 example 'el:*' and :243 'remote-content windows get channels: [] unless granted'; :213 migrate seeds from static analysis; keld-guard lib.rs:320/394 KELD-GUARD003; drawio electron.js:694-700 validateSender. The 'refuse el:*' rule is a design conclusion."
+   },
+   {
+    "decision": "Updater handling for draw.io: electron-updater aliased to an adapter whose setFeedURL is a recorded no-op (\u25b2 'feed is host-declared'); DRAWIO_DISABLE_UPDATE=true written into the host-declared role environment by migrate (not the operator shell); never a throw (safeUpdaterCall routes it to a user-facing 'Update Error' dialog) and never a fabricated update-not-available (KEL-139 T1b).",
+    "class": "inference",
+    "evidence": "Facts: drawio electron.js:74-86 (env var only gates checkForUpdates; autoUpdater.logger/autoDownload/autoInstallOnAppQuit set unconditionally), 92-141 (notifyUpdateFailure \u2192 dialog.showMessageBox; safeUpdaterCall catch), 2078 setFeedURL outside the 2092 guard; kel139:354 'cannot fabricate a native completion/effect result'; research 186 row 10."
+   },
+   {
+    "decision": "Corpus demand facts for lane sizing (resolved call sites, not token scans): draw.io webContents.send( 9, .send( 13 total, executeJavaScript 5 in electron.js / 8 in src, event/e.reply( 24, sendSync 0, beforeunload 0, showMessageBoxSync 1 (line 876, on the close path); Zettlr sendSync( 6, webContents.send( 49, ipcRenderer.send( 35, ipcRenderer.invoke( 186, .reply( 3, beforeunload 0, sandbox:false 2, protocol.handle 1.",
+    "class": "fact",
+    "evidence": "grep over scratchpad/corpus/drawio-desktop/src and scratchpad/corpus/zettlr/source, 2026-10-06. Supersedes the maintainer's 'webContents.send 15' and security-red-team's 'ipcRenderer.send 84 / webContents.send 84'."
+   },
+   {
+    "decision": "Boot-static values (app.getPath family, name/version/isPackaged, process.versions) must be available synchronously before the app module evaluates, from spawn env or declared identity, not at HELLO/Ready; draw.io constructs electron-store at module top level and calls app.getPath('userData') pre-ready, and Electron documents pre-ready API use as synchronous top-level calls. The current @keld/electron app.ts offers nothing synchronous at import.",
+    "class": "fact",
+    "evidence": "drawio electron.js:28-32, 56-58; app.md v44.4.5 'ensure that it is called synchronously in the top-level context'; packages/@keld/electron/src/app.ts:32-48 lazy observeReady(). Retrieved 2026-10-06. (electron-store default cwd = userData remains [inference], not re-read.)"
+   },
+   {
+    "decision": "Frame-targeted delivery (event.reply, senderFrame.send) binds to the sender's document generation and goes stale after navigation; webContents.send targets the current main frame. draw.io's mainResp and export-* replies ride the frame-targeted path (24 .reply( sites).",
+    "class": "fact",
+    "evidence": "web-frame-main.md v44.4.5 'may become detached as the newly navigated page replaced it in the frame tree'; ipc-main-event.md senderFrame 'May be null if accessed after the frame has either navigated or been destroyed' (per round-1 receipts); drawio electron.js:3060-3075, 4537-4541. Whether webContents.send on a destroyed wrapper throws is [inference] (maintainer labelled it so)."
+   },
+   {
+    "decision": "ipcMain.handle error transport to the page is message-only; the typed KELD-* code stays on the kipc wire.",
+    "class": "fact",
+    "evidence": "scratchpad/ipc-main.v44.4.5.md:135-139 'only the message property from the original error is provided to the renderer process'. Retrieved 2026-10-06."
+   }
+  ],
+  "contested_decisions": [
+   {
+    "question": "What should happen when the Bun role does not answer a cancellable close in time (close-veto 'deadline expiry')?",
+    "side_a": "electron-maintainer: keep the window open, emit a diagnostic, close only when the Bun generation is actually revoked/dead; the host must never destroy a dirty document (draw.io preventDefaults every close).",
+    "side_b": "perf-engineer (round 1) / security-red-team (round 1): host proceeds and records \u25b2; revised perf-engineer: there is no host-side CALL deadline to expire at all \u2014 AppKit's windowShouldClose:NO and applicationShouldTerminate: terminateLater are async hooks and 02 \u00a77's deadline is a frame-stall clock, not a reply-latency bound.",
+    "judge_call": "Side A on outcome, side B on mechanism. The host never auto-closes (KEL-139 T1b forbids fabricated completion; Electron's own delegate returns NO and waits indefinitely). But 'suspending CALL deadlines' is the wrong frame: 02 \u00a77:364-388 has no outstanding-CALL deadline to suspend; the timer that actually fires is the writer SO_SNDTIMEO once the parked Bun stops draining 8 KiB. The design is: async AppKit hooks on the host, window stays open, role health decided by link liveness/generation revocation, with a diagnostic.",
+    "what_would_settle_it": "Spike arm: windowShouldClose:NO + later programmatic close and applicationShouldTerminate: terminateLater + reply in a small objc2 harness with two windows, plus arm C (renderer never answers isModified \u2192 window stays open, diagnostic emitted, no 'closed' fabricated) and arm D (kill the Bun role while a modal is up \u2192 window survives, modal dismissed with typed error). Pass = ordering transcript matches Electron 44.4.5 on the same Mac."
+   },
+   {
+    "question": "By what mechanism may the Bun main thread block for showMessageBoxSync (and later renderer sendSync's main-side reply)?",
+    "side_a": "perf-engineer and security-red-team: a worker-owned @keld/kipc transport (socket in a Worker, SAB ring + Atomics.notify, main thread Atomics.wait) that keeps draining the single link and replays EVENTs in order after wake; alternatively host-side per-role credit windows so the host parks its queue instead of its writer. One role, one link, one principal; a second HELLO is refused.",
+    "side_b": "electron-maintainer: the decision is open \u2014 either a Worker-owned SECOND authenticated link for the same role generation (an admission decision for KEL-75/KEL-97) or a visible refusal; E2 probes whether a stub host accepts a second HELLO for the same generation.",
+    "judge_call": "Side A. A second link per role has no spec basis and would mint a second principal for one role (identity is link metadata, 02 \u00a71/KEL-75:48-51), and it still leaves the primary link undrained while the main thread is parked. The worker-owned transport is the only candidate that addresses the measured 8 KiB stall, but it is a kipc public-API + wire-protocol gate (KEL-80 owner), not a facade detail; until it or credit windows land, showMessageBoxSync is SCAFFOLDED (typed KELD-COMPAT throw with fix-it) and draw.io's close-with-prompt step is a fail cell. Security-red-team's 'refused outright' is the right policy but was stated as fact where it is a design rule.",
+    "what_would_settle_it": "perf-engineer's S0 two-arm fixture against the real @keld/kipc transport: arm A current main-thread transport vs arm B 150-line worker-owned transport, main parked 10 s while a second connection emits 100 \u00d7 64-byte EVENTs/s with host writer SO_SNDTIMEO=5 s; record bytes-to-stall, KELD-IPC-006 occurrence, in-order replay of \u226510k EVENTs with zero drops, and sync-CALL RTT (diagnostic). Arm C: credit frames in a keld-ipc test (frame.rs:46 already names the kind). Pass = B or C shows zero stall/zero IPC-006 and sync RTT within 2\u00d7 raw kipc RTT."
+   },
+   {
+    "question": "Which risk is the program killer?",
+    "side_a": "security-red-team (joined by electron-maintainer in round 2): the authority-model collision \u2014 if draw.io is config-only ONLY under legacy, the security unique never reaches the headline use case and legacy becomes the de-facto default.",
+    "side_b": "perf-engineer: 'Bun blocks \u21d2 kipc link stalls \u21d2 KELD-IPC-006' \u2014 measured today, reproducible, and sits on every editor's close dance; IPC hop latency is a chart problem with in-invariant fixes.",
+    "judge_call": "Both are real but of different kinds, and the evidence favors B as the first-proof killer: it is the only one with a reproduced measurement (park-probe) and it blocks primary_workflow step 4 for draw.io today. A is a program-level honesty risk, but it is already a labelled, sanctioned state (kel78: legacy is explicit with a printed forfeit; 'unverified' is the live state on every OS), so it narrows the claim rather than blocking the proof. Rank: (1) link-drain stall under blocking emulation, (2) legacy-only headline, (3) renderer sendSync mechanism on WKWebView (Zettlr-gated), (4) IPC hop latency (narrows claims only).",
+    "what_would_settle_it": "For B: S0 fixture above. For A: security-red-team's E1 Node-API tracer under Bun with a throwing @keld/electron stub, classifying every fs/net/spawn row on draw.io's activation + primary_workflow path as scopable or not; if most rows are scopable, a strict-profile node:fs facade spec is credible and legacy is a stepping stone, otherwise the headline is 'legacy-profile migration' and must be published as such."
+   },
+   {
+    "question": "Where does the app's preload run \u2014 inside the trusted KEL-142 isolated WKContentWorld or in a third content world?",
+    "side_a": "electron-maintainer: same isolated world (authority-equivalent to Electron's trusted preload), with the contextBridge proxy enforcing Electron's value table so the raw handler/nonce cannot be re-exported.",
+    "side_b": "security-red-team: acceptable only if the value table is enforced AND KEL-142's page-isolation negative tests (kel142:376-384) are re-run with the preload present; a third world with a nonce-less relay should be costed because the preload can close over the raw handler, a leak path Electron does not have.",
+    "judge_call": "Side B's conditions are mandatory either way; the choice between same-world and third-world is open and cheap to test. kel142:224/249 keep the nonce and handler outside the page world; a preload sharing that world is new trusted code next to them. Do not decide on prose.",
+    "what_would_settle_it": "Arm G: a preload that attempts to exposeInMainWorld an object closing over the native handler or nonce \u2192 absent in page world; re-run every kel142 negative test with the preload loaded. Measure the third-world relay's per-call cost in the same fixture so the decision is cost-vs-isolation on numbers."
+   },
+   {
+    "question": "Is Electron's main-process JS re-entrant during dialog.showMessageBoxSync on macOS, and therefore must Keld's parked-Bun model be \u25b2 or \u2714?",
+    "side_a": "electron-maintainer: unknown \u2014 message_box_mac.mm uses [alert runModal] / [NSApp runModalForWindow:], an app-modal Cocoa loop; whether Chromium tasks/JS timers/IPC run inside it is undetermined; the two-dirty-windows Cmd+Q scenario is weaker than first stated.",
+    "side_b": "perf-engineer / security-red-team: Electron's documented semantics are 'block the process until the message box is closed', so queue-while-blocked replay is what Keld must reproduce.",
+    "judge_call": "[unknown]; the maintainer is right to withhold a mark. dialog.md says 'block the process' but a Cocoa modal run loop can still pump Chromium's message pump; the doc sentence does not settle re-entrancy. Record the Keld model as \u25b2 or \u2714 only after the fixture.",
+    "what_would_settle_it": "E3: Electron 44.4.5 fixture on a Mac \u2014 open showMessageBoxSync, fire a setTimeout and a renderer ipcRenderer.send during it, log whether any JS runs before the dialog returns; diff against Keld's non-reentrant parked model."
+   },
+   {
+    "question": "How should draw.io's session.webRequest listeners (CSP header, file:// filter) be mapped?",
+    "side_a": "migrating-app-dev (round 1, via objections): statically compile the app's rules into host policy.",
+    "side_b": "electron-maintainer / security-red-team / perf-engineer: listeners are recorded no-ops (\u25b2) only after the host enforces an equivalent \u2014 always-on CSP injection and loadFileURL:allowingReadAccessToURL scoped to the app code dir \u2014 proven by a negative control (file:// outside the app dir refused before bytes load); until then no-op widens read reach and is not a quirks flag.",
+    "judge_call": "Side B. The filters are JS closures over codeDir (electron.js 994-1023); compiling them needs a JS evaluator in the host, which violates one-parser/no-Electron-isms. The \u25b2 is conditional on the host containment landing with its negative control as an S1 Lane A gating artifact.",
+    "what_would_settle_it": "Conformance test: with draw.io loaded via file://, a request to a file:// URL outside codeDir fails before any bytes load under Keld; same fixture under Electron 44.4.5 confirms draw.io's own filter blocks it. Both must refuse."
+   },
+   {
+    "question": "Which sync getters block Bun and which return thenables or mirror reads?",
+    "side_a": "migrating-app-dev (round 1): clipboard.readText and similar genuinely-blocking calls are blocking CALLs with deadline.",
+    "side_b": "perf-engineer: a getter blocks only when the corpus call site consumes the value synchronously (showMessageBoxSync at 876 does); draw.io awaits clipboardAction/windowAction (4497-4498), so a thenable return is a \u25b2 with the KEL-72 app.quit precedent; bounds/focus/maximized/fullscreen/displays/dark read a host-pushed ordered mirror (\u25b2 one-event lag); boot-static values come from a pre-evaluation descriptor.",
+    "judge_call": "Side B, with the maintainer's addition that clipboard text can be a mirror refreshed on NSPasteboard.changeCount ([inference], unmeasured). Blocking is the exception decided per call site by keld migrate static analysis, because every block carries the link-drain hazard.",
+    "what_would_settle_it": "keld migrate static-analysis output over draw.io listing each sync-API call site with 'awaited / consumed synchronously'; a conformance test that a thenable return at the awaited sites round-trips; mirror staleness measured as events between host state change and facade read under a 10k-event/s background stream."
+   }
+  ],
+  "kill_conditions": [
+   {
+    "risk": "Blocking emulation on the Bun main thread stalls the only kipc link: with the current Bun.connect client, a parked main thread stops draining the socket after 8,192 bytes of host\u2192Bun traffic (measured), and 02 \u00a77's 5 s writer SO_SNDTIMEO then yields KELD-IPC-006 (inference from spec). draw.io's close-with-unsaved-prompt depends on showMessageBoxSync, so this blocks primary_workflow step 4 for every editor in the corpus.",
+    "experiment": "S0 (1-2 days, scratchpad only): extend park-probe against the real @keld/kipc transport. Arm A current transport; arm B worker-owned transport (socket in Worker, SAB ring + Atomics.notify, main Atomics.wait for sync CALLs); arm C credit frames in a keld-ipc test so the host parks per-role queues at credit 0. In A/B park main 10 s while a second connection emits 100 \u00d7 64-byte EVENTs/s with host writer SO_SNDTIMEO=5 s; record bytes-to-stall, KELD-IPC-006, in-order replay of 10k EVENTs with zero drops, sync-CALL RTT (diagnostic only, no CI claim). Pass = B or C: zero stall, zero IPC-006, sync RTT \u2264 2\u00d7 raw kipc RTT.",
+    "fallback": "If B passes: worker-owned transport becomes the @keld/kipc contract (wire-protocol + public-API gates), sync emulation allowed per KEL-127 (deadline, rate-limit, dev-warn). If only C passes: host credit windows land first (02 \u00a77 planned work), blocking bounded by credit, not timers. If neither: showMessageBoxSync/sendSync are \u2718 fail cells with fix-its; draw.io is re-scored 'config + 1 edit' (async showMessageBox in the isModified-result handler) and the program's promise becomes minimal-edit migration with a scored edit count. Refused: fake-async sync APIs, host auto-close on timeout, infinite host wait with no unhealthy-role signal, a second kipc link per role, moving window/close ownership into Bun."
+   },
+   {
+    "risk": "Authority-model collision: draw.io's main uses node:fs with renderer-supplied paths, child_process spawn/execFile, electron-store/log/updater; a strict-profile run needs a node:fs\u2192broker facade and child_process\u2192role mapping that do not exist (keld-native is fs.read/fs.write only). If config-only works ONLY under legacy, the security unique never reaches the headline app and legacy becomes the de-facto default.",
+    "experiment": "E1: Node-API tracer under Bun 1.4.2 with a throwing @keld/electron stub over draw.io's activation + primary_workflow path; classify every fs/net/spawn row as scopable (dialog-minted path, app dir, userData) or not; note execFile at electron.js:4413 and spawn sites (Windows-only attrib.exe). Cost ~1 day, scratchpad only.",
+    "fallback": "Publish the first proof under legacy with every unscopable call listed as a fix-it and AuthorityProfile::LegacySandboxOff in every evidence record; open the strict path as its own spec (node:fs facade over FsBroker + OS sandbox per KEL-78). The headline claim is 'legacy-profile migration' until a strict cell passes; never infer strict from Electron options (kel78)."
+   },
+   {
+    "risk": "Renderer sendSync has no engine-portable blocking primitive: browser main threads cannot Atomics.wait, so the only candidate is a synchronous XHR to a host-owned scheme handler, whose behavior on WKWebView (and WebView2) is [unknown]. Zettlr has 6 sites at store construction; draw.io 0.",
+    "experiment": "E4: WKWebView fixture \u2014 synchronous XHR from the page main thread to a WKURLSchemeHandler-backed scheme that forwards to a stub Bun reply; measure whether it completes, main-thread stall, RTT for Zettlr's config-provider get-config shape. Zettlr-gated; not on the draw.io path.",
+    "fallback": "sendSync \u2718 with fix-it (02 \u00a75 says it must exist, so record as tracked \u2718\u2192\u25b2, not silent async); Zettlr activation cell is `unknown` until it passes; Zettlr's preload would need a code change, disclosed as such."
+   },
+   {
+    "risk": "Electron main-process re-entrancy during a Cocoa app-modal dialog is unknown; if Electron's JS does run timers/IPC inside runModalForWindow, Keld's strictly non-reentrant parked-Bun model diverges in a way editors may depend on.",
+    "experiment": "E3: Electron 44.4.5 fixture on the same Mac \u2014 open showMessageBoxSync, schedule setTimeout and a renderer ipcRenderer.send during it, log any JS execution before the dialog returns; compare to Keld's parked model.",
+    "fallback": "If re-entrant: \u25b2 'sync dialogs are non-reentrant in Keld' with a sequence test and in-order EVENT replay after wake. If not: \u2714 with the same replay test as the conformance artifact."
+   },
+   {
+    "risk": "Preload-in-isolated-world leak: app preload code shares the WKContentWorld with the trusted bridge script and document nonce; contextBridge could re-export the raw handler/nonce to the page.",
+    "experiment": "Arm G: preload attempts exposeInMainWorld of an object closing over the native handler/nonce \u2192 must be absent in page world; re-run all kel142:376-384 negative tests with the preload loaded; cost a third-world relay in the same fixture.",
+    "fallback": "Third content world for the preload with a nonce-less relay enforcing exactly the window.keld.invoke shape (kel142:233-236 relay rule); if that costs measurably per call, record the number before choosing."
+   },
+   {
+    "risk": "Channel grant wildcard: with window.keld.invoke in the page world and both corpus preloads exposing arbitrary-channel send/invoke, an el:* grant makes KELD-GUARD003 vacuous for the whole compat namespace.",
+    "experiment": "Arm F: page-world script invokes an el: channel outside the enumerated grant \u2192 KELD-GUARD003; migrate emitting el:* is the negative control that must be refused; measure guard evaluation cost per el: frame for enumerated vs wildcard lists so no one later argues for el:* on performance grounds without a number.",
+    "fallback": "If enumeration from static analysis misses channels (dynamic channel names), the recorder (Lane D deliverable; 03 \u00a73 v0 has none) produces the diff and the manifest is widened explicitly by the developer, never by migrate."
+   }
+  ],
+  "rejected_ideas": [
+   "Bun's existing kipc client as a blocking reader (electron-maintainer round 1) \u2014 transport.ts:600-612/764/925-962 is a Bun.connect event-loop client with async receive(); retracted by its author.",
+   "A second authenticated kipc link per role generation as the sync-call mechanism \u2014 mints a second principal for one role (identity is link metadata, KEL-75:48-51), has no spec owner, and leaves the primary link undrained during the park; the measured 8 KiB stall is unaddressed.",
+   "Blanket 'host suspends inbound host\u2192Bun CALL deadlines while Bun is parked' \u2014 02 \u00a77:364-388 has no outstanding-CALL deadline to suspend (frame-stall clock + writer SO_SNDTIMEO); if written broadly it lets an app defer quit (KEL-139 AC6) and generation revocation; the real hazard is the writer stall, fixed at transport/credit layer, not timers.",
+   "Host auto-closes the window when the Bun reply times out \u2014 destroys dirty documents Electron never destroys (draw.io preventDefaults every close, electron.js:947-963); fabricated completion forbidden by kel139:354.",
+   "Fake-async replacements for sendSync/showMessageBoxSync presented as sync \u2014 KEL-127 and 02 \u00a75:335-337 forbid silent contract changes.",
+   "Static compilation of session.webRequest closures into host policy \u2014 the filters are JS closures over codeDir (electron.js 994-1023); compiling requires a JS evaluator in the host (second parser / Electron-ism in core).",
+   "A throwing autoUpdater.setFeedURL facade \u2014 draw.io's safeUpdaterCall catches it and shows a user-facing 'Update Error' dialog (electron.js:92-141); a no-op \u25b2 plus host-declared env is safer and more honest.",
+   "Fabricating update-not-available when no host updater exists \u2014 a fabricated native effect result (kel139 T1b).",
+   "DRAWIO_DISABLE_UPDATE=true from the operator's shell as the whole updater strategy \u2014 the env var gates only checkForUpdates (electron.js 74-86, 2092-2099); autoUpdater properties and setFeedURL run regardless; and role env is host-declared, so migrate must write it.",
+   "Blocking clipboard.readText as a deadline CALL \u2014 draw.io awaits clipboardAction (electron.js:4497-4498); a thenable (KEL-72 app.quit \u25b2 precedent) or a changeCount-refreshed mirror avoids the link-stall hazard.",
+   "Token-scan usage counts as denominator or lane sizing \u2014 WebContents.replace 22\u00d7 is String.replace; 'webContents.send 15' is 9; 'ipcRenderer.send 84' is 35; only resolved call sites count.",
+   "webContents.send dropped with a dev warning after navigation \u2014 Electron delivers to the current main frame; only frame-targeted event.reply/senderFrame.send goes stale (web-frame-main.md).",
+   "Publishing a close-veto p99 from 1,000 samples \u2014 01 \u00a75.1 requires \u226520 sessions \u00d7 100,000 calls with session-block bootstrap CI and a registry id; label diagnostic.",
+   "Using the reference doc's '~1 ms equivalent framework path' as an Electron IPC baseline \u2014 uncited at line 1244; no paired Electron arm exists.",
+   "Running Electron's spec/ tree under Bun as the oracle, or copying its three-retries policy \u2014 research 214 REFUSE; BrowserWindow/IPC/contextBridge suites are SUBSTRATE-BLOCKED on H7/KEL-97.",
+   "el:* wildcard channel grant emitted by migrate \u2014 both corpus preloads hand the page arbitrary channels, so the guard grant is the only renderer\u2192main boundary and must be enumerated (03-security:97 is an example, not a template).",
+   "Claiming 'default-deny demonstrated for draw.io' under the legacy proof \u2014 the Bun role has ambient fs/child_process/network; negative controls prove brokers refuse, not containment (kel78 profile table).",
+   "Treating 'Cmd+Q with two dirty windows blocks on windowShouldClose' as the test \u2014 Apple: windowShouldClose(_:) is not called when a user quits; quit routes through applicationShouldTerminate(_:).",
+   "Any 'faster IPC', 'starts faster', 'less memory', installer/patch byte, or compatibility-percentage sentence \u2014 budget-scoreboard.md:26-29/90-92 and compat-scoreboard.md:3-6 forbid each on current evidence."
+  ]
+ },
+ {
+  "lens": "Keld invariant compliance: four uniques only; default-deny never defaulted to allow; no Electron-isms in keld-core/keld-ipc; reuse of existing Linear owners; spec+conformance-first; honest divergence marking (\u25b2/\u2718, never prose-only); prior decisions #312/#313/#319 respected. Every scored claim below was re-grounded by me on 2026-10-06 against the Keld repo at d150a14, the scratchpad corpus clones and probes, and pinned Electron v44.4.5 / Apple sources (receipts in the evidence fields). Coverage caveat: the computed task relayed full revised positions only for electron-maintainer, security-red-team and perf-engineer; migrating-app-dev's revised position was truncated out of my input, so its score is provisional and based on what the other three quoted and rebutted.",
+  "scores": [
+   {
+    "persona": "security-red-team",
+    "score": 9,
+    "reason": "Strongest invariant fit. Correctly refuses a second authenticated kipc link per role (KEL-75 lines 50-51 bind one link to one generation after HELLO [fact]), refuses blanket deadline suspension (02 \u00a77 lines 364-388: every I/O wait has a deadline; lifecycle/revocation must keep theirs; KEL-139 AC6 one quit owner [fact]), and converts the preload-as-boundary worry into 'enumerate el:<channel> grants' after checking both corpus preloads expose arbitrary-channel send (drawio electron-preload.js:102-117, zettlr preload/index.ts:28-51 [fact, verified]). Legacy-profile concession is honest and schema-backed (kel78 Profile states table; evidence.rs AuthorityProfile::LegacySandboxOff [fact]). Updater call (setFeedURL recorded no-op + \u25b2 + host-declared role env, typed error only when invoked) is the only one of the three updater proposals that neither fabricates an effect nor triggers draw.io's notifyUpdateFailure dialog (electron.js:92-141 [fact]). Deductions: relies on secondhand Electron doc receipts this round (disclosed); does not note that 03-security.md:97 itself shows `el:*` as the example grant, so its enumerated-grant rule is a spec edit under the code/spec-mismatch rule, not just a migrate behavior; worker-owned-reader design is asserted without the 8 KiB stall evidence that actually forces it."
+   },
+   {
+    "persona": "perf-engineer",
+    "score": 8,
+    "reason": "Only persona whose kill risk is measured and reproducible: I re-ran park-probe (client parked 1505 ms, bytesSeenDuringPark 0, server stalled at 8,192 B; sysctl net.local.stream.sendspace=8192) and sync-probe (Atomics.wait ok, 51 ms). AppKit async-veto correction is verified (Apple: windowShouldClose 'is not called when a user quits an application'; Electron's own delegate returns NO from windowShouldClose: [fact]). Statistic discipline (1,000-sample p99 is diagnostic; 01 \u00a75.1 demands >=20x100k with bootstrap CI) and corpus-count corrections (Zettlr send 35 / webContents.send 49 / sendSync 6 / invoke 186; draw.io webContents.send( 9) all survive my grep. Deductions: the '5 s writer SO_SNDTIMEO -> KELD-IPC-006' consequence is spec inference, not measured against the Rust host writer (labelled mixed, should be [inference]); fallback (b) 'host credit windows alone' is insufficient for a blocking CALL because the REPLY still lands on a socket nobody reads while main is parked, so only the worker-owned transport actually enables showMessageBoxSync; the 'tier C return type decided per call site by migrate' rule would make one facade API's contract vary by caller, which is not a stable public contract (see contested #9); changed_mind section was truncated in my input."
+   },
+   {
+    "persona": "electron-maintainer",
+    "score": 8,
+    "reason": "Model corrections are real and verified: Bun client is Bun.connect/async (transport.ts:600-615, 764, 925-962 [fact]); Electron marks the wrapper destroyed before Emit(\"closed\") (base_window.cc OnWindowClosed [fact]); pre-ready APIs must be synchronous at top level and draw.io constructs electron-store at module top level (app.md; electron.js:30 [fact]); sandboxed-preload module map matches sandbox.md exactly [fact]; beforeunload divergence honestly surfaced (0 corpus hits [fact]). Kill-risk re-ranking toward the authority collision and the sync-identity blocker is well argued. Deductions: still carries 'host->Bun CALL deadlines are suspended while Bun is parked in a modal' as a design rule, which security-red-team showed must be scoped to app-level CALLs only and perf-engineer showed targets the wrong clock (the writer buffer, not the CALL deadline, is what fires); presents 'a Worker-owned second authenticated link for the same role generation' as an open admission decision rather than a refused principal mint (KEL-75 binds one link per generation; a second HELLO is a second principal, i.e. an architecture change by AGENTS' own definition); did not integrate the measured 8 KiB link-stall, which is the mechanism beneath its own first-proof blocker."
+   },
+   {
+    "persona": "migrating-app-dev",
+    "score": 6,
+    "reason": "PROVISIONAL: revised position not present in my input (truncated), scored only from what the other three quoted. Credited: boot-static values must exist before the app module evaluates (verified against electron.js:30/58 and app.md) and windowShouldClose:NO + later programmatic close as the host veto shape (verified against Apple and Electron's delegate). Debited on quoted round-1 items: 'webContents.send to destroyed target dropped with dev warning' conflicts with MarkDestroyed-before-closed semantics; 'static compilation of session.webRequest rules' cannot be done for JS closures over codeDir (electron.js:994-1023) without a JS evaluator in the host, which is an Electron-ism in core; 'setFeedURL throws unless built-in feed' lands in draw.io's user-visible notifyUpdateFailure dialog; 'clipboard.readText as blocking CALL' assumes a parked main thread is survivable, which the park-probe refutes. If the orchestrator has the revised text, re-score; do not treat 6 as a verdict on text I did not read."
+   }
+  ],
+  "consensus_decisions": [
+   {
+    "decision": "Clone Electron's observable contract at three seams only: @keld/electron (TS) as a pure consumer of @keld/api owning Electron-shaped objects, EventEmitter semantics, tombstones and lifecycle sequencing; keld-compat (Rust, behind keld-guard) only for what JS cannot fake or what mints authority (webview routing identity, host-minted event.sender/senderFrame, window parenting/modals, scheme declaration, nativeImage codecs, single-instance admission); renderer compat user-script above the KEL-142 isolated WKContentWorld floor. No Electron-isms in keld-core/keld-ipc.",
+    "class": "fact",
+    "evidence": "docs/architecture/04-electron-compat.md \u00a73 (five layers, retrieved 2026-10-06); docs/specs/kel142-macos-renderer-bridge-api.md:201 '@keld/electron becomes a compatibility consumer' and :216-258 (isolated world, nonce outside page world); briefing invariant 3."
+   },
+   {
+    "decision": "No blocking kipc read exists in the Bun client today. Any 'blocking CALL' (showMessageBoxSync, close veto reply, renderer sendSync main-side) is an unbuilt primitive requiring a transport-ownership change, not a facade detail. All three scored personas now agree the maintainer's round-1 'echo_call is a blocking reader' premise was false.",
+    "class": "fact",
+    "evidence": "packages/@keld/kipc/src/transport.ts:600-615 (one in-flight readFrame, Promise), :764 'async receive', :925-962 'Bun.connect' with data/drain/close callbacks; grep for readSync|blocking|Atomics|Worker in that file = 0 hits (2026-10-06)."
+   },
+   {
+    "decision": "A parked Bun main thread that owns the kipc socket stops draining the link; the host writer stalls after 8,192 bytes on this Mac. Therefore no sync emulation may park the thread that owns the socket; a worker-owned transport (one link, one HELLO, in-order EVENT replay to main after wake) is the only candidate mechanism, and it needs a KEL-80/KEL-97-owned spec plus wire-protocol and public-API review gates before any slice that blocks.",
+    "class": "fact",
+    "evidence": "Judge re-run of scratchpad/prototypes/park-probe/main.ts on Bun 1.4.2: {client-parked, wait timed-out, 1505.2 ms, bytesSeenDuringPark 0}, {server-flood writes 9, acceptedBytes 8192, stalledAtBytes 8192}; sysctl net.local.stream.sendspace=8192 recvspace=8192; sync-probe {wait ok, value 42, 51.12 ms}. The follow-on 'writer expires at 5 s -> KELD-IPC-006' is [inference] from 02-ipc.md:364-388 ('Writer SO_SNDTIMEO stays APP_LINK_IO_DEADLINE'; 'credit windows remain later work'), not yet measured against the Rust host."
+   },
+   {
+    "decision": "Host-side close and quit vetoes are asynchronous AppKit hooks and never block the UI thread on Bun: windowShouldClose: returns NO and the host closes programmatically after Bun's reply; app quit routes through applicationShouldTerminate: (NSTerminateLater + reply), because windowShouldClose is not invoked on quit. Deadline expiry on a close veto keeps the window open and emits a diagnostic; the host closes on its own only when the Bun generation is revoked. Neither primitive exists in keld-wv/keld-core today.",
+    "class": "fact",
+    "evidence": "developer.apple.com windowshouldclose(_:).json: 'this method is not called when a user quits an application' (retrieved 2026-10-06); electron v44.4.5 shell/browser/ui/cocoa/electron_ns_window_delegate.mm windowShouldClose: 'shell_->NotifyWindowCloseButtonClicked(); return NO;'; kel142 \u00a76 line 321 'no UI thread blocks on Bun'; kel139 T1b 'cannot fabricate a native completion/effect result'; grep windowShouldClose|NSWindowDelegate|performClose|applicationShouldTerminate in crates/keld-wv/src crates/keld-core/src = 0 hits."
+   },
+   {
+    "decision": "Destroyed-object contract: facade objects are (handle, generation) pairs; the tombstone flips BEFORE the facade emits 'closed' (so isDestroyed() is true inside a closed listener), every later member access throws the exact text 'Object has been destroyed' synchronously with no round trip, destroy() skips close/beforeunload and guarantees closed; the host-destroyed/Bun-not-drained race is a scoreboard \u25b2 with a sequence test.",
+    "class": "fact",
+    "evidence": "electron v44.4.5 shell/browser/api/electron_api_base_window.cc OnWindowClosed: MarkDestroyed() precedes Emit(\"closed\") (fetched 2026-10-06); WillCloseWindow sets prevent_default when Emit(\"close\") returns true; browser-window.md 'Object has been destroyed' and destroy() guarantees closed (maintainer receipt, consistent)."
+   },
+   {
+    "decision": "Boot-static values (app.getPath family, getName/getVersion/isPackaged, process.versions) must be available synchronously before the app module evaluates, derived from spawn env or declared app identity, not from a HELLO/Ready message. The current @keld/electron has nothing synchronous at import.",
+    "class": "fact",
+    "evidence": "corpus drawio-desktop/src/main/electron.js:30 'store = new Store();' at top level and :58 app.getPath('userData') pre-ready; electron v44.4.5 app.md: 'If an Electron API needs to be called before the ready event, ensure that it is called synchronously in the top-level context'; packages/@keld/electron/src/app.ts:32-48 lazy observeReady() over apiApp.whenReady(). [inference] electron-store's constructor resolves app.getPath('userData') (not re-read)."
+   },
+   {
+    "decision": "Divergence routing stays exactly as KEL-72 set it: host/kipc constraints no app can toggle -> scoreboard \u25b2 with a conformance test (app.quit Promise<void>, per-listener isolation, bounded deadlines, shadow getters, beforeunload-not-fired, close-veto fail-closed); per-app two-defensible-behaviors choices -> keld.compat.ts quirks flag that may narrow but never widen authority and that the guard never reads; documented-never or tracked -> \u2718 scored as a fail cell with a fix-it. Never prose-only.",
+    "class": "fact",
+    "evidence": "docs/engineering/compat-scoreboard.md:95-101 'Chosen as scoreboard \u25b2, not a keld.compat.ts quirks flag: these are host/kipc constraints, not per-app toggles'; 04 \u00a73 layer 5; briefing invariant 3."
+   },
+   {
+    "decision": "The never-list is unanimous and grounded: remote module; nodeIntegration:true / sandbox:false / webSecurity:false Node reach in renderers; Chromium/V8 flags; full CDP in production webviews; a missing permission handler becoming allow; app code minting scheme privileges (registerSchemesAsPrivileged bits); unfiltered shell.openExternal; second-instance argv/cwd/additionalData without host admission and typed exactly-once delivery; utilityProcess as raw spawn or PID as identity; app-selected updater feeds into a privileged updater; Electron spec/ under Bun; CI retries; any silent legacy downgrade; any quirks flag that widens authority.",
+    "class": "fact",
+    "evidence": "docs/research/library/compatibility-competitors/186-electron-micro-surfaces.md rows 1, 2, 3, 6, 10 and lines 27-28 ('both permission paths default to allow without handlers'); 214 line 6-7 REFUSE/PARTIAL and :38 'three retries ... a policy Keld must not copy'; 28 fact matrix Refuse column; 87 'Do not copy' rows; 03-security.md:239-241 legacy explicit, never auto-selected; briefing invariant 10."
+   },
+   {
+    "decision": "Renderer sendSync is deferred past the draw.io proof (0 sites) and gated on a WKWebView synchronous-XHR-to-scheme-handler experiment before Zettlr (6 sites); it must remain what 02 \u00a75 / KEL-127 ordered (a blocking CALL with deadline, rate-limited, dev-warned) or be a visible SCAFFOLDED/\u2718 cell with a fix-it; never a secretly-async rewrite.",
+    "class": "fact",
+    "evidence": "02-ipc.md:335-337 'sync sendSync supported but rate-limited + dev-warned (it's a blocking CALL with a deadline; Electron apps abuse it, so it must exist)'; grep sendSync drawio-desktop/src = 0, zettlr/source = 6 (preload/index.ts:37,57,63,74; pinia/config.ts:28,49); mechanism on WebKit [unknown]."
+   },
+   {
+    "decision": "Performance: only Windows host-process RSS (19,552 KB vs 89,140 KB, Electron won total tree), a 1-session publication-ineligible Windows kipc p99 (~101 \u00b5s), host-only paint arms where Electron leads (275 vs 469 ms), a 342.9 ms macOS host-only proxy, and a bootstrap-only Bun ext-host PoC are measured. Nothing renderer-inclusive, nothing under the \u00a75.1 macOS census, no installer/patch bytes, no per-app number. Forbidden: 'faster start', 'less memory', any IPC ratio, installer/patch figures, any compat percentage, 'Rust makes it faster', PoC extrapolation, and the reference doc's uncited '~1 ms' Electron IPC baseline. Measured / target / projection are never blended.",
+    "class": "fact",
+    "evidence": "docs/engineering/budget-scoreboard.md:24-29, 88-92, 545-548, 780-807; docs/architecture/01-overview.md:184-222 (census/clock/statistic rows; >=20 sessions x 100,000; 30 samples); Electron Compatibility Reference for KELD.md:1244-1246 ('~1 ms' uncited; 'Never apply that ratio'), :1307 'must never be blended', :1619-1640 \u00a738 priority order; compat-scoreboard.md:1-36 no committed product denominator."
+   },
+   {
+    "decision": "A renderer-inclusive invoke RTT (renderer -> bridge -> host -> Bun ipcMain.handle -> renderer) and a facade-overhead delta (@keld/electron path minus raw @keld/api path, same session) need registered keld-benches metric ids before any IPC number for migrated apps is quoted; the KEL-142 one-pending / 4 KiB floor must be lifted by KEL-80 before any throughput claim; SCV vs JSON must be measured on real draw.io payloads before the sum type is kept.",
+    "class": "fact",
+    "evidence": "kel142:112-128 (channel 1 only, payload <= 4096, exactly one pending invoke per WebView); 02-ipc.md:229-231 postcard 'no committed Keld measurement yet'; 01 \u00a75.1 registry rule."
+   },
+   {
+    "decision": "First proof: do not reorder the spine (#312; KEL-139 T1a KEL-141 || T1b KEL-142 -> T2 KEL-140 -> T3 KEL-143 -> T4 KEL-144). drawio-desktop on macOS runs under an explicitly declared Keld `legacy` profile with the forfeit printed and `authority_profile: LegacySandboxOff` in every KEL-74 record, framed as 'brokers correct, containment forfeited, strict not admitted on any OS'. Score install + activation + a 4-step primary_workflow against a committed denominator built from resolved call sites, not token counts. Zettlr waits.",
+    "class": "fact",
+    "evidence": "docs/specs/kel139-macos-product-spine.md:344-374 (entry conditions; 'A parent issue status never substitutes for a named task artifact'); kel78 Profile states table (legacy = explicit key, forfeit printed; unverified is the live default); evidence.rs:255-266; compat-scoreboard.md:17-34 claim shape; briefing #312/#313/#319."
+   },
+   {
+    "decision": "The renderer->main authorization boundary in Keld is the per-window enumerated `el:<channel>` guard grant, not the preload: both corpus preloads expose arbitrary-channel send/invoke to the page. `keld migrate` must emit enumerated grants from static analysis and refuse `el:*`; a child webview principal from setWindowOpenHandler 'allow' starts with channels: [] unless granted; the facade must expose host-minted event.senderFrame.url because draw.io's validateSender depends on it. The `el:*` example in 03 \u00a73 must be revised in the same PR (code/spec mismatch rule).",
+    "class": "fact",
+    "evidence": "drawio electron-preload.js:102-117 (sendMessage -> ipcRenderer.send(action, args)); zettlr preload/index.ts:28-51; drawio electron.js:692-700 validateSender startsWith(codeUrl); 03-security.md:97 example manifest grants [\"notes.*\", \"el:*\"], :213 migrate seeds from static analysis, :243 remote-content windows get channels: []; keld-guard lib.rs:293/320/394 ChannelForbidden -> KELD-GUARD003."
+   },
+   {
+    "decision": "draw.io has zero `<webview>` demand (all 8 hits disable it), zero sendSync, zero beforeunload, no native addons; its close dance is close -> preventDefault -> renderer 'isModified' -> dialog.showMessageBoxSync (the only sync dialog site) -> destroy(); its updater calls setFeedURL and sets autoUpdater properties unconditionally at boot regardless of DRAWIO_DISABLE_UPDATE; its webRequest file:// filter and CSP are JS closures.",
+    "class": "fact",
+    "evidence": "grep counts 2026-10-06: webviewTag|will-attach-webview 8, sendSync 0, beforeunload 0, showMessageBoxSync 1, event.reply 17, webContents.send( 9, executeJavaScript 8 (incl. progress-bar); electron.js:74-86 (disableUpdate gates only checkForUpdates), :2078 safeUpdaterCall('setFeedURL'), :851-880, :947-963, :994-1023, :4348-4359 allowedUrls regex incl. mailto|tel|callto."
+   },
+   {
+    "decision": "Whether JS timers/IPC re-enter Electron's main process during a mac showMessageBoxSync (Cocoa runModal) is unknown and must be decided by an Electron 44.4.5 fixture before Keld's non-reentrant parked model is recorded \u2714 or \u25b2.",
+    "class": "unknown",
+    "evidence": "dialog.md 'it will block the process until the message box is closed' (fetched 2026-10-06) says nothing about task-runner re-entrancy; electron message_box_mac.mm runModal claim is a maintainer receipt not re-fetched by me."
+   }
+  ],
+  "contested_decisions": [
+   {
+    "question": "What mechanism, if any, lets the Bun main process block for showMessageBoxSync / sync reply without violating one-link-per-principal or killing the link?",
+    "side_a": "electron-maintainer: a Worker-owned SECOND authenticated kipc link for the same role generation ('sync sidecar link'), framed as an open KEL-75/KEL-97 admission decision; alternatively refusal.",
+    "side_b": "security-red-team + perf-engineer: ONE link whose reader moves to a worker for the whole session (SAB/Atomics mailbox to main; EVENTs buffered in order during a park and replayed after wake; never a second HELLO). perf-engineer also lists host-side credit windows as an alternative precondition.",
+    "judge_call": "Side B, with one correction. A second link for the same generation is a second principal mint (KEL-75 binds one link to one generation after HELLO) and therefore an architecture change by AGENTS' definition (principal minting) \u2014 REFUSED, not open. Credit windows alone are insufficient for a blocking CALL: they stop the writer from dying but the REPLY still arrives on a socket nobody reads while main is parked; they are needed for backpressure (02 \u00a77 'later work', KEL-80 owner) but do not enable sync emulation. The worker-owned single-link transport is the only candidate and it is a @keld/kipc transport-ownership change requiring wire-protocol + public-API gates and an approved spec before S1's close veto or S3's sync dialog may land.",
+    "what_would_settle_it": "perf-engineer arm B (150-line worker-owned transport against the real @keld/kipc frames; main parked 10 s while a second connection emits 100 x 64 B EVENTs/s; host writer SO_SNDTIMEO 5 s; pass = zero stall, zero KELD-IPC-006, in-order replay of 10k EVENTs, sync RTT within 2x raw kipc) plus security-red-team arm E (host issues generation-retire/quit CALL during the park; it completes within deadline, modal dismissed with typed error, window survives, no fabricated 'closed')."
+   },
+   {
+    "question": "What happens when a close-veto CALL to Bun exceeds its deadline?",
+    "side_a": "perf-engineer round 1 / security-red-team round 1: host proceeds and closes, records \u25b2.",
+    "side_b": "electron-maintainer (round 2, joined by security-red-team's fail-closed rung): window stays open, diagnostic emitted, role flagged unhealthy; host closes only when the Bun generation is revoked/dead.",
+    "judge_call": "Side B. draw.io preventDefaults every close and destroys only after the user answers; auto-closing is silent data loss and a fabricated completion (KEL-139 T1b). Electron's own delegate never closes without JS consent (windowShouldClose: returns NO). Record as \u25b2 'close veto is deadline-bounded and fails closed; Electron blocks indefinitely'. Additionally per perf-engineer: the CALL deadline is not even the clock that fires today \u2014 the writer buffer is \u2014 so the rule to write is about backpressure plus lifecycle/revocation CALLs keeping their deadlines, not about suspending a CALL timer.",
+    "what_would_settle_it": "Spike arm C (renderer never answers 'isModified' -> window remains open, dev diagnostic, no forced close) and arm D (kill the Bun role while a modal is up -> window survives, modal dismissed with typed error, 'closed' not fabricated), transcript diffed against Electron 44.4.5 on the same Mac."
+   },
+   {
+    "question": "Which risk kills the program first?",
+    "side_a": "electron-maintainer: authority-model collision (draw.io config-only works ONLY under legacy; pressure to make legacy the de-facto default) as program-level, with sync-emulation identity as the first-proof blocker; IPC latency fixable inside invariants.",
+    "side_b": "perf-engineer: 'Bun blocks => kipc link stalls after 8 KiB => KELD-IPC-006' is the measured, reproducible first-proof killer; the authority collision is conceded but unmeasurable.",
+    "judge_call": "Both are right about different atoms and both gate. Under this lens the ordering is: (1) the parked-role/link-stall atom is the first-proof blocker because it is measured today and sits on draw.io's primary_workflow step 4; (2) the legacy-only collision is the program-level risk because its only fixes are a new spec (node:fs/child_process facades over brokers + OS sandbox) or accepting legacy as the headline, which erodes unique #2; (3) IPC hop latency narrows claims but has in-invariant levers. The maintainer's round-1 'host cannot wait on Bun' atom is dissolved by AppKit's async hooks.",
+    "what_would_settle_it": "E1 (Node-API tracer under Bun with a throwing @keld/electron stub classifying every fs/net/spawn call on the activation + primary_workflow path as scopable or not) decides (2); the arm B/E spike decides (1); the registered two-hop RTT lane sizes (3)."
+   },
+   {
+    "question": "Where do boot-static values (app.getPath etc.) come from?",
+    "side_a": "security-red-team round 1: a static table sent at Ready.",
+    "side_b": "electron-maintainer + migrating-app-dev: available synchronously before the app module evaluates, from spawn env (KELD_APP_LINK precedent) or computed from declared identity.",
+    "judge_call": "Side B. draw.io constructs electron-store at top level (electron.js:30) and Electron documents pre-ready APIs as synchronous top-level calls. A Ready-time table would make the first corpus app fail at import. Values must be host-minted (identity stays host-owned) but delivered via the spawn contract, not a message.",
+    "what_would_settle_it": "Run draw.io's electron.js under Bun with a @keld/electron stub whose getPath throws unless pre-seeded; the import either completes or the failing call site is listed (part of E1)."
+   },
+   {
+    "question": "webContents.send to a destroyed or navigated target: drop with warning, or throw?",
+    "side_a": "migrating-app-dev (as quoted): drop with a dev warning for navigated/destroyed generations.",
+    "side_b": "electron-maintainer: webContents.send targets the CURRENT main frame (delivered after navigation, never dropped); after destruction the wrapper throws 'Object has been destroyed'; only frame-targeted paths (event.reply, senderFrame.send) go stale after navigation.",
+    "judge_call": "Side B for the destroyed case (consistent with MarkDestroyed-before-closed in base_window.cc) and for the navigation split (web-frame-main.md detached frames). The exact throw on destroyed webContents.send is [inference] from the shared destroyed-wrapper check; draw.io's ~17 event.reply sites ride the frame-targeted path and must bind to the sender's document generation.",
+    "what_would_settle_it": "Electron 44.4.5 fixture: call win.webContents.send after 'closed' and after a navigation; record throw text vs delivery; land as the conformance oracle for the sequence test."
+   },
+   {
+    "question": "How should electron-updater / autoUpdater.setFeedURL be handled in the draw.io proof?",
+    "side_a": "perf-engineer: set DRAWIO_DISABLE_UPDATE=true. migrating-app-dev (as quoted): facade throws unless the feed names the built-in identity. electron-maintainer: adapter emits update-not-available/error without authority.",
+    "side_b": "security-red-team: adapter accepts setFeedURL as a recorded no-op (\u25b2 'feed is host-declared; app feed ignored'), host-declared role env disables draw.io's own check, and a typed error is emitted only when checkForUpdates is actually invoked; never a fabricated update-not-available.",
+    "judge_call": "Side B. The env var only gates checkForUpdates; setFeedURL and property writes run unconditionally (electron.js:74-86, 2078), a throw is caught by safeUpdaterCall and surfaces a boot-time error dialog (92-141), and update-not-available without an updater is a fabricated effect (KEL-139 T1b). Role env must be host-declared in the role declaration, not inherited from the operator shell (186 utilityProcess ambient-env row). Updater real activation stays KEL-53.",
+    "what_would_settle_it": "Boot draw.io under the adapter with and without the role env; pass = no notifyUpdateFailure dialog, a \u25b2 row for setFeedURL, and a typed error only on an explicit checkForUpdates call."
+   },
+   {
+    "question": "Does the app's preload run in the same isolated WKContentWorld as the trusted KEL-142 bridge, or in a third world?",
+    "side_a": "electron-maintainer: same isolated world, with the contextBridge proxy enforcing Electron's value table (functions proxied by id, prototypes dropped, Symbols throw) so the raw handler/nonce cannot be re-exported.",
+    "side_b": "security-red-team: acceptable only if KEL-142's page-isolation negative tests are re-run with the preload present; otherwise a third content world with a nonce-less relay.",
+    "judge_call": "Unresolved and cheap to test; I lean to a third world if any negative test fails with the preload present, because KEL-142's negative tests (:374-386) were written for a world without app code and 'deleting content-world isolation ... must fail a named test' is the standing contract. Authority-wise both equal Electron (preload is trusted app code); the question is leak surface, not authority.",
+    "what_would_settle_it": "Arm G: a preload that tries to exposeInMainWorld a closure over the native handler / nonce; pass = absent from page globals and request arguments, and KEL-142's six negative tests still pass with the preload installed."
+   },
+   {
+    "question": "How are session.webRequest listeners (draw.io's CSP and file:// filter) mapped?",
+    "side_a": "migrating-app-dev (as quoted): statically compile the app's rules into host policy.",
+    "side_b": "electron-maintainer + security-red-team + perf-engineer: listeners become recorded no-ops (\u25b2) backed by the host's always-on CSP injection and navigation allow-list (loadFileURL:allowingReadAccessToURL scoped to the app dir), with a negative control proving host policy is at least as strict as draw.io's filter; and this is a Lane A gating artifact for S1, not a quirks flag, because a flag may not no-op an app's security policy before the host enforces the equivalent.",
+    "judge_call": "Side B. The rules are JS closures over codeDir and request details (electron.js:994-1023); compiling them needs a JS evaluator in the host (an Electron-ism in core and a second policy parser) or silent omission. 03 \u00a72/\u00a73 already own CSP injection and allow-lists.",
+    "what_would_settle_it": "Conformance negative control: a file:// URL outside the app code dir fails before bytes load; a CSP header at least as strict as draw.io's is observed on the main document."
+   },
+   {
+    "question": "For sync getters with no defining host event (clipboard.readText, windowAction), does the facade block or return a thenable?",
+    "side_a": "migrating-app-dev (as quoted): blocking CALL with deadline.",
+    "side_b": "perf-engineer: return a thenable where the corpus call site awaits the value (draw.io awaits clipboardAction/windowAction at 4497-4498), \u25b2 with the KEL-72 app.quit Promise<void> precedent; reserve a true block for sites that consume synchronously, 'decided per call site by keld migrate'.",
+    "judge_call": "Side B's outcome, Side B's mechanism rejected in part: a facade API must have one public return type, so tier-C getters return a thenable uniformly (\u25b2, KEL-72 precedent) and `keld migrate` static analysis flags call sites that consume the value synchronously as scored fail cells with a fix-it; per-call-site return-type switching is not a stable contract. Blocking is reserved for showMessageBoxSync-class calls and only after the worker-owned transport lands.",
+    "what_would_settle_it": "draw.io primary_workflow passes with thenable clipboard/window getters and zero sync-consumption sites flagged; any flagged site would be a visible \u2718 row."
+   }
+  ],
+  "kill_conditions": [
+   {
+    "risk": "Bun cannot block without killing its link: a parked main thread stops draining the single kipc socket, the host writer stalls after 8 KiB (measured) and expires at the 5 s writer SO_SNDTIMEO as KELD-IPC-006 (inferred from 02 \u00a77). Every editor's close dance (draw.io showMessageBoxSync at electron.js:876) depends on a block, so config-only editor migration is impossible without a transport change.",
+    "experiment": "1-2 day scratchpad spike against the real @keld/kipc frames: arm A current main-thread transport; arm B worker-owned single-link transport (socket in a Worker, SAB ring + Atomics.notify, main Atomics.wait for sync CALLs, in-order EVENT replay after wake); in both, park main 10 s while a second connection emits 100 x 64 B EVENTs/s with host writer SO_SNDTIMEO 5 s; record bytes-to-stall, KELD-IPC-006 occurrence, 10k-EVENT replay order, sync-CALL RTT p50/p99 (diagnostic, no CI claim). Arm E: host issues a generation-retire/quit CALL during the park; must complete within deadline, modal dismissed with typed error, no fabricated 'closed'. Arm C (host side): prototype credit frames (frame.rs:46 already names the kind) so the host parks per-role queues at credit 0.",
+    "fallback": "If B passes: worker-owned transport becomes the @keld/kipc contract under wire-protocol + public-API gates (KEL-80/KEL-97 owners), sync emulation allowed with deadline + rate-limit + dev-warn per KEL-127. If only credit windows pass: they land first for backpressure, but sync dialogs remain SCAFFOLDED (typed KELD-COMPAT throw + fix-it to showMessageBox) because credits alone cannot deliver the REPLY to a parked reader. If neither: showMessageBoxSync/sendSync are \u2718 fail cells, draw.io is scored 'config + 1 edit' (async showMessageBox in the isModified-result handler), and the program's promise becomes minimal-edit migration with a scored edit count. REFUSED: second link per role, blanket deadline suspension, host auto-close on expiry, fake-async sync APIs, window ownership in Bun."
+   },
+   {
+    "risk": "Authority-model collision: draw.io's main uses node:fs with renderer-supplied paths, child_process spawn/execFile, and ambient network, so config-only runs only under `legacy`; if strict never reaches the headline use case, pressure to make legacy the de-facto default erodes unique #2 (zero ambient OS authority).",
+    "experiment": "E1: Node-API tracer under Bun 1.4.2 with a throwing @keld/electron stub, running draw.io's activation + primary_workflow path (open via dialog, edit, save, close-with-prompt); classify every fs/net/spawn row as scopable to a dialog-minted grant, scopable to a declared role, or unscopable; count rows per class.",
+    "fallback": "Publish the first proof under explicit legacy with every unscopable call listed as a fix-it and `authority_profile: LegacySandboxOff` in every record (brokers correct, containment forfeited); open the strict path as its own approved spec (node:fs -> FsBroker facade, child_process -> declared role or \u2718) consuming KEL-78/KEL-140/KEL-143; never auto-select legacy from Electron options (03 \u00a72)."
+   },
+   {
+    "risk": "Renderer sendSync has no engine-portable blocking primitive on WKWebView (browser main threads cannot Atomics.wait; only a synchronous XHR to a WKURLSchemeHandler is a candidate), which kills Zettlr-class activation (6 sites at store construction).",
+    "experiment": "E4: WKWebView probe where page JS issues a synchronous XMLHttpRequest to a host scheme handler that forwards to Bun and returns; record whether WebKit services it from the WebContent main thread, the stall duration, and the rate-limit threshold derived from measurement.",
+    "fallback": "sendSync stays \u2718 with a fix-it (to invoke) per KEL-127 \u2014 no silent async rewrite; Zettlr activation cell is `unknown`, not failed-silently; draw.io is unaffected (0 sites)."
+   },
+   {
+    "risk": "Running the app preload inside the trusted isolated WKContentWorld creates a leak path Electron lacks: a preload could exposeInMainWorld an object closing over the raw native handler or the per-document nonce that KEL-142 keeps outside the page world.",
+    "experiment": "Arm G: adversarial preload attempts to re-export the raw handler/nonce via contextBridge; re-run KEL-142's six page-isolation negative tests (kel142:374-386) with the preload installed; verify the contextBridge proxy drops prototypes, proxies functions by id, throws on Symbol, and yields an empty object for the full ipcRenderer (Electron's documented table).",
+    "fallback": "Move the preload to a third content world with a nonce-less relay whose shape is no broader than window.keld.invoke (kel142 \u00a75.1 relay rule); scoreboard \u25b2 for any contextBridge type-table difference."
+   },
+   {
+    "risk": "Electron's mac sync dialog may let JS timers/IPC re-enter during Cocoa runModal; Keld's strictly non-reentrant parked-Bun model would then diverge in observable ordering for apps that rely on re-entrancy.",
+    "experiment": "E3: Electron 44.4.5 fixture on the same Mac: open showMessageBoxSync, fire a setTimeout and a renderer ipcRenderer.send during it, record whether handlers run before the dialog returns.",
+    "fallback": "If re-entrant: scoreboard \u25b2 'sync dialogs are non-reentrant in Keld' with a sequence test; if not: \u2714 for the parked model's ordering."
+   },
+   {
+    "risk": "Close/quit veto sequencing with two dirty windows: Cmd+Q does not route through windowShouldClose (Apple), so a host that models quit as per-window close CALLs will mis-order before-quit / window closes / will-quit relative to Electron.",
+    "experiment": "50-line objc2 harness: windowShouldClose:NO + later programmatic close for per-window, applicationShouldTerminate: NSTerminateLater + replyToApplicationShouldTerminate: for quit; two windows; transcript of hook order diffed against an Electron 44.4.5 run of the same fixture (before-quit -> per-window close -> will-quit -> quit; quitAndInstall inverts).",
+    "fallback": "If interleaving cannot be matched: host serializes close requests per app and the facade delivers them in order after the modal returns; \u25b2 'window close events are serialized across a blocking dialog'."
+   }
+  ],
+  "rejected_ideas": [
+   "A second authenticated kipc link ('sync sidecar link') for the same role generation so a Worker can perform a blocking CALL \u2014 it is a second principal mint; KEL-75 binds one link to one generation after HELLO and AGENTS defines principal minting as architecture; refused rather than left open.",
+   "Blanket suspension of inbound host->Bun CALL deadlines while a role is parked in a modal \u2014 would let an app defer quit ordering (KEL-139 AC6) and generation revocation (02 \u00a77); also targets the wrong clock, since the measured failure is the writer buffer, not the CALL deadline.",
+   "Host proceeds and closes the window when a close-veto CALL times out \u2014 silent data loss for draw.io (preventDefault on every close) and a fabricated native completion (KEL-139 T1b); Electron's own delegate never closes without JS consent.",
+   "Atomics.wait on the Bun main thread while that thread owns the kipc socket \u2014 measured: 0 bytes drained during the park, host writer stalls at 8,192 bytes.",
+   "Host-side credit windows as a sufficient precondition for blocking calls \u2014 they prevent link death but cannot deliver the REPLY to a parked reader; necessary for backpressure, insufficient for sync emulation.",
+   "Facade answers checkForUpdates with a fabricated `update-not-available` when no host updater exists \u2014 fabricated effect (KEL-139 T1b).",
+   "autoUpdater.setFeedURL throws unless it names the built-in feed \u2014 draw.io's safeUpdaterCall routes the throw to notifyUpdateFailure, a user-visible boot-time error dialog; the divergence would be reported by the app, not the scoreboard.",
+   "Relying on the operator's shell DRAWIO_DISABLE_UPDATE=true \u2014 the env var gates only checkForUpdates (setFeedURL and property writes run anyway) and role env must be host-declared, not inherited (186 ambient-env row).",
+   "Statically 'compiling' session.webRequest closures into host policy \u2014 requires a JS evaluator in the host (Electron-ism in core, second policy parser) or silent omission; use recorded no-ops (\u25b2) plus host CSP/allow-list with an at-least-as-strict negative control.",
+   "A keld.compat.ts quirks flag that no-ops draw.io's file:// filter before the host enforces loadFileURL:allowingReadAccessToURL with a negative control \u2014 a flag may never widen authority; this is a Lane A gating artifact, not a toggle.",
+   "`keld migrate` emitting a wildcard `el:*` channel grant (as 03 \u00a73's current example shows) \u2014 makes KELD-GUARD003 vacuous for the compat namespace when both corpus preloads hand the page arbitrary-channel send; grants must be enumerated and the spec example corrected in the same PR.",
+   "clipboard.readText (and other tier-C getters) as a default blocking CALL \u2014 draw.io awaits the value (electron.js:4497-4498); a uniform thenable with \u25b2 (KEL-72 app.quit precedent) avoids parking the loop.",
+   "Per-call-site switching of a facade API's return type by migrate static analysis \u2014 one public API, one return type; migrate flags sync-consuming call sites as fail cells instead.",
+   "Boot-static values delivered as a table at Ready/HELLO \u2014 draw.io constructs electron-store at module top level; Electron documents pre-ready APIs as synchronous top-level calls.",
+   "Dropping webContents.send to a destroyed target with a dev warning \u2014 Electron marks the wrapper destroyed before 'closed' and throws 'Object has been destroyed'; only frame-targeted replies go stale after navigation.",
+   "Running Electron's spec/ tree under Bun as the oracle, or copying its three-retry CI policy (research 214).",
+   "Publishing a close-veto RTT p99 from 1,000 samples \u2014 01 \u00a75.1 requires >=20 sessions x 100,000 calls with a session-block bootstrap; run it as a diagnostic only, add a registry id first.",
+   "Using token-count usage scans (e.g. Zettlr 'send 84', draw.io 'WebContents.replace 22') as denominator or lane-sizing inputs \u2014 grep of resolved call sites gives 35/49/6/186 for Zettlr and 9 webContents.send for draw.io.",
+   "Moving window ownership or the close decision into Bun, or an infinite host wait with no unhealthy-role signal \u2014 breaks unique #1 or hides a fault.",
+   "Quoting the reference doc's '~1 ms equivalent framework path' as an Electron IPC baseline \u2014 uncited; and extrapolating the Bun ext-host bootstrap PoC (53%) to any whole app.",
+   "Reordering the spine (#312) to put compat lanes ahead of KEL-139 tasks, or scoring the first proof as `strict` \u2014 kel78 says strict cannot be reported from documentation and `unverified` is the live state on every OS."
+  ]
+ },
+ {
+  "lens": "Decision usefulness: does the revised position yield falsifiable decisions, sized tracer bullets, real gating artifacts, measurable exit criteria, and a credible kill-condition experiment. RECEIPTS (all retrieved 2026-10-06): packages/@keld/kipc/src/transport.ts:600-615,764-775,820-850,925-962 \u2014 readFrame() returns a Promise with one in-flight read (KELD-IPC-005), receive() is async, writes await drain under APP_LINK_IO_DEADLINE_MS, client is Bun.connect with data/drain callbacks; no synchronous read path (grep readSync|Atomics|Worker|SharedArrayBuffer = 0 hits). docs/architecture/02-ipc.md:320-337 \u2014 sendSync 'supported but rate-limited + dev-warned (blocking CALL with a deadline ... it must exist)'; :364-388 \u2014 frame-wide stall clock, 'Writer SO_SNDTIMEO stays APP_LINK_IO_DEADLINE' (5 s), 'The readiness-driven reader (and credit windows) remain later work'; :228-232 postcard 'no committed Keld measurement yet'. crates/keld-ipc/src/frame.rs:46 \u2014 FrameKind::Grant 'Grants flow-control credit on a channel' (kind exists, unused: grep credit in crates/keld-ipc/src = 2 comment hits). grep windowShouldClose|NSWindowDelegate|performClose|applicationShouldTerminate|NSTerminateLater in crates/keld-wv/src + crates/keld-core/src = 0 hits. docs/architecture/03-security.md:97 (`el:*` example grant), :203-216 (v0: no dev-permissive profile, no denial recorder; `--permissions` not live; migrate seeds from static analysis), :238-244 (legacy explicit, never auto-downgrade; remote-content windows get channels: []). docs/specs/kel78-strict-profile-sandbox.md:169-177 \u2014 legacy = explicit key, forfeit printed; unverified default. crates/keld-compat/src/evidence.rs:255-265 \u2014 AuthorityProfile::{StrictBun, SandboxedAddonWorker, LegacySandboxOff, UserApprovedToolChild}. docs/specs/kel142-macos-renderer-bridge-api.md:114-128 (4096 bound, one pending invoke per WebView, host mints correlation), :219-257 (page world cannot reach native handler/nonce; handoff not an authority boundary), :313-323 ('no UI thread blocks on Bun'), :377-384 (isolation negative tests). docs/specs/kel75-principalized-bun-child-roles.md:48-52,127-137 \u2014 link bound to one generation after HELLO. docs/specs/kel139-macos-product-spine.md:195 (AC6 one quit owner), :348-357 (T1b cannot fabricate completion). docs/engineering/compat-scoreboard.md:1-40,85-105 \u2014 no committed product denominator, claim shape, \u25b2 app.quit Promise<void> and per-listener isolation 'host/kipc constraints, not per-app toggles'. docs/engineering/budget-scoreboard.md:20-35,86-94,540-550 \u2014 19,552 vs 89,140 KB host RSS (Electron won total tree), 469/479/275 ms host-only paint, kipc p99 101.6/100.5 \u00b5s publication.eligible=false, host+Bun INCONCLUSIVE 81.8 vs 54.5 MiB, Bun zstd-19 16,838,595 B. docs/architecture/01-overview.md:186-222 \u2014 census/clock/statistic rows; \u226520 sessions \u00d7 100,000 calls; 30 samples. docs/architecture/04-electron-compat.md:63-103 \u2014 five layers; v0 \u25b2 records. packages/@keld/electron/src/app.ts:32-48 \u2014 lazy observeReady, nothing synchronous at import. 'Electron Compatibility Reference for KELD.md':977-1307,1619-1631 \u2014 \u00a728-33 claim levels 'must never be blended', :1203 'Do not convert that 78% figure', :1244 uncited '~1 ms' baseline, :1246 'Never apply that ratio', \u00a738 priority order. research 214:6-7,38,144-153 \u2014 REFUSE spec/ as-is, PARTIAL per-surface, retries not copied, BrowserWindow/ipc SUBSTRATE-BLOCKED on H7/KEL-97. research 186:58-59,66 rows 2/3/10. research 28:51 Refuse column. research 16:29 bug 206741 CANNOT. crates/keld-guard/src/lib.rs:293-395 ChannelForbidden = KELD-GUARD003. Corpus drawio-desktop/src/main/electron.js:26-32 (top-level new Store()), :58 (app.getPath('userData') pre-ready), :74-90 (DRAWIO_DISABLE_UPDATE gates only checks; autoUpdater props set unconditionally), :92-141 (notifyUpdateFailure \u2192 dialog.showMessageBox; safeUpdaterCall catches throws), :851-880 (isModified-result handler, showMessageBoxSync :876 with Linux comment), :947-981 (preventDefault on every close; closed splices registry), :994,1010 (webRequest onHeadersReceived/onBeforeRequest file://*), :692-700 (validateSender tolerates null), :1718-1746 (single instance, second-instance drops when dialogOpen), :2078-2099 (setFeedURL outside disableUpdate guard), :2192-2223 (will-navigate, setWindowOpenHandler, will-attach-webview), :4278-4292 (clipboardAction), :4497-4498 (await clipboardAction), :4533 (getFocusedWindow isFullScreen), :4537-4541 (event.reply mainResp). electron-preload.js:10-20 (process.argv flag), :55-125 (mainResp listener; contextBridge exposes arbitrary-channel send/on/once). Resolved grep counts: Zettlr sendSync( 6, webContents.send( 49, ipcRenderer.send( 35, ipcRenderer.invoke( 186; draw.io webContents.send( 9, executeJavaScript 8 (src incl. progress-bar), event/e.reply( 15, showMessageBoxSync 1, sendSync 0; beforeunload 0 in both corpora. Zettlr sendSync sites: source/common/modules/preload/index.ts:37,57,63,74; source/pinia/config.ts:28,49. Prototypes re-run by me on Bun 1.4.2: park-probe \u2192 {client-parked timed-out 1502.3 ms, bytesSeenDuringPark 0}, {server-flood writes 9, acceptedBytes 8192, stalledAtBytes 8192}, {bytesAfterPark 8192}; sync-probe \u2192 {wait ok, value 42, ms 54.6}; sysctl net.local.stream.sendspace=8192 recvspace=8192 (no prior result artifacts existed in scratchpad). https://raw.githubusercontent.com/electron/electron/v44.4.5/shell/browser/api/electron_api_base_window.cc \u2014 WillCloseWindow: Emit('close') sets prevent_default; OnWindowClosed: MarkDestroyed() then FlushWindowState() then Emit('closed'). .../shell/browser/ui/cocoa/electron_ns_window_delegate.mm \u2014 windowShouldClose: calls NotifyWindowCloseButtonClicked(); return NO. .../shell/browser/api/electron_api_browser_window.cc \u2014 OnCloseButtonClicked sets *prevent_default=true, DispatchBeforeUnload if NeedToFireBeforeUnloadOrUnloadEvents else web_contents()->Close(). .../docs/api/dialog.md \u2014 showMessageBoxSync 'will block the process until the message box is closed'; window arg makes it modal; showMessageBox Promise<Object>. .../docs/api/app.md \u2014 'called synchronously in the top-level context of the main process' pre-ready; quitAndInstall emits before-quit after close. .../docs/api/browser-window.md \u2014 close before beforeunload/unload, preventDefault cancels; destroy skips close, guarantees closed; 'Object has been destroyed'; 'move' emitted while being moved. https://developer.apple.com/tutorials/data/documentation/appkit/nswindowdelegate/windowshouldclose(_:).json \u2014 'this method is not called when a user quits an application'. .../nsapplicationdelegate/applicationshouldterminate(_:).json \u2014 may delay termination and later call reply(toApplicationShouldTerminate:). [unknown] electron-store default cwd = userData (no node_modules in corpus clone); [unknown] whether Electron JS re-enters during Cocoa runModal; [unknown] WKURLSchemeHandler servicing a synchronous XHR; [inference] host writer stall \u2192 KELD-IPC-006 after 5 s (probe used a Bun server, not the Rust host).",
+  "scores": [
+   {
+    "persona": "perf-engineer",
+    "score": 8.5,
+    "reason": "Most decision-useful revision: replaced an unmeasured assumption with a reproduced measurement (8,192-byte writer stall while the Bun main thread is parked; I reproduced it on Bun 1.4.2), identified the real fuse (writer SO_SNDTIMEO, not a CALL deadline), dissolved the 'host must block' risk with verified Apple hooks (windowShouldClose:NO, applicationShouldTerminate delay), added a sized S0 spike with explicit pass criteria (10 s park + 100 msg/s, zero stall, zero KELD-IPC-006, sync RTT \u2264 2\u00d7 raw), two concrete arms (worker-owned transport vs credit frames, and frame.rs already names Grant), per-call-site sync classification grounded in draw.io's awaited clipboardAction, registered metric ids before publication, and corrected its own counts. Deductions: host-side KELD-IPC-006 consequence is inference (probe server was Bun, not the Rust host); in-order EVENT replay during a park and KEL-80 ownership of the worker design were raised by security-red-team, not here; 'credit windows alone' cannot give a blocking read, which the position does not state."
+   },
+   {
+    "persona": "security-red-team",
+    "score": 8,
+    "reason": "Highest-yield gating decisions: enumerated el:<channel> grants with el:* refused by migrate (grounded in both corpus preloads exposing arbitrary-channel send), child principals start with channels: [] (03 \u00a73 line 243), scoped deadline rule (app-level CALLs only; lifecycle/revocation keep deadlines and fail closed), preload-in-isolated-world must re-run KEL-142 negative tests or move to a third world, updater as recorded no-op + host-declared role env (correct per electron.js:74-141, 2078), legacy proof framed as 'brokers correct, containment forfeited'. Experiments E-H have pass criteria and a refused list. Deductions: still models the hazard as a CALL-deadline to suspend rather than the writer-stall clock perf measured; Electron doc semantics not re-fetched (disclosed); the worker-owned reader is asserted as 'the only candidate' without the probe evidence; one receipt mislocates draw.io's webRequest block (it is at :994-1023, not ~1718-1760)."
+   },
+   {
+    "persona": "electron-maintainer",
+    "score": 7,
+    "reason": "Strong on falsifiable Electron-semantics decisions, each verified: tombstone flipped before 'closed' (base_window.cc), boot-static descriptor before app-module evaluation (electron.js:30,58; app.md pre-ready sentence), webContents.send to current generation vs event.reply frame-bound, beforeunload \u25b2 with zero corpus demand, S3b promoted to a gate, honest changed_mind list. Deductions: E2 proposes a Worker opening a SECOND Bun.connect with its own HELLO, which KEL-75 (one link bound per generation) and security-red-team's refusal rule out, so the experiment tests a design that cannot ship; 'host suspends inbound CALL deadlines while parked' targets a clock that does not fire on a pending CALL (02 \u00a77 is a frame-stall clock) and ignores the measured 8 KiB link-drain fuse; the close-veto still described as a held-open CALL where AppKit's async hooks need no host wait; event.reply count overstated (~20 vs 15 resolved)."
+   },
+   {
+    "persona": "migrating-app-dev",
+    "score": 5,
+    "reason": "PROVISIONAL \u2014 the round-2 revised position did not reach this judge (payload truncated); scored only from positions others quoted. Credited: windowShouldClose:NO + programmatic close (verified by Apple docs and adopted by perf-engineer), boot-static values before module eval (verified). Debited: 'webContents.send after destroy drops with dev warning' contradicts the destroyed-wrapper throw; 'static compilation of session.webRequest closures' is infeasible for draw.io's JS predicates; throwing setFeedURL would surface a boot-time error dialog via safeUpdaterCall\u2192notifyUpdateFailure; blocking clipboard.readText is unnecessary because draw.io awaits clipboardAction. [unknown] whether the revision retracted these."
+   }
+  ],
+  "consensus_decisions": [
+   {
+    "class": "fact",
+    "decision": "The shipped @keld/kipc Bun client is Promise-based (Bun.connect data/drain callbacks, one in-flight readFrame); no blocking kipc read exists. Any synchronous main-process emulation (showMessageBoxSync, close veto reply, renderer sendSync main side) is an unbuilt transport-ownership change (worker-owned single reader + Atomics.wait mailbox) and/or host credit windows, owned by KEL-80 with wire-protocol and public-API review gates \u2014 never a facade detail and never a second authenticated link.",
+    "evidence": "transport.ts:600-615,764-775,925-962 (verified); 02 \u00a77 lines 364-388 'credit windows remain later work'; frame.rs:46 Grant kind unused; KEL-75 one link bound per generation; all three delivered revisions concede the maintainer's original 'blocking reader' premise was false."
+   },
+   {
+    "class": "fact",
+    "decision": "Parking the Bun main thread while it owns the kipc socket stops draining the link after exactly one 8,192-byte kernel buffer (macOS net.local.stream.sendspace); the host writer then stalls. Nothing that parks the Bun main thread may land before a transport design that survives this is proven (perf-engineer's S0 gate).",
+    "evidence": "park-probe reproduced by the judge on Bun 1.4.2: acceptedBytes 8192, stalledAtBytes 8192, bytesSeenDuringPark 0; sysctl sendspace=recvspace=8192. [inference] stall \u2192 KELD-IPC-006 after the 5 s writer SO_SNDTIMEO per 02 \u00a77 (host arm not yet exercised)."
+   },
+   {
+    "class": "fact",
+    "decision": "Host-side close and quit vetoes need no blocking: windowShouldClose: returns NO and the host closes programmatically after Bun allows; app quit goes through applicationShouldTerminate with delayed reply. Deadline expiry keeps the window open (fail closed, diagnostic, role flagged); the host closes a window on its own only when the Bun generation is revoked. Host auto-close on timeout is refused as fabricated completion.",
+    "evidence": "Apple windowShouldClose(_:) 'not called when a user quits'; applicationShouldTerminate may delay then reply(toApplicationShouldTerminate:); Electron's own delegate does the same (electron_ns_window_delegate.mm return NO; browser_window.cc prevent_default=true); KEL-142 \u00a76 'no UI thread blocks on Bun'; KEL-139 T1b no fabricated completion; draw.io preventDefaults every close (electron.js:947-963). All three revised positions converge on keep-open."
+   },
+   {
+    "class": "fact",
+    "decision": "Destroyed-object contract: facade objects are host-minted (handle, generation) pairs; the tombstone flips BEFORE 'closed' is emitted so isDestroyed() is true inside a closed listener and getters throw the exact 'Object has been destroyed' text synchronously; destroy() skips close/beforeunload and guarantees closed; webContents.send targets the current main-frame generation (never dropped on navigation, throws after destruction) while event.reply/senderFrame.send bind to the sender's document generation and go stale after navigation.",
+    "evidence": "electron_api_base_window.cc OnWindowClosed: MarkDestroyed() \u2192 FlushWindowState() \u2192 Emit('closed') (verified); browser-window.md destroy() and 'Object has been destroyed' (verified); draw.io uses event.reply at 15 sites and validateSender tolerates null senderFrame (electron.js:692-700)."
+   },
+   {
+    "class": "fact",
+    "decision": "Boot-static values (app.getPath family, name/version/isPackaged, process.versions) must be available synchronously before the app module evaluates, delivered via spawn env or computed from declared identity, not at HELLO/Ready.",
+    "evidence": "draw.io electron.js:30 top-level new Store() and :58 app.getPath('userData') pre-ready; app.md 'ensure that it is called synchronously in the top-level context'; packages/@keld/electron/src/app.ts:32-48 exposes nothing synchronous at import. [inference] electron-store default cwd = userData (no node_modules to verify)."
+   },
+   {
+    "class": "fact",
+    "decision": "First migration proof: drawio-desktop on macOS under an explicitly declared Keld legacy profile, evidence authority_profile LegacySandboxOff, framed as 'brokers correct, containment forfeited, strict not admitted on any OS'; score only install + activation + a 4-step primary_workflow (open \u2192 edit \u2192 save \u2192 close-with-unsaved-prompt) against a committed denominator built from resolved call sites; the only claim shape is {passed}/{N} of product corpus drawio-desktop@<digest> (kind). The spine (#312/#322-#325, KEL-139 \u2192 KEL-141 \u2225 KEL-142 \u2192 KEL-140 \u2192 KEL-143 \u2192 KEL-144) is not reordered; compat lanes run on disjoint crates consuming KEL-142 artifacts.",
+    "evidence": "kel78 Profile states table (legacy explicit, forfeit printed; unverified default); evidence.rs AuthorityProfile::LegacySandboxOff; 03 \u00a72 lines 239-241; compat-scoreboard.md rules 1-4; briefing prior decisions."
+   },
+   {
+    "class": "fact",
+    "decision": "Divergence routing stays as KEL-72 set it: host/kipc constraints no app can toggle \u2192 scoreboard \u25b2 with a conformance test citing the v44.4.5 doc sentence; two-defensible-behaviors per-app choices \u2192 keld.compat.ts quirk that may narrow but never widen authority and never no-ops an app's own security policy before the host enforces an equivalent with a negative control; documented-never or tracked \u2192 \u2718 fail cell with fix-it. Never prose-only; never Electron spec/ under Bun; never CI retries.",
+    "evidence": "compat-scoreboard.md:95-101; 04 \u00a73 lines 100-103; research 214:6-7,38."
+   },
+   {
+    "class": "fact",
+    "decision": "Never-list is unanimous and unchanged: remote, nodeIntegration:true/sandbox:false/webSecurity:false, Chromium/V8 flags, full CDP in production webviews, permission default-allow (missing handler = deny), app-minted scheme privileges, unfiltered openExternal, second-instance argv/cwd without host admission, utilityProcess as raw spawn, app-selected updater feed into a privileged updater, silent legacy downgrade, a second manifest/permission parser in the facade.",
+    "evidence": "briefing invariant 10; research 186 rows 2/3/4/10; 03 \u00a72-3; AGENTS.md four uniques."
+   },
+   {
+    "class": "fact",
+    "decision": "The renderer\u2192main authorization boundary in Keld is the per-window enumerated el:<channel> grant evaluated by keld-guard (KELD-GUARD003), not the preload: both corpus preloads expose arbitrary-channel send/invoke to the page. keld migrate must emit enumerated grants from static analysis and refuse el:*; a webview principal minted via setWindowOpenHandler allow starts with channels: [] unless granted; the facade exposes host-minted event.senderFrame.url because draw.io's validateSender depends on it.",
+    "evidence": "electron-preload.js:102-117 sendMessage(action,args) \u2192 ipcRenderer.send(action,...); zettlr preload index.ts:37 generic sendSync/send/invoke; 03 \u00a73 line 97 el:* example and line 243 remote-content channels: []; keld-guard lib.rs:293-395."
+   },
+   {
+    "class": "fact",
+    "decision": "Updater handling for the proof: electron-updater aliases to an adapter whose setFeedURL is a recorded no-op (scoreboard \u25b2 'feed is host-declared'), DRAWIO_DISABLE_UPDATE=true is written into the host-declared role environment by migrate (not the operator shell), and no fabricated update-not-available is ever emitted; a typed error is emitted only when the app actually invokes a check. A throwing facade is rejected.",
+    "evidence": "electron.js:74-90 (env gates only checks; autoUpdater props set unconditionally), :2078 setFeedURL outside the disableUpdate guard, :92-141 safeUpdaterCall \u2192 notifyUpdateFailure \u2192 user-visible dialog.showMessageBox; KEL-139 T1b; research 186 row 10."
+   },
+   {
+    "class": "fact",
+    "decision": "Performance claims: only Windows host-process RSS (Electron won total tree), host-only paint arms where Electron leads, a 1-session ineligible Windows kipc p99, a macOS host-only paint proxy, and a bootstrap-only Bun ext-host PoC are measured; the three claim classes stay unblended. Forbidden: 'faster start', 'less memory', any IPC ratio (the reference's '~1 ms' baseline is uncited), installer/patch bytes, any compat percentage, 'Rust makes it faster', PoC extrapolation. Required before any compat IPC sentence: registered metric ids for renderer-inclusive invoke RTT, facade-overhead delta (@keld/electron minus raw @keld/api), blocking-surface/link-drain overhead, host-main-thread CPU per webContents.send, SCV-vs-JSON on recorded draw.io payloads; every migrated-app memory sentence carries authority_profile plus census class.",
+    "evidence": "budget-scoreboard.md:20-35,86-94,540-550; 01 \u00a75.1 lines 196-222; reference \u00a728-33 and :1244-1246; 02 \u00a72 line 230."
+   },
+   {
+    "class": "fact",
+    "decision": "Resolved call sites, not token scans, size lanes and the denominator: Zettlr sendSync 6 / webContents.send 49 / ipcRenderer.send 35 / invoke 186; draw.io webContents.send 9, event.reply 15, executeJavaScript 8 (incl. progress-bar), showMessageBoxSync 1, sendSync 0, <webview> demand 0, beforeunload 0 in both corpora.",
+    "evidence": "Judge grep over scratchpad corpus clones 2026-10-06; corrects maintainer 'webContents.send 15' and security 'ipcRenderer.send 84'."
+   },
+   {
+    "class": "inference",
+    "decision": "Sync getters: boot-static tier from the pre-eval descriptor (\u2714); state with a defining host event (bounds/focus/maximized/fullscreen/displays/dark/clipboard changeCount) from a host-pushed ordered mirror (\u25b2 'reflects last host-delivered state'); calls with no defining event are classified per call site by migrate \u2014 a thenable where the site awaits (draw.io awaits clipboardAction/windowAction; KEL-72 app.quit precedent) and a true block only where the site consumes synchronously (showMessageBoxSync). Blocking is the exception and is gated on the S0 transport decision.",
+    "evidence": "electron.js:4497-4498 await clipboardAction; :4533 isFullScreen mirror read; :876 showMessageBoxSync; compat-scoreboard app.quit \u25b2. Inference: mirror staleness and 'move' event write volume are unmeasured."
+   },
+   {
+    "class": "inference",
+    "decision": "session.webRequest listeners become recorded no-ops (\u25b2) only after the host enforces file:// containment (loadFileURL:allowingReadAccessToURL scoped to the app code dir) with a negative control proving host policy is at least as strict as draw.io's onBeforeRequest file://* filter; app closures are never 'compiled' into host policy.",
+    "evidence": "electron.js:994,1010 JS predicate closures over codeDir; 03 \u00a73 line 243 always-on CSP + navigation allow-list; AGENTS one-rule-one-owner (no JS evaluator in host)."
+   },
+   {
+    "class": "unknown",
+    "decision": "Renderer sendSync is SCAFFOLDED (typed KELD-COMPAT throw with fix-it) for draw.io (0 sites) and a tracked \u2718\u2192\u25b2 for Zettlr (6 sites); the WKWebView synchronous-XHR-to-scheme-handler mechanism is unverified and is the discriminating experiment before any Zettlr activation cell; never a silent async rewrite (KEL-127).",
+    "evidence": "02 \u00a75 'it must exist' as blocking CALL with deadline; research 28 Refuse column; zettlr preload index.ts:57-74, pinia/config.ts:28,49; no WebKit evidence either way."
+   }
+  ],
+  "contested_decisions": [
+   {
+    "question": "What mechanism gives Bun a blocking main-process call (showMessageBoxSync, sendSync main side)?",
+    "side_a": "electron-maintainer E2: a Worker opens a SECOND Bun.connect to the host with its own HELLO for the same role generation ('sync sidecar link'), main thread parks in Atomics.wait.",
+    "side_b": "security-red-team + perf-engineer: refuse a second link (one role, one link, one principal; identity is link metadata); instead move the single kipc transport into a Worker that owns the reader for the whole session, hands frames to main via SAB/Atomics, buffers EVENTs in order during a park and replays after wake; optionally host credit windows so the host parks per-role queues instead of its writer.",
+    "judge_call": "Side B. KEL-75 binds a link to exactly one host-minted generation after HELLO and 02 \u00a71 makes principal identity link metadata; a second authenticated link is a permission-model change with no owner and would be refused at the gate, so E2 as written tests an unshippable design. Worker-owned single transport is the only candidate that also fixes the measured 8 KiB drain stall; credit windows protect the host but do not by themselves provide a blocking read, so they are complementary, not alternative.",
+    "what_would_settle_it": "perf-engineer's S0 two-arm spike against the real @keld/kipc transport: arm A (current main-thread transport) vs arm B (~150-line worker-owned transport with SAB ring + Atomics.notify), each parking main 10 s while a second connection emits 100 \u00d7 64-byte EVENTs/s with host writer SO_SNDTIMEO=5 s; record bytes-to-stall, whether KELD-IPC-006 fires, in-order replay of 10k parked EVENTs with zero drops (security arm H), and sync-CALL RTT p50/p99 over 1,000 calls labelled diagnostic. Pass = arm B zero stall, zero IPC-006, ordered replay, RTT \u2264 2\u00d7 raw kipc. KEL-80 owner signs the design before it leaves scratchpad."
+   },
+   {
+    "question": "How does the host hold a window close open while Bun decides, and what happens on deadline expiry?",
+    "side_a": "electron-maintainer: host emits WindowCloseRequested as a kipc CALL and blocks the window's close on the REPLY; host suspends inbound host\u2192Bun CALL deadlines while Bun is parked in a modal; expiry keeps the window open.",
+    "side_b": "perf-engineer (adopting migrating-app-dev): NSWindowDelegate windowShouldClose: returns NO and the host performs a programmatic close after Bun allows; Cmd+Q goes through applicationShouldTerminate with a delayed reply; no deadline suspension is needed because 02 \u00a77's deadline is a frame-stall clock that a pending CALL does not trip; the real hazard is the writer stall.",
+    "judge_call": "Side B on mechanism (verified: Apple says windowShouldClose is not called on quit and applicationShouldTerminate may delay then reply; Electron's own delegate returns NO; KEL-142 \u00a76 forbids UI-thread blocks). Side A's expiry rule (keep open, fail closed, close only on generation revocation) is adopted by all and is consensus. 'Suspend CALL deadlines' is dropped: it names a clock that does not fire and, if written broadly, lets an app defer revocation/quit (security-red-team arm E).",
+    "what_would_settle_it": "A ~50-line objc2 harness: two windows, Cmd+W on a dirty window \u2192 shouldClose:NO then programmatic close on allow; Cmd+Q \u2192 applicationShouldTerminate returns later, per-window close sequence, reply; transcript diffed against the same fixture on Electron 44.4.5 on the same Mac. Plus security arm E: while Bun is parked, a host generation-retire/quit CALL completes within its deadline, the modal is dismissed with a typed error, the window survives, no 'closed' is fabricated."
+   },
+   {
+    "question": "Which risk is the program killer?",
+    "side_a": "security-red-team (joined by electron-maintainer): authority-model collision \u2014 if draw.io is config-only ONLY under legacy, the security unique never reaches the headline use case and legacy becomes the de-facto default.",
+    "side_b": "perf-engineer: 'Bun blocks \u21d2 kipc link stalls \u21d2 KELD-IPC-006' \u2014 measured, reproducible today, and on the canonical editor close dance; the authority collision is a program risk that no one-week experiment can falsify.",
+    "judge_call": "Both are real but of different kinds: the link-stall is a falsifiable kill condition with a cheap experiment and belongs first; the legacy collision is a decision (is a legacy headline acceptable for the first proof?) already answered by consensus (yes, explicitly labelled) plus a tracer (E1 Node-API trace classifying fs/net/spawn rows as scopable) that bounds the strict-path spec. IPC hop latency is a claim-narrowing risk, not a kill.",
+    "what_would_settle_it": "S0 spike result (above) settles the first; E1 tracer under Bun with a throwing @keld/electron stub on the activation + primary_workflow path, producing the list of unscopable Node calls, settles how large the strict-profile spec is and therefore whether 'legacy headline' is a transient or permanent state."
+   },
+   {
+    "question": "Where does the app's preload run on WKWebView?",
+    "side_a": "electron-maintainer: in the same isolated WKContentWorld as the trusted KEL-142 bridge script, with a require shim exposing the sandboxed-preload module map.",
+    "side_b": "security-red-team: same world only if the contextBridge proxy enforces Electron's value table so the raw native handler/nonce cannot be re-exported and KEL-142's isolation negative tests are re-run with the preload present; otherwise a third content world with a nonce-less relay.",
+    "judge_call": "Side B's conditional: start in the isolated world (authority equivalent to Electron's trusted preload), but the KEL-142 negative tests ('page world cannot access the isolated native handler'; 'raw endpoint/token/nonce absent from page') become S2 gating artifacts re-run with draw.io's real preload, plus a new test where a hostile preload tries to exposeInMainWorld a closure over the handler/nonce.",
+    "what_would_settle_it": "Security arm G: a preload that attempts to re-export the raw handler or nonce via contextBridge \u2192 absent in page world; if it leaks, move to a third world and re-run."
+   },
+   {
+    "question": "What does webContents.send do after navigation or destruction?",
+    "side_a": "migrating-app-dev (as quoted): dropped with a dev warning for a navigated/destroyed generation.",
+    "side_b": "electron-maintainer: webContents.send targets the CURRENT main frame (delivered after navigation; throws 'Object has been destroyed' after destruction); only frame-targeted event.reply/senderFrame.send go stale after navigation.",
+    "judge_call": "Side B. base_window.cc marks the wrapper destroyed before 'closed'; web-frame-main.md documents frame detachment on navigation; draw.io's mainResp/export-* replies ride event.reply (15 sites) and must bind to the sender document generation.",
+    "what_would_settle_it": "An Electron 44.4.5 fixture: send after navigation (expect delivery), send after destroy (expect throw text), event.reply after navigation (expect no delivery); Keld sequence test cites the transcript."
+   },
+   {
+    "question": "Does Electron's main-process JS re-enter during a Cocoa modal (showMessageBoxSync)?",
+    "side_a": "electron-maintainer round 1: Cmd+Q with two dirty windows while parked in a modal must queue the second close.",
+    "side_b": "electron-maintainer revised / perf-engineer: the sync dialog is an app-modal Cocoa loop so a second window's close button is unreachable; whether timers/IPC re-enter is unknown and Keld's strictly non-reentrant parked-Bun model may be \u2714 or \u25b2.",
+    "judge_call": "Unknown; record as \u25b2 'sync dialogs are non-reentrant in Keld' only after the fixture, never from documentation.",
+    "what_would_settle_it": "E3: Electron 44.4.5 fixture opens showMessageBoxSync on mac, fires a setTimeout and a renderer ipcRenderer.send during it, records whether JS re-enters; diff against Keld's parked model."
+   }
+  ],
+  "kill_conditions": [
+   {
+    "risk": "Bun main thread cannot block without killing its kipc link: parked thread stops draining; host writer stalls after 8,192 bytes (measured) and expires at the 5 s SO_SNDTIMEO \u2192 KELD-IPC-006 (inferred) \u2192 role restart during the canonical close-with-unsaved-prompt. Every corpus editor needs a block (draw.io showMessageBoxSync on the close path; Zettlr sendSync at store init).",
+    "experiment": "S0 (1-2 days, scratchpad): extend park-probe against the real @keld/kipc transport. Arm A current transport; arm B worker-owned transport (socket in a Worker, SAB ring + Atomics.notify, main Atomics.wait for sync CALLs, in-order EVENT replay after wake); arm C host-side credit frames in a keld-ipc test using the existing Grant kind. In each, park main 10 s while a second connection emits 100 \u00d7 64 B EVENTs/s with host writer SO_SNDTIMEO = 5 s. Record bytes-to-stall, whether KELD-IPC-006 fires, 10k-EVENT ordered replay with zero drops, sync RTT p50/p99 over 1,000 calls (diagnostic only). Pass = arm B or C shows zero stall, zero IPC-006, ordered replay, sync RTT \u2264 2\u00d7 raw kipc RTT.",
+    "fallback": "(1) B passes \u2192 worker-owned transport becomes the @keld/kipc contract (wire-protocol + public-API gates, KEL-80 owner), sync emulation allowed with deadline + rate-limit + dev-warn per KEL-127. (2) Only C passes \u2192 credit windows land first; blocking still needs a worker so sync calls stay SCAFFOLDED until B is redone on top. (3) Neither \u2192 showMessageBoxSync/sendSync are \u2718 fail cells with fix-its; draw.io scored 'config + 1 edit' (async showMessageBox in the isModified-result handler); program promise becomes minimal-edit migration with a scored edit count. REFUSED: second authenticated link per role, fake-async sync APIs, host auto-close on timeout, infinite host wait, window ownership into Bun."
+   },
+   {
+    "risk": "Config-only draw.io runs ONLY under legacy: the security unique never reaches the headline use case and legacy becomes the de-facto default (authority-model collision).",
+    "experiment": "E1 (\u22641 day): run draw.io main under Bun with a throwing @keld/electron stub and a Node-API tracer; classify every fs/net/child_process row on the install + activation + primary_workflow path as scopable (dialog-minted path grant, declared role) or unscopable (ambient fs with renderer-supplied paths, execFile at electron.js:4413).",
+    "fallback": "Publish the first proof under explicitly declared legacy with every unscopable call listed as a fix-it and authority_profile LegacySandboxOff in each evidence record; open the strict path (node:fs facade over FsBroker + child_process \u2192 declared role) as its own approved spec. The headline wording must say 'brokers correct, containment forfeited' and never 'default-deny demonstrated for draw.io'."
+   },
+   {
+    "risk": "Renderer-blocking sendSync has no primitive on WKWebView (browser main threads cannot Atomics.wait; only a synchronous XHR to a WKURLSchemeHandler might block). Kills Zettlr activation (6 sites), not draw.io (0 sites).",
+    "experiment": "E4: a WKWebView page performs a synchronous XHR to the host scheme handler which forwards to Bun and replies; record whether the WebContent main thread blocks and the RTT for Zettlr's config-provider get-config shape; rate-limit threshold derived from the measurement.",
+    "fallback": "sendSync stays \u2718 with a fix-it to invoke; Zettlr activation cell = unknown; never a silent async rewrite (KEL-127, 02 \u00a75)."
+   },
+   {
+    "risk": "A deadline rule written as blanket suspension lets an app parked in a modal defer host-owned revocation and quit (KEL-139 AC6 one ordered quit owner); written as none, every close dance fails.",
+    "experiment": "Security arm E inside the S0/AppKit harness: while Bun is parked in a modal CALL, the host issues generation-retire and quit; both must complete within their deadlines, the modal dismissed with a typed error, the window survives, no 'closed' fabricated.",
+    "fallback": "Scope: suspension (if any) applies only to app-level CALLs whose reply the facade owns; lifecycle/revocation CALLs keep deadlines and fail closed (window stays, role unhealthy, diagnostic). Recorded \u25b2 'close veto is deadline-bounded and fails closed; Electron blocks indefinitely'."
+   },
+   {
+    "risk": "App preload running beside the trusted KEL-142 bridge leaks the raw native handler or document nonce into the page world via contextBridge.",
+    "experiment": "Arm G: hostile preload tries to exposeInMainWorld an object closing over the handler/nonce; re-run KEL-142's 'page world cannot access the isolated native handler' and 'raw endpoint/token/nonce absent' tests with draw.io's real preload present.",
+    "fallback": "Enforce Electron's contextBridge value table (functions proxied by id, prototypes and non-cloneables dropped); if still leaking, move the preload to a third content world with a nonce-less relay; deleting content-world isolation must fail a named test."
+   },
+   {
+    "risk": "Wildcard el:* grant plus page-world window.keld.invoke makes KELD-GUARD003 vacuous for the whole compat namespace; both corpus preloads expose arbitrary-channel send, so the guard grant is the only renderer\u2192main boundary.",
+    "experiment": "Arm F: a page-world script invokes an el: channel outside the enumerated grant \u2192 KELD-GUARD003; migrate emitting el:* is the negative control that must be refused; a setWindowOpenHandler-allowed about:blank child starts with channels: [].",
+    "fallback": "If static analysis cannot enumerate channels for a dynamic dispatcher (draw.io's single rendererReq channel is enumerable; Zettlr's generic window.ipc is not), the recorder (03 \u00a73 destination, not live) produces the list under keld dev and the manifest ships enumerated; el:* is never written."
+   }
+  ],
+  "rejected_ideas": [
+   "'Bun's kipc client is already a blocking reader (echo_call)' \u2014 false; transport.ts is Bun.connect with async handlers and one in-flight Promise read; retracted by the maintainer.",
+   "Sync sidecar link: a Worker opening a second authenticated kipc link with its own HELLO for the same role generation \u2014 violates KEL-75 one-link-per-generation and 02 \u00a71 identity-as-link-metadata; an unowned permission-model change, refused at the gate.",
+   "'Host suspends inbound host\u2192Bun CALL deadlines while Bun is parked' \u2014 targets a clock that does not fire on a pending CALL (02 \u00a77 is a frame-stall clock); the real fuse is the writer SO_SNDTIMEO after 8 KiB; broad suspension would also let an app defer revocation/quit.",
+   "Host blocks a WindowCloseRequested CALL on Bun's REPLY \u2014 unnecessary (windowShouldClose:NO + programmatic close; applicationShouldTerminate delayed reply are async by design) and forbidden by KEL-142 \u00a76.",
+   "Host auto-closes the window on deadline expiry \u2014 silent data loss on draw.io's always-preventDefault close path; fabricated completion per KEL-139 T1b.",
+   "Throwing autoUpdater.setFeedURL facade \u2014 draw.io's safeUpdaterCall \u2192 notifyUpdateFailure shows a user-facing 'Update Error' dialog on every boot; use a recorded no-op \u25b2 instead.",
+   "Emitting a fabricated update-not-available when no host updater exists \u2014 fabricated native effect (KEL-139 T1b).",
+   "Relying on operator-shell DRAWIO_DISABLE_UPDATE \u2014 env gates only checkForUpdates; autoUpdater properties and setFeedURL run unconditionally; role env must be host-declared by migrate.",
+   "Static compilation of session.webRequest closures into host policy \u2014 JS predicates over codeDir cannot be compiled without a JS evaluator in the host (no second parser/policy owner); no-op \u25b2 + host containment negative control instead.",
+   "Making webRequest listeners a silent no-op before host file:// containment exists \u2014 widens read reach; it is a Lane A gating artifact, not a quirks flag.",
+   "keld migrate emitting el:* \u2014 makes KELD-GUARD003 vacuous; the guard grant is the only renderer\u2192main boundary for this corpus.",
+   "Blocking CALL as the default for sync getters (clipboard.readText etc.) \u2014 draw.io awaits clipboardAction/windowAction; a thenable (KEL-72 app.quit precedent) is correct; blocking is reserved for synchronously-consumed sites.",
+   "Static app.getPath table delivered at Ready \u2014 too late; draw.io constructs electron-store and calls app.getPath('userData') at module top level.",
+   "'webContents.send after destruction drops with a dev warning' \u2014 Electron marks the wrapper destroyed before 'closed' and method calls throw; only frame-targeted replies go stale.",
+   "Token-scan counts as denominator or lane sizing (Zettlr 'send 84', draw.io 'webContents.send 15', 'WebContents.replace 22') \u2014 resolved call sites only.",
+   "Publishing a p99 from 1,000 closes \u2014 01 \u00a75.1 requires \u226520 sessions \u00d7 100,000 calls with session-block bootstrap CI; run it as a diagnostic with a registry id first.",
+   "Applying the zero-steady-state-allocation rule to the Bun-side JS mirror \u2014 that rule binds host Rust kipc/event-loop/guard paths; the mirror's real cost is write volume into an 8 KiB buffer toward a possibly-parked role.",
+   "Quoting the reference doc's '~1 ms equivalent framework path' as an Electron IPC baseline \u2014 uncited.",
+   "Running Electron's spec/ tree under Bun as the oracle, or copying its 3-retry policy (research 214).",
+   "Treating the Cmd+Q-two-dirty-windows interleaving arm as the discriminating test \u2014 windowShouldClose is not called on quit (Apple), and Electron's sync dialog is app-modal; quit must be tested through applicationShouldTerminate.",
+   "Claiming the first proof demonstrates default-deny for draw.io \u2014 under legacy the Bun role has ambient fs/net/spawn; only 'brokers correct; containment forfeited' is honest.",
+   "A recorder-produced keld.permissions.jsonc as an S3/S4 input \u2014 03 \u00a73 v0: no dev-permissive profile and no denial recorder exist; it is a Lane D/E deliverable."
+  ]
+ }
+]

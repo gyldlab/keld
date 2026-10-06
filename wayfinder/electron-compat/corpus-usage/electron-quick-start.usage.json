@@ -1,0 +1,89 @@
+{
+ "app": "electron-quick-start",
+ "root": "corpus/electron-quick-start",
+ "files_scanned": 3,
+ "electron_dep": "^44.4.3",
+ "modules": {
+  "app": {
+   "count": 1,
+   "files": [
+    "main.js"
+   ],
+   "file_count": 1
+  },
+  "BrowserWindow": {
+   "count": 1,
+   "files": [
+    "main.js"
+   ],
+   "file_count": 1
+  }
+ },
+ "members_top": [
+  {
+   "entity": "BaseWindow",
+   "member": "getAllWindows",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getAllWindows",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "loadFile",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "quit",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "whenReady",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "loadFile",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "openDevTools",
+   "count": 1,
+   "file_count": 1
+  }
+ ],
+ "events_top": [
+  {
+   "entity": "app",
+   "event": "window-all-closed",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "activate",
+   "count": 1,
+   "file_count": 1
+  }
+ ],
+ "native_suspects": [],
+ "deps_count": 1,
+ "signals": {
+  "preload": 1,
+  "openDevTools": 1,
+  "app.on(activate)": 1,
+  "window-all-closed": 1,
+  "loadFile": 1
+ }
+}

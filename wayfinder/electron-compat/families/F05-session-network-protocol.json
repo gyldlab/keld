@@ -1,0 +1,4311 @@
+[
+ {
+  "name": "ClientRequest",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": true,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Make HTTP/HTTPS requests.\n\nProcess: Main, Utility\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._\n\n`ClientRequest` implements the Writable Stream interface and is therefore an EventEmitter.",
+  "members": [
+   {
+    "name": "setHeader",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name",
+     "value"
+    ],
+    "returns": null,
+    "desc": "Adds an extra HTTP header. The header name will be issued as-is without lowercasing. It can be called only before first write. Calling this method after the first write will throw an error. If the pas"
+   },
+   {
+    "name": "getHeader",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name"
+    ],
+    "returns": "String",
+    "desc": "The value of a previously set extra header name."
+   },
+   {
+    "name": "removeHeader",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name"
+    ],
+    "returns": null,
+    "desc": "Removes a previously set extra header name. This method can be called only before first write. Trying to call it after the first write will throw an error."
+   },
+   {
+    "name": "write",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "chunk",
+     "encoding",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "`callback` is essentially a dummy function introduced in the purpose of keeping similarity with the Node.js API. It is called asynchronously in the next tick after `chunk` content have been delivered "
+   },
+   {
+    "name": "end",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "chunk",
+     "encoding",
+     "callback"
+    ],
+    "returns": "this",
+    "desc": "Sends the last chunk of the request data. Subsequent write or end operations will not be allowed. The `finish` event is emitted just after the end operation."
+   },
+   {
+    "name": "abort",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Cancels an ongoing HTTP transaction. If the request has already emitted the `close` event, the abort operation will have no effect. Otherwise an ongoing event will emit `abort` and `close` events. Add"
+   },
+   {
+    "name": "followRedirect",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Continues any pending redirection. Can only be called during a `'redirect'` event."
+   },
+   {
+    "name": "getUploadProgress",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `active` boolean - Whether the request is currently active. If this is false no other properties will be set\n* `started` boolean - Whether the upload has started. If this is false both `current` and"
+   },
+   {
+    "name": "response",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "response"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "login",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "authInfo",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when an authenticating proxy is asking for user credentials.\n\nThe `callback` function is expected to be called back with user credentials:\n\n* `username` string\n* `password` string\n\nProviding e"
+   },
+   {
+    "name": "finish",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted just after the last chunk of the `request`'s data has been written into the `request` object."
+   },
+   {
+    "name": "abort",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the `request` is aborted. The `abort` event will not be fired if the `request` is already closed."
+   },
+   {
+    "name": "error",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "error"
+    ],
+    "returns": null,
+    "desc": "Emitted when the `net` module fails to issue a network request. Typically when the `request` object emits an `error` event, a `close` event will subsequently follow and no response object will be prov"
+   },
+   {
+    "name": "close",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted as the last event in the HTTP request-response transaction. The `close` event indicates that no more events will be emitted on either the `request` or `response` objects."
+   },
+   {
+    "name": "redirect",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "statusCode",
+     "method",
+     "redirectUrl",
+     "responseHeaders"
+    ],
+    "returns": null,
+    "desc": "Emitted when the server returns a redirect response (e.g. 301 Moved Permanently). Calling `request.followRedirect` will continue with the redirection.  If this event is handled, `request.followRedirec"
+   },
+   {
+    "name": "chunkedEncoding",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` specifying whether the request will use HTTP chunked transfer encoding or not. Defaults to false. The property is readable and writable, however it can be set only before the first write o"
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/client-request"
+ },
+ {
+  "name": "Cookies",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "get",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter"
+    ],
+    "returns": "Promise",
+    "desc": "A promise which resolves an array of cookie objects.\n\nSends a request to get all cookies matching `filter`, and resolves a promise with the response."
+   },
+   {
+    "name": "set",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details"
+    ],
+    "returns": "Promise",
+    "desc": "A promise which resolves when the cookie has been set.\n\nSets a cookie with `details`."
+   },
+   {
+    "name": "remove",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "name"
+    ],
+    "returns": "Promise",
+    "desc": "A promise which resolves when the cookie has been removed.\n\nRemoves the cookies matching `url` and `name`."
+   },
+   {
+    "name": "flushStore",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "A promise which resolves when the cookie store has been flushed.\n\nWrites any unwritten cookies data to disk.\n\nCookies written by any method will not be written to disk immediately, but will be written"
+   },
+   {
+    "name": "changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "cookie",
+     "cause",
+     "removed"
+    ],
+    "returns": null,
+    "desc": "Emitted when a cookie is changed because it was added, edited, removed, or expired."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/cookies"
+ },
+ {
+  "name": "DownloadItem",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "setSavePath",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "The API is only available in session's `will-download` callback function. If `path` doesn't exist, Electron will try to make the directory recursively. If user doesn't set the save path via the API, E"
+   },
+   {
+    "name": "getSavePath",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The save path of the download item. This will be either the path set via `downloadItem.setSavePath(path)` or the path selected from the shown save dialog."
+   },
+   {
+    "name": "setSaveDialogOptions",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "This API allows the user to set custom options for the save dialog that opens for the download item by default. The API is only available in session's `will-download` callback function."
+   },
+   {
+    "name": "getSaveDialogOptions",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "SaveDialogOptions",
+    "desc": "Returns the object previously set by `downloadItem.setSaveDialogOptions(options)`."
+   },
+   {
+    "name": "pause",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Pauses the download."
+   },
+   {
+    "name": "isPaused",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the download is paused."
+   },
+   {
+    "name": "resume",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Resumes the download that has been paused.\n\n> [!NOTE] To enable resumable downloads the server you are downloading from must support range requests and provide both `Last-Modified` and `ETag` header v"
+   },
+   {
+    "name": "canResume",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the download can resume."
+   },
+   {
+    "name": "cancel",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Cancels the download operation."
+   },
+   {
+    "name": "getURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The origin URL where the item is downloaded from."
+   },
+   {
+    "name": "getMimeType",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The files mime type."
+   },
+   {
+    "name": "hasUserGesture",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the download has user gesture."
+   },
+   {
+    "name": "getInitiatorOrigin",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The origin that started the download (for example `https://example.com`, or `null` for an opaque origin), or an empty string if the download was not started by web content (for example `webContents.do"
+   },
+   {
+    "name": "getFilename",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The file name of the download item.\n\n> [!NOTE] The file name is not always the same as the actual one saved in local disk. If user changes the file name in a prompted download saving dialog, the actua"
+   },
+   {
+    "name": "getCurrentBytesPerSecond",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The current download speed in bytes per second."
+   },
+   {
+    "name": "getTotalBytes",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The total size in bytes of the download item.\n\nIf the size is unknown, it returns 0."
+   },
+   {
+    "name": "getReceivedBytes",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The received bytes of the download item."
+   },
+   {
+    "name": "getPercentComplete",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "The download completion in percent."
+   },
+   {
+    "name": "getContentDisposition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The Content-Disposition field from the response header."
+   },
+   {
+    "name": "getState",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The current state. Can be `progressing`, `completed`, `cancelled` or `interrupted`.\n\n> [!NOTE] The following methods are useful specifically to resume a `cancelled` item when session is restarted."
+   },
+   {
+    "name": "getURLChain",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The complete URL chain of the item including any redirects."
+   },
+   {
+    "name": "getLastModifiedTime",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "Last-Modified header value."
+   },
+   {
+    "name": "getETag",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "ETag header value."
+   },
+   {
+    "name": "getStartTime",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Double",
+    "desc": "Number of seconds since the UNIX epoch when the download was started."
+   },
+   {
+    "name": "getEndTime",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Double",
+    "desc": "Number of seconds since the UNIX epoch when the download ended."
+   },
+   {
+    "name": "updated",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "state"
+    ],
+    "returns": null,
+    "desc": "Emitted when the download has been updated and is not done.\n\nThe `state` can be one of following:\n\n* `progressing` - The download is in-progress.\n* `interrupted` - The download has interrupted and can"
+   },
+   {
+    "name": "done",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "state"
+    ],
+    "returns": null,
+    "desc": "Emitted when the download is in a terminal state. This includes a completed download, a cancelled download (via `downloadItem.cancel()`), and interrupted download that can't be resumed.\n\nThe `state` c"
+   },
+   {
+    "name": "savePath",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the save file path of the download item.\n\nThe property is only available in session's `will-download` callback function. If user doesn't set the save path via the p"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/download-item"
+ },
+ {
+  "name": "Extensions",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "loadExtension",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the extension is loaded.\n\nThis method will raise an exception if the extension could not be loaded. If there are warnings when installing the extension (e.g. if the extension requests an"
+   },
+   {
+    "name": "removeExtension",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "extensionId"
+    ],
+    "returns": null,
+    "desc": "Unloads an extension.\n\n> [!NOTE] This API cannot be called before the `ready` event of the `app` module is emitted."
+   },
+   {
+    "name": "getExtension",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "extensionId"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Extension"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The loaded extension with the given ID.\n\n> [!NOTE] This API cannot be called before the `ready` event of the `app` module is emitted."
+   },
+   {
+    "name": "getAllExtensions",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Extension",
+    "desc": "A list of all loaded extensions.\n\n> [!NOTE] This API cannot be called before the `ready` event of the `app` module is emitted."
+   },
+   {
+    "name": "extension-loaded",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "extension"
+    ],
+    "returns": null,
+    "desc": "Emitted after an extension is loaded. This occurs whenever an extension is added to the \"enabled\" set of extensions. This includes:\n\n* Extensions being loaded from `Extensions.loadExtension`.\n* Extens"
+   },
+   {
+    "name": "extension-unloaded",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "extension"
+    ],
+    "returns": null,
+    "desc": "Emitted after an extension is unloaded. This occurs when `Session.removeExtension` is called."
+   },
+   {
+    "name": "extension-ready",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "extension"
+    ],
+    "returns": null,
+    "desc": "Emitted after an extension is loaded and all necessary browser state is initialized to support the start of the extension's background page."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/extensions-api"
+ },
+ {
+  "name": "IncomingMessage",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": true,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "data",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "chunk"
+    ],
+    "returns": null,
+    "desc": "The `data` event is the usual method of transferring response data into applicative code."
+   },
+   {
+    "name": "end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Indicates that response body has ended. Must be placed before 'data' event."
+   },
+   {
+    "name": "aborted",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when a request has been canceled during an ongoing HTTP transaction."
+   },
+   {
+    "name": "error",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "error"
+    ],
+    "returns": null,
+    "desc": "Emitted when an error was encountered while streaming response data events. For instance, if the server closes the underlying connection while the response is still streaming, an `error` event will be"
+   },
+   {
+    "name": "statusCode",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` indicating the HTTP response status code."
+   },
+   {
+    "name": "statusMessage",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the HTTP status message."
+   },
+   {
+    "name": "headers",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Record<string, string | string[]>` representing the HTTP response headers. The `headers` object is formatted as follows:\n\n* All header names are lowercased.\n* Duplicates of `age`, `authorization`, "
+   },
+   {
+    "name": "httpVersion",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the HTTP protocol version number. Typical values are '1.0' or '1.1'. Additionally `httpVersionMajor` and `httpVersionMinor` are two Integer-valued readable properties that return"
+   },
+   {
+    "name": "httpVersionMajor",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` indicating the HTTP protocol major version number."
+   },
+   {
+    "name": "httpVersionMinor",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` indicating the HTTP protocol minor version number."
+   },
+   {
+    "name": "rawHeaders",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string[]` containing the raw HTTP response headers exactly as they were received. The keys and values are in the same list. It is not a list of tuples. So, the even-numbered offsets are key values,"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/incoming-message"
+ },
+ {
+  "name": "netLog",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Logging network events for a session.\n\nProcess: Main\n\n```\nconst { app, netLog } = require('electron')\n\napp.whenReady().then(async () => {\n  await netLog.startLogging('/path/to/net-log')\n  // After some network events\n  const path = await netLog.stopLogging()\n  console.log('Net-logs written to', pa",
+  "members": [
+   {
+    "name": "startLogging",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the net log has begun recording.\n\nStarts recording network events to `path`."
+   },
+   {
+    "name": "stopLogging",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "resolves when the net log has been flushed to disk.\n\nStops recording network events. If not called, net logging will automatically end when app quits."
+   },
+   {
+    "name": "currentlyLogging",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that indicates whether network logs are currently being recorded."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/net-log"
+ },
+ {
+  "name": "net",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": true,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Issue HTTP/HTTPS requests using Chromium's native networking library\n\nProcess: Main, Utility\n\nThe `net` module is a client-side API for issuing HTTP(S) requests. It is similar to the HTTP and HTTPS modules of Node.js but uses Chromium's native networking library instead of the Node.js implementati",
+  "members": [
+   {
+    "name": "request",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "ClientRequest",
+    "desc": "Creates a `ClientRequest` instance using the provided `options` which are directly forwarded to the `ClientRequest` constructor. The `net.request` method would be used to issue both secure and insecur"
+   },
+   {
+    "name": "fetch",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "input",
+     "init"
+    ],
+    "returns": "Promise",
+    "desc": "see Response.\n\nSends a request, similarly to how `fetch()` works in the renderer, using Chromium's network stack. This differs from Node's `fetch()`, which uses Node.js's HTTP stack.\n\nExample:\n\nThis m"
+   },
+   {
+    "name": "isOnline",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether there is currently internet connection.\n\nA return value of `false` is a pretty strong indicator that the user won't be able to connect to remote sites. However, a return value of `true` is inc"
+   },
+   {
+    "name": "resolveHost",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "host",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the resolved IP addresses for the `host`.\n\nThis method will resolve hosts from the default session. To resolve a host from another session, use ses.resolveHost()."
+   },
+   {
+    "name": "online",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property. Whether there is currently internet connection.\n\nA return value of `false` is a pretty strong indicator that the user won't be able to connect to remote sites. However, a return "
+   },
+   {
+    "name": "WebSocket",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "> [!NOTE] This property is only available in the main process.\n\nA `typeof WebSocket` reference to the `WebSocket` class, which can be used to create WHATWG-compatible WebSocket connections through Chr"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/net"
+ },
+ {
+  "name": "protocol",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Register a custom protocol and intercept existing protocol requests.\n\nProcess: Main\n\nAn example of implementing a protocol that has the same effect as the `file://` protocol:\n\n```\nconst { app, protocol, net } = require('electron')\n\nconst path = require('node:path')\nconst url = require('node:url')\n",
+  "members": [
+   {
+    "name": "registerSchemesAsPrivileged",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "customSchemes"
+    ],
+    "returns": null,
+    "desc": "> [!NOTE] This method can only be used before the `ready` event of the `app` module gets emitted and can be called only once.\n\nRegisters the `scheme` as standard, secure, bypasses content security pol"
+   },
+   {
+    "name": "handle",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Register a protocol handler for `scheme`. Requests made to URLs with this scheme will delegate to this handler to determine what response should be sent.\n\nIn addition to the standard `Request` fields,"
+   },
+   {
+    "name": "unhandle",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "scheme"
+    ],
+    "returns": null,
+    "desc": "Removes a protocol handler registered with `protocol.handle`."
+   },
+   {
+    "name": "isProtocolHandled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "scheme"
+    ],
+    "returns": "boolean",
+    "desc": "Whether `scheme` is already handled."
+   },
+   {
+    "name": "registerFileProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully registered\n\nRegisters a protocol of `scheme` that will send a file as the response. The `handler` will be called with `request` and `callback` where `request` is "
+   },
+   {
+    "name": "registerBufferProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully registered\n\nRegisters a protocol of `scheme` that will send a `Buffer` as a response.\n\nThe usage is the same with `registerFileProtocol`, except that the `callbac"
+   },
+   {
+    "name": "registerStringProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully registered\n\nRegisters a protocol of `scheme` that will send a `string` as a response.\n\nThe usage is the same with `registerFileProtocol`, except that the `callbac"
+   },
+   {
+    "name": "registerHttpProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully registered\n\nRegisters a protocol of `scheme` that will send an HTTP request as a response.\n\nThe usage is the same with `registerFileProtocol`, except that the `ca"
+   },
+   {
+    "name": "registerStreamProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully registered\n\nRegisters a protocol of `scheme` that will send a stream as a response.\n\nThe usage is the same with `registerFileProtocol`, except that the `callback`"
+   },
+   {
+    "name": "unregisterProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully unregistered\n\nUnregisters the custom protocol of `scheme`."
+   },
+   {
+    "name": "isProtocolRegistered",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme"
+    ],
+    "returns": "boolean",
+    "desc": "Whether `scheme` is already registered."
+   },
+   {
+    "name": "interceptFileProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully intercepted\n\nIntercepts `scheme` protocol and uses `handler` as the protocol's new handler which sends a file as a response."
+   },
+   {
+    "name": "interceptStringProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully intercepted\n\nIntercepts `scheme` protocol and uses `handler` as the protocol's new handler which sends a `string` as a response."
+   },
+   {
+    "name": "interceptBufferProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully intercepted\n\nIntercepts `scheme` protocol and uses `handler` as the protocol's new handler which sends a `Buffer` as a response."
+   },
+   {
+    "name": "interceptHttpProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully intercepted\n\nIntercepts `scheme` protocol and uses `handler` as the protocol's new handler which sends a new HTTP request as a response."
+   },
+   {
+    "name": "interceptStreamProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme",
+     "handler"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully intercepted\n\nSame as `protocol.registerStreamProtocol`, except that it replaces an existing protocol handler."
+   },
+   {
+    "name": "uninterceptProtocol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the protocol was successfully unintercepted\n\nRemove the interceptor installed for `scheme` and restore its original handler."
+   },
+   {
+    "name": "isProtocolIntercepted",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "scheme"
+    ],
+    "returns": "boolean",
+    "desc": "Whether `scheme` is already intercepted."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/protocol"
+ },
+ {
+  "name": "ServiceWorkerMain",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "isDestroyed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the service worker has been destroyed."
+   },
+   {
+    "name": "send",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "channel",
+     "...args"
+    ],
+    "returns": null,
+    "desc": "Send an asynchronous message to the service worker process via `channel`, along with arguments. Arguments will be serialized with the Structured Clone Algorithm, just like `postMessage`, so prototype "
+   },
+   {
+    "name": "startTask",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `end` Function - Method to call when the task has ended. If never called, the service won't terminate while otherwise idle.\n\nInitiate a task to keep the service worker alive until ended."
+   },
+   {
+    "name": "ipc",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `IpcMainServiceWorker` instance scoped to the service worker."
+   },
+   {
+    "name": "scope",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the scope URL of the service worker."
+   },
+   {
+    "name": "scriptURL",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the script URL of the service worker."
+   },
+   {
+    "name": "versionId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "stability_experimental"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` representing the ID of the specific version of the service worker script in its scope."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/service-worker-main"
+ },
+ {
+  "name": "ServiceWorkers",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "getAllRunning",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Record",
+    "desc": "A ServiceWorkerInfo object where the keys are the service worker version ID and the values are the information about that service worker."
+   },
+   {
+    "name": "getInfoFromVersionID",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "versionId"
+    ],
+    "returns": "ServiceWorkerInfo",
+    "desc": "Information about this service worker\n\nIf the service worker does not exist or is not running this method will throw an exception."
+   },
+   {
+    "name": "getFromVersionID",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "versionId"
+    ],
+    "returns": "ServiceWorkerInfo",
+    "desc": "Information about this service worker\n\nIf the service worker does not exist or is not running this method will throw an exception.\n\n**Deprecated:** Use the new `serviceWorkers.getInfoFromVersionID` AP"
+   },
+   {
+    "name": "getWorkerFromVersionID",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "versionId"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "ServiceWorkerMain"
+     },
+     {
+      "collection": false,
+      "type": "undefined"
+     }
+    ],
+    "desc": "Instance of the service worker associated with the given version ID. If there's no associated version, or its running status has changed to 'stopped', this will return `undefined`."
+   },
+   {
+    "name": "startWorkerForScope",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "scope"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the service worker when it's started.\n\nStarts the service worker or does nothing if already running."
+   },
+   {
+    "name": "console-message",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "messageDetails"
+    ],
+    "returns": null,
+    "desc": "Emitted when a service worker logs something to the console."
+   },
+   {
+    "name": "registration-completed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when a service worker has been registered. Can occur after a call to `navigator.serviceWorker.register('/sw.js')` successfully resolves or when a Chrome extension is loaded."
+   },
+   {
+    "name": "running-status-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when a service worker's running status has changed."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/service-workers"
+ },
+ {
+  "name": "session",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Manage browser sessions, cookies, cache, proxy settings, etc.\n\nProcess: Main\n\nThe `session` module can be used to create new `Session` objects.\n\nYou can also access the `session` of existing pages by using the `session` property of `WebContents`, or from the `session` module.",
+  "members": [
+   {
+    "name": "fromPartition",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "partition",
+     "options"
+    ],
+    "returns": "Session",
+    "desc": "A session instance from `partition` string. When there is an existing `Session` with the same `partition`, it will be returned; otherwise a new `Session` instance will be created with `options`.\n\nIf `"
+   },
+   {
+    "name": "fromPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path",
+     "options"
+    ],
+    "returns": "Session",
+    "desc": "A session instance from the absolute path as specified by the `path` string. When there is an existing `Session` with the same absolute path, it will be returned; otherwise a new `Session` instance wi"
+   },
+   {
+    "name": "defaultSession",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Session` object, the default session object of the app, available after `app.whenReady` is called."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/session"
+ },
+ {
+  "name": "Session",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "getCacheSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "the session's current cache size, in bytes."
+   },
+   {
+    "name": "clearCache",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "resolves when the cache clear operation is complete.\n\nClears the session\u2019s HTTP cache."
+   },
+   {
+    "name": "clearStorageData",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the storage data has been cleared."
+   },
+   {
+    "name": "flushStorageData",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Writes any unwritten DOMStorage data to disk."
+   },
+   {
+    "name": "setProxy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "config"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves when the proxy setting process is complete.\n\nSets the proxy settings.\n\nYou may need `ses.closeAllConnections` to close currently in flight connections to prevent pooled sockets using previous"
+   },
+   {
+    "name": "resolveHost",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "host",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the resolved IP addresses for the `host`."
+   },
+   {
+    "name": "resolveProxy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with the proxy information for `url`."
+   },
+   {
+    "name": "forceReloadProxyConfig",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves when the all internal states of proxy service is reset and the latest proxy configuration is reapplied if it's already available. The pac script will be fetched from `pacScript` again if the "
+   },
+   {
+    "name": "setDownloadPath",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "Sets download saving directory. By default, the download directory will be the `Downloads` under the respective app folder."
+   },
+   {
+    "name": "enableNetworkEmulation",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Emulates network with the given configuration for the `session`."
+   },
+   {
+    "name": "preconnect",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Preconnects the given number of sockets to an origin."
+   },
+   {
+    "name": "closeAllConnections",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves when all connections are closed.\n\n> [!NOTE] It will terminate / fail all requests currently in flight."
+   },
+   {
+    "name": "fetch",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "input",
+     "init"
+    ],
+    "returns": "Promise",
+    "desc": "see Response.\n\nSends a request, similarly to how `fetch()` works in the renderer, using Chromium's network stack. This differs from Node's `fetch()`, which uses Node.js's HTTP stack.\n\nExample:\n\nSee al"
+   },
+   {
+    "name": "disableNetworkEmulation",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Disables any network emulation already active for the `session`. Resets to the original network configuration."
+   },
+   {
+    "name": "setCertificateVerifyProc",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "proc"
+    ],
+    "returns": null,
+    "desc": "Sets the certificate verify proc for `session`, the `proc` will be called with `proc(request, callback)` whenever a server certificate verification is requested. Calling `callback(0)` accepts the cert"
+   },
+   {
+    "name": "setPermissionRequestHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Sets the handler which can be used to respond to permission requests for the `session`. Calling `callback(true)` will allow the permission and `callback(false)` will reject it. To clear the handler, c"
+   },
+   {
+    "name": "setPermissionCheckHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Sets the handler which can be used to respond to permission checks for the `session`. Returning `true` will allow the permission and `false` will reject it.  Please note that you must also implement `"
+   },
+   {
+    "name": "setDisplayMediaRequestHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler",
+     "opts"
+    ],
+    "returns": null,
+    "desc": "This handler will be called when web content requests access to display media via the `navigator.mediaDevices.getDisplayMedia` API. Use the desktopCapturer API to choose which stream(s) to grant acces"
+   },
+   {
+    "name": "setDevicePermissionHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Sets the handler which can be used to respond to device permission checks for the `session`. Returning `true` will allow the device to be permitted and `false` will reject it. To clear the handler, ca"
+   },
+   {
+    "name": "setUSBProtectedClassesHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Sets the handler which can be used to override which USB classes are protected. The return value for the handler is a string array of USB classes which should be considered protected (eg not available"
+   },
+   {
+    "name": "setBluetoothPairingHandler",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "handler"
+    ],
+    "returns": null,
+    "desc": "Sets a handler to respond to Bluetooth pairing requests. This handler allows developers to handle devices that require additional validation before pairing.  When a handler is not defined, any pairing"
+   },
+   {
+    "name": "clearHostResolverCache",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves when the operation is complete.\n\nClears the host resolver cache."
+   },
+   {
+    "name": "allowNTLMCredentialsForDomains",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "domains"
+    ],
+    "returns": null,
+    "desc": "Dynamically sets whether to always send credentials for HTTP NTLM or Negotiate authentication."
+   },
+   {
+    "name": "setUserAgent",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "userAgent",
+     "acceptLanguages"
+    ],
+    "returns": null,
+    "desc": "Overrides the `userAgent` and `acceptLanguages` for this session.\n\nThe `acceptLanguages` must be a comma separated ordered list of language codes, for example `\"en-US,fr,de,ko,zh-CN,ja\"`.\n\nThis doesn'"
+   },
+   {
+    "name": "isPersistent",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether or not this session is a persistent one. The default `webContents` session of a `BrowserWindow` is persistent. When creating a session from a partition, session prefixed with `persist:` will b"
+   },
+   {
+    "name": "getUserAgent",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The user agent for this session."
+   },
+   {
+    "name": "setSSLConfig",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "config"
+    ],
+    "returns": null,
+    "desc": "Sets the SSL configuration for the session. All subsequent network requests will use the new configuration. Existing network connections (such as WebSocket connections) will not be terminated, but old"
+   },
+   {
+    "name": "getBlobData",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "identifier"
+    ],
+    "returns": "Promise",
+    "desc": "resolves with blob data."
+   },
+   {
+    "name": "downloadURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Initiates a download of the resource at `url`. The API will generate a DownloadItem that can be accessed with the will-download event.\n\n> [!NOTE] This does not perform any security checks that relate "
+   },
+   {
+    "name": "createInterruptedDownload",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Allows resuming `cancelled` or `interrupted` downloads from previous `Session`. The API will generate a DownloadItem that can be accessed with the will-download event. The DownloadItem will not have a"
+   },
+   {
+    "name": "clearAuthCache",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "resolves when the session\u2019s HTTP authentication cache has been cleared."
+   },
+   {
+    "name": "setPreloads",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "preloads"
+    ],
+    "returns": null,
+    "desc": "Adds scripts that will be executed on ALL web contents that are associated with this session just before normal `preload` scripts run.\n\n**Deprecated:** Use the new `ses.registerPreloadScript` API."
+   },
+   {
+    "name": "getPreloads",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "an array of paths to preload scripts that have been registered.\n\n**Deprecated:** Use the new `ses.getPreloadScripts` API. This will only return preload script paths for `frame` context types."
+   },
+   {
+    "name": "registerPreloadScript",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "script"
+    ],
+    "returns": "String",
+    "desc": "Registers preload script that will be executed in its associated context type in this session. For `frame` contexts, this will run prior to any preload defined in the web preferences of a WebContents."
+   },
+   {
+    "name": "unregisterPreloadScript",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Unregisters script."
+   },
+   {
+    "name": "getPreloadScripts",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "PreloadScript",
+    "desc": "An array of paths to preload scripts that have been registered."
+   },
+   {
+    "name": "setCodeCachePath",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": null,
+    "desc": "Sets the directory to store the generated JS code cache for this session. The directory is not required to be created by the user before this call, the runtime will create if it does not exist otherwi"
+   },
+   {
+    "name": "clearCodeCaches",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the code cache clear operation is complete."
+   },
+   {
+    "name": "getSharedDictionaryUsageInfo",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "an array of shared dictionary information entries in Chromium's networking service's storage.\n\nShared dictionaries are used to power advanced compression of data sent over the wire, specifically with "
+   },
+   {
+    "name": "getSharedDictionaryInfo",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "an array of shared dictionary information entries in Chromium's networking service's storage.\n\nTo get information about all present shared dictionaries, call `getSharedDictionaryUsageInfo()`."
+   },
+   {
+    "name": "clearSharedDictionaryCache",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "resolves when the dictionary cache has been cleared, both in memory and on disk."
+   },
+   {
+    "name": "clearSharedDictionaryCacheForIsolationKey",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the dictionary cache has been cleared for the specified isolation key, both in memory and on disk."
+   },
+   {
+    "name": "setSpellCheckerEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "enable"
+    ],
+    "returns": null,
+    "desc": "Sets whether to enable the builtin spell checker."
+   },
+   {
+    "name": "isSpellCheckerEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the builtin spell checker is enabled."
+   },
+   {
+    "name": "setSpellCheckerLanguages",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "languages"
+    ],
+    "returns": null,
+    "desc": "The built in spellchecker does not automatically detect what language a user is typing in.  In order for the spell checker to correctly check their words you must call this API with an array of langua"
+   },
+   {
+    "name": "getSpellCheckerLanguages",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "An array of language codes the spellchecker is enabled for.  If this list is empty the spellchecker will fallback to using `en-US`.  By default on launch if this setting is an empty list Electron will"
+   },
+   {
+    "name": "setSpellCheckerDictionaryDownloadURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url"
+    ],
+    "returns": null,
+    "desc": "By default Electron will download hunspell dictionaries from the Chromium CDN.  If you want to override this behavior you can use this API to point the dictionary downloader at your own hosted version"
+   },
+   {
+    "name": "listWordsInSpellCheckerDictionary",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "An array of all words in app's custom dictionary. Resolves when the full dictionary is loaded from disk."
+   },
+   {
+    "name": "addWordToSpellCheckerDictionary",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "word"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the word was successfully written to the custom dictionary. This API will not work on non-persistent (in-memory) sessions.\n\n> [!NOTE] On macOS and Windows, this word will be written to the OS "
+   },
+   {
+    "name": "removeWordFromSpellCheckerDictionary",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "word"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the word was successfully removed from the custom dictionary. This API will not work on non-persistent (in-memory) sessions.\n\n> [!NOTE] On macOS and Windows, this word will be removed from the"
+   },
+   {
+    "name": "loadExtension",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "path",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the extension is loaded.\n\nThis method will raise an exception if the extension could not be loaded. If there are warnings when installing the extension (e.g. if the extension requests an"
+   },
+   {
+    "name": "removeExtension",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "extensionId"
+    ],
+    "returns": null,
+    "desc": "Unloads an extension.\n\n> [!NOTE] This API cannot be called before the `ready` event of the `app` module is emitted.\n\n**Deprecated:** Use the new `ses.extensions.removeExtension` API."
+   },
+   {
+    "name": "getExtension",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "extensionId"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Extension"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The loaded extension with the given ID.\n\n> [!NOTE] This API cannot be called before the `ready` event of the `app` module is emitted.\n\n**Deprecated:** Use the new `ses.extensions.getExtension` API."
+   },
+   {
+    "name": "getAllExtensions",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": "Extension",
+    "desc": "A list of all loaded extensions.\n\n> [!NOTE] This API cannot be called before the `ready` event of the `app` module is emitted.\n\n**Deprecated:** Use the new `ses.extensions.getAllExtensions` API."
+   },
+   {
+    "name": "getStoragePath",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "String",
+      "possibleValues": null
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The absolute file system path where data for this session is persisted on disk.  For in memory sessions this returns `null`."
+   },
+   {
+    "name": "clearData",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when all data has been cleared.\n\nClears various different types of data.\n\nThis method clears more types of data and is more thorough than the `clearStorageData` method.\n\n> [!NOTE] Cookies are"
+   },
+   {
+    "name": "will-download",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "item",
+     "webContents",
+     "frame"
+    ],
+    "returns": null,
+    "desc": "Emitted when Electron is about to download `item` in `webContents`. See also `item.getInitiatorOrigin()`.\n\nCalling `event.preventDefault()` will cancel the download and `item` will not be available fr"
+   },
+   {
+    "name": "extension-loaded",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "extension"
+    ],
+    "returns": null,
+    "desc": "Emitted after an extension is loaded. This occurs whenever an extension is added to the \"enabled\" set of extensions. This includes:\n\n* Extensions being loaded from `Session.loadExtension`.\n* Extension"
+   },
+   {
+    "name": "extension-unloaded",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "extension"
+    ],
+    "returns": null,
+    "desc": "Emitted after an extension is unloaded. This occurs when `Session.removeExtension` is called."
+   },
+   {
+    "name": "extension-ready",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "extension"
+    ],
+    "returns": null,
+    "desc": "Emitted after an extension is loaded and all necessary browser state is initialized to support the start of the extension's background page."
+   },
+   {
+    "name": "file-system-access-restricted",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details",
+     "callback"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "preconnect",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "preconnectUrl",
+     "allowCredentials",
+     "frame"
+    ],
+    "returns": null,
+    "desc": "Emitted when a render process requests preconnection to a URL, generally due to a resource hint."
+   },
+   {
+    "name": "spellcheck-dictionary-initialized",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "languageCode"
+    ],
+    "returns": null,
+    "desc": "Emitted when a hunspell dictionary file has been successfully initialized. This occurs after the file has been downloaded."
+   },
+   {
+    "name": "spellcheck-dictionary-download-begin",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "languageCode"
+    ],
+    "returns": null,
+    "desc": "Emitted when a hunspell dictionary file starts downloading"
+   },
+   {
+    "name": "spellcheck-dictionary-download-success",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "languageCode"
+    ],
+    "returns": null,
+    "desc": "Emitted when a hunspell dictionary file has been successfully downloaded"
+   },
+   {
+    "name": "spellcheck-dictionary-download-failure",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "languageCode"
+    ],
+    "returns": null,
+    "desc": "Emitted when a hunspell dictionary file download fails.  For details on the failure you should collect a netlog and inspect the download request."
+   },
+   {
+    "name": "select-hid-device",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a HID device needs to be selected when a call to `navigator.hid.requestDevice` is made. `callback` should be called with `deviceId` to be selected; passing no arguments to `callback` will"
+   },
+   {
+    "name": "hid-device-added",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted after `navigator.hid.requestDevice` has been called and `select-hid-device` has fired if a new device becomes available before the callback from `select-hid-device` is called.  This event is i"
+   },
+   {
+    "name": "hid-device-removed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted after `navigator.hid.requestDevice` has been called and `select-hid-device` has fired if a device has been removed before the callback from `select-hid-device` is called.  This event is intend"
+   },
+   {
+    "name": "hid-device-revoked",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted after `HIDDevice.forget()` has been called.  This event can be used to help maintain persistent storage of permissions when `setDevicePermissionHandler` is used."
+   },
+   {
+    "name": "select-serial-port",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "portList",
+     "webContents",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a serial port needs to be selected when a call to `navigator.serial.requestPort` is made. `callback` should be called with `portId` to be selected, passing an empty string to `callback` w"
+   },
+   {
+    "name": "serial-port-added",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "port",
+     "webContents"
+    ],
+    "returns": null,
+    "desc": "Emitted after `navigator.serial.requestPort` has been called and `select-serial-port` has fired if a new serial port becomes available before the callback from `select-serial-port` is called.  This ev"
+   },
+   {
+    "name": "serial-port-removed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "port",
+     "webContents"
+    ],
+    "returns": null,
+    "desc": "Emitted after `navigator.serial.requestPort` has been called and `select-serial-port` has fired if a serial port has been removed before the callback from `select-serial-port` is called.  This event i"
+   },
+   {
+    "name": "serial-port-revoked",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted after `SerialPort.forget()` has been called.  This event can be used to help maintain persistent storage of permissions when `setDevicePermissionHandler` is used."
+   },
+   {
+    "name": "select-usb-device",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a USB device needs to be selected when a call to `navigator.usb.requestDevice` is made. `callback` should be called with `deviceId` to be selected; passing no arguments to `callback` will"
+   },
+   {
+    "name": "usb-device-added",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "device",
+     "webContents"
+    ],
+    "returns": null,
+    "desc": "Emitted after `navigator.usb.requestDevice` has been called and `select-usb-device` has fired if a new device becomes available before the callback from `select-usb-device` is called.  This event is i"
+   },
+   {
+    "name": "usb-device-removed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "device",
+     "webContents"
+    ],
+    "returns": null,
+    "desc": "Emitted after `navigator.usb.requestDevice` has been called and `select-usb-device` has fired if a device has been removed before the callback from `select-usb-device` is called.  This event is intend"
+   },
+   {
+    "name": "usb-device-revoked",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted after `USBDevice.forget()` has been called.  This event can be used to help maintain persistent storage of permissions when `setDevicePermissionHandler` is used."
+   },
+   {
+    "name": "select-webauthn-account",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "details",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Emitted when a call to `navigator.credentials.get()` resolves multiple discoverable WebAuthn credentials and the user must choose one. `callback` should be called with the `credentialId` of the select"
+   },
+   {
+    "name": "availableSpellCheckerLanguages",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string[]` array which consists of all the known available spell checker languages.  Providing a language code to the `setSpellCheckerLanguages` API that isn't in this array will result in an error."
+   },
+   {
+    "name": "spellCheckerEnabled",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` indicating whether builtin spell checker is enabled."
+   },
+   {
+    "name": "storagePath",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string | null` indicating the absolute file system path where data for this session is persisted on disk.  For in memory sessions this returns `null`."
+   },
+   {
+    "name": "cookies",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Cookies` object for this session."
+   },
+   {
+    "name": "extensions",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Extensions` object for this session."
+   },
+   {
+    "name": "serviceWorkers",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `ServiceWorkers` object for this session."
+   },
+   {
+    "name": "webRequest",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebRequest` object for this session."
+   },
+   {
+    "name": "protocol",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Protocol` object for this session."
+   },
+   {
+    "name": "netLog",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `NetLog` object for this session."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/session"
+ },
+ {
+  "name": "WebRequest",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "onBeforeRequest",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details, callback)` when a request is about to occur.\n\nThe `uploadData` is an array of `UploadData` objects.\n\nThe `callback` has to be called with an `resp"
+   },
+   {
+    "name": "onBeforeSendHeaders",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details, callback)` before sending an HTTP request, once the request headers are available. This may occur after a TCP connection is made to the server, bu"
+   },
+   {
+    "name": "onSendHeaders",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details)` just before a request is going to be sent to the server, modifications of previous `onBeforeSendHeaders` response are visible by the time this li"
+   },
+   {
+    "name": "onHeadersReceived",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details, callback)` when HTTP response headers of a request have been received.\n\nThe `callback` has to be called with a `response` object."
+   },
+   {
+    "name": "onResponseStarted",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details)` when first byte of the response body is received. For HTTP requests, this means that the status line and response headers are available."
+   },
+   {
+    "name": "onBeforeRedirect",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details)` when a server initiated redirect is about to occur."
+   },
+   {
+    "name": "onCompleted",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details)` when a request is completed."
+   },
+   {
+    "name": "onErrorOccurred",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filter",
+     "listener"
+    ],
+    "returns": null,
+    "desc": "The `listener` will be called with `listener(details)` when an error occurs."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-request"
+ },
+ {
+  "name": "WebSocket",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": "EventTarget",
+  "description": "> Create WebSocket connections from the main process using Chromium's native networking library\n\nProcess: Main\n\n`net.WebSocket` is a drop-in replacement for the WHATWG `WebSocket` interface that routes the connection through Chromium's network stack rather than Node.js. Use it when you want a main-p",
+  "members": [
+   {
+    "name": "send",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "data"
+    ],
+    "returns": null,
+    "desc": "Enqueues `data` to be transmitted to the server. Throws an `InvalidStateError` `DOMException` if `readyState` is `CONNECTING`."
+   },
+   {
+    "name": "close",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "code",
+     "reason"
+    ],
+    "returns": null,
+    "desc": "Closes the connection. Calling `close()` while still `CONNECTING` aborts the handshake."
+   },
+   {
+    "name": "url",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the resolved URL of the connection."
+   },
+   {
+    "name": "readyState",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the current state of the connection: one of `WebSocket.CONNECTING` (`0`), `WebSocket.OPEN` (`1`), `WebSocket.CLOSING` (`2`), or `WebSocket.CLOSED` (`3`)."
+   },
+   {
+    "name": "bufferedAmount",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the number of bytes of application data that have been queued via `send()` but not yet handed off to the network."
+   },
+   {
+    "name": "protocol",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` containing the subprotocol selected by the server. The empty string until the connection is open or if the server did not select a subprotocol."
+   },
+   {
+    "name": "extensions",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` containing the extensions negotiated by the server (for example `permessage-deflate`)."
+   },
+   {
+    "name": "binaryType",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` controlling how incoming binary messages are exposed on the `message` event. Can be `nodebuffer`, `arraybuffer`, or `blob`. The default is `nodebuffer`.\n\n`'nodebuffer'` is an Electron exten"
+   },
+   {
+    "name": "onopen",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Function | null` event handler for the `open` event. Equivalent to calling `addEventListener('open', ...)`."
+   },
+   {
+    "name": "onmessage",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Function | null` event handler for the `message` event. Equivalent to calling `addEventListener('message', ...)`."
+   },
+   {
+    "name": "onerror",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Function | null` event handler for the `error` event. Equivalent to calling `addEventListener('error', ...)`."
+   },
+   {
+    "name": "onclose",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Function | null` event handler for the `close` event. Equivalent to calling `addEventListener('close', ...)`."
+   },
+   {
+    "name": "CONNECTING",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` constant equal to `0`, the `readyState` value while the opening handshake is in progress."
+   },
+   {
+    "name": "OPEN",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` constant equal to `1`, the `readyState` value once the connection is established."
+   },
+   {
+    "name": "CLOSING",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` constant equal to `2`, the `readyState` value while the closing handshake is in progress."
+   },
+   {
+    "name": "CLOSED",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` constant equal to `3`, the `readyState` value once the connection is closed."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "protocols"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-socket"
+ },
+ {
+  "name": "BluetoothDevice",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "deviceName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "deviceId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/bluetooth-device"
+ },
+ {
+  "name": "CertificatePrincipal",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "commonName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Common Name."
+   },
+   {
+    "name": "organizations",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Organization names."
+   },
+   {
+    "name": "organizationUnits",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Organization Unit names."
+   },
+   {
+    "name": "locality",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Locality."
+   },
+   {
+    "name": "state",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "State or province."
+   },
+   {
+    "name": "country",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Country or region."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/certificate-principal"
+ },
+ {
+  "name": "Certificate",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "data",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "PEM encoded data"
+   },
+   {
+    "name": "issuer",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Issuer principal"
+   },
+   {
+    "name": "issuerName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Issuer's Common Name"
+   },
+   {
+    "name": "issuerCert",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Issuer certificate (if not self-signed)"
+   },
+   {
+    "name": "subject",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Subject principal"
+   },
+   {
+    "name": "subjectName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Subject's Common Name"
+   },
+   {
+    "name": "serialNumber",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Hex value represented string"
+   },
+   {
+    "name": "validStart",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Start date of the certificate being valid in seconds"
+   },
+   {
+    "name": "validExpiry",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "End date of the certificate being valid in seconds"
+   },
+   {
+    "name": "fingerprint",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Fingerprint of the certificate"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/certificate"
+ },
+ {
+  "name": "Cookie",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The name of the cookie."
+   },
+   {
+    "name": "value",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The value of the cookie."
+   },
+   {
+    "name": "domain",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The domain of the cookie; this will be normalized with a preceding dot so that it's also valid for subdomains."
+   },
+   {
+    "name": "hostOnly",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the cookie is a host-only cookie; this will only be `true` if no domain was passed."
+   },
+   {
+    "name": "path",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The path of the cookie."
+   },
+   {
+    "name": "secure",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the cookie is marked as secure."
+   },
+   {
+    "name": "httpOnly",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the cookie is marked as HTTP only."
+   },
+   {
+    "name": "session",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the cookie is a session cookie or a persistent cookie with an expiration date."
+   },
+   {
+    "name": "expirationDate",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The expiration date of the cookie as the number of seconds since the UNIX epoch. Not provided for session cookies."
+   },
+   {
+    "name": "sameSite",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The Same Site policy applied to this cookie.  Can be `unspecified`, `no_restriction`, `lax` or `strict`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/cookie"
+ },
+ {
+  "name": "CustomScheme",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "scheme",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Custom schemes to be registered with options."
+   },
+   {
+    "name": "privileges",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/custom-scheme"
+ },
+ {
+  "name": "ExtensionInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "version",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/extension-info"
+ },
+ {
+  "name": "Extension",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "manifest",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Copy of the extension's manifest data."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "path",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The extension's file path."
+   },
+   {
+    "name": "version",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The extension's `chrome-extension://` URL."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/extension"
+ },
+ {
+  "name": "FilePathWithHeaders",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "path",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The path to the file to send."
+   },
+   {
+    "name": "headers",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Additional headers to be sent."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/file-path-with-headers"
+ },
+ {
+  "name": "FilesystemPermissionRequest",
+  "type": "Structure",
+  "process": null,
+  "extends": "PermissionRequest",
+  "description": "",
+  "members": [
+   {
+    "name": "filePath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The path of the `fileSystem` request."
+   },
+   {
+    "name": "isDirectory",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the `fileSystem` request is a directory."
+   },
+   {
+    "name": "fileAccessType",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The access type of the `fileSystem` request. Can be `writable` or `readable`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/filesystem-permission-request"
+ },
+ {
+  "name": "HIDDevice",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "deviceId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique identifier for the device."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Name of the device."
+   },
+   {
+    "name": "vendorId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB vendor ID."
+   },
+   {
+    "name": "productId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB product ID."
+   },
+   {
+    "name": "serialNumber",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB device serial number."
+   },
+   {
+    "name": "guid",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique identifier for the HID interface.  A device may have multiple HID interfaces."
+   },
+   {
+    "name": "collections",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "an array of report formats. See MDN documentation for more."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/hid-device"
+ },
+ {
+  "name": "MediaAccessPermissionRequest",
+  "type": "Structure",
+  "process": null,
+  "extends": "PermissionRequest",
+  "description": "",
+  "members": [
+   {
+    "name": "securityOrigin",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The security origin of the request."
+   },
+   {
+    "name": "mediaTypes",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The types of media access being requested - elements can be `video` or `audio`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/media-access-permission-request"
+ },
+ {
+  "name": "MimeTypedBuffer",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "mimeType",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "MIME type of the buffer."
+   },
+   {
+    "name": "charset",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Charset of the buffer."
+   },
+   {
+    "name": "data",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The actual Buffer content."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/mime-typed-buffer"
+ },
+ {
+  "name": "OpenExternalPermissionRequest",
+  "type": "Structure",
+  "process": null,
+  "extends": "PermissionRequest",
+  "description": "",
+  "members": [
+   {
+    "name": "externalURL",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The url of the `openExternal` request."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/open-external-permission-request"
+ },
+ {
+  "name": "PermissionRequest",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "requestingUrl",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The last URL the requesting frame loaded."
+   },
+   {
+    "name": "isMainFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the frame making the request is the main frame."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/permission-request"
+ },
+ {
+  "name": "ProtocolRequest",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "referrer",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "initiatorOrigin",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The origin that issued the request (for example `https://example.com`, or `null` for an opaque origin). Absent for requests the browser started itself. Unlike `referrer`, this is not controlled by the"
+   },
+   {
+    "name": "method",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "uploadData",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "headers",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/protocol-request"
+ },
+ {
+  "name": "ProtocolResponseUploadData",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "contentType",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "MIME type of the content."
+   },
+   {
+    "name": "data",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Content to be sent."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/protocol-response-upload-data"
+ },
+ {
+  "name": "ProtocolResponse",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "error",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "When assigned, the `request` will fail with the `error` number . For the available error numbers you can use, please see the net error list."
+   },
+   {
+    "name": "statusCode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The HTTP response code, default is 200."
+   },
+   {
+    "name": "charset",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The charset of response body, default is `\"utf-8\"`."
+   },
+   {
+    "name": "mimeType",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The MIME type of response body, default is `\"text/html\"`. Setting `mimeType` would implicitly set the `content-type` header in response, but if `content-type` is already set in `headers`, the `mimeTyp"
+   },
+   {
+    "name": "headers",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An object containing the response headers. The keys must be string, and values must be either string or Array of string."
+   },
+   {
+    "name": "data",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The response body. When returning stream as response, this is a Node.js readable stream representing the response body. When returning `Buffer` as response, this is a `Buffer`. When returning `string`"
+   },
+   {
+    "name": "path",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path to the file which would be sent as response body. This is only used for file responses."
+   },
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Download the `url` and pipe the result as response body. This is only used for URL responses."
+   },
+   {
+    "name": "referrer",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `referrer` URL. This is only used for file and URL responses."
+   },
+   {
+    "name": "method",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The HTTP `method`. This is only used for file and URL responses."
+   },
+   {
+    "name": "session",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The session used for requesting URL. The HTTP request will reuse the current session by default."
+   },
+   {
+    "name": "uploadData",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The data used as upload data. This is only used for URL responses when `method` is `\"POST\"`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/protocol-response"
+ },
+ {
+  "name": "ProxyConfig",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "When `mode` is unspecified, `pacScript` and `proxyRules` are provided together, the `proxyRules` option is ignored and `pacScript` configuration is applied.\n\nThe `proxyRules` has to follow the rules below:\n\nFor example:\n\n* `http=foopy:80;ftp=foopy2` - Use HTTP proxy `foopy:80` for `http://` URLs, an",
+  "members": [
+   {
+    "name": "mode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The proxy mode. Should be one of `direct`, `auto_detect`, `pac_script`, `fixed_servers` or `system`. Defaults to `pac_script` proxy mode if `pacScript` option is specified otherwise defaults to `fixed"
+   },
+   {
+    "name": "pacScript",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The URL associated with the PAC file."
+   },
+   {
+    "name": "proxyRules",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Rules indicating which proxies to use."
+   },
+   {
+    "name": "proxyBypassRules",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Rules indicating which URLs should bypass the proxy settings."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/proxy-config"
+ },
+ {
+  "name": "ResolvedEndpoint",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "address",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "family",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "One of the following:"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/resolved-endpoint"
+ },
+ {
+  "name": "ResolvedHost",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "endpoints",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "resolved DNS entries for the hostname"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/resolved-host"
+ },
+ {
+  "name": "SerialPort",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "portId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique identifier for the port."
+   },
+   {
+    "name": "portName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Name of the port."
+   },
+   {
+    "name": "displayName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A string suitable for display to the user for describing this device."
+   },
+   {
+    "name": "vendorId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB vendor ID."
+   },
+   {
+    "name": "productId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB product ID."
+   },
+   {
+    "name": "serialNumber",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB device serial number."
+   },
+   {
+    "name": "usbDriverName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Represents a single serial port on macOS can be enumerated by multiple drivers."
+   },
+   {
+    "name": "deviceInstanceId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A stable identifier on Windows that can be used for device permissions."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/serial-port"
+ },
+ {
+  "name": "ServiceWorkerInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "scriptUrl",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The full URL to the script that this service worker runs"
+   },
+   {
+    "name": "scope",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The base URL that this service worker is active for."
+   },
+   {
+    "name": "renderProcessId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The virtual ID of the process that this service worker is running in.  This is not an OS level PID.  This aligns with the ID set used for `webContents.getProcessId()`."
+   },
+   {
+    "name": "versionId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "ID of the service worker version"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/service-worker-info"
+ },
+ {
+  "name": "SharedDictionaryInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "match",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The matching path pattern for the dictionary which was declared in 'use-as-dictionary' response header's `match` option."
+   },
+   {
+    "name": "matchDestinations",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of matching destinations for the dictionary which was declared in 'use-as-dictionary' response header's `match-dest` option."
+   },
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The Id for the dictionary which was declared in 'use-as-dictionary' response header's `id` option."
+   },
+   {
+    "name": "dictionaryUrl",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "URL of the dictionary."
+   },
+   {
+    "name": "lastFetchTime",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The time of when the dictionary was received from the network layer."
+   },
+   {
+    "name": "responseTime",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The time of when the dictionary was received from the server. For cached responses, this time could be \"far\" in the past."
+   },
+   {
+    "name": "expirationDuration",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The expiration time for the dictionary which was declared in 'use-as-dictionary' response header's `expires` option in seconds."
+   },
+   {
+    "name": "lastUsedTime",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The time when the dictionary was last used."
+   },
+   {
+    "name": "size",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of bytes stored for this shared dictionary information object in Chromium's internal storage (usually Sqlite)."
+   },
+   {
+    "name": "hash",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The sha256 hash of the dictionary binary."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-dictionary-info"
+ },
+ {
+  "name": "SharedDictionaryUsageInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "frameOrigin",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The origin of the frame where the request originates. It\u2019s specific to the individual frame making the request and is defined by its scheme, host, and port. In practice, will look like a URL."
+   },
+   {
+    "name": "topFrameSite",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The site of the top-level browsing context (the main frame or tab that contains the request). It\u2019s less granular than `frameOrigin` and focuses on the broader \"site\" scope. In practice, will look like"
+   },
+   {
+    "name": "totalSizeBytes",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of bytes stored for this shared dictionary information object in Chromium's internal storage (usually Sqlite)."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-dictionary-usage-info"
+ },
+ {
+  "name": "SharedWorkerInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The unique id of the shared worker."
+   },
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The url of the shared worker."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shared-worker-info"
+ },
+ {
+  "name": "USBDevice",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "configuration",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A USBConfiguration object containing information about the currently selected configuration of a USB device."
+   },
+   {
+    "name": "configurations",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of USBConfiguration interfaces for controlling a paired USB device."
+   },
+   {
+    "name": "deviceClass",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The device class for the communication interface supported by the device."
+   },
+   {
+    "name": "deviceId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique identifier for the device."
+   },
+   {
+    "name": "deviceProtocol",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The device protocol for the communication interface supported by the device."
+   },
+   {
+    "name": "deviceSubclass",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The device subclass for the communication interface supported by the device."
+   },
+   {
+    "name": "deviceVersionMajor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The major version number of the device as defined by the device manufacturer."
+   },
+   {
+    "name": "deviceVersionMinor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The minor version number of the device as defined by the device manufacturer."
+   },
+   {
+    "name": "deviceVersionSubminor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The subminor version number of the device as defined by the device manufacturer."
+   },
+   {
+    "name": "manufacturerName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The manufacturer name of the device."
+   },
+   {
+    "name": "productId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB product ID."
+   },
+   {
+    "name": "productName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Name of the device."
+   },
+   {
+    "name": "serialNumber",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB device serial number."
+   },
+   {
+    "name": "usbVersionMajor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB protocol major version supported by the device."
+   },
+   {
+    "name": "usbVersionMinor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB protocol minor version supported by the device."
+   },
+   {
+    "name": "usbVersionSubminor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB protocol subminor version supported by the device."
+   },
+   {
+    "name": "vendorId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The USB vendor ID."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/usb-device"
+ },
+ {
+  "name": "WebRequestFilter",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "urls",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Array of URL patterns used to include requests that match these patterns. Use the pattern `<all_urls>` to match all URLs."
+   },
+   {
+    "name": "excludeUrls",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Array of URL patterns used to exclude requests that match these patterns."
+   },
+   {
+    "name": "types",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Array of types that will be used to filter out the requests that do not match the types. When not specified, all types will be matched. Can be `mainFrame`, `subFrame`, `stylesheet`, `script`, `image`,"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/web-request-filter"
+ },
+ {
+  "name": "WebSocketOptions",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "protocols",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Requested WebSocket subprotocols."
+   },
+   {
+    "name": "headers",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Extra HTTP headers to send with the opening handshake."
+   },
+   {
+    "name": "origin",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Value of the `Origin` header to send with the opening handshake. Defaults to the `http(s)` equivalent of the WebSocket URL's origin (e.g. connecting to `wss://api.example.com` sends `Origin: https://a"
+   },
+   {
+    "name": "useSessionCookies",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to send cookies from the session with the opening handshake and store cookies received in the handshake response. Default is `false`."
+   },
+   {
+    "name": "session",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `Session` the connection is associated with."
+   },
+   {
+    "name": "partition",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The name of the `partition` the connection is associated with. Defaults to the empty string, which corresponds to the default session. If `session` is provided, `partition` is ignored."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/web-socket-options"
+ },
+ {
+  "name": "WebAuthnAccount",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "credentialId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "URL-safe base64-encoded (no padding) credential ID of the discoverable credential. Matches `PublicKeyCredential.id` returned by `navigator.credentials.get()` in the renderer."
+   },
+   {
+    "name": "userHandle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "URL-safe base64-encoded (no padding) user handle (`user.id`) that was provided when the credential was created."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Human-palatable identifier for the account (for example, an email address or username)."
+   },
+   {
+    "name": "displayName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Human-palatable name for the account, intended for display."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/webauthn-account"
+ }
+]

@@ -1,0 +1,1 @@
+{"compilerOptions":{"baseUrl":".","paths":{"electron":["./shim/index.ts"]}}}

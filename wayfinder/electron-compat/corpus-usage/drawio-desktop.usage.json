@@ -1,0 +1,980 @@
+{
+ "app": "drawio-desktop",
+ "root": "corpus/drawio-desktop",
+ "files_scanned": 22,
+ "electron_dep": "^44.2.0",
+ "modules": {
+  "BrowserWindow": {
+   "count": 2,
+   "files": [
+    "src/main/electron.js",
+    "src/main/progress-bar.js"
+   ],
+   "file_count": 2
+  },
+  "contextBridge": {
+   "count": 1,
+   "files": [
+    "src/main/electron-preload.js"
+   ],
+   "file_count": 1
+  },
+  "ipcRenderer": {
+   "count": 1,
+   "files": [
+    "src/main/electron-preload.js"
+   ],
+   "file_count": 1
+  },
+  "Menu": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "shell": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "dialog": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "session": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "screen": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "ClipboardItem": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "clipboard": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "nativeImage": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "nativeTheme": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "ipcMain": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  },
+  "app": {
+   "count": 1,
+   "files": [
+    "src/main/electron.js"
+   ],
+   "file_count": 1
+  }
+ },
+ "members_top": [
+  {
+   "entity": "WebContents",
+   "member": "replace",
+   "count": 22,
+   "file_count": 3
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "send",
+   "count": 15,
+   "file_count": 2
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "once",
+   "count": 15,
+   "file_count": 3
+  },
+  {
+   "entity": "ipcMain",
+   "member": "once",
+   "count": 15,
+   "file_count": 3
+  },
+  {
+   "entity": "WebContents",
+   "member": "send",
+   "count": 15,
+   "file_count": 2
+  },
+  {
+   "entity": "WebFrameMain",
+   "member": "send",
+   "count": 15,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "close",
+   "count": 11,
+   "file_count": 3
+  },
+  {
+   "entity": "Notification",
+   "member": "close",
+   "count": 11,
+   "file_count": 3
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "close",
+   "count": 11,
+   "file_count": 3
+  },
+  {
+   "entity": "MessagePortMain",
+   "member": "close",
+   "count": 11,
+   "file_count": 3
+  },
+  {
+   "entity": "WebContents",
+   "member": "close",
+   "count": 11,
+   "file_count": 3
+  },
+  {
+   "entity": "Tray",
+   "member": "destroy",
+   "count": 10,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "destroy",
+   "count": 10,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "destroy",
+   "count": 10,
+   "file_count": 2
+  },
+  {
+   "entity": "app",
+   "member": "exit",
+   "count": 7,
+   "file_count": 2
+  },
+  {
+   "entity": "Tray",
+   "member": "isDestroyed",
+   "count": 6,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "isDestroyed",
+   "count": 6,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "isDestroyed",
+   "count": 6,
+   "file_count": 2
+  },
+  {
+   "entity": "WebContents",
+   "member": "isDestroyed",
+   "count": 6,
+   "file_count": 2
+  },
+  {
+   "entity": "WebFrameMain",
+   "member": "isDestroyed",
+   "count": 6,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getFocusedWindow",
+   "count": 6,
+   "file_count": 1
+  },
+  {
+   "entity": "dialog",
+   "member": "showMessageBox",
+   "count": 6,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getFocusedWindow",
+   "count": 6,
+   "file_count": 1
+  },
+  {
+   "entity": "clipboard",
+   "member": "write",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "ClientRequest",
+   "member": "write",
+   "count": 5,
+   "file_count": 2
+  },
+  {
+   "entity": "WebContents",
+   "member": "executeJavaScript",
+   "count": 5,
+   "file_count": 3
+  },
+  {
+   "entity": "WebFrameMain",
+   "member": "executeJavaScript",
+   "count": 5,
+   "file_count": 3
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "removeListener",
+   "count": 5,
+   "file_count": 1
+  },
+  {
+   "entity": "ipcMain",
+   "member": "removeListener",
+   "count": 5,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "quit",
+   "count": 5,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "loadURL",
+   "count": 4,
+   "file_count": 2
+  },
+  {
+   "entity": "WebContents",
+   "member": "loadURL",
+   "count": 4,
+   "file_count": 2
+  },
+  {
+   "entity": "app",
+   "member": "getVersion",
+   "count": 4,
+   "file_count": 1
+  },
+  {
+   "entity": "clipboard",
+   "member": "clear",
+   "count": 3,
+   "file_count": 2
+  },
+  {
+   "entity": "WebContents",
+   "member": "delete",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "isFullScreen",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "isFullScreen",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "print",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "setVisualZoomLevelLimits",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "copy",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "shell",
+   "member": "openExternal",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "getPath",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "contextBridge",
+   "member": "exposeInMainWorld",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "Menu",
+   "member": "setApplicationMenu",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "isMaximized",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "maximize",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "setFullScreen",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "NativeImage",
+   "member": "resize",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "NativeImage",
+   "member": "toPNG",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "isMaximized",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "maximize",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "setFullScreen",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "openDevTools",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "whenReady",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "show",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "setMenu",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Notification",
+   "member": "show",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "show",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "setMenu",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "show",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "Menu",
+   "member": "buildFromTemplate",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "screen",
+   "member": "getAllDisplays",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "screen",
+   "member": "getPrimaryDisplay",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getAllWindows",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "setClosable",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getSize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "minimize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "unmaximize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "capturePage",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "getPosition",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "member": "setBounds",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "clipboard",
+   "member": "readText",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "clipboard",
+   "member": "writeText",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "clipboard",
+   "member": "read",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "dialog",
+   "member": "showSaveDialog",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "dialog",
+   "member": "showMessageBoxSync",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "dialog",
+   "member": "showOpenDialog",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "ipcRenderer",
+   "member": "removeAllListeners",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "NativeImage",
+   "member": "toJPEG",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "NativeImage",
+   "member": "getSize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "ipcMain",
+   "member": "removeAllListeners",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebRequest",
+   "member": "onBeforeRequest",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebRequest",
+   "member": "onHeadersReceived",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getAllWindows",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "setClosable",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getSize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "minimize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "unmaximize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "getPosition",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "member": "setBounds",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "nativeImage",
+   "member": "createFromDataURL",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "pasteAndMatchStyle",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "printToPDF",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "setWindowOpenHandler",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "member": "capturePage",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebFrameMain",
+   "member": "printToPDF",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "enableSandbox",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "getLocale",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "requestSingleInstanceLock",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "member": "disableHardwareAcceleration",
+   "count": 1,
+   "file_count": 1
+  }
+ ],
+ "events_top": [
+  {
+   "entity": "UtilityProcess",
+   "event": "error",
+   "count": 9,
+   "file_count": 1
+  },
+  {
+   "entity": "ClientRequest",
+   "event": "error",
+   "count": 9,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "did-finish-load",
+   "count": 7,
+   "file_count": 2
+  },
+  {
+   "entity": "app",
+   "event": "ready",
+   "count": 4,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "unmaximize",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "close",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "maximize",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "Notification",
+   "event": "close",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "unmaximize",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "close",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "maximize",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "ClientRequest",
+   "event": "close",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "MessagePortMain",
+   "event": "close",
+   "count": 3,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "closed",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "closed",
+   "count": 2,
+   "file_count": 2
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "resize",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "resize",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "render-process-gone",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "render-process-gone",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "window-all-closed",
+   "count": 2,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "ready-to-show",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "hide",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BrowserWindow",
+   "event": "minimize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "UtilityProcess",
+   "event": "exit",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "hide",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "BaseWindow",
+   "event": "minimize",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "did-navigate",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "destroyed",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "before-input-event",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "will-navigate",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "WebContents",
+   "event": "will-attach-webview",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "web-contents-created",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "will-finish-launching",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "before-quit",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "activate",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "quit",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "second-instance",
+   "count": 1,
+   "file_count": 1
+  },
+  {
+   "entity": "app",
+   "event": "open-file",
+   "count": 1,
+   "file_count": 1
+  }
+ ],
+ "native_suspects": [],
+ "deps_count": 16,
+ "signals": {
+  "preload": 4,
+  "autoUpdater": 20,
+  "electron-updater": 4,
+  "electron-store": 3,
+  "electron-builder_cfg": 8,
+  "requestSingleInstanceLock": 1,
+  "second-instance": 1,
+  "webview_tag": 7,
+  "setWindowOpenHandler": 1,
+  "contextBridge.exposeInMainWorld": 2,
+  "session.defaultSession": 2,
+  "webContents.send": 9,
+  "nativeTheme": 2,
+  "printToPDF": 2,
+  "webContents.print": 1,
+  "executeJavaScript": 8,
+  "openDevTools": 4,
+  "app.getPath": 3,
+  "shell.openExternal": 3,
+  "dialog.showOpenDialog": 4,
+  "dialog.showSaveDialog": 4,
+  "dialog.showMessageBox": 7,
+  "Menu.buildFromTemplate": 1,
+  "Menu.setApplicationMenu": 2,
+  "clipboard": 3,
+  "screen": 2,
+  "nativeImage": 1,
+  "process.type": 1,
+  "app.on(activate)": 1,
+  "before-quit": 1,
+  "window-all-closed": 2,
+  "ready-to-show": 1,
+  "did-finish-load": 7,
+  "will-navigate": 1,
+  "web-contents-created": 1,
+  "loadURL": 4,
+  "file://": 11
+ }
+}

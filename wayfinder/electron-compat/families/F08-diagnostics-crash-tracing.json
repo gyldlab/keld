@@ -1,0 +1,735 @@
+[
+ {
+  "name": "contentTracing",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Collect tracing data from Chromium to find performance bottlenecks and slow operations.\n\nProcess: Main\n\nThis module does not include a web interface. To view recorded traces, use trace viewer, available at `chrome://tracing` in Chrome.\n\n> [!NOTE] You should not use this module until the `ready` ev",
+  "members": [
+   {
+    "name": "getCategories",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "resolves with an array of category groups once all child processes have acknowledged the `getCategories` request\n\nGet a set of category groups. The category groups can change as new code paths are rea"
+   },
+   {
+    "name": "startRecording",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolved once all child processes have acknowledged the `startRecording` request.\n\nStart recording on all processes.\n\nRecording begins immediately locally and asynchronously on child processes as soon"
+   },
+   {
+    "name": "stopRecording",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "resultFilePath"
+    ],
+    "returns": "Promise",
+    "desc": "resolves with a path to a file that contains the traced data once all child processes have acknowledged the `stopRecording` request\n\nStop recording on all processes.\n\nChild processes typically cache t"
+   },
+   {
+    "name": "getTraceBufferUsage",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves with an object containing the `value` and `percentage` of trace buffer maximum usage\n\n* `value` number\n* `percentage` number\n\nGet the maximum usage across processes of trace buffer as a perce"
+   },
+   {
+    "name": "enableHeapProfiling",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves once heap profiling has been enabled.\n\nEnable heap profiling for MemoryInfra traces. Equivalent to the `--memlog` switch in Chrome.\n\nOnly takes effect if the `disabled-by-default-memory-infra"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/content-tracing"
+ },
+ {
+  "name": "crashReporter",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Submit crash reports to a remote server.\n\nProcess: Main, Renderer\n\n> [!IMPORTANT] If you want to call this API from a renderer process with context isolation enabled, place the API call in your preload script and expose it using the `contextBridge` API.\n\nThe following is an example of setting up E",
+  "members": [
+   {
+    "name": "start",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "This method must be called before using any other `crashReporter` APIs. Once initialized this way, the crashpad handler collects crashes from all subsequently created processes. The crash reporter can"
+   },
+   {
+    "name": "getLastCrashReport",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "CrashReport"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The date and ID of the last crash report. Only crash reports that have been uploaded will be returned; even if a crash report is present on disk it will not be returned until it is uploaded. In the ca"
+   },
+   {
+    "name": "getUploadedReports",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "CrashReport",
+    "desc": "Returns all uploaded crash reports. Each report contains the date and uploaded ID.\n\n> [!NOTE] This method is only available in the main process."
+   },
+   {
+    "name": "getUploadToServer",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether reports should be submitted to the server. Set through the `start` method or `setUploadToServer`.\n\n> [!NOTE] This method is only available in the main process."
+   },
+   {
+    "name": "setUploadToServer",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "uploadToServer"
+    ],
+    "returns": null,
+    "desc": "This would normally be controlled by user preferences. This has no effect if called before `start` is called.\n\n> [!NOTE] This method is only available in the main process."
+   },
+   {
+    "name": "addExtraParameter",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "key",
+     "value"
+    ],
+    "returns": null,
+    "desc": "Set an extra parameter to be sent with the crash report. The values specified here will be sent in addition to any values set via the `extra` option when `start` was called.\n\nParameters added in this "
+   },
+   {
+    "name": "removeExtraParameter",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "key"
+    ],
+    "returns": null,
+    "desc": "Remove an extra parameter from the current set of parameters. Future crashes will not include this parameter."
+   },
+   {
+    "name": "getParameters",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Record",
+    "desc": "The current 'extra' parameters of the crash reporter."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/crash-reporter"
+ },
+ {
+  "name": "CPUUsage",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "Both `percentCPUUsage` and `idleWakeupsPerSecond` are averages rather than instant samples, and each call starts a fresh measurement interval.\n\nMultiple APIs return `CPUUsage` objects, and each tracks its own intervals:\n\n* `process.getCPUUsage()` measures the process it is called in. Only calls to `",
+  "members": [
+   {
+    "name": "percentCPUUsage",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Percentage of CPU used since the last call to the API that returned this object. First call returns 0."
+   },
+   {
+    "name": "cumulativeCPUUsage",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Total seconds of CPU time used since process startup."
+   },
+   {
+    "name": "idleWakeupsPerSecond",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The number of average idle CPU wakeups per second since the last call to the API that returned this object. First call returns 0. Will always return 0 on Windows."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/cpu-usage"
+ },
+ {
+  "name": "CrashReport",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "date",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/crash-report"
+ },
+ {
+  "name": "EnableHeapProfilingOptions",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "mode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Controls which processes are profiled. Equivalent to `--memlog` in Chrome. Default is `all`."
+   },
+   {
+    "name": "samplingRate",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Controls the sampling interval in bytes. The lower the interval, the more precise the profile is. However it comes at the cost of performance. Default is `100000` (100KB). That is enough to observe al"
+   },
+   {
+    "name": "stackMode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Controls the type of metadata recorded for each allocation. Equivalent to `--memlog-stack-mode` in Chrome. Default is `native`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/enable-heap-profiling-options"
+ },
+ {
+  "name": "GPUFeatureStatus",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "Possible values:\n\n* `disabled_software` - Software only. Hardware acceleration disabled (yellow)\n* `disabled_off` - Disabled (red)\n* `disabled_off_ok` - Disabled (yellow)\n* `unavailable_software` - Software only, hardware acceleration unavailable (yellow)\n* `unavailable_off` - Unavailable (red)\n* `u",
+  "members": [
+   {
+    "name": "2d_canvas",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Canvas."
+   },
+   {
+    "name": "flash_3d",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Flash."
+   },
+   {
+    "name": "flash_stage3d",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Flash Stage3D."
+   },
+   {
+    "name": "flash_stage3d_baseline",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Flash Stage3D Baseline profile."
+   },
+   {
+    "name": "gpu_compositing",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Compositing."
+   },
+   {
+    "name": "multiple_raster_threads",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Multiple Raster Threads."
+   },
+   {
+    "name": "native_gpu_memory_buffers",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Native GpuMemoryBuffers."
+   },
+   {
+    "name": "rasterization",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Rasterization."
+   },
+   {
+    "name": "video_decode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Video Decode."
+   },
+   {
+    "name": "video_encode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Video Encode."
+   },
+   {
+    "name": "vpx_decode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "VPx Video Decode."
+   },
+   {
+    "name": "webgl",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "WebGL."
+   },
+   {
+    "name": "webgl2",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "WebGL2."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/gpu-feature-status"
+ },
+ {
+  "name": "MemoryInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "Note that all statistics are reported in Kilobytes.",
+  "members": [
+   {
+    "name": "workingSetSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of memory currently pinned to actual physical RAM."
+   },
+   {
+    "name": "peakWorkingSetSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The maximum amount of memory that has ever been pinned to actual physical RAM."
+   },
+   {
+    "name": "privateBytes",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of memory not shared by other processes, such as JS heap or HTML content."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/memory-info"
+ },
+ {
+  "name": "MemoryUsageDetails",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "count",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "size",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "liveSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/memory-usage-details"
+ },
+ {
+  "name": "ProcessMemoryInfo",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "residentSet",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of memory currently pinned to actual physical RAM in Kilobytes."
+   },
+   {
+    "name": "private",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of memory not shared by other processes, such as JS heap or HTML content in Kilobytes."
+   },
+   {
+    "name": "shared",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The amount of memory shared between processes, typically memory consumed by the Electron code itself in Kilobytes."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/process-memory-info"
+ },
+ {
+  "name": "ProcessMetric",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "pid",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Process id of the process."
+   },
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Process type. One of the following values:"
+   },
+   {
+    "name": "serviceName",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The non-localized name of the process."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The name of the process. Examples for utility: `Audio Service`, `Content Decryption Module Service`, `Network Service`, `Video Capture`, etc."
+   },
+   {
+    "name": "cpu",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "CPU usage of the process. Its `percentCPUUsage` and `idleWakeupsPerSecond` are averages over the time since the previous call to the API returning this object."
+   },
+   {
+    "name": "creationTime",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Creation time for this process. The time is represented as number of milliseconds since epoch. Since the `pid` can be reused after a process dies, it is useful to use both the `pid` and the `creationT"
+   },
+   {
+    "name": "memory",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Memory information for the process."
+   },
+   {
+    "name": "sandboxed",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the process is sandboxed on OS level."
+   },
+   {
+    "name": "integrityLevel",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "One of the following values:"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/process-metric"
+ },
+ {
+  "name": "TraceCategoriesAndOptions",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "categoryFilter",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A filter to control what category groups should be traced. A filter can have an optional '-' prefix to exclude category groups that contain a matching category. Having both included and excluded categ"
+   },
+   {
+    "name": "traceOptions",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Controls what kind of tracing is enabled, it is a comma-delimited sequence of the following strings: `record-until-full`, `record-continuously`, `trace-to-console`, `enable-sampling`, `enable-systrace"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/trace-categories-and-options"
+ },
+ {
+  "name": "TraceConfig",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "An example TraceConfig that roughly matches what Chrome DevTools records:",
+  "members": [
+   {
+    "name": "recording_mode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `record-until-full`, `record-continuously`, `record-as-much-as-possible` or `trace-to-console`. Defaults to `record-until-full`."
+   },
+   {
+    "name": "trace_buffer_size_in_kb",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "maximum size of the trace recording buffer in kilobytes. Defaults to 100MB."
+   },
+   {
+    "name": "trace_buffer_size_in_events",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "maximum size of the trace recording buffer in events."
+   },
+   {
+    "name": "enable_argument_filter",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "if true, filter event data according to a specific list of events that have been manually vetted to not include any PII. See the implementation in Chromium for specifics."
+   },
+   {
+    "name": "included_categories",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "a list of tracing categories to include. Can include glob-like patterns using `*` at the end of the category name. See tracing categories for the list of categories."
+   },
+   {
+    "name": "excluded_categories",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "a list of tracing categories to exclude. Can include glob-like patterns using `*` at the end of the category name. See tracing categories for the list of categories."
+   },
+   {
+    "name": "included_process_ids",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "a list of process IDs to include in the trace. If not specified, trace all processes."
+   },
+   {
+    "name": "histogram_names",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "a list of histogram names to report with the trace."
+   },
+   {
+    "name": "memory_dump_config",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "if the `disabled-by-default-memory-infra` category is enabled, this contains optional additional configuration for data collection. See the Chromium memory-infra docs for more information."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/trace-config"
+ }
+]

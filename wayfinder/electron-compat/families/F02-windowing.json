@@ -1,0 +1,6941 @@
+[
+ {
+  "name": "BaseWindow",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Create and control windows.\n\nProcess: Main\n\n> [!NOTE] `BaseWindow` provides a flexible way to compose multiple web views in a single window. For windows with only a single, full-size web view, the `BrowserWindow` class may be a simpler option.\n\nThis module cannot be used until the `ready` event of",
+  "members": [
+   {
+    "name": "setContentView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "view"
+    ],
+    "returns": null,
+    "desc": "Sets the content view of the window."
+   },
+   {
+    "name": "getContentView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "View",
+    "desc": "The content view of the window."
+   },
+   {
+    "name": "destroy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Force closing the window, the `unload` and `beforeunload` event won't be emitted for the web page, and `close` event will also not be emitted for this window, but it guarantees the `closed` event will"
+   },
+   {
+    "name": "close",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Try to close the window. This has the same effect as a user manually clicking the close button of the window. The web page may cancel the close though. See the close event."
+   },
+   {
+    "name": "focus",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Focuses on the window."
+   },
+   {
+    "name": "blur",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Removes focus from the window."
+   },
+   {
+    "name": "isFocused",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is focused."
+   },
+   {
+    "name": "isDestroyed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is destroyed.\n\n> [!NOTE] Once a window is destroyed, accessing most of its other properties and methods throws `Object has been destroyed`, so callbacks that may run after the windo"
+   },
+   {
+    "name": "show",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Shows and gives focus to the window."
+   },
+   {
+    "name": "showInactive",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Shows the window but doesn't focus on it."
+   },
+   {
+    "name": "hide",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Hides the window."
+   },
+   {
+    "name": "isVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is visible to the user in the foreground of the app."
+   },
+   {
+    "name": "isModal",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether current window is a modal window."
+   },
+   {
+    "name": "maximize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Maximizes the window. This will also show (but not focus) the window if it isn't being displayed already."
+   },
+   {
+    "name": "unmaximize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unmaximizes the window."
+   },
+   {
+    "name": "isMaximized",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is maximized."
+   },
+   {
+    "name": "minimize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Minimizes the window. On some platforms the minimized window will be shown in the Dock."
+   },
+   {
+    "name": "restore",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Restores the window from minimized state to its previous state."
+   },
+   {
+    "name": "isMinimized",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is minimized."
+   },
+   {
+    "name": "setFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should be in fullscreen mode.\n\n> [!NOTE] On macOS, fullscreen transitions take place asynchronously. If further actions depend on the fullscreen state, use the 'enter-full-scre"
+   },
+   {
+    "name": "isFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in fullscreen mode."
+   },
+   {
+    "name": "setSimpleFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Enters or leaves simple fullscreen mode.\n\nSimple fullscreen mode emulates the native fullscreen behavior found in versions of macOS prior to Lion (10.7)."
+   },
+   {
+    "name": "isSimpleFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in simple (pre-Lion) fullscreen mode."
+   },
+   {
+    "name": "isNormal",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in normal state (not maximized, not minimized, not in fullscreen mode)."
+   },
+   {
+    "name": "setAspectRatio",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "aspectRatio",
+     "extraSize"
+    ],
+    "returns": null,
+    "desc": "This will make a window maintain an aspect ratio. The extra size allows a developer to have space, specified in pixels, not included within the aspect ratio calculations. This API already takes into a"
+   },
+   {
+    "name": "setBackgroundColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "backgroundColor"
+    ],
+    "returns": null,
+    "desc": "Examples of valid `backgroundColor` values:\n\n* Hex\n  * #fff (shorthand RGB)\n  * #ffff (shorthand ARGB)\n  * #ffffff (RGB)\n  * #ffffffff (ARGB)\n* RGB\n  * `rgb\\(([\\d]+),\\s*([\\d]+),\\s*([\\d]+)\\)`\n    * e.g"
+   },
+   {
+    "name": "previewFile",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "path",
+     "displayName"
+    ],
+    "returns": null,
+    "desc": "Uses Quick Look to preview a file at a given path."
+   },
+   {
+    "name": "closeFilePreview",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Closes the currently open Quick Look panel."
+   },
+   {
+    "name": "setBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "bounds",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes and moves the window to the supplied bounds. Any properties that are not supplied will default to their current values.\n\n> [!NOTE] On macOS, the y-coordinate value cannot be smaller than the T"
+   },
+   {
+    "name": "getBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The `bounds` of the window as `Object`.\n\n> [!NOTE] On macOS, the y-coordinate value returned will be at minimum the Tray height. For example, calling `win.setBounds({ x: 25, y: 20, width: 800, height:"
+   },
+   {
+    "name": "getBackgroundColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "Gets the background color of the window in Hex (`#RRGGBB`) format.\n\nSee Setting `backgroundColor`.\n\n> [!NOTE] The alpha value is _not_ returned alongside the red, green, and blue values."
+   },
+   {
+    "name": "setContentBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "bounds",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes and moves the window's client area (e.g. the web page) to the supplied bounds."
+   },
+   {
+    "name": "getContentBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The `bounds` of the window's client area as `Object`."
+   },
+   {
+    "name": "getNormalBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "Contains the window bounds of the normal state\n\n> [!NOTE] Whatever the current state of the window : maximized, minimized or in fullscreen, this function always returns the position and size of the wi"
+   },
+   {
+    "name": "setEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "enable"
+    ],
+    "returns": null,
+    "desc": "Disable or enable the window."
+   },
+   {
+    "name": "isEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether the window is enabled."
+   },
+   {
+    "name": "setSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes the window to `width` and `height`. If `width` or `height` are below any set minimum size constraints the window will snap to its minimum size."
+   },
+   {
+    "name": "getSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's width and height."
+   },
+   {
+    "name": "setContentSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes the window's client area (e.g. the web page) to `width` and `height`."
+   },
+   {
+    "name": "getContentSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's client area's width and height."
+   },
+   {
+    "name": "setMinimumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height"
+    ],
+    "returns": null,
+    "desc": "Sets the minimum size of window to `width` and `height`."
+   },
+   {
+    "name": "getMinimumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's minimum width and height."
+   },
+   {
+    "name": "setMaximumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height"
+    ],
+    "returns": null,
+    "desc": "Sets the maximum size of window to `width` and `height`."
+   },
+   {
+    "name": "getMaximumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's maximum width and height."
+   },
+   {
+    "name": "setResizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "resizable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually resized by the user."
+   },
+   {
+    "name": "isResizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually resized by the user."
+   },
+   {
+    "name": "setMovable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "movable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be moved by user. On Linux does nothing."
+   },
+   {
+    "name": "isMovable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be moved by user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setMinimizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "minimizable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually minimized by user. On Linux does nothing."
+   },
+   {
+    "name": "isMinimizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually minimized by the user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setMaximizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "maximizable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually maximized by user. On Linux does nothing."
+   },
+   {
+    "name": "isMaximizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually maximized by user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setFullScreenable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "fullscreenable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the maximize/zoom window button toggles fullscreen mode or maximizes the window."
+   },
+   {
+    "name": "isFullScreenable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the maximize/zoom window button toggles fullscreen mode or maximizes the window."
+   },
+   {
+    "name": "setClosable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "closable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually closed by user. On Linux does nothing."
+   },
+   {
+    "name": "isClosable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually closed by user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setHiddenInMissionControl",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "hidden"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window will be hidden when the user toggles into mission control."
+   },
+   {
+    "name": "isHiddenInMissionControl",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window will be hidden when the user toggles into mission control."
+   },
+   {
+    "name": "setAlwaysOnTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag",
+     "level",
+     "relativeLevel"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should show always on top of other windows. After setting this, the window is still a normal window, not a toolbox window which can not be focused on.\n\nNot supported on Wayland"
+   },
+   {
+    "name": "isAlwaysOnTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is always on top of other windows.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "moveAbove",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "mediaSourceId"
+    ],
+    "returns": null,
+    "desc": "Moves window above the source window in the sense of z-order. If the `mediaSourceId` is not of type window or if the window does not exist then this method throws an error."
+   },
+   {
+    "name": "moveTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Moves window to top(z-order) regardless of focus"
+   },
+   {
+    "name": "center",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Moves window to the center of the screen."
+   },
+   {
+    "name": "setPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Moves window to `x` and `y`."
+   },
+   {
+    "name": "getPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's current position.\n\n> [!NOTE] On Wayland, this method will return `[0, 0]` as introspecting or programmatically changing the global window coordinates is prohibited."
+   },
+   {
+    "name": "setTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "title"
+    ],
+    "returns": null,
+    "desc": "Changes the title of native window to `title`."
+   },
+   {
+    "name": "getTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The title of the native window.\n\n> [!NOTE] The title of the web page can be different from the title of the native window."
+   },
+   {
+    "name": "setSheetOffset",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "offsetY",
+     "offsetX"
+    ],
+    "returns": null,
+    "desc": "Changes the attachment point for sheets on macOS. By default, sheets are attached just below the window frame, but you may want to display them beneath a HTML-rendered toolbar. For example:"
+   },
+   {
+    "name": "flashFrame",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Starts or stops flashing the window to attract user's attention."
+   },
+   {
+    "name": "setSkipTaskbar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "skip"
+    ],
+    "returns": null,
+    "desc": "Makes the window not show in the taskbar."
+   },
+   {
+    "name": "setKiosk",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Enters or leaves kiosk mode."
+   },
+   {
+    "name": "isKiosk",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in kiosk mode."
+   },
+   {
+    "name": "isTabletMode",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in Windows 10 tablet mode.\n\nSince Windows 10 users can use their PC as tablet, under this mode apps can choose to optimize their UI for tablets, such as enlarging the titlebar an"
+   },
+   {
+    "name": "getMediaSourceId",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "Window id in the format of DesktopCapturerSource's id. For example \"window:1324:0\".\n\nMore precisely the format is `window:id:other_id` where `id` is `HWND` on Windows, `CGWindowID` (`uint64_t`) on mac"
+   },
+   {
+    "name": "getNativeWindowHandle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Buffer",
+    "desc": "The platform-specific handle of the window.\n\nThe native type of the handle is `HWND` on Windows, `NSView*` on macOS, and `Window` (`unsigned long`) on Linux."
+   },
+   {
+    "name": "hookWindowMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "message",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Hooks a windows message. The `callback` is called when the message is received in the WndProc."
+   },
+   {
+    "name": "isWindowMessageHooked",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "message"
+    ],
+    "returns": "boolean",
+    "desc": "`true` or `false` depending on whether the message is hooked."
+   },
+   {
+    "name": "unhookWindowMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "message"
+    ],
+    "returns": null,
+    "desc": "Unhook the window message."
+   },
+   {
+    "name": "unhookAllWindowMessages",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Unhooks all of the window messages."
+   },
+   {
+    "name": "setRepresentedFilename",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "filename"
+    ],
+    "returns": null,
+    "desc": "Sets the pathname of the file the window represents, and the icon of the file will show in window's title bar."
+   },
+   {
+    "name": "getRepresentedFilename",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "The pathname of the file the window represents."
+   },
+   {
+    "name": "setDocumentEdited",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "edited"
+    ],
+    "returns": null,
+    "desc": "Specifies whether the window\u2019s document has been edited, and the icon in title bar will become gray when set to `true`."
+   },
+   {
+    "name": "isDocumentEdited",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window's document has been edited."
+   },
+   {
+    "name": "setMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [
+     "menu"
+    ],
+    "returns": null,
+    "desc": "Sets the `menu` as the window's menu bar."
+   },
+   {
+    "name": "removeMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Remove the window's menu bar."
+   },
+   {
+    "name": "setProgressBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "progress",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets progress value in progress bar. Valid range is [0, 1.0].\n\nRemove progress bar when progress < 0; Change to indeterminate mode when progress > 1.\n\nOn Windows, a mode can be passed. Accepted values"
+   },
+   {
+    "name": "setOverlayIcon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "overlay",
+     "description"
+    ],
+    "returns": null,
+    "desc": "Sets a 16 x 16 pixel overlay onto the current taskbar icon, usually used to convey some sort of application status or to passively notify the user."
+   },
+   {
+    "name": "invalidateShadow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Invalidates the window shadow so that it is recomputed based on the current window shape.\n\n`BaseWindow`s that are transparent can sometimes leave behind visual artifacts on macOS. This method can be u"
+   },
+   {
+    "name": "setHasShadow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "hasShadow"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should have a shadow."
+   },
+   {
+    "name": "hasShadow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window has a shadow."
+   },
+   {
+    "name": "setOpacity",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_macos"
+    ],
+    "params": [
+     "opacity"
+    ],
+    "returns": null,
+    "desc": "Sets the opacity of the window. On Linux, does nothing. Out of bound number values are clamped to the [0, 1] range."
+   },
+   {
+    "name": "getOpacity",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "number",
+    "desc": "between 0.0 (fully transparent) and 1.0 (fully opaque). On Linux, always returns 1."
+   },
+   {
+    "name": "setShape",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux",
+     "stability_experimental"
+    ],
+    "params": [
+     "rects"
+    ],
+    "returns": null,
+    "desc": "Setting a window shape determines the area within the window where the system permits drawing and user interaction. Outside of the given region, no pixels will be drawn and no mouse events will be reg"
+   },
+   {
+    "name": "setThumbarButtons",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "buttons"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the buttons were added successfully\n\nAdd a thumbnail toolbar with a specified set of buttons to the thumbnail image of a window in a taskbar button layout. Returns a `boolean` object indicates"
+   },
+   {
+    "name": "setThumbnailClip",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "region"
+    ],
+    "returns": null,
+    "desc": "Sets the region of the window to show as the thumbnail image displayed when hovering over the window in the taskbar. You can reset the thumbnail to be the entire window by specifying an empty region: "
+   },
+   {
+    "name": "setThumbnailToolTip",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "toolTip"
+    ],
+    "returns": null,
+    "desc": "Sets the toolTip that is displayed when hovering over the window thumbnail in the taskbar."
+   },
+   {
+    "name": "setAppDetails",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets the properties for the window's taskbar button.\n\n> [!NOTE] `relaunchCommand` and `relaunchDisplayName` must always be set together. If one of those properties is not set, then neither will be use"
+   },
+   {
+    "name": "setAccentColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "accentColor"
+    ],
+    "returns": null,
+    "desc": "Sets the system accent color and highlighting of active window border.\n\nThe `accentColor` parameter accepts the following values:\n\n* **Color string** - Like `true`, but sets a custom accent color usin"
+   },
+   {
+    "name": "getAccentColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "String",
+      "possibleValues": null
+     },
+     {
+      "collection": false,
+      "type": "boolean"
+     }
+    ],
+    "desc": "the system accent color and highlighting of active window border in Hex RGB format.\n\nIf a color has been set for the window that differs from the system accent color, the window accent color will be r"
+   },
+   {
+    "name": "setIcon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "icon"
+    ],
+    "returns": null,
+    "desc": "Changes window icon."
+   },
+   {
+    "name": "setWindowButtonVisibility",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "visible"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window traffic light buttons should be visible."
+   },
+   {
+    "name": "setAutoHideMenuBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "hide"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window menu bar should hide itself automatically. Once set the menu bar will only show when users press the single `Alt` key.\n\nIf the menu bar is already visible, calling `setAutoHide"
+   },
+   {
+    "name": "isMenuBarAutoHide",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether menu bar automatically hides itself."
+   },
+   {
+    "name": "setMenuBarVisibility",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "visible"
+    ],
+    "returns": null,
+    "desc": "Sets whether the menu bar should be visible. If the menu bar is auto-hide, users can still bring up the menu bar by pressing the single `Alt` key."
+   },
+   {
+    "name": "isMenuBarVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the menu bar is visible."
+   },
+   {
+    "name": "isSnapped",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether the window is arranged via Snap.\n\nThe window is snapped via buttons shown when the mouse is hovered over window maximize button, or by dragging it to the edges of the screen."
+   },
+   {
+    "name": "setVisibleOnAllWorkspaces",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [
+     "visible",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should be visible on all workspaces.\n\n> [!NOTE] This API does nothing on Windows."
+   },
+   {
+    "name": "isVisibleOnAllWorkspaces",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is visible on all workspaces.\n\n> [!NOTE] This API always returns false on Windows."
+   },
+   {
+    "name": "setIgnoreMouseEvents",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "ignore",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Makes the window ignore all mouse events.\n\nAll mouse events happened in this window will be passed to the window below this window, but if this window has focus, it will still receive keyboard events."
+   },
+   {
+    "name": "setContentProtection",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "enable"
+    ],
+    "returns": null,
+    "desc": "Prevents the window contents from being captured by other apps.\n\nOn macOS it sets the NSWindow's sharingType to NSWindowSharingNone. On Windows it calls SetWindowDisplayAffinity with `WDA_EXCLUDEFROMC"
+   },
+   {
+    "name": "isContentProtected",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether or not content protection is currently enabled."
+   },
+   {
+    "name": "setFocusable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "focusable"
+    ],
+    "returns": null,
+    "desc": "Changes whether the window can be focused.\n\nOn macOS it does not remove the focus from the window."
+   },
+   {
+    "name": "isFocusable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be focused."
+   },
+   {
+    "name": "setParentWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "parent"
+    ],
+    "returns": null,
+    "desc": "Sets `parent` as current window's parent window, passing `null` will turn current window into a top-level window."
+   },
+   {
+    "name": "getParentWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BaseWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The parent window or `null` if there is no parent."
+   },
+   {
+    "name": "getChildWindows",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "BaseWindow",
+    "desc": "All child windows."
+   },
+   {
+    "name": "setAutoHideCursor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "autoHide"
+    ],
+    "returns": null,
+    "desc": "Controls whether to hide cursor when typing."
+   },
+   {
+    "name": "selectPreviousTab",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Selects the previous tab when native tabs are enabled and there are other tabs in the window."
+   },
+   {
+    "name": "selectNextTab",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Selects the next tab when native tabs are enabled and there are other tabs in the window."
+   },
+   {
+    "name": "showAllTabs",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Shows or hides the tab overview when native tabs are enabled."
+   },
+   {
+    "name": "mergeAllWindows",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Merges all windows into one window with multiple tabs when native tabs are enabled and there is more than one open window."
+   },
+   {
+    "name": "moveTabToNewWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Moves the current tab into a new window if native tabs are enabled and there is more than one tab in the current window."
+   },
+   {
+    "name": "toggleTabBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Toggles the visibility of the tab bar if native tabs are enabled and there is only one tab in the current window."
+   },
+   {
+    "name": "addTabbedWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "baseWindow"
+    ],
+    "returns": null,
+    "desc": "Adds a window as a tab on this window, after the tab for the window instance."
+   },
+   {
+    "name": "setVibrancy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "type"
+    ],
+    "returns": null,
+    "desc": "Adds a vibrancy effect to the window. Passing `null` or an empty string will remove the vibrancy effect on the window."
+   },
+   {
+    "name": "setBackgroundMaterial",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "material"
+    ],
+    "returns": null,
+    "desc": "This method sets the browser window's system-drawn background material, including behind the non-client area.\n\nSee the Windows documentation for more details.\n\n> [!NOTE] This method is only supported "
+   },
+   {
+    "name": "setWindowButtonPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "position"
+    ],
+    "returns": null,
+    "desc": "Set a custom position for the traffic light buttons in frameless window. Passing `null` will reset the position to default."
+   },
+   {
+    "name": "getWindowButtonPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Point"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The custom position for the traffic light buttons in frameless window, `null` will be returned when there is no custom position."
+   },
+   {
+    "name": "setTouchBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "touchBar"
+    ],
+    "returns": null,
+    "desc": "Sets the touchBar layout for the current window. Specifying `null` or `undefined` clears the touch bar. This method only has an effect if the machine has a touch bar.\n\n> [!NOTE] The TouchBar API is cu"
+   },
+   {
+    "name": "setTitleBarOverlay",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "On a Window with Window Controls Overlay already enabled, this method updates the style of the title bar overlay.\n\nOn Linux, the `symbolColor` is automatically calculated to have minimum accessible co"
+   },
+   {
+    "name": "getAllWindows",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "BaseWindow",
+    "desc": "An array of all opened browser windows."
+   },
+   {
+    "name": "getFocusedWindow",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BaseWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The window that is focused in this application, otherwise returns `null`."
+   },
+   {
+    "name": "fromId",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BaseWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The window with the given `id`."
+   },
+   {
+    "name": "clearPersistedState",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "name"
+    ],
+    "returns": null,
+    "desc": "Clears the saved state for a window with the given name. This removes all persisted window bounds, display mode, and work area information that was previously saved when `windowStatePersistence` was e"
+   },
+   {
+    "name": "close",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the window is going to be closed. It's emitted before the `beforeunload` and `unload` event of the DOM. Calling `event.preventDefault()` will cancel the close.\n\nUsually you would want to "
+   },
+   {
+    "name": "closed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is closed. After you have received this event you should remove the reference to the window and avoid using it any more."
+   },
+   {
+    "name": "query-session-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when a session is about to end due to a shutdown, machine restart, or user log-off. Calling `event.preventDefault()` can delay the system shutdown, though it\u2019s generally best to respect the us"
+   },
+   {
+    "name": "session-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when a session is about to end due to a shutdown, machine restart, or user log-off. Once this event fires, there is no way to prevent the session from ending."
+   },
+   {
+    "name": "blur",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the window loses focus."
+   },
+   {
+    "name": "focus",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the window gains focus."
+   },
+   {
+    "name": "show",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is shown."
+   },
+   {
+    "name": "hide",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is hidden."
+   },
+   {
+    "name": "maximize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when window is maximized."
+   },
+   {
+    "name": "unmaximize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window exits from a maximized state."
+   },
+   {
+    "name": "minimize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is minimized.\n\n> [!NOTE] On Wayland, \u201cminimized\u201d is not currently a supported state. The minimize event will only fire when triggered by client-side decoration (e.g. clicking t"
+   },
+   {
+    "name": "restore",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is restored from a minimized state."
+   },
+   {
+    "name": "will-resize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "newBounds",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted before the window is resized. Calling `event.preventDefault()` will prevent the window from being resized.\n\nNote that this is only emitted when the window is being resized manually. Resizing t"
+   },
+   {
+    "name": "resize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted after the window has been resized."
+   },
+   {
+    "name": "resized",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted once when the window has finished being resized.\n\nThis is usually emitted when the window has been resized manually. On macOS, resizing the window with `setBounds`/`setSize` and setting the `a"
+   },
+   {
+    "name": "will-move",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "newBounds"
+    ],
+    "returns": null,
+    "desc": "Emitted before the window is moved. On Windows, calling `event.preventDefault()` will prevent the window from being moved.\n\nNote that this is only emitted when the window is being moved manually. Movi"
+   },
+   {
+    "name": "move",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is being moved to a new position."
+   },
+   {
+    "name": "moved",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted once when the window is moved to a new position.\n\n> [!NOTE] On macOS, this event is an alias of `move`."
+   },
+   {
+    "name": "enter-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window enters a full-screen state."
+   },
+   {
+    "name": "leave-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window leaves a full-screen state."
+   },
+   {
+    "name": "always-on-top-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "isAlwaysOnTop"
+    ],
+    "returns": null,
+    "desc": "Emitted when the window is set or unset to show always on top of other windows."
+   },
+   {
+    "name": "app-command",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "event",
+     "command"
+    ],
+    "returns": null,
+    "desc": "Emitted when an App Command is invoked. These are typically related to keyboard media keys or browser commands, as well as the \"Back\" button built into some mice on Windows.\n\nCommands are lowercased, "
+   },
+   {
+    "name": "swipe",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "direction"
+    ],
+    "returns": null,
+    "desc": "Emitted on 3-finger swipe. Possible directions are `up`, `right`, `down`, `left`.\n\nThe method underlying this event is built to handle older macOS-style trackpad swiping, where the content on the scre"
+   },
+   {
+    "name": "rotate-gesture",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "rotation"
+    ],
+    "returns": null,
+    "desc": "Emitted on trackpad rotation gesture. Continually emitted until rotation gesture is ended. The `rotation` value on each emission is the angle in degrees rotated since the last emission. The last emitt"
+   },
+   {
+    "name": "sheet-begin",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window opens a sheet."
+   },
+   {
+    "name": "sheet-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window has closed a sheet."
+   },
+   {
+    "name": "new-window-for-tab",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the user clicks the native macOS new tab button. The new tab button is only visible if the current `BrowserWindow` has a `tabbingIdentifier`.\n\nYou must create a window in this handler in "
+   },
+   {
+    "name": "system-context-menu",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "event",
+     "point"
+    ],
+    "returns": null,
+    "desc": "Emitted when the system context menu is triggered on the window, this is normally only triggered when the user right clicks on the non-client area of your window.  This is the window titlebar or any a"
+   },
+   {
+    "name": "persisted-state-restored",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted after the persisted window state has been restored.\n\nWindow state includes the window bounds (x, y, height, width) and display mode (maximized, fullscreen, kiosk).\n\n> [!NOTE] This event is onl"
+   },
+   {
+    "name": "id",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Integer` property representing the unique ID of the window. Each ID is unique among all `BaseWindow` instances of the entire Electron application."
+   },
+   {
+    "name": "contentView",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `View` property for the content view of the window."
+   },
+   {
+    "name": "tabbingIdentifier",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` (optional) property that is equal to the `tabbingIdentifier` passed to the `BrowserWindow` constructor or `undefined` if none was set."
+   },
+   {
+    "name": "autoHideMenuBar",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window menu bar should hide itself automatically. Once set, the menu bar will only show when users press the single `Alt` key.\n\nIf the menu bar is alre"
+   },
+   {
+    "name": "simpleFullScreen",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is in simple (pre-Lion) fullscreen mode."
+   },
+   {
+    "name": "fullScreen",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is in fullscreen mode."
+   },
+   {
+    "name": "focusable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is focusable."
+   },
+   {
+    "name": "visibleOnAllWorkspaces",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is visible on all workspaces.\n\n> [!NOTE] Always returns false on Windows."
+   },
+   {
+    "name": "shadow",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window has a shadow."
+   },
+   {
+    "name": "menuBarVisible",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the menu bar should be visible.\n\n> [!NOTE] If the menu bar is auto-hide, users can still bring up the menu bar by pressing the single `Alt` key."
+   },
+   {
+    "name": "kiosk",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is in kiosk mode."
+   },
+   {
+    "name": "documentEdited",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that specifies whether the window\u2019s document has been edited.\n\nThe icon in title bar will become gray when set to `true`."
+   },
+   {
+    "name": "representedFilename",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the pathname of the file the window represents, and the icon of the file will show in window's title bar."
+   },
+   {
+    "name": "title",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the title of the native window.\n\n> [!NOTE] The title of the web page can be different from the title of the native window."
+   },
+   {
+    "name": "minimizable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually minimized by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "maximizable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually maximized by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "fullScreenable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the maximize/zoom window button toggles fullscreen mode or maximizes the window."
+   },
+   {
+    "name": "resizable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually resized by user."
+   },
+   {
+    "name": "closable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually closed by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "movable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines Whether the window can be moved by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "excludedFromShownWindowsMenu",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is excluded from the application\u2019s Windows menu. `false` by default."
+   },
+   {
+    "name": "accessibleTitle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that defines an alternative title provided only to accessibility tools such as screen readers. This string is not directly visible to users."
+   },
+   {
+    "name": "snapped",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that indicates whether the window is arranged via Snap."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/base-window"
+ },
+ {
+  "name": "BrowserView",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> [!NOTE] The `BrowserView` class is deprecated, and replaced by the new `WebContentsView` class.\n\nA `BrowserView` can be used to embed additional web content into a `BrowserWindow`. It is like a child window, except that it is positioned relative to its owning window. It is meant to be an alternati",
+  "members": [
+   {
+    "name": "setAutoResize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "setBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "bounds"
+    ],
+    "returns": null,
+    "desc": "Resizes and moves the view to the supplied bounds relative to the window."
+   },
+   {
+    "name": "getBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The `bounds` of this BrowserView instance as `Object`."
+   },
+   {
+    "name": "setBackgroundColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "color"
+    ],
+    "returns": null,
+    "desc": "Examples of valid `color` values:\n\n* Hex\n  * `#fff` (RGB)\n  * `#ffff` (ARGB)\n  * `#ffffff` (RRGGBB)\n  * `#ffffffff` (AARRGGBB)\n* RGB\n  * `rgb\\(([\\d]+),\\s*([\\d]+),\\s*([\\d]+)\\)`\n    * e.g. `rgb(255, 255"
+   },
+   {
+    "name": "webContents",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebContents` object owned by this view."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/browser-view"
+ },
+ {
+  "name": "BrowserWindow",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": "BaseWindow",
+  "description": "> Create and control browser windows.\n\nProcess: Main\n\nThis module cannot be used until the `ready` event of the `app` module is emitted.\n\n### Window customization\n\nThe `BrowserWindow` class exposes various ways to modify the look and behavior of your app's windows. For more details, see the Window C",
+  "members": [
+   {
+    "name": "destroy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Force closing the window, the `unload` and `beforeunload` event won't be emitted for the web page, and `close` event will also not be emitted for this window, but it guarantees the `closed` event will"
+   },
+   {
+    "name": "close",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Try to close the window. This has the same effect as a user manually clicking the close button of the window. The web page may cancel the close though. See the close event."
+   },
+   {
+    "name": "focus",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Focuses on the window.\n\nOn Wayland (Linux), the desktop environment may show a notification or flash the app icon if the window or app is not already focused."
+   },
+   {
+    "name": "blur",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Removes focus from the window.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "isFocused",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is focused."
+   },
+   {
+    "name": "isDestroyed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is destroyed."
+   },
+   {
+    "name": "show",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Shows and gives focus to the window."
+   },
+   {
+    "name": "showInactive",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Shows the window but doesn't focus on it.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "hide",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Hides the window."
+   },
+   {
+    "name": "isVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is visible to the user in the foreground of the app."
+   },
+   {
+    "name": "isModal",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether current window is a modal window."
+   },
+   {
+    "name": "maximize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Maximizes the window. This will also show (but not focus) the window if it isn't being displayed already."
+   },
+   {
+    "name": "unmaximize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unmaximizes the window."
+   },
+   {
+    "name": "isMaximized",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is maximized."
+   },
+   {
+    "name": "minimize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Minimizes the window. On some platforms the minimized window will be shown in the Dock."
+   },
+   {
+    "name": "restore",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Restores the window from minimized state to its previous state."
+   },
+   {
+    "name": "isMinimized",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is minimized."
+   },
+   {
+    "name": "setFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should be in fullscreen mode.\n\n> [!NOTE] On macOS, fullscreen transitions take place asynchronously. If further actions depend on the fullscreen state, use the 'enter-full-scre"
+   },
+   {
+    "name": "isFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in fullscreen mode.\n\n> [!NOTE] On macOS, fullscreen transitions take place asynchronously. When querying for a BrowserWindow's fullscreen status, you should ensure that either th"
+   },
+   {
+    "name": "setSimpleFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Enters or leaves simple fullscreen mode.\n\nSimple fullscreen mode emulates the native fullscreen behavior found in versions of macOS prior to Lion (10.7)."
+   },
+   {
+    "name": "isSimpleFullScreen",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in simple (pre-Lion) fullscreen mode."
+   },
+   {
+    "name": "isNormal",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in normal state (not maximized, not minimized, not in fullscreen mode)."
+   },
+   {
+    "name": "setAspectRatio",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "aspectRatio",
+     "extraSize"
+    ],
+    "returns": null,
+    "desc": "This will make a window maintain an aspect ratio. The extra size allows a developer to have space, specified in pixels, not included within the aspect ratio calculations. This API already takes into a"
+   },
+   {
+    "name": "setBackgroundColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "backgroundColor"
+    ],
+    "returns": null,
+    "desc": "Examples of valid `backgroundColor` values:\n\n* Hex\n  * #fff (shorthand RGB)\n  * #ffff (shorthand ARGB)\n  * #ffffff (RGB)\n  * #ffffffff (ARGB)\n* RGB\n  * `rgb\\(([\\d]+),\\s*([\\d]+),\\s*([\\d]+)\\)`\n    * e.g"
+   },
+   {
+    "name": "previewFile",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "path",
+     "displayName"
+    ],
+    "returns": null,
+    "desc": "Uses Quick Look to preview a file at a given path."
+   },
+   {
+    "name": "closeFilePreview",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Closes the currently open Quick Look panel."
+   },
+   {
+    "name": "setBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "bounds",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes and moves the window to the supplied bounds. Any properties that are not supplied will default to their current values.\n\nOn Wayland (Linux), has the same limitations as `setSize` and `setPosit"
+   },
+   {
+    "name": "getBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The `bounds` of the window as `Object`.\n\n> [!NOTE] On macOS, the y-coordinate value returned will be at minimum the Tray height. For example, calling `win.setBounds({ x: 25, y: 20, width: 800, height:"
+   },
+   {
+    "name": "getBackgroundColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "Gets the background color of the window in Hex (`#RRGGBB`) format.\n\nSee Setting `backgroundColor`.\n\n> [!NOTE] The alpha value is _not_ returned alongside the red, green, and blue values."
+   },
+   {
+    "name": "setContentBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "bounds",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes and moves the window's client area (e.g. the web page) to the supplied bounds.\n\nOn Wayland (Linux), has the same limitations as `setContentSize` and `setPosition`."
+   },
+   {
+    "name": "getContentBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The `bounds` of the window's client area as `Object`."
+   },
+   {
+    "name": "getNormalBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "Contains the window bounds of the normal state\n\n> [!NOTE] Whatever the current state of the window (maximized, minimized or in fullscreen), this function always returns the position and size of the wi"
+   },
+   {
+    "name": "setEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "enable"
+    ],
+    "returns": null,
+    "desc": "Disable or enable the window."
+   },
+   {
+    "name": "isEnabled",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether the window is enabled."
+   },
+   {
+    "name": "setSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes the window to `width` and `height`. If `width` or `height` are below any set minimum size constraints the window will snap to its minimum size.\n\nOn Wayland (Linux), may not work as some window"
+   },
+   {
+    "name": "getSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's width and height."
+   },
+   {
+    "name": "setContentSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Resizes the window's client area (e.g. the web page) to `width` and `height`.\n\nOn Wayland (Linux), may not work as some window managers restrict programmatic window resizing."
+   },
+   {
+    "name": "getContentSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's client area's width and height."
+   },
+   {
+    "name": "setMinimumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height"
+    ],
+    "returns": null,
+    "desc": "Sets the minimum size of window to `width` and `height`."
+   },
+   {
+    "name": "getMinimumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's minimum width and height."
+   },
+   {
+    "name": "setMaximumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "width",
+     "height"
+    ],
+    "returns": null,
+    "desc": "Sets the maximum size of window to `width` and `height`."
+   },
+   {
+    "name": "getMaximumSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's maximum width and height."
+   },
+   {
+    "name": "setResizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "resizable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually resized by the user."
+   },
+   {
+    "name": "isResizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually resized by the user."
+   },
+   {
+    "name": "setMovable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "movable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be moved by user. On Linux does nothing."
+   },
+   {
+    "name": "isMovable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be moved by user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setMinimizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "minimizable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually minimized by user. On Linux does nothing."
+   },
+   {
+    "name": "isMinimizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually minimized by the user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setMaximizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "maximizable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually maximized by user. On Linux does nothing."
+   },
+   {
+    "name": "isMaximizable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually maximized by user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setFullScreenable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "fullscreenable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the maximize/zoom window button toggles fullscreen mode or maximizes the window."
+   },
+   {
+    "name": "isFullScreenable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the maximize/zoom window button toggles fullscreen mode or maximizes the window."
+   },
+   {
+    "name": "setClosable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "closable"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window can be manually closed by user. On Linux does nothing."
+   },
+   {
+    "name": "isClosable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be manually closed by user.\n\nOn Linux always returns `true`."
+   },
+   {
+    "name": "setHiddenInMissionControl",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "hidden"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window will be hidden when the user toggles into mission control."
+   },
+   {
+    "name": "isHiddenInMissionControl",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window will be hidden when the user toggles into mission control."
+   },
+   {
+    "name": "setAlwaysOnTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag",
+     "level",
+     "relativeLevel"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should show always on top of other windows. After setting this, the window is still a normal window, not a toolbox window which can not be focused on.\n\nNot supported on Wayland"
+   },
+   {
+    "name": "isAlwaysOnTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is always on top of other windows.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "moveAbove",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "mediaSourceId"
+    ],
+    "returns": null,
+    "desc": "Moves window above the source window in the sense of z-order. If the `mediaSourceId` is not of type window or if the window does not exist then this method throws an error."
+   },
+   {
+    "name": "moveTop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Moves window to top(z-order) regardless of focus.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "center",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Moves window to the center of the screen.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "setPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "x",
+     "y",
+     "animate"
+    ],
+    "returns": null,
+    "desc": "Moves window to `x` and `y`.\n\nNot supported on Wayland (Linux)."
+   },
+   {
+    "name": "getPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Contains the window's current position.\n\n> [!NOTE] On Wayland, this method will return `[0, 0]` as introspecting or programmatically changing the global window coordinates is prohibited."
+   },
+   {
+    "name": "setTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "title"
+    ],
+    "returns": null,
+    "desc": "Changes the title of native window to `title`."
+   },
+   {
+    "name": "getTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The title of the native window.\n\n> [!NOTE] The title of the web page can be different from the title of the native window."
+   },
+   {
+    "name": "setSheetOffset",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "offsetY",
+     "offsetX"
+    ],
+    "returns": null,
+    "desc": "Changes the attachment point for sheets on macOS. By default, sheets are attached just below the window frame, but you may want to display them beneath a HTML-rendered toolbar. For example:"
+   },
+   {
+    "name": "flashFrame",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Starts or stops flashing the window to attract user's attention."
+   },
+   {
+    "name": "setSkipTaskbar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "skip"
+    ],
+    "returns": null,
+    "desc": "Makes the window not show in the taskbar."
+   },
+   {
+    "name": "setKiosk",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "flag"
+    ],
+    "returns": null,
+    "desc": "Enters or leaves kiosk mode."
+   },
+   {
+    "name": "isKiosk",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in kiosk mode."
+   },
+   {
+    "name": "isTabletMode",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is in Windows 10 tablet mode.\n\nSince Windows 10 users can use their PC as tablet, under this mode apps can choose to optimize their UI for tablets, such as enlarging the titlebar an"
+   },
+   {
+    "name": "getMediaSourceId",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "Window id in the format of DesktopCapturerSource's id. For example \"window:1324:0\".\n\nMore precisely the format is `window:id:other_id` where `id` is `HWND` on Windows, `CGWindowID` (`uint64_t`) on mac"
+   },
+   {
+    "name": "getNativeWindowHandle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Buffer",
+    "desc": "The platform-specific handle of the window.\n\nThe native type of the handle is `HWND` on Windows, `NSView*` on macOS, and `Window` (`unsigned long`) on Linux."
+   },
+   {
+    "name": "hookWindowMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "message",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Hooks a windows message. The `callback` is called when the message is received in the WndProc."
+   },
+   {
+    "name": "isWindowMessageHooked",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "message"
+    ],
+    "returns": "boolean",
+    "desc": "`true` or `false` depending on whether the message is hooked."
+   },
+   {
+    "name": "unhookWindowMessage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "message"
+    ],
+    "returns": null,
+    "desc": "Unhook the window message."
+   },
+   {
+    "name": "unhookAllWindowMessages",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Unhooks all of the window messages."
+   },
+   {
+    "name": "setRepresentedFilename",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "filename"
+    ],
+    "returns": null,
+    "desc": "Sets the pathname of the file the window represents, and the icon of the file will show in window's title bar."
+   },
+   {
+    "name": "getRepresentedFilename",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "The pathname of the file the window represents."
+   },
+   {
+    "name": "setDocumentEdited",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "edited"
+    ],
+    "returns": null,
+    "desc": "Specifies whether the window\u2019s document has been edited, and the icon in title bar will become gray when set to `true`."
+   },
+   {
+    "name": "isDocumentEdited",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window's document has been edited."
+   },
+   {
+    "name": "focusOnWebView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "blurWebView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "capturePage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "rect",
+     "opts"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with a NativeImage\n\nCaptures a snapshot of the page within `rect`. Omitting `rect` will capture the whole visible page. If the page is not visible, `rect` may be empty. The page is considered"
+   },
+   {
+    "name": "loadURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "the promise will resolve when the page has finished loading (see `did-finish-load`), and rejects if the page fails to load (see `did-fail-load`). A noop rejection handler is already attached, which av"
+   },
+   {
+    "name": "loadFile",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "filePath",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "the promise will resolve when the page has finished loading (see `did-finish-load`), and rejects if the page fails to load (see `did-fail-load`).\n\nSame as `webContents.loadFile`, `filePath` should be "
+   },
+   {
+    "name": "reload",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Same as `webContents.reload`."
+   },
+   {
+    "name": "setMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [
+     "menu"
+    ],
+    "returns": null,
+    "desc": "Sets the `menu` as the window's menu bar."
+   },
+   {
+    "name": "removeMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Remove the window's menu bar."
+   },
+   {
+    "name": "setProgressBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "progress",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets progress value in progress bar. Valid range is [0, 1.0].\n\nRemove progress bar when progress < 0; Change to indeterminate mode when progress > 1.\n\nOn Windows, a mode can be passed. Accepted values"
+   },
+   {
+    "name": "setOverlayIcon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "overlay",
+     "description"
+    ],
+    "returns": null,
+    "desc": "Sets a 16 x 16 pixel overlay onto the current taskbar icon, usually used to convey some sort of application status or to passively notify the user."
+   },
+   {
+    "name": "invalidateShadow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Invalidates the window shadow so that it is recomputed based on the current window shape.\n\n`BrowserWindows` that are transparent can sometimes leave behind visual artifacts on macOS. This method can b"
+   },
+   {
+    "name": "setHasShadow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "hasShadow"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should have a shadow."
+   },
+   {
+    "name": "hasShadow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window has a shadow."
+   },
+   {
+    "name": "setOpacity",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "opacity"
+    ],
+    "returns": null,
+    "desc": "Sets the opacity of the window. Out of bound number values are clamped to the [0, 1] range."
+   },
+   {
+    "name": "getOpacity",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "number",
+    "desc": "between 0.0 (fully transparent) and 1.0 (fully opaque)."
+   },
+   {
+    "name": "setShape",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux",
+     "stability_experimental"
+    ],
+    "params": [
+     "rects"
+    ],
+    "returns": null,
+    "desc": "Setting a window shape determines the area within the window where the system permits drawing and user interaction. Outside of the given region, no pixels will be drawn and no mouse events will be reg"
+   },
+   {
+    "name": "setThumbarButtons",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "buttons"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the buttons were added successfully\n\nAdd a thumbnail toolbar with a specified set of buttons to the thumbnail image of a window in a taskbar button layout. Returns a `boolean` object indicates"
+   },
+   {
+    "name": "setThumbnailClip",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "region"
+    ],
+    "returns": null,
+    "desc": "Sets the region of the window to show as the thumbnail image displayed when hovering over the window in the taskbar. You can reset the thumbnail to be the entire window by specifying an empty region: "
+   },
+   {
+    "name": "setThumbnailToolTip",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "toolTip"
+    ],
+    "returns": null,
+    "desc": "Sets the toolTip that is displayed when hovering over the window thumbnail in the taskbar."
+   },
+   {
+    "name": "setAppDetails",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets the properties for the window's taskbar button.\n\n> [!NOTE] `relaunchCommand` and `relaunchDisplayName` must always be set together. If one of those properties is not set, then neither will be use"
+   },
+   {
+    "name": "setAccentColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "accentColor"
+    ],
+    "returns": null,
+    "desc": "Sets the system accent color and highlighting of active window border.\n\nThe `accentColor` parameter accepts the following values:\n\n* **Color string** - Like `true`, but sets a custom accent color usin"
+   },
+   {
+    "name": "getAccentColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "String",
+      "possibleValues": null
+     },
+     {
+      "collection": false,
+      "type": "boolean"
+     }
+    ],
+    "desc": "the system accent color and highlighting of active window border in Hex RGB format.\n\nIf a color has been set for the window that differs from the system accent color, the window accent color will be r"
+   },
+   {
+    "name": "showDefinitionForSelection",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Same as `webContents.showDefinitionForSelection()`."
+   },
+   {
+    "name": "setIcon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "icon"
+    ],
+    "returns": null,
+    "desc": "Changes window icon."
+   },
+   {
+    "name": "setWindowButtonVisibility",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "visible"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window traffic light buttons should be visible."
+   },
+   {
+    "name": "setAutoHideMenuBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "hide"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window menu bar should hide itself automatically. Once set the menu bar will only show when users press the single `Alt` key.\n\nIf the menu bar is already visible, calling `setAutoHide"
+   },
+   {
+    "name": "isMenuBarAutoHide",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether menu bar automatically hides itself."
+   },
+   {
+    "name": "setMenuBarVisibility",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "visible"
+    ],
+    "returns": null,
+    "desc": "Sets whether the menu bar should be visible. If the menu bar is auto-hide, users can still bring up the menu bar by pressing the single `Alt` key."
+   },
+   {
+    "name": "isMenuBarVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the menu bar is visible."
+   },
+   {
+    "name": "isSnapped",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether the window is arranged via Snap.\n\nThe window is snapped via buttons shown when the mouse is hovered over window maximize button, or by dragging it to the edges of the screen."
+   },
+   {
+    "name": "setVisibleOnAllWorkspaces",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [
+     "visible",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets whether the window should be visible on all workspaces.\n\n> [!NOTE] This API does nothing on Windows."
+   },
+   {
+    "name": "isVisibleOnAllWorkspaces",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window is visible on all workspaces.\n\n> [!NOTE] This API always returns false on Windows."
+   },
+   {
+    "name": "setIgnoreMouseEvents",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "ignore",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Makes the window ignore all mouse events.\n\nAll mouse events happened in this window will be passed to the window below this window, but if this window has focus, it will still receive keyboard events."
+   },
+   {
+    "name": "setContentProtection",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "enable"
+    ],
+    "returns": null,
+    "desc": "Prevents the window contents from being captured by other apps.\n\nOn Windows, it calls `SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`. For Windows 10 version 2004 and up the window will be re"
+   },
+   {
+    "name": "isContentProtected",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether or not content protection is currently enabled."
+   },
+   {
+    "name": "setFocusable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "focusable"
+    ],
+    "returns": null,
+    "desc": "Changes whether the window can be focused.\n\nOn macOS it does not remove the focus from the window."
+   },
+   {
+    "name": "isFocusable",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the window can be focused."
+   },
+   {
+    "name": "setParentWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "parent"
+    ],
+    "returns": null,
+    "desc": "Sets `parent` as current window's parent window, passing `null` will turn current window into a top-level window."
+   },
+   {
+    "name": "getParentWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BrowserWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The parent window or `null` if there is no parent."
+   },
+   {
+    "name": "getChildWindows",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "BrowserWindow",
+    "desc": "All child windows."
+   },
+   {
+    "name": "setAutoHideCursor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "autoHide"
+    ],
+    "returns": null,
+    "desc": "Controls whether to hide cursor when typing."
+   },
+   {
+    "name": "selectPreviousTab",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Selects the previous tab when native tabs are enabled and there are other tabs in the window."
+   },
+   {
+    "name": "selectNextTab",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Selects the next tab when native tabs are enabled and there are other tabs in the window."
+   },
+   {
+    "name": "showAllTabs",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Shows or hides the tab overview when native tabs are enabled."
+   },
+   {
+    "name": "mergeAllWindows",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Merges all windows into one window with multiple tabs when native tabs are enabled and there is more than one open window."
+   },
+   {
+    "name": "moveTabToNewWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Moves the current tab into a new window if native tabs are enabled and there is more than one tab in the current window."
+   },
+   {
+    "name": "toggleTabBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Toggles the visibility of the tab bar if native tabs are enabled and there is only one tab in the current window."
+   },
+   {
+    "name": "addTabbedWindow",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "browserWindow"
+    ],
+    "returns": null,
+    "desc": "Adds a window as a tab on this window, after the tab for the window instance."
+   },
+   {
+    "name": "setVibrancy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "type",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Adds a vibrancy effect to the browser window. Passing `null` or an empty string will remove the vibrancy effect on the window. The `animationDuration` parameter only animates fading in or fading out t"
+   },
+   {
+    "name": "setBackgroundMaterial",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "material"
+    ],
+    "returns": null,
+    "desc": "This method sets the browser window's system-drawn background material, including behind the non-client area.\n\nSee the Windows documentation for more details.\n\n> [!NOTE] This method is only supported "
+   },
+   {
+    "name": "setWindowButtonPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "position"
+    ],
+    "returns": null,
+    "desc": "Set a custom position for the traffic light buttons in frameless window. Passing `null` will reset the position to default."
+   },
+   {
+    "name": "getWindowButtonPosition",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Point"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The custom position for the traffic light buttons in frameless window, `null` will be returned when there is no custom position."
+   },
+   {
+    "name": "setTouchBar",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "touchBar"
+    ],
+    "returns": null,
+    "desc": "Sets the touchBar layout for the current window. Specifying `null` or `undefined` clears the touch bar. This method only has an effect if the machine has a touch bar.\n\n> [!NOTE] The TouchBar API is cu"
+   },
+   {
+    "name": "setBrowserView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "browserView"
+    ],
+    "returns": null,
+    "desc": "> [!WARNING] The `BrowserView` class is deprecated, and replaced by the new `WebContentsView` class."
+   },
+   {
+    "name": "getBrowserView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BrowserView"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The `BrowserView` attached to `win`. Returns `null` if one is not attached. Throws an error if multiple `BrowserView`s are attached.\n\n> [!WARNING] The `BrowserView` class is deprecated, and replaced b"
+   },
+   {
+    "name": "addBrowserView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "browserView"
+    ],
+    "returns": null,
+    "desc": "Replacement API for setBrowserView supporting work with multi browser views.\n\n> [!WARNING] The `BrowserView` class is deprecated, and replaced by the new `WebContentsView` class."
+   },
+   {
+    "name": "removeBrowserView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "browserView"
+    ],
+    "returns": null,
+    "desc": "> [!WARNING] The `BrowserView` class is deprecated, and replaced by the new `WebContentsView` class."
+   },
+   {
+    "name": "setTopBrowserView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [
+     "browserView"
+    ],
+    "returns": null,
+    "desc": "Raises `browserView` above other `BrowserView`s attached to `win`. Throws an error if `browserView` is not attached to `win`.\n\n> [!WARNING] The `BrowserView` class is deprecated, and replaced by the n"
+   },
+   {
+    "name": "getBrowserViews",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental",
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": "BrowserView",
+    "desc": "a sorted by z-index array of all BrowserViews that have been attached with `addBrowserView` or `setBrowserView`. The top-most BrowserView is the last element of the array.\n\n> [!WARNING] The `BrowserVi"
+   },
+   {
+    "name": "setTitleBarOverlay",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "On a window with Window Controls Overlay already enabled, this method updates the style of the title bar overlay.\n\nOn Linux, the `symbolColor` is automatically calculated to have minimum accessible co"
+   },
+   {
+    "name": "getAllWindows",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "BrowserWindow",
+    "desc": "An array of all opened browser windows."
+   },
+   {
+    "name": "getFocusedWindow",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BrowserWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The window that is focused in this application, otherwise returns `null`."
+   },
+   {
+    "name": "fromWebContents",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "webContents"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BrowserWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The window that owns the given `webContents` or `null` if the contents are not owned by a window."
+   },
+   {
+    "name": "fromBrowserView",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "browserView"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BrowserWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "> [!NOTE] The `BrowserView` class is deprecated, and replaced by the new `WebContentsView` class.\n\nThe window that owns the given `browserView`. If the given view is not attached to any window, return"
+   },
+   {
+    "name": "fromId",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "BrowserWindow"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The window with the given `id`."
+   },
+   {
+    "name": "page-title-updated",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "title",
+     "explicitSet"
+    ],
+    "returns": null,
+    "desc": "Emitted when the document changed its title, calling `event.preventDefault()` will prevent the native window's title from changing. `explicitSet` is false when title is synthesized from file URL."
+   },
+   {
+    "name": "close",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the window is going to be closed. It's emitted before the `beforeunload` and `unload` event of the DOM. Calling `event.preventDefault()` will cancel the close.\n\nUsually you would want to "
+   },
+   {
+    "name": "closed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is closed. After you have received this event you should remove the reference to the window and avoid using it any more."
+   },
+   {
+    "name": "query-session-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when a session is about to end due to a shutdown, machine restart, or user log-off. Calling `event.preventDefault()` can delay the system shutdown, though it\u2019s generally best to respect the us"
+   },
+   {
+    "name": "session-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when a session is about to end due to a shutdown, machine restart, or user log-off. Once this event fires, there is no way to prevent the session from ending."
+   },
+   {
+    "name": "unresponsive",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the web page becomes unresponsive."
+   },
+   {
+    "name": "responsive",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the unresponsive web page becomes responsive again."
+   },
+   {
+    "name": "blur",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window loses focus."
+   },
+   {
+    "name": "focus",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window gains focus."
+   },
+   {
+    "name": "show",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is shown."
+   },
+   {
+    "name": "hide",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is hidden."
+   },
+   {
+    "name": "ready-to-show",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the web page has been rendered (while not being shown) and window can be displayed without a visual flash.\n\nPlease note that using this event implies that the renderer will be considered "
+   },
+   {
+    "name": "maximize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when window is maximized."
+   },
+   {
+    "name": "unmaximize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window exits from a maximized state."
+   },
+   {
+    "name": "minimize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is minimized.\n\n> [!NOTE] On Wayland, \u201cminimized\u201d is not currently a supported state. The minimize event will only fire when triggered by client-side decoration (e.g. clicking t"
+   },
+   {
+    "name": "restore",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is restored from a minimized state."
+   },
+   {
+    "name": "will-resize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "newBounds",
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted before the window is resized. Calling `event.preventDefault()` will prevent the window from being resized.\n\nNote that this is only emitted when the window is being resized manually. Resizing t"
+   },
+   {
+    "name": "resize",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted after the window has been resized."
+   },
+   {
+    "name": "resized",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted once when the window has finished being resized.\n\nThis is usually emitted when the window has been resized manually. On macOS, resizing the window with `setBounds`/`setSize` and setting the `a"
+   },
+   {
+    "name": "will-move",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "newBounds"
+    ],
+    "returns": null,
+    "desc": "Emitted before the window is moved. On Windows, calling `event.preventDefault()` will prevent the window from being moved.\n\nNote that this is only emitted when the window is being moved manually. Movi"
+   },
+   {
+    "name": "move",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window is being moved to a new position."
+   },
+   {
+    "name": "moved",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted once when the window is moved to a new position.\n\n> [!NOTE] On macOS, this event is an alias of `move`."
+   },
+   {
+    "name": "enter-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window enters a full-screen state."
+   },
+   {
+    "name": "leave-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window leaves a full-screen state."
+   },
+   {
+    "name": "enter-html-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window enters a full-screen state triggered by HTML API."
+   },
+   {
+    "name": "leave-html-full-screen",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window leaves a full-screen state triggered by HTML API."
+   },
+   {
+    "name": "always-on-top-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "isAlwaysOnTop"
+    ],
+    "returns": null,
+    "desc": "Emitted when the window is set or unset to show always on top of other windows."
+   },
+   {
+    "name": "app-command",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "event",
+     "command"
+    ],
+    "returns": null,
+    "desc": "Emitted when an App Command is invoked. These are typically related to keyboard media keys or browser commands, as well as the \"Back\" button built into some mice on Windows.\n\nCommands are lowercased, "
+   },
+   {
+    "name": "swipe",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "direction"
+    ],
+    "returns": null,
+    "desc": "Emitted on 3-finger swipe. Possible directions are `up`, `right`, `down`, `left`.\n\nThe method underlying this event is built to handle older macOS-style trackpad swiping, where the content on the scre"
+   },
+   {
+    "name": "rotate-gesture",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "rotation"
+    ],
+    "returns": null,
+    "desc": "Emitted on trackpad rotation gesture. Continually emitted until rotation gesture is ended. The `rotation` value on each emission is the angle in degrees rotated since the last emission. The last emitt"
+   },
+   {
+    "name": "sheet-begin",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window opens a sheet."
+   },
+   {
+    "name": "sheet-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the window has closed a sheet."
+   },
+   {
+    "name": "new-window-for-tab",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the user clicks the native macOS new tab button. The new tab button is only visible if the current `BrowserWindow` has a `tabbingIdentifier`.\n\nYou must create a window in this handler in "
+   },
+   {
+    "name": "system-context-menu",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "event",
+     "point"
+    ],
+    "returns": null,
+    "desc": "Emitted when the system context menu is triggered on the window, this is normally only triggered when the user right clicks on the non-client area of your window.  This is the window titlebar or any a"
+   },
+   {
+    "name": "webContents",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebContents` object this window owns. All web page related events and operations will be done via it.\n\nSee the `webContents` documentation for its methods and events.\n\n> [!NOTE] Reading this proper"
+   },
+   {
+    "name": "id",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Integer` property representing the unique ID of the window. Each ID is unique among all `BrowserWindow` instances of the entire Electron application."
+   },
+   {
+    "name": "tabbingIdentifier",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` (optional) property that is equal to the `tabbingIdentifier` passed to the `BrowserWindow` constructor or `undefined` if none was set."
+   },
+   {
+    "name": "autoHideMenuBar",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window menu bar should hide itself automatically. Once set, the menu bar will only show when users press the single `Alt` key.\n\nIf the menu bar is alre"
+   },
+   {
+    "name": "simpleFullScreen",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is in simple (pre-Lion) fullscreen mode."
+   },
+   {
+    "name": "fullScreen",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is in fullscreen mode."
+   },
+   {
+    "name": "focusable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is focusable."
+   },
+   {
+    "name": "visibleOnAllWorkspaces",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is visible on all workspaces.\n\n> [!NOTE] Always returns false on Windows."
+   },
+   {
+    "name": "shadow",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window has a shadow."
+   },
+   {
+    "name": "menuBarVisible",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the menu bar should be visible.\n\n> [!NOTE] If the menu bar is auto-hide, users can still bring up the menu bar by pressing the single `Alt` key."
+   },
+   {
+    "name": "kiosk",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is in kiosk mode."
+   },
+   {
+    "name": "documentEdited",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that specifies whether the window\u2019s document has been edited.\n\nThe icon in title bar will become gray when set to `true`."
+   },
+   {
+    "name": "representedFilename",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the pathname of the file the window represents, and the icon of the file will show in window's title bar."
+   },
+   {
+    "name": "title",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that determines the title of the native window.\n\n> [!NOTE] The title of the web page can be different from the title of the native window."
+   },
+   {
+    "name": "minimizable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually minimized by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "maximizable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually maximized by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "fullScreenable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the maximize/zoom window button toggles fullscreen mode or maximizes the window."
+   },
+   {
+    "name": "resizable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually resized by user."
+   },
+   {
+    "name": "closable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window can be manually closed by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "movable",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines Whether the window can be moved by user.\n\nOn Linux the setter is a no-op, although the getter returns `true`."
+   },
+   {
+    "name": "excludedFromShownWindowsMenu",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the window is excluded from the application\u2019s Windows menu. `false` by default."
+   },
+   {
+    "name": "accessibleTitle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that defines an alternative title provided only to accessibility tools such as screen readers. This string is not directly visible to users."
+   },
+   {
+    "name": "snapped",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that indicates whether the window is arranged via Snap."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/browser-window"
+ },
+ {
+  "name": "ImageView",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": "View",
+  "description": "> A View that displays an image.\n\nProcess: Main\n\nThis module cannot be used until the `ready` event of the `app` module is emitted.\n\nUseful for showing splash screens that will be swapped for `WebContentsView`s when the content finishes loading.\n\nNote that `ImageView` is experimental and may be chan",
+  "members": [
+   {
+    "name": "setImage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_experimental"
+    ],
+    "params": [
+     "image"
+    ],
+    "returns": null,
+    "desc": "Sets the image for this `ImageView`. Note that only image formats supported by `NativeImage` can be used with an `ImageView`."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/image-view"
+ },
+ {
+  "name": "TouchBarButton",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a button in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "accessibilityLabel",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the description of the button to be read by a screen reader. Will only be read by screen readers if no label is set."
+   },
+   {
+    "name": "label",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the button's current text. Changing this value immediately updates the button in the touch bar."
+   },
+   {
+    "name": "backgroundColor",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` hex code representing the button's current background color. Changing this value immediately updates the button in the touch bar."
+   },
+   {
+    "name": "icon",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `NativeImage` representing the button's current icon. Changing this value immediately updates the button in the touch bar."
+   },
+   {
+    "name": "iconPosition",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` - Can be `left`, `right` or `overlay`.  Defaults to `overlay`."
+   },
+   {
+    "name": "enabled",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` representing whether the button is in an enabled state."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-button"
+ },
+ {
+  "name": "TouchBarColorPicker",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a color picker in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "availableColors",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string[]` array representing the color picker's available colors to select. Changing this value immediately updates the color picker in the touch bar."
+   },
+   {
+    "name": "selectedColor",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` hex code representing the color picker's currently selected color. Changing this value immediately updates the color picker in the touch bar."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-color-picker"
+ },
+ {
+  "name": "TouchBarGroup",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a group in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-group"
+ },
+ {
+  "name": "TouchBarLabel",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a label in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "label",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the label's current text. Changing this value immediately updates the label in the touch bar."
+   },
+   {
+    "name": "accessibilityLabel",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the description of the label to be read by a screen reader."
+   },
+   {
+    "name": "textColor",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` hex code representing the label's current text color. Changing this value immediately updates the label in the touch bar."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-label"
+ },
+ {
+  "name": "TouchBarOtherItemsProxy",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Instantiates a special \"other items proxy\", which nests TouchBar elements inherited from Chromium at the space indicated by the proxy. By default, this proxy is added to each TouchBar at the end of the input. For more information, see the AppKit docs on NSTouchBarItemIdentifierOtherItemsProxy\n\n> [",
+  "members": [
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-other-items-proxy"
+ },
+ {
+  "name": "TouchBarPopover",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a popover in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "label",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the popover's current button text. Changing this value immediately updates the popover in the touch bar."
+   },
+   {
+    "name": "icon",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `NativeImage` representing the popover's current button icon. Changing this value immediately updates the popover in the touch bar."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-popover"
+ },
+ {
+  "name": "TouchBarScrubber",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a scrubber (a scrollable selector)\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "items",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `ScrubberItem[]` array representing the items in this scrubber. Updating this value immediately updates the control in the touch bar. Updating deep properties inside this array **does not update the"
+   },
+   {
+    "name": "selectedStyle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the style that selected items in the scrubber should have. Updating this value immediately updates the control in the touch bar. Possible values:\n\n* `background` - Maps to `[NS"
+   },
+   {
+    "name": "overlayStyle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the style that selected items in the scrubber should have. This style is overlaid on top of the scrubber item instead of being placed behind it. Updating this value immediately"
+   },
+   {
+    "name": "showArrowButtons",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` representing whether to show the left / right selection arrows in this scrubber. Updating this value immediately updates the control in the touch bar."
+   },
+   {
+    "name": "mode",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the mode of this scrubber. Updating this value immediately updates the control in the touch bar. Possible values:\n\n* `fixed` - Maps to `NSScrubberModeFixed`.\n* `free` - Maps to"
+   },
+   {
+    "name": "continuous",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` representing whether this scrubber is continuous or not. Updating this value immediately updates the control in the touch bar."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-scrubber"
+ },
+ {
+  "name": "TouchBarSegmentedControl",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a segmented control (a button group) where one button has a selected state\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "segmentStyle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the controls current segment style. Updating this value immediately updates the control in the touch bar."
+   },
+   {
+    "name": "segments",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `SegmentedControlSegment[]` array representing the segments in this control. Updating this value immediately updates the control in the touch bar. Updating deep properties inside this array **does n"
+   },
+   {
+    "name": "selectedIndex",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An `Integer` representing the currently selected segment. Changing this value immediately updates the control in the touch bar. User interaction with the touch bar will update this value automatically"
+   },
+   {
+    "name": "mode",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the current selection mode of the control.  Can be `single`, `multiple` or `buttons`."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-segmented-control"
+ },
+ {
+  "name": "TouchBarSlider",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a slider in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "label",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the slider's current text. Changing this value immediately updates the slider in the touch bar."
+   },
+   {
+    "name": "value",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` representing the slider's current value. Changing this value immediately updates the slider in the touch bar."
+   },
+   {
+    "name": "minValue",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` representing the slider's current minimum value. Changing this value immediately updates the slider in the touch bar."
+   },
+   {
+    "name": "maxValue",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` representing the slider's current maximum value. Changing this value immediately updates the slider in the touch bar."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-slider"
+ },
+ {
+  "name": "TouchBarSpacer",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "> Create a spacer between two items in the touch bar for native macOS applications\n\nProcess: Main\n _This class is not exported from the `'electron'` module. It is only available as a return value of other methods in the Electron API._",
+  "members": [
+   {
+    "name": "size",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` representing the size of the spacer.  Can be `small`, `large` or `flexible`."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar-spacer"
+ },
+ {
+  "name": "TouchBar",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> [!WARNING] Electron's built-in classes cannot be subclassed in user code. For more information, see the FAQ.\n\n### Class: TouchBar\n\n> Create TouchBar layouts for native macOS applications\n\nProcess: Main",
+  "members": [
+   {
+    "name": "escapeItem",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `TouchBarItem` that will replace the \"esc\" button on the touch bar when set. Setting to `null` restores the default \"esc\" button. Changing this value immediately updates the escape item in the touch"
+   },
+   {
+    "name": "TouchBarButton",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarButton` reference to the `TouchBarButton` class."
+   },
+   {
+    "name": "TouchBarColorPicker",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarColorPicker` reference to the `TouchBarColorPicker` class."
+   },
+   {
+    "name": "TouchBarGroup",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarGroup` reference to the `TouchBarGroup` class."
+   },
+   {
+    "name": "TouchBarLabel",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarLabel` reference to the `TouchBarLabel` class."
+   },
+   {
+    "name": "TouchBarPopover",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarPopover` reference to the `TouchBarPopover` class."
+   },
+   {
+    "name": "TouchBarScrubber",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarScrubber` reference to the `TouchBarScrubber` class."
+   },
+   {
+    "name": "TouchBarSegmentedControl",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarSegmentedControl` reference to the `TouchBarSegmentedControl` class."
+   },
+   {
+    "name": "TouchBarSlider",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarSlider` reference to the `TouchBarSlider` class."
+   },
+   {
+    "name": "TouchBarSpacer",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarSpacer` reference to the `TouchBarSpacer` class."
+   },
+   {
+    "name": "TouchBarOtherItemsProxy",
+    "kind": "static-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `typeof TouchBarOtherItemsProxy` reference to the `TouchBarOtherItemsProxy` class."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/touch-bar"
+ },
+ {
+  "name": "View",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Create and layout native views.\n\nProcess: Main\n\nThis module cannot be used until the `ready` event of the `app` module is emitted.\n\n### Class: View\n\n> A basic native view.\n\nProcess: Main\n\n`View` is an EventEmitter.\n\n> [!WARNING] Electron's built-in classes cannot be subclassed in user code. For mo",
+  "members": [
+   {
+    "name": "addChildView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "view",
+     "index"
+    ],
+    "returns": null,
+    "desc": "If the same View is added to a parent which already contains it, it will be reordered such that it becomes the topmost view."
+   },
+   {
+    "name": "removeChildView",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "view"
+    ],
+    "returns": null,
+    "desc": "If the view passed as a parameter is not a child of this view, this method is a no-op."
+   },
+   {
+    "name": "setBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "bounds",
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "getBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The bounds of this View, relative to its parent."
+   },
+   {
+    "name": "setBackgroundColor",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "color"
+    ],
+    "returns": null,
+    "desc": "Examples of valid `color` values:\n\n* Hex\n  * `#fff` (RGB)\n  * `#ffff` (ARGB)\n  * `#ffffff` (RRGGBB)\n  * `#ffffffff` (AARRGGBB)\n* RGB\n  * `rgb\\(([\\d]+),\\s*([\\d]+),\\s*([\\d]+)\\)`\n    * e.g. `rgb(255, 255"
+   },
+   {
+    "name": "setBorderRadius",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "radius"
+    ],
+    "returns": null,
+    "desc": "> [!NOTE] The area cutout of the view's border still captures clicks."
+   },
+   {
+    "name": "setBackgroundBlur",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "blurRadius"
+    ],
+    "returns": null,
+    "desc": "> [!NOTE] You must set a background color with an alpha channel (e.g. `#80ffffff`) in order for the blur effect to be visible."
+   },
+   {
+    "name": "setVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "visible"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "getVisible",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the view should be drawn. Note that this is different from whether the view is visible on screen\u2014it may still be obscured or out of view."
+   },
+   {
+    "name": "bounds-changed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the view's bounds have changed in response to being laid out. The new bounds can be retrieved with `view.getBounds()`."
+   },
+   {
+    "name": "children",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `View[]` property representing the child views of this view."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/view"
+ },
+ {
+  "name": "WebContentsView",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": "View",
+  "description": "> A View that displays a WebContents.\n\nProcess: Main\n\nThis module cannot be used until the `ready` event of the `app` module is emitted.\n\n### Class: WebContentsView extends `View`\n\n> A View that displays a WebContents.\n\nProcess: Main\n\n`WebContentsView` inherits from `View`.\n\n`WebContentsView` is an ",
+  "members": [
+   {
+    "name": "webContents",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `WebContents` property containing a reference to the displayed `WebContents`. Use this to interact with the `WebContents`, for instance to load a URL."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/web-contents-view"
+ },
+ {
+  "name": "BaseWindowConstructorOptions",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "When setting minimum or maximum window size with `minWidth`/`maxWidth`/ `minHeight`/`maxHeight`, it only constrains the users. It won't prevent you from passing a size that does not follow size constraints to `setBounds`/`setSize` or to the constructor of `BrowserWindow`.\n\nThe possible values and be",
+  "members": [
+   {
+    "name": "width",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Window's width in pixels. Default is `800`."
+   },
+   {
+    "name": "height",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Window's height in pixels. Default is `600`."
+   },
+   {
+    "name": "x",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "(**required** if y is used) Window's left offset from screen. Default is to center the window."
+   },
+   {
+    "name": "y",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "(**required** if x is used) Window's top offset from screen. Default is to center the window."
+   },
+   {
+    "name": "useContentSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The `width` and `height` would be used as web page's size, which means the actual window's size will include window frame's size and be slightly larger. Default is `false`."
+   },
+   {
+    "name": "center",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Show window in the center of the screen. Default is `false`."
+   },
+   {
+    "name": "minWidth",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Window's minimum width. Default is `0`."
+   },
+   {
+    "name": "minHeight",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Window's minimum height. Default is `0`."
+   },
+   {
+    "name": "maxWidth",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Window's maximum width. Default is no limit."
+   },
+   {
+    "name": "maxHeight",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Window's maximum height. Default is no limit."
+   },
+   {
+    "name": "resizable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window is resizable. Default is `true`."
+   },
+   {
+    "name": "movable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window is movable. This is not implemented on Linux. Default is `true`."
+   },
+   {
+    "name": "minimizable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window is minimizable. This is not implemented on Linux. Default is `true`."
+   },
+   {
+    "name": "maximizable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window is maximizable. This is not implemented on Linux. Default is `true`."
+   },
+   {
+    "name": "closable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window is closable. This is not implemented on Linux. Default is `true`."
+   },
+   {
+    "name": "focusable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the window can be focused. Default is `true`. On Windows setting `focusable: false` also implies setting `skipTaskbar: true`. On Linux setting `focusable: false` makes the window stop interact"
+   },
+   {
+    "name": "alwaysOnTop",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the window should always stay on top of other windows. Default is `false`. Not supported on Wayland (Linux)."
+   },
+   {
+    "name": "fullscreen",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the window should show in fullscreen. When explicitly set to `false` the fullscreen button will be hidden or disabled on macOS. Default is `false`."
+   },
+   {
+    "name": "fullscreenable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the window can be put into fullscreen mode. On macOS, also whether the maximize/zoom button should toggle full screen mode or maximize window. Default is `true`."
+   },
+   {
+    "name": "simpleFullscreen",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Use pre-Lion fullscreen on macOS. Default is `false`."
+   },
+   {
+    "name": "skipTaskbar",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to show the window in taskbar. Default is `false`."
+   },
+   {
+    "name": "hiddenInMissionControl",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window should be hidden when the user toggles into mission control."
+   },
+   {
+    "name": "kiosk",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the window is in kiosk mode. Default is `false`."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A unique identifier for the window, used internally by Electron to enable features such as state persistence. Each window must have a distinct name. It can only be reused after the corresponding windo"
+   },
+   {
+    "name": "windowStatePersistence",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Configures or enables the persistence of window state (position, size, maximized state, etc.) across application restarts. Has no effect if window `name` is not provided. Automatically disabled when t"
+   },
+   {
+    "name": "title",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Default window title. Default is `\"Electron\"`. If the HTML tag `<title>` is defined in the HTML file loaded by `loadURL()`, this property will be ignored."
+   },
+   {
+    "name": "icon",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The window icon. On Windows it is recommended to use `ICO` icons to get best visual effects, you can also leave it undefined so the executable's icon will be used."
+   },
+   {
+    "name": "show",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window should be shown when created. Default is `true`."
+   },
+   {
+    "name": "frame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Specify `false` to create a frameless window. Default is `true`."
+   },
+   {
+    "name": "parent",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Specify parent window. Default is `null`."
+   },
+   {
+    "name": "modal",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether this is a modal window. This only works when the window is a child window. Default is `false`."
+   },
+   {
+    "name": "acceptFirstMouse",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether clicking an inactive window will also click through to the web contents. Default is `false` on macOS. This option is not configurable on other platforms."
+   },
+   {
+    "name": "disableAutoHideCursor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to hide cursor when typing. Default is `false`."
+   },
+   {
+    "name": "autoHideMenuBar",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Auto hide the menu bar unless the `Alt` key is pressed. Default is `false`."
+   },
+   {
+    "name": "enableLargerThanScreen",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Enable the window to be resized larger than screen. Only relevant for macOS, as other OSes allow larger-than-screen windows by default. Default is `false`."
+   },
+   {
+    "name": "backgroundColor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The window's background color in Hex, RGB, RGBA, HSL, HSLA or named CSS color format. Alpha in #AARRGGBB format is supported if `transparent` is set to `true`. Default is `#FFF` (white). See win.setBa"
+   },
+   {
+    "name": "hasShadow",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether window should have a shadow. Default is `true`."
+   },
+   {
+    "name": "opacity",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Set the initial opacity of the window, between 0.0 (fully transparent) and 1.0 (fully opaque). This is only implemented on Windows and macOS."
+   },
+   {
+    "name": "darkTheme",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Forces using dark theme for the window, only works on some GTK+3 desktop environments. Default is `false`."
+   },
+   {
+    "name": "transparent",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Makes the window transparent. Default is `false`. On Windows, does not work unless the window is frameless. When you add a `View` to a `BaseWindow`, you'll need to call `view.setBackgroundColor` with "
+   },
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of window, default is normal window. See more about this below."
+   },
+   {
+    "name": "visualEffectState",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Specify how the material appearance should reflect window activity state on macOS. Must be used with the `vibrancy` property. Possible values are:"
+   },
+   {
+    "name": "titleBarStyle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The style of window title bar. Default is `default`. Possible values are:"
+   },
+   {
+    "name": "titleBarOverlay",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": " When using a frameless window in conjunction with `win.setWindowButtonVisibility(true)` on macOS or using a `titleBarStyle` so that the standard window controls (\"traffic lights\" on macOS) are visibl"
+   },
+   {
+    "name": "accentColor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The accent color for the window. By default, follows user preference in System Settings. Set to `false` to explicitly disable, or set the color in Hex, RGB, RGBA, HSL, HSLA or named CSS color format. "
+   },
+   {
+    "name": "trafficLightPosition",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Set a custom position for the traffic light buttons in frameless windows."
+   },
+   {
+    "name": "roundedCorners",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether a frameless window should have rounded corners. Default is `true`. On Windows versions older than Windows 11 Build 22000 this property has no effect, and frameless windows will not have rounde"
+   },
+   {
+    "name": "thickFrame",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Use `WS_THICKFRAME` style for frameless windows on Windows, which adds the standard window frame. Setting it to `false` will remove window shadow and window animations, and disable window resizing via"
+   },
+   {
+    "name": "vibrancy",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Add a type of vibrancy effect to the window, only on macOS. Can be `appearance-based`, `titlebar`, `selection`, `menu`, `popover`, `sidebar`, `header`, `sheet`, `window`, `hud`, `fullscreen-ui`, `tool"
+   },
+   {
+    "name": "backgroundMaterial",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Set the window's system-drawn background material, including behind the non-client area. Can be `auto`, `none`, `mica`, `acrylic` or `tabbed`. See win.setBackgroundMaterial for more information."
+   },
+   {
+    "name": "zoomToPageWidth",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Controls the behavior on macOS when option-clicking the green stoplight button on the toolbar or by clicking the Window > Zoom menu item. If `true`, the window will grow to the preferred width of the "
+   },
+   {
+    "name": "tabbingIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Tab group name, allows opening the window as a native tab. Windows with the same tabbing identifier will be grouped together. This also adds a native new tab button to your window's tab bar and allows"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/base-window-options"
+ },
+ {
+  "name": "BrowserWindowConstructorOptions",
+  "type": "Structure",
+  "process": null,
+  "extends": "BaseWindowConstructorOptions",
+  "description": "",
+  "members": [
+   {
+    "name": "webPreferences",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Settings of web page's features."
+   },
+   {
+    "name": "paintWhenInitiallyHidden",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether the renderer should be active when `show` is `false` and it has just been created.  In order for `document.visibilityState` to work correctly on first load with `show: false` you should set th"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/browser-window-options"
+ },
+ {
+  "name": "JumpListCategory",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "> [!NOTE] If a `JumpListCategory` object has neither the `type` nor the `name` property set then its `type` is assumed to be `tasks`. If the `name` property is set but the `type` property is omitted then the `type` is assumed to be `custom`.\n\n> [!NOTE] The maximum length of a Jump List item's `descr",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "One of the following:"
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Must be set if `type` is `custom`, otherwise it should be omitted."
+   },
+   {
+    "name": "items",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Array of `JumpListItem` objects if `type` is `tasks` or `custom`, otherwise it should be omitted."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/jump-list-category"
+ },
+ {
+  "name": "JumpListItem",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "One of the following:"
+   },
+   {
+    "name": "path",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of the file to open, should only be set if `type` is `file`."
+   },
+   {
+    "name": "program",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of the program to execute, usually you should specify `process.execPath` which opens the current program. Should only be set if `type` is `task`."
+   },
+   {
+    "name": "args",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The command line arguments when `program` is executed. Should only be set if `type` is `task`."
+   },
+   {
+    "name": "title",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The text to be displayed for the item in the Jump List. Should only be set if `type` is `task`."
+   },
+   {
+    "name": "description",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Description of the task (displayed in a tooltip). Should only be set if `type` is `task`. Maximum length 260 characters."
+   },
+   {
+    "name": "iconPath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The absolute path to an icon to be displayed in a Jump List, which can be an arbitrary resource file that contains an icon (e.g. `.ico`, `.exe`, `.dll`). You can usually specify `process.execPath` to "
+   },
+   {
+    "name": "iconIndex",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The index of the icon in the resource file. If a resource file contains multiple icons this value can be used to specify the zero-based index of the icon that should be displayed for this task. If a r"
+   },
+   {
+    "name": "workingDirectory",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The working directory. Default is empty."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/jump-list-item"
+ },
+ {
+  "name": "Point",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "> [!NOTE] Both `x` and `y` must be whole integers, when providing a point object as input to an Electron API we will automatically round your `x` and `y` values to the nearest whole integer.",
+  "members": [
+   {
+    "name": "x",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "y",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/point"
+ },
+ {
+  "name": "Rectangle",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "x",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The x coordinate of the origin of the rectangle (must be an integer)."
+   },
+   {
+    "name": "y",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The y coordinate of the origin of the rectangle (must be an integer)."
+   },
+   {
+    "name": "width",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The width of the rectangle (must be an integer)."
+   },
+   {
+    "name": "height",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The height of the rectangle (must be an integer)."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/rectangle"
+ },
+ {
+  "name": "ScrubberItem",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "label",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The text to appear in this item."
+   },
+   {
+    "name": "icon",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The image to appear in this item."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/scrubber-item"
+ },
+ {
+  "name": "SegmentedControlSegment",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "label",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The text to appear in this segment."
+   },
+   {
+    "name": "icon",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The image to appear in this segment."
+   },
+   {
+    "name": "enabled",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether this segment is selectable. Default: true."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/segmented-control-segment"
+ },
+ {
+  "name": "Size",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "width",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "height",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/size"
+ },
+ {
+  "name": "Task",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "program",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Path of the program to execute, usually you should specify `process.execPath` which opens the current program."
+   },
+   {
+    "name": "arguments",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The command line arguments when `program` is executed."
+   },
+   {
+    "name": "title",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The string to be displayed in a JumpList."
+   },
+   {
+    "name": "description",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Description of this task."
+   },
+   {
+    "name": "iconPath",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The absolute path to an icon to be displayed in a JumpList, which can be an arbitrary resource file that contains an icon. You can usually specify `process.execPath` to show the icon of the program."
+   },
+   {
+    "name": "iconIndex",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The icon index in the icon file. If an icon file consists of two or more icons, set this value to identify the icon. If an icon file consists of one icon, this value is 0."
+   },
+   {
+    "name": "workingDirectory",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The working directory. Default is empty."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/task"
+ },
+ {
+  "name": "ThumbarButton",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "The `flags` is an array that can include following `string`s:\n\n* `enabled` - The button is active and available to the user.\n* `disabled` - The button is disabled. It is present, but has a visual state indicating it will not respond to user action.\n* `dismissonclick` - When the button is clicked, th",
+  "members": [
+   {
+    "name": "icon",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The icon showing in thumbnail toolbar."
+   },
+   {
+    "name": "click",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "tooltip",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The text of the button's tooltip."
+   },
+   {
+    "name": "flags",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Control specific states and behaviors of the button. By default, it is `['enabled']`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/thumbar-button"
+ },
+ {
+  "name": "WebPreferences",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "devTools",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable DevTools. If it is set to `false`, can not use `BrowserWindow.webContents.openDevTools()` to open DevTools. Default is `true`."
+   },
+   {
+    "name": "nodeIntegration",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether node integration is enabled. Default is `false`."
+   },
+   {
+    "name": "nodeIntegrationInWorker",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether node integration is enabled in web workers. Default is `false`. Only workers created by a frame that itself has access to Node.js (the main frame, or any frame when `nodeIntegrationInSubFrames"
+   },
+   {
+    "name": "nodeIntegrationInSubFrames",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Experimental option for enabling Node.js support in sub-frames such as iframes and child windows. All your preloads will load for every iframe, you can use `process.isMainFrame` to determine if you ar"
+   },
+   {
+    "name": "preload",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Specifies a script that will be loaded before other scripts run in the page. This script will always have access to node APIs no matter whether node integration is turned on or off. The value should b"
+   },
+   {
+    "name": "sandbox",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "If set, this will sandbox the renderer associated with the window, making it compatible with the Chromium OS-level sandbox and disabling the Node.js engine. This is not the same as the `nodeIntegratio"
+   },
+   {
+    "name": "session",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Sets the session used by the page. Instead of passing the Session object directly, you can also choose to use the `partition` option instead, which accepts a partition string. When both `session` and "
+   },
+   {
+    "name": "partition",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Sets the session used by the page according to the session's partition string. If `partition` starts with `persist:`, the page will use a persistent session available to all pages in the app with the "
+   },
+   {
+    "name": "zoomFactor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The default zoom factor of the page, `3.0` represents `300%`. Default is `1.0`."
+   },
+   {
+    "name": "zoomMode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The initial zoom mode for the page. See `contents.setZoomMode` for available modes. Default is `'default'`."
+   },
+   {
+    "name": "javascript",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Enables JavaScript support. Default is `true`."
+   },
+   {
+    "name": "webSecurity",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "When `false`, it will disable the same-origin policy (usually using testing websites by people), and set `allowRunningInsecureContent` to `true` if this option has not been set by user. Default is `tr"
+   },
+   {
+    "name": "allowRunningInsecureContent",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Allow an https page to run JavaScript, CSS or plugins from http URLs. Default is `false`."
+   },
+   {
+    "name": "images",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Enables image support. Default is `true`."
+   },
+   {
+    "name": "imageAnimationPolicy",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Specifies how to run image animations (E.g. GIFs).  Can be `animate`, `animateOnce` or `noAnimation`.  Default is `animate`."
+   },
+   {
+    "name": "textAreasAreResizable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Make TextArea elements resizable. Default is `true`."
+   },
+   {
+    "name": "webgl",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Enables WebGL support. Default is `true`."
+   },
+   {
+    "name": "plugins",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether plugins should be enabled. Default is `false`."
+   },
+   {
+    "name": "experimentalFeatures",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Enables Chromium's experimental features. Default is `false`."
+   },
+   {
+    "name": "scrollBounce",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Enables scroll bounce (rubber banding) effect on macOS. Default is `false`."
+   },
+   {
+    "name": "enableBlinkFeatures",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A list of feature strings separated by `,`, like `CSSVariables,KeyboardEventKey` to enable. The full list of supported feature strings can be found in the RuntimeEnabledFeatures.json5 file."
+   },
+   {
+    "name": "disableBlinkFeatures",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A list of feature strings separated by `,`, like `CSSVariables,KeyboardEventKey` to disable. The full list of supported feature strings can be found in the RuntimeEnabledFeatures.json5 file."
+   },
+   {
+    "name": "defaultFontFamily",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Sets the default font for the font-family."
+   },
+   {
+    "name": "defaultFontSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Defaults to `16`."
+   },
+   {
+    "name": "defaultMonospaceFontSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Defaults to `13`."
+   },
+   {
+    "name": "minimumFontSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Defaults to `0`."
+   },
+   {
+    "name": "defaultEncoding",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Defaults to `ISO-8859-1`."
+   },
+   {
+    "name": "backgroundThrottling",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to throttle animations and timers when the page becomes background. This also affects the Page Visibility API. When at least one webContents displayed in a single browserWindow has disabled `b"
+   },
+   {
+    "name": "offscreen",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable offscreen rendering for the browser window. Defaults to `false`. See the offscreen rendering tutorial for more details."
+   },
+   {
+    "name": "contextIsolation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to run Electron APIs and the specified `preload` script in a separate JavaScript context. Defaults to `true`. The context that the `preload` script runs in will only have access to its own ded"
+   },
+   {
+    "name": "webviewTag",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable the `<webview>` tag. Defaults to `false`. **Note:** The `preload` script configured for the `<webview>` will have node integration enabled when it is executed so you should ensure re"
+   },
+   {
+    "name": "additionalArguments",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A list of strings that will be appended to `process.argv` in the renderer process of this app.  Useful for passing small bits of data down to renderer process preload scripts."
+   },
+   {
+    "name": "safeDialogs",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable browser style consecutive dialog protection. Default is `false`."
+   },
+   {
+    "name": "safeDialogsMessage",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The message to display when consecutive dialog protection is triggered. If not defined the default message would be used, note that currently the default message is in English and not localized."
+   },
+   {
+    "name": "disableDialogs",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to disable dialogs completely. Overrides `safeDialogs`. Default is `false`."
+   },
+   {
+    "name": "navigateOnDragDrop",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether dragging and dropping a file or link onto the page causes a navigation. Default is `false`."
+   },
+   {
+    "name": "autoplayPolicy",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Autoplay policy to apply to content in the window, can be `no-user-gesture-required`, `user-gesture-required`, `document-user-activation-required`. Defaults to `no-user-gesture-required`."
+   },
+   {
+    "name": "disableHtmlFullscreenWindowResize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to prevent the window from resizing when entering HTML Fullscreen. Default is `false`."
+   },
+   {
+    "name": "accessibleTitle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An alternative title string provided only to accessibility tools such as screen readers. This string is not directly visible to users."
+   },
+   {
+    "name": "spellcheck",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable the builtin spellchecker. Default is `true`."
+   },
+   {
+    "name": "enableWebSQL",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable the WebSQL api. Default is `true`."
+   },
+   {
+    "name": "v8CacheOptions",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Enforces the v8 code caching policy used by blink. Accepted values are"
+   },
+   {
+    "name": "enablePreferredSizeMode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable preferred size mode. The preferred size is the minimum size needed to contain the layout of the document\u2014without requiring scrolling. Enabling this will cause the `preferred-size-cha"
+   },
+   {
+    "name": "transparent",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable background transparency for the guest page. Default is `true`. **Note:** The guest page's text and background colors are derived from the color scheme of its root element. When trans"
+   },
+   {
+    "name": "enableDeprecatedPaste",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to enable the `paste` execCommand. Default is `false`."
+   },
+   {
+    "name": "focusOnNavigation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to focus the WebContents when navigating. Default is `true`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/web-preferences"
+ },
+ {
+  "name": "WindowOpenHandlerResponse",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "action",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `allow` or `deny`. Controls whether new window should be created."
+   },
+   {
+    "name": "overrideBrowserWindowOptions",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Allows customization of the created window."
+   },
+   {
+    "name": "outlivesOpener",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "By default, child windows are closed when their opener is closed. This can be changed by specifying `outlivesOpener: true`, in which case the opened window will not be closed when its opener is closed"
+   },
+   {
+    "name": "createWindow",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "If specified, will be called instead of `new BrowserWindow` to create the new child window and event `did-create-window` will not be emitted. Constructed child window should use passed `options` objec"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/window-open-handler-response"
+ },
+ {
+  "name": "WindowSessionEndEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": "Event",
+  "description": "Unfortunately, Windows does not offer a way to differentiate between a shutdown and a reboot, meaning the 'shutdown' reason is triggered in both scenarios. For more details on the `WM_ENDSESSION` message and its associated reasons, refer to the MSDN documentation.",
+  "members": [
+   {
+    "name": "reasons",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "List of reasons for shutdown. Can be 'shutdown', 'close-app', 'critical', or 'logoff'."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/window-session-end-event"
+ },
+ {
+  "name": "WindowStatePersistence",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "bounds",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to persist window position and size across application restarts. Defaults to `true` if not specified."
+   },
+   {
+    "name": "displayMode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether to persist display modes (fullscreen, kiosk, maximized, etc.) across application restarts. Defaults to `true` if not specified."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/window-state-persistence"
+ }
+]

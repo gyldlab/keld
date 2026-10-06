@@ -1,0 +1,4294 @@
+[
+ {
+  "name": "ClipboardItem",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> A single clipboard entry that pairs one or more MIME-typed payloads.\n\nProcess: Main\n\n`ClipboardItem` is modeled after the W3C `ClipboardItem` class. Each `ClipboardItem` carries one or more MIME-typed payloads that represent the same conceptual clipboard entry \u2014 for example, a single copy operatio",
+  "members": [
+   {
+    "name": "getType",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "type"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Promise",
+      "innerTypes": [
+       {
+        "collection": false,
+        "type": "Blob"
+       }
+      ]
+     },
+     {
+      "collection": false,
+      "type": "Promise",
+      "innerTypes": [
+       {
+        "collection": false,
+        "type": "ClipboardBookmark"
+       }
+      ]
+     }
+    ],
+    "desc": "Resolves with the payload for the given MIME type. Modeled after the W3C `ClipboardItem.getType` method. The promise resolves to a `Blob` for most MIME types; the one exception is `getType('electron a"
+   },
+   {
+    "name": "getType",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "bookmark"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with a ClipboardBookmark when a bookmark is available in the clipboard. Rejects when a bookmark is not available in the clipboard."
+   },
+   {
+    "name": "types",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string[]` property \u2014 the MIME types of the data carried by this entry. For a constructed `ClipboardItem` these are the keys passed to the constructor; for an item returned by `clipboard.read()` the"
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "items"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/clipboard-item"
+ },
+ {
+  "name": "clipboard",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Perform copy and paste operations on the system clipboard.\n\nProcess: Main\n\nThe `clipboard` module is modeled after the W3C Clipboard API: `clipboard.read()` returns a `Promise` that resolves with a list of `ClipboardItem` objects, and `clipboard.write()` accepts an array of `ClipboardItem` instanc",
+  "members": [
+   {
+    "name": "readText",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "A promise that resolves with the content of the clipboard as plain text. Modeled after the W3C `navigator.clipboard.readText` API."
+   },
+   {
+    "name": "writeText",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "text"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves once the text has been written to the clipboard. Modeled after the W3C `navigator.clipboard.writeText` API."
+   },
+   {
+    "name": "read",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "A promise that resolves with an array of ClipboardItem objects containing the clipboard's contents."
+   },
+   {
+    "name": "write",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "data"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves once the data has been written to the clipboard. All entries supplied in a single `write()` call are committed to the system clipboard atomically."
+   },
+   {
+    "name": "has",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "mimetype"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with `true` if the clipboard contains data of the specified `mimetype`, otherwise `false`. To check for a raw format, eg `public/utf8-plain-text`, use the `electron application"
+   },
+   {
+    "name": "clear",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Clears the clipboard content."
+   },
+   {
+    "name": "selection",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `Clipboard` property \u2014 a `Clipboard` object on Linux that operates against the selection clipboard instead of the system clipboard, and `undefined` on all other platforms. It exposes the same `read`"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/clipboard"
+ },
+ {
+  "name": "desktopCapturer",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Access information about media sources that can be used to capture audio and video from the desktop using the `navigator.mediaDevices.getUserMedia` API.\n\nProcess: Main\n\nThe following example shows how to capture video from a desktop window whose title is `Electron`:\n\n```\n// main.js\nconst { app, Br",
+  "members": [
+   {
+    "name": "getSources",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with an array of `DesktopCapturerSource` objects, each `DesktopCapturerSource` represents a screen or an individual window that can be captured.\n\n> [!NOTE]\n\n> * Capturing audio requires `NSAu"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/desktop-capturer"
+ },
+ {
+  "name": "dialog",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Display native system dialogs for opening and saving files, alerting, etc.\n\nProcess: Main\n\nAn example of showing a dialog to select multiple files:",
+  "members": [
+   {
+    "name": "showOpenDialogSync",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": [
+     {
+      "collection": true,
+      "type": "String",
+      "possibleValues": null
+     },
+     {
+      "collection": false,
+      "type": "undefined"
+     }
+    ],
+    "desc": "the file paths chosen by the user; if the dialog is cancelled it returns `undefined`.\n\nThe `window` argument allows the dialog to attach itself to a parent window, making it modal.\n\nThe `filters` spec"
+   },
+   {
+    "name": "showOpenDialog",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolve with an object containing the following:\n\n* `canceled` boolean - whether or not the dialog was canceled.\n* `filePaths` string[] - An array of file paths chosen by the user. If the dialog is ca"
+   },
+   {
+    "name": "showSaveDialogSync",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": "String",
+    "desc": "the path of the file chosen by the user; if the dialog is cancelled it returns an empty string.\n\nThe `window` argument allows the dialog to attach itself to a parent window, making it modal.\n\nThe `fil"
+   },
+   {
+    "name": "showSaveDialog",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Resolve with an object containing the following:\n\n* `canceled` boolean - whether or not the dialog was canceled.\n* `filePath` string - If the dialog is canceled, this will be an empty string.\n* `bookm"
+   },
+   {
+    "name": "showMessageBoxSync",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": "Integer",
+    "desc": "the index of the clicked button.\n\nShows a message box, it will block the process until the message box is closed. It returns the index of the clicked button.\n\nThe `window` argument allows the dialog t"
+   },
+   {
+    "name": "showMessageBox",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves with a promise containing the following properties:\n\n* `response` number - The index of the clicked button.\n* `checkboxChecked` boolean - The checked state of the checkbox if `checkboxLabel` "
+   },
+   {
+    "name": "showErrorBox",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "title",
+     "content"
+    ],
+    "returns": null,
+    "desc": "Displays a modal dialog that shows an error message.\n\nThis API can be called safely before the `ready` event the `app` module emits, it is usually used to report errors in early stage of startup. If c"
+   },
+   {
+    "name": "showCertificateTrustDialog",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "window",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "resolves when the certificate trust dialog is shown.\n\nOn macOS, this displays a modal dialog that shows a message and certificate information, and gives the user the option of trusting/importing the c"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/dialog"
+ },
+ {
+  "name": "globalShortcut",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Detect keyboard events when the application does not have keyboard focus.\n\nProcess: Main\n\nThe `globalShortcut` module can register/unregister a global keyboard shortcut with the operating system so that you can customize the operations for various shortcuts.\n\n> [!NOTE] The shortcut is global; it w",
+  "members": [
+   {
+    "name": "register",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "accelerator",
+     "callback"
+    ],
+    "returns": "boolean",
+    "desc": "Whether or not the shortcut was registered successfully.\n\nRegisters a global shortcut of `accelerator`. The `callback` is called when the registered shortcut is pressed by the user.\n\nWhen the accelera"
+   },
+   {
+    "name": "registerAll",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "accelerators",
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Registers a global shortcut of all `accelerator` items in `accelerators`. The `callback` is called when any of the registered shortcuts are pressed by the user.\n\nWhen a given accelerator is already ta"
+   },
+   {
+    "name": "isRegistered",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "accelerator"
+    ],
+    "returns": "boolean",
+    "desc": "Whether this application has registered `accelerator`.\n\nWhen the accelerator is already taken by other applications, this call will still return `false`. This behavior is intended by operating systems"
+   },
+   {
+    "name": "unregister",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "accelerator"
+    ],
+    "returns": null,
+    "desc": "Unregisters the global shortcut of `accelerator`."
+   },
+   {
+    "name": "unregisterAll",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unregisters all of the global shortcuts."
+   },
+   {
+    "name": "setSuspended",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "suspended"
+    ],
+    "returns": null,
+    "desc": "Suspends or resumes global shortcut handling. When suspended, all registered global shortcuts will stop listening for key presses. When resumed, all previously registered shortcuts will begin listenin"
+   },
+   {
+    "name": "isSuspended",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether global shortcut handling is currently suspended."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/global-shortcut"
+ },
+ {
+  "name": "inAppPurchase",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> In-app purchases on Mac App Store.\n\nProcess: Main",
+  "members": [
+   {
+    "name": "purchaseProduct",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "productID",
+     "opts"
+    ],
+    "returns": "Promise",
+    "desc": "Returns `true` if the product is valid and added to the payment queue.\n\nYou should listen for the `transactions-updated` event as soon as possible and certainly before you call `purchaseProduct`."
+   },
+   {
+    "name": "getProducts",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "productIDs"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with an array of `Product` objects.\n\nRetrieves the product descriptions."
+   },
+   {
+    "name": "canMakePayments",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether a user can make a payment."
+   },
+   {
+    "name": "restoreCompletedTransactions",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Restores finished transactions. This method can be called either to install purchases on additional devices, or to restore purchases for an application that the user deleted and reinstalled.\n\nThe paym"
+   },
+   {
+    "name": "getReceiptURL",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "the path to the receipt."
+   },
+   {
+    "name": "finishAllTransactions",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Completes all pending transactions."
+   },
+   {
+    "name": "finishTransactionByDate",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "date"
+    ],
+    "returns": null,
+    "desc": "Completes the pending transactions corresponding to the date."
+   },
+   {
+    "name": "transactions-updated",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "transactions"
+    ],
+    "returns": null,
+    "desc": "Emitted when one or more transactions have been updated."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/in-app-purchase"
+ },
+ {
+  "name": "MenuItem",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "\n\n### Class: MenuItem\n\n> Add items to native application menus and context menus.\n\nProcess: Main\n\nSee `Menu` for examples.\n\n> [!WARNING] Electron's built-in classes cannot be subclassed in user code. For more information, see the FAQ.",
+  "members": [
+   {
+    "name": "id",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the item's unique id.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "label",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the item's visible label.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "accessibilityLabel",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the item's accessibility label (used by assistive technology), if set.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "click",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "focusedWindow",
+     "focusedWebContents"
+    ],
+    "returns": null,
+    "desc": "A `Function` that is fired when the MenuItem receives a click event. It can be called with `menuItem.click(event, focusedWindow, focusedWebContents)`.\n\n* `event` KeyboardEvent\n* `focusedWindow` BaseWi"
+   },
+   {
+    "name": "submenu",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Menu` (optional) containing the menu item's submenu, if present."
+   },
+   {
+    "name": "type",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the type of the item. Can be `normal`, `separator`, `submenu`, `checkbox`, `radio`, `header` or `palette`.\n\n> [!NOTE] `header` and `palette` are only available on macOS 14 and up"
+   },
+   {
+    "name": "role",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` (optional) indicating the item's role, if set. Can be `undo`, `redo`, `cut`, `copy`, `paste`, `pasteAndMatchStyle`, `delete`, `selectAll`, `reload`, `forceReload`, `toggleDevTools`, `resetZ"
+   },
+   {
+    "name": "accelerator",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An `Accelerator | null` indicating the item's accelerator, if set."
+   },
+   {
+    "name": "userAccelerator",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly",
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "An `Accelerator | null` indicating the item's user-assigned accelerator for the menu item.\n\n> [!NOTE] This property is only initialized after the `MenuItem` has been added to a `Menu`. Either via `Men"
+   },
+   {
+    "name": "icon",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `NativeImage | string` (optional) indicating the item's icon, if set.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "sublabel",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the item's sublabel.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "toolTip",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` indicating the item's hover text."
+   },
+   {
+    "name": "enabled",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` indicating whether the item is enabled.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "visible",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` indicating whether the item is visible.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "checked",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` indicating whether the item is checked.\n\nThis property can be dynamically changed.\n\nA `checkbox` menu item will toggle the `checked` property on and off when selected.\n\nA `radio` menu item"
+   },
+   {
+    "name": "registerAccelerator",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` indicating if the accelerator should be registered with the system or just displayed.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "sharingItem",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `SharingItem` indicating the item to share when the `role` is `shareMenu`.\n\nThis property can be dynamically changed."
+   },
+   {
+    "name": "commandId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `number` indicating an item's sequential unique id."
+   },
+   {
+    "name": "menu",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `Menu` that the item is a part of."
+   },
+   {
+    "name": "badge",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `MenuItemBadge` (optional) indicating the badge for the menu item.\n\nThis property can be dynamically changed; setting it to `undefined` removes the badge. Only available on macOS 14 and up.\n\nBadges "
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/menu-item"
+ },
+ {
+  "name": "Menu",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "\n\n### Class: Menu\n\n> Create application menus and context menus.\n\nProcess: Main\n\nThe presentation of menus varies depending on the operating system:\n\n* Under Windows and Linux, menus are visually similar to Chromium.\n* Under macOS, these will be native menus.\n\n> [!TIP] See also: A detailed guide abo",
+  "members": [
+   {
+    "name": "popup",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Pops up this menu as a context menu in the `BaseWindow`.\n\n> [!TIP] For more details, see the Context Menu guide."
+   },
+   {
+    "name": "closePopup",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "window"
+    ],
+    "returns": null,
+    "desc": "Closes the context menu in the `window`."
+   },
+   {
+    "name": "append",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "menuItem"
+    ],
+    "returns": null,
+    "desc": "Appends the `menuItem` to the menu."
+   },
+   {
+    "name": "getMenuItemById",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": [
+     {
+      "collection": false,
+      "type": "MenuItem"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "the item with the specified `id`"
+   },
+   {
+    "name": "insert",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "pos",
+     "menuItem"
+    ],
+    "returns": null,
+    "desc": "Inserts the `menuItem` to the `pos` position of the menu."
+   },
+   {
+    "name": "setApplicationMenu",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "menu"
+    ],
+    "returns": null,
+    "desc": "Sets `menu` as the application menu on macOS. On Windows and Linux, the `menu` will be set as each window's top menu.\n\nAlso on Windows and Linux, you can use a `&` in the top-level item name to indica"
+   },
+   {
+    "name": "getApplicationMenu",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "Menu"
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The application menu, if set, or `null`, if not set.\n\n> [!NOTE] The returned `Menu` instance doesn't support dynamic addition or removal of menu items. Instance properties can still be dynamically mod"
+   },
+   {
+    "name": "sendActionToFirstResponder",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "action"
+    ],
+    "returns": null,
+    "desc": "Sends the `action` to the first responder of application. This is used for emulating default macOS menu behaviors. Usually you would use the `role` property of a `MenuItem`.\n\nSee the macOS Cocoa Event"
+   },
+   {
+    "name": "buildFromTemplate",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "template"
+    ],
+    "returns": "Menu",
+    "desc": "Generally, the `template` is an array of `options` for constructing a MenuItem. The usage can be referenced above.\n\nYou can also attach other fields to the element of the `template` and they will beco"
+   },
+   {
+    "name": "menu-will-show",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when `menu.popup()` is called."
+   },
+   {
+    "name": "menu-will-close",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when a popup is closed either manually or with `menu.closePopup()`."
+   },
+   {
+    "name": "items",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `MenuItem[]` array containing the menu's items.\n\nEach `Menu` consists of multiple `MenuItem` instances and each `MenuItem` can nest a `Menu` into its `submenu` property."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/menu"
+ },
+ {
+  "name": "nativeImage",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Create tray, dock, and application icons using PNG or JPG files.\n\nProcess: Main, Renderer\n\n> [!IMPORTANT] If you want to call this API from a renderer process with context isolation enabled, place the API call in your preload script and expose it using the `contextBridge` API.\n\nThe `nativeImage` m",
+  "members": [
+   {
+    "name": "createEmpty",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "NativeImage",
+    "desc": "Creates an empty `NativeImage` instance."
+   },
+   {
+    "name": "createThumbnailFromPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "path",
+     "size"
+    ],
+    "returns": "Promise",
+    "desc": "fulfilled with the file's thumbnail preview image, which is a NativeImage.\n\n> [!NOTE] Windows implementation will ignore `size.height` and scale the height according to `size.width`."
+   },
+   {
+    "name": "createFromPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": "NativeImage",
+    "desc": "Creates a new `NativeImage` instance from an image file (e.g., PNG or JPEG) located at `path`. This method returns an empty image if the `path` does not exist, cannot be read, or is not a valid image."
+   },
+   {
+    "name": "createFromBitmap",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "buffer",
+     "options"
+    ],
+    "returns": "NativeImage",
+    "desc": "Creates a new `NativeImage` instance from `buffer` that contains the raw bitmap pixel data returned by `toBitmap()`. The specific format is platform-dependent."
+   },
+   {
+    "name": "createFromBuffer",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "buffer",
+     "options"
+    ],
+    "returns": "NativeImage",
+    "desc": "Creates a new `NativeImage` instance from `buffer`. Tries to decode as PNG or JPEG first."
+   },
+   {
+    "name": "createFromDataURL",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "dataURL"
+    ],
+    "returns": "NativeImage",
+    "desc": "Creates a new `NativeImage` instance from `dataUrl`, a base 64 encoded Data URL string."
+   },
+   {
+    "name": "createFromNamedImage",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "imageName",
+     "options"
+    ],
+    "returns": "NativeImage",
+    "desc": "Creates a new `NativeImage` instance from the `NSImage` that maps to the given image name. See Apple's `NSImageName` documentation and SF Symbols for a list of possible values.\n\nThe `hslShift` is appl"
+   },
+   {
+    "name": "createMenuSymbol",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "imageName"
+    ],
+    "returns": "NativeImage",
+    "desc": "Creates a new `NativeImage` instance from an SF Symbol for use in a native Menu. See SF Symbols for a list of possible values."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/native-image"
+ },
+ {
+  "name": "NativeImage",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": false,
+   "exported": false
+  },
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "toPNG",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Buffer",
+    "desc": "A Buffer that contains the image's `PNG` encoded data."
+   },
+   {
+    "name": "toJPEG",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "quality"
+    ],
+    "returns": "Buffer",
+    "desc": "A Buffer that contains the image's `JPEG` encoded data."
+   },
+   {
+    "name": "toBitmap",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "Buffer",
+    "desc": "A Buffer that contains a copy of the image's raw bitmap pixel data."
+   },
+   {
+    "name": "toDataURL",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "String",
+    "desc": "The Data URL of the image."
+   },
+   {
+    "name": "getBitmap",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "stability_deprecated"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Legacy alias for `image.toBitmap()`."
+   },
+   {
+    "name": "getNativeHandle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "Buffer",
+    "desc": "A Buffer that stores C pointer to underlying native handle of the image. On macOS, a pointer to `NSImage` instance is returned.\n\nNotice that the returned pointer is a weak pointer to the underlying na"
+   },
+   {
+    "name": "isEmpty",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the image is empty."
+   },
+   {
+    "name": "getSize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "scaleFactor"
+    ],
+    "returns": "Size",
+    "desc": "If `scaleFactor` is passed, this will return the size corresponding to the image representation most closely matching the passed value."
+   },
+   {
+    "name": "setTemplateImage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "option"
+    ],
+    "returns": null,
+    "desc": "Marks the image as a macOS template image."
+   },
+   {
+    "name": "isTemplateImage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the image is a macOS template image."
+   },
+   {
+    "name": "crop",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "rect"
+    ],
+    "returns": "NativeImage",
+    "desc": "The cropped image."
+   },
+   {
+    "name": "resize",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": "NativeImage",
+    "desc": "The resized image.\n\nIf only the `height` or the `width` are specified then the current aspect ratio will be preserved in the resized image."
+   },
+   {
+    "name": "getAspectRatio",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "scaleFactor"
+    ],
+    "returns": "Number",
+    "desc": "The image's aspect ratio (width divided by height).\n\nIf `scaleFactor` is passed, this will return the aspect ratio corresponding to the image representation most closely matching the passed value."
+   },
+   {
+    "name": "getScaleFactors",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Number",
+    "desc": "An array of all scale factors corresponding to representations for a given `NativeImage`."
+   },
+   {
+    "name": "addRepresentation",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Add an image representation for a specific scale factor. This can be used to programmatically add different scale factor representations to an image. This can be called on empty images."
+   },
+   {
+    "name": "isMacTemplateImage",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property that determines whether the image is considered a template image.\n\nPlease note that this property only has an effect on macOS."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/native-image"
+ },
+ {
+  "name": "nativeTheme",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Read and respond to changes in Chromium's native color theme.\n\nProcess: Main",
+  "members": [
+   {
+    "name": "updated",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when something in the underlying NativeTheme has changed. This normally means that either the value of `shouldUseDarkColors`, `shouldUseHighContrastColors` or `shouldUseInvertedColorScheme` ha"
+   },
+   {
+    "name": "shouldUseDarkColors",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` for if the OS / Chromium currently has a dark mode enabled or is being instructed to show a dark-style UI.  If you want to modify this value you should use `themeSource` below."
+   },
+   {
+    "name": "themeSource",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that can be `system`, `light` or `dark`.  It is used to override and supersede the value that Chromium has chosen to use internally.\n\nSetting this property to `system` will remove "
+   },
+   {
+    "name": "shouldUseHighContrastColors",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` for if the OS / Chromium currently has high-contrast mode enabled or is being instructed to show a high-contrast UI."
+   },
+   {
+    "name": "shouldUseDarkColorsForSystemIntegratedUI",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property indicating whether or not the system theme has been set to dark or light.\n\nOn Windows this property distinguishes between system and app light/dark theme, returning `true` if the "
+   },
+   {
+    "name": "shouldUseInvertedColorScheme",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` for if the OS / Chromium currently has an inverted color scheme or is being instructed to use an inverted color scheme."
+   },
+   {
+    "name": "inForcedColorsMode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` indicating whether Chromium is in forced colors mode, controlled by system accessibility settings. Currently, Windows high contrast is the only system setting that triggers forced colors m"
+   },
+   {
+    "name": "prefersReducedTransparency",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that indicates whether the user has chosen via system accessibility settings to reduce transparency at the OS level."
+   },
+   {
+    "name": "shouldDifferentiateWithoutColor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` that indicates whether the user prefers UI that differentiates items using something other than color alone (e.g. shapes or labels). This maps to NSWorkspace.accessibilityDisplayShouldDiff"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/native-theme"
+ },
+ {
+  "name": "Notification",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Create OS desktop notifications\n\nProcess: Main\n\n> [!NOTE] If you want to show notifications from a renderer process you should use the web Notifications API\n\n> [!NOTE] On MacOS, notifications use the UNNotification API as their underlying framework. This API requires an application to be code-sign",
+  "members": [
+   {
+    "name": "show",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Immediately shows the notification to the user. Unlike the web notification API, instantiating a `new Notification()` does not immediately show it to the user. Instead, you need to call this method be"
+   },
+   {
+    "name": "close",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Dismisses the notification.\n\nOn Windows, calling `notification.close()` while the notification is visible on screen will dismiss the notification and remove it from the Action Center. If `notification"
+   },
+   {
+    "name": "isSupported",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether or not desktop notifications are supported on the current system"
+   },
+   {
+    "name": "handleActivation",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "callback"
+    ],
+    "returns": null,
+    "desc": "Registers a callback to handle all notification activations. The callback is invoked whenever a notification is clicked, replied to, or has an action button pressed - regardless of whether the origina"
+   },
+   {
+    "name": "getHistory",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves with an array of `Notification` objects representing all delivered notifications still present in Notification Center.\n\nEach returned `Notification` is a live object connected to the correspo"
+   },
+   {
+    "name": "remove",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Removes one or more delivered notifications from Notification Center by their identifier(s)."
+   },
+   {
+    "name": "removeAll",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Removes all of the app's delivered notifications from Notification Center."
+   },
+   {
+    "name": "removeGroup",
+    "kind": "static-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "groupId"
+    ],
+    "returns": null,
+    "desc": "Removes all delivered notifications with the given `groupId` from Notification Center."
+   },
+   {
+    "name": "show",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the notification is shown to the user. Note that this event can be fired multiple times as a notification can be shown multiple times through the `show()` method."
+   },
+   {
+    "name": "click",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": "Emitted when the notification is clicked by the user."
+   },
+   {
+    "name": "close",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when the notification is closed by manual intervention from the user.\n\nThis event is not guaranteed to be emitted in all cases where the notification is closed.\n\nOn Windows, the `close` event "
+   },
+   {
+    "name": "reply",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "details",
+     "reply"
+    ],
+    "returns": null,
+    "desc": "Emitted when the user clicks the \"Reply\" button on a notification with `hasReply: true`."
+   },
+   {
+    "name": "action",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "details",
+     "actionIndex",
+     "selectionIndex"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "failed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "error"
+    ],
+    "returns": null,
+    "desc": "Emitted when an error is encountered while creating and showing the native notification."
+   },
+   {
+    "name": "id",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the unique identifier of the notification. This is set at construction time \u2014 either from the `id` option or as a generated UUID if none was provided."
+   },
+   {
+    "name": "groupId",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the group identifier of the notification. Notifications with the same `groupId` will be visually grouped together in Notification Center (macOS) or Action Center (Wind"
+   },
+   {
+    "name": "groupTitle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the title of the notification group header."
+   },
+   {
+    "name": "title",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the title of the notification."
+   },
+   {
+    "name": "subtitle",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the subtitle of the notification."
+   },
+   {
+    "name": "body",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the body of the notification."
+   },
+   {
+    "name": "replyPlaceholder",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the reply placeholder of the notification."
+   },
+   {
+    "name": "sound",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the sound of the notification."
+   },
+   {
+    "name": "closeButtonText",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the close button text of the notification."
+   },
+   {
+    "name": "silent",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property representing whether the notification is silent."
+   },
+   {
+    "name": "hasReply",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property representing whether the notification has a reply action."
+   },
+   {
+    "name": "urgency",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_linux"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the urgency level of the notification. Can be 'normal', 'critical', or 'low'.\n\nDefault is 'low' - see NotifyUrgency for more information."
+   },
+   {
+    "name": "timeoutType",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the type of timeout duration for the notification. Can be 'default' or 'never'.\n\nIf `timeoutType` is set to 'never', the notification never expires. It stays open unti"
+   },
+   {
+    "name": "actions",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `NotificationAction[]` property representing the actions of the notification."
+   },
+   {
+    "name": "toastXml",
+    "kind": "instance-property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property representing the custom Toast XML of the notification."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/notification"
+ },
+ {
+  "name": "powerMonitor",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Monitor power state changes.\n\nProcess: Main",
+  "members": [
+   {
+    "name": "getSystemIdleState",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "idleThreshold"
+    ],
+    "returns": "String",
+    "desc": "The system's current idle state. Can be `active`, `idle`, `locked` or `unknown`.\n\nCalculate the system idle state. `idleThreshold` is the amount of time (in seconds) before considered idle.  `locked` "
+   },
+   {
+    "name": "getSystemIdleTime",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Integer",
+    "desc": "Idle time in seconds\n\nCalculate system idle time in seconds."
+   },
+   {
+    "name": "getCurrentThermalState",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "The system's current thermal state. Can be `unknown`, `nominal`, `fair`, `serious`, or `critical`."
+   },
+   {
+    "name": "isOnBatteryPower",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the system is on battery power.\n\nTo monitor for changes in this property, use the `on-battery` and `on-ac` events."
+   },
+   {
+    "name": "suspend",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the system is suspending."
+   },
+   {
+    "name": "resume",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when system is resuming."
+   },
+   {
+    "name": "on-ac",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the system changes to AC power."
+   },
+   {
+    "name": "on-battery",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when system changes to battery power."
+   },
+   {
+    "name": "thermal-state-change",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "details"
+    ],
+    "returns": null,
+    "desc": "Emitted when the thermal state of the system changes. Notification of a change in the thermal status of the system, such as entering a critical temperature range. Depending on the severity, the system"
+   },
+   {
+    "name": "speed-limit-change",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "details"
+    ],
+    "returns": null,
+    "desc": "Notification of a change in the operating system's advertised speed limit for CPUs, in percent. Values below 100 indicate that the system is impairing processing power due to thermal management."
+   },
+   {
+    "name": "shutdown",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_linux",
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the system is about to reboot or shut down. If the event handler invokes `e.preventDefault()`, Electron will attempt to delay system shutdown in order for the app to exit cleanly. If `e.p"
+   },
+   {
+    "name": "lock-screen",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the system is about to lock the screen."
+   },
+   {
+    "name": "unlock-screen",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted as soon as the systems screen is unlocked."
+   },
+   {
+    "name": "user-did-become-active",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when a login session is activated. See documentation for more information."
+   },
+   {
+    "name": "user-did-resign-active",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when a login session is deactivated. See documentation for more information."
+   },
+   {
+    "name": "onBatteryPower",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property. True if the system is on battery power.\n\nSee `powerMonitor.isOnBatteryPower()`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/power-monitor"
+ },
+ {
+  "name": "powerSaveBlocker",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Block the system from entering low-power (sleep) mode.\n\nProcess: Main\n\nFor example:",
+  "members": [
+   {
+    "name": "start",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "type"
+    ],
+    "returns": "Integer",
+    "desc": "The blocker ID that is assigned to this power blocker.\n\nStarts preventing the system from entering lower-power mode. Returns an integer identifying the power save blocker.\n\n> [!NOTE] `prevent-display-"
+   },
+   {
+    "name": "stop",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": "boolean",
+    "desc": "Stops the specified power save blocker.\n\nWhether the specified `powerSaveBlocker` has been stopped."
+   },
+   {
+    "name": "isStarted",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "id"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the corresponding `powerSaveBlocker` has started."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/power-save-blocker"
+ },
+ {
+  "name": "pushNotifications",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "Process: Main\n\n> Register for and receive notifications from remote push notification services\n\nFor example, when registering for push notifications via Apple push notification services (APNS):",
+  "members": [
+   {
+    "name": "registerForAPNSNotifications",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Registers the app with Apple Push Notification service (APNS) to receive Badge, Sound, and Alert notifications. If registration is successful, the promise will be resolved with the APNS device token. "
+   },
+   {
+    "name": "unregisterForAPNSNotifications",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Unregisters the app from notifications received from APNS.\n\nApps unregistered through this method can always reregister.\n\nSee: https://developer.apple.com/documentation/appkit/nsapplication/1428747-un"
+   },
+   {
+    "name": "received-apns-notification",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "userInfo"
+    ],
+    "returns": null,
+    "desc": "Emitted when the app receives a remote notification while running. See: https://developer.apple.com/documentation/appkit/nsapplicationdelegate/1428430-application?language=objc"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/push-notifications"
+ },
+ {
+  "name": "safeStorage",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Allows access to simple encryption and decryption of strings for storage on the local machine.\n\nProcess: Main\n\nThis module adds extra protection to data being stored on disk by using OS-provided cryptography systems. Current security semantics for each platform are outlined below.\n\n> [!NOTE] We re",
+  "members": [
+   {
+    "name": "isEncryptionAvailable",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether encryption is available.\n\nOn Linux, returns true if the app has emitted the `ready` event and the secret key is available. On MacOS, returns true if Keychain is available. On Windows, returns "
+   },
+   {
+    "name": "isAsyncEncryptionAvailable",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Promise",
+    "desc": "Resolves with whether encryption is available for asynchronous safeStorage operations.\n\nThe asynchronous encryptor is initialized lazily the first time this method, `encryptStringAsync`, or `decryptSt"
+   },
+   {
+    "name": "encryptString",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "plainText"
+    ],
+    "returns": "Buffer",
+    "desc": "An array of bytes representing the encrypted string.\n\nThis function will throw an error if encryption fails."
+   },
+   {
+    "name": "decryptString",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "encrypted"
+    ],
+    "returns": "String",
+    "desc": "the decrypted string. Decrypts the encrypted buffer obtained  with `safeStorage.encryptString` back into a string."
+   },
+   {
+    "name": "encryptStringAsync",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "plainText"
+    ],
+    "returns": "Promise",
+    "desc": "An array of bytes representing the encrypted string."
+   },
+   {
+    "name": "decryptStringAsync",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "encrypted"
+    ],
+    "returns": "Promise",
+    "desc": "Resolve with an object containing the following:\n\n* `shouldReEncrypt` boolean - whether data that has just been returned from the decrypt operation should be re-encrypted, as the key has been rotated "
+   },
+   {
+    "name": "setUsePlainTextEncryption",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "usePlainText"
+    ],
+    "returns": null,
+    "desc": "This function on Linux will force the module to use an in memory password for creating symmetric key that is used for encrypt/decrypt functions when a valid OS password manager cannot be determined fo"
+   },
+   {
+    "name": "getSelectedStorageBackend",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_linux"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "User friendly name of the password manager selected on Linux.\n\nThis function will return one of the following values:\n\n* `basic_text` - When the desktop environment is not recognised or if the followi"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/safe-storage"
+ },
+ {
+  "name": "screen",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Retrieve information about screen size, displays, cursor position, etc.\n\nProcess: Main\n\nThis module cannot be used until the `ready` event of the `app` module is emitted.\n\n`screen` is an EventEmitter.\n\n> [!NOTE] In the renderer / DevTools, `window.screen` is a reserved DOM property, so writing `le",
+  "members": [
+   {
+    "name": "getCursorScreenPoint",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Point",
+    "desc": "The current absolute position of the mouse pointer.\n\nNot supported on Wayland (Linux).\n\n> [!NOTE] The return value is a DIP point, not a screen physical point."
+   },
+   {
+    "name": "getPrimaryDisplay",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Display",
+    "desc": "The primary display."
+   },
+   {
+    "name": "getAllDisplays",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Display",
+    "desc": "An array of displays that are currently available."
+   },
+   {
+    "name": "getDisplayNearestPoint",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "point"
+    ],
+    "returns": "Display",
+    "desc": "The display nearest the specified point."
+   },
+   {
+    "name": "getDisplayMatching",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "rect"
+    ],
+    "returns": "Display",
+    "desc": "The display that most closely intersects the provided bounds."
+   },
+   {
+    "name": "screenToDipPoint",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "point"
+    ],
+    "returns": "Point",
+    "desc": "Converts a screen physical point to a screen DIP point. The DPI scale is performed relative to the display containing the physical point.\n\nNot currently supported on Wayland - if used there it will re"
+   },
+   {
+    "name": "dipToScreenPoint",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "point"
+    ],
+    "returns": "Point",
+    "desc": "Converts a screen DIP point to a screen physical point. The DPI scale is performed relative to the display containing the DIP point.\n\nNot currently supported on Wayland."
+   },
+   {
+    "name": "screenToDipRect",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "window",
+     "rect"
+    ],
+    "returns": "Rectangle",
+    "desc": "Converts a screen physical rect to a screen DIP rect. The DPI scale is performed relative to the display nearest to `window`. If `window` is null, scaling will be performed to the display nearest to `"
+   },
+   {
+    "name": "dipToScreenRect",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "window",
+     "rect"
+    ],
+    "returns": "Rectangle",
+    "desc": "Converts a screen DIP rect to a screen physical rect. The DPI scale is performed relative to the display nearest to `window`. If `window` is null, scaling will be performed to the display nearest to `"
+   },
+   {
+    "name": "display-added",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "newDisplay"
+    ],
+    "returns": null,
+    "desc": "Emitted when `newDisplay` has been added."
+   },
+   {
+    "name": "display-removed",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "oldDisplay"
+    ],
+    "returns": null,
+    "desc": "Emitted when `oldDisplay` has been removed."
+   },
+   {
+    "name": "display-metrics-changed",
+    "kind": "event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "display",
+     "changedMetrics"
+    ],
+    "returns": null,
+    "desc": "Emitted when one or more metrics change in a `display`. The `changedMetrics` is an array of strings that describe the changes. Possible changes are `bounds`, `workArea`, `scaleFactor` and `rotation`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/screen"
+ },
+ {
+  "name": "ShareMenu",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "The `ShareMenu` class creates Share Menu on macOS, which can be used to share information from the current context to apps, social media accounts, and other services.\n\nFor including the share menu as a submenu of other menus, please use the `shareMenu` role of `MenuItem`.\n\n### Class: ShareMenu\n\n> Cr",
+  "members": [
+   {
+    "name": "popup",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Pops up this menu as a context menu in the `BrowserWindow`."
+   },
+   {
+    "name": "closePopup",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "browserWindow"
+    ],
+    "returns": null,
+    "desc": "Closes the context menu in the `browserWindow`."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "sharingItem"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/share-menu"
+ },
+ {
+  "name": "shell",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": true,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Manage files and URLs using their default applications.\n\nProcess: Main, Renderer (non-sandboxed only)\n\nThe `shell` module provides functions related to desktop integration.\n\nAn example of opening a URL in the user's default browser:\n\n```\nconst { shell } = require('electron')\n\nshell.openExternal('h",
+  "members": [
+   {
+    "name": "showItemInFolder",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "fullPath"
+    ],
+    "returns": null,
+    "desc": "Show the given file in a file manager. If possible, select the file."
+   },
+   {
+    "name": "openPath",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves with a string containing the error message corresponding to the failure if a failure occurred, otherwise \"\".\n\nOpen the given file in the desktop's default manner."
+   },
+   {
+    "name": "openExternal",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "url",
+     "options"
+    ],
+    "returns": "Promise",
+    "desc": "Open the given external protocol URL in the desktop's default manner. (For example, mailto: URLs in the user's default mail agent)."
+   },
+   {
+    "name": "trashItem",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "path"
+    ],
+    "returns": "Promise",
+    "desc": "Resolves when the operation has been completed. Rejects if there was an error while deleting the requested item.\n\nThis moves a path to the OS-specific trash location (Trash on macOS, Recycle Bin on Wi"
+   },
+   {
+    "name": "beep",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Play the beep sound."
+   },
+   {
+    "name": "writeShortcutLink",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "shortcutPath",
+     "operation",
+     "options"
+    ],
+    "returns": "boolean",
+    "desc": "Whether the shortcut was created successfully.\n\nCreates or updates a shortcut link at `shortcutPath`."
+   },
+   {
+    "name": "readShortcutLink",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "shortcutPath"
+    ],
+    "returns": "ShortcutDetails",
+    "desc": "Resolves the shortcut link at `shortcutPath`.\n\nAn exception will be thrown when any error happens."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/shell"
+ },
+ {
+  "name": "systemPreferences",
+  "type": "Module",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": true,
+   "exported": true
+  },
+  "extends": null,
+  "description": "> Get system preferences.\n\nProcess: Main, Utility",
+  "members": [
+   {
+    "name": "isSwipeTrackingFromScrollEventsEnabled",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the Swipe between pages setting is on."
+   },
+   {
+    "name": "postNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "userInfo",
+     "deliverImmediately"
+    ],
+    "returns": null,
+    "desc": "Posts `event` as native notifications of macOS. The `userInfo` is an Object that contains the user information dictionary sent along with the notification."
+   },
+   {
+    "name": "postLocalNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "userInfo"
+    ],
+    "returns": null,
+    "desc": "Posts `event` as native notifications of macOS. The `userInfo` is an Object that contains the user information dictionary sent along with the notification."
+   },
+   {
+    "name": "postWorkspaceNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "userInfo"
+    ],
+    "returns": null,
+    "desc": "Posts `event` as native notifications of macOS. The `userInfo` is an Object that contains the user information dictionary sent along with the notification."
+   },
+   {
+    "name": "subscribeNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "callback"
+    ],
+    "returns": "number",
+    "desc": "The ID of this subscription\n\nSubscribes to native notifications of macOS, `callback` will be called with `callback(event, userInfo)` when the corresponding `event` happens. The `userInfo` is an Object"
+   },
+   {
+    "name": "subscribeLocalNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "callback"
+    ],
+    "returns": "number",
+    "desc": "The ID of this subscription\n\nSame as `subscribeNotification`, but uses `NSNotificationCenter` for local defaults. This is necessary for events such as `NSUserDefaultsDidChangeNotification`.\n\nIf `event"
+   },
+   {
+    "name": "subscribeWorkspaceNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "callback"
+    ],
+    "returns": "number",
+    "desc": "The ID of this subscription\n\nSame as `subscribeNotification`, but uses `NSWorkspace.sharedWorkspace.notificationCenter`. This is necessary for events such as `NSWorkspaceDidActivateApplicationNotifica"
+   },
+   {
+    "name": "unsubscribeNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Removes the subscriber with `id`."
+   },
+   {
+    "name": "unsubscribeLocalNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Same as `unsubscribeNotification`, but removes the subscriber from `NSNotificationCenter`."
+   },
+   {
+    "name": "unsubscribeWorkspaceNotification",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "id"
+    ],
+    "returns": null,
+    "desc": "Same as `unsubscribeNotification`, but removes the subscriber from `NSWorkspace.sharedWorkspace.notificationCenter`."
+   },
+   {
+    "name": "registerDefaults",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "defaults"
+    ],
+    "returns": null,
+    "desc": "Add the specified defaults to your application's `NSUserDefaults`."
+   },
+   {
+    "name": "getUserDefault",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "key",
+     "type"
+    ],
+    "returns": "UserDefaultTypes[Type]",
+    "desc": "The value of `key` in `NSUserDefaults`.\n\nSome popular `key` and `type`s are:\n\n* `AppleInterfaceStyle`: `string`\n* `AppleAquaColorVariant`: `integer`\n* `AppleHighlightColor`: `string`\n* `AppleShowScrol"
+   },
+   {
+    "name": "setUserDefault",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "key",
+     "type",
+     "value"
+    ],
+    "returns": null,
+    "desc": "Set the value of `key` in `NSUserDefaults`.\n\nNote that `type` should match actual type of `value`. An exception is thrown if they don't.\n\nSome popular `key` and `type`s are:\n\n* `ApplePressAndHoldEnabl"
+   },
+   {
+    "name": "removeUserDefault",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "key"
+    ],
+    "returns": null,
+    "desc": "Removes the `key` in `NSUserDefaults`. This can be used to restore the default or global value of a `key` previously set with `setUserDefault`."
+   },
+   {
+    "name": "getAccentColor",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "String",
+    "desc": "The users current system wide accent color preference in RGBA hexadecimal form.\n\nThis API is only available on macOS 10.14 Mojave or newer."
+   },
+   {
+    "name": "getColor",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_macos"
+    ],
+    "params": [
+     "color"
+    ],
+    "returns": "String",
+    "desc": "The system color setting in RGBA hexadecimal form (`#RRGGBBAA`). See the Windows docs and the macOS docs for more details.\n\nThe following colors are only available on macOS 10.14: `find-highlight`, `s"
+   },
+   {
+    "name": "getSystemColor",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "color"
+    ],
+    "returns": "String",
+    "desc": "The standard system color formatted as `#RRGGBBAA`.\n\nReturns one of several standard system colors that automatically adapt to vibrancy and changes in accessibility settings like 'Increase contrast' a"
+   },
+   {
+    "name": "getEffectiveAppearance",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "Can be `dark`, `light` or `unknown`.\n\nGets the macOS appearance setting that is currently applied to your application, maps to NSApplication.effectiveAppearance"
+   },
+   {
+    "name": "canPromptTouchID",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "whether or not this device has the ability to use Touch ID."
+   },
+   {
+    "name": "promptTouchID",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "reason"
+    ],
+    "returns": "Promise",
+    "desc": "resolves if the user has successfully authenticated with Touch ID.\n\nThis API itself will not protect your user data; rather, it is a mechanism to allow you to do so. Native apps will need to set Acces"
+   },
+   {
+    "name": "isTrustedAccessibilityClient",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "prompt"
+    ],
+    "returns": "boolean",
+    "desc": "`true` if the current process is a trusted accessibility client and `false` if it is not."
+   },
+   {
+    "name": "getMediaAccessStatus",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_macos"
+    ],
+    "params": [
+     "mediaType"
+    ],
+    "returns": "String",
+    "desc": "Can be `not-determined`, `granted`, `denied`, `restricted` or `unknown`.\n\nThis user consent was not required on macOS 10.13 High Sierra so this method will always return `granted`. macOS 10.14 Mojave "
+   },
+   {
+    "name": "askForMediaAccess",
+    "kind": "method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "mediaType"
+    ],
+    "returns": "Promise",
+    "desc": "A promise that resolves with `true` if consent was granted and `false` if it was denied. If an invalid `mediaType` is passed, the promise will be rejected. If an access request was denied and later is"
+   },
+   {
+    "name": "getAnimationSettings",
+    "kind": "method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "Object",
+    "desc": "* `shouldRenderRichAnimation` boolean - Returns true if rich animations should be rendered. Looks at session type (e.g. remote desktop) and accessibility settings to give guidance for heavy animations"
+   },
+   {
+    "name": "accent-color-changed",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_windows",
+     "os_linux"
+    ],
+    "params": [
+     "event",
+     "newColor"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "color-changed",
+    "kind": "event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "event"
+    ],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "accessibilityDisplayShouldReduceTransparency",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "stability_deprecated"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `boolean` property which determines whether the app avoids using semitransparent backgrounds. This maps to NSWorkspace.accessibilityDisplayShouldReduceTransparency\n\n**Deprecated:** Use the new `nati"
+   },
+   {
+    "name": "effectiveAppearance",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "availability_readonly"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "A `string` property that can be `dark`, `light` or `unknown`.\n\nReturns the macOS appearance setting that is currently applied to your application, maps to NSApplication.effectiveAppearance"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/system-preferences"
+ },
+ {
+  "name": "Tray",
+  "type": "Class",
+  "process": {
+   "main": true,
+   "renderer": false,
+   "utility": false,
+   "exported": true
+  },
+  "extends": null,
+  "description": "\n\n### Class: Tray\n\n> Add icons and context menus to the system's notification area.\n\nProcess: Main\n\n`Tray` is an EventEmitter.\n\n```\nconst { app, Menu, Tray } = require('electron')\n\nlet tray = null\napp.whenReady().then(() => {\n  tray = new Tray('/path/to/my/icon')\n  const contextMenu = Menu.buildFrom",
+  "members": [
+   {
+    "name": "destroy",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Destroys the tray icon immediately."
+   },
+   {
+    "name": "setImage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "image"
+    ],
+    "returns": null,
+    "desc": "Sets the `image` associated with this tray icon."
+   },
+   {
+    "name": "setPressedImage",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "image"
+    ],
+    "returns": null,
+    "desc": "Sets the `image` associated with this tray icon when pressed on macOS."
+   },
+   {
+    "name": "setToolTip",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "toolTip"
+    ],
+    "returns": null,
+    "desc": "Sets the hover text for this tray icon. Setting the text to an empty string will remove the tooltip."
+   },
+   {
+    "name": "setTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "title",
+     "options"
+    ],
+    "returns": null,
+    "desc": "Sets the title displayed next to the tray icon in the status bar (Support ANSI colors)."
+   },
+   {
+    "name": "getTitle",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "String",
+    "desc": "the title displayed next to the tray icon in the status bar"
+   },
+   {
+    "name": "setIgnoreDoubleClickEvents",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "ignore"
+    ],
+    "returns": null,
+    "desc": "Sets the option to ignore double click events. Ignoring these events allows you to detect every individual click of the tray icon.\n\nThis value is set to false by default."
+   },
+   {
+    "name": "getIgnoreDoubleClickEvents",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether double click events will be ignored."
+   },
+   {
+    "name": "displayBalloon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "options"
+    ],
+    "returns": null,
+    "desc": "Displays a tray balloon."
+   },
+   {
+    "name": "removeBalloon",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Removes a tray balloon."
+   },
+   {
+    "name": "focus",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Returns focus to the taskbar notification area. Notification area icons should use this message when they have completed their UI operation. For example, if the icon displays a shortcut menu, but the "
+   },
+   {
+    "name": "popUpContextMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "menu",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Pops up the context menu of the tray icon. When `menu` is passed, the `menu` will be shown instead of the tray icon's context menu.\n\nThe `position` is only available on Windows, and it is (0, 0) by de"
+   },
+   {
+    "name": "closeContextMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Closes an open context menu, as set by `tray.setContextMenu()`."
+   },
+   {
+    "name": "setContextMenu",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "menu"
+    ],
+    "returns": null,
+    "desc": "Sets the context menu for this icon."
+   },
+   {
+    "name": "getBounds",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": "Rectangle",
+    "desc": "The `bounds` of this tray icon as `Object`."
+   },
+   {
+    "name": "getGUID",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [],
+    "returns": [
+     {
+      "collection": false,
+      "type": "String",
+      "possibleValues": null
+     },
+     {
+      "type": "null",
+      "collection": false
+     }
+    ],
+    "desc": "The GUID used to uniquely identify the tray icon and allow it to retain its position between relaunches, or null if none is set."
+   },
+   {
+    "name": "isDestroyed",
+    "kind": "instance-method",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": "boolean",
+    "desc": "Whether the tray icon is destroyed."
+   },
+   {
+    "name": "click",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "event",
+     "bounds",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Emitted when the tray icon is clicked.\n\nNote that on Linux this event is emitted when the tray icon receives an activation, which might not necessarily be left mouse click."
+   },
+   {
+    "name": "right-click",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "bounds"
+    ],
+    "returns": null,
+    "desc": "Emitted when the tray icon is right clicked."
+   },
+   {
+    "name": "double-click",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "bounds"
+    ],
+    "returns": null,
+    "desc": "Emitted when the tray icon is double clicked."
+   },
+   {
+    "name": "middle-click",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "bounds"
+    ],
+    "returns": null,
+    "desc": "Emitted when the tray icon is middle clicked."
+   },
+   {
+    "name": "balloon-show",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the tray balloon shows."
+   },
+   {
+    "name": "balloon-click",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the tray balloon is clicked."
+   },
+   {
+    "name": "balloon-closed",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when the tray balloon is closed because of timeout or user manually closes it."
+   },
+   {
+    "name": "drop",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when any dragged items are dropped on the tray icon."
+   },
+   {
+    "name": "drop-files",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "files"
+    ],
+    "returns": null,
+    "desc": "Emitted when dragged files are dropped in the tray icon."
+   },
+   {
+    "name": "drop-text",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "text"
+    ],
+    "returns": null,
+    "desc": "Emitted when dragged text is dropped in the tray icon."
+   },
+   {
+    "name": "drag-enter",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when a drag operation enters the tray icon."
+   },
+   {
+    "name": "drag-leave",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when a drag operation exits the tray icon."
+   },
+   {
+    "name": "drag-end",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "Emitted when a drag operation ends on the tray or ends at another location."
+   },
+   {
+    "name": "mouse-up",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Emitted when the mouse is released from clicking the tray icon.\n\n> [!NOTE] This will not be emitted if you have set a context menu for your Tray using `tray.setContextMenu`, as a result of macOS-level"
+   },
+   {
+    "name": "mouse-down",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos"
+    ],
+    "params": [
+     "event",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Emitted when the mouse clicks the tray icon."
+   },
+   {
+    "name": "mouse-enter",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Emitted when the mouse enters the tray icon."
+   },
+   {
+    "name": "mouse-leave",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Emitted when the mouse exits the tray icon."
+   },
+   {
+    "name": "mouse-move",
+    "kind": "instance-event",
+    "platforms": [],
+    "tags": [
+     "os_macos",
+     "os_windows"
+    ],
+    "params": [
+     "event",
+     "position"
+    ],
+    "returns": null,
+    "desc": "Emitted when the mouse moves in the tray icon."
+   },
+   {
+    "name": "constructor",
+    "kind": "constructor",
+    "platforms": [],
+    "tags": [],
+    "params": [
+     "image",
+     "guid"
+    ],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/tray"
+ },
+ {
+  "name": "ActivationArguments",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of activation that launched the app: `'click'`, `'action'`, or `'reply'`."
+   },
+   {
+    "name": "arguments",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The raw activation arguments string from Windows."
+   },
+   {
+    "name": "actionIndex",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "For `'action'` type, the index of the button that was clicked."
+   },
+   {
+    "name": "reply",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "For `'reply'` type, the text the user entered in the reply field."
+   },
+   {
+    "name": "userInputs",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A dictionary of all user inputs from the notification."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/activation-arguments"
+ },
+ {
+  "name": "ClipboardBookmark",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "A `ClipboardBookmark` is the payload used by the `electron application/bookmark` clipboard custom format. It is passed to `clipboard.write()` as a `ClipboardItem` `data` value, and is what `getType('electron application/bookmark')` resolves to when reading via `clipboard.read()`.",
+  "members": [
+   {
+    "name": "title",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The title of the bookmark."
+   },
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The URL of the bookmark."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/clipboard-bookmark"
+ },
+ {
+  "name": "DesktopCapturerSource",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The identifier of a window or screen that can be used as a `chromeMediaSourceId` constraint when calling `navigator.getUserMedia`. The format of the identifier will be `window:XX:YY` or `screen:ZZ:0`."
+   },
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A screen source will be named either `Entire Screen` or `Screen <index>`, while the name of a window source will match the window title."
+   },
+   {
+    "name": "thumbnail",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A thumbnail image. **Note:** There is no guarantee that the size of the thumbnail is the same as the `thumbnailSize` specified in the `options` passed to `desktopCapturer.getSources`. The actual size "
+   },
+   {
+    "name": "display_id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A unique identifier that will correspond to the `id` of the matching Display returned by the Screen API. On some platforms, this is equivalent to the `XX` portion of the `id` field above and on others"
+   },
+   {
+    "name": "appIcon",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An icon image of the application that owns the window or null if the source has a type screen. The size of the icon is not known in advance and depends on what the application provides."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/desktop-capturer-source"
+ },
+ {
+  "name": "Display",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "The `Display` object represents a physical display connected to the system. A fake `Display` may exist on a headless system, or a `Display` may correspond to a remote, virtual display.",
+  "members": [
+   {
+    "name": "accelerometerSupport",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `available`, `unavailable`, `unknown`."
+   },
+   {
+    "name": "bounds",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "the bounds of the display in DIP points."
+   },
+   {
+    "name": "colorDepth",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The number of bits per pixel."
+   },
+   {
+    "name": "colorSpace",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": " represent a color space (three-dimensional object which contains all realizable color combinations) for the purpose of color conversions."
+   },
+   {
+    "name": "depthPerComponent",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The number of bits per color component."
+   },
+   {
+    "name": "detected",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "`true` if the display is detected by the system."
+   },
+   {
+    "name": "displayFrequency",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The display refresh rate."
+   },
+   {
+    "name": "id",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Unique identifier associated with the display. A value of -1 means the display is invalid or the correct `id` is not yet known, and a value of -10 means the display is a virtual display assigned to a "
+   },
+   {
+    "name": "internal",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "`true` for an internal display and `false` for an external display."
+   },
+   {
+    "name": "label",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "User-friendly label, determined by the platform."
+   },
+   {
+    "name": "maximumCursorSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Maximum cursor size in native pixels."
+   },
+   {
+    "name": "nativeOrigin",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Returns the display's origin in pixel coordinates. Only available on windowing systems like X11 that position displays in pixel coordinates."
+   },
+   {
+    "name": "rotation",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be 0, 90, 180, 270, represents screen rotation in clock-wise degrees."
+   },
+   {
+    "name": "scaleFactor",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Output device's pixel scale factor."
+   },
+   {
+    "name": "touchSupport",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `available`, `unavailable`, `unknown`."
+   },
+   {
+    "name": "monochrome",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Whether or not the display is a monochrome display."
+   },
+   {
+    "name": "size",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "workArea",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "the work area of the display in DIP points."
+   },
+   {
+    "name": "workAreaSize",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The size of the work area."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/display"
+ },
+ {
+  "name": "FileFilter",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "name",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "extensions",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/file-filter"
+ },
+ {
+  "name": "KeyboardEvent",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "ctrlKey",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "whether the Control key was used in an accelerator to trigger the Event"
+   },
+   {
+    "name": "metaKey",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "whether a meta key was used in an accelerator to trigger the Event"
+   },
+   {
+    "name": "shiftKey",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "whether a Shift key was used in an accelerator to trigger the Event"
+   },
+   {
+    "name": "altKey",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "whether an Alt key was used in an accelerator to trigger the Event"
+   },
+   {
+    "name": "triggeredByAccelerator",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "whether an accelerator was used to trigger the event as opposed to another user gesture like mouse click"
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/keyboard-event"
+ },
+ {
+  "name": "MenuItemBadge",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "If you use one of the predefined badge types (not `none`), the system localizes and pluralizes the badge for you. If you create your own custom badge string, you need to localize and pluralize that string yourself.",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "Can be `alerts`, `updates`, `new-items` or `none`. Default is `none`. See Creating badges of a specific type for further explanation of these types."
+   },
+   {
+    "name": "count",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The number of items the badge displays. Required for the `alerts`, `updates` and `new-items` types; cannot be used with `none`."
+   },
+   {
+    "name": "content",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A custom string to display in the badge. Required for, and only usable with, the `none` type."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/menu-item-badge"
+ },
+ {
+  "name": "NotificationAction",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of action, can be `button` or `selection`. `selection` is only supported on Windows."
+   },
+   {
+    "name": "text",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The label for the given action."
+   },
+   {
+    "name": "items",
+    "kind": "property",
+    "platforms": [],
+    "tags": [
+     "os_windows"
+    ],
+    "params": [],
+    "returns": null,
+    "desc": "The list of items for the `selection` action `type`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/notification-action"
+ },
+ {
+  "name": "NotificationResponse",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "actionIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The identifier string of the action that the user selected."
+   },
+   {
+    "name": "date",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The delivery date of the notification."
+   },
+   {
+    "name": "identifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The unique identifier for this notification request."
+   },
+   {
+    "name": "userInfo",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A dictionary of custom information associated with the notification."
+   },
+   {
+    "name": "userText",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The text entered or chosen by the user."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/notification-response"
+ },
+ {
+  "name": "PaymentDiscount",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "identifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A string used to uniquely identify a discount offer for a product."
+   },
+   {
+    "name": "keyIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A string that identifies the key used to generate the signature."
+   },
+   {
+    "name": "nonce",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A universally unique ID (UUID) value that you define."
+   },
+   {
+    "name": "signature",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A UTF-8 string representing the properties of a specific discount offer, cryptographically signed."
+   },
+   {
+    "name": "timestamp",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The date and time of the signature's creation in milliseconds, formatted in Unix epoch time."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/payment-discount"
+ },
+ {
+  "name": "ProductDiscount",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "identifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A string used to uniquely identify a discount offer for a product."
+   },
+   {
+    "name": "type",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The type of discount offer."
+   },
+   {
+    "name": "price",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The discount price of the product in the local currency."
+   },
+   {
+    "name": "priceLocale",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The locale used to format the discount price of the product."
+   },
+   {
+    "name": "paymentMode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The payment mode for this product discount. Can be `payAsYouGo`, `payUpFront`, or `freeTrial`."
+   },
+   {
+    "name": "numberOfPeriods",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An integer that indicates the number of periods the product discount is available."
+   },
+   {
+    "name": "subscriptionPeriod",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An object that defines the period for the product discount."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/product-discount"
+ },
+ {
+  "name": "ProductSubscriptionPeriod",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "numberOfUnits",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The number of units per subscription period."
+   },
+   {
+    "name": "unit",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The increment of time that a subscription period is specified in. Can be `day`, `week`, `month`, `year`."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/product-subscription-period"
+ },
+ {
+  "name": "Product",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "productIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The string that identifies the product to the Apple App Store."
+   },
+   {
+    "name": "localizedDescription",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A description of the product."
+   },
+   {
+    "name": "localizedTitle",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The name of the product."
+   },
+   {
+    "name": "price",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The cost of the product in the local currency."
+   },
+   {
+    "name": "formattedPrice",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The locale formatted price of the product."
+   },
+   {
+    "name": "currencyCode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "3 character code presenting a product's currency based on the ISO 4217 standard."
+   },
+   {
+    "name": "introductoryPrice",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The object containing introductory price information for the product. available for the product."
+   },
+   {
+    "name": "discounts",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of discount offers"
+   },
+   {
+    "name": "subscriptionGroupIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The identifier of the subscription group to which the subscription belongs."
+   },
+   {
+    "name": "subscriptionPeriod",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The period details for products that are subscriptions."
+   },
+   {
+    "name": "isDownloadable",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A boolean value that indicates whether the App Store has downloadable content for this product. `true` if at least one file has been associated with the product."
+   },
+   {
+    "name": "downloadContentVersion",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A string that identifies the version of the content."
+   },
+   {
+    "name": "downloadContentLengths",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The total size of the content, in bytes."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/product"
+ },
+ {
+  "name": "SharingItem",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "texts",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of text to share."
+   },
+   {
+    "name": "filePaths",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of files to share."
+   },
+   {
+    "name": "urls",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "An array of URLs to share."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/sharing-item"
+ },
+ {
+  "name": "ShortcutDetails",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "target",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The target to launch from this shortcut."
+   },
+   {
+    "name": "cwd",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The working directory. Default is empty."
+   },
+   {
+    "name": "args",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The arguments to be applied to `target` when launching from this shortcut. Default is empty."
+   },
+   {
+    "name": "description",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The description of the shortcut. Default is empty."
+   },
+   {
+    "name": "icon",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The path to the icon, can be a DLL or EXE. `icon` and `iconIndex` have to be set together. Default is empty, which uses the target's icon."
+   },
+   {
+    "name": "iconIndex",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The resource ID of icon when `icon` is a DLL or EXE. Default is 0."
+   },
+   {
+    "name": "appUserModelId",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The Application User Model ID. Default is empty."
+   },
+   {
+    "name": "toastActivatorClsid",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The Application Toast Activator CLSID. Needed for participating in Action Center."
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/shortcut-details"
+ },
+ {
+  "name": "Transaction",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "",
+  "members": [
+   {
+    "name": "transactionIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "A string that uniquely identifies a successful payment transaction."
+   },
+   {
+    "name": "transactionDate",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The date the transaction was added to the App Store\u2019s payment queue."
+   },
+   {
+    "name": "originalTransactionIdentifier",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The identifier of the restored transaction by the App Store."
+   },
+   {
+    "name": "transactionState",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The transaction state, can be `purchasing`, `purchased`, `failed`, `restored` or `deferred`."
+   },
+   {
+    "name": "errorCode",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The error code if an error occurred while processing the transaction."
+   },
+   {
+    "name": "errorMessage",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": "The error message if an error occurred while processing the transaction."
+   },
+   {
+    "name": "payment",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/transaction"
+ },
+ {
+  "name": "UserDefaultTypes",
+  "type": "Structure",
+  "process": null,
+  "extends": null,
+  "description": "This type is a helper alias, no object will ever exist of this type.",
+  "members": [
+   {
+    "name": "string",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "boolean",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "integer",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "float",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "double",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "url",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "array",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   },
+   {
+    "name": "dictionary",
+    "kind": "property",
+    "platforms": [],
+    "tags": [],
+    "params": [],
+    "returns": null,
+    "desc": ""
+   }
+  ],
+  "websiteUrl": "https://electronjs.org/docs/api/structures/user-default-types"
+ }
+]
