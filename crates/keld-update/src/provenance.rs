@@ -501,8 +501,9 @@ fn payload_refusal(error: &keld_pack::PackError) -> UpdateError {
 
 /// Maps a container-reader refusal: a payload refusal stays `KELD-UPDATE-017` as
 /// [`ExpectedAppIdentity::decode`] reports it; every other keld-pack refusal is
-/// `KELD-UPDATE-019` and keeps the keld-pack code and message.
-#[cfg(any(windows, test))]
+/// `KELD-UPDATE-019` and keeps the keld-pack code and message. Windows only, like its
+/// one caller, [`ExpectedAppIdentity::from_signed_image`].
+#[cfg(windows)]
 pub(crate) fn container_refusal(error: &keld_pack::PackError) -> UpdateError {
     if matches!(error, keld_pack::PackError::ExpectedIdentityInvalid { .. }) {
         return payload_refusal(error);
