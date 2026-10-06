@@ -236,6 +236,18 @@ wv_fuzz_classification="$(result_for_paths crates/keld-wv/fuzz/Cargo.toml)"
 expect_flags "keld-wv fuzz workspace routes through the owning Rust closure" "$wv_flags" "$wv_fuzz_classification"
 expect_package_token "keld-wv fuzz workspace includes host consumer" keld-host "$wv_fuzz_classification"
 
+update_fuzz_classification="$(result_for_paths crates/keld-update/fuzz/Cargo.toml)"
+expect_flags "keld-update fuzz workspace routes through the owning Rust closure" "$runtime_flags" "$update_fuzz_classification"
+expect_package_token "keld-update fuzz workspace includes its owner package" keld-update "$update_fuzz_classification"
+# keld-core reads keld-update on Windows (KEL-254 T3 Part B), so the closure reaches the host.
+expect_package_token "keld-update fuzz workspace includes host consumer" keld-host "$update_fuzz_classification"
+
+# The host_identity fuzz target reads keld-pack, so a keld-pack edit must reach
+# the same rust-routed lane that builds the keld-update fuzz workspace.
+pack_classification="$(result_for_paths crates/keld-pack/src/host_identity.rs)"
+expect_flags "keld-pack change routes the Rust lane that builds the keld-update fuzz workspace" "$runtime_flags" "$pack_classification"
+expect_package_token "keld-pack change includes its keld-update consumer" keld-update "$pack_classification"
+
 manifest_classification="$(result_for_paths Cargo.lock)"
 expect_flags "workspace manifest routes every dependent Rust lane" "$manifest" "$manifest_classification"
 expect_package_token "workspace manifest selects host" keld-host "$manifest_classification"
