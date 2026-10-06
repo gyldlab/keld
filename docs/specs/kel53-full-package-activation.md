@@ -1994,7 +1994,7 @@ Must not touch in Slice A:
   resolves it from a fresh UAC prompt without ordinary host boot, writing nothing when
   revalidation or the process-family proof fails. The §7 rows for criteria 8, 17 and 20
   define the expected results. Implementation follows these dependency-ordered slices,
-  each one PR with its crates, gates and evidence:
+  each one PR (S4 is two, S4a and S4b) with its crates, gates and evidence:
   - S1, native qualification spike, in the nested research checkout only (no Keld
     code; no gate): `hProcess` and its rights from an elevated `runas` launch; the
     elevated helper opening the host process and its token after own-account and
@@ -2014,9 +2014,27 @@ Must not touch in Slice A:
   - S3, journal v2 and the mint-then-journal seam in `keld-update` (`records.rs`,
     `windows_baseline/activate.rs`). Gates: wire, public API. Evidence: v2 golden
     vectors, v1 decoding that admits no claim, unchanged crash cuts.
-  - S4, the `keld-attempt` codec, server and client in `keld-ipc` (`attempt.rs`,
-    `windows_named_pipe.rs`). Gates: wire, unsafe (`keld-ipc` amendment), public API.
-    Evidence: codec goldens and fuzzing, cross-namespace negatives, descriptor readback.
+  - S4, the `keld-attempt` endpoint layer, codec, server and client in `keld-ipc`
+    (`attempt.rs`, `bootstrap.rs`, `windows_named_pipe.rs`), in two PRs. Coordination
+    record (Linear KEL-270 comment `3972c6dd-1bae-4c29-9c8b-95d621600057`,
+    2026-10-06): the record byte layouts wait for the T4d wire review that "Candidate
+    connect-back" requires before code, so S4 splits into the parts this specification
+    already fixes (S4a) and the parts that wait for that review (S4b).
+    - S4a carries no wire-format content: no record, byte layout, codec, golden vector
+      or locator. It adds the exact-shape `is_attempt_endpoint` predicate, the three
+      closed endpoint descriptor forms, first-instance endpoint creation and descriptor
+      readback, the identification-level client, which requires the server's session
+      and exact descriptor before it sends anything, and the `TokenStatistics`,
+      `TokenElevation` and `TokenElevationType` fields of
+      `query_windows_peer_token_facts` (§5); the descriptor readback shares the one
+      ACL-entry equality that `keld-guard` (`windows_machine.rs`) exports. Gates: unsafe
+      (`keld-ipc` amendment), public API, permission model (the connect-back DACL), wire
+      (the `keld-attempt-<64 hex>` namespace only). Evidence: the landed rows for the
+      exact shape and cross-namespace negatives, descriptor readback and squatting
+      refusal, the client's session check and the token facts.
+    - S4b, after the wire-layout amendment from that review is approved: the codec with
+      its golden vectors and fuzzing, and the endpoint locator. Gates: wire, public API.
+      Evidence: the codec and locator golden vectors and codec fuzzing.
   - S5, the `CompareObjectHandles` binding in `keld-runtime` (`windows_job.rs`),
     reusing the generalized LPAC suspended-child path. Gates: unsafe (`keld-runtime`
     amendment). Evidence: the claimant-binding row.
@@ -2038,8 +2056,9 @@ Must not touch in Slice A:
     through `VerifiedWindowsImage::file`, the handle that verification pinned.
   - S9, the helper crate, its self-anchor (with the `locate.rs` image choice that
     replaces the fixed `HOST` constant), loader hardening and static runtime, the
-    `keld-pack` helper member, the `keld-ipc` argument-shape predicate, and the
-    `keld-runtime` launch calls; the recovery role stays disabled (`RecoveryDisabled`).
+    `keld-pack` helper member, the helper's argument check, which wires the S4a
+    predicate into the helper argv, and the `keld-runtime` launch calls; the recovery
+    role stays disabled (`RecoveryDisabled`).
     Gates: dependency (new crate, `Win32_UI_Shell`, `Win32_System_Com`), unsafe
     (`keld-runtime`), wire (canonical package content), public API (the locator's image
     choice). Evidence: the helper launch, argument-shape, planted-DLL and edge-set rows.
