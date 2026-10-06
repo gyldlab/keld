@@ -230,6 +230,10 @@ wire, capability, or Bun-principal ownership.
 | Lifecycle | packaging/update owner plus host teardown | stable identity + lifecycle event → retain/isolate/preserve/purge | early/wrong-identity delete → typed failure and untouched store | Bun generation never owns data |
 | Evidence | per-platform implementation task | real engine/OS effect → isolated/persistent result | mock/source string/other OS → no pass | KEL-79 remains separate |
 
+KEL-270 D4 cross-reference (2026-10-06): the Windows Authenticode verifier is
+`keld-guard`'s `WindowsAuthenticodeImage` (`src/windows_authenticode.rs`); `keld-core`
+calls it, applies the canonical app-id check and mints `ValidatedAppIdentity`.
+
 The live state proves why the identity input cannot be inferred:
 
 - `ValidatedBootSelection` currently contains only the per-launch root, display `name`,
@@ -533,6 +537,9 @@ Future implementation ownership:
 - `keld-core` platform verifier adapters in T2/T3/T4: validate Authenticode, macOS code
   signing, or Linux Ed25519 facts and mint `ValidatedAppIdentity`; these are identity
   gates as well as distribution gates;
+  KEL-270 D4 cross-reference (2026-10-06): the Windows Authenticode verifier is
+  `keld-guard`'s `WindowsAuthenticodeImage` (`src/windows_authenticode.rs`); `keld-core`
+  calls it, applies the canonical app-id check and mints `ValidatedAppIdentity`.
 - `keld-update`/packaging lifecycle: update/rollback continuity, package lock and purge
   authority;
 - `keld-wv::profile`: host-agnostic identity derivation, namespace/registry state,

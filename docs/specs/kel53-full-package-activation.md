@@ -2028,10 +2028,14 @@ Must not touch in Slice A:
     (`keld-guard` amendment), dependency (`Win32_Security_Authentication_Identity`).
     Evidence: wrapper tests, including the seam-injected session statuses.
   - S8, the KEL-135 verifier move to `keld-guard` (`windows_authenticode.rs`) with
-    `keld-core` calling it, after KEL-19's writer and container and KEL-254 T3 Part B
-    land. Gates: unsafe (`keld-core` and `keld-guard` amendments), public API.
-    Evidence: the existing KEL-135 rows pass unchanged against the moved owner, and the
-    payload reads back from both executables.
+    `keld-core` calling it. Owner decision (Linear KEL-270 comment
+    `4f5ce05b-8a79-4288-9a88-59d79d45e3f5`, 2026-10-06): S8 lands ahead of KEL-19's
+    writer and container and KEL-254 T3 Part B. Gates: unsafe (`keld-core` and
+    `keld-guard` amendments), public API. Evidence: the existing KEL-135 rows pass
+    unchanged against the moved owner, plus a before/after signed-image receipt. The
+    payload read-back moves to its producers' slices: from `keld-host.exe` to KEL-254
+    T3 Part B and from `keld-updater-helper.exe` to S9. T3 Part B reads the payload
+    through `VerifiedWindowsImage::file`, the handle that verification pinned.
   - S9, the helper crate, its self-anchor (with the `locate.rs` image choice that
     replaces the fixed `HOST` constant), loader hardening and static runtime, the
     `keld-pack` helper member, the `keld-ipc` argument-shape predicate, and the
