@@ -2993,11 +2993,16 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   `current` record is absent or does not decode, a `PerUserDirect` selection republishes
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
-  installation refuses because only its elevated writer may repair. The KEL-254 T2b
-  executable-located entrypoint (`select_active_package_for_executable`) and its payload
-  codec, the KEL-19 `.keldeai` host container (T1) and its boot-time reader
-  `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and the
-  KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
+  installation refuses because only its elevated writer may repair. In
+  `MachineUacDirect` that refusal (once the same read-only checks of both known-good
+  slots and the floor pass under the snapshot lease; a failed check keeps its own error)
+  and the refusal of a pending journal in any phase are the typed
+  `MachineRecoveryRequired` effect: the ordinary process writes nothing, and until the
+  helper's recovery-only role is enabled its guidance is `RecoveryDisabled`. The
+  KEL-254 T2b executable-located entrypoint (`select_active_package_for_executable`)
+  and its payload codec, the KEL-19 `.keldeai` host container (T1) and its boot-time
+  reader `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and
+  the KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
   through `keld-guard`, reads the expectation from that pinned handle, selects its
   installation and requires the record's publisher and app id to equal the verified
   identity before any listener, child or window. No `keld build` step embeds the
@@ -5849,7 +5854,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The common journaled activation transaction refused or could not confirm a step
-- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. With a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released.
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. Outside `MachineUacDirect`, with a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved any activation journal, the pointers and the versions: start nothing, and follow the reported guidance, which names the recovery-only role of the elevated `keld-updater-helper.exe`; while this release does not provide that role, no supported resolution exists other than administrator action.
 
 ## KELD-UPDATE-017
 

@@ -108,6 +108,11 @@ pub fn load_windows_baseline(
 /// unreferenced, missing or substituted version each refuse. The selection never guesses
 /// the newest directory or substitutes the installed baseline. An invalid `current` in a
 /// machine installation refuses: only its elevated writer may republish last-known-good.
+/// In `MachineUacDirect` a pending journal of any phase, and that invalid `current` once
+/// the snapshot shows a valid last-known-good (the same read-only checks the per-user
+/// repair runs, any failure of which keeps its own untyped refusal), refuse with the typed
+/// [`crate::ActivationEffect::MachineRecoveryRequired`] instead, writing nothing: only
+/// the elevated helper's recovery-only role resolves them.
 pub fn select_windows_active_package(
     trust: &WindowsBaselineTrust,
 ) -> Result<super::ActivePackageSelection, UpdateError> {
@@ -157,13 +162,38 @@ fn lease_error(step: &'static str, cause: &std::io::Error) -> UpdateError {
     }
 }
 
-fn pending_journal_refusal(journal: &records::ActivationJournal) -> UpdateError {
+/// What an ordinary startup returns for a Machine-UAC recovery-required state (KEL-53
+/// "Machine-UAC recovery-required state and recovery-only role"). Every such state carries
+/// `RecoveryDisabled` until the helper's recovery-only role is enabled: KEL-270 T4d slice
+/// S10 for an unlaunched attempt or an invalid `current`, slice S12 for a launched attempt.
+const MACHINE_RECOVERY_REQUIRED: crate::ActivationEffect =
+    crate::ActivationEffect::MachineRecoveryRequired(
+        crate::MachineRecoveryGuidance::RecoveryDisabled,
+    );
+
+/// The journal-free selection's refusal of a pending journal in any phase. In
+/// `MachineUacDirect` only the elevated helper writes, so an ordinary process infers
+/// nothing and returns the typed recovery-required state; the other modes keep
+/// journal-bound recovery under the writer lease.
+pub(super) fn pending_journal_refusal(
+    mode: DirectInstallMode,
+    phase: &records::ActivationPhase,
+) -> UpdateError {
+    let (effect, resolver) = match mode {
+        DirectInstallMode::MachineUacDirect => (
+            MACHINE_RECOVERY_REQUIRED,
+            "the elevated helper's recovery-only role",
+        ),
+        DirectInstallMode::PerUserDirect | DirectInstallMode::MachineSeamlessDirect => (
+            crate::ActivationEffect::JournalBoundRecoveryRequired,
+            "journal-bound recovery",
+        ),
+    };
     UpdateError::activation(
         "active package selection",
-        crate::ActivationEffect::JournalBoundRecoveryRequired,
+        effect,
         format!(
-            "a pending {:?} activation journal selects nothing until journal-bound recovery resolves it",
-            journal.phase
+            "a pending {phase:?} activation journal selects nothing until {resolver} resolves it"
         ),
     )
 }
@@ -179,11 +209,28 @@ fn select_committed_package(
     let provenance = read_writer_provenance(trust, &roots)?;
     let records = read_records(&roots, true)?;
     if let Some(journal) = &records.journal {
-        return Err(pending_journal_refusal(journal));
+        return Err(pending_journal_refusal(
+            trust.installation.install_mode,
+            &journal.phase,
+        ));
     }
     let current = match records.current {
         Ok(current) => current,
-        Err(cause) => return Ok(CommittedSelection::CurrentInvalid(cause)),
+        Err(cause) => {
+            // No Machine-UAC repair runs after this snapshot, so its source is validated
+            // here, under the snapshot lease: only a valid last-known-good makes an
+            // invalid `current` the typed recovery-required state.
+            if trust.installation.install_mode == DirectInstallMode::MachineUacDirect {
+                validate_current_repair_source(
+                    &trust.installation.baseline,
+                    &roots,
+                    &records.version_floor,
+                    &records.last_known_good,
+                    records.previous_known_good.as_ref(),
+                )?;
+            }
+            return Ok(CommittedSelection::CurrentInvalid(cause));
+        }
     };
     let records = WriterRecords {
         version_floor: records.version_floor,
@@ -242,24 +289,45 @@ fn select_committed_package(
 ///
 /// Only `PerUserDirect` owns a startup writer. Under the exclusive writer lease every
 /// fact is re-read: a journal refuses as journal-bound, a `current` that became valid is
-/// left alone, and last-known-good, previous-known-good and the floor must hold with
-/// `current` equal to last-known-good. Both known-good versions pass the census, metadata
-/// admission and package policy before one prepared record replaces `current` through the
-/// shared write-through publication and is read back. A crash leaves either the invalid
-/// record, repaired again at the next start, or the valid one.
+/// left alone, and [`validate_current_repair_source`] must pass: last-known-good,
+/// previous-known-good and the floor hold with `current` equal to last-known-good, and
+/// both known-good versions pass the census, metadata admission and package policy.
+/// Only then does one prepared record replace `current` through the shared write-through
+/// publication and is read back. A crash leaves either the invalid record, repaired again
+/// at the next start, or the valid one.
+///
+/// A machine installation refuses here before taking any lease or writing:
+/// `MachineSeamlessDirect` with its untyped baseline refusal, and `MachineUacDirect` with
+/// the typed [`crate::ActivationEffect::MachineRecoveryRequired`], whatever version holds
+/// the running executable. In `MachineUacDirect` the same last-known-good validation has
+/// already passed in the selection snapshot, under its shared lease; a failure there
+/// refuses untyped and never reaches this function.
 pub(super) fn repair_invalid_current(
     trust: &WindowsBaselineTrust,
     invalid: &UpdateError,
     located_version: Option<&str>,
 ) -> Result<(), UpdateError> {
-    if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
-        return Err(error(
-            "current pointer repair",
-            format!(
-                "current is invalid ({}) and only the elevated writer of a machine installation may republish last-known-good",
-                super::activate::refusal_detail(invalid)
-            ),
-        ));
+    match trust.installation.install_mode {
+        DirectInstallMode::PerUserDirect => {}
+        DirectInstallMode::MachineUacDirect => {
+            return Err(UpdateError::activation(
+                "current pointer repair",
+                MACHINE_RECOVERY_REQUIRED,
+                format!(
+                    "current is invalid ({}) and only the elevated helper's recovery-only role may republish last-known-good",
+                    super::activate::refusal_detail(invalid)
+                ),
+            ));
+        }
+        DirectInstallMode::MachineSeamlessDirect => {
+            return Err(error(
+                "current pointer repair",
+                format!(
+                    "current is invalid ({}) and only the elevated writer of a machine installation may republish last-known-good",
+                    super::activate::refusal_detail(invalid)
+                ),
+            ));
+        }
     }
     let roots = open_roots(trust, false).map_err(|cause| error("repair root admission", cause))?;
     let profile = roots.profile();
@@ -268,7 +336,10 @@ pub(super) fn repair_invalid_current(
     drop(read_writer_provenance(trust, &roots)?);
     let records = read_records(&roots, true)?;
     if let Some(journal) = &records.journal {
-        return Err(pending_journal_refusal(journal));
+        return Err(pending_journal_refusal(
+            trust.installation.install_mode,
+            &journal.phase,
+        ));
     }
     if records.current.is_ok() {
         // Another writer repaired it after the snapshot; nothing to do.
@@ -285,24 +356,13 @@ pub(super) fn repair_invalid_current(
             ),
         });
     }
-    let floor = semver::Version::parse(&records.version_floor)
-        .map_err(|cause| error("version floor", cause))?;
-    validate_writer_pointer_context(
+    validate_current_repair_source(
         &trust.installation.baseline,
-        &records.last_known_good,
+        &roots,
+        &records.version_floor,
         &records.last_known_good,
         records.previous_known_good.as_ref(),
-        &floor,
     )?;
-    let mut selected = vec![records.last_known_good.clone()];
-    if let Some(previous) = &records.previous_known_good {
-        selected.push(previous.clone());
-    }
-    validate_activation_version_census(&roots, &selected, None)?;
-    for artifact in &selected {
-        let completion = read_version_completion(&roots, artifact)?;
-        validate_package_policy(&roots, &completion.tree)?;
-    }
     super::activate::remove_stale_record_preparations(&roots)?;
     let bytes = records::encode_pointer(PointerKind::Current, &records.last_known_good)?;
     let temporary = super::prepare_record(&roots.update, &bytes, profile)?;
@@ -314,6 +374,40 @@ pub(super) fn repair_invalid_current(
         profile,
     )?;
     drop(lease);
+    Ok(())
+}
+
+/// Read-only validation of last-known-good as the source that replaces an invalid
+/// `current` (KEL-254 AC4 "valid last-known-good"), over records the caller read under
+/// its held lease: last-known-good, standing as `current`, with previous-known-good and
+/// the floor; the version census; and each known-good version's completion record and
+/// package policy. Every failure keeps its own untyped refusal, so the exact reason
+/// survives (KEL-254 AC16).
+pub(super) fn validate_current_repair_source(
+    baseline: &crate::ArtifactIdentity,
+    roots: &Roots,
+    version_floor: &str,
+    last_known_good: &crate::ArtifactIdentity,
+    previous_known_good: Option<&crate::ArtifactIdentity>,
+) -> Result<(), UpdateError> {
+    let floor =
+        semver::Version::parse(version_floor).map_err(|cause| error("version floor", cause))?;
+    validate_writer_pointer_context(
+        baseline,
+        last_known_good,
+        last_known_good,
+        previous_known_good,
+        &floor,
+    )?;
+    let mut selected = vec![last_known_good.clone()];
+    if let Some(previous) = previous_known_good {
+        selected.push(previous.clone());
+    }
+    validate_activation_version_census(roots, &selected, None)?;
+    for artifact in &selected {
+        let completion = read_version_completion(roots, artifact)?;
+        validate_package_policy(roots, &completion.tree)?;
+    }
     Ok(())
 }
 
