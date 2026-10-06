@@ -1,0 +1,98 @@
+export const meta = {
+  name: 'electron-compat-batch2',
+  description: 'Doctrine audit of the published Electron compat map: refute unrefuted units, critique the plan (coverage, YAGNI, coupling, ambiguity), write decision packets for open decisions, build and judge four logic prototypes',
+  phases: [
+    { title: 'Refute', detail: 'two lenses for F06, X03, X05, X06; semantics lens for F07' },
+    { title: 'Critique', detail: 'doctrine audit of the published plan' },
+    { title: 'Prototype', detail: 'four single-file logic prototypes' },
+    { title: 'Judge', detail: 'verify each prototype against decided semantics' },
+    { title: 'Decision packets', detail: 'one packet per open decision ticket, grouped' },
+  ],
+}
+const S = args.scratch, B = `${S}/briefing.md`
+const STR = { type: 'string' }, ARR = { type: 'array', items: STR }
+const VERDICT_SCHEMA = { type: 'object', properties: { lens: STR, verdicts: { type: 'array', items: { type: 'object', properties: { decision_id: STR, verdict: STR, reason: STR, evidence: STR, correction: STR }, required: ['decision_id', 'verdict', 'reason'] } }, extra_findings: { type: 'array', items: { type: 'object', properties: { finding: STR, evidence: STR, severity: STR } } } }, required: ['lens', 'verdicts'] }
+const CRITIC_SCHEMA = { type: 'object', properties: {
+  coverage_gaps: { type: 'array', items: { type: 'object', properties: { entity: STR, problem: STR, suggested_unit: STR } } },
+  duplicates: { type: 'array', items: { type: 'object', properties: { keys: ARR, problem: STR, fix: STR } } },
+  edge_problems: { type: 'array', items: { type: 'object', properties: { key: STR, problem: STR, fix: STR } } },
+  invariant_violations: { type: 'array', items: { type: 'object', properties: { key: STR, violation: STR, fix: STR } } },
+  quality_problems: { type: 'array', items: { type: 'object', properties: { key: STR, problem: STR, fix: STR } } },
+  yagni: { type: 'array', items: { type: 'object', properties: { key: STR, milestone: STR, reason: STR }, required: ['key', 'milestone', 'reason'] } },
+  ambiguity_laundering: { type: 'array', items: { type: 'object', properties: { key: STR, claim: STR, problem: STR, fix: STR } } },
+  hidden_coupling: { type: 'array', items: { type: 'object', properties: { keys: ARR, coupling: STR, fix: STR } } },
+  first_proof_frontier: { type: 'array', items: { type: 'object', properties: { key: STR, why_now: STR, consumes: STR }, required: ['key', 'why_now'] } },
+  summary: STR }, required: ['yagni', 'first_proof_frontier', 'summary'] }
+const PACKET_SCHEMA = { type: 'object', properties: { group: STR, packets: { type: 'array', items: { type: 'object', properties: {
+  key: STR, decision: STR, classification: STR, milestone: STR, facts: ARR, inferences: ARR, unknowns: ARR,
+  alternatives: { type: 'array', items: { type: 'object', properties: { option: STR, cost: STR, new_invariant: STR, invariant_at_risk: STR }, required: ['option', 'cost'] } },
+  recommendation: STR, falsifier: STR, reversible: STR, missing_evidence: STR, next_action: STR, owner: STR, prompt_tracker_node: STR },
+  required: ['key', 'decision', 'classification', 'milestone', 'facts', 'unknowns', 'alternatives', 'recommendation', 'falsifier', 'next_action'] } } }, required: ['group', 'packets'] }
+const PROTO_SCHEMA = { type: 'object', properties: { file: STR, question: STR, module_shape: STR, scenarios: ARR, decisions_encoded: ARR, caveats: STR }, required: ['file', 'question', 'scenarios', 'decisions_encoded'] }
+const JUDGE_SCHEMA = { type: 'object', properties: { file: STR, verdict: STR, mismatches: ARR, dom_leak: { type: 'boolean' }, scenario_coverage: STR, fixes_applied: STR }, required: ['file', 'verdict', 'mismatches'] }
+const LENS = {
+  invariants: 'LENS = Keld invariants, ownership and reuse: four uniques only; default-deny never bypassed or defaulted to allow; no Electron-isms in keld-core/keld-ipc; no parallel process model/transport/schema/parser/policy owner; reuse of existing Linear owners; unmeasured performance claims decide nothing; spec+Linear gate; prior decisions #312/#313/#319/#322/#323/#325 and KEL-127 direction. Verify by reading the cited Keld files/specs yourself at <keld repo>.',
+  semantics: 'LENS = Electron semantics accuracy and corpus demand: for each decision, fetch the pinned Electron v44.4.5 doc it depends on (https://raw.githubusercontent.com/electron/electron/v44.4.5/docs/api/*.md or docs/tutorial/*.md; shell/ sources where docs are silent) and check the claimed behavior/ordering/defaults/platform tags; check demand against RESOLVED call sites in the corpus clones under ' + S + '/corpus/ (fixed-string grep; token-scan counts are leads only); check sequencing and sizing.',
+}
+const REFUTES = [['F06','invariants'],['F06','semantics'],['X03','invariants'],['X03','semantics'],['X05','invariants'],['X05','semantics'],['X06','invariants'],['X06','semantics'],['F07','semantics']]
+
+// ---- start three independent lanes concurrently (no barrier between them)
+const refuteP = parallel(REFUTES.map(([u, lens]) => () => agent(`You are an independent refuter for unit ${u} of the KELD Electron compatibility map. Read ${B} first and obey its doctrine rules. ${LENS[lens]}
+BOUNDED QUESTION: does each decision of unit ${u} survive? EVIDENCE TARGET: primary sources only. WRITES: none. STOP: when every decision id has a verdict.
+Load the research object: read ${S}/swarm.json → units[] where unit == "${u}" → .research (decisions with ids). Default position: each decision is WRONG until evidence shows it survives; ask for the strongest plausible reason it is wrong. A claim is not evidence — reopen its source.
+For EVERY decision id return "survives" | "refuted" (contrary evidence + concrete correction) | "unresolved" (exact missing evidence + the cheapest discriminating experiment). List extra findings with severity. Return only the structured object.`, { label: `refute-${lens}:${u}`, phase: 'Refute', schema: VERDICT_SCHEMA, effort: 'high' }).then(v => v ? ({ unit: u, lens, verdict: v }) : null)))
+
+const criticP = agent(`You are the doctrine auditor for the PUBLISHED KELD Electron compatibility map (gyldlab/keld#391). Read ${B} and ${S}/DOCTRINE.md first; the doctrine is your rubric.
+BOUNDED QUESTION: where does the published plan violate the doctrine or the Keld invariants, and what is the true first-proof critical path? EVIDENCE TARGET: ${S}/publish_plan.json (every issue body), ${S}/swarm.json (research + verdicts), ${S}/families/*.json (180 entities), ${S}/compat-matrix.tsv, the Keld repo at <keld repo> (specs, code) and the pinned Electron docs. WRITES: none. STOP: when every ticket key (F0N-T<n>, X0N-T<n>) has a yagni row and the frontier is ordered.
+Audit:
+(1) COVERAGE — each of the 180 Electron entities must be covered by a ticket's members, an epic scope, a never list or out-of-scope; list each uncovered entity.
+(2) DUPLICATES and one-owner violations across units (e.g. preload runtime F04-T4 vs F07-T1; boot facts F01-T4 vs X03-T1; permission handlers F05-T3 vs X04; shell.open F06-D4 vs X04-D4; sendSync F04-A5 vs PANEL).
+(3) EDGES — unresolvable keys, cycles, edges that are not real gates, missing gates; every edge must consume something concrete.
+(4) INVARIANT violations.
+(5) QUALITY — acceptance criteria that are not binary, negative controls that could not fail, file paths, oversized tickets.
+(6) YAGNI — for EVERY ticket key classify milestone = "first-proof" (drawio-desktop on macOS under explicit legacy profile: install + activation + open → edit → save → close-with-unsaved-prompt cannot ship correctly without it), "next" (Zettlr or strict profile needs it) or "parked" (exists for completeness/symmetry/speculation), with the reason grounded in resolved corpus call sites.
+(7) AMBIGUITY LAUNDERING — statements in issue bodies presented as fact that are inference/assumption/unknown (check against the sources), with the corrected wording.
+(8) HIDDEN COUPLING — atoms whose change silently changes another (e.g. Ready re-base ↔ KEL-143 recovery; two navigation-generation counters; preload world ↔ executeJavaScriptInIsolatedWorld; channel grants ↔ migrate static analysis), each with the fix (new edge or new atom).
+(9) FIRST-PROOF FRONTIER — the ordered list of keys that are actually takeable now or next for the first proof, each with what concrete artifact it consumes.
+Return only the structured object.`, { label: 'critic:doctrine-audit', phase: 'Critique', schema: CRITIC_SCHEMA, effort: 'high' })
+
+const PROTOS = [
+  { name: 'window-lifecycle', units: ['F01','F02','F03'], question: 'Does a host-owned window model reproduce Electron BrowserWindow/WebContents observable lifecycle (ready-to-show, show, close with preventDefault, closed, destroy, isDestroyed, window-all-closed default quit, app.quit: before-quit → per-window close → will-quit → quit) while the Bun role can crash and be replaced without the window disappearing? Encode the DECIDED semantics: facade objects are host-minted (handle, generation) pairs; the tombstone flips BEFORE closed is emitted; later member access throws the exact "Object has been destroyed" text; destroy() skips close but guarantees closed; the host emits CloseRequested and waits indefinitely while the owning Bun generation is alive (no auto-close on timeout); a Bun generation loss revokes pending calls with an ambiguous-outcome error and the successor re-adopts surviving windows; close() twice is idempotent; preventDefault on close keeps the window; window-all-closed fires only after the last closed; app.quit is cancellable at before-quit or by any window close veto; Cmd+Q does not route through windowShouldClose (applicationShouldTerminate delayed reply).' },
+  { name: 'ipc-bridge', units: ['F04'], question: 'Does host-mediated IPC reproduce Electron ipcMain/ipcRenderer semantics: invoke/handle round trip; handler throw → message-only error to the renderer (typed KELD-* code stays on the wire); send/on ordering per channel; sendSync as a blocking CALL with deadline + rate limit + dev warning, SCAFFOLDED (typed throw + fix-it) until the transport experiment passes; webContents.send targets the current main frame of one webview principal; event.reply bound to the sender document generation and dropped silently when stale; senderFrame may be null; bounded credit window (slow consumer gets a typed error, never an unbounded queue); ungranted el:<channel> refused with KELD-GUARD003 and el:* refused by migrate; the renderer never obtains a Bun endpoint; a parked Bun main thread that owns the socket stalls the link after 8 KiB, a worker-owned single link does not.' },
+  { name: 'migrate-report', units: ['X02','X03','X04'], question: 'Does the keld migrate analyzer state model produce an honest report: scan → inventory call sites per Electron member → classify against the compat matrix (✔ / ▲ documented divergence / ✘ tracked / ✘ never / unknown) → native-module qualification lookup (only version+runtime+artifact-qualified evidence may say qualified) → security blockers listed separately (nodeIntegration, remote, sandbox:false ▲ ignored, webRequest no-ops behind host containment, openExternal dynamics, spawn sites) → authority profile printed (unverified by default; legacy only when the user accepts the forfeit) → generate the five files only after --write authorization (literal-only grants; el:* refused) → counts labelled "static estimate, not a compatibility score" → a KEL-74 claim line ONLY when a committed denominator exists. Scenarios use draw.io-like and Zettlr-like inventories.' },
+  { name: 'compat-matrix-cell', units: ['X01','F05','F06'], question: 'Does the compatibility-matrix cell state machine encode the maturity ladder honestly: UNSUPPORTED → SCAFFOLDED (L0) → PARTIAL (L1) → BEHAVIOR_MATCH (Keld transcript equals the golden under declared normalisers, ≥1 OS, legacy_sandbox_off; observed-only cells cap here) → CONFORMANCE_PASS (cited pinned doc sentence + Keld-owned test + named negative control + all three OS lanes or explicit ▲) → CORPUS_VERIFIED (real corpus app via migrate+dev, panel product only once the corpus id is committed, authority profile printed); regression on any gate demotes and raises P1; ▲ is a parallel accepted state with quirks-flag-or-scoreboard recorded; ✘ never is terminal; waivers need owner+reason+expiry and fail closed when expired; a percentage is computable only against a committed denominator and never for panel product without a documented id.' },
+]
+const protoP = pipeline(PROTOS,
+  p => agent(`Build a LOGIC prototype (single self-contained HTML file, no framework, no server, no external resources) at ${S}/prototypes/${p.name}.html. Read ${B} first.
+BOUNDED QUESTION: ${p.question}
+EVIDENCE TARGET: decided semantics in ${S}/publish_plan.json (epics ${p.units.map(u => u + '-EPIC').join(', ')}; PANEL-D1..D18 resolution comments) and ${S}/swarm.json units ${p.units.join(', ')}; pinned Electron docs (https://raw.githubusercontent.com/electron/electron/v44.4.5/docs/api/*.md) for event names and ordering. WRITES: that one file only. STOP: file written and summary returned.
+Shape: (1) visible intro stating the question; (2) a pure logic module in its own <script> block — explicit state machine or reducer, NO DOM/document/window references inside it, the page calls into it — liftable into the real codebase; (3) a current-state panel re-rendered after every action with "what just changed" callouts in domain language (Electron API names + Keld terms); (4) free-play buttons, one per action, always available — illegal actions produce the typed error the real system would (KELD-COMPAT-/KELD-IPC-/KELD-GUARD- style code + fix text), never silent success; (5) tabbed guided walkthroughs (happy path, tricky edges, illegal attempts) each resetting to a known initial state; (6) an "Assumptions and decisions encoded" section listing each semantic with its source and its label FACT / INFERENCE / PROPOSED (anything still open on the map is PROPOSED, never presented as decided). Restrained styling, one accent colour, readable in light and dark. Return the structured summary.`, { label: `prototype:${p.name}`, phase: 'Prototype', schema: PROTO_SCHEMA, effort: 'high' }),
+  (proto, p) => proto ? agent(`You are the judge for ${S}/prototypes/${p.name}.html (read it). Read ${B}. QUESTION it must answer: ${p.question}
+Ask for the strongest plausible reason the prototype is wrong. Check: (a) the logic module has no DOM/document/window references and is liftable; (b) every scenario in the question is a guided walkthrough that actually drives the module; (c) encoded semantics match the pinned Electron v44.4.5 docs for names/ordering (fetch the pages) and the Keld invariants (host owns windows/ports; default-deny; typed KELD-* errors; bounded queues; stale generation rejected; no auto-close on timeout); (d) illegal actions produce the typed error; (e) open decisions are labelled PROPOSED; (f) valid standalone HTML with no external resources. FIX mismatches in the file directly (keep the pure-module boundary) and list them in fixes_applied. Return the structured verdict.`, { label: `judge:${p.name}`, phase: 'Judge', schema: JUDGE_SCHEMA, effort: 'high' }).then(j => ({ name: p.name, proto, judge: j })) : null)
+
+phase('Refute')
+const verdicts = (await refuteP).filter(Boolean)
+log(`Refuter verdicts: ${verdicts.length}/${REFUTES.length}`)
+
+phase('Decision packets')
+const GROUPS = [
+  { name: 'gating-experiments', keys: ['PANEL-P1','PANEL-P2','PANEL-P3'] },
+  { name: 'panel-contested', keys: ['PANEL-D19','PANEL-D20','PANEL-D21','PANEL-D22','PANEL-D23'] },
+  { name: 'ipc', keys: ['F04-A1','F04-A3','F04-A4','F04-A5'] },
+  { name: 'app-window', keys: ['F01-A4','F01-A5','F02-A3','F02-A6'] },
+  { name: 'webcontents-session-diag', keys: ['F03-D4','F03-D6','F05-D3','F08-D6'] },
+  { name: 'native-renderer', keys: ['F06-D1','F06-D3','F06-D4','F07-A6','F07-E1'] },
+  { name: 'update-harness-migrate', keys: ['F09-A2','F09-A6','X01-A5','X02-A1'] },
+  { name: 'runtime-security-perf', keys: ['X03-A5','X03-A6','X04-D3','X04-D4','X05-A4'] },
+]
+const packets = (await parallel(GROUPS.map(g => () => {
+  const rel = verdicts.filter(v => g.keys.some(k => k.startsWith(v.unit + '-')))
+  return agent(`You write DECISION PACKETS for open decision tickets of the KELD Electron compatibility map. Read ${B} and ${S}/DOCTRINE.md (§3 Confront decisions, §4 Treat blockers as engineering problems, §5 Research with purpose, §8 YAGNI) first.
+BOUNDED QUESTION: for each ticket key in [${g.keys.join(', ')}] produce one packet. EVIDENCE TARGET: the ticket body in ${S}/publish_plan.json (issues[].key), its unit research + verdicts in ${S}/swarm.json and ${S}/wayfinder/electron-compat/notes/, the panel synthesis ${S}/wayfinder/electron-compat/panel/synthesis.md, the Keld repo at <keld repo> (owning code/spec), pinned Electron docs, corpus clones. WRITES: none. STOP: one packet per key.
+${rel.length ? 'NEW refuter verdicts for these units (not yet in swarm.json):\n' + JSON.stringify(rel, null, 1).slice(0, 30000) : ''}
+Each packet: decision (the exact decision in one sentence); classification = "decided" (current evidence already determines it — say which evidence) | "needs-experiment" (reproducible uncertainty: design the SMALLEST experiment that falsifies the competing hypotheses, with arms and exit criteria) | "needs-primary-doc" (name the exact page/source) | "needs-human" (genuinely owner-owned: give options, consequences, a recommendation and the ONE remaining question) | "needs-os-device" (exact system + observable); milestone = "first-proof" | "next" | "parked" by the YAGNI test (can drawio-desktop on macOS under the explicit legacy profile ship its install + activation + 4-step workflow correctly without this decision?); facts / inferences / unknowns as separate lists (each fact with its source); alternatives (each with cost, the new invariant it creates, the existing invariant it puts at risk); recommendation; falsifier (what observation would prove the recommendation wrong); reversible (yes/no + why); missing_evidence; next_action (one concrete action with its owner and the first observable completion check); owner (existing Linear/crate owner — never invent one). ONLY when classification is needs-experiment or needs-primary-doc AND milestone is first-proof, also fill prompt_tracker_node with a copy-ready node in the Prompt Tracker form (read <prompt-tracker clone>/docs/06-graph-engineering.md § Node form and docs/04-model-routing.md for the admitted model/effort names; header MODEL / EFFORT / HARNESS / GRAPH_NODE / GRAPH_ROLE / SESSION / OS / LINEAR / PIN / READS / WRITES / REQUIRES_ARTIFACTS / PRODUCES_ARTIFACTS / AFTER / NEXT / DO_NOT_RUN_WITH, then Role, Goal, Success criteria, Prerequisites, Resources, Delegation, Verification, Output, Stop rules; propose the category path under prompts/NEW/; never put a machine home directory in it). Otherwise leave prompt_tracker_node empty. Return only the structured object with group="${g.name}".`, { label: `packets:${g.name}`, phase: 'Decision packets', schema: PACKET_SCHEMA, effort: 'high' })
+}))).filter(Boolean)
+log(`Decision packet groups: ${packets.length}/${GROUPS.length}`)
+const critic = await criticP
+const prototypes = (await protoP).filter(Boolean)
+return { verdicts, critic, packets, prototypes }
