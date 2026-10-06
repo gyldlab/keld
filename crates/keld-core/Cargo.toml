@@ -30,6 +30,10 @@ getrandom = { workspace = true }
 sha2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# KEL-254 A3 T3 Part B: the one internal edge through which the boot owner consumes
+# KEL-53's opaque `ActivePackageSelection` and `ExpectedAppIdentity`. Windows only,
+# because installed-root boot is Windows-only; keld-update never depends on keld-core.
+keld-update = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 

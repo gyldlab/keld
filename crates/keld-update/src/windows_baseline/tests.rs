@@ -11,6 +11,7 @@ mod qualification;
 mod reader;
 mod role;
 mod selection;
+mod signed_host;
 mod substitutions;
 mod support;
 mod transaction;

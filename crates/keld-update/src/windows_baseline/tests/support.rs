@@ -286,7 +286,11 @@ pub(super) fn baseline_with(trust: &WindowsBaselineTrust, content: &[u8]) -> Ver
 /// Canonical Windows v0 package content whose tree holds a `keld-host.exe` image, made by
 /// keld-pack's producer (KEL-254 T2b executable-located selection).
 pub(super) fn host_package_content() -> Vec<u8> {
-    let image: &[u8] = b"keld-host fixture image";
+    host_package_content_with(b"keld-host fixture image")
+}
+
+/// [`host_package_content`] whose `keld-host.exe` holds exactly `image`.
+pub(super) fn host_package_content_with(image: &[u8]) -> Vec<u8> {
     let mut input = image;
     let mut entries = [keld_pack::PackageEntry::File {
         name: "keld-host.exe",

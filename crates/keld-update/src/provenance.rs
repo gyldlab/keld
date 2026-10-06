@@ -419,13 +419,37 @@ impl ExpectedAppIdentity {
     /// payload bytes, the channel is not a supported channel, or the update-signing
     /// public key is not a valid, non-weak Ed25519 key.
     pub fn decode(payload: &[u8]) -> Result<Self, UpdateError> {
-        let payload = keld_pack::ExpectedAppIdentityPayload::decode(payload).map_err(|error| {
-            let detail = match error {
-                keld_pack::PackError::ExpectedIdentityInvalid { detail } => detail,
-                _ => "payload",
-            };
-            invalid_expected(format!("payload {detail}"))
-        })?;
+        let payload = keld_pack::ExpectedAppIdentityPayload::decode(payload)
+            .map_err(|error| payload_refusal(&error))?;
+        Self::from_payload(&payload)
+    }
+
+    /// Reads the single embedded expectation from `image`, the open handle whose image
+    /// KEL-135 verified, through keld-pack's container reader, then applies exactly the
+    /// channel and key rules of [`Self::decode`].
+    ///
+    /// The reader uses only positioned reads on `image` and its handle-derived length: it
+    /// opens no path and neither depends on nor restores the handle's cursor. It
+    /// authenticates nothing; the result is authentic only because the caller verified
+    /// this same handle, which shares no write or delete access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::ExpectedIdentityContainer`], carrying keld-pack's code and
+    /// detail, when the image is not an admissible host or has no, more than one or a
+    /// non-canonical `.keldeai` container, or a positioned read fails; and
+    /// [`UpdateError::ExpectedIdentityInvalid`] when the embedded payload bytes, channel
+    /// or update-signing public key are refused as [`Self::decode`] refuses them.
+    #[cfg(windows)]
+    pub fn from_signed_image(image: &std::fs::File) -> Result<Self, UpdateError> {
+        let payload =
+            keld_pack::read_host_identity(image).map_err(|error| container_refusal(&error))?;
+        Self::from_payload(&payload)
+    }
+
+    /// The one channel and key admission shared by [`Self::decode`] and the signed-image
+    /// reader, so neither carrier has a second check.
+    fn from_payload(payload: &keld_pack::ExpectedAppIdentityPayload) -> Result<Self, UpdateError> {
         let channel = Channel::parse(payload.channel())
             .ok_or_else(|| invalid_expected("unsupported channel".to_owned()))?;
         release_verifying_key(payload.update_public_key()).map_err(invalid_expected)?;
@@ -463,6 +487,30 @@ impl ExpectedAppIdentity {
 #[cfg(any(windows, test))]
 fn invalid_expected(detail: String) -> UpdateError {
     UpdateError::ExpectedIdentityInvalid { detail }
+}
+
+/// A keld-pack payload refusal is an invalid expectation (`KELD-UPDATE-017`).
+#[cfg(any(windows, test))]
+fn payload_refusal(error: &keld_pack::PackError) -> UpdateError {
+    let detail = match error {
+        keld_pack::PackError::ExpectedIdentityInvalid { detail } => *detail,
+        _ => "payload",
+    };
+    invalid_expected(format!("payload {detail}"))
+}
+
+/// Maps a container-reader refusal: a payload refusal stays `KELD-UPDATE-017` as
+/// [`ExpectedAppIdentity::decode`] reports it; every other keld-pack refusal is
+/// `KELD-UPDATE-019` and keeps the keld-pack code and message.
+#[cfg(any(windows, test))]
+pub(crate) fn container_refusal(error: &keld_pack::PackError) -> UpdateError {
+    if matches!(error, keld_pack::PackError::ExpectedIdentityInvalid { .. }) {
+        return payload_refusal(error);
+    }
+    UpdateError::ExpectedIdentityContainer {
+        pack_code: error.code(),
+        detail: error.to_string(),
+    }
 }
 
 pub(crate) fn match_identity(
