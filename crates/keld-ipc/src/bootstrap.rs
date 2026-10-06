@@ -1346,7 +1346,7 @@ pub fn connect_windows_lifecycle_rendezvous_until<P: WindowsLifecyclePeerPin>(
         ));
     }
     let mut stream = WindowsNamedPipeBootstrapStream(
-        WindowsNamedPipeServer::connect_lifecycle_client_until(endpoint, deadline)?,
+        WindowsNamedPipeServer::connect_identification_client_until(endpoint, deadline)?,
     );
     let process_id = stream.peer_process_id()?;
     let session_id = stream.peer_session_id()?;
@@ -2146,27 +2146,25 @@ impl WindowsNamedPipeBootstrapStream {
     /// Returns whether `endpoint` has the exact host-minted Keld pipe shape.
     #[must_use]
     pub fn is_keld_endpoint(endpoint: &str) -> bool {
-        endpoint
-            .strip_prefix(r"\\.\pipe\keld-")
-            .is_some_and(|nonce| {
-                nonce.len() == 64
-                    && nonce
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
+        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-")
     }
 
     /// Returns whether `endpoint` has the exact lifecycle-only pipe shape.
     #[must_use]
     pub fn is_lifecycle_endpoint(endpoint: &str) -> bool {
-        endpoint
-            .strip_prefix(r"\\.\pipe\keld-lifecycle-")
-            .is_some_and(|nonce| {
-                nonce.len() == 64
-                    && nonce
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
+        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-lifecycle-")
+    }
+
+    /// Returns whether `endpoint` has the exact `keld-attempt` pipe shape,
+    /// `\\.\pipe\keld-attempt-<64 lowercase hex>` (KEL-53 §4 "Machine-UAC
+    /// bootstrap" item 3 and "Candidate connect-back").
+    ///
+    /// This is the argument-shape check for the helper's rendezvous argument and
+    /// the candidate's: a UNC or remote path, a `\\?\` path, another `keld-*`
+    /// namespace, uppercase hex and any other length are refused before any open.
+    #[must_use]
+    pub fn is_attempt_endpoint(endpoint: &str) -> bool {
+        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-attempt-")
     }
 
     /// Opens a client handle to an exact named-pipe endpoint.
@@ -2199,6 +2197,36 @@ impl WindowsNamedPipeBootstrapStream {
         self.0.try_clone().map(Self)
     }
 }
+
+/// One owner for the exact Keld pipe-name rule: the namespace `prefix` followed
+/// by exactly 64 lowercase hexadecimal digits and nothing else. The prefix is
+/// the protocol discriminator, so the namespaces stay disjoint.
+#[cfg(windows)]
+fn has_exact_pipe_locator(endpoint: &str, prefix: &str) -> bool {
+    endpoint.strip_prefix(prefix).is_some_and(|locator| {
+        locator.len() == 64
+            && locator
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Test-only: a fresh 64-lowercase-hex locator for a unique live test pipe,
+/// minted independently of the production locators so that no test name is
+/// derived by the code under test.
+#[cfg(all(test, windows))]
+pub(crate) fn random_test_locator() -> io::Result<String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    let mut locator = String::with_capacity(64);
+    for byte in bytes {
+        write!(locator, "{byte:02x}").map_err(io::Error::other)?;
+    }
+    Ok(locator)
+}
+
+#[cfg(all(test, windows))]
+mod endpoint_shape_tests;
 
 #[cfg(all(test, windows))]
 mod named_pipe_tests {

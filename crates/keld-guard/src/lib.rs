@@ -54,7 +54,7 @@ pub use windows_machine::{
     validate_windows_install_directory, validate_windows_install_file,
     validate_windows_machine_ancestor_directory, validate_windows_machine_directory,
     validate_windows_machine_file, validate_windows_machine_volume_anchor,
-    windows_initiating_logon_time, windows_install_directory_security,
+    windows_acl_entries_equal, windows_initiating_logon_time, windows_install_directory_security,
     windows_install_file_security,
 };
 

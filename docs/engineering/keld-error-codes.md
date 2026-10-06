@@ -68,6 +68,42 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: HELLO session token rejected
 - fix: Mint the token with the host (`keld dev`) into KELD_APP_LINK as `<endpoint>#<64 hex chars>` and send those exact 32 bytes as the HELLO payload. A wrong HELLO semantic shape is `KELD-IPC-005`; `KELD-IPC-007` is reserved for invalid bootstrap token text or an exactly shaped foreign token.
 
+## KELD-IPC-008
+
+- crate: keld-ipc
+- message: keld-attempt endpoint name refused before any open
+- fix: Pass exactly one local `\\.\pipe\keld-attempt-<64 lowercase hex>` name; UNC, `\\?\`, other `keld-*` namespaces, uppercase hex and other lengths are refused.
+
+## KELD-IPC-009
+
+- crate: keld-ipc
+- message: keld-attempt endpoint name already exists
+- fix: Refuse this attempt before any protected write; never reuse, wait for or connect to a name that another process created.
+
+## KELD-IPC-010
+
+- crate: keld-ipc
+- message: keld-attempt endpoint security readback mismatch
+- fix: Refuse the endpoint without sending anything: only the owner's exact form (owner, protected DACL, Medium no-write-up label, remote clients rejected, non-inheritable handle) is admitted.
+
+## KELD-IPC-011
+
+- crate: keld-ipc
+- message: SID is not a valid binary Windows SID
+- fix: Pass the exact TokenUser SID bytes from query_windows_peer_token_facts.
+
+## KELD-IPC-012
+
+- crate: keld-ipc
+- message: Windows call failed for a keld-attempt endpoint
+- fix: Check that the endpoint exists, and that the creating token can assign the form's owner (a Medium token cannot assign BUILTIN Administrators).
+
+## KELD-IPC-013
+
+- crate: keld-ipc
+- message: keld-attempt server runs in another session than the client
+- fix: Refuse the endpoint without sending anything: only an owner in the client's own session is admitted.
+
 ## KELD-WV-001
 
 - crate: keld-wv

@@ -9,7 +9,7 @@ use windows_permissions::constants::{
 };
 use windows_permissions::utilities::current_process_sid;
 use windows_permissions::wrappers::{GetSecurityInfo, SetSecurityInfo};
-use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
+use windows_permissions::{Acl, LocalBox, SecurityDescriptor, Sid};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
 mod initiating_token;
@@ -312,24 +312,35 @@ fn validate_descriptor(
             "machine DACL ACE count differs from selected profile",
         ));
     }
-    for index in 0..expected_acl.len() {
-        let actual = actual_acl
-            .get_ace(index)
-            .ok_or_else(|| io::Error::other("unreadable machine ACE"))?;
-        let expected = expected_acl
-            .get_ace(index)
-            .ok_or_else(|| io::Error::other("unreadable canonical ACE"))?;
-        if actual.ace_type() != expected.ace_type()
-            || actual.flags() != expected.flags()
-            || actual.mask() != expected.mask()
-            || actual.sid() != expected.sid()
-        {
-            return Err(io::Error::other(
-                "machine access rule differs from selected protection profile",
-            ));
-        }
+    if !windows_acl_entries_equal(actual_acl, expected_acl) {
+        return Err(io::Error::other(
+            "machine access rule differs from selected protection profile",
+        ));
     }
     Ok(())
+}
+
+/// Whether two ACLs hold the same ACEs in the same order, each with the same
+/// type, flags, access mask and SID. An ACE that cannot be read never matches.
+///
+/// This is the single ACE-equality rule for exact Windows descriptor checks:
+/// the install-protection profiles here and the `keld-ipc` named-pipe forms.
+/// ACL control flags such as protection and auto-inheritance belong to the
+/// descriptor, not to its entries, so callers check them separately.
+#[must_use]
+pub fn windows_acl_entries_equal(actual: &Acl, expected: &Acl) -> bool {
+    actual.len() == expected.len()
+        && (0..expected.len()).all(
+            |index| match (actual.get_ace(index), expected.get_ace(index)) {
+                (Some(actual), Some(expected)) => {
+                    actual.ace_type() == expected.ace_type()
+                        && actual.flags() == expected.flags()
+                        && actual.mask() == expected.mask()
+                        && actual.sid() == expected.sid()
+                }
+                _ => false,
+            },
+        )
 }
 
 fn seal(object: &mut File, directory: bool) -> io::Result<()> {
@@ -521,6 +532,38 @@ mod tests {
                 .is_err(),
                 "{sddl}"
             );
+        }
+    }
+
+    /// Each row changes exactly one ACE field, the order or the count of a
+    /// literal DACL; the first row is the positive control.
+    #[test]
+    fn acl_entry_equality_requires_each_field_order_and_count() {
+        let base = "D:P(A;;0x12019b;;;SY)(A;OICI;FA;;;BA)";
+        let expected: LocalBox<SecurityDescriptor> = base.parse().expect("literal DACL");
+        let expected = expected.dacl().expect("literal DACL present");
+        for (row, sddl, equal) in [
+            ("identical", base, true),
+            (
+                "protection is not an entry",
+                "D:(A;;0x12019b;;;SY)(A;OICI;FA;;;BA)",
+                true,
+            ),
+            ("deny type", "D:P(D;;0x12019b;;;SY)(A;OICI;FA;;;BA)", false),
+            ("flags", "D:P(A;;0x12019b;;;SY)(A;CI;FA;;;BA)", false),
+            ("mask", "D:P(A;;0x12019f;;;SY)(A;OICI;FA;;;BA)", false),
+            ("SID", "D:P(A;;0x12019b;;;BU)(A;OICI;FA;;;BA)", false),
+            ("order", "D:P(A;OICI;FA;;;BA)(A;;0x12019b;;;SY)", false),
+            ("missing ACE", "D:P(A;;0x12019b;;;SY)", false),
+            (
+                "extra ACE",
+                "D:P(A;;0x12019b;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;WD)",
+                false,
+            ),
+        ] {
+            let actual: LocalBox<SecurityDescriptor> = sddl.parse().expect("row DACL");
+            let actual = actual.dacl().expect("row DACL present");
+            assert_eq!(windows_acl_entries_equal(actual, expected), equal, "{row}");
         }
     }
 

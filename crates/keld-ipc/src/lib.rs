@@ -12,6 +12,8 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 pub mod admission;
+#[cfg(windows)]
+pub mod attempt;
 #[cfg(any(unix, windows))]
 pub mod bootstrap;
 pub mod call_error;
@@ -28,6 +30,11 @@ pub mod token;
 mod windows_named_pipe;
 
 pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
+#[cfg(windows)]
+pub use attempt::{
+    WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
+    WindowsAttemptEndpointSecurity,
+};
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
     BootstrapAdmission, BootstrapAdmissionFor, BootstrapCancellation, BootstrapListener,
@@ -54,7 +61,10 @@ pub use session::{
 };
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 #[cfg(windows)]
-pub use windows_named_pipe::{WindowsPeerTokenFacts, query_windows_peer_token_facts};
+pub use windows_named_pipe::{
+    WindowsPeerTokenFacts, WindowsPipeSecurityFact, WindowsTokenElevationType,
+    query_windows_peer_token_facts,
+};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).
 ///
