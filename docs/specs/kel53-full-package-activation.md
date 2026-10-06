@@ -1934,14 +1934,14 @@ Implement in:
     and `WaitForSingleObject` are already listed;
   - reuse decisions in `keld-runtime`: the suspended child's resume-once state and its
     single `ResumeThread` call in `windows_lpac.rs` (`spawn_suspended` at :313,
-    `resume` at :552) are generalized into one suspended-child type that both the LPAC
+    `resume` at :559) are generalized into one suspended-child type that both the LPAC
     launch and the token launch use, so no second `ResumeThread` call is added; the LPAC
     `spawn_suspended` itself is not reused, because it creates through `CreateProcessW`
     with an LPAC attribute list and the caller's own token. `assign_child`
-    (`windows_job.rs:1089`) takes a `std::process::Child`, which cannot represent the
+    (`windows_job.rs:1308`) takes a `std::process::Child`, which cannot represent the
     process that `CreateProcessWithTokenW` returns, so it is extended to accept that
     suspended child's owned process handle rather than duplicated. The attempt-Job
-    stdin start gate (`windows_job.rs:2064-2082`) is not reused for the candidate:
+    stdin start gate (`windows_job.rs:2283-2301`) is not reused for the candidate:
     suspended creation gives Job membership before the first instruction without an
     inherited pipe, and handle inheritance through `CreateProcessWithTokenW` is not
     qualified;
