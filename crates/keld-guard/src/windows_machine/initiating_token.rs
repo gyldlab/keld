@@ -36,9 +36,14 @@ const INITIATING_TOKEN_ACCESS: TOKEN_ACCESS_MASK =
 const IMPERSONATION_TOKEN_ACCESS: TOKEN_ACCESS_MASK = TOKEN_IMPERSONATE;
 
 /// Requires the initiating token's facts to be those of a non-elevated Medium token
-/// ("Machine-UAC bootstrap" item 4). The helper reads `elevated` and `integrity_rid` from
-/// [`WindowsInitiatingToken`] with the single token-fact reader,
-/// `keld_ipc::query_windows_peer_token_facts`, and calls this before any protected write.
+/// ("Machine-UAC bootstrap" item 4). The helper calls this before any protected write.
+///
+/// The facts are to come from [`WindowsInitiatingToken`] through the single token-fact
+/// reader, `keld_ipc::query_windows_peer_token_facts`. That is a forward reference: the
+/// reader does not yet return `elevated`, which arrives with KEL-270 T4d S4a, and it
+/// takes `&OwnedHandle` while [`WindowsInitiatingToken`] lends only a `BorrowedHandle`.
+/// The caller (S11) needs either an owned duplicate from
+/// `BorrowedHandle::try_clone_to_owned` or a reader that takes `BorrowedHandle<'_>`.
 ///
 /// # Errors
 /// [`WindowsTokenError::InitiatingTokenProfile`] for an elevated token or for any
