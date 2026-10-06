@@ -30,7 +30,7 @@ use crate::windows_baseline::{
 };
 use crate::{DirectInstallMode, UpdateError};
 
-const LABEL: &str = "application";
+pub(super) const LABEL: &str = "application";
 const WEAKENED: &str = "ancestor-weakened";
 const SEEDED: &str = "kel254-located-seeded.txt";
 /// The exact `MachineUac` directory profile plus one non-inheritable Users `FILE_ADD_FILE`
@@ -40,30 +40,31 @@ const WEAKENED_UAC_ANCESTOR: &str =
 /// The exact `MachineSystem` directory profile plus the same one extra Users grant.
 const WEAKENED_SYSTEM_ANCESTOR: &str = "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)(A;;0x2;;;BU)";
 
-fn machine_uac_trust(parent: &Path, content: &[u8]) -> WindowsBaselineTrust {
+pub(super) fn machine_uac_trust(parent: &Path, content: &[u8]) -> WindowsBaselineTrust {
     let mut trust = trust_for_with(&parent.join(LABEL), content);
     trust.installation.install_mode = DirectInstallMode::MachineUacDirect;
     trust
 }
 
-/// The fixture root, once its privileged seeding selector has finished.
-fn seeded(root: PathBuf) -> PathBuf {
+/// The fixture root, once the privileged seeding selector that writes `marker` last has
+/// finished.
+pub(super) fn seeded(root: PathBuf, marker: &str) -> PathBuf {
     assert!(
-        root.join(SEEDED).is_file(),
-        "run the privileged located-host seeding selector first: {}",
+        root.join(marker).is_file(),
+        "run the privileged seeding selector that writes `{marker}` first: {}",
         root.display()
     );
     root
 }
 
-fn leaf(root: &Path) -> &str {
+pub(super) fn leaf(root: &Path) -> &str {
     root.file_name()
         .and_then(|value| value.to_str())
         .expect("UTF-8 fixture leaf")
 }
 
 /// Every entry under `root`: directories map to `None`, files to their exact bytes.
-fn census(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+pub(super) fn census(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     let mut entries = BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -176,7 +177,7 @@ fn machine_uac_elevated_installer_seeds_located_host_baselines() {
 #[ignore = "operator acceptance: run this exact selector from an ordinary unelevated user token after the elevated located-host seeding selector"]
 fn machine_uac_ordinary_user_selects_the_located_baseline() {
     support::assert_ordinary_token();
-    let root = seeded(operator_root_path());
+    let root = seeded(operator_root_path(), SEEDED);
     let trust = machine_uac_trust(&root, &host_package_content());
     let before = state(&trust);
     let selection =
@@ -201,7 +202,7 @@ fn machine_uac_ordinary_user_selects_the_located_baseline() {
 #[ignore = "operator acceptance: run this exact selector from an ordinary unelevated user token after the elevated located-host seeding selector"]
 fn machine_uac_ordinary_user_refuses_a_weakened_ancestor() {
     support::assert_ordinary_token();
-    let root = seeded(operator_root_path());
+    let root = seeded(operator_root_path(), SEEDED);
     let trust = machine_uac_trust(&root.join(WEAKENED), &host_package_content());
     let locator = host_path(&trust, "1.0.0");
     let executable = open_image(&locator);
@@ -264,7 +265,7 @@ fn machine_system_installer_seeds_located_host_baselines() {
 #[ignore = "operator acceptance: run this exact selector from an ordinary unelevated user token after the LocalSystem located-host seeding selector"]
 fn machine_system_ordinary_user_selects_the_located_baseline() {
     support::assert_ordinary_token();
-    let root = seeded(support::suite_root());
+    let root = seeded(support::suite_root(), SEEDED);
     let trust = trust_for_with(&root.join(LABEL), &host_package_content());
     let before = state(&trust);
     let selection =
@@ -289,7 +290,7 @@ fn machine_system_ordinary_user_selects_the_located_baseline() {
 #[ignore = "operator acceptance: run this exact selector from an ordinary unelevated user token after the LocalSystem located-host seeding selector"]
 fn machine_system_ordinary_user_refuses_a_weakened_ancestor() {
     support::assert_ordinary_token();
-    let root = seeded(support::suite_root());
+    let root = seeded(support::suite_root(), SEEDED);
     let trust = trust_for_with(&root.join(WEAKENED).join(LABEL), &host_package_content());
     let locator = host_path(&trust, "1.0.0");
     let executable = open_image(&locator);

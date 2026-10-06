@@ -1851,11 +1851,14 @@ pub(super) fn higher_release_version_with(
         .expect("verify complete higher package")
 }
 
-fn seed_pending_activation_journal(
+/// Seeds a consistent pending `phase` over a committed baseline: a complete candidate
+/// version, the floor and `current` that phase implies, and its canonical journal, each
+/// created with the protection profile of the installation's own mode.
+pub(super) fn seed_pending_activation_journal(
     trust: &WindowsBaselineTrust,
     phase: ActivationPhase,
 ) -> ([u8; 32], [u8; 32]) {
-    let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
+    let profile = trust.installation.install_mode.protection_profile();
     let baseline = trust.installation.baseline.clone();
     let mut candidate = baseline.clone();
     candidate.version = "2.0.0".to_owned();

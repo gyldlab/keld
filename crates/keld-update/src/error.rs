@@ -19,6 +19,9 @@ pub enum VersionPublicationOutcome {
 }
 
 /// What an activation-transaction refusal leaves behind, and therefore what may happen next.
+///
+/// The enum is deliberately exhaustive: a caller that matches it must handle every state,
+/// so adding a variant is a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationEffect {
     /// No activation journal exists for this refusal: the installation selects exactly
@@ -39,6 +42,50 @@ pub enum ActivationEffect {
     /// updater's exclusive writer lease, so this call read and wrote nothing. Startup
     /// selects no package while that conflict lasts.
     WriterActive,
+    /// An ordinary startup of a `MachineUacDirect` installation found a pending activation
+    /// journal, or no journal with an absent or undecodable `current` beside a valid
+    /// last-known-good: one that holds with previous-known-good and the floor and whose
+    /// version census, completion records and package policies pass, as the per-user
+    /// startup repair requires. A last-known-good that fails any of those checks refuses
+    /// with that check's own error instead. In that mode only the elevated
+    /// `keld-updater-helper.exe` writes, so the ordinary process inferred and wrote nothing:
+    /// it assumed neither health nor process-family retirement and preserved any activation
+    /// journal, the pointers and the versions. Startup selects no package; only the
+    /// helper's recovery-only role resolves this state, and while this release does not
+    /// provide that role the guidance says so.
+    MachineRecoveryRequired(MachineRecoveryGuidance),
+}
+
+/// The one supported way out of [`ActivationEffect::MachineRecoveryRequired`].
+///
+/// A closed set: each variant has exactly one fix-guidance text, which every rendering of
+/// the refusal carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineRecoveryGuidance {
+    /// This release does not provide the recovery-only role, so no supported resolution
+    /// exists other than administrator action.
+    RecoveryDisabled,
+    /// An unlaunched `publish-pending` attempt or an invalid `current`: run the
+    /// recovery-only role now; no restart is needed.
+    RecoverNow,
+    /// A launched attempt: restart Windows, then run the recovery-only role.
+    RestartFirst,
+}
+
+impl MachineRecoveryGuidance {
+    const fn fix_guidance(self) -> &'static str {
+        match self {
+            Self::RecoveryDisabled => {
+                "This MachineUacDirect installation needs recovery that only the recovery-only role of the elevated keld-updater-helper.exe may perform, and this release does not provide that role: no supported resolution exists other than administrator action. Start nothing from this state; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them."
+            }
+            Self::RecoverNow => {
+                "This MachineUacDirect installation needs recovery that only the recovery-only role of the elevated keld-updater-helper.exe may perform: run that role now and approve its UAC prompt; no restart is needed. Start nothing from this state; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them."
+            }
+            Self::RestartFirst => {
+                "This MachineUacDirect installation needs recovery that only the recovery-only role of the elevated keld-updater-helper.exe may perform: restart Windows first, then run that role and approve its UAC prompt. Start nothing from this state; the activation journal, the pointers and the versions are preserved, and no ordinary process repairs them."
+            }
+        }
+    }
 }
 
 impl ProvenanceUnavailable {
@@ -462,6 +509,7 @@ fn fmt_activation_error(
         ActivationEffect::WriterActive => {
             "A conflicting handle, normally the updater's exclusive writer lease, holds the installation's activation lock and nothing was read or written; start nothing from this state, and select again only after that handle is released."
         }
+        ActivationEffect::MachineRecoveryRequired(guidance) => guidance.fix_guidance(),
     };
     write!(
         f,

@@ -47,8 +47,8 @@ mod tests;
 pub use archive::{ArchiveEntry, ArchiveEntryKind, ValidatedArchive};
 pub use baseline::{BaselineVerifier, SelectedBaseline, VerifiedBaseline};
 pub use error::{
-    ActivationEffect, ArtifactDomain, ManifestIdentityField, ProvenanceField,
-    ProvenanceUnavailable, UpdateError, VersionPublicationOutcome,
+    ActivationEffect, ArtifactDomain, MachineRecoveryGuidance, ManifestIdentityField,
+    ProvenanceField, ProvenanceUnavailable, UpdateError, VersionPublicationOutcome,
 };
 pub use full::VerifiedFull;
 #[cfg(feature = "fuzzing")]
