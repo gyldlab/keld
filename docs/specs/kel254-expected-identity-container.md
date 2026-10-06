@@ -617,8 +617,8 @@ need this edge: its tests build fixtures by calling the writer directly. Step 7'
 carrier check calls the single KEL-135 Windows Authenticode verifier owner. Owner
 decision D4 (2026-10-05, Linear KEL-270 comment
 `810f90c3-7ae0-411b-8164-f951f2246235`) moves that verifier from `keld-core` into
-`keld-guard` (`src/windows_authenticode.rs` in the in-progress KEL-270 T4d v2 draft,
-whose slice S8 performs the move): `keld-core` and the T4d updater helper both call
+`keld-guard` (`src/windows_authenticode.rs`, moved by KEL-270 T4d S8): `keld-core`
+and the T4d updater helper both call
 it, and copying it is forbidden. `keld-cli` already depends on `keld-guard`, so the
 check adds no edge. It MUST NOT add a public `keld-core` entry point for this purpose:
 that would be a second public owner of one rule. The D4 move is therefore a T3

@@ -30,9 +30,17 @@ mod probe;
 mod unique_json;
 pub mod verified_manifest;
 #[cfg(windows)]
+mod windows_authenticode;
+#[cfg(windows)]
 mod windows_machine;
 #[cfg(windows)]
 mod windows_owner_private;
+
+#[cfg(windows)]
+pub use windows_authenticode::{
+    VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeIdentity,
+    WindowsAuthenticodeImage,
+};
 
 #[cfg(windows)]
 pub use windows_machine::{
