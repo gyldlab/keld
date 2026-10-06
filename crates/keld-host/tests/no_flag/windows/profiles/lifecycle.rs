@@ -1,7 +1,9 @@
-//! Signed-profile concurrency and running-crash lifecycle acceptance.
+//! Signed-profile concurrency and running-crash lifecycle acceptance on an installed
+//! package (KEL-254 T3 Part B restores these rows on installed provenance).
 
 use crate::PRODUCT_DEADLINE;
 use crate::support::control::{accept_ready_generation, read_control_line};
+use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{
     assert_process_signaled, open_process_for_wait, process_exists, terminate_test_process,
     wait_child,
@@ -9,28 +11,33 @@ use crate::support::process::{
 use crate::support::product::ProductFixture;
 use crate::support::signed_process::SignedStateProcessGuard;
 use crate::support::window::wait_for_host_window;
-use std::env;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Instant;
 
-#[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires a signed KEL-135 Windows host fixture"]
-fn kel135_signed_host_profile_concurrency() {
-    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
-        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+/// One fresh installation of the signed A/P1 host with the default product renderer.
+fn installed_product() -> (ProductFixture, InstalledApp) {
     let fixture = ProductFixture::new();
+    let installed = InstalledApp::install(
+        &fixture.project,
+        &fixture_env(SIGNED_HOST_A_P1),
+        &fixture_env(INSTALLER_ENV),
+    );
+    (fixture, installed)
+}
+
+#[test]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1 and KELD_KEL254_INSTALLER_FIXTURE (KEL-254 installed-host operator fixtures)"]
+fn kel135_signed_host_profile_concurrency() {
+    let (_fixture, installed) = installed_product();
     let first_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind first control");
     let first_port = first_listener
         .local_addr()
         .expect("first control address")
         .port();
-    let first_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
-        .expect("stage first signed host");
-    let first_child = Command::new(first_stage.host())
-        .current_dir(first_stage.root())
+    let first_child = installed
+        .command()
         .env("KELD_T1B_CONTROL", first_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -47,10 +54,8 @@ fn kel135_signed_host_profile_concurrency() {
         .local_addr()
         .expect("second control address")
         .port();
-    let second_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
-        .expect("stage second signed host");
-    let mut second = Command::new(second_stage.host())
-        .current_dir(second_stage.root())
+    let mut second = installed
+        .command()
         .env("KELD_T1B_CONTROL", second_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -91,20 +96,16 @@ fn kel135_signed_host_profile_concurrency() {
 }
 
 #[test]
-#[ignore = "blocked on KEL-19 / KEL-254 T3 Part B (Windows persistent profiles need installed-root boot); requires a signed KEL-135 Windows host fixture"]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1 and KELD_KEL254_INSTALLER_FIXTURE (KEL-254 installed-host operator fixtures)"]
 fn kel135_signed_host_running_crash_releases_profile() {
-    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
-        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
-    let fixture = ProductFixture::new();
+    let (_fixture, installed) = installed_product();
     let first_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind crashing control");
     let first_port = first_listener
         .local_addr()
         .expect("crashing control address")
         .port();
-    let first_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
-        .expect("stage crashing signed host");
-    let first_child = Command::new(first_stage.host())
-        .current_dir(first_stage.root())
+    let first_child = installed
+        .command()
         .env("KELD_T1B_CONTROL", first_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -129,10 +130,8 @@ fn kel135_signed_host_running_crash_releases_profile() {
         .local_addr()
         .expect("recovered control address")
         .port();
-    let second_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
-        .expect("stage recovered signed host");
-    let second_child = Command::new(second_stage.host())
-        .current_dir(second_stage.root())
+    let second_child = installed
+        .command()
         .env("KELD_T1B_CONTROL", second_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
