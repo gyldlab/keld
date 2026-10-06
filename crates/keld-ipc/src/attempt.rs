@@ -203,6 +203,10 @@ impl WindowsAttemptEndpoint {
         security: &WindowsAttemptEndpointSecurity,
         descriptor: &LocalBox<SecurityDescriptor>,
     ) -> Result<Self, WindowsAttemptEndpointError> {
+        // Both codes mean that the name exists. FILE_FLAG_FIRST_PIPE_INSTANCE
+        // refuses with ERROR_ACCESS_DENIED, but a squatter at its instance
+        // limit that grants FILE_CREATE_PIPE_INSTANCE is refused first with
+        // ERROR_PIPE_BUSY; the tests reach both.
         let server = WindowsNamedPipeServer::bind_with_descriptor(endpoint, descriptor).map_err(
             |source| match source.raw_os_error() {
                 Some(code)

@@ -23,8 +23,8 @@ use windows_permissions::wrappers::{
 };
 use windows_permissions::{LocalBox, SecurityDescriptor};
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_OWNER, GetHandleInformation,
-    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_OWNER, ERROR_PIPE_BUSY,
+    GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::{
     GetTokenInformation, RevertToSelf, SECURITY_ATTRIBUTES, SECURITY_IMPERSONATION_LEVEL,
@@ -323,25 +323,37 @@ fn a_live_owner_name_cannot_be_created_again() -> io::Result<()> {
     Ok(())
 }
 
-/// A squatter that pre-created the name and allows unlimited instances to
-/// everyone still cannot hand the owner a second instance of its pipe.
+/// A squatter that pre-created the name and grants everyone every right,
+/// `FILE_CREATE_PIPE_INSTANCE` included, still cannot hand the owner a second
+/// instance of its pipe. Both name-in-use codes are reachable: with spare
+/// instances `FILE_FLAG_FIRST_PIPE_INSTANCE` refuses with
+/// `ERROR_ACCESS_DENIED`, and at its instance limit Windows refuses first with
+/// `ERROR_PIPE_BUSY` (observed on Windows 11 26300). A live owner, whose DACL
+/// withholds `FILE_CREATE_PIPE_INSTANCE`, refuses with `ERROR_ACCESS_DENIED`
+/// (`a_live_owner_name_cannot_be_created_again`).
 #[test]
 fn a_pre_created_name_is_refused_even_when_the_squatter_allows_more_instances() -> io::Result<()> {
     let security = WindowsAttemptEndpointSecurity::per_user_connect_back(&own_user_sid_bytes()?)
         .map_err(io::Error::other)?;
-    let name = random_attempt_name()?;
-    let _squatter = squat(
-        &name,
-        "D:P(A;;GA;;;WD)",
-        Squat {
-            unlimited_instances: true,
-            ..SQUAT
-        },
-    )?;
-    assert!(matches!(
-        WindowsAttemptEndpoint::create(&name, &security),
-        Err(WindowsAttemptEndpointError::NameInUse { .. })
-    ));
+    for (unlimited_instances, expected) in [(true, ERROR_ACCESS_DENIED), (false, ERROR_PIPE_BUSY)] {
+        let name = random_attempt_name()?;
+        let _squatter = squat(
+            &name,
+            "D:P(A;;GA;;;WD)",
+            Squat {
+                unlimited_instances,
+                ..SQUAT
+            },
+        )?;
+        match WindowsAttemptEndpoint::create(&name, &security) {
+            Err(WindowsAttemptEndpointError::NameInUse { source }) => assert_eq!(
+                source.raw_os_error(),
+                Some(expected.cast_signed()),
+                "unlimited instances: {unlimited_instances}"
+            ),
+            other => panic!("a squatted name must be NameInUse: {other:?}"),
+        }
+    }
     Ok(())
 }
 
