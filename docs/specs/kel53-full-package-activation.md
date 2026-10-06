@@ -2019,7 +2019,10 @@ Must not touch in Slice A:
     Evidence: codec goldens and fuzzing, cross-namespace negatives, descriptor readback.
   - S5, the `CompareObjectHandles` binding in `keld-runtime` (`windows_job.rs`),
     reusing the generalized LPAC suspended-child path. Gates: unsafe (`keld-runtime`
-    amendment). Evidence: the claimant-binding row.
+    amendment), public API (breaking rename `WindowsLpacChild`→`WindowsSuspendedChild`;
+    new `WindowsLaunchedProcess`, `WindowsClaimantRefusal`). Evidence: the
+    process-object cells of the claimant-binding row at the binding; pipe, token,
+    deadline and one-shot cells close in S6/S11.
   - S6, `PerUserDirect` connect-back end to end (`keld-update`, `keld-core` as the host
     coordinator owner, `keld-runtime`, `keld-ipc`). Gates: permission model. Evidence:
     the `PerUserDirect` cells of the connect-back, claimant-binding and squatting rows.
@@ -2140,7 +2143,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:21`);
   the helper role entry points; the `keld-guard` Authenticode owner moved
   under D4; the `keld-ipc` `attempt` module; and the new safe wrappers that
-  `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate;
+  `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate, with the
+  breaking rename of `keld-runtime`'s `WindowsLpacChild` to `WindowsSuspendedChild`
+  (S5);
 - permission model: yes — the install-mode protection profiles, UAC elevation and
   hostile-role denial decide who can mutate executable state, though no app grant is
   added. T4d adds the elevated helper principal, its recovery-only role and the
