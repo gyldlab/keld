@@ -4146,7 +4146,10 @@ mod tests {
     fn suspended_child_owns_the_sole_resume_thread_call() {
         // KEL-53 §5 reuse decision: one suspended-child type owns the only
         // primary-thread resume, so a later launch path cannot add a second one.
-        let needle = concat!("Resume", "Thread(");
+        // It counts the identifier, not one call spelling: an alias or a
+        // qualified path must still name it, so the import and the one call
+        // are the only two occurrences.
+        let needle = concat!("Resume", "Thread");
         let mut calls = Vec::new();
         let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         while let Some(directory) = pending.pop() {
@@ -4164,6 +4167,6 @@ mod tests {
                 }
             }
         }
-        assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 1)]);
+        assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 2)]);
     }
 }
