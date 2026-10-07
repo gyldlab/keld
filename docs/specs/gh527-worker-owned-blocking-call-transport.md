@@ -155,10 +155,14 @@ negative control: the one mutation that MUST make the test fail.
     `KELD-IPC-005`. A late REPLY for an abandoned id is discarded and never returned.
     The one reachable path to a second blocking call is a state applier that calls
     `callBlocking` during the step-1 drain (§4.6), since no other code runs on a parked
-    main. That inner call throws `KELD-IPC-005` before any write. The applier then
-    throws, so the link closes and the outer call throws `KELD-IPC-022` (§4.4).
+    main. That inner call throws `KELD-IPC-005` before any write, although the Worker
+    has already cleared `BLOCKING` at its claim, and the reply slot, `REPLY_AT` and
+    `REPLY_LEN` are unchanged. The applier then throws, so the link closes and the
+    outer call throws `KELD-IPC-022` (§4.4).
     *Negative control:* matching the "next REPLY" instead of the correlation id
-    makes the abandoned-id case return the wrong bytes.
+    makes the abandoned-id case return the wrong bytes. *Second negative control:*
+    an in-flight check that reads `BLOCKING` instead of main's flag lets the inner
+    call write its CALL during the drain, so the no-write assertion fails.
 13. **Deadline on every call.** Given `callBlocking` without a finite positive
     deadline no greater than `MAX_BLOCKING_CALL_DEADLINE_MS`, then it throws
     `KELD-IPC-005` before any frame is written. Given a host that never replies, then
@@ -543,7 +547,11 @@ export class WorkerLink {
 
 1. It validates the deadline: finite, greater than 0 and at most
    `MAX_BLOCKING_CALL_DEADLINE_MS`. Otherwise it throws `KELD-IPC-005`.
-2. No blocking call may be in flight; otherwise it throws `KELD-IPC-005`. Main
+2. No blocking call may be in flight; otherwise it throws `KELD-IPC-005`. "In
+   flight" is a main-only flag, never `BLOCKING`, which the Worker clears at its
+   claim. Main sets the flag here and clears it only after step 4, so it covers the
+   step-1 drain (§4.6) and the copy out of the reply slot; the slot stays owned by
+   the outer call until then. Main
    allocates the correlation id (the rule is under "Pending-CALL map" below). Main
    stores the id in `BLOCKING` and posts the CALL to the Worker
    with `postMessage`, marked blocking. FACT: `postMessage` from a parked main reaches
@@ -913,7 +921,7 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
 
 ### 4.12 Architecture 02 sentences changed in this PR
 
-- §1: one new paragraph, "Destination Bun-side link owner (GH-527, draft)", after the
+- §1: one new paragraph, "Destination Bun-side link owner (GH-527, approved spec)", after the
   KEL-75 role-instance contract. It states Worker ownership of the client end, that
   every main-thread frame passes through the Worker, that outbound frames reach the
   Worker by `postMessage` while inbound frames arrive through its bounded ordered ring

@@ -36,7 +36,7 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
-**Destination Bun-side link owner (GH-527, draft
+**Destination Bun-side link owner (GH-527, approved
 [spec](../specs/gh527-worker-owned-blocking-call-transport.md)):** inside a role
 process, one transport Worker owns the client end of the role generation's one
 authenticated link, from `HELLO` to close. The role's main thread opens no socket.
@@ -302,7 +302,7 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
-  readiness-driven reader remains destination work (see §7). GH-527 (draft) gives
+  readiness-driven reader remains destination work (see §7). GH-527 (approved spec) gives
   `GRANT` its first payload: optional credit that the role's transport Worker sends to
   the host, which bounds the host's `EVENT`s to that role by the Worker's free ring
   space. It ships only behind a protocol-version bump.
@@ -407,7 +407,7 @@ compromised keeps the host's threat model uniform).
   (credit hits zero), emits a role-qualified `runtime-crashed` event and restarts per
   policy. Its in-flight calls reject with a registered role-qualified `KELD-*` error;
   other principals continue. KEL-70 currently proves generic child restart only.
-  Under GH-527 (draft), the death of a role's transport Worker is that role's link
+  Under GH-527 (approved spec), the death of a role's transport Worker is that role's link
   loss and follows this path. A parked caller wakes with `KELD-IPC-025`, not at its
   call deadline; if the link had already ended with another code, the first recorded
   code stands.
