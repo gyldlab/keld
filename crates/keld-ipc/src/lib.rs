@@ -29,16 +29,17 @@ pub mod token;
 mod windows_named_pipe;
 
 pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
-pub use attempt::{
-    AttemptBootAcknowledgement, AttemptChallenge, AttemptClaim, AttemptFailureClass,
-    AttemptHealthResult, AttemptReadPosition, AttemptRecord, AttemptRecordError, AttemptRecordKind,
-    AttemptTranscript,
-};
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use attempt::fuzz_attempt_records;
 #[cfg(windows)]
 pub use attempt::{
-    WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
-    WindowsAttemptEndpointSecurity, WindowsAttemptLocatorError, WindowsAttemptLocatorInput,
-    windows_attempt_connect_back_endpoint,
+    ATTEMPT_HEALTH_WINDOW, AttemptFailureClass, AttemptHealthWindowFailure, AttemptReadPosition,
+    AttemptRecordError, AttemptRecordKind, AttemptTranscript, WindowsAttemptClaimantChannel,
+    WindowsAttemptClient, WindowsAttemptCloseWait, WindowsAttemptEndpoint,
+    WindowsAttemptEndpointError, WindowsAttemptEndpointSecurity, WindowsAttemptExchangeError,
+    WindowsAttemptLocatorError, WindowsAttemptLocatorInput, WindowsAttemptOwnerChannel,
+    WindowsAttemptRollBack, windows_attempt_connect_back_endpoint,
 };
 #[cfg(any(unix, windows))]
 pub use bootstrap::{

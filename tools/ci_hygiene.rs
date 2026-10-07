@@ -262,6 +262,10 @@ const FUZZ_WORKSPACE_STEPS: &[(&str, &str)] = &[
         "cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
     ),
     (
+        "Test keld-ipc fuzzing hook",
+        "cargo test -p keld-ipc --features fuzzing --lib attempt::records",
+    ),
+    (
         "Check keld-wv fuzz workspace",
         "cargo check --manifest-path crates/keld-wv/fuzz/Cargo.toml",
     ),
@@ -2696,6 +2700,10 @@ mod tests {
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
             "          cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml",
+            "      - name: Test keld-ipc fuzzing hook",
+            "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
+            "        run: |",
+            "          cargo test -p keld-ipc --features fuzzing --lib attempt::records",
             "      - name: Check keld-wv fuzz workspace",
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
@@ -3961,6 +3969,19 @@ mod tests {
         temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
         let error = check(temp.path()).expect_err("missing fuzz workspace check must fail");
         assert!(error.contains("Check keld-ipc fuzz workspace"), "{error}");
+    }
+
+    #[test]
+    fn missing_ipc_fuzzing_hook_test_step_fails() {
+        let temp = complete_fixture();
+        let step = "      - name: Test keld-ipc fuzzing hook
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
+        run: |
+          cargo test -p keld-ipc --features fuzzing --lib attempt::records
+";
+        temp.write(WORKFLOW, &valid_workflow().replace(step, ""));
+        let error = check(temp.path()).expect_err("missing fuzzing hook test must fail");
+        assert!(error.contains("Test keld-ipc fuzzing hook"), "{error}");
     }
 
     #[test]

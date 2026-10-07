@@ -73,8 +73,9 @@ frames; production capability handoff remains disconnected until lifecycle proof
 pass. See KEL-53 for the record and failure contract.
 
 **Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer, claim and health
-record codec and connect-back locator current; record exchange and bootstrap records
-target):** the candidate connect-back and the Machine-UAC helper bootstrap use a
+record codec, connect-back locator and the claim and health exchange current; host
+composition and bootstrap records target):** the candidate connect-back and the
+Machine-UAC helper bootstrap use a
 third one-peer protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>`
 namespace, disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
@@ -99,10 +100,24 @@ KEL-53 fixes (owner decision `eff8e2fb`), `keld-ipc::attempt` also owns the clai
 health record codec (`KELD-AH1` to `KELD-AK1`), whose reader takes the 8-byte magic
 first and refuses a record its position does not admit before reading further, and
 the purpose-`1` connect-back locator, which shares its one prefix constant with
-`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is pure
-bytes and builds on every platform; the locator is Windows-only. No component
-exchanges these records yet (KEL-53 §6 S6a), and the bootstrap records and purpose-`2`
-locator land with S11.
+`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is
+crate-private pure bytes: it builds on Windows, for its tests, and with the
+non-product `fuzzing` feature, which exposes only its raw-byte fuzz hook; the locator
+is Windows-only. The exchange runs inside the endpoint and the client, which never
+expose their stream, so no other crate builds, sends or reads a record. The owner's
+connect-back endpoint derives its name from the IDs its `KELD-AC1` carries; per
+connection, under the landed per-connection deadline clamped to the claim deadline, it
+reads the client's process ID and session, `KELD-AH1`, the claim writer's
+identification-level token and the retained process pin that the caller's claimant
+policy returns, disconnects and re-arms on any refusal, and consumes its one-shot
+before `KELD-AR1`. After `KELD-AR1` the owner reads `KELD-AB1` and `KELD-AY1` by
+position, decides the health window (30 seconds plus a margin G, which the caller
+passes until KEL-53 §6 S6c fixes it from its measurement) as a state machine over an
+injected clock, and then either writes `KELD-AK1` accepted and waits for the
+candidate's end of file before it closes, or writes `KELD-AK1` rolled back once without
+waiting; the candidate arms only on `KELD-AK1` accepted, read under its deadline. No
+host component composes the exchange yet (KEL-53 §6 S6c), and the bootstrap records and
+purpose-`2` locator land with S11.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
