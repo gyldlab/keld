@@ -6,7 +6,10 @@
 //! The setting is process-wide and irreversible, so each observation runs in a
 //! child copy of this test executable. The same fixture first proves that the
 //! standard search loads every planted copy (the negative control), then that
-//! a child which restricts its search first loads none of them.
+//! a child which restricts its search first loads none of them. In both
+//! children an unplanted System32 DLL, loaded by name only, must still load
+//! from System32 (the positive control): a restriction that searched nowhere
+//! would also refuse every planted copy.
 
 #![cfg(windows)]
 #![allow(unsafe_code)] // isolated test-only loader observation with local ABI proofs
@@ -24,7 +27,9 @@ use std::process::{Command, Stdio};
 
 use keld_runtime::windows_job::restrict_dll_search_to_system32;
 use windows_sys::Win32::Foundation::{ERROR_MOD_NOT_FOUND, FreeLibrary};
-use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, LoadLibraryW};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetModuleHandleW, LoadLibraryW,
+};
 
 const CHILD_TEST: &str = "dll_search_child";
 const MODE_ENV: &str = "KELD_TEST_DLL_SEARCH_MODE";
@@ -35,6 +40,9 @@ const IMAGE_DLL: &str = "keld-planted-image-dir.dll";
 const CWD_DLL: &str = "keld-planted-current-dir.dll";
 /// Planted in a user-writable directory prepended to the child's `PATH`.
 const PATH_DLL: &str = "keld-planted-path-entry.dll";
+/// Not planted and not in `KnownDLLs`, so only a search that includes System32
+/// finds it.
+const SYSTEM_DLL: &str = "version.dll";
 
 /// What one child load reported.
 #[derive(Debug, PartialEq, Eq)]
@@ -43,6 +51,9 @@ enum Load {
     Loaded(PathBuf),
     /// `LoadLibraryW` failed with this Windows error.
     Refused(i32),
+    /// The module was already loaded before the load, so the load proved no
+    /// search.
+    Preloaded,
 }
 
 #[test]
@@ -60,7 +71,7 @@ fn system32_only_search_skips_dlls_planted_beside_the_image_in_the_current_direc
 
     // A real System32 DLL under a name that no search path, KnownDLLs entry or
     // loaded module already holds, so only the planted copies can satisfy it.
-    let source = system32_dll("version.dll");
+    let source = system32_dll(SYSTEM_DLL);
     let planted = [
         (IMAGE_DLL, image_dir.join(IMAGE_DLL)),
         (CWD_DLL, current_dir.join(CWD_DLL)),
@@ -70,19 +81,23 @@ fn system32_only_search_skips_dlls_planted_beside_the_image_in_the_current_direc
         fs::copy(&source, path).expect("plant a DLL copy");
     }
 
-    // Each location is reported on its own, so one failure shows all three.
-    let loaded_from_plant: BTreeMap<String, Load> = planted
+    // Each location is reported on its own, so one failure shows all four.
+    let from_system32 = (SYSTEM_DLL.to_owned(), Load::Loaded(canonical(&source)));
+    let mut loaded_from_plant: BTreeMap<String, Load> = planted
         .iter()
         .map(|(name, path)| ((*name).to_owned(), Load::Loaded(canonical(path))))
         .collect();
+    loaded_from_plant.insert(from_system32.0.clone(), Load::Loaded(canonical(&source)));
     assert_eq!(
         run_child(&child_image, &current_dir, &path_entry, "standard"),
         loaded_from_plant,
         "negative control: the standard search must load every planted copy, or this machine \
-         cannot show the restriction's effect"
+         cannot show the restriction's effect. A policy that removes the current directory or \
+         PATH from the search (CWDIllegalInDllSearch), or an AppLocker or WDAC DLL rule on \
+         %TEMP%, makes this fail without any Keld defect"
     );
 
-    let not_found: BTreeMap<String, Load> = planted
+    let mut not_found: BTreeMap<String, Load> = planted
         .iter()
         .map(|(name, _)| {
             (
@@ -91,10 +106,12 @@ fn system32_only_search_skips_dlls_planted_beside_the_image_in_the_current_direc
             )
         })
         .collect();
+    not_found.insert(from_system32.0, from_system32.1);
     assert_eq!(
         run_child(&child_image, &current_dir, &path_entry, "system32"),
         not_found,
-        "after restrict_dll_search_to_system32 no planted copy may load"
+        "after restrict_dll_search_to_system32 no planted copy may load, and the unplanted \
+         System32 DLL must still load from System32"
     );
 }
 
@@ -116,6 +133,10 @@ fn dll_search_child() {
     }
     let names = env::var(NAMES_ENV).expect("planted DLL names");
     for name in names.split(';') {
+        if is_loaded(name) {
+            println!("LOAD {name} preloaded -");
+            continue;
+        }
         match load_by_name(name) {
             Ok(path) => println!("LOAD {name} loaded {}", path.display()),
             Err(error) => println!(
@@ -144,7 +165,10 @@ fn run_child(
         .current_dir(current_dir)
         .env("PATH", path)
         .env(MODE_ENV, mode)
-        .env(NAMES_ENV, [IMAGE_DLL, CWD_DLL, PATH_DLL].join(";"))
+        .env(
+            NAMES_ENV,
+            [IMAGE_DLL, CWD_DLL, PATH_DLL, SYSTEM_DLL].join(";"),
+        )
         .stdin(Stdio::null())
         .output()
         .expect("run the loader child");
@@ -168,6 +192,7 @@ fn run_child(
         let load = match kind {
             "loaded" => Load::Loaded(canonical(Path::new(value))),
             "refused" => Load::Refused(value.parse().expect("Windows error code")),
+            "preloaded" => Load::Preloaded,
             _ => panic!("malformed child record {line:?}"),
         };
         assert!(
@@ -177,10 +202,22 @@ fn run_child(
     }
     assert_eq!(
         loads.len(),
-        3,
+        4,
         "{mode} child must report every name:\n{stdout}"
     );
     loads
+}
+
+/// Whether a module of this name is already in the process, which would let
+/// `LoadLibraryW` return it without searching.
+fn is_loaded(name: &str) -> bool {
+    let wide: Vec<u16> = OsStr::new(name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is a live NUL-terminated UTF-16 buffer; the call takes no
+    // reference on the module it finds.
+    !unsafe { GetModuleHandleW(wide.as_ptr()) }.is_null()
 }
 
 /// Loads `name` by module name only, so the process search path decides where

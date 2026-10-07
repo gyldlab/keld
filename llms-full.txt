@@ -5708,8 +5708,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-RUNTIME-019
 
 - crate: keld-runtime
-- message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process is retained
-- fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM, shell or process-handle failure, report the detail; the launch is refused rather than continued without a bound process handle.
+- message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process handle is retained
+- fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM or shell failure, report the detail. When the shell returned no process handle, or the handle could not report its process ID, an elevated helper may already be running unbound: close the bootstrap endpoint so that the helper's server check refuses and it exits without a protected write, then report the detail.
 
 ## KELD-NATIVE-001
 

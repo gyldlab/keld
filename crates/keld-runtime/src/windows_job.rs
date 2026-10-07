@@ -3168,9 +3168,9 @@ pub fn restrict_dll_search_to_system32() -> Result<(), WindowsDllSearchError> {
     Ok(())
 }
 
-/// The updater helper's fixed recovery-role selector (KEL-53 §4 "Machine-UAC
-/// bootstrap" item 3; approved: KEL-270 comment `7905ec8a`, 2026-10-07,
-/// decision D3).
+/// The updater helper's fixed recovery-role selector (KEL-53 §4 "Helper launch
+/// and self-anchor"; Coordination record, Linear KEL-270 comment
+/// `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07).
 ///
 /// Exact ASCII and case-sensitive. It is the helper's only accepted argument
 /// besides an attempt rendezvous name, and the helper's argument parser imports
@@ -3237,17 +3237,31 @@ impl WindowsUpdaterHelperArgument {
     }
 }
 
-/// An exact local image path for [`launch_elevated_updater_helper`].
+/// A Win32-canonical drive-letter `.exe` path for
+/// [`launch_elevated_updater_helper`].
 ///
 /// `SHELLEXECUTEINFO` resolves a file name without a path against the current
 /// directory, and hands a document file to its associated application. This
-/// type admits only a path that names an `.exe` from a
-/// drive root (`C:\...`), with no UNC, `\\?\` or `\\.\` prefix, no `.` or `..`
-/// component, no alternate data stream, no NUL and only single `\` separators,
-/// so the shell receives exactly the spelling the caller derived. It checks
-/// spelling, not file identity: which file runs is decided by the caller's
-/// derivation from admitted provenance (KEL-53 §4 "Helper launch and
-/// self-anchor").
+/// type admits a path only when all of these hold:
+/// - it starts at a drive root (`C:\...`): no UNC, `\\?\` or `\\.\` prefix,
+///   and no relative or drive-relative form;
+/// - it names an `.exe`;
+/// - Win32 would not rewrite it: no `.` or `..` component, only single `\`
+///   separators, and `GetFullPathNameW` (through `std::path::absolute`)
+///   returns it unchanged;
+/// - no component ends in `.` or a space, which Win32 strips;
+/// - no component holds `<>:"|?*`, NUL or another character below 0x20
+///   (`:` would name an alternate data stream);
+/// - no component is a reserved device name (`CON`, `PRN`, `AUX`, `NUL`,
+///   `COM1`-`COM9`, `LPT1`-`LPT9` and their superscript-digit forms), with or
+///   without an extension.
+///
+/// So the shell receives exactly the spelling the caller derived. The type
+/// checks spelling only. It does not decide whether the drive is local (a
+/// `subst` or mapped drive letter passes), resolve 8.3 aliases or reparse
+/// points, or prove which file runs. The host's derivation from admitted
+/// provenance (KEL-53 §6 S9a) and the helper's self-anchor (S9c) own those
+/// facts (KEL-53 §4 "Helper launch and self-anchor").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsUpdaterHelperPath {
     path: PathBuf,
@@ -3256,7 +3270,7 @@ pub struct WindowsUpdaterHelperPath {
 }
 
 impl WindowsUpdaterHelperPath {
-    /// Admits `path` if it is an exact local `.exe` path.
+    /// Admits `path` if it is a Win32-canonical drive-letter `.exe` path.
     ///
     /// # Errors
     ///
@@ -3274,7 +3288,7 @@ impl WindowsUpdaterHelperPath {
         if components.next() != Some(Component::RootDir) {
             return refuse("it is not absolute from the drive root");
         }
-        let mut file_name = None;
+        let mut names = Vec::new();
         for component in components {
             let Component::Normal(name) = component else {
                 return refuse("it has a `..` component");
@@ -3282,9 +3296,18 @@ impl WindowsUpdaterHelperPath {
             if name.encode_wide().any(|unit| unit == u16::from(b':')) {
                 return refuse("it names an alternate data stream");
             }
-            file_name = Some(name);
+            if name.encode_wide().any(is_forbidden_name_unit) {
+                return refuse("it holds a character that Win32 forbids in a name");
+            }
+            // Checked before the full-path check: Microsoft documents that
+            // before Windows 11 that normalization turns a path naming a legacy
+            // device into a `\\.\` device path, which would change the rule.
+            if is_reserved_device_name(name) {
+                return refuse("a component is a reserved device name");
+            }
+            names.push(name);
         }
-        let Some(file_name) = file_name else {
+        let Some(file_name) = names.last() else {
             return refuse("it names no file");
         };
         if !Path::new(file_name)
@@ -3300,6 +3323,27 @@ impl WindowsUpdaterHelperPath {
             return refuse(
                 "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
             );
+        }
+        // Win32's own normalization (GetFullPathNameW) also removes a single
+        // trailing `.` from an inner component.
+        if std::path::absolute(path)
+            .ok()
+            .as_deref()
+            .map(Path::as_os_str)
+            != Some(path.as_os_str())
+        {
+            return refuse("Win32 rewrites it to a different full path");
+        }
+        // GetFullPathNameW keeps an inner trailing space and a run of periods,
+        // but Win32 file names must not end in either.
+        for name in &names {
+            if name
+                .encode_wide()
+                .last()
+                .is_some_and(|unit| unit == u16::from(b'.') || unit == u16::from(b' '))
+            {
+                return refuse("a component ends in `.` or a space");
+            }
         }
         let (Some(file), Some(directory)) = (
             nul_terminated_wide(path.as_os_str()),
@@ -3322,15 +3366,69 @@ impl WindowsUpdaterHelperPath {
     }
 }
 
+/// Whether `unit` is one of the characters that Microsoft's "Naming Files,
+/// Paths, and Namespaces" forbids in a file or directory name: `<>"/\|?*` or
+/// a value from 0 through 31. `:` is checked separately, and the separators
+/// never reach a component.
+fn is_forbidden_name_unit(unit: u16) -> bool {
+    unit < 0x20
+        || b"<>\"|?*"
+            .iter()
+            .any(|forbidden| unit == u16::from(*forbidden))
+}
+
+/// Whether `name` is a reserved device name, alone or followed by an
+/// extension: `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `COM¹`-`COM³`,
+/// `LPT1`-`LPT9` or `LPT¹`-`LPT³`, in any case ("Naming Files, Paths, and
+/// Namespaces": "NUL.txt and NUL.tar.gz are both equivalent to NUL"). Spaces
+/// before the first `.` are ignored, so a spelling such as `NUL .exe` is also
+/// refused.
+fn is_reserved_device_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|digit| {
+                matches!(
+                    digit,
+                    "1" | "2"
+                        | "3"
+                        | "4"
+                        | "5"
+                        | "6"
+                        | "7"
+                        | "8"
+                        | "9"
+                        | "\u{b9}"
+                        | "\u{b2}"
+                        | "\u{b3}"
+                )
+            })
+}
+
 /// Why an elevated updater-helper launch refused or failed
 /// (`KELD-RUNTIME-019`).
 ///
-/// No variant leaves a retained helper process. [`Self::HelperPath`],
+/// No variant retains a helper process handle. [`Self::HelperPath`],
 /// [`Self::ArgumentShape`] and [`Self::ComInitialization`] refuse before the
-/// shell is called, and [`Self::Declined`] means the user refused consent.
+/// shell is called, and [`Self::Declined`] means the user refused consent, so
+/// no helper started. After [`Self::NoProcessHandle`] or
+/// [`Self::ProcessIdentity`] an elevated helper may already be running, unbound
+/// to this launch: the caller must close its bootstrap endpoint, so that the
+/// helper's server check refuses and it exits without a protected write
+/// (KEL-53 §4 "Machine-UAC bootstrap" item 3; S11 composes this).
 #[derive(Debug)]
 pub enum WindowsUpdaterHelperLaunchError {
-    /// The helper path is not an exact local `.exe` path.
+    /// The helper path is not a Win32-canonical drive-letter `.exe` path.
     HelperPath {
         /// The first rule the path breaks.
         rule: &'static str,
@@ -3359,9 +3457,11 @@ pub enum WindowsUpdaterHelperLaunchError {
         inst_app: usize,
     },
     /// `ShellExecuteExW` succeeded without returning a process handle, so no
-    /// launched process can be bound to the launch.
+    /// launched process can be bound to the launch. A helper may still be
+    /// running.
     NoProcessHandle,
-    /// The returned handle could not report its process ID; it was closed.
+    /// The returned handle could not report its process ID; it was closed. The
+    /// helper may still be running.
     ProcessIdentity {
         /// The Windows error.
         source: io::Error,
@@ -3374,7 +3474,8 @@ impl std::fmt::Display for WindowsUpdaterHelperLaunchError {
         match self {
             Self::HelperPath { rule } => write!(
                 f,
-                "the helper path is not an exact local `.exe` path: {rule}. Derive it again \
+                "the helper path is not a Win32-canonical drive-letter `.exe` path: {rule}. \
+                 Derive it again \
                  from the selected tree's admitted provenance; never pass a searched, relative \
                  or caller-supplied name."
             ),
@@ -3405,14 +3506,17 @@ impl std::fmt::Display for WindowsUpdaterHelperLaunchError {
                  searching for another helper."
             ),
             Self::NoProcessHandle => f.write_str(
-                "ShellExecuteExW returned no process handle. The launch is refused because no \
-                 connecting client can be bound to the launched process; report the detail.",
+                "ShellExecuteExW returned no process handle, so no connecting client can be \
+                 bound to the launch. A helper may already be running: close the bootstrap \
+                 endpoint so that its server check refuses and it exits without a protected \
+                 write, and report the detail.",
             ),
             Self::ProcessIdentity { source } => write!(
                 f,
                 "the returned process handle could not report its process ID: {source}. The \
-                 handle was closed and the launch refused, because no connecting client can be \
-                 bound to it; report the detail."
+                 handle was closed, so no connecting client can be bound to the launch. A \
+                 helper may already be running: close the bootstrap endpoint so that its server \
+                 check refuses and it exits without a protected write, and report the detail."
             ),
         }
     }
@@ -3508,13 +3612,24 @@ pub fn launch_elevated_updater_helper(
     path: &WindowsUpdaterHelperPath,
     argument: &WindowsUpdaterHelperArgument,
 ) -> Result<WindowsElevatedUpdaterHelper, WindowsUpdaterHelperLaunchError> {
+    launch_updater_helper(path, argument, ShellVerb::RunAs)
+}
+
+/// The launch with its verb as a parameter. Production builds have only
+/// [`ShellVerb::RunAs`]; a unit test drives the same block with `open`, which
+/// needs no consent prompt.
+fn launch_updater_helper(
+    path: &WindowsUpdaterHelperPath,
+    argument: &WindowsUpdaterHelperArgument,
+    verb: ShellVerb,
+) -> Result<WindowsElevatedUpdaterHelper, WindowsUpdaterHelperLaunchError> {
     let file = path.file.clone();
     let directory = path.directory.clone();
     let parameters = nul_terminated_wide(OsStr::new(argument.as_str()))
         .ok_or(WindowsUpdaterHelperLaunchError::ArgumentShape)?;
     let launch = std::thread::Builder::new()
         .name("keld-updater-helper-launch".to_owned())
-        .spawn(move || runas_on_this_thread(&file, &parameters, &directory))
+        .spawn(move || shell_execute_on_this_thread(&file, &parameters, &directory, verb))
         .map_err(|source| WindowsUpdaterHelperLaunchError::LaunchThread { source })?;
     let process = launch
         .join()
@@ -3524,15 +3639,21 @@ pub fn launch_elevated_updater_helper(
     WindowsElevatedUpdaterHelper::identify(process)
 }
 
-/// Makes the one `runas` call inside a COM apartment that the current thread
-/// enters first and leaves after the call, and returns the process handle.
-fn runas_on_this_thread(
+/// Makes the one `ShellExecuteExW` call inside a COM apartment that the
+/// current thread enters first and leaves after the call, and returns the
+/// process handle.
+fn shell_execute_on_this_thread(
     file: &[u16],
     parameters: &[u16],
     directory: &[u16],
+    verb: ShellVerb,
 ) -> Result<OwnedHandle, WindowsUpdaterHelperLaunchError> {
     let _apartment = ComApartment::enter()?;
-    let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = verb
+        .name()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let size = u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>()).map_err(|_| {
         WindowsUpdaterHelperLaunchError::ShellExecute {
             source: io::Error::other("SHELLEXECUTEINFOW does not fit its u32 size field"),
@@ -3560,8 +3681,8 @@ fn runas_on_this_thread(
     let succeeded = unsafe { ShellExecuteExW(&raw mut info) } != 0;
     // Read at once: nothing may run between the call and its last-error value.
     let error = io::Error::last_os_error();
-    let process = runas_outcome(succeeded, error, info.hInstApp.addr(), info.hProcess)?;
-    // SAFETY: `runas_outcome` admits only a successful call's non-null
+    let process = shell_execute_outcome(succeeded, error, info.hInstApp.addr(), info.hProcess)?;
+    // SAFETY: `shell_execute_outcome` admits only a successful call's non-null
     // hProcess, which SEE_MASK_NOCLOSEPROCESS makes this caller's to close;
     // nothing else holds it, so it moves into exactly one owner here.
     Ok(unsafe { OwnedHandle::from_raw_handle(process.cast()) })
@@ -3570,7 +3691,7 @@ fn runas_on_this_thread(
 /// Classifies one finished `ShellExecuteExW` call: a failure with
 /// `ERROR_CANCELLED` is the user's decline, any other failure is reported with
 /// its `hInstApp` diagnostic, and a success counts only with a process handle.
-fn runas_outcome(
+fn shell_execute_outcome(
     succeeded: bool,
     error: io::Error,
     inst_app: usize,
@@ -3638,8 +3759,30 @@ impl Drop for ComApartment {
     }
 }
 
+/// The `ShellExecuteExW` verb. Production builds have only `runas`, so no
+/// public path can select another verb.
+#[derive(Debug, Clone, Copy)]
+enum ShellVerb {
+    /// UAC elevation: the only production verb.
+    RunAs,
+    /// Ordinary activation without a consent prompt, for the unit test that
+    /// executes the launch block.
+    #[cfg(test)]
+    Open,
+}
+
+impl ShellVerb {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::RunAs => "runas",
+            #[cfg(test)]
+            Self::Open => "open",
+        }
+    }
+}
+
 #[cfg(test)]
-#[allow(unsafe_code)] // test-only native Job-limit negative control
+#[allow(unsafe_code)] // test-only Job, COM, loader and process-handle probes, each with a local ABI proof
 #[allow(clippy::expect_used, clippy::panic)] // subprocess contract failures abort the proof
 mod tests {
     use super::*;
@@ -4732,15 +4875,15 @@ mod tests {
     }
 
     #[test]
-    fn runas_outcome_separates_decline_failure_and_a_missing_process_handle() {
+    fn shell_execute_outcome_separates_decline_failure_and_a_missing_process_handle() {
         // Only compared, never used as a handle.
         let returned: HANDLE = std::ptr::without_provenance_mut(0x1234);
         let cancelled = || io::Error::from_raw_os_error(ERROR_CANCELLED.cast_signed());
         assert!(matches!(
-            runas_outcome(false, cancelled(), 5, std::ptr::null_mut()),
+            shell_execute_outcome(false, cancelled(), 5, std::ptr::null_mut()),
             Err(WindowsUpdaterHelperLaunchError::Declined)
         ));
-        match runas_outcome(
+        match shell_execute_outcome(
             false,
             io::Error::from_raw_os_error(2),
             2,
@@ -4753,15 +4896,16 @@ mod tests {
         }
         // A failed call is a failure even if a handle value is present.
         assert!(matches!(
-            runas_outcome(false, io::Error::from_raw_os_error(5), 5, returned),
+            shell_execute_outcome(false, io::Error::from_raw_os_error(5), 5, returned),
             Err(WindowsUpdaterHelperLaunchError::ShellExecute { .. })
         ));
         assert!(matches!(
-            runas_outcome(true, cancelled(), 42, std::ptr::null_mut()),
+            shell_execute_outcome(true, cancelled(), 42, std::ptr::null_mut()),
             Err(WindowsUpdaterHelperLaunchError::NoProcessHandle)
         ));
         assert_eq!(
-            runas_outcome(true, cancelled(), 42, returned).expect("a success with a handle"),
+            shell_execute_outcome(true, cancelled(), 42, returned)
+                .expect("a success with a handle"),
             returned
         );
     }
@@ -4784,6 +4928,80 @@ mod tests {
             }
             other => panic!("a file handle has no process ID, got {other:?}"),
         }
+    }
+
+    /// Runs the production `ShellExecuteExW` block with the `open` verb, which
+    /// needs no consent prompt. The image is a `.cmd` script that the shell
+    /// starts through its association (`cmd.exe`): it records the arguments and
+    /// working directory it received, then exits 7. The closed path type admits
+    /// only `.exe`, so this test builds the path value directly.
+    #[test]
+    fn shell_launch_owns_the_process_handle_and_passes_the_argument_and_directory() {
+        let fixture = tempfile::tempdir().expect("launch fixture");
+        let directory = fixture.path().join("helper dir");
+        std::fs::create_dir(&directory).expect("helper directory");
+        let script = directory.join("probe.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\n>\"%~dp0observed.txt\" (\r\n echo ARG1=%~1\r\n echo ALL=%*\r\n \
+             echo CWD=%CD%\r\n)\r\nexit /b 7\r\n",
+        )
+        .expect("probe script");
+        let path = WindowsUpdaterHelperPath {
+            path: script.clone(),
+            file: nul_terminated_wide(script.as_os_str()).expect("script path"),
+            directory: nul_terminated_wide(directory.as_os_str()).expect("script directory"),
+        };
+        let rendezvous = format!(r"\\.\pipe\keld-attempt-{}", "0123456789abcdef".repeat(4));
+        let argument = WindowsUpdaterHelperArgument::activation(&rendezvous).expect("rendezvous");
+
+        let launched =
+            launch_updater_helper(&path, &argument, ShellVerb::Open).expect("open-verb launch");
+        let handle: HANDLE = launched.as_handle().as_raw_handle().cast();
+        // SAFETY: `launched` retains `handle` for each call below.
+        assert_eq!(unsafe { GetProcessId(handle) }, launched.id());
+        // SAFETY: as above; the wait is bounded.
+        assert_eq!(
+            unsafe { WaitForSingleObject(handle, 60_000) },
+            WAIT_OBJECT_0
+        );
+        let mut exit_code = u32::MAX;
+        // SAFETY: as above; `exit_code` is writable.
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::Threading::GetExitCodeProcess(
+                    handle,
+                    &raw mut exit_code,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            exit_code, 7,
+            "the retained handle is the launched script's process"
+        );
+
+        let observed =
+            std::fs::read_to_string(directory.join("observed.txt")).expect("the script's record");
+        let lines: Vec<&str> = observed.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some(format!("ARG1={rendezvous}").as_str())
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some(format!("ALL={rendezvous}").as_str()),
+            "the argument arrives as exactly one token"
+        );
+        let cwd = lines
+            .get(2)
+            .and_then(|line| line.strip_prefix("CWD="))
+            .expect("the working-directory record");
+        assert_eq!(
+            std::fs::canonicalize(cwd).expect("canonical working directory"),
+            std::fs::canonicalize(&directory).expect("canonical helper directory"),
+            "lpDirectory is the launched process's working directory"
+        );
     }
 
     /// Enters COM's multithreaded apartment directly, as an independent probe of

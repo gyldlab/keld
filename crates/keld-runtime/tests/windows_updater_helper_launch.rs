@@ -2,9 +2,12 @@
 //! self-anchor"; §7 row "17 (helper launch and self-anchor)", launch cells).
 //!
 //! CI covers what is decided before the shell is called: the closed helper
-//! path and argument types. A `runas` launch shows the UAC prompt, so the
-//! consent and decline cells are `#[ignore]`d operator rows; each names its
-//! exact command and expected observation.
+//! path and argument types. The `ShellExecuteExW` block itself runs in CI
+//! through the `open` verb, in `windows_job.rs`'s unit test
+//! `shell_launch_owns_the_process_handle_and_passes_the_argument_and_directory`.
+//! A `runas` launch shows the UAC prompt, so the consent and decline cells are
+//! `#[ignore]`d operator rows; each names its exact command and expected
+//! observation.
 
 #![cfg(windows)]
 #![allow(unsafe_code)] // isolated test-only process observation with local ABI proofs
@@ -40,11 +43,28 @@ fn rendezvous(locator: &str) -> String {
 }
 
 #[test]
-fn helper_path_admits_only_an_exact_local_exe_path() {
+fn helper_path_admits_only_a_win32_canonical_drive_letter_exe_path() {
+    const NO_DRIVE: &str = "it does not start with a drive letter";
+    const PREFIX: &str = "its prefix is not a plain drive letter";
+    const NO_ROOT: &str = "it is not absolute from the drive root";
+    const PARENT: &str = "it has a `..` component";
+    const STREAM: &str = "it names an alternate data stream";
+    const FORBIDDEN: &str = "it holds a character that Win32 forbids in a name";
+    const DEVICE: &str = "a component is a reserved device name";
+    const NO_FILE: &str = "it names no file";
+    const NOT_EXE: &str = "it does not name an `.exe` image";
+    const SPELLING: &str =
+        "it is not canonical: a `.` component or a `/`, doubled or trailing separator";
+    const REWRITTEN: &str = "Win32 rewrites it to a different full path";
+    const TRAILING: &str = "a component ends in `.` or a space";
+
     for accepted in [
         r"C:\Program Files\Keld App\versions\1.2.3\keld-updater-helper.exe",
         r"c:\x.EXE",
         r"D:\keld-updater-helper.exe",
+        r"C:\keld\.hidden\keld-updater-helper.exe",
+        r"C:\keld\CONSOLE\COM10.exe",
+        r"C:\keld\nul-helper\LPT10.exe",
     ] {
         let path = WindowsUpdaterHelperPath::new(Path::new(accepted))
             .unwrap_or_else(|error| panic!("{accepted} must be admitted: {error}"));
@@ -52,77 +72,48 @@ fn helper_path_admits_only_an_exact_local_exe_path() {
     }
 
     let refused: &[(&str, &str)] = &[
-        ("", "it does not start with a drive letter"),
-        (
-            "keld-updater-helper.exe",
-            "it does not start with a drive letter",
-        ),
-        (
-            r".\keld-updater-helper.exe",
-            "it does not start with a drive letter",
-        ),
-        (
-            r"\keld\keld-updater-helper.exe",
-            "it does not start with a drive letter",
-        ),
-        (
-            r"\\server\share\keld-updater-helper.exe",
-            "its prefix is not a plain drive letter",
-        ),
-        (
-            r"\\?\C:\keld\keld-updater-helper.exe",
-            "its prefix is not a plain drive letter",
-        ),
-        (
-            r"\\.\C:\keld\keld-updater-helper.exe",
-            "its prefix is not a plain drive letter",
-        ),
-        (
-            r"C:keld-updater-helper.exe",
-            "it is not absolute from the drive root",
-        ),
-        (
-            r"C:\keld\..\keld-updater-helper.exe",
-            "it has a `..` component",
-        ),
-        (
-            r"C:\keld\helper.exe:stream",
-            "it names an alternate data stream",
-        ),
-        (
-            r"C:\keld\file:keld-updater-helper.exe",
-            "it names an alternate data stream",
-        ),
-        (r"C:\", "it names no file"),
-        (
-            r"C:\keld\keld-updater-helper.txt",
-            "it does not name an `.exe` image",
-        ),
-        (
-            r"C:\keld\keld-updater-helper",
-            "it does not name an `.exe` image",
-        ),
-        (
-            r"C:\keld\keld-updater-helper.exe.",
-            "it does not name an `.exe` image",
-        ),
-        (
-            r"C:\keld\.\keld-updater-helper.exe",
-            "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
-        ),
-        (
-            "C:/keld/keld-updater-helper.exe",
-            "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
-        ),
-        (
-            r"C:\keld\\keld-updater-helper.exe",
-            "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
-        ),
-        (
-            r"C:\keld\keld-updater-helper.exe\",
-            "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
-        ),
-        ("C:\\keld\\keld\0updater-helper.exe", "it contains a NUL"),
+        ("", NO_DRIVE),
+        ("keld-updater-helper.exe", NO_DRIVE),
+        (r".\keld-updater-helper.exe", NO_DRIVE),
+        (r"\keld\keld-updater-helper.exe", NO_DRIVE),
+        (r"\\server\share\keld-updater-helper.exe", PREFIX),
+        (r"\\?\C:\keld\keld-updater-helper.exe", PREFIX),
+        (r"\\.\C:\keld\keld-updater-helper.exe", PREFIX),
+        (r"C:keld-updater-helper.exe", NO_ROOT),
+        (r"C:\keld\..\keld-updater-helper.exe", PARENT),
+        (r"C:\keld\helper.exe:stream", STREAM),
+        (r"C:\keld\file:keld-updater-helper.exe", STREAM),
+        (r#"C:\keld\a" --recovery-role ".exe"#, FORBIDDEN),
+        (r"C:\keld\*.exe", FORBIDDEN),
+        (r"C:\keld\?.exe", FORBIDDEN),
+        (r"C:\keld\a|b.exe", FORBIDDEN),
+        (r"C:\keld\a<b.exe", FORBIDDEN),
+        (r"C:\keld\a>b.exe", FORBIDDEN),
+        ("C:\\keld\\a\u{1}b.exe", FORBIDDEN),
+        ("C:\\keld\\a\u{1f}b.exe", FORBIDDEN),
+        ("C:\\keld\\keld\0updater-helper.exe", FORBIDDEN),
+        (r"C:\keld\CON.exe", DEVICE),
+        (r"C:\keld\NUL.exe", DEVICE),
+        (r"C:\CON\keld-updater-helper.exe", DEVICE),
+        (r"C:\keld\COM1\keld-updater-helper.exe", DEVICE),
+        (r"C:\keld\lpt9.exe", DEVICE),
+        ("C:\\keld\\COM\u{b9}\\keld-updater-helper.exe", DEVICE),
+        (r"C:\keld\aux.tar.exe", DEVICE),
+        (r"C:\keld\prn .exe", DEVICE),
+        (r"C:\", NO_FILE),
+        (r"C:\keld\keld-updater-helper.txt", NOT_EXE),
+        (r"C:\keld\keld-updater-helper", NOT_EXE),
+        (r"C:\keld\keld-updater-helper.exe.", NOT_EXE),
+        (r"C:\keld\keld-updater-helper.exe ", NOT_EXE),
+        (r"C:\keld\.\keld-updater-helper.exe", SPELLING),
+        ("C:/keld/keld-updater-helper.exe", SPELLING),
+        (r"C:\keld\\keld-updater-helper.exe", SPELLING),
+        (r"C:\keld\keld-updater-helper.exe\", SPELLING),
+        // GetFullPathNameW removes a single trailing period from an inner
+        // component, but keeps an inner trailing space and a run of periods.
+        (r"C:\keld.\keld-updater-helper.exe", REWRITTEN),
+        (r"C:\keld \keld-updater-helper.exe", TRAILING),
+        (r"C:\keld\...\keld-updater-helper.exe", TRAILING),
     ];
     for (path, rule) in refused {
         match WindowsUpdaterHelperPath::new(Path::new(path)) {
@@ -190,8 +181,8 @@ fn launch_refusals_name_their_code_and_fix() {
         .to_string();
     assert!(
         path.starts_with(
-            "KELD-RUNTIME-019: elevated updater-helper launch refused: the helper path is not an \
-             exact local `.exe` path: it does not start with a drive letter."
+            "KELD-RUNTIME-019: elevated updater-helper launch refused: the helper path is not a \
+             Win32-canonical drive-letter `.exe` path: it does not start with a drive letter."
         ),
         "{path}"
     );
@@ -208,6 +199,21 @@ fn launch_refusals_name_their_code_and_fix() {
             && declined.contains("Nothing was launched and no protected state changed"),
         "{declined}"
     );
+    // A helper may be running without a bound handle: the guidance says how it
+    // is made to exit.
+    for unbound in [
+        WindowsUpdaterHelperLaunchError::NoProcessHandle,
+        WindowsUpdaterHelperLaunchError::ProcessIdentity {
+            source: std::io::Error::from_raw_os_error(6),
+        },
+    ] {
+        let rendered = unbound.to_string();
+        assert!(
+            rendered.starts_with("KELD-RUNTIME-019: ")
+                && rendered.contains("A helper may already be running: close the bootstrap"),
+            "{rendered}"
+        );
+    }
 }
 
 #[test]

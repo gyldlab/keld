@@ -987,4 +987,15 @@ mod tests {
         );
         flags & HANDLE_FLAG_INHERIT != 0
     }
+
+    #[test]
+    fn nul_terminated_wide_appends_one_terminator_and_refuses_an_interior_nul() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            super::nul_terminated_wide(OsStr::new("ab")),
+            Some(vec![u16::from(b'a'), u16::from(b'b'), 0])
+        );
+        assert_eq!(super::nul_terminated_wide(OsStr::new("")), Some(vec![0]));
+        assert_eq!(super::nul_terminated_wide(OsStr::new("a\0b")), None);
+    }
 }
