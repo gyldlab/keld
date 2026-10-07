@@ -2164,7 +2164,7 @@ impl WindowsNamedPipeBootstrapStream {
     /// namespace, uppercase hex and any other length are refused before any open.
     #[must_use]
     pub fn is_attempt_endpoint(endpoint: &str) -> bool {
-        has_exact_pipe_locator(endpoint, r"\\.\pipe\keld-attempt-")
+        has_exact_pipe_locator(endpoint, crate::attempt::ATTEMPT_ENDPOINT_PREFIX)
     }
 
     /// Opens a client handle to an exact named-pipe endpoint.

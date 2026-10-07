@@ -1,22 +1,47 @@
-//! `keld-attempt` endpoints (KEL-53 §4 "Candidate connect-back" and
-//! "Machine-UAC bootstrap" item 1; owner decisions D2 and D5).
+//! `keld-attempt` endpoints and records (KEL-53 §4 "Candidate connect-back"
+//! and "Machine-UAC bootstrap" item 1; owner decisions D2 and D5).
 //!
-//! An attempt endpoint name is a locator that carries no authority. This
-//! module owns the closed set of endpoint descriptors, the owner's
-//! first-instance creation with descriptor readback, and the client's
-//! readback of the server descriptor before it sends anything. Comparing a
-//! readback with a form is not repeated here: it is the named-pipe owner's
-//! single comparison, which the app-link and lifecycle pipes share. It defines
-//! no message record; the subprotocol's byte layouts are owned by KEL-53.
+//! An attempt endpoint name is a locator that carries no authority. On
+//! Windows this module owns the closed set of endpoint descriptors, the
+//! owner's first-instance creation with descriptor readback, the client's
+//! readback of the server descriptor before it sends anything, and the
+//! purpose-`1` endpoint locator. Comparing a readback with a form is not
+//! repeated here: it is the named-pipe owner's single comparison, which the
+//! app-link and lifecycle pipes share. The claim and health record codec is
+//! pure bytes and builds on every platform; KEL-53 owns its byte layouts
+//! (approved: KEL-270 owner decision `eff8e2fb`).
 
+#[cfg(windows)]
+mod locator;
+mod records;
+
+#[cfg(windows)]
+pub(crate) use locator::ATTEMPT_ENDPOINT_PREFIX;
+#[cfg(windows)]
+pub use locator::{
+    WindowsAttemptLocatorError, WindowsAttemptLocatorInput, windows_attempt_connect_back_endpoint,
+};
+pub use records::{
+    AttemptBootAcknowledgement, AttemptChallenge, AttemptClaim, AttemptFailureClass,
+    AttemptHealthResult, AttemptReadPosition, AttemptRecord, AttemptRecordError, AttemptRecordKind,
+    AttemptTranscript,
+};
+
+#[cfg(windows)]
 use std::fmt::{self, Write as _};
+#[cfg(windows)]
 use std::io;
+#[cfg(windows)]
 use std::time::Instant;
 
+#[cfg(windows)]
 use windows_permissions::{LocalBox, SecurityDescriptor, Sid};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
 
+#[cfg(windows)]
 use crate::bootstrap::WindowsNamedPipeBootstrapStream;
+#[cfg(windows)]
 use crate::windows_named_pipe::{
     PIPE_ACCESS_MASK, PipeDescriptorReadback, PipeSecuritySections, WindowsNamedPipeServer,
     WindowsNamedPipeStream, WindowsPipeSecurityFact, current_process_session_id,
@@ -25,6 +50,7 @@ use crate::windows_named_pipe::{
 /// Explicit Medium mandatory label with `SYSTEM_MANDATORY_LABEL_NO_WRITE_UP`,
 /// which denies Low-integrity and `AppContainer` writers whatever the
 /// creator's own integrity level.
+#[cfg(windows)]
 const MEDIUM_NO_WRITE_UP_LABEL: &str = "S:(ML;;NW;;;ME)";
 
 /// One of the closed descriptor forms a `keld-attempt` endpoint may carry.
@@ -35,11 +61,13 @@ const MEDIUM_NO_WRITE_UP_LABEL: &str = "S:(ML;;NW;;;ME)";
 /// differ only in owner and grantees. The same value builds the owner's
 /// descriptor and checks the readback on both ends, so creation and
 /// verification cannot drift apart.
+#[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsAttemptEndpointSecurity {
     form: DescriptorForm,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DescriptorForm {
     PerUserConnectBack { user: String },
@@ -47,6 +75,7 @@ enum DescriptorForm {
     Bootstrap { host_user: String },
 }
 
+#[cfg(windows)]
 impl WindowsAttemptEndpointSecurity {
     /// `PerUserDirect` connect-back endpoint: owned by the user, whose SID is
     /// also the only grantee (the owner and the initiating user are the same
@@ -155,6 +184,7 @@ impl WindowsAttemptEndpointSecurity {
 /// created first and read back before the owner reveals the name to anyone.
 ///
 /// Dropping it closes the instance and releases the name.
+#[cfg(windows)]
 #[derive(Debug)]
 pub struct WindowsAttemptEndpoint {
     #[cfg_attr(
@@ -168,6 +198,7 @@ pub struct WindowsAttemptEndpoint {
     endpoint: String,
 }
 
+#[cfg(windows)]
 impl WindowsAttemptEndpoint {
     /// Creates `endpoint` as its only, first instance under `security`, with
     /// remote clients rejected and a non-inheritable handle, then reads the
@@ -245,11 +276,13 @@ impl WindowsAttemptEndpoint {
 /// A client connection to a `keld-attempt` endpoint whose server was found in
 /// this process's session, with its descriptor read back and matched, before
 /// this value existed. Nothing has been sent on it.
+#[cfg(windows)]
 #[derive(Debug)]
 pub struct WindowsAttemptClient {
     stream: WindowsNamedPipeStream,
 }
 
+#[cfg(windows)]
 impl WindowsAttemptClient {
     /// Refuses any name outside the `keld-attempt` namespace before opening
     /// it, opens the endpoint so the server can at most identify this client
@@ -357,6 +390,7 @@ impl WindowsAttemptClient {
 }
 
 /// Typed failure of a `keld-attempt` endpoint operation.
+#[cfg(windows)]
 #[derive(Debug)]
 pub enum WindowsAttemptEndpointError {
     /// `KELD-IPC-008`: the name is not exactly
@@ -395,6 +429,7 @@ pub enum WindowsAttemptEndpointError {
     },
 }
 
+#[cfg(windows)]
 impl fmt::Display for WindowsAttemptEndpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -441,6 +476,7 @@ impl fmt::Display for WindowsAttemptEndpointError {
     }
 }
 
+#[cfg(windows)]
 impl std::error::Error for WindowsAttemptEndpointError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -456,6 +492,7 @@ impl std::error::Error for WindowsAttemptEndpointError {
 /// Renders a binary Windows SID as SDDL text. Only a structurally valid SID
 /// (revision 1, at most 15 subauthorities, exact length) that the Windows SID
 /// parser reads back unchanged is accepted.
+#[cfg(windows)]
 fn sid_text(binary: &[u8]) -> Result<String, WindowsAttemptEndpointError> {
     const MAX_SUB_AUTHORITIES: usize = 15;
     let [1, count, rest @ ..] = binary else {
@@ -495,4 +532,5 @@ fn sid_text(binary: &[u8]) -> Result<String, WindowsAttemptEndpointError> {
 }
 
 #[cfg(test)]
+#[cfg(windows)]
 mod tests;

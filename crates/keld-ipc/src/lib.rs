@@ -12,7 +12,6 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 pub mod admission;
-#[cfg(windows)]
 pub mod attempt;
 #[cfg(any(unix, windows))]
 pub mod bootstrap;
@@ -30,10 +29,16 @@ pub mod token;
 mod windows_named_pipe;
 
 pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
+pub use attempt::{
+    AttemptBootAcknowledgement, AttemptChallenge, AttemptClaim, AttemptFailureClass,
+    AttemptHealthResult, AttemptReadPosition, AttemptRecord, AttemptRecordError, AttemptRecordKind,
+    AttemptTranscript,
+};
 #[cfg(windows)]
 pub use attempt::{
     WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
-    WindowsAttemptEndpointSecurity,
+    WindowsAttemptEndpointSecurity, WindowsAttemptLocatorError, WindowsAttemptLocatorInput,
+    windows_attempt_connect_back_endpoint,
 };
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
