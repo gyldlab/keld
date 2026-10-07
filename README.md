@@ -50,9 +50,10 @@ These measurements answer different questions, so we do not combine them into on
 > **Read the scope, not just the headline.** KELD does not currently lead every
 > metric. Electron had lower **total process-tree RSS**—resident RAM summed across
 > the measured application processes—and faster first paint in the cited Windows
-> sessions. Current Linux KELD-vs-Tauri paint intervals cross 1.0, so the data does
-> not support claiming that either side is faster there. We publish those non-wins
-> too.
+> sessions. The pinned Linux result is a KELD-only paint-opportunity measurement
+> without a paired Tauri arm, and it is not publication-eligible. It does not
+> support a KELD-vs-Tauri interval comparison or a directional speed claim. We
+> publish this non-comparison result too.
 
 <details>
 <summary><strong>Inside KELD: IPC (inter-process communication) latency</strong></summary>
