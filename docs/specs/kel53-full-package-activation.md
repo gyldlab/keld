@@ -1316,8 +1316,8 @@ the helper clears the limit once `health-accepted` is durable, through the one
 lands for `PerUserDirect` ("Candidate release after commit"); Machine-UAC shares only
 that primitive and keeps this timing. Whether the elevated helper, or the candidate it
 launches with `CreateProcessWithTokenW`, also joins the initiating host's host-death Job
-is unknown: the AppInfo `runas` launch and the Secondary Logon launch may carry the
-initiating process's Job membership, and nothing documents that they do not. S11's §7
+is unknown: no evidence in this specification covers the Job membership of either
+launch, and a launch that names a parent process can carry that parent's Jobs. S11's §7
 rows record both memberships and whether the candidate survives the initiating host's
 exit ("17 (Machine-UAC Job inheritance)"); a candidate inside that host-death Job stops
 S11 for an owner decision, because the defect that "Candidate release after commit"
