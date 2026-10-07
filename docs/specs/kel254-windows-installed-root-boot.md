@@ -348,8 +348,10 @@ window, installed-host process-family composition, Machine-UAC activation, or li
 orchestration. KEL-53 owns these remaining pieces.
 Its admitted result binds the KEL-135 publisher/app identity, explicit install mode and
 owner, direct install/update roots, update-signing identity, and initial baseline.
-KEL-53 exposes only the authenticated recorded publisher/app identity for `keld-core`
-to compare with KEL-135; `keld-update` does not depend on `keld-core`. Its active
+From KEL-53 T4d S9a, `keld-update` owns the signer rule: its executable-located selection
+compares the authenticated recorded publisher scope and app id with the KEL-135 identity
+of the same executable (`KELD-UPDATE-020`), and `keld-core` calls that selection;
+`keld-update` does not depend on `keld-core`. Its active
 selection identifies exactly one current artifact/tree. The baseline is only the
 install-time floor; it MUST NOT stand in for the active artifact after update or
 rollback. The active resolver validates no-journal recovery state or the exact
@@ -573,9 +575,8 @@ repair the selected version must equal the located one. Journal recovery,
 process-family ownership and candidate
 admission join it only with KEL-53's later recovery and candidate slices, under KEL-53's
 own discovery rules. If another live coordinator owns the journal, process state is
-unknown, or recovery is incomplete, KEL-53 returns no selection. KEL-96 compares the
-record's publisher/app fields with the KEL-135 verified
-identity, checks the effective access boundary, and relies on the T2b handle identity
+unknown, or recovery is incomplete, KEL-53 returns no selection. The record's publisher/app fields are compared with the KEL-135 verified
+identity inside that selection (above); KEL-96 checks the effective access boundary, and relies on the T2b handle identity
 (never `tree_root` path text) to prove that the running executable is the exact host
 inside the selected tree. It may consume but MUST NOT construct or clone the
 selection. `DirectInstallationIdentity` and its OS-protected record are KEL-53
