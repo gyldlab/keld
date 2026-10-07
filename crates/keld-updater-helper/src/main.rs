@@ -29,6 +29,7 @@ fn main() -> ExitCode {
     // First statement (KEL-53 §4): every later DLL load by name searches System32 only,
     // never the application directory, the current directory or `PATH`. It cannot be
     // undone, and the helper exits with `KELD-RUNTIME-018` if Windows refuses it.
+    // tests/first_statement.rs pins this shape.
     #[cfg(windows)]
     if let Err(error) = keld_runtime::windows_job::restrict_dll_search_to_system32() {
         return refuse(&HelperError::DllSearch(error));
