@@ -1,7 +1,7 @@
 # Spec: generic compatibility evidence schema (KEL-74)
 
 Status: implementing
-Linear: KEL-74 · Owner: GYLDLAB · Updated: 2026-08-19
+Linear: KEL-74 · Owner: GYLDLAB · Updated: 2026-10-07
 
 ## 1. Goal & non-goals
 
@@ -144,7 +144,7 @@ Closed fields only (`deny_unknown_fields`):
 | `artifact.platform` | `macos` \| `windows` \| `linux` |
 | `artifact.arch` | `aarch64` \| `x86_64` |
 | `revisions.keld` / `bun` / `engine` | non-empty, not `latest` |
-| `authority_profile` | `strict_bun` \| `sandboxed_addon_worker` \| `legacy_sandbox_off` \| `user_approved_tool_child` |
+| `authority_profile` | `strict_bun` \| `sandboxed_addon_worker` \| `legacy_sandbox_off` \| `user_approved_tool_child` \| `unverified`. `unverified` is a run without verified containment (KEL-78 `unverified` state) and is never strict or legacy evidence; it is added by `docs/specs/gh532-first-proof-evidence-rules.md` task T2 within v1, and the parser rejects it until T2 lands |
 | `operation.id` | `[a-z0-9._-]+` |
 | `operation.kind` | `install` \| `activation` \| `primary_workflow` \| `full_feature` |
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
