@@ -340,7 +340,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "b2d2357ebb32b10f34ac6278f6f9ef6d72ed78352faeb24de52e8b03084f78c8"
+      "sha256": "d22b39c38ec658ccd4123d3fb7a10274c4e820d4278b1a11b468947b39df3319"
     },
     "audit-readers": {
       "patterns": [
@@ -386,7 +386,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "e79738f10f2639f1a33e1160e102e20a93e84e62fcc134c30de9c7385360edbb",
+    "membership_sha256": "d58827a327f6f342f32527d6406b8df8ea9399e15b6a702775f640a53b8cf30f",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
