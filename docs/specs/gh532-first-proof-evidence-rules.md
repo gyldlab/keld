@@ -167,6 +167,25 @@ scorer and parser (task T2). "v1 manifest" means a manifest carrying
     `keld.compat.evidence/v1`. *Negative control:* a sixth, unknown string still
     fails with `KELD-COMPAT-005`, and swapping any two `as_str` arms fails the round
     trip.
+16. **Quote is in the pinned page.** Given a v1 cell with `doc_citation`, when the
+    validator runs offline, then the snapshot at
+    `doc-snapshots/<electron_commit>/<page path>` has the SHA-256 declared in
+    `doc_snapshots`, and `quote` is a byte-exact substring of it. The substring check
+    runs before the `quote_sha256` check (§4.2 rule 2). *Negative control:* a cell
+    whose `quote` is absent from the pinned page is rejected with a quote-absent
+    error that names the cell and the page, even when its `quote_sha256` is the
+    correct digest of that fabricated quote. So is a snapshot whose bytes differ from
+    its `doc_snapshots` digest, a cited page with no `doc_snapshots` entry or no
+    snapshot file, and a snapshot filed under another commit's directory.
+17. **Pending is reported apart from divergence.** Given a corpus with one cell that
+    carries `implementing_ticket` and one that carries `intentional_divergence`
+    (both `expected_verdict: fail`, so both records say `result: fail`), when the
+    lifecycle evidence report renders, then it counts and labels them separately,
+    as "Pending implementation" (listing the ticket keys) and "Intentional
+    divergence". The split comes from the manifest key, because the records cannot
+    tell the two apart. *Negative control:* a report that lumps them into one count
+    or one label fails, and so does one that labels a pending cell "Intentional
+    divergence" or shows it as ▲.
 
 ## 4. Design
 
@@ -228,7 +247,9 @@ Atoms (each falsified independently by the §3 control named):
 |---|---|---|---|---|
 | Pin | manifest `upstream` | manifest → one pin | two pins feed one claim | AC1, AC2 |
 | Citation | cell `doc_citation` | cell → pinned page + quote digest | quote drifts from pin | AC3 |
+| Quote source | manifest `doc_snapshots` | cell + committed snapshot → quote found or rejected | fabricated quote with a matching digest | AC16 |
 | Red cell | cell `implementing_ticket` | pending cell → `fail` + key | pending work read as ▲ or hidden | AC4, AC5 |
+| Pending report | report renderer | manifest key + `fail` record → one labelled count | pending work lumped into ▲ | AC17 |
 | Observed-only | cell without citation | cell → `unknown` | uncited cell inflates score | AC6 |
 | Digest meaning | manifest `artifact_digest` | bytes → `artifact.sha256` | two meanings in one corpus | AC7 |
 | Authority | receipt profile state | run → one label | `unverified` run dropped or relabelled | AC8, AC12 |
@@ -258,7 +279,8 @@ amendment to this spec. A cell's `oracle_id` starts with `electron-v` plus the
 corpus `electron_version` plus `.`. Each record's `operation.oracle.revision` is
 `electron-v` plus the version, `@`, then the commit. That is the live lifecycle form
 (`electron-v44.3.0@07e46071…`). A pin bump is one reviewed change. It re-cites every
-cell (new `url` commit, re-verified `quote`, new `quote_sha256`), renames every
+cell (new `url` commit, re-verified `quote`, new `quote_sha256`, new committed
+snapshot and `doc_snapshots` digest), renames every
 `oracle_id`, and regenerates the denominator, every receipt and every record. A
 partial bump fails AC2 and AC3, and stale records fail AC7, because the manifest
 bytes changed. `electron-lifecycle-v0` stays frozen at `44.3.0` @ `07e46071…` until
@@ -276,8 +298,26 @@ id, chosen by the first consumer that adds them.
 - `quote_sha256`: `sha256:` plus the lowercase hex SHA-256 of the UTF-8 bytes of
   `quote`.
 
-The PR lane checks the commit and the digest offline. The citing change, and every
-later pin bump, verifies that `quote` appears in the page at the pin. The corpus-level
+The page text at the pin is available offline from a committed snapshot. Each v1
+manifest declares `doc_snapshots` *(addition)*, a map from every cited page path
+(for example `docs/api/app.md`) to `sha256:` plus the SHA-256 of that page's exact
+bytes at the pin. The snapshot file sits beside the manifest at
+`doc-snapshots/<electron_commit>/<page path>`. The commit is part of its path, so a
+snapshot from another pin cannot satisfy this one. It holds the cited pages only, not
+the docs tree. Because `doc_snapshots` is in the manifest, AC7 binds the snapshot
+digests to the manifest bytes. The validator checks each citation in this order, with
+no network:
+
+1. Take the page path from `url`, without the anchor, and read the snapshot file.
+2. Assert the snapshot's SHA-256 equals its `doc_snapshots` entry.
+3. Assert `quote` is a byte-exact substring of the snapshot.
+4. Only then assert `quote_sha256` (AC3).
+
+The one online step is review. At the citing change, and again at every pin bump, the
+reviewer compares each `doc_snapshots` digest with the upstream file at the pin
+(`curl -sL https://raw.githubusercontent.com/electron/electron/<electron_commit>/<page path> | shasum -a 256`).
+That is one reproducible digest per page and pin. Every later check is mechanical, so
+a fabricated quote cannot pass by carrying a matching `quote_sha256`. The corpus-level
 `upstream.app_docs` is a v0 field and is not part of v1.
 
 **Rule 3 — Red-until-implemented.** A pending cell is `expected_verdict: fail`
@@ -285,7 +325,10 @@ together with `implementing_ticket` *(addition)*, which is the key of the ticket
 whose change implements it (`GH-` or `KEL-` plus digits). It carries no
 `intentional_divergence`. A `fail` cell has exactly one of the two keys:
 `intentional_divergence` is permanent and reported ▲, and `implementing_ticket` is
-pending and reported as failing work owned by that ticket. The mapped test asserts
+pending and reported as failing work owned by that ticket. Both records say
+`result: fail`, so the report takes the split from the manifest key and renders
+"Pending implementation" and "Intentional divergence" as separate counts (AC17). The
+mapped test asserts
 Keld's current behaviour and passes, and execution admission still requires it to
 run and pass. The implementing change, in one PR, makes four edits: it inverts the
 mapped test to assert the cited sentence, sets `expected_verdict: pass`, removes
@@ -372,6 +415,9 @@ chooses it:
   "kind": "primary_workflow",
   "artifact_digest": "manifest_bytes",
   "engine": { "macos": "headless-lifecycle-conformance" },
+  "doc_snapshots": {
+    "docs/api/app.md": "sha256:49238ddf50585d8a581bd7b5141ec825216cd9b82e6bc82bd97cad4200593ebf"
+  },
   "upstream": {
     "electron_version": "44.4.5",
     "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
@@ -436,6 +482,10 @@ pub fn sha256_uri(bytes: &[u8]) -> String {
 - **A public keld-compat manifest module.** It would add public API and move `sha2`
   into production dependencies, which the crate manifest records as rejected (KEL-74
   T1). Only tests read manifests.
+- **Checking `quote` only in review, or fetching the page in the PR lane.** The first
+  is not repeatable after a later corpus change, and the second makes CI depend on
+  the network. A committed snapshot with its own digest gives an offline,
+  commit-keyed check (AC16).
 - **A new verdict value for pending cells** (for example `pending`). The KEL-74
   parser closes the set at four values, and a fifth would change the versioned ledger
   format and `score()`. `fail` plus `implementing_ticket` expresses the same state.
@@ -496,15 +546,20 @@ v1 fallback reader instead. The format review gate on T2 (§8) checks this decis
 
 ## 5. Boundaries
 
-- Implement in (this spec): `docs/specs/gh532-first-proof-evidence-rules.md`, the
-  `authority_profile` row of `docs/specs/kel74-compat-evidence-schema.md` §4.1, plus
-  the generated `llms.txt` and `llms-full.txt`. No Rust changes.
+- Implement in (this spec): `docs/specs/gh532-first-proof-evidence-rules.md` and the
+  `authority_profile` row of `docs/specs/kel74-compat-evidence-schema.md` §4.1. No
+  Rust changes. Neither file is an `llms.txt` source, so the generated files stay
+  unchanged.
 - Implement in (T2): `crates/keld-compat/src/evidence.rs` (the `AuthorityProfile`
   variant, `parse_authority`, `as_str`, the `Scoreboard` accessor and the colocated
-  tests) and `docs/engineering/compat-scoreboard.md` (the reporting rule).
+  tests) and `docs/engineering/compat-scoreboard.md` (the reporting rule). The
+  scoreboard is an `llms.txt` source, so T2 also regenerates `llms-full.txt` with
+  `just llms` and passes `just llms-check`.
 - Implement in (X01-T4): `crates/keld-compat/tests/support/corpus_manifest.rs`,
   `crates/keld-compat/tests/lifecycle_corpus.rs`,
-  `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
+  `crates/keld-compat/tests/lifecycle_evidence_report.rs`. The `doc-snapshots/` files
+  are committed by the change that adds a v1 corpus, not by X01-T4, whose AC16 cases
+  use in-test snapshots.
 - Must not touch: the rest of `crates/keld-compat/src/` (other vocabularies, the
   `schema` ids, `DOCUMENTED_COMMITTED_PRODUCT_CORPORA`), `crates/keld-compat/Cargo.toml`
   dependencies, the bytes under `crates/keld-compat/fixtures/lifecycle-corpus/`,
@@ -524,8 +579,8 @@ v1 fallback reader instead. The format review gate on T2 (§8) checks this decis
       add the AC13–AC15 colocated unit tests, each with its named mutation. Add the
       reporting rule to `compat-scoreboard.md`. It lands before T3, because the T3
       validator must parse `unverified` records.
-- [ ] T3 X01-T4 (#566): its own spec gate, then the shared owner, with AC1–AC12 as
-      tests and the byte-identical lifecycle migration.
+- [ ] T3 X01-T4 (#566): its own spec gate, then the shared owner, with AC1–AC12,
+      AC16 and AC17 as tests and the byte-identical lifecycle migration.
 
 The consumer edges are tracker actions, not PRs, and the F01–F09 and X02 repairs own
 them.
@@ -538,11 +593,14 @@ them.
 | 8, 12 | product receipt fixtures with `unverified` and `legacy` profile states, each paired with every label, plus a receipt with no record | integration (X01-T4) |
 | 13, 14 | `score()` unit cases in `evidence.rs`: `unverified` paired with each other profile, and an all-`unverified` board | unit (T2) |
 | 15 | `parse_authority` and `as_str` round trip over all five strings, plus an unknown string | unit (T2) |
+| 16 | validator cases on an in-test snapshot: a fabricated quote with its correct `quote_sha256`, a tampered snapshot, a missing entry or file, and a snapshot under another commit | integration (X01-T4) |
+| 17 | report render over one pending and one divergence cell: assert the two labelled counts, then the lumped-report mutation | integration (X01-T4) |
 | 10 | source census over `crates/keld-compat/tests/**/*.rs` and `src/lib.rs` exports; `cargo metadata` dependency kind for `sha2` | integration |
 | 11 | digest and byte equality of the committed lifecycle fixtures against constants pinned from `origin/main` | integration |
 
-Anti-flake: the tests use no clock (`as_of` stays explicit), no network (citation
-upstream checks are review steps, not PR-lane checks), and no ports. Execution
+Anti-flake: the tests use no clock (`as_of` stays explicit), no network (citations
+are checked against committed snapshots, AC16, and only the snapshot-versus-upstream
+digest comparison is a review step), and no ports. Execution
 admission keeps the live Rust and Bun exact-case controls. Run with `CLAUDECODE` and
 `AI_AGENT` unset (KEL-237 comment 6964244b).
 
