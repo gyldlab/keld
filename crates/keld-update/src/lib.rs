@@ -13,8 +13,8 @@
 //! On Windows, a separate one-shot SYSTEM baseline initializer publishes protected
 //! installer provenance last. Its read-only loader retains protected identity/floor
 //! handles. Under the exclusive writer lease, one common journaled transaction
-//! activates a published version, binds an exact attempt health receipt, commits or
-//! rolls back, and resumes from every persisted cut. Production admission of that
+//! activates a published version, durably binds an exact attempt health receipt before
+//! it commits, or rolls back, and resumes from every persisted cut. Production admission of that
 //! transaction is currently `PerUserDirect` only; candidate launch, health observation,
 //! process-family evidence and current-image signer verification remain host-owned.
 //! A [`ProvenanceObservation::Protected`] test value
@@ -74,11 +74,11 @@ pub use windows_baseline::{
     ProcessFamilyRetirement, UpdaterHelperAnchor, UpdaterHelperImage, UpdaterHelperRole,
     WindowsActivationAttempt, WindowsActivationOutcome, WindowsActivationResolution,
     WindowsActivationWriteSnapshot, WindowsBaselineReceipt, WindowsBaselineTrust,
-    WindowsJournaledAttempt, WindowsMintedAttempt, WindowsRecoveryInspection,
-    WindowsRecoveryOutcome, anchor_updater_helper, initialize_windows_baseline,
-    initialize_windows_machine_uac_baseline, initialize_windows_per_user_baseline,
-    load_windows_activation_write_snapshot, load_windows_baseline,
-    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
+    WindowsHealthAcceptedAttempt, WindowsJournaledAttempt, WindowsMintedAttempt,
+    WindowsRecoveryInspection, WindowsRecoveryOutcome, anchor_updater_helper,
+    initialize_windows_baseline, initialize_windows_machine_uac_baseline,
+    initialize_windows_per_user_baseline, load_windows_activation_write_snapshot,
+    load_windows_baseline, load_windows_recovery_inspection, repair_windows_unjournaled_versions,
     select_active_package_for_executable, select_windows_active_package,
 };
 #[cfg(windows)]

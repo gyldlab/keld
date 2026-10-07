@@ -30,8 +30,8 @@ mod locate;
 pub(crate) use activate::CRASH_CUT_HOOK;
 pub use activate::{
     ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
-    WindowsActivationOutcome, WindowsActivationResolution, WindowsJournaledAttempt,
-    WindowsMintedAttempt, WindowsRecoveryOutcome,
+    WindowsActivationOutcome, WindowsActivationResolution, WindowsHealthAcceptedAttempt,
+    WindowsJournaledAttempt, WindowsMintedAttempt, WindowsRecoveryOutcome,
 };
 pub use helper::{
     UpdaterHelperAnchor, UpdaterHelperImage, UpdaterHelperRole, anchor_updater_helper,
