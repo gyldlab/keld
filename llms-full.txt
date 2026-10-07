@@ -1374,7 +1374,7 @@ first and refuses a record its position does not admit before reading further, a
 the purpose-`1` connect-back locator, which shares its one prefix constant with
 `is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is pure
 bytes and builds on every platform; the locator is Windows-only. No component
-exchanges these records yet (KEL-53 §6 S6), and the bootstrap records and purpose-`2`
+exchanges these records yet (KEL-53 §6 S6a), and the bootstrap records and purpose-`2`
 locator land with S11.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
