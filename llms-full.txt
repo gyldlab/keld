@@ -1577,8 +1577,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
   readiness-driven reader remains destination work (see §7). GH-527 (draft) gives
-  `GRANT` its first payload, optional app-to-host credit for the transport Worker's
-  ring, and ships it only behind a protocol-version bump.
+  `GRANT` its first payload: optional credit that the role's transport Worker sends to
+  the host, which bounds the host's `EVENT`s to that role by the Worker's free ring
+  space. It ships only behind a protocol-version bump.
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
@@ -1682,7 +1683,8 @@ compromised keeps the host's threat model uniform).
   other principals continue. KEL-70 currently proves generic child restart only.
   Under GH-527 (draft), the death of a role's transport Worker is that role's link
   loss and follows this path. A parked caller wakes with `KELD-IPC-025`, not at its
-  call deadline.
+  call deadline; if the link had already closed first, the earlier `KELD-IPC-022`
+  stands.
 - Window close: the destination host revokes that window generation and virtual-port
   routes, then drains only roles declared `window-bound` to it. App-bound roles remain
   live until the host application session stops.

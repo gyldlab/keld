@@ -123,8 +123,9 @@ negative control: the one mutation that MUST make the test fail.
    never ran: the exit handler's `STATE` compare-and-exchange woke it. *Control:*
    removing that compare-and-exchange leaves the wake to the liveness branch, so the
    counter is 1 and the arm fails. (b) *Abrupt termination:* before main parks, the
-   test posts a test-only message that makes the Worker call `self.close()` (or
-   `process.exit`) N ms after it reads `BLOCKING` as 1. Main parks, then observes
+   test posts a test-only message that makes the Worker call `process.exit` N ms
+   after it reads `BLOCKING` as 1. `self.close()` is not an arm-(b) trigger: §4.5
+   classes it as an orderly exit, whose handler runs. Main parks, then observes
    `KELD-IPC-025`. A test counter MUST show the Worker's exit handler did not run, so
    the wake comes from the liveness branch; a termination path that runs the exit
    handler does not satisfy (b). The message handler exists only in the test build;
@@ -273,6 +274,29 @@ negative control: the one mutation that MUST make the test fail.
     post-claim branch never ran. *Second negative control:* removing the Worker's own
     25 record on a throw (§4.5 step 2) leaves the wake to the post-claim bound after
     the deadline, so the timing and counter assertions fail.
+27. **Asynchronous replies and host CALLs are dispatched on main (§4.6).** Given two
+    pending `call()`s with ids `c1` and `c2`, and a host that writes an EVENT `e`, then
+    a REPLY for `c2`, then an `ERR` for `c1`, then `e`'s listener runs before either
+    Promise settles, `c2` resolves with its REPLY bytes, and `c1` rejects with the
+    `ERR`'s `CallError.code`. A late REPLY for a `call()` that already rejected with
+    `KELD-IPC-006` leaves that outcome unchanged and the link up. Given a call handler
+    set for the echo channel and a host echo CALL written while main is parked, then
+    the handler has run 0 times when `callBlocking` returns and once afterwards, and the
+    host reads exactly one frame for that CALL, carrying the CALL's channel and
+    correlation id and the handler's kind and payload. Given an `echoReceiver` with no
+    call handler set, the same host CALL closes the link with `KELD-IPC-005`, and every
+    pending call throws or rejects with `KELD-IPC-022`. *Negative control:* a dispatcher
+    that settles the oldest pending Promise instead of the one `header.corr` names
+    resolves `c1` with `c2`'s bytes, so the test fails.
+28. **Uncredited share overflow (T4).** Given credit enabled, every credited channel
+    holding unused credit, a parked call, and the uncredited share (`ringBytes / 4`
+    bytes or `ringRecords / 4` records, §4.8) full of retained frames, when the host
+    writes one more uncredited frame (a lifecycle EVENT or an asynchronous REPLY), then
+    the Worker stops reading, records 26, and closes the link; the parked call throws
+    `KELD-IPC-026`, every retained record is delivered in order, and the host observes
+    link loss. *Negative control:* checking an uncredited frame against the whole
+    ring's free space instead of its share admits the frame into credited space, so
+    the test fails.
 
 ## 4. Design
 
@@ -439,15 +463,16 @@ and updates this table in the same PR.
 | `KELD-IPC-023` | `keld-ipc` (host writes it with `write_call_error`) | the host retired this role generation before the call's handler finished | role generation retired before this call completed | The role instance is being replaced or stopped. Do not retry here; the successor generation reissues the work after its own `Ready`. |
 | `KELD-IPC-024` | `keld-ipc` (host writes it with `write_call_error`) | the host accepted `Quit` and its drain ended with this call still pending | session ended by an accepted Quit before this call completed | The application is quitting. Do not issue new work; finish only the shutdown path. |
 | `KELD-IPC-025` | `@keld/kipc` | the transport Worker exited, or its heartbeat stopped for `WORKER_LIVENESS_WINDOW_MS`, while the role is open | transport Worker dead or unresponsive; the role's link is lost | The role has no link and cannot reconnect. Report the crash. The host restarts the role per its policy; check the role log for the Worker's last error. |
-| `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound and no credit lane was active, or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, reduce the host event rate toward this role, or enable the credit lane (T4). Retained events were delivered in order. |
+| `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound (with the credit lane, its share of them, §4.7), or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, reduce the host event rate toward this role, or enable the credit lane (T4). Retained events were delivered in order. |
 | `KELD-IPC-027` | `@keld/kipc` | a call expired while `MAX_ABANDONED_CALLS` expired calls were already awaiting their late replies | too many unanswered calls; the link was closed rather than track another abandoned id | The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect. |
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
 an invalid `receive` table (§4.5), a second in-flight
-blocking call, an invalid deadline, an unsolicited correlation id, a malformed `GRANT`
-or an applier that throws. A `KELD-IPC-005` raised by an API call before any write is
-thrown to that caller. A `KELD-IPC-005` that closes the link (an inbound frame the
-Worker rejects, a reused correlation id, a throwing applier) records `STATE = 22`, so
+blocking call, an invalid deadline, an unsolicited correlation id, a malformed `GRANT`,
+an applier that throws, or a host CALL whose call handler is missing or fails (§4.6).
+A `KELD-IPC-005` raised by an API call before any write is thrown to that caller. A
+`KELD-IPC-005` that closes the link (an inbound frame the Worker rejects, a reused
+correlation id, a throwing applier, a failed call handler) records `STATE = 22`, so
 the parked call and every pending call throw `KELD-IPC-022`, whose detail names the
 `KELD-IPC-005` cause; the cause is also written to the role log. `KELD-IPC-006` for an
 expired call deadline. Only the
@@ -478,6 +503,12 @@ export type WorkerCallReceiver =
   | { readonly policy: "echoReceiver" }                        // KEL-142 host Echo CALL
   | { readonly policy: "privilegedCallReceiver"; readonly channel: number };
 
+/** How main answers one host CALL: REPLY bytes, or an ERR's encoded CallError. */
+export interface WorkerCallReply {
+  readonly kind: typeof FrameKind.Reply | typeof FrameKind.Err;
+  readonly payload: Uint8Array;
+}
+
 export class WorkerLink {
   /** Spawns the transport Worker, which connects and completes HELLO. At most once per realm. */
   static open(options: WorkerLinkOptions): Promise<WorkerLink>;
@@ -488,6 +519,8 @@ export class WorkerLink {
   sendEvent(channel: number, payload: Uint8Array): void;
   /** Framework-only synchronous state applier; at most one per channel; never user code. */
   setStateApplier(channel: number, applier: (payload: Uint8Array) => void): void;
+  /** Framework-only answer to host CALLs on a `receive.callReceivers` channel; at most one per channel. */
+  setCallHandler(channel: number, handler: (payload: Uint8Array) => Promise<WorkerCallReply>): void;
   onEvent(channel: number, listener: (payload: Uint8Array) => void): () => void;
   close(): void;
 }
@@ -544,8 +577,8 @@ Link termination. Every side that ends the link does so with one
 the first succeeds, so the recorded code never changes and the Worker and main cannot
 disagree about it. The Worker records 22 (EOF, I/O error or a link-closing
 `KELD-IPC-005`), 25 (its own orderly exit, or a fault after a claim), 26 (overflow) or 27 (abandoned cap); main
-records 25 (liveness failure) or 22 (a throwing applier). 23 and 24 are never recorded:
-they arrive as host `ERR` payloads.
+records 25 (liveness failure) or 22 (a throwing applier or a failed call handler).
+23 and 24 are never recorded: they arrive as host `ERR` payloads.
 
 Pending-CALL map. The Worker is its one owner, because it writes every CALL. It adds
 an entry `(corr, channel, blocking)` when it writes the CALL, and removes it when the
@@ -619,6 +652,35 @@ The ring has two main-side cursors over one record sequence:
    loop between batches. Parked and unparked delivery use the one dispatch cursor, so
    listener order is issue order whatever mix of the two occurs.
 
+Dispatch by record kind. In step 2, after the applier step, the dispatch task handles
+each record by its kind (criterion 27):
+
+- EVENT: the channel's `onEvent` listeners run.
+- Asynchronous REPLY or `ERR`: main looks up `header.corr` among its own unresolved
+  `call()`s, the set the correlation counter skips (§4.5). A match is removed, and its
+  Promise resolves with the REPLY payload or rejects with `errorFromErrFrame` for an
+  `ERR`. With no match, main already rejected that call at its deadline, and the
+  record is discarded. The correlation id selects the Promise, never arrival order.
+  A `call()` deadline is a main-thread timer: on expiry main removes the entry,
+  rejects with `KELD-IPC-006` and posts `abandon(id)`, as `callBlocking` does.
+- Host CALL: main runs the handler that `setCallHandler` set for `header.channel` with
+  the payload. When its Promise fulfils, main posts the returned kind and payload to
+  the Worker. The Worker writes them with the CALL's channel and correlation id through
+  its `WriteQueue`, like any outbound frame (§4.2). The record is released when the
+  handler starts, so a slow handler holds no ring space. A missing handler, a rejected
+  Promise, a kind other than REPLY or `ERR`, or a payload above `MAX_FRAME_LEN` makes
+  the link terminal with `KELD-IPC-005`, recorded as 22 (§4.4). `setCallHandler`
+  throws `KELD-IPC-005` for a channel that `receive.callReceivers` does not name, or a
+  second handler on one channel. The answer rule stays with its owner: `@keld/api`
+  passes its existing `resolveEchoCall` rule (`packages/@keld/api/src/echo-call.ts`),
+  which already turns a missing or failing application handler into an `ERR` with
+  `KELD-API-001`. The transport adds no error code.
+
+No call handler starts and no `call()` Promise settles while main is parked, because
+main does both only in the dispatch task. Once `STATE` is not 0 and the task has
+delivered every retained record, each unresolved `call()` rejects with the code
+`STATE` records.
+
 The ring is therefore also the listener FIFO. No second queue exists, and memory held
 for undispatched listeners stays inside the ring bound. An applier MUST be synchronous
 and MUST NOT call user code. A throwing applier makes the link terminal with
@@ -687,8 +749,11 @@ test lands with #528.
   from its named constructor and throws `KELD-IPC-005` when any channel appears twice
   across `eventChannels`, the built policies' `channel` and their `alsoChannel`, or
   when a channel is 0. No caller-built `ReceivePolicy` object is accepted.
-- Before appending, the Worker checks both bounds: free bytes for the frame envelope,
-  and a free record slot. If either fails and no credit lane is active, the Worker
+- Before appending, the Worker checks both bounds of the frame's share: free bytes for
+  the frame envelope, and a free record slot. With no credit lane the share is the
+  whole ring. With the credit lane (§4.8), an uncredited frame's share is the reserved
+  uncredited share, and a credited EVENT's share is its channel's share; a frame never
+  takes space from another share (criterion 28). If either check fails, the Worker
   stops reading, records 26 in `STATE` (§4.5), and ends the socket. The frame is never dropped silently and nothing already retained is
   discarded. Main delivers the retained records in order, and the pending blocking
   call throws `KELD-IPC-026`. FACT: a 64 KiB ring failed closed 3/3, and the first
@@ -722,8 +787,10 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
 
 - Credited channels are fixed by the host-declared channel table at open. The Worker
   reserves `ringBytes / 4` and `ringRecords / 4` for uncredited frames (asynchronous
-  REPLY and `ERR`, lifecycle). The blocking reply needs no share, because it uses the
-  reply slot (§4.3). It splits the rest equally among the credited channels. The first
+  REPLY and `ERR`, host CALLs, lifecycle). Credit never suspends an uncredited frame,
+  so one that does not fit this share fails closed with 26 (§4.7, criterion 28). The
+  blocking reply needs no share, because it uses the reply slot (§4.3). The Worker
+  splits the rest equally among the credited channels. The first
   `GRANT` per channel declares that channel's window: both fields MUST be nonzero, and
   the host records them as the channel's maximum outstanding credit. The Worker writes
   it only after it has validated the host's `HELLO` reply. It grants freed capacity
@@ -821,11 +888,13 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   (the blocking reply through its reply slot), that a second link is refused, and that
   Worker death is role link loss. It also notes
   that v0 consumers still own the socket on the main thread.
-- §2 "Backpressure", v0 sentence: one appended sentence. GH-527 gives `GRANT` its
-  first payload (optional app-to-host ring credit) and ships it only behind a
+- §2 "Backpressure", v0 sentence: two appended sentences. GH-527 gives `GRANT` its
+  first payload: optional credit that the Worker sends to the host, bounding the
+  host's EVENTs to the role by free ring space. It ships only behind a
   protocol-version bump.
-- §7 "App-role crash": one appended sentence. Transport Worker death is that role's
-  link loss, and the parked caller wakes with `KELD-IPC-025`, not at its deadline.
+- §7 "App-role crash": two appended sentences. Transport Worker death is that role's
+  link loss, and the parked caller wakes with `KELD-IPC-025`, not at its deadline,
+  unless the link had already closed and recorded `KELD-IPC-022` first (§4.5).
 
 ### 4.13 Migration unit
 
@@ -872,7 +941,7 @@ not.
   self-entry Worker, ring, two cursors, `callBlocking`, liveness, and codes
   `KELD-IPC-022`, `KELD-IPC-025`, `KELD-IPC-026` and `KELD-IPC-027` with registry
   headings and the `SCAN_REL` extension. Corpus rows. Criteria 1 to 5, 8 to 16, 18
-  to 22, 25 and 26 against
+  to 22 and 25 to 27 against
   the real `keld-ipc` writer on macOS (the credit case of 18 lands with T4).
 - [ ] T2 — #528 host: `KELD-IPC-023` and `KELD-IPC-024` constructors and registry
   headings; the router answers pending calls on retire and Quit drain; host test that
@@ -882,7 +951,7 @@ not.
   strict self-entry mount proof; remove `DirectedReader` and the main-thread client
   path; update the arch 02, arch 06 and product-status current state.
 - [ ] T4 — conditional: only when a consumer shows the ring bound is insufficient.
-  `GrantCredit`, the version-3 bump, criteria 17, 23 and 24, and the credit case of 18.
+  `GrantCredit`, the version-3 bump, criteria 17, 23, 24 and 28, and the credit case of 18.
 - [ ] T5 — Linux and Windows qualification of criteria 1 to 14 and 18 to 20 on real
   hosts.
 
@@ -907,6 +976,8 @@ not.
 | 23, 24 | T4 Rust host tests with a scripted Worker peer for over-window and pre-`HELLO` `GRANT`s |
 | 25 | Bun `open` cases for 3 MiB and 4 MiB rings, plus a counter-start hook at `2^32 - 64` with a blocking reply after the wrap |
 | 26 | claim-then-skip-publish and claim-step-throw hooks with a heartbeat-counting watchdog thread |
+| 27 | the criterion-1 harness with a host that answers two `call()`s out of order and writes an echo CALL during a park, recording a step log and the host's read frames |
+| 28 | T4 harness with credit enabled, a small ring and a host that fills the uncredited share with lifecycle EVENTs |
 
 Anti-flake: no sleep is used for synchronization. The host's 100 EVENT/s pacing is load
 generation only. Every assertion is a code, a count or a step log, never a duration. The
@@ -917,7 +988,7 @@ path is marked in T5.
 ## 8. Review gates triggered
 
 unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
-`WorkerReceiveTable`, `WorkerCallReceiver`, `replyWaiter(channel, corr)`,
+`WorkerReceiveTable`, `WorkerCallReceiver`, `WorkerCallReply`, `setCallHandler`, `replyWaiter(channel, corr)`,
 `eventReceiver(channel)`, the `replyBytes` option, the constants); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
 `ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (today's
