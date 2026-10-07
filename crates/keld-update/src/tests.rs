@@ -193,6 +193,18 @@ pub(crate) fn append_required_policy(archive: &mut Vec<u8>) {
     );
 }
 
+/// The updater helper every canonical Windows package carries (KEL-53 T4d). A literal
+/// wire oracle like [`append_required_policy`]; the caller appends it at its byte-sorted
+/// position, after every member whose name sorts below `keld-updater-helper.exe`.
+pub(crate) fn append_required_helper(archive: &mut Vec<u8>) {
+    append_ustar_entry(
+        archive,
+        "keld-updater-helper.exe",
+        b'0',
+        b"keld-updater-helper fixture",
+    );
+}
+
 fn refresh_ustar_checksum(header: &mut [u8; 512]) {
     header[148..156].fill(b' ');
     let sum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
@@ -966,14 +978,18 @@ fn machine_recovery_guidance_renders_its_exact_pinned_text() {
 }
 
 #[test]
-fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
-    let mut empty = Vec::new();
-    append_required_policy(&mut empty);
-    finish_ustar(&mut empty);
-    let validated = parse_test_archive(&empty).expect("policy-only package");
-    assert_eq!(validated.entries().len(), 2);
-    assert_eq!(validated.content_size(), 2560);
-    assert_eq!(validated.content_blake3(), blake3::hash(&empty).as_bytes());
+fn canonical_archive_preflight_accepts_the_required_minimum_and_nested_file_trees() {
+    let mut minimum = Vec::new();
+    append_required_policy(&mut minimum);
+    append_required_helper(&mut minimum);
+    finish_ustar(&mut minimum);
+    let validated = parse_test_archive(&minimum).expect("policy and helper only");
+    assert_eq!(validated.entries().len(), 3);
+    assert_eq!(validated.content_size(), 3584);
+    assert_eq!(
+        validated.content_blake3(),
+        blake3::hash(&minimum).as_bytes()
+    );
 
     let mut archive = Vec::new();
     append_required_policy(&mut archive);
@@ -981,6 +997,7 @@ fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
     append_ustar_entry(&mut archive, "assets/a.txt", b'0', b"x");
     append_ustar_entry(&mut archive, "assets/b.bin", b'0', &vec![0x5a; 513]);
     append_ustar_entry(&mut archive, "empty", b'5', &[]);
+    append_required_helper(&mut archive);
     finish_ustar(&mut archive);
     let validated = parse_test_archive(&archive).expect("canonical nested package tree");
     assert_eq!(
@@ -995,7 +1012,8 @@ fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
             "assets",
             "assets/a.txt",
             "assets/b.bin",
-            "empty"
+            "empty",
+            "keld-updater-helper.exe"
         ]
     );
     assert_eq!(validated.entries()[2].kind(), ArchiveEntryKind::Directory);
@@ -1067,15 +1085,107 @@ fn canonical_archive_preflight_requires_exact_policy_bytes_and_file_kind() {
     ));
 }
 
+/// One helper-member case: its label, the members it appends after the policy, and the
+/// exact refusal detail.
+type HelperCase = (&'static str, fn(&mut Vec<u8>), &'static str);
+
+#[test]
+fn canonical_archive_preflight_requires_the_updater_helper_after_the_digest() {
+    // Each archive is signed as it stands, so only the helper rule can refuse it.
+    let cases: [HelperCase; 4] = [
+        (
+            "absent",
+            |_| {},
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "case variant only",
+            |archive| append_ustar_entry(archive, "KELD-UPDATER-HELPER.EXE", b'0', b"x"),
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "nested only",
+            |archive| {
+                append_ustar_entry(archive, "nested", b'5', &[]);
+                append_ustar_entry(archive, "nested/keld-updater-helper.exe", b'0', b"x");
+            },
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "directory",
+            |archive| append_ustar_entry(archive, "keld-updater-helper.exe", b'5', &[]),
+            "keld-updater-helper.exe is not a regular file",
+        ),
+    ];
+    for (why, append, detail) in cases {
+        let mut archive = Vec::new();
+        append_required_policy(&mut archive);
+        append(&mut archive);
+        finish_ustar(&mut archive);
+        let error = parse_test_archive(&archive).expect_err(why);
+        assert_code(&error, "KELD-UPDATE-011");
+        assert!(
+            matches!(error, UpdateError::ArchiveInvalid { detail: found } if found == detail),
+            "{why}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_changed_archive_without_the_helper_is_a_digest_failure() {
+    let mut signed = Vec::new();
+    append_required_policy(&mut signed);
+    append_required_helper(&mut signed);
+    finish_ustar(&mut signed);
+    let receipt = archive_receipt(&signed);
+    // The same bytes with the helper renamed to a same-length name: canonical, the signed
+    // size, no helper, and not the signed digest.
+    let mut changed = Vec::new();
+    append_required_policy(&mut changed);
+    append_ustar_entry(
+        &mut changed,
+        "keld-updater-helper.exf",
+        b'0',
+        b"keld-updater-helper fixture",
+    );
+    finish_ustar(&mut changed);
+    assert_eq!(changed.len(), signed.len());
+    let error = crate::archive::parse_canonical_ustar(
+        &receipt,
+        &mut Cursor::new(&changed),
+        lexical_windows_package_names,
+    )
+    .expect_err("changed content is refused");
+    assert_code(&error, "KELD-UPDATE-009");
+    assert!(
+        matches!(
+            error,
+            UpdateError::ArtifactDigestMismatch {
+                domain: ArtifactDomain::Content,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn produced_package_metadata_drives_signed_full_verification_and_policy_admission() {
     let mut source = Cursor::new(b"application fixture");
-    let mut entries = [keld_pack::PackageEntry::File {
-        name: "app.bin",
-        size: 19,
-        input: &mut source,
-    }];
+    let mut helper = Cursor::new(b"keld-updater-helper fixture");
+    let mut entries = [
+        keld_pack::PackageEntry::File {
+            name: "app.bin",
+            size: 19,
+            input: &mut source,
+        },
+        keld_pack::PackageEntry::File {
+            name: "keld-updater-helper.exe",
+            size: 27,
+            input: &mut helper,
+        },
+    ];
     let mut compressed = Vec::new();
     let produced =
         keld_pack::produce_windows_v0(&mut entries, &mut compressed).expect("native producer");
@@ -1098,7 +1208,12 @@ fn produced_package_metadata_drives_signed_full_verification_and_policy_admissio
             .iter()
             .map(ArchiveEntry::name)
             .collect::<Vec<_>>(),
-        [".keld", ".keld/update-policy.v1", "app.bin"]
+        [
+            ".keld",
+            ".keld/update-policy.v1",
+            "app.bin",
+            "keld-updater-helper.exe"
+        ]
     );
     let policy = &admitted.entries()[1];
     let offset = usize::try_from(policy.data_offset()).expect("small fixture");
@@ -1208,20 +1323,40 @@ fn windows_archive_preflight_rejects_case_aliases_and_non_nfc_names() {
     append_required_policy(&mut aliases);
     append_ustar_entry(&mut aliases, "README", b'0', b"a");
     append_ustar_entry(&mut aliases, "Readme", b'0', b"b");
+    append_required_helper(&mut aliases);
     finish_ustar(&mut aliases);
     let receipt = archive_receipt(&aliases);
     let error = receipt
         .validate_windows_archive(&mut Cursor::new(&aliases))
         .unwrap_err();
     assert_code(&error, "KELD-UPDATE-011");
+    assert!(
+        matches!(
+            error,
+            UpdateError::ArchiveInvalid {
+                detail: "Windows package namespace is invalid"
+            }
+        ),
+        "{error}"
+    );
 
     let mut decomposed = Vec::new();
     append_required_policy(&mut decomposed);
     append_ustar_entry(&mut decomposed, "cafe\u{0301}.txt", b'0', b"a");
+    append_required_helper(&mut decomposed);
     finish_ustar(&mut decomposed);
     let receipt = archive_receipt(&decomposed);
     let error = receipt
         .validate_windows_archive(&mut Cursor::new(&decomposed))
         .unwrap_err();
     assert_code(&error, "KELD-UPDATE-011");
+    assert!(
+        matches!(
+            error,
+            UpdateError::ArchiveInvalid {
+                detail: "Windows package namespace is invalid"
+            }
+        ),
+        "{error}"
+    );
 }

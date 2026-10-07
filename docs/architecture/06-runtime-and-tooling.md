@@ -948,7 +948,12 @@ The canonical tar contains `.keld/update-policy.v1` with exact UTF-8 bytes
 file. `keld-pack` is the single owner of its path and portable byte constant, and
 `keld-update` consumes that owner through a one-way internal dependency. Missing,
 duplicate or different policy refuses activation. The package producer includes it;
-the consumer checks its exact bytes before any extraction. macOS/Linux and any
+the consumer checks its exact bytes before any extraction. Every Windows package also
+carries exactly one regular file `keld-updater-helper.exe` at its tree root, beside
+`keld-host.exe`, in every install mode, because the signed artifact is mode-agnostic
+(KEL-53 T4d). `keld-pack` owns that path and the presence rule: its producer refuses a
+tree without it before any I/O, and `keld-update` refuses an archive without it only
+after the content digest, as it does the policy. macOS/Linux and any
 package requiring executable modes, links or other v0-excluded metadata remain blocked
 on an approved KEL-137 representation.
 

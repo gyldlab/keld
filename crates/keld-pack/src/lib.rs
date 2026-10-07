@@ -30,6 +30,10 @@ pub use host_identity::{embed_host_identity, read_host_identity_bytes};
 pub const UPDATE_POLICY_PATH: &str = ".keld/update-policy.v1";
 /// Exact UTF-8 policy payload; this slice provides no data-migration hooks.
 pub const NO_MIGRATION_POLICY: &[u8] = b"{\"schema\":1,\"dataMigration\":\"none\"}\n";
+/// Exact relative path of the updater helper that every canonical Windows package carries
+/// (KEL-53 T4d): one regular file at the tree root, beside `keld-host.exe`, in every
+/// install mode, because the signed artifact is mode-agnostic.
+pub const UPDATER_HELPER_PATH: &str = "keld-updater-helper.exe";
 /// Block size of the canonical v0 ustar representation.
 pub const ARCHIVE_BLOCK_BYTES: usize = 512;
 /// Positive artifact counts must fit the signed feed's JSON safe-integer domain.
@@ -105,6 +109,32 @@ pub fn validate_v0_members(members: &[ArchiveMember<'_>]) -> Result<(), PackErro
     Ok(())
 }
 
+/// Requires exactly one regular file at [`UPDATER_HELPER_PATH`] (KEL-53 T4d canonical
+/// content).
+///
+/// The rule is presence only: the name compares exactly, so a case variant or a nested
+/// copy is not the helper, and the helper's image is checked when it anchors itself at
+/// run time. The producer applies it to its plan before any source read or sink write;
+/// the verifier applies it only after the content digest, so a changed archive stays a
+/// digest failure.
+///
+/// # Errors
+/// Returns [`PackError::InvalidMetadata`] when no member has that exact name, when that
+/// member is not a regular file, or when more than one member has it.
+pub fn require_updater_helper(members: &[ArchiveMember<'_>]) -> Result<(), PackError> {
+    let mut helpers = members
+        .iter()
+        .filter(|member| member.name == UPDATER_HELPER_PATH);
+    match (helpers.next(), helpers.next()) {
+        (None, _) => Err(invalid("required keld-updater-helper.exe is missing")),
+        (Some(_), Some(_)) => Err(invalid("keld-updater-helper.exe appears more than once")),
+        (Some(helper), None) if helper.kind != ArchiveEntryKind::File => {
+            Err(invalid("keld-updater-helper.exe is not a regular file"))
+        }
+        (Some(_), None) => Ok(()),
+    }
+}
+
 /// Borrowed package source. Readers begin at their current positions.
 pub enum PackageEntry<'a> {
     /// Explicit application directory.
@@ -172,9 +202,10 @@ impl ProducedFull {
 
 /// Produces a Windows x64 v0 update package, including the fixed no-migration policy.
 ///
-/// All metadata and the augmented Windows namespace are checked before any source
-/// read or sink write. Caller entries are not reordered. An exact `.keld` directory
-/// may be supplied; the policy file itself is reserved to the producer.
+/// All metadata, the augmented Windows namespace and the required
+/// [`UPDATER_HELPER_PATH`] member are checked before any source read or sink write.
+/// Caller entries are not reordered. An exact `.keld` directory may be supplied; the
+/// policy file itself is reserved to the producer.
 ///
 /// # Errors
 /// Unsupported hosts and invalid metadata perform no I/O. After streaming begins,
