@@ -1621,7 +1621,7 @@ remain the runtime wire oracle. This echo-only bootstrap does not make Rust the 
 schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
 
 **Channel table: live slice and destination
-([GH-508 spec](../specs/gh508-kipc-channel-table.md), draft).** The live slice is one
+([GH-508 spec](../specs/gh508-kipc-channel-table.md), approved).** The live slice is one
 static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
 guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
 reused. TypeScript constants are generated from it by the KEL-98 generator. It goes
