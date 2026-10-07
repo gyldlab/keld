@@ -334,9 +334,13 @@ fail. "Owner" is the implementing ticket.
     last-window policy in the wake drain writes `Quit` before `'closed'` and fails.
     **Creation in flight:** given window A `Open` and window B `Opening`, when A
     reaches `Destroyed`, then no `LastWindowClosed` is written and B then reaches
-    `Open`; if B's build fails instead (O2), the caller gets `ERR 041` and still no
-    `LastWindowClosed` is written. *NC:* excluding `Opening` from the T11 check writes
-    `LastWindowClosed`, the facade's default `Quit` follows, and the test fails.
+    `Open`. *NC:* excluding `Opening` from the T11 check writes `LastWindowClosed`, the
+    facade's default `Quit` follows, and the test fails. **Deferred failure:** given A
+    destroyed while B is `Opening`, when B's build fails (O2), then the caller gets
+    `ERR 041` and exactly one `LastWindowClosed` is written, after O2; with no
+    `'window-all-closed'` listener the default `Quit` follows. Given only a first
+    window whose build fails, zero are written. *NC:* omitting the deferred write leaves
+    zero `LastWindowClosed` after O2, and the test fails.
     Owner: F02-T3.
 33. **Quit keeps asking every window (#419 rule; registry half).** Given windows A and
     B and the facade's quit loop, when A vetoes, then a close request for B is still
@@ -762,8 +766,8 @@ test enumerates every pair and asserts its row.
 
 | # | State | Input | Next state | Writes / effects |
 |---|---|---|---|---|
-| O1 | `Opening` | `BuildOk` | `Open` | `Created`, then `REPLY Created` (T1) |
-| O2 | `Opening` | `BuildFail` | `Destroyed` | `ERR 041`; no `Created` (T2) |
+| O1 | `Opening` | `BuildOk` | `Open` | `Created`, then `REPLY Created`; clears the deferred last-window check (T1) |
+| O2 | `Opening` | `BuildFail` | `Destroyed` | `ERR 041`; no `Created`; then, if the last-window check is deferred and no window remains `Opening` or live, `LastWindowClosed` on the owner link and the deferral clears (T2, T11) |
 | O3 | `Opening` | `Native close` | `Opening` | one host diagnostic; ignored (no `Created` yet) |
 | O4 | `Opening` | `RequestClose` | `Opening` | ERR 038 |
 | O5 | `Opening` | `Reply current` | — | impossible: no request pending; classified as `Reply stale` |
@@ -849,9 +853,18 @@ link is live and not retired (after a `Role loss` row nothing is written): `Dest
 remains and the step is outside a session end; then every deferred `REPLY Destroyed`.
 *Live* means `Opening`, `Open`, `ClosePending` or `Closing`. An `Opening` window counts
 because its `Create` was admitted before this step, as an Electron constructor returns
-before any later close completes; so the session cannot quit before it opens. If that
-build then fails (O2), no `LastWindowClosed` is written: the `Create` caller's
-`ERR 041` is the app's signal (criterion 32).
+before any later close completes; so the session cannot quit before it opens.
+
+**Deferred last-window check.** The registry holds one session-level flag. T11 sets it
+when it suppresses `LastWindowClosed` only because some window is `Opening` (no `Open`,
+`ClosePending` or `Closing` window remains). O1 clears it, because a window became live.
+O2 consumes it: when the last `Opening` window fails its build and no live window
+remains, `LastWindowClosed` is written after `ERR 041`, and the facade's last-window
+policy runs as on the normal close path. `Role loss` and `Session end` clear it, since
+neither writes `LastWindowClosed`. If no window ever reached T11 (the session's first
+window fails to build), the flag was never set and nothing is written, as Electron
+never emits `window-all-closed` without a closed window. The flag is last-window state,
+not the cross-window quit latch that criterion 33 forbids (criterion 32).
 
 The facade runs no last-window policy for that `LastWindowClosed` until the `Destroy`
 caller has emitted `'closed'` (§4.e facade rules).
