@@ -100,9 +100,11 @@ KEL-53 fixes (owner decision `eff8e2fb`), `keld-ipc::attempt` also owns the clai
 health record codec (`KELD-AH1` to `KELD-AK1`), whose reader takes the 8-byte magic
 first and refuses a record its position does not admit before reading further, and
 the purpose-`1` connect-back locator, which shares its one prefix constant with
-`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is pure
-bytes and builds on every platform; the locator is Windows-only. The exchange runs
-inside the endpoint and the client, which never expose their stream. The owner's
+`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is
+crate-private pure bytes: it builds on Windows, for its tests, and with the
+non-product `fuzzing` feature, which exposes only its raw-byte fuzz hook; the locator
+is Windows-only. The exchange runs inside the endpoint and the client, which never
+expose their stream, so no other crate builds, sends or reads a record. The owner's
 connect-back endpoint derives its name from the IDs its `KELD-AC1` carries; per
 connection, under the landed per-connection deadline clamped to the claim deadline, it
 reads the client's process ID and session, `KELD-AH1`, the claim writer's

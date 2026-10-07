@@ -7,14 +7,17 @@
 //! readback of the server descriptor before it sends anything, and the
 //! purpose-`1` endpoint locator. Comparing a readback with a form is not
 //! repeated here: it is the named-pipe owner's single comparison, which the
-//! app-link and lifecycle pipes share. The claim and health record codec is
-//! pure bytes and builds on every platform; KEL-53 owns its byte layouts
-//! (approved: KEL-270 owner decision `eff8e2fb`).
+//! app-link and lifecycle pipes share. KEL-53 owns the claim and health
+//! records' byte layouts (approved: KEL-270 owner decision `eff8e2fb`).
 //!
-//! The claim (`KELD-AH1` to `KELD-AR1`) runs inside the endpoint and the
-//! client, which never expose their stream (`claim.rs`): the owner's endpoint
-//! derives its name from the IDs that its `KELD-AC1` carries, and the client
-//! runs the locator check before it sends `KELD-AA1`.
+//! The claim (`KELD-AH1` to `KELD-AR1`, `claim.rs`) and the health records
+//! after it (`channel.rs`) run inside the endpoint and the client, which never
+//! expose their stream: the owner's endpoint derives its name from the IDs
+//! that its `KELD-AC1` carries, and the client runs the locator check before
+//! it sends `KELD-AA1`. The record codec is therefore crate-private pure
+//! bytes (KEL-270 comment `136c2682`); it builds where the exchange does, for
+//! its tests, and with the non-product `fuzzing` feature, which adds only its
+//! raw-byte fuzz hook.
 
 #[cfg(windows)]
 mod channel;
@@ -22,6 +25,7 @@ mod channel;
 mod claim;
 #[cfg(windows)]
 mod locator;
+#[cfg(any(windows, test, feature = "fuzzing"))]
 mod records;
 #[cfg(any(windows, test))]
 mod window;
@@ -37,9 +41,12 @@ pub(crate) use locator::ATTEMPT_ENDPOINT_PREFIX;
 pub use locator::{
     WindowsAttemptLocatorError, WindowsAttemptLocatorInput, windows_attempt_connect_back_endpoint,
 };
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use records::fuzz_attempt_records;
+#[cfg(windows)]
 pub use records::{
-    AttemptBootAcknowledgement, AttemptChallenge, AttemptClaim, AttemptFailureClass,
-    AttemptHealthResult, AttemptReadPosition, AttemptRecord, AttemptRecordError, AttemptRecordKind,
+    AttemptFailureClass, AttemptReadPosition, AttemptRecordError, AttemptRecordKind,
     AttemptTranscript,
 };
 #[cfg(windows)]

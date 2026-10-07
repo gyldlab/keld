@@ -11,9 +11,24 @@
 //! record under the stream's own deadline. Class and result bytes are closed
 //! sets numbered from `1`, so a zeroed byte never decodes.
 //!
-//! This is the codec only. The claim and health exchange that sends and reads
-//! these records runs inside the endpoint and the client (`claim.rs`,
-//! `channel.rs`). The bootstrap records `BH1` to `BO1` land with S11.
+//! This is the codec only, and it is crate-private (KEL-270 comment
+//! `136c2682`): the claim and health exchange that sends and reads these
+//! records runs inside the endpoint and the client (`claim.rs`, `channel.rs`),
+//! so no other crate can build, send or read a record. Only the types that its
+//! refusals and transcripts name are public. The non-product `fuzzing` feature
+//! adds the raw-byte fuzz hook [`fuzz_attempt_records`]. The bootstrap records
+//! `BH1` to `BO1` land with S11.
+//!
+//! Off Windows the module builds only for its tests and the fuzz hook, so the
+//! parts that only the Windows exchange uses are unused there.
+#![cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "off Windows only the codec tests and the fuzzing hook build this module; \
+                  the exchange that uses the rest is Windows-only"
+    )
+)]
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -61,7 +76,7 @@ impl AttemptRecordKind {
 
     /// The record's 8 ASCII magic bytes.
     #[must_use]
-    pub const fn magic(self) -> [u8; MAGIC_LEN] {
+    pub(crate) const fn magic(self) -> [u8; MAGIC_LEN] {
         match self {
             Self::Claim => *b"KELD-AH1",
             Self::Challenge => *b"KELD-AC1",
@@ -76,7 +91,7 @@ impl AttemptRecordKind {
 
     /// The record's whole length in bytes, magic included.
     #[must_use]
-    pub const fn record_len(self) -> usize {
+    pub(crate) const fn record_len(self) -> usize {
         match self {
             Self::Claim => MAGIC_LEN + 2 * ID_LEN + PID_LEN,
             Self::Challenge => MAGIC_LEN + 3 * ID_LEN + PID_LEN,
@@ -199,7 +214,7 @@ impl AttemptFailureClass {
 /// The closed `KELD-AK1` health result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum AttemptHealthResult {
+pub(crate) enum AttemptHealthResult {
     /// `1`: `HealthAccepted` is durable.
     Accepted = 1,
     /// `2`: the owner rolls the attempt back.
@@ -218,7 +233,7 @@ impl AttemptHealthResult {
 
 /// `KELD-AH1`: what the candidate knows without the journal (76 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttemptClaim {
+pub(crate) struct AttemptClaim {
     installation_id: [u8; ID_LEN],
     client_nonce: SessionToken,
     client_pid: u32,
@@ -229,7 +244,7 @@ impl AttemptClaim {
     /// provenance record, a fresh nonce from [`SessionToken::random`] and its
     /// own process ID.
     #[must_use]
-    pub const fn new(
+    pub(crate) const fn new(
         installation_id: [u8; 32],
         client_nonce: SessionToken,
         client_pid: u32,
@@ -240,29 +255,11 @@ impl AttemptClaim {
             client_pid,
         }
     }
-
-    /// The claimed installation ID.
-    #[must_use]
-    pub const fn installation_id(&self) -> &[u8; 32] {
-        &self.installation_id
-    }
-
-    /// The candidate's nonce for this connection.
-    #[must_use]
-    pub const fn client_nonce(&self) -> &SessionToken {
-        &self.client_nonce
-    }
-
-    /// The candidate's own process ID.
-    #[must_use]
-    pub const fn client_pid(&self) -> u32 {
-        self.client_pid
-    }
 }
 
 /// `KELD-AC1`: the owner's challenge (108 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttemptChallenge {
+pub(crate) struct AttemptChallenge {
     attempt_id: [u8; ID_LEN],
     health_channel_id: [u8; ID_LEN],
     server_nonce: SessionToken,
@@ -274,7 +271,7 @@ impl AttemptChallenge {
     /// `keld-update` minted, a fresh nonce from [`SessionToken::random`] and
     /// the owner's own process ID.
     #[must_use]
-    pub const fn new(
+    pub(crate) const fn new(
         attempt_id: [u8; 32],
         health_channel_id: [u8; 32],
         server_nonce: SessionToken,
@@ -287,42 +284,17 @@ impl AttemptChallenge {
             server_pid,
         }
     }
-
-    /// The offered attempt ID.
-    #[must_use]
-    pub const fn attempt_id(&self) -> &[u8; 32] {
-        &self.attempt_id
-    }
-
-    /// The offered health-channel ID.
-    #[must_use]
-    pub const fn health_channel_id(&self) -> &[u8; 32] {
-        &self.health_channel_id
-    }
-
-    /// The owner's nonce for this connection.
-    #[must_use]
-    pub const fn server_nonce(&self) -> &SessionToken {
-        &self.server_nonce
-    }
-
-    /// The process ID the owner states as its own.
-    #[must_use]
-    pub const fn server_pid(&self) -> u32 {
-        self.server_pid
-    }
 }
 
 /// The whole claim transcript, the fields of `KELD-AH1` and `KELD-AC1`
 /// together: the body of `KELD-AA1` and of its same-context receipt
 /// `KELD-AR1` (176 bytes each), which differ only in magic.
 ///
-/// A transcript is the body that each side's acceptance check returns. The
-/// codec does not make it unforgeable: [`AttemptRecord::decode`] and
-/// [`AttemptRecord::read_from`] return any well-formed transcript. The
-/// exchange (`claim.rs`) sends only the transcript that `for_claimant`
-/// (claimant) or `for_owner` (owner) returned, and the claimant runs
-/// `for_claimant` before it writes `KELD-AA1`.
+/// A transcript is the body that each side's acceptance check returns, and
+/// only the crate-private exchange builds one: it sends only the transcript
+/// that the claimant's or the owner's check returned, and the claimant runs
+/// its locator check before it writes `KELD-AA1`. Outside `keld-ipc` a
+/// transcript is read-only: the accepted claim that a channel reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptTranscript {
     installation_id: [u8; ID_LEN],
@@ -345,7 +317,7 @@ impl AttemptTranscript {
     ///
     /// [`AttemptRecordError::ForeignInstallation`] or
     /// [`AttemptRecordError::ClientProcessMismatch`].
-    pub fn for_owner(
+    pub(crate) fn for_owner(
         claim: &AttemptClaim,
         installation_id: &[u8; 32],
         connected_client_pid: u32,
@@ -377,7 +349,7 @@ impl AttemptTranscript {
     /// [`AttemptRecordError::LocatorMismatch`] (which includes IDs the locator
     /// refuses).
     #[cfg(windows)]
-    pub fn for_claimant(
+    pub(crate) fn for_claimant(
         claim: &AttemptClaim,
         challenge: &AttemptChallenge,
         rendezvous: &str,
@@ -420,7 +392,7 @@ impl AttemptTranscript {
     /// # Errors
     ///
     /// [`AttemptRecordError::TranscriptMismatch`] when any field differs.
-    pub fn require_match(&self, received: &Self) -> Result<(), AttemptRecordError> {
+    pub(crate) fn require_match(&self, received: &Self) -> Result<(), AttemptRecordError> {
         if self == received {
             Ok(())
         } else {
@@ -475,7 +447,7 @@ impl AttemptTranscript {
 /// (104 bytes): the attempt, the health channel and the §4 health-receipt
 /// digest over them and the candidate artifact identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttemptBootAcknowledgement {
+pub(crate) struct AttemptBootAcknowledgement {
     attempt_id: [u8; ID_LEN],
     health_channel_id: [u8; ID_LEN],
     health_receipt_digest: [u8; ID_LEN],
@@ -486,7 +458,7 @@ impl AttemptBootAcknowledgement {
     /// for its own version tree; the owner builds the one it expects from
     /// the journal.
     #[must_use]
-    pub const fn new(
+    pub(crate) const fn new(
         attempt_id: [u8; 32],
         health_channel_id: [u8; 32],
         health_receipt_digest: [u8; 32],
@@ -503,36 +475,18 @@ impl AttemptBootAcknowledgement {
     /// # Errors
     ///
     /// [`AttemptRecordError::BootMismatch`] when any field differs.
-    pub fn require_match(&self, received: &Self) -> Result<(), AttemptRecordError> {
+    pub(crate) fn require_match(&self, received: &Self) -> Result<(), AttemptRecordError> {
         if self == received {
             Ok(())
         } else {
             Err(AttemptRecordError::BootMismatch)
         }
     }
-
-    /// The acknowledged attempt ID.
-    #[must_use]
-    pub const fn attempt_id(&self) -> &[u8; 32] {
-        &self.attempt_id
-    }
-
-    /// The acknowledged health-channel ID.
-    #[must_use]
-    pub const fn health_channel_id(&self) -> &[u8; 32] {
-        &self.health_channel_id
-    }
-
-    /// The §4 health-receipt digest.
-    #[must_use]
-    pub const fn health_receipt_digest(&self) -> &[u8; 32] {
-        &self.health_receipt_digest
-    }
 }
 
 /// One `keld-attempt` claim or health record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttemptRecord {
+pub(crate) enum AttemptRecord {
     /// `KELD-AH1`.
     Claim(AttemptClaim),
     /// `KELD-AC1`.
@@ -554,7 +508,7 @@ pub enum AttemptRecord {
 impl AttemptRecord {
     /// This record's kind.
     #[must_use]
-    pub const fn kind(&self) -> AttemptRecordKind {
+    pub(crate) const fn kind(&self) -> AttemptRecordKind {
         match self {
             Self::Claim(_) => AttemptRecordKind::Claim,
             Self::Challenge(_) => AttemptRecordKind::Challenge,
@@ -595,7 +549,7 @@ impl AttemptRecord {
     ///   byte;
     /// - [`AttemptRecordError::Io`] for end of file before a whole record, a
     ///   read failure or an expired deadline.
-    pub fn read_from<R: Read + ?Sized>(
+    pub(crate) fn read_from<R: Read + ?Sized>(
         reader: &mut R,
         position: AttemptReadPosition,
     ) -> Result<Self, AttemptRecordError> {
@@ -614,7 +568,8 @@ impl AttemptRecord {
     }
 
     /// Decodes `bytes` as exactly one record admitted at `position`, by the
-    /// same magic-first rule as [`AttemptRecord::read_from`].
+    /// same magic-first rule as [`AttemptRecord::read_from`]. The exchange
+    /// reads streams; only the tests and the fuzz hook decode slices.
     ///
     /// # Errors
     ///
@@ -625,7 +580,11 @@ impl AttemptRecord {
     ///   record;
     /// - [`AttemptRecordError::ValueOutOfSet`] or
     ///   [`AttemptRecordError::FailureClassNotAdmitted`].
-    pub fn decode(position: AttemptReadPosition, bytes: &[u8]) -> Result<Self, AttemptRecordError> {
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn decode(
+        position: AttemptReadPosition,
+        bytes: &[u8],
+    ) -> Result<Self, AttemptRecordError> {
         let Some(magic) = bytes.first_chunk::<MAGIC_LEN>() else {
             return Err(AttemptRecordError::Truncated {
                 expected: MAGIC_LEN,
@@ -656,7 +615,10 @@ impl AttemptRecord {
     /// # Errors
     ///
     /// [`AttemptRecordError::Io`] when the write fails.
-    pub fn write_to<W: Write + ?Sized>(&self, writer: &mut W) -> Result<(), AttemptRecordError> {
+    pub(crate) fn write_to<W: Write + ?Sized>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), AttemptRecordError> {
         let (bytes, len) = self.encode();
         writer
             .write_all(&bytes[..len])
@@ -993,6 +955,93 @@ impl std::error::Error for AttemptRecordError {
             _ => None,
         }
     }
+}
+
+/// Raw-byte fuzz hook for the claim and health record codec (KEL-53 §6 S4b;
+/// §7 "8 (keld-attempt codec)"). It exists only with the non-product
+/// `fuzzing` feature, so the codec stays crate-private.
+///
+/// At every read position, decoding `bytes` terminates and either refuses
+/// with a classified `KELD-IPC-*` error or admits a record whose canonical
+/// encoding is the whole input; the stream reader agrees with the slice
+/// decoder, consumes exactly one encoded record and never reads past a
+/// refused magic. The locator check is Windows-only and covered by the
+/// deterministic tests.
+///
+/// # Errors
+///
+/// The first violated property, which the fuzz target reports as a crash.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_attempt_records(bytes: &[u8]) -> Result<(), String> {
+    use AttemptReadPosition::{
+        CandidateChallenge, CandidateHealthResult, CandidateReceipt, OwnerAcknowledgement,
+        OwnerBoot, OwnerClaim, OwnerReady,
+    };
+    for position in [
+        OwnerClaim,
+        OwnerAcknowledgement,
+        OwnerBoot,
+        OwnerReady,
+        CandidateChallenge,
+        CandidateReceipt,
+        CandidateHealthResult,
+    ] {
+        let decoded = AttemptRecord::decode(position, bytes);
+        let mut stream = io::Cursor::new(bytes);
+        let streamed = AttemptRecord::read_from(&mut stream, position);
+        let consumed = usize::try_from(stream.position())
+            .map_err(|_| format!("{position:?}: the cursor passed usize"))?;
+        match (decoded, streamed) {
+            (Ok(record), Ok(read)) => {
+                let (encoded, len) = record.encode();
+                if read != record {
+                    return Err(format!("{position:?}: stream and slice decoders disagree"));
+                }
+                if encoded[..len] != *bytes {
+                    return Err(format!("{position:?}: admitted bytes are not canonical"));
+                }
+                if consumed != bytes.len() {
+                    return Err(format!("{position:?}: the stream read {consumed} bytes"));
+                }
+            }
+            (Ok(record), Err(error)) => {
+                return Err(format!(
+                    "{position:?}: the slice admitted {record:?}, the stream refused: {error}"
+                ));
+            }
+            (Err(error), Ok(read)) => {
+                // Only a whole record followed by more bytes reads from a stream.
+                let (encoded, len) = read.encode();
+                if !matches!(error, AttemptRecordError::TrailingBytes { .. })
+                    || consumed != len
+                    || bytes.len() <= len
+                    || !bytes.starts_with(&encoded[..len])
+                {
+                    return Err(format!(
+                        "{position:?}: the stream admitted {read:?} after {consumed} bytes, the \
+                         slice refused: {error}"
+                    ));
+                }
+            }
+            (Err(decode_error), Err(read_error)) => {
+                for error in [&decode_error, &read_error] {
+                    let text = error.to_string();
+                    if !text.starts_with("KELD-IPC-01") {
+                        return Err(format!("{position:?}: unclassified refusal: {text}"));
+                    }
+                }
+                if matches!(read_error, AttemptRecordError::MagicNotAdmitted { .. })
+                    && consumed != MAGIC_LEN
+                {
+                    return Err(format!(
+                        "{position:?}: the stream read {consumed} bytes past a refused magic"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
