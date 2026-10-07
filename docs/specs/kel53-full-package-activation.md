@@ -2475,6 +2475,20 @@ Implement in:
     `retirement_due` (`:137-152`) names the candidate for `PublishPending` only under
     the abandon intent and only when no pointer names it. Every mapping is unchanged
     under the ordinary intent;
+- landed-code change in `keld-runtime` and its call sites (slice S6b3; KEL-270 owner
+  decision `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 2, under replies
+  `559c07ac` and `079b239d`; "Candidate release after commit"): `install_host_death_job`
+  (`crates/keld-runtime/src/windows_job.rs:3209-3249`) returns the opaque
+  `WindowsHostDeathJob` capability instead of forgetting the Job handle
+  (`windows_job.rs:3248`), a breaking public API change; the capability holds the
+  handle in `ManuallyDrop`, so no caller can close it and dropping it changes nothing.
+  Its callers change mechanically, binding the capability and reading the observation
+  through its accessor: `crates/keld-host/src/main.rs:101`,
+  `crates/keld-host/tests/no_flag_windows.rs:204` and
+  `crates/keld-runtime/tests/windows_host_death_job.rs:2160`,
+  `windows_host_death_job.rs:2187` and `windows_host_death_job.rs:2225`. The host keeps
+  the capability until it exits; S6c adds the one `release_for_exit` call on the
+  committed exit path, and no other caller releases it;
 - the new T4d production FFI. Each call below lives in the named file of its existing
   owner, only after an issue-scoped amendment of that owner's AGENTS.md `unsafe` rule;
   calls that the owner already lists gain only the stated new scope:
@@ -2540,20 +2554,33 @@ Implement in:
   - `keld-runtime`, `src/windows_job.rs` (its KEL-270 whitelist): `CreateProcessWithTokenW`
     with `CREATE_SUSPENDED`; `AssignProcessToJobObject` on that suspended process (S11)
     and on the `PerUserDirect` same-token suspended child (S6b) (a listed call with a
-    new scope); `CompareObjectHandles`; clearing
-    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` with `SetInformationJobObject` after
-    `health-accepted` (a listed call with a new scope);
+    new scope); `CompareObjectHandles`; the one crate-private clear of
+    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` with `SetInformationJobObject` and a
+    `QueryInformationJobObject` read-back of `0` (slice S6b3; "Candidate release after
+    commit"), with exactly two scopes: the exact attempt Job through
+    `WindowsProcessJob::release_family`, after `complete()` in `PerUserDirect` (S6c)
+    and after `health-accepted` in `MachineUacDirect` (S11), and the host-death Job
+    through `WindowsHostDeathJob::release_for_exit`, after the census at a committed
+    exit (listed calls with a new scope; the amendment also narrows the crate rule that
+    forbids Job limit changes to admit exactly this strip); the production census of
+    `release_for_exit` (S6b3): `QueryInformationJobObject(JobObjectBasicProcessIdList)`
+    on the host-death Job, `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
+    PROCESS_TERMINATE | PROCESS_SYNCHRONIZE)` on each listed member, `IsProcessInJob`
+    against the host-death Job and the attempt Job, and `TerminateProcess` and
+    `WaitForSingleObject` on members outside the family (listed calls with new scopes);
     `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`, the System32-only search;
     `ShellExecuteExW` with `runas`, `SEE_MASK_NOCLOSEPROCESS`, `SEE_MASK_NOASYNC` and
     `SEE_MASK_FLAG_NO_UI`, the helper's own directory as `lpDirectory`, `nShow`
     `SW_HIDE` and no owner window, on a dedicated thread with `CoInitializeEx`
     (single-threaded apartment) and `CoUninitialize` around it ("Helper launch and
     self-anchor"; new `windows-sys` features `Win32_UI_Shell` and
-    `Win32_System_Com`); and, in acceptance builds only, an owner-side test seam that
-    lists the attempt Job's process IDs with `QueryInformationJobObject`
-    (`JobObjectBasicProcessIdList`) for the census, never as retirement evidence.
-    `OpenProcess`, `GetProcessTimes`, `QueryFullProcessImageNameW`, `OpenProcessToken`
-    and `WaitForSingleObject` are already listed;
+    `Win32_System_Com`); and the S6b3 process-ID lister over
+    `QueryInformationJobObject(JobObjectBasicProcessIdList)`, production code for the
+    host-death census, which S12 reuses for the Machine-UAC census of "Machine-UAC
+    owner-loss retirement" instead of adding an acceptance-only seam, never as
+    retirement evidence. `OpenProcess`, `GetProcessTimes`,
+    `QueryFullProcessImageNameW`, `OpenProcessToken`, `IsProcessInJob`,
+    `TerminateProcess` and `WaitForSingleObject` are already listed;
   - reuse decisions in `keld-runtime`: the suspended child's resume-once state and its
     single `ResumeThread` call in `windows_lpac.rs` (`spawn_suspended` at :313,
     `resume` at :564) are generalized into one suspended-child type that the LPAC
@@ -2566,7 +2593,7 @@ Implement in:
     the LPAC attribute list, beside the LPAC creation in `windows_lpac.rs` (an existing
     call with a new scope; slice S6b; Coordination record, Linear KEL-270 comment
     `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07). `assign_child`
-    (`windows_job.rs:1348`) takes a `std::process::Child`, which cannot represent the
+    (`windows_job.rs:1479`) takes a `std::process::Child`, which cannot represent the
     process that `CreateProcessWithTokenW` or that suspended creation returns, so it is
     extended to accept the suspended child's owned process handle rather than
     duplicated. The attempt-Job
