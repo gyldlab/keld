@@ -1151,7 +1151,17 @@ credentials
 `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`, because Microsoft says COM should be
 initialized before `ShellExecuteEx`
 ([ShellExecuteExW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw),
-`ms.date` 2018-12-05). It passes exactly one argument, which conveys no authority: the
+`ms.date` 2018-12-05). That thread is a dedicated launch thread: it enters the
+single-threaded apartment with `CoInitializeEx`, makes the one call and leaves with
+`CoUninitialize` before it ends. The call sets `SEE_MASK_NOCLOSEPROCESS`;
+`SEE_MASK_NOASYNC`, which Microsoft requires when the calling thread has no message
+loop or ends soon after the call; and `SEE_MASK_FLAG_NO_UI`, which suppresses error
+dialogs while security prompts such as UAC's still show. Its `lpDirectory` is the
+helper's own directory, never the host's current directory, which a null value would
+pass on; its `nShow` is `SW_HIDE`; and it names no owner window
+([SHELLEXECUTEINFOW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow),
+`ms.date` 2018-12-05; KEL-270 T4d PR-0 review, 2026-10-07, recording the S9b launch).
+It passes exactly one argument, which conveys no authority: the
 bootstrap rendezvous name for the activation role ("Machine-UAC bootstrap"), or the
 fixed recovery-role selector `--recovery-role`, exact ASCII and case-sensitive, defined
 once in `keld-runtime` and imported by the helper's argument check (Coordination record,
@@ -2266,9 +2276,13 @@ Implement in:
     and on the `PerUserDirect` same-token suspended child (S6b) (a listed call with a
     new scope); `CompareObjectHandles`; clearing
     `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` with `SetInformationJobObject` after
-    `health-accepted` (a listed call with a new scope); `SetDefaultDllDirectories`;
-    `ShellExecuteExW` with `runas` and `SEE_MASK_NOCLOSEPROCESS`, with `CoInitializeEx`
-    and `CoUninitialize` around it (new `windows-sys` features `Win32_UI_Shell` and
+    `health-accepted` (a listed call with a new scope);
+    `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`, the System32-only search;
+    `ShellExecuteExW` with `runas`, `SEE_MASK_NOCLOSEPROCESS`, `SEE_MASK_NOASYNC` and
+    `SEE_MASK_FLAG_NO_UI`, the helper's own directory as `lpDirectory`, `nShow`
+    `SW_HIDE` and no owner window, on a dedicated thread with `CoInitializeEx`
+    (single-threaded apartment) and `CoUninitialize` around it ("Helper launch and
+    self-anchor"; new `windows-sys` features `Win32_UI_Shell` and
     `Win32_System_Com`); and, in acceptance builds only, an owner-side test seam that
     lists the attempt Job's process IDs with `QueryInformationJobObject`
     (`JobObjectBasicProcessIdList`) for the census, never as retirement evidence.
