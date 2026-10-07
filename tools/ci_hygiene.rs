@@ -1453,6 +1453,69 @@ fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
 }
 
 /// Checks the repository's block-style direct action steps, not shell text.
+/// Largest admitted `timeout-minutes` for a step that runs `apt-get` (#624).
+/// Observed slow-but-successful mirror downloads took up to 642 s; hangs ran
+/// to the 45-minute job timeout.
+const APT_STEP_TIMEOUT_MAX_MINUTES: u32 = 15;
+
+/// Every workflow step whose `run` invokes `apt-get` must bound itself with a
+/// step-level `timeout-minutes`, so a hung Ubuntu mirror fails that step in
+/// minutes instead of consuming the whole job timeout. Steps are the `- `
+/// entries at indent 6; comments never count as an invocation.
+fn apt_steps_without_bounded_timeout(text: &str) -> Vec<String> {
+    let mut offenders = Vec::new();
+    let mut current: Option<(String, bool, Option<String>)> = None;
+    let mut finish = |step: Option<(String, bool, Option<String>)>| {
+        if let Some((label, runs_apt, timeout)) = step {
+            let bounded = timeout
+                .and_then(|value| value.trim_matches(['\'', '"']).parse::<u32>().ok())
+                .is_some_and(|minutes| (1..=APT_STEP_TIMEOUT_MAX_MINUTES).contains(&minutes));
+            if runs_apt && !bounded {
+                offenders.push(label);
+            }
+        }
+    };
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if indent < 6 || (indent == 6 && content.starts_with("- ")) {
+            finish(current.take());
+            if indent == 6 && content.starts_with("- ") {
+                current = Some((content.to_owned(), false, None));
+            } else {
+                continue;
+            }
+        }
+        let Some((_, runs_apt, timeout)) = current.as_mut() else {
+            continue;
+        };
+        if content.contains("apt-get") {
+            *runs_apt = true;
+        }
+        if indent == 8 {
+            if let Some((key, value)) = yaml_mapping_key(content) {
+                if key == "timeout-minutes" {
+                    *timeout = Some(value.to_owned());
+                }
+            }
+        }
+    }
+    finish(current.take());
+    offenders
+}
+
+fn check_apt_step_timeouts(text: &str) -> Result<(), String> {
+    let offenders = apt_steps_without_bounded_timeout(text);
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "CI-HYGIENE: `{WORKFLOW}` step(s) `{}` run `apt-get` without a step `timeout-minutes` between 1 and {APT_STEP_TIMEOUT_MAX_MINUTES}. A hung Ubuntu mirror must fail the step in minutes, not consume the job timeout; add `timeout-minutes` to the step. Do not retry or continue on error.",
+        offenders.join("`, `")
+    ))
+}
+
 fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
     let invalid = || {
         format!(
@@ -1701,7 +1764,9 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "secrets",
         "hygiene",
         "mermaid",
-        "codeql",
+        "codeql-rust",
+        "codeql-javascript-typescript",
+        "codeql-actions",
         "dependency-review",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
@@ -1733,7 +1798,30 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
         ("KELD_ROUTE_MERMAID", "${{ needs.changes.outputs.mermaid }}"),
-        ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+        (
+            "KELD_RESULT_CODEQL_RUST",
+            "${{ needs['codeql-rust'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs['codeql-javascript-typescript'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_ACTIONS",
+            "${{ needs['codeql-actions'].result }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_RUST",
+            "${{ needs.changes.outputs.codeql_rust }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_ACTIONS",
+            "${{ needs.changes.outputs.codeql_actions }}",
+        ),
         (
             "KELD_RESULT_DEPENDENCY_REVIEW",
             "${{ needs['dependency-review'].result }}",
@@ -1760,7 +1848,11 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
         "\"$KELD_ROUTE_DOCS\" \"$KELD_ROUTE_MERMAID\" ",
-        "\"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
+        "\"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_RESULT_CODEQL_ACTIONS\" ",
+        "\"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_ROUTE_CODEQL_ACTIONS\" ",
+        "\"$KELD_RESULT_DEPENDENCY_REVIEW\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1770,7 +1862,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 20-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 25-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -2609,6 +2701,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
+    // After the job-specific apt owners, so their placement errors win.
+    check_apt_step_timeouts(&text)?;
     check_linux_media_guard_step(&text)?;
     check_required_job(&text)?;
     check_gitleaks_scan_step(&text)?;
@@ -2930,6 +3024,11 @@ mod tests {
             "        run: cd fixture && bun test",
             "  linux-gui-smoke:",
             "    steps:",
+            "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)",
+            "        timeout-minutes: 10",
+            "        run: |",
+            "          sudo apt-get update",
+            "          sudo apt-get install -y --no-install-recommends xvfb",
             "      - name: Build Linux media guard probe",
             "        run: |",
             "          cargo build -p keld-wv --example linux_media_guard",
@@ -3024,7 +3123,9 @@ mod tests {
             "      - secrets",
             "      - hygiene",
             "      - mermaid",
-            "      - codeql",
+            "      - codeql-rust",
+            "      - codeql-javascript-typescript",
+            "      - codeql-actions",
             "      - dependency-review",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -3050,7 +3151,12 @@ mod tests {
             "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
             "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
             "          KELD_ROUTE_MERMAID: ${{ needs.changes.outputs.mermaid }}",
-            "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
+            "          KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}",
+            "          KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}",
+            "          KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}",
+            "          KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}",
+            "          KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}",
+            "          KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}",
             "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
             "        run: |",
             "          tools/ci_required.sh test",
@@ -3063,7 +3169,11 @@ mod tests {
             "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
             "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
             "            \"$KELD_ROUTE_MERMAID\" \\",
-            "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
+            "            \"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
+            "            \"$KELD_RESULT_CODEQL_ACTIONS\" \\",
+            "            \"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
+            "            \"$KELD_ROUTE_CODEQL_ACTIONS\" \\",
+            "            \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
             "",
         ]
         .join("\n")
@@ -3683,12 +3793,17 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("20-argument"), "{error}");
+        assert!(error.contains("25-argument"), "{error}");
     }
 
     #[test]
     fn required_result_must_observe_security_jobs() {
-        for job in ["codeql", "dependency-review"] {
+        for job in [
+            "codeql-rust",
+            "codeql-javascript-typescript",
+            "codeql-actions",
+            "dependency-review",
+        ] {
             let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
             let error = check_required_job(&workflow).expect_err("missing security job must fail");
             assert!(error.contains(job), "{error}");
@@ -3698,7 +3813,30 @@ mod tests {
     #[test]
     fn required_result_must_receive_security_results_without_spoofing() {
         for (key, expression) in [
-            ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+            (
+                "KELD_RESULT_CODEQL_RUST",
+                "${{ needs['codeql-rust'].result }}",
+            ),
+            (
+                "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+                "${{ needs['codeql-javascript-typescript'].result }}",
+            ),
+            (
+                "KELD_RESULT_CODEQL_ACTIONS",
+                "${{ needs['codeql-actions'].result }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_RUST",
+                "${{ needs.changes.outputs.codeql_rust }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+                "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_ACTIONS",
+                "${{ needs.changes.outputs.codeql_actions }}",
+            ),
             (
                 "KELD_RESULT_DEPENDENCY_REVIEW",
                 "${{ needs['dependency-review'].result }}",
@@ -3711,8 +3849,65 @@ mod tests {
             let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
             let error =
                 check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("20-argument"), "{error}");
+            assert!(error.contains("25-argument"), "{error}");
         }
+    }
+
+    #[test]
+    fn apt_steps_must_bound_a_hung_mirror_with_a_step_timeout() {
+        let bounded = "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)\n        timeout-minutes: 10\n";
+        assert!(valid_workflow().contains(bounded));
+        assert!(apt_steps_without_bounded_timeout(&valid_workflow()).is_empty());
+        for (mutated, label) in [
+            (
+                "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)\n",
+                "missing timeout",
+            ),
+            (
+                "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)\n        timeout-minutes: 16\n",
+                "timeout above the admitted bound",
+            ),
+            (
+                "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)\n        timeout-minutes: 0\n",
+                "zero timeout",
+            ),
+            (
+                "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)\n        timeout-minutes: ${{ inputs.minutes }}\n",
+                "unbounded expression",
+            ),
+            (
+                "      - name: Install WebKitGTK build deps + X11 control tools (KEL-28)\n        with:\n          timeout-minutes: 10\n",
+                "nested timeout is not a step key",
+            ),
+        ] {
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(bounded, mutated, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("timeout-minutes"), "{label}: {error}");
+            assert!(error.contains("Install WebKitGTK"), "{label}: {error}");
+        }
+        // A one-line run step is also an apt invocation; a comment is not.
+        let one_line = valid_workflow().replacen(
+            "      - name: Build Linux media guard probe\n",
+            "      - run: sudo apt-get install -y xdotool\n      - name: Build Linux media guard probe\n",
+            1,
+        );
+        assert_eq!(
+            apt_steps_without_bounded_timeout(&one_line),
+            ["- run: sudo apt-get install -y xdotool"]
+        );
+        let commented = valid_workflow().replacen(
+            "      - name: Build Linux media guard probe\n",
+            "      # sudo apt-get update belongs to the step above\n      - name: Build Linux media guard probe\n",
+            1,
+        );
+        assert!(apt_steps_without_bounded_timeout(&commented).is_empty());
+        let quoted = valid_workflow().replacen(
+            "        timeout-minutes: 10\n",
+            "        timeout-minutes: '10'\n",
+            1,
+        );
+        assert!(apt_steps_without_bounded_timeout(&quoted).is_empty());
     }
 
     #[test]

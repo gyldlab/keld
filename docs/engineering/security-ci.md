@@ -1,16 +1,26 @@
 # Security CI coverage
 
-The [CI workflow](../../.github/workflows/ci.yml) runs CodeQL and dependency review
-on every pull request and push to `main`. `CI required` rejects missing, skipped,
-failed or cancelled security jobs. A passing analysis is evidence that the tool ran;
-it is not a claim that Keld has no vulnerabilities.
+The [CI workflow](../../.github/workflows/ci.yml) runs dependency review on every
+pull request and push to `main`. CodeQL analyses every language on every push to
+`main`, so the default branch always has a complete baseline. On a pull request the
+change router (`tools/ci_changes.sh`) selects each CodeQL language only when that
+language's analysed inputs changed: Rust for `*.rs` and Rust build inputs,
+JavaScript/TypeScript for the source and data files its extractor reads, and Actions
+for workflow and action files. Unknown inputs, all-lane fallbacks and workflow or
+router edits select every language. `CI required` rejects missing, failed or
+cancelled dependency review, a selected CodeQL language whose job is missing,
+skipped, failed or cancelled, and an unselected language whose job ran. A passing
+analysis is evidence that the tool ran; it is not a claim that Keld has no
+vulnerabilities.
 
 `ci-hygiene check` runs the parsed workflow security check through Bun, the same
 runtime already required by `just ci`. `tools/ci_workflow_security.ts` owns checkout
 and scanner semantics; the Rust checker retains the other hygiene contracts.
-The CodeQL matrix must include Rust, JavaScript/TypeScript and Actions exactly
-once. Exclusions and additional matrix axes are refused so a successful job cannot
-silently represent fewer scan categories; row order does not affect admission.
+Each CodeQL language has its own job (`codeql-rust`, `codeql-javascript-typescript`,
+`codeql-actions`), because a job-level condition cannot read `matrix`. Each job must
+need the router, run only on its own router output, keep its `/language:<language>`
+upload category, and set no strategy. CodeQL steps in any other job are refused, so
+a successful job cannot silently represent a missing or duplicated scan category.
 Block, flow and aliased steps are inspected as objects. Missing, malformed,
 multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.2's
 parser uses the last value for duplicate keys; this check does not claim to reject
@@ -43,7 +53,9 @@ authenticates its own check; that trust boundary remains tracked in KEL-169.
 CodeQL's analysis/upload job result and its alert result are different checks.
 Maintainers must verify live scan results and configure GitHub's **Require code
 scanning results** rule for CodeQL and the chosen alert thresholds before calling
-alert-based merge blocking enabled. Repository settings are not established by this
+alert-based merge blocking enabled. Before activating that rule, also verify how it
+treats a pull request whose diff selected no CodeQL language; that behavior is not
+established by this workflow file. Repository settings are not established by this
 workflow file. Public work and outstanding acceptance are tracked in
 [issue #170](https://github.com/gyldlab/keld/issues/170).
 
