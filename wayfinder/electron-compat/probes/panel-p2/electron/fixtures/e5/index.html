@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8"><title>e5</title>
+<body>e5
+<script>
+const { ipcRenderer } = require('electron');
+const { log } = require('../lib');
+window.dirty = true;
+ipcRenderer.send('dirty', window.dirty);
+window.addEventListener('beforeunload', () => log('renderer:beforeunload'));
+window.addEventListener('unload', () => log('renderer:unload'));
+</script>

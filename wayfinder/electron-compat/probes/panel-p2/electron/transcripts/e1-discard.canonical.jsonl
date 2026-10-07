@@ -1,0 +1,20 @@
+{"proc": "main", "pid": 23858, "ev": "app:start", "perf_ms": 63.548125, "hr_ns": "63790163918083", "epoch_ms": 1791367287057.2324, "electron": "44.4.5", "answer": "discard"}
+{"proc": "main", "pid": 23858, "ev": "app:ready", "perf_ms": 91.441084, "hr_ns": "63790191809583", "epoch_ms": 1791367287085.12}
+{"proc": "renderer", "pid": 23864, "ev": "renderer:load", "perf_ms": 102.20000000298023, "hr_ns": "63790364909375", "epoch_ms": 1791367287258.3, "dirty": true}
+{"proc": "main", "pid": 23858, "ev": "ipc:dirty", "perf_ms": 268.014084, "hr_ns": "63790368384791", "epoch_ms": 1791367287261.706, "value": true, "isDocumentEdited": true}
+{"proc": "main", "pid": 23858, "ev": "trigger:win.close", "perf_ms": 569.250667, "hr_ns": "63790669620000", "epoch_ms": 1791367287562.9304}
+{"proc": "main", "pid": 23858, "ev": "win:close", "perf_ms": 569.856417, "hr_ns": "63790670223750", "epoch_ms": 1791367287563.5322, "isModified": true, "isDocumentEdited": true, "win_destroyed": false, "wc_destroyed": false}
+{"proc": "main", "pid": 23858, "ev": "win:close:preventDefault", "perf_ms": 569.917084, "hr_ns": "63790670283916", "epoch_ms": 1791367287563.5913}
+{"proc": "main", "pid": 23858, "ev": "dismiss:scheduled", "perf_ms": 571.436375, "hr_ns": "63790671803625", "epoch_ms": 1791367287565.112, "method": "osascript System Events AX button click (retry until modal returns)", "key": "return", "delay_ms": 500, "child_pid": 23873}
+{"proc": "main", "pid": 23858, "ev": "dialog:before", "perf_ms": 571.4985, "hr_ns": "63790671865458", "epoch_ms": 1791367287565.173}
+{"proc": "main", "pid": 23858, "ev": "dialog:after", "perf_ms": 1605.451875, "hr_ns": "63791705820708", "epoch_ms": 1791367288599.132, "result": 1, "win_destroyed": false, "wc_destroyed": false}
+{"proc": "main", "pid": 23858, "ev": "destroy:call", "perf_ms": 1605.561834, "hr_ns": "63791705930000", "epoch_ms": 1791367288599.2407}
+{"proc": "main", "pid": 23858, "ev": "win:closed", "perf_ms": 1605.668209, "hr_ns": "63791706034791", "epoch_ms": 1791367288599.342, "win_destroyed": true, "wc_destroyed": false}
+{"proc": "main", "pid": 23858, "ev": "app:window-all-closed", "perf_ms": 1605.713709, "hr_ns": "63791706080250", "epoch_ms": 1791367288599.3872}
+{"proc": "main", "pid": 23858, "ev": "app:before-quit", "perf_ms": 1605.739834, "hr_ns": "63791706106375", "epoch_ms": 1791367288599.4133}
+{"proc": "main", "pid": 23858, "ev": "app:will-quit", "perf_ms": 1605.764084, "hr_ns": "63791706130666", "epoch_ms": 1791367288599.4375}
+{"proc": "main", "pid": 23858, "ev": "app:quit", "perf_ms": 1605.789125, "hr_ns": "63791706155666", "epoch_ms": 1791367288599.4626}
+{"proc": "main", "pid": 23858, "ev": "destroy:returned", "perf_ms": 1612.523375, "hr_ns": "63791712891500", "epoch_ms": 1791367288606.2004, "win_destroyed": true, "wc_destroyed": false}
+{"proc": "main", "pid": 23858, "ev": "trigger:win.close:returned", "perf_ms": 1612.698959, "hr_ns": "63791713065666", "epoch_ms": 1791367288606.373, "win_destroyed": true, "wc_destroyed": false}
+{"proc": "main", "pid": 23858, "ev": "wc:destroyed", "perf_ms": 1618.009875, "hr_ns": "63791718376875", "epoch_ms": 1791367288611.6846, "win_destroyed": true, "wc_destroyed": true}
+{"proc": "main", "pid": 23858, "ev": "tick:setImmediate-after-destroy", "perf_ms": 1618.829875, "hr_ns": "63791719196541", "epoch_ms": 1791367288612.5037, "win_destroyed": true, "wc_destroyed": true}

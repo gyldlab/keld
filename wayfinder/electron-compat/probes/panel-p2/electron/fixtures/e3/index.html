@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8"><title>e3</title>
+<body>e3
+<script>
+const { ipcRenderer } = require('electron');
+const { log } = require('../lib');
+window.dirty = true;
+let n = 0;
+log('renderer:load', { dirty: window.dirty });
+ipcRenderer.send('ready');
+// Renderer is a separate OS process: it keeps ticking and writes straight to the shared
+// transcript, so a main-process stall is visible as renderer ticks with no main receipts.
+const riv = setInterval(() => {
+  n++;
+  if (n > 60) { clearInterval(riv); return; }   // cap: 60 ticks (6 s)
+  log('renderer:tick', { n });
+  ipcRenderer.send('ping', { n });
+  ipcRenderer.invoke('rpc', n).then((v) => log('renderer:rpc-resolved', { n, v }));
+}, 100);
+ipcRenderer.on('arm-close-request', () => {
+  log('renderer:arm-close-request-received');
+  setTimeout(() => { log('renderer:send-request-close'); ipcRenderer.send('request-close'); }, 300);
+});
+window.addEventListener('beforeunload', () => log('renderer:beforeunload'));
+window.addEventListener('unload', () => log('renderer:unload'));
+</script>

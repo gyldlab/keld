@@ -1,0 +1,20 @@
+{"proc":"main","pid":23978,"ev":"app:start","perf_ms":58.286708,"hr_ns":"63797138032583","epoch_ms":1791367294031.3762,"electron":"44.4.5","answer":"discard"}
+{"proc":"main","pid":23978,"ev":"app:ready","perf_ms":84.616542,"hr_ns":"63797164361125","epoch_ms":1791367294057.7024}
+{"proc":"renderer","pid":23984,"ev":"renderer:load","perf_ms":74.19999999552965,"hr_ns":"63797296846416","epoch_ms":1791367294190.0999,"dirty":true}
+{"proc":"main","pid":23978,"ev":"ipc:dirty","perf_ms":217.565042,"hr_ns":"63797297309000","epoch_ms":1791367294190.6545,"value":true,"isDocumentEdited":true}
+{"proc":"main","pid":23978,"ev":"trigger:win.close","perf_ms":519.538417,"hr_ns":"63797599287291","epoch_ms":1791367294492.635}
+{"proc":"main","pid":23978,"ev":"win:close","perf_ms":521.712708,"hr_ns":"63797601457708","epoch_ms":1791367294494.801,"isModified":true,"isDocumentEdited":true,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":23978,"ev":"win:close:preventDefault","perf_ms":522.080625,"hr_ns":"63797601825666","epoch_ms":1791367294495.1694}
+{"proc":"main","pid":23978,"ev":"dismiss:scheduled","perf_ms":525.369958,"hr_ns":"63797605114750","epoch_ms":1791367294498.4563,"method":"osascript System Events AX button click (retry until modal returns)","key":"return","delay_ms":500,"child_pid":23987}
+{"proc":"main","pid":23978,"ev":"dialog:before","perf_ms":525.642667,"hr_ns":"63797605385833","epoch_ms":1791367294498.7246}
+{"proc":"main","pid":23978,"ev":"dialog:after","perf_ms":1544.291375,"hr_ns":"63798624038708","epoch_ms":1791367295517.386,"result":1,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":23978,"ev":"destroy:call","perf_ms":1544.666958,"hr_ns":"63798624412500","epoch_ms":1791367295517.7566}
+{"proc":"main","pid":23978,"ev":"win:closed","perf_ms":1544.979875,"hr_ns":"63798624722416","epoch_ms":1791367295518.06,"win_destroyed":true,"wc_destroyed":false}
+{"proc":"main","pid":23978,"ev":"app:window-all-closed","perf_ms":1545.09875,"hr_ns":"63798624841208","epoch_ms":1791367295518.1785}
+{"proc":"main","pid":23978,"ev":"app:before-quit","perf_ms":1545.157208,"hr_ns":"63798624899833","epoch_ms":1791367295518.2373}
+{"proc":"main","pid":23978,"ev":"app:will-quit","perf_ms":1545.245625,"hr_ns":"63798624988250","epoch_ms":1791367295518.3254}
+{"proc":"main","pid":23978,"ev":"app:quit","perf_ms":1545.3345,"hr_ns":"63798625077083","epoch_ms":1791367295518.4146}
+{"proc":"main","pid":23978,"ev":"destroy:returned","perf_ms":1554.26825,"hr_ns":"63798634012416","epoch_ms":1791367295527.3523,"win_destroyed":true,"wc_destroyed":false}
+{"proc":"main","pid":23978,"ev":"trigger:win.close:returned","perf_ms":1554.482583,"hr_ns":"63798634225333","epoch_ms":1791367295527.563,"win_destroyed":true,"wc_destroyed":false}
+{"proc":"main","pid":23978,"ev":"wc:destroyed","perf_ms":1560.872583,"hr_ns":"63798640615416","epoch_ms":1791367295533.9534,"win_destroyed":true,"wc_destroyed":true}
+{"proc":"main","pid":23978,"ev":"tick:setImmediate-after-destroy","perf_ms":1561.780333,"hr_ns":"63798641523041","epoch_ms":1791367295534.8608,"win_destroyed":true,"wc_destroyed":true}

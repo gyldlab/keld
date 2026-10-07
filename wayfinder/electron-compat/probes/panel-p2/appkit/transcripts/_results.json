@@ -1,0 +1,534 @@
+{
+ "criteria": {
+  "C1": "fail-closed: a dirty window is destroyed only after an explicit role 'allow' and never after a synchronous YES",
+  "C2": "no auto-close on timeout: no destroy follows a close-timeout without an intervening role 'allow'",
+  "C3": "single prompt: never two dialogs open at once; at most one dialog per close txn",
+  "C4": "tombstone-before-closed: every 'closed' is preceded by that window's 'tombstone'",
+  "C5": "quit ordering: before-quit < serialized closes < reply; will-quit/quit iff reply YES; reply NO keeps app alive",
+  "C6": "quit serialization: the next window's close starts only after the previous window's outcome",
+  "C7": "no hang: the run ends by quit or harness-end, not the watchdog"
+ },
+ "probes": {
+  "s3a_reentrancy_modal_from_gcd_block": {
+   "bg->CFRunLoopPerformBlock(common)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->CFRunLoopPerformBlock(default)": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "bg->CFRunLoopPerformBlock(modalPanel)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->gcd-main-async": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "bg->performSelectorOnMainThread(common)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "gcd-main-asyncAfter": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "perform-afterDelay(default)": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "timer-commonModes": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "timer-defaultMode": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "timer-modalPanelMode": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   }
+  },
+  "s3b_reentrancy_modal_from_runloop_block": {
+   "bg->CFRunLoopPerformBlock(common)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->CFRunLoopPerformBlock(default)": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "bg->CFRunLoopPerformBlock(modalPanel)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->gcd-main-async": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->performSelectorOnMainThread(common)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "gcd-main-asyncAfter": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "perform-afterDelay(default)": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "timer-commonModes": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "timer-defaultMode": {
+    "after": 5,
+    "during": 0,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "kCFRunLoopDefaultMode"
+    ]
+   },
+   "timer-modalPanelMode": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   }
+  },
+  "s3c_reentrancy_terminate_later": {
+   "bg->CFRunLoopPerformBlock(common)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->CFRunLoopPerformBlock(default)": {
+    "after": 0,
+    "during": 0,
+    "never_before_exit": 5,
+    "rl_modes": []
+   },
+   "bg->CFRunLoopPerformBlock(modalPanel)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->gcd-main-async": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "bg->performSelectorOnMainThread(common)": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "gcd-main-asyncAfter": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   },
+   "perform-afterDelay(default)": {
+    "after": 0,
+    "during": 0,
+    "never_before_exit": 5,
+    "rl_modes": []
+   },
+   "timer-commonModes": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSEventTrackingRunLoopMode"
+    ]
+   },
+   "timer-defaultMode": {
+    "after": 0,
+    "during": 0,
+    "never_before_exit": 5,
+    "rl_modes": []
+   },
+   "timer-modalPanelMode": {
+    "after": 0,
+    "during": 5,
+    "never_before_exit": 0,
+    "rl_modes": [
+     "NSModalPanelRunLoopMode"
+    ]
+   }
+  }
+ },
+ "role_reply_modes": {
+  "NSEventTrackingRunLoopMode": 52,
+  "NSModalPanelRunLoopMode": 61,
+  "kCFRunLoopDefaultMode": 37
+ },
+ "scenarios": {
+  "n1_sync_yes_while_dirty": {
+   "criteria": {
+    "C1": "0/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "0/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [
+    "C1",
+    "C4"
+   ],
+   "ordering": [
+    "close(W1,windowShouldClose:) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:False)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "C1:FAILS-AS-REQUIRED",
+    "C4:FAILS-AS-REQUIRED"
+   ]
+  },
+  "n2_timeout_autoclose": {
+   "criteria": {
+    "C1": "0/5 pass",
+    "C2": "0/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [
+    "C1",
+    "C2"
+   ],
+   "ordering": [
+    "close(W1,windowShouldClose:) > close-timeout(W1) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > role-reply(W1:veto_prompt) > stale-reply-dropped(W1)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "C1:FAILS-AS-REQUIRED",
+    "C2:FAILS-AS-REQUIRED"
+   ]
+  },
+  "n3_second_close_during_modal_ungated": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "0/5 pass",
+    "C4": "5/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [
+    "C3"
+   ],
+   "ordering": [
+    "close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > close(W1,host-close-api) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:abort) > role-reply(W1:veto) > dialog-result(W1:abort) > role-reply(W1:veto)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "C3:FAILS-AS-REQUIRED"
+   ]
+  },
+  "p3_second_close_during_modal_gated": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > close(W1,host-close-api) > close-coalesced(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s1_close_veto_then_allow": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s2a_quit_two_dirty_allow": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "5/5 pass",
+    "C6": "5/5 pass",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:veto_prompt) > dialog-open(W2) > dialog-result(W2:discard) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True) > reply-to-should-terminate(True) > will-quit > quit"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s2b_quit_second_vetoes": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "5/5 pass",
+    "C6": "5/5 pass",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:veto_prompt) > dialog-open(W2) > dialog-result(W2:cancel) > role-reply(W2:veto) > quit-serial-stop(W2) > reply-to-should-terminate(False) > quit-cancelled > terminate-returned"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s2c_quit_first_vetoes_stop": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "5/5 pass",
+    "C6": "5/5 pass",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:cancel) > role-reply(W1:veto) > quit-serial-stop(W1) > reply-to-should-terminate(False) > quit-cancelled > terminate-returned"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s2d_quit_first_vetoes_continue": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "5/5 pass",
+    "C6": "5/5 pass",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:cancel) > role-reply(W1:veto) > close(W2,windowShouldClose:) > role-reply(W2:veto_prompt) > dialog-open(W2) > dialog-result(W2:discard) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True) > reply-to-should-terminate(False) > quit-cancelled > terminate-returned"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s3a_reentrancy_modal_from_gcd_block": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:abort) > role-reply(W1:veto)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s3b_reentrancy_modal_from_runloop_block": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "n/a",
+    "C6": "n/a",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:abort) > role-reply(W1:veto)"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s3c_reentrancy_terminate_later": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "5/5 pass",
+    "C6": "5/5 pass",
+    "C7": "5/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [],
+   "ordering": [
+    "before-quit > close(W1,windowShouldClose:) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True) > reply-to-should-terminate(True) > will-quit > quit"
+   ],
+   "runs": 5,
+   "verdict": [
+    "all applicable criteria pass"
+   ]
+  },
+  "s3d_terminate_later_default_mode_delivery": {
+   "criteria": {
+    "C1": "5/5 pass",
+    "C2": "5/5 pass",
+    "C3": "5/5 pass",
+    "C4": "5/5 pass",
+    "C5": "0/5 pass",
+    "C6": "5/5 pass",
+    "C7": "0/5 pass"
+   },
+   "distinct_orderings": 1,
+   "expected_fail": [
+    "C5",
+    "C7"
+   ],
+   "ordering": [
+    "before-quit > close(W1,windowShouldClose:) > watchdog"
+   ],
+   "runs": 5,
+   "verdict": [
+    "C5:FAILS-AS-REQUIRED",
+    "C7:FAILS-AS-REQUIRED"
+   ]
+  }
+ }
+}

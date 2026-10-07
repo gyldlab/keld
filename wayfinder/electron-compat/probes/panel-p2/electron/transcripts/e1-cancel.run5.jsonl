@@ -1,0 +1,22 @@
+{"proc":"main","pid":24246,"ev":"app:start","perf_ms":51.556209,"hr_ns":"63812394219625","epoch_ms":1791367309287.6309,"electron":"44.4.5","answer":"cancel"}
+{"proc":"main","pid":24246,"ev":"app:ready","perf_ms":97.642709,"hr_ns":"63812440305333","epoch_ms":1791367309333.713}
+{"proc":"renderer","pid":24252,"ev":"renderer:load","perf_ms":76.20000000298023,"hr_ns":"63812581487333","epoch_ms":1791367309474.9,"dirty":true}
+{"proc":"main","pid":24246,"ev":"ipc:dirty","perf_ms":247.483625,"hr_ns":"63812590147000","epoch_ms":1791367309483.568,"value":true,"isDocumentEdited":true}
+{"proc":"main","pid":24246,"ev":"trigger:win.close","perf_ms":549.241417,"hr_ns":"63812891903958","epoch_ms":1791367309785.311}
+{"proc":"main","pid":24246,"ev":"win:close","perf_ms":549.891792,"hr_ns":"63812892552500","epoch_ms":1791367309785.959,"isModified":true,"isDocumentEdited":true,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24246,"ev":"win:close:preventDefault","perf_ms":549.948875,"hr_ns":"63812892609125","epoch_ms":1791367309786.0137}
+{"proc":"main","pid":24246,"ev":"dismiss:scheduled","perf_ms":551.024584,"hr_ns":"63812893685333","epoch_ms":1791367309787.0908,"method":"osascript System Events AX button click (retry until modal returns)","key":"escape","delay_ms":500,"child_pid":24275}
+{"proc":"main","pid":24246,"ev":"dialog:before","perf_ms":551.075917,"hr_ns":"63812893736166","epoch_ms":1791367309787.141}
+{"proc":"main","pid":24246,"ev":"dialog:after","perf_ms":1525.250667,"hr_ns":"63813867912958","epoch_ms":1791367310761.3215,"result":0,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24246,"ev":"close:cancelled-by-user","perf_ms":1525.380334,"hr_ns":"63813868041416","epoch_ms":1791367310761.4495}
+{"proc":"main","pid":24246,"ev":"trigger:win.close:returned","perf_ms":1525.459084,"hr_ns":"63813868119250","epoch_ms":1791367310761.5242,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24246,"ev":"trigger:win.close#2","perf_ms":1826.855917,"hr_ns":"63814169517000","epoch_ms":1791367311062.923}
+{"proc":"main","pid":24246,"ev":"win:close","perf_ms":1827.048792,"hr_ns":"63814169708958","epoch_ms":1791367311063.1138,"isModified":false,"isDocumentEdited":false,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"renderer","pid":24252,"ev":"renderer:beforeunload","perf_ms":1664.7000000029802,"hr_ns":"63814169973791","epoch_ms":1791367311063.4}
+{"proc":"renderer","pid":24252,"ev":"renderer:unload","perf_ms":1766.2000000029802,"hr_ns":"63814271437916","epoch_ms":1791367311164.9}
+{"proc":"main","pid":24246,"ev":"wc:destroyed","perf_ms":1932.8015,"hr_ns":"63814275462375","epoch_ms":1791367311168.8682,"win_destroyed":false,"wc_destroyed":true}
+{"proc":"main","pid":24246,"ev":"win:closed","perf_ms":1932.911917,"hr_ns":"63814275572000","epoch_ms":1791367311168.9766,"win_destroyed":true,"wc_destroyed":true}
+{"proc":"main","pid":24246,"ev":"app:window-all-closed","perf_ms":1932.951709,"hr_ns":"63814275611708","epoch_ms":1791367311169.016}
+{"proc":"main","pid":24246,"ev":"app:before-quit","perf_ms":1932.980459,"hr_ns":"63814275640458","epoch_ms":1791367311169.0447}
+{"proc":"main","pid":24246,"ev":"app:will-quit","perf_ms":1933.004959,"hr_ns":"63814275665000","epoch_ms":1791367311169.0693}
+{"proc":"main","pid":24246,"ev":"app:quit","perf_ms":1933.035709,"hr_ns":"63814275695708","epoch_ms":1791367311169.0999}

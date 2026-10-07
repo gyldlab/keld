@@ -1,0 +1,38 @@
+{"proc": "main", "pid": 26064, "ev": "app:start", "perf_ms": 90.376208, "hr_ns": "63835743107708", "epoch_ms": 1791367332636.6204, "electron": "44.4.5", "parent": false, "mode": "plain"}
+{"proc": "main", "pid": 26064, "ev": "app:ready", "perf_ms": 123.364417, "hr_ns": "63835776094625", "epoch_ms": 1791367332669.6042}
+{"proc": "renderer", "pid": 26206, "ev": "renderer:load", "perf_ms": 144.10000000149012, "hr_ns": "63835994142208", "epoch_ms": 1791367332887.7, "dirty": true}
+{"proc": "main", "pid": 26064, "ev": "ipc:ready", "perf_ms": 341.726792, "hr_ns": "63835994456500", "epoch_ms": 1791367332887.9731}
+{"ev": "main:interval-tick", "collapsed": 4, "first_perf_ms": 442.579125, "last_perf_ms": 746.629625, "first_hr_ns": "63836095308875", "last_hr_ns": "63836399358041", "proc": "main"}
+{"ev": "renderer:tick", "collapsed": 5, "first_perf_ms": 246.10000000149012, "last_perf_ms": 645.6000000014901, "first_hr_ns": "63836096067708", "last_hr_ns": "63836495683208", "proc": "renderer"}
+{"ev": "main:ipc-ping-received", "collapsed": 5, "first_perf_ms": 443.585458, "last_perf_ms": 843.280417, "first_hr_ns": "63836096313833", "last_hr_ns": "63836496009291", "proc": "main"}
+{"ev": "main:ipc-rpc-handled", "collapsed": 5, "first_perf_ms": 443.672833, "last_perf_ms": 843.405833, "first_hr_ns": "63836096400708", "last_hr_ns": "63836496133416", "proc": "main"}
+{"ev": "renderer:rpc-resolved", "collapsed": 5, "first_perf_ms": 246.5, "last_perf_ms": 646.2999999970198, "first_hr_ns": "63836096498500", "last_hr_ns": "63836496227375", "proc": "renderer"}
+{"proc": "main", "pid": 26064, "ev": "main:timers-armed", "perf_ms": 844.177833, "hr_ns": "63836496905750", "epoch_ms": 1791367333390.4119}
+{"proc": "main", "pid": 26064, "ev": "dismiss:scheduled", "perf_ms": 846.393417, "hr_ns": "63836499122458", "epoch_ms": 1791367333392.6301, "method": "osascript System Events AX button click (retry until modal returns)", "key": "return", "delay_ms": 1500, "child_pid": 26286}
+{"proc": "main", "pid": 26064, "ev": "modal:before", "perf_ms": 846.517292, "hr_ns": "63836499244916", "epoch_ms": 1791367333392.751, "parent": false}
+{"ev": "renderer:tick", "collapsed": 18, "first_perf_ms": 745.8999999985099, "last_perf_ms": 2445.10000000149, "first_hr_ns": "63836595935791", "last_hr_ns": "63838295081875", "proc": "renderer"}
+{"proc": "main", "pid": 26064, "ev": "modal:after", "perf_ms": 2675.000583, "hr_ns": "63838327729583", "epoch_ms": 1791367335221.2383, "result": 1}
+{"ev": "main:ipc-ping-received", "collapsed": 18, "first_perf_ms": 2680.507542, "last_perf_ms": 2682.337167, "first_hr_ns": "63838333236000", "last_hr_ns": "63838335064666", "proc": "main"}
+{"ev": "main:ipc-rpc-handled", "collapsed": 18, "first_perf_ms": 2680.67575, "last_perf_ms": 2682.366375, "first_hr_ns": "63838333403458", "last_hr_ns": "63838335093916", "proc": "main"}
+{"ev": "renderer:rpc-resolved", "collapsed": 18, "first_perf_ms": 2483.5, "last_perf_ms": 2485.10000000149, "first_hr_ns": "63838333528083", "last_hr_ns": "63838335148916", "proc": "renderer"}
+{"proc": "main", "pid": 26064, "ev": "main:setImmediate-fired", "perf_ms": 2682.43825, "hr_ns": "63838335165833", "epoch_ms": 1791367335228.6714}
+{"ev": "main:interval-tick", "collapsed": 1, "first_perf_ms": 2682.503208, "last_perf_ms": 2682.503208, "first_hr_ns": "63838335230791", "last_hr_ns": "63838335230791", "proc": "main"}
+{"proc": "main", "pid": 26064, "ev": "main:timeout-250ms-fired", "perf_ms": 2682.553667, "hr_ns": "63838335281208", "epoch_ms": 1791367335228.7869}
+{"ev": "renderer:tick", "collapsed": 6, "first_perf_ms": 2546.2000000029802, "last_perf_ms": 3045.60000000149, "first_hr_ns": "63838396233750", "last_hr_ns": "63838895589125", "proc": "renderer"}
+{"ev": "main:ipc-ping-received", "collapsed": 6, "first_perf_ms": 2743.858625, "last_perf_ms": 3243.073625, "first_hr_ns": "63838396587333", "last_hr_ns": "63838895802375", "proc": "main"}
+{"ev": "main:ipc-rpc-handled", "collapsed": 6, "first_perf_ms": 2743.996208, "last_perf_ms": 3243.160042, "first_hr_ns": "63838396723875", "last_hr_ns": "63838895887583", "proc": "main"}
+{"ev": "renderer:rpc-resolved", "collapsed": 6, "first_perf_ms": 2546.89999999851, "last_perf_ms": 3045.89999999851, "first_hr_ns": "63838396815875", "last_hr_ns": "63838895960250", "proc": "renderer"}
+{"ev": "main:interval-tick", "collapsed": 5, "first_perf_ms": 2784.331542, "last_perf_ms": 3189.057917, "first_hr_ns": "63838437060666", "last_hr_ns": "63838841786625", "proc": "main"}
+{"proc": "main", "pid": 26064, "ev": "main:cleanup", "perf_ms": 3276.210958, "hr_ns": "63838928939625", "epoch_ms": 1791367335822.4468}
+{"proc": "main", "pid": 26064, "ev": "app:before-quit", "perf_ms": 3276.377583, "hr_ns": "63838929105375", "epoch_ms": 1791367335822.6113}
+{"proc": "main", "pid": 26064, "ev": "win:close", "perf_ms": 3276.683667, "hr_ns": "63838929411250", "epoch_ms": 1791367335822.917, "vetoed": false, "win_destroyed": false, "wc_destroyed": false}
+{"proc": "main", "pid": 26064, "ev": "win:close:allowed", "perf_ms": 3276.71175, "hr_ns": "63838929439375", "epoch_ms": 1791367335822.945}
+{"proc": "renderer", "pid": 26206, "ev": "renderer:beforeunload", "perf_ms": 3079.7000000029802, "hr_ns": "63838929644125", "epoch_ms": 1791367335823.2}
+{"ev": "renderer:tick", "collapsed": 1, "first_perf_ms": 3145.7999999970198, "last_perf_ms": 3145.7999999970198, "first_hr_ns": "63838995787625", "last_hr_ns": "63838995787625", "proc": "renderer"}
+{"ev": "main:ipc-ping-received", "collapsed": 1, "first_perf_ms": 3378.189333, "last_perf_ms": 3378.189333, "first_hr_ns": "63839030917916", "last_hr_ns": "63839030917916", "proc": "main"}
+{"proc": "renderer", "pid": 26206, "ev": "renderer:unload", "perf_ms": 3181, "hr_ns": "63839030982916", "epoch_ms": 1791367335924.5}
+{"ev": "main:ipc-rpc-handled", "collapsed": 1, "first_perf_ms": 3378.377, "last_perf_ms": 3378.377, "first_hr_ns": "63839031104708", "last_hr_ns": "63839031104708", "proc": "main"}
+{"ev": "renderer:rpc-resolved", "collapsed": 1, "first_perf_ms": 3181.2000000029802, "last_perf_ms": 3181.2000000029802, "first_hr_ns": "63839031180208", "last_hr_ns": "63839031180208", "proc": "renderer"}
+{"proc": "main", "pid": 26064, "ev": "win:closed", "perf_ms": 3382.687333, "hr_ns": "63839035415541", "epoch_ms": 1791367335928.9224, "win_destroyed": true, "wc_destroyed": true}
+{"proc": "main", "pid": 26064, "ev": "app:will-quit", "perf_ms": 3382.797208, "hr_ns": "63839035524875", "epoch_ms": 1791367335929.0308}
+{"proc": "main", "pid": 26064, "ev": "app:quit", "perf_ms": 3382.83475, "hr_ns": "63839035562375", "epoch_ms": 1791367335929.068}

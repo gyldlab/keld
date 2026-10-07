@@ -1,0 +1,25 @@
+{"proc":"main","pid":21353,"ev":"app:start","perf_ms":54.67175,"hr_ns":"63713932317125","epoch_ms":1791367210825.273,"electron":"44.4.5","mode":"noveto"}
+{"proc":"main","pid":21353,"ev":"app:ready","perf_ms":81.290375,"hr_ns":"63713958935333","epoch_ms":1791367210851.892}
+{"proc":"main","pid":21353,"ev":"both-windows-dirty","perf_ms":236.165209,"hr_ns":"63714113809250","epoch_ms":1791367211006.7705}
+{"proc":"main","pid":21353,"ev":"trigger:autoUpdater.quitAndInstall:#1","perf_ms":535.867042,"hr_ns":"63714413511083","epoch_ms":1791367211306.463}
+{"proc":"main","pid":21353,"ev":"autoUpdater:before-quit-for-update","perf_ms":535.993584,"hr_ns":"63714413636125","epoch_ms":1791367211306.5862}
+{"proc":"main","pid":21353,"ev":"win:close","perf_ms":536.334125,"hr_ns":"63714413976625","epoch_ms":1791367211306.9265,"id":"w2","vetoed_before":true,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":21353,"ev":"win:close:allowed","perf_ms":536.368875,"hr_ns":"63714414011291","epoch_ms":1791367211306.9607,"id":"w2"}
+{"proc":"main","pid":21353,"ev":"win:close","perf_ms":536.48475,"hr_ns":"63714414127250","epoch_ms":1791367211307.0767,"id":"w1","vetoed_before":true,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":21353,"ev":"win:close:allowed","perf_ms":536.510959,"hr_ns":"63714414153541","epoch_ms":1791367211307.1033,"id":"w1"}
+{"proc":"main","pid":21353,"ev":"quitAndInstall:returned:#1","perf_ms":536.556042,"hr_ns":"63714414199500","epoch_ms":1791367211307.151}
+{"proc":"renderer","pid":21362,"ev":"renderer:beforeunload","perf_ms":373.30000000447035,"hr_ns":"63714414289875","epoch_ms":1791367211307.2998}
+{"proc":"renderer","pid":21361,"ev":"renderer:beforeunload","perf_ms":386.09999999403954,"hr_ns":"63714414381625","epoch_ms":1791367211307.4}
+{"proc":"renderer","pid":21361,"ev":"renderer:unload","perf_ms":386.3999999985099,"hr_ns":"63714414645458","epoch_ms":1791367211307.5999}
+{"proc":"renderer","pid":21362,"ev":"renderer:unload","perf_ms":373.70000000298023,"hr_ns":"63714414643458","epoch_ms":1791367211307.5999}
+{"proc":"main","pid":21353,"ev":"win:closed","perf_ms":537.612834,"hr_ns":"63714415255250","epoch_ms":1791367211308.2048,"id":"w1","win_destroyed":true,"wc_destroyed":true}
+{"proc":"main","pid":21353,"ev":"win:closed","perf_ms":539.191209,"hr_ns":"63714416833750","epoch_ms":1791367211309.7834,"id":"w2","win_destroyed":true,"wc_destroyed":true}
+{"proc":"main","pid":21353,"ev":"app:window-all-closed","perf_ms":539.250042,"hr_ns":"63714416892375","epoch_ms":1791367211309.8416}
+{"proc":"main","pid":21353,"ev":"autoUpdater:before-quit-for-update","perf_ms":539.277334,"hr_ns":"63714416919583","epoch_ms":1791367211309.8687}
+{"proc":"main","pid":21353,"ev":"autoUpdater:error","perf_ms":539.308125,"hr_ns":"63714416950375","epoch_ms":1791367211309.8997,"arg":"No update available, can't quit and install"}
+{"proc":"main","pid":21353,"ev":"trigger:autoUpdater.quitAndInstall:#2","perf_ms":1438.050959,"hr_ns":"63715315694291","epoch_ms":1791367212208.6445}
+{"proc":"main","pid":21353,"ev":"autoUpdater:before-quit-for-update","perf_ms":1438.253625,"hr_ns":"63715315895916","epoch_ms":1791367212208.8452}
+{"proc":"main","pid":21353,"ev":"autoUpdater:error","perf_ms":1438.472209,"hr_ns":"63715316114375","epoch_ms":1791367212209.0637,"arg":"No update available, can't quit and install"}
+{"proc":"main","pid":21353,"ev":"quitAndInstall:returned:#2","perf_ms":1438.499917,"hr_ns":"63715316142125","epoch_ms":1791367212209.0913}
+{"proc":"main","pid":21353,"ev":"watchdog:exit","perf_ms":3738.736375,"hr_ns":"63717616381000","epoch_ms":1791367214509.332}
+{"proc":"main","pid":21353,"ev":"app:quit","perf_ms":3738.909917,"hr_ns":"63717616552291","epoch_ms":1791367214509.5017}

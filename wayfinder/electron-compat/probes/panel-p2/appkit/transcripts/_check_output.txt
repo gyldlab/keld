@@ -1,0 +1,101 @@
+== n1_sync_yes_while_dirty runs=5 distinct_orderings=1
+   {'C1': '0/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '0/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: ['C1:FAILS-AS-REQUIRED', 'C4:FAILS-AS-REQUIRED']
+   [5x] close(W1,windowShouldClose:) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:False)
+
+== n2_timeout_autoclose runs=5 distinct_orderings=1
+   {'C1': '0/5 pass', 'C2': '0/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: ['C1:FAILS-AS-REQUIRED', 'C2:FAILS-AS-REQUIRED']
+   [5x] close(W1,windowShouldClose:) > close-timeout(W1) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > role-reply(W1:veto_prompt) > stale-reply-dropped(W1)
+
+== n3_second_close_during_modal_ungated runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '0/5 pass', 'C4': '5/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: ['C3:FAILS-AS-REQUIRED']
+   [5x] close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > close(W1,host-close-api) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:abort) > role-reply(W1:veto) > dialog-result(W1:abort) > role-reply(W1:veto)
+
+== p3_second_close_during_modal_gated runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > close(W1,host-close-api) > close-coalesced(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True)
+
+== s1_close_veto_then_allow runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True)
+
+== s2a_quit_two_dirty_allow runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': '5/5 pass', 'C6': '5/5 pass', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:veto_prompt) > dialog-open(W2) > dialog-result(W2:discard) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True) > reply-to-should-terminate(True) > will-quit > quit
+
+== s2b_quit_second_vetoes runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': '5/5 pass', 'C6': '5/5 pass', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:discard) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:veto_prompt) > dialog-open(W2) > dialog-result(W2:cancel) > role-reply(W2:veto) > quit-serial-stop(W2) > reply-to-should-terminate(False) > quit-cancelled > terminate-returned
+
+== s2c_quit_first_vetoes_stop runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': '5/5 pass', 'C6': '5/5 pass', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:cancel) > role-reply(W1:veto) > quit-serial-stop(W1) > reply-to-should-terminate(False) > quit-cancelled > terminate-returned
+
+== s2d_quit_first_vetoes_continue runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': '5/5 pass', 'C6': '5/5 pass', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] before-quit > close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:cancel) > role-reply(W1:veto) > close(W2,windowShouldClose:) > role-reply(W2:veto_prompt) > dialog-open(W2) > dialog-result(W2:discard) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True) > reply-to-should-terminate(False) > quit-cancelled > terminate-returned
+
+== s3a_reentrancy_modal_from_gcd_block runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:abort) > role-reply(W1:veto)
+
+== s3b_reentrancy_modal_from_runloop_block runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': 'n/a', 'C6': 'n/a', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] close(W1,windowShouldClose:) > role-reply(W1:veto_prompt) > dialog-open(W1) > dialog-result(W1:abort) > role-reply(W1:veto)
+
+== s3c_reentrancy_terminate_later runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': '5/5 pass', 'C6': '5/5 pass', 'C7': '5/5 pass'}
+   verdict: all applicable criteria pass
+   [5x] before-quit > close(W1,windowShouldClose:) > role-reply(W1:allow) > tombstone(W1) > destroy(W1) > closed(W1) > tombstone-before-closed(W1:True) > close(W2,windowShouldClose:) > role-reply(W2:allow) > tombstone(W2) > destroy(W2) > closed(W2) > tombstone-before-closed(W2:True) > reply-to-should-terminate(True) > will-quit > quit
+
+== s3d_terminate_later_default_mode_delivery runs=5 distinct_orderings=1
+   {'C1': '5/5 pass', 'C2': '5/5 pass', 'C3': '5/5 pass', 'C4': '5/5 pass', 'C5': '0/5 pass', 'C6': '5/5 pass', 'C7': '0/5 pass'}
+   verdict: ['C5:FAILS-AS-REQUIRED', 'C7:FAILS-AS-REQUIRED']
+   [5x] before-quit > close(W1,windowShouldClose:) > watchdog
+
+== re-entrancy probes (fired while modal/terminateLater wait active, out of runs)
+  s3a_reentrancy_modal_from_gcd_block
+    timer-defaultMode                          during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    timer-commonModes                          during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    timer-modalPanelMode                       during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    perform-afterDelay(default)                during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    gcd-main-asyncAfter                        during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    bg->gcd-main-async                         during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    bg->performSelectorOnMainThread(common)    during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->CFRunLoopPerformBlock(default)         during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    bg->CFRunLoopPerformBlock(common)          during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->CFRunLoopPerformBlock(modalPanel)      during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+  s3b_reentrancy_modal_from_runloop_block
+    timer-defaultMode                          during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    timer-commonModes                          during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    timer-modalPanelMode                       during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    perform-afterDelay(default)                during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    gcd-main-asyncAfter                        during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->gcd-main-async                         during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->performSelectorOnMainThread(common)    during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->CFRunLoopPerformBlock(default)         during=0 after=5 never=0 modes=['kCFRunLoopDefaultMode']
+    bg->CFRunLoopPerformBlock(common)          during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->CFRunLoopPerformBlock(modalPanel)      during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+  s3c_reentrancy_terminate_later
+    timer-defaultMode                          during=0 after=0 never=5 modes=[]
+    timer-commonModes                          during=5 after=0 never=0 modes=['NSEventTrackingRunLoopMode']
+    timer-modalPanelMode                       during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    perform-afterDelay(default)                during=0 after=0 never=5 modes=[]
+    gcd-main-asyncAfter                        during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->gcd-main-async                         during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->performSelectorOnMainThread(common)    during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->CFRunLoopPerformBlock(default)         during=0 after=0 never=5 modes=[]
+    bg->CFRunLoopPerformBlock(common)          during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+    bg->CFRunLoopPerformBlock(modalPanel)      during=5 after=0 never=0 modes=['NSModalPanelRunLoopMode']
+
+role-reply delivery modes: {'kCFRunLoopDefaultMode': 37, 'NSEventTrackingRunLoopMode': 52, 'NSModalPanelRunLoopMode': 61}

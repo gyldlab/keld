@@ -1,0 +1,22 @@
+{"proc":"main","pid":24188,"ev":"app:start","perf_ms":60.573584,"hr_ns":"63809586931083","epoch_ms":1791367306480.3296,"electron":"44.4.5","answer":"cancel"}
+{"proc":"main","pid":24188,"ev":"app:ready","perf_ms":90.027042,"hr_ns":"63809616384958","epoch_ms":1791367306509.7815}
+{"proc":"renderer","pid":24194,"ev":"renderer:load","perf_ms":80.60000000149012,"hr_ns":"63809767863875","epoch_ms":1791367306661.3,"dirty":true}
+{"proc":"main","pid":24188,"ev":"ipc:dirty","perf_ms":246.996709,"hr_ns":"63809773353041","epoch_ms":1791367306666.7573,"value":true,"isDocumentEdited":true}
+{"proc":"main","pid":24188,"ev":"trigger:win.close","perf_ms":548.711792,"hr_ns":"63810075069583","epoch_ms":1791367306968.4668}
+{"proc":"main","pid":24188,"ev":"win:close","perf_ms":550.292917,"hr_ns":"63810076649208","epoch_ms":1791367306970.0454,"isModified":true,"isDocumentEdited":true,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24188,"ev":"win:close:preventDefault","perf_ms":550.560125,"hr_ns":"63810076915208","epoch_ms":1791367306970.3088}
+{"proc":"main","pid":24188,"ev":"dismiss:scheduled","perf_ms":553.62875,"hr_ns":"63810079986541","epoch_ms":1791367306973.3835,"method":"osascript System Events AX button click (retry until modal returns)","key":"escape","delay_ms":500,"child_pid":24204}
+{"proc":"main","pid":24188,"ev":"dialog:before","perf_ms":553.879834,"hr_ns":"63810080234833","epoch_ms":1791367306973.6284}
+{"proc":"main","pid":24188,"ev":"dialog:after","perf_ms":1575.352542,"hr_ns":"63811101720083","epoch_ms":1791367307995.1284,"result":0,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24188,"ev":"close:cancelled-by-user","perf_ms":1575.960084,"hr_ns":"63811102320625","epoch_ms":1791367307995.7312}
+{"proc":"main","pid":24188,"ev":"trigger:win.close:returned","perf_ms":1576.580584,"hr_ns":"63811102936000","epoch_ms":1791367307996.3306,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24188,"ev":"trigger:win.close#2","perf_ms":1879.193917,"hr_ns":"63811405556541","epoch_ms":1791367308298.959}
+{"proc":"main","pid":24188,"ev":"win:close","perf_ms":1880.09275,"hr_ns":"63811406448208","epoch_ms":1791367308299.843,"isModified":false,"isDocumentEdited":false,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"renderer","pid":24194,"ev":"renderer:beforeunload","perf_ms":1720.3000000044703,"hr_ns":"63811407645875","epoch_ms":1791367308301.0999}
+{"proc":"renderer","pid":24194,"ev":"renderer:unload","perf_ms":1822.7000000029802,"hr_ns":"63811510021041","epoch_ms":1791367308403.4}
+{"proc":"main","pid":24188,"ev":"wc:destroyed","perf_ms":1999.328917,"hr_ns":"63811525685791","epoch_ms":1791367308419.0813,"win_destroyed":false,"wc_destroyed":true}
+{"proc":"main","pid":24188,"ev":"win:closed","perf_ms":1999.648292,"hr_ns":"63811526002750","epoch_ms":1791367308419.395,"win_destroyed":true,"wc_destroyed":true}
+{"proc":"main","pid":24188,"ev":"app:window-all-closed","perf_ms":1999.709084,"hr_ns":"63811526063500","epoch_ms":1791367308419.4556}
+{"proc":"main","pid":24188,"ev":"app:before-quit","perf_ms":1999.754167,"hr_ns":"63811526108458","epoch_ms":1791367308419.5005}
+{"proc":"main","pid":24188,"ev":"app:will-quit","perf_ms":1999.792875,"hr_ns":"63811526147291","epoch_ms":1791367308419.5393}
+{"proc":"main","pid":24188,"ev":"app:quit","perf_ms":1999.840209,"hr_ns":"63811526194583","epoch_ms":1791367308419.587}

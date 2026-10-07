@@ -1,0 +1,22 @@
+{"proc":"main","pid":24122,"ev":"app:start","perf_ms":52.469875,"hr_ns":"63806997242333","epoch_ms":1791367303890.6292,"electron":"44.4.5","answer":"cancel"}
+{"proc":"main","pid":24122,"ev":"app:ready","perf_ms":77.153875,"hr_ns":"63807021924958","epoch_ms":1791367303915.3079}
+{"proc":"renderer","pid":24128,"ev":"renderer:load","perf_ms":78.20000000298023,"hr_ns":"63807166592291","epoch_ms":1791367304060,"dirty":true}
+{"proc":"main","pid":24122,"ev":"ipc:dirty","perf_ms":222.330041,"hr_ns":"63807167101791","epoch_ms":1791367304060.4932,"value":true,"isDocumentEdited":true}
+{"proc":"main","pid":24122,"ev":"trigger:win.close","perf_ms":523.892916,"hr_ns":"63807468668958","epoch_ms":1791367304362.0596}
+{"proc":"main","pid":24122,"ev":"win:close","perf_ms":526.09425,"hr_ns":"63807470865708","epoch_ms":1791367304364.2505,"isModified":true,"isDocumentEdited":true,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24122,"ev":"win:close:preventDefault","perf_ms":526.374541,"hr_ns":"63807471144583","epoch_ms":1791367304364.5266}
+{"proc":"main","pid":24122,"ev":"dismiss:scheduled","perf_ms":529.744708,"hr_ns":"63807474519500","epoch_ms":1791367304367.9067,"method":"osascript System Events AX button click (retry until modal returns)","key":"escape","delay_ms":500,"child_pid":24131}
+{"proc":"main","pid":24122,"ev":"dialog:before","perf_ms":530.070333,"hr_ns":"63807474840625","epoch_ms":1791367304368.2231}
+{"proc":"main","pid":24122,"ev":"dialog:after","perf_ms":1541.317125,"hr_ns":"63808486088500","epoch_ms":1791367305379.4724,"result":0,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24122,"ev":"close:cancelled-by-user","perf_ms":1541.446333,"hr_ns":"63808486216875","epoch_ms":1791367305379.601}
+{"proc":"main","pid":24122,"ev":"trigger:win.close:returned","perf_ms":1541.525333,"hr_ns":"63808486294916","epoch_ms":1791367305379.6753,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"main","pid":24122,"ev":"trigger:win.close#2","perf_ms":1844.240583,"hr_ns":"63808789015833","epoch_ms":1791367305682.4153}
+{"proc":"main","pid":24122,"ev":"win:close","perf_ms":1844.978458,"hr_ns":"63808789748791","epoch_ms":1791367305683.1304,"isModified":false,"isDocumentEdited":false,"win_destroyed":false,"wc_destroyed":false}
+{"proc":"renderer","pid":24128,"ev":"renderer:beforeunload","perf_ms":1702.3000000044703,"hr_ns":"63808790639416","epoch_ms":1791367305684}
+{"proc":"renderer","pid":24128,"ev":"renderer:unload","perf_ms":1803.1000000014901,"hr_ns":"63808891357666","epoch_ms":1791367305784.8}
+{"proc":"main","pid":24122,"ev":"wc:destroyed","perf_ms":1951.853833,"hr_ns":"63808896624125","epoch_ms":1791367305790.0056,"win_destroyed":false,"wc_destroyed":true}
+{"proc":"main","pid":24122,"ev":"win:closed","perf_ms":1951.97775,"hr_ns":"63808896747333","epoch_ms":1791367305790.1277,"win_destroyed":true,"wc_destroyed":true}
+{"proc":"main","pid":24122,"ev":"app:window-all-closed","perf_ms":1952.041875,"hr_ns":"63808896811250","epoch_ms":1791367305790.1914}
+{"proc":"main","pid":24122,"ev":"app:before-quit","perf_ms":1952.089625,"hr_ns":"63808896859083","epoch_ms":1791367305790.239}
+{"proc":"main","pid":24122,"ev":"app:will-quit","perf_ms":1952.139,"hr_ns":"63808896908416","epoch_ms":1791367305790.2883}
+{"proc":"main","pid":24122,"ev":"app:quit","perf_ms":1952.179083,"hr_ns":"63808896948500","epoch_ms":1791367305790.3284}

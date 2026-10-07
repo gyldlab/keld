@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8"><title>e1</title>
+<body>e1
+<script>
+const { ipcRenderer } = require('electron');
+const { log } = require('../lib');
+window.dirty = true;   // the "dirty" flag the main process vetoes on
+log('renderer:load', { dirty: window.dirty });
+ipcRenderer.send('dirty', window.dirty);
+window.addEventListener('beforeunload', () => log('renderer:beforeunload'));
+window.addEventListener('unload', () => log('renderer:unload'));
+</script>
