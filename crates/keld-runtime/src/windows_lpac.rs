@@ -707,19 +707,38 @@ impl WindowsSuspendedChild {
 
     /// Resumes the initially suspended primary thread exactly once.
     ///
+    /// The thread's previous suspend count must be exactly 1: the one suspension
+    /// of `CREATE_SUSPENDED`. So a successful resume proves that the primary
+    /// thread ran no instruction between creation and this call, and that
+    /// anything the caller did first, such as attempt-Job assignment, preceded
+    /// the child's first instruction.
+    ///
     /// # Errors
     ///
-    /// Fails if the child was already resumed or the kernel rejects resume.
+    /// Fails if the child was already resumed, the kernel rejects resume, or the
+    /// previous suspend count was not 1. In that last case the resume is spent
+    /// and the caller must terminate the child.
     pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
         let thread = self.thread.as_ref().ok_or_else(|| {
             WindowsLpacError::contract("child resume", "primary thread already resumed")
                 .in_launch(self.launch)
         })?;
         // SAFETY: the primary-thread handle is live and still owned here.
-        if unsafe { ResumeThread(thread.as_raw_handle().cast()) } == u32::MAX {
+        let previous = unsafe { ResumeThread(thread.as_raw_handle().cast()) };
+        if previous == u32::MAX {
             return Err(WindowsLpacError::last_os("child resume").in_launch(self.launch));
         }
         self.thread = None;
+        if previous != 1 {
+            return Err(WindowsLpacError::contract(
+                "child resume",
+                format!(
+                    "the primary thread's previous suspend count was {previous}, not 1: it was \
+                     not held suspended from creation"
+                ),
+            )
+            .in_launch(self.launch));
+        }
         Ok(())
     }
 
@@ -1112,7 +1131,41 @@ mod tests {
 
     use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
 
-    use super::InheritedHandleCopies;
+    use super::{InheritedHandleCopies, WindowsSuspendedChild};
+
+    #[test]
+    fn resume_refuses_a_primary_thread_not_held_suspended_exactly_once() {
+        // Seam-injected: a second suspension stands in for any count but the one of
+        // CREATE_SUSPENDED. A thread that already ran shows count 0 and refuses the
+        // same way; that case cannot be built without resuming the thread here.
+        let system32 =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+                .join("System32");
+        let mut child = WindowsSuspendedChild::spawn_same_token(
+            &system32.join("cmd.exe"),
+            &[std::ffi::OsString::from("/d")],
+            &[],
+            &system32,
+        )
+        .expect("create a suspended child");
+        let thread = child.thread.as_ref().expect("the primary thread is held");
+        // SAFETY: the primary-thread handle is live and owned by `child`.
+        let previous = unsafe {
+            windows_sys::Win32::System::Threading::SuspendThread(thread.as_raw_handle().cast())
+        };
+        assert_eq!(previous, 1, "CREATE_SUSPENDED leaves one suspension");
+        let refusal = child
+            .resume()
+            .expect_err("a count other than 1 refuses the resume");
+        assert!(
+            refusal
+                .to_string()
+                .contains("previous suspend count was 2, not 1"),
+            "{refusal}"
+        );
+        assert!(child.resume().is_err(), "the refused resume is spent");
+        child.terminate(1).expect("terminate the refused child");
+    }
 
     #[test]
     fn admitted_handle_uses_private_inheritable_copy_without_mutating_caller() {
