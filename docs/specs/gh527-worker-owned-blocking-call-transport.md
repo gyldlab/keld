@@ -275,8 +275,10 @@ negative control: the one mutation that MUST make the test fail.
     25 record on a throw (§4.5 step 2) leaves the wake to the post-claim bound after
     the deadline, so the timing and counter assertions fail.
 27. **Asynchronous replies and host CALLs are dispatched on main (§4.6).** Given two
-    pending `call()`s with ids `c1` and `c2`, and a host that writes an EVENT `e`, then
-    a REPLY for `c2`, then an `ERR` for `c1`, then `e`'s listener runs before either
+    pending `call()`s, `c1` on the lifecycle channel (its reply waiter admits `ERR`,
+    §4.7; an `ERR` on the echo channel closes the link, criterion 6) and `c2` on the
+    echo channel, and a host that writes an EVENT `e`, then a REPLY for `c2`, then an
+    `ERR` for `c1`, then `e`'s listener runs before either
     Promise settles, `c2` resolves with its REPLY bytes, and `c1` rejects with the
     `ERR`'s `CallError.code`. A late REPLY for a `call()` that already rejected with
     `KELD-IPC-006` leaves that outcome unchanged and the link up. Given a call handler
@@ -287,7 +289,11 @@ negative control: the one mutation that MUST make the test fail.
     call handler set, the same host CALL closes the link with `KELD-IPC-005`, and every
     pending call throws or rejects with `KELD-IPC-022`. *Negative control:* a dispatcher
     that settles the oldest pending Promise instead of the one `header.corr` names
-    resolves `c1` with `c2`'s bytes, so the test fails.
+    resolves `c1` with `c2`'s bytes, so the test fails. *Second negative control:*
+    starting call handlers in the step-1 wake drain (§4.6) makes the handler count 1
+    when `callBlocking` returns, so the parked case fails. *Third negative control:*
+    answering a CALL that has no handler with an `ERR`, or discarding it, leaves the
+    link up, so the `KELD-IPC-005` assertion fails.
 28. **Uncredited share overflow (T4).** Given credit enabled, every credited channel
     holding unused credit, a parked call, and the uncredited share (`ringBytes / 4`
     bytes or `ringRecords / 4` records, §4.8) full of retained frames, when the host
@@ -377,7 +383,7 @@ no claim is made (§9).
   that imports the transport MUST NOT start a link.
 - Crash domains. Worker death leaves the role process alive but without a link. The
   transport converts it into terminal link loss: every later call throws
-  `KELD-IPC-025`, and the socket closes when the Worker dies. The host owns the crash
+  `KELD-IPC-025` (or the code recorded first, §4.5), and the socket closes when the Worker dies. The host owns the crash
   decision through KEL-75's natural-crash path. No new crash owner is added.
 - The Worker runs no application code. It imports only the transport module, and no
   user listener or applier runs on it.
@@ -605,8 +611,11 @@ Worker liveness. This is the mechanism #418 risk 1 requires:
   wakes at least once per heartbeat interval and throws `KELD-IPC-025` once the
   heartbeat has not moved for `WORKER_LIVENESS_WINDOW_MS`. The wake is bounded by the
   liveness window and does not depend on the call deadline.
-- *Not parked*: main also listens for the Worker's `error` and `close` events. Every
-  pending asynchronous call rejects with `KELD-IPC-025`, and the link is terminal.
+- *Not parked*: main also listens for the Worker's `error` and `close` events. On
+  either, main runs `Atomics.compareExchange(ctrl, STATE, 0, 25)`, which keeps any
+  code recorded first, and the link is terminal. Pending asynchronous calls then
+  settle by the §4.6 rule: retained records are delivered first, and each unresolved
+  `call()` rejects with the code `STATE` holds.
 - *Host side*: Worker death closes the socket. FACT: the host saw `KELD-IPC-001`
   broken pipe at once in both runs. The host handles it as role link loss (arch 02
   §7; KEL-75 natural crash). UNKNOWN: whether `terminate()` closes the socket of a
@@ -672,9 +681,13 @@ each record by its kind (criterion 27):
   the link terminal with `KELD-IPC-005`, recorded as 22 (§4.4). `setCallHandler`
   throws `KELD-IPC-005` for a channel that `receive.callReceivers` does not name, or a
   second handler on one channel. The answer rule stays with its owner: `@keld/api`
-  passes its existing `resolveEchoCall` rule (`packages/@keld/api/src/echo-call.ts`),
-  which already turns a missing or failing application handler into an `ERR` with
-  `KELD-API-001`. The transport adds no error code.
+  adapts its existing module-private `resolveEchoCall` rule
+  (`packages/@keld/api/src/echo-call.ts`), which already turns a missing or failing
+  application handler into an `ERR` with `KELD-API-001`. In T3 it takes the payload
+  instead of a `DecodedFrame`, drops its `validateReceivedHeader` call because the
+  Worker has already validated the CALL (§4.7), and returns `WorkerCallReply`.
+  `WorkerCallReply` replaces `EchoCallResult`, so the reply shape has one owner. The
+  transport adds no error code.
 
 No call handler starts and no `call()` Promise settles while main is parked, because
 main does both only in the dispatch task. Once `STATE` is not 0 and the task has
@@ -894,7 +907,8 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   protocol-version bump.
 - §7 "App-role crash": two appended sentences. Transport Worker death is that role's
   link loss, and the parked caller wakes with `KELD-IPC-025`, not at its deadline,
-  unless the link had already closed and recorded `KELD-IPC-022` first (§4.5).
+  unless another code (22, 25, 26 or 27) was recorded first, in which case that
+  first recorded code stands (§4.5).
 
 ### 4.13 Migration unit
 

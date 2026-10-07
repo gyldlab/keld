@@ -409,8 +409,8 @@ compromised keeps the host's threat model uniform).
   other principals continue. KEL-70 currently proves generic child restart only.
   Under GH-527 (draft), the death of a role's transport Worker is that role's link
   loss and follows this path. A parked caller wakes with `KELD-IPC-025`, not at its
-  call deadline; if the link had already closed first, the earlier `KELD-IPC-022`
-  stands.
+  call deadline; if the link had already ended with another code, the first recorded
+  code stands.
 - Window close: the destination host revokes that window generation and virtual-port
   routes, then drains only roles declared `window-bound` to it. App-bound roles remain
   live until the host application session stops.
