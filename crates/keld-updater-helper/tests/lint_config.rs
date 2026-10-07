@@ -7,10 +7,10 @@
 use std::path::Path;
 
 /// Every process start the elevated helper must not reach: the `keld-runtime` entry
-/// points that start a Bun child or an app role, and the `std::process::Command`
-/// methods that start a process directly (KEL-53 §4, §7 "17 (helper launch and
-/// self-anchor)").
-const DISALLOWED_PROCESS_STARTS: [&str; 9] = [
+/// points that start a Bun child, an app role or another elevated helper through the
+/// shell, and the `std::process::Command` methods that start a process directly
+/// (KEL-53 §4, §7 "17 (helper launch and self-anchor)").
+const DISALLOWED_PROCESS_STARTS: [&str; 10] = [
     "std::process::Command::spawn",
     "std::process::Command::output",
     "std::process::Command::status",
@@ -20,6 +20,7 @@ const DISALLOWED_PROCESS_STARTS: [&str; 9] = [
     "keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations",
     "keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated",
     "keld_runtime::windows_lpac::WindowsLpacProfile::spawn_suspended",
+    "keld_runtime::windows_job::launch_elevated_updater_helper",
 ];
 
 /// The non-comment, non-blank lines of a `clippy.toml`.

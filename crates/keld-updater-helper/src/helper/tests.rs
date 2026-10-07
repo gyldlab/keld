@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt as _;
 
+use keld_runtime::windows_job::WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR;
 use keld_update::UpdaterHelperRole;
 
 use super::{interim_refusal, parse_argument};
@@ -11,6 +12,10 @@ use crate::error::HelperError;
 
 /// 64 lowercase hex digits, written out rather than derived from the endpoint owner.
 const HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// The recovery-role selector as KEL-53 §4 spells it, written out rather than imported:
+/// a cross-version argument contract between a host and an older tree's helper.
+const SELECTOR: &str = "--recovery-role";
 
 fn rendezvous() -> String {
     format!(r"\\.\pipe\keld-attempt-{HEX}")
@@ -35,22 +40,44 @@ fn the_exact_local_rendezvous_selects_the_activation_role() {
 }
 
 #[test]
-fn any_argument_count_but_one_is_refused() {
-    let one = rendezvous();
-    assert_eq!(refused(args(&[])), "it takes exactly one argument, not 0");
+fn the_exact_selector_selects_the_recovery_role() {
     assert_eq!(
-        refused(args(&[&one, &one])),
-        "it takes exactly one argument, not 2"
+        WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR, SELECTOR,
+        "keld-runtime's selector is the KEL-53 literal"
     );
-    assert_eq!(
-        refused(args(&[&one, ""])),
-        "it takes exactly one argument, not 2"
-    );
+    let role = parse_argument(args(&[SELECTOR])).expect("the exact selector");
+    assert_eq!(role, UpdaterHelperRole::Recovery);
 }
 
 #[test]
+fn any_argument_count_but_one_is_refused() {
+    let one = rendezvous();
+    assert_eq!(refused(args(&[])), "it takes exactly one argument, not 0");
+    for extra in [
+        args(&[&one, &one]),
+        args(&[&one, ""]),
+        args(&[SELECTOR, SELECTOR]),
+        args(&[SELECTOR, &one]),
+        args(&[&one, SELECTOR]),
+        args(&[SELECTOR, ""]),
+    ] {
+        assert_eq!(
+            refused(extra.clone()),
+            "it takes exactly one argument, not 2",
+            "{extra:?}"
+        );
+    }
+}
+
+/// Every refusal of a wrong shape renders the same text, so none echoes its argument.
+#[test]
 fn every_other_shape_is_refused_without_echoing_it() {
-    let shape = "its argument is not an exact local keld-attempt rendezvous";
+    let shape = "its argument is neither an exact local keld-attempt rendezvous nor \
+                 `--recovery-role`";
+    let rendered = HelperError::Invocation {
+        detail: shape.to_owned(),
+    }
+    .to_string();
     let upper = HEX.to_ascii_uppercase();
     let cases = [
         String::new(),
@@ -65,19 +92,25 @@ fn every_other_shape_is_refused_without_echoing_it() {
         format!(r"\\.\pipe\keld-attempt-{HEX} "),
         format!(r" \\.\pipe\keld-attempt-{HEX}"),
         format!(r"\\.\pipe\keld-attempt-{HEX}\x"),
-        "--recovery-role".to_owned(),
+        "--RECOVERY-ROLE".to_owned(),
+        "--Recovery-Role".to_owned(),
+        "--recovery-role ".to_owned(),
+        " --recovery-role".to_owned(),
+        "-recovery-role".to_owned(),
+        "recovery-role".to_owned(),
+        "--recovery_role".to_owned(),
+        "--recovery-role=1".to_owned(),
+        "--recovery-role\0".to_owned(),
+        "/recovery-role".to_owned(),
     ];
     for case in cases {
         let detail = refused(args(&[&case]));
         assert_eq!(detail, shape, "case {case:?}");
-        if !case.is_empty() {
-            assert!(
-                !HelperError::Invocation { detail }
-                    .to_string()
-                    .contains(&case),
-                "the refusal echoes {case:?}"
-            );
-        }
+        assert_eq!(
+            HelperError::Invocation { detail }.to_string(),
+            rendered,
+            "case {case:?}"
+        );
     }
 }
 
@@ -89,7 +122,7 @@ fn a_non_unicode_argument_is_refused() {
 }
 
 #[test]
-fn the_invocation_refusal_names_the_one_accepted_start() {
+fn the_invocation_refusal_names_the_two_accepted_starts() {
     let rendered = HelperError::Invocation {
         detail: "it takes exactly one argument, not 0".to_owned(),
     }
@@ -97,8 +130,9 @@ fn the_invocation_refusal_names_the_one_accepted_start() {
     assert_eq!(
         rendered,
         "KELD-HELPER-001: keld-updater-helper.exe refused how it was started (it takes exactly \
-         one argument, not 0). Only keld-host.exe starts it, on Windows, with exactly one \
-         argument: the activation rendezvous `\\\\.\\pipe\\keld-attempt-<64 lowercase hex>`."
+         one argument, not 0). It takes exactly one argument: keld-host.exe passes the \
+         activation rendezvous `\\\\.\\pipe\\keld-attempt-<64 lowercase hex>`, and keld-host.exe \
+         or an administrator passes `--recovery-role`."
     );
 }
 

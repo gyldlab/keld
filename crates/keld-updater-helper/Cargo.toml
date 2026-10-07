@@ -18,8 +18,9 @@ path = "src/main.rs"
 [target.'cfg(windows)'.dependencies]
 keld-guard = { workspace = true }
 keld-ipc = { workspace = true }
-# KEL-53 §5 normal edge (Job, launch and process identity); clippy.toml's
-# disallowed-methods name its process-starting entry points through it.
+# KEL-53 §5 normal edge (Job, launch and process identity): the System32-only DLL
+# search and the recovery-role selector; clippy.toml's disallowed-methods name its
+# process-starting entry points through it.
 keld-runtime = { workspace = true }
 keld-update = { workspace = true }
 

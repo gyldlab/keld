@@ -5,6 +5,7 @@ use std::ffi::OsString;
 
 use keld_guard::{WindowsAuthenticodeError, WindowsAuthenticodeImage};
 use keld_ipc::WindowsNamedPipeBootstrapStream;
+use keld_runtime::windows_job::WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR;
 use keld_update::{UpdaterHelperAnchor, UpdaterHelperRole, anchor_updater_helper};
 
 use crate::error::HelperError;
@@ -23,10 +24,13 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), Helper
 
 /// Decides the role from the arguments alone, before any open or write.
 ///
-/// There must be exactly one argument, and it must be the exact local
-/// `\\.\pipe\keld-attempt-<64 lowercase hex>` rendezvous that `keld-ipc`'s
-/// [`WindowsNamedPipeBootstrapStream::is_attempt_endpoint`], the one owner of that
-/// shape, accepts (KEL-53 §7 "17 (argument shape)"). The argument conveys no authority.
+/// There must be exactly one argument (KEL-53 §7 "17 (argument shape)"). It conveys no
+/// authority and is one of exactly two shapes:
+/// - the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` activation rendezvous,
+///   as `keld-ipc`'s [`WindowsNamedPipeBootstrapStream::is_attempt_endpoint`], the one
+///   owner of that shape, accepts it; or
+/// - the recovery-role selector, compared exactly with `keld-runtime`'s
+///   [`WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR`], the one owner of that literal.
 fn parse_argument(
     args: impl IntoIterator<Item = OsString>,
 ) -> Result<UpdaterHelperRole, HelperError> {
@@ -43,9 +47,13 @@ fn parse_argument(
     if WindowsNamedPipeBootstrapStream::is_attempt_endpoint(argument) {
         return Ok(UpdaterHelperRole::Activation);
     }
-    Err(invocation(
-        "its argument is not an exact local keld-attempt rendezvous".to_owned(),
-    ))
+    if argument == WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR {
+        return Ok(UpdaterHelperRole::Recovery);
+    }
+    Err(invocation(format!(
+        "its argument is neither an exact local keld-attempt rendezvous nor \
+         `{WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR}`"
+    )))
 }
 
 fn invocation(detail: String) -> HelperError {

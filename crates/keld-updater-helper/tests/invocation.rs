@@ -24,22 +24,25 @@ fn run(args: &[&str]) -> (i32, String) {
     )
 }
 
-/// The argument check precedes the self-anchor: from the same location, the refused
-/// argument returns `KELD-HELPER-001` where an accepted one reaches the image
-/// verification and returns `KELD-HELPER-002`. The test binary is unsigned and sits in
-/// no installation, so the accepted argument can only end there.
+/// The argument check precedes the self-anchor: from the same location, a refused
+/// argument returns `KELD-HELPER-001` where each accepted one, the rendezvous and the
+/// recovery-role selector, reaches the image verification and returns
+/// `KELD-HELPER-002`. The test binary is unsigned and sits in no installation, so an
+/// accepted argument can only end there.
 #[cfg(windows)]
 #[test]
 fn a_refused_argument_is_typed_before_the_self_anchor_runs() {
     let rendezvous =
         r"\\.\pipe\keld-attempt-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let refusals: [&[&str]; 4] = [
+    let refusals: [&[&str]; 6] = [
         &[],
         &[rendezvous, rendezvous],
+        &["--recovery-role", "--recovery-role"],
         &[
             r"\\server\pipe\keld-attempt-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         ],
-        &["--recovery-role"],
+        &["--RECOVERY-ROLE"],
+        &["--recovery-role "],
     ];
     for args in refusals {
         let (code, stderr) = run(args);
@@ -51,15 +54,17 @@ fn a_refused_argument_is_typed_before_the_self_anchor_runs() {
         assert!(stderr.ends_with('\n'), "{args:?}: one line: {stderr:?}");
     }
 
-    let (code, stderr) = run(&[rendezvous]);
-    assert_eq!(code, 1, "{stderr}");
-    assert!(
-        stderr.starts_with(
-            "KELD-HELPER-002: keld-updater-helper.exe could not verify its own image \
-             (WinVerifyTrust rejected the current executable with status 0x800b0100)."
-        ),
-        "an unsigned helper refuses on its own image verification: {stderr}"
-    );
+    for accepted in [rendezvous, "--recovery-role"] {
+        let (code, stderr) = run(&[accepted]);
+        assert_eq!(code, 1, "{accepted}: {stderr}");
+        assert!(
+            stderr.starts_with(
+                "KELD-HELPER-002: keld-updater-helper.exe could not verify its own image \
+                 (WinVerifyTrust rejected the current executable with status 0x800b0100)."
+            ),
+            "{accepted}: an unsigned helper refuses on its own image verification: {stderr}"
+        );
+    }
 }
 
 #[cfg(not(windows))]

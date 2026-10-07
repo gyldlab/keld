@@ -6,6 +6,8 @@
 //! anchors it to the installation that holds it. Its build script links the C runtime
 //! statically and sets `/DEPENDENTLOADFLAG:0x800`, so before `main` the loader
 //! resolves its static imports only from System32 and searches for no runtime DLL.
+//! After that, `main`'s first statement restricts every later DLL search to System32
+//! through `keld-runtime`.
 //!
 //! Every refusal precedes the writer lease and any write. Until their slices land,
 //! both roles refuse right after a passing self-anchor (KEL-53 §4 *Interim*).
@@ -24,11 +26,16 @@ use std::process::ExitCode;
 use error::HelperError;
 
 fn main() -> ExitCode {
-    let result = run();
-    report(result.as_ref().err());
-    match result {
+    // First statement (KEL-53 §4): every later DLL load by name searches System32 only,
+    // never the application directory, the current directory or `PATH`. It cannot be
+    // undone, and the helper exits with `KELD-RUNTIME-018` if Windows refuses it.
+    #[cfg(windows)]
+    if let Err(error) = keld_runtime::windows_job::restrict_dll_search_to_system32() {
+        return refuse(&HelperError::DllSearch(error));
+    }
+    match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(_) => ExitCode::FAILURE,
+        Err(error) => refuse(&error),
     }
 }
 
@@ -44,12 +51,12 @@ fn run() -> Result<(), HelperError> {
     })
 }
 
-/// Writes a refusal to stderr. A helper started elevated through `ShellExecuteExW` has
-/// no stderr, so a failed write leaves the exit status as the refusal's only signal.
-fn report(error: Option<&HelperError>) {
-    if let Some(error) = error {
-        let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "{error}");
-        let _ = stderr.flush();
-    }
+/// Writes a refusal to stderr and exits with failure. A helper started elevated through
+/// `ShellExecuteExW` has no stderr, so a failed write leaves the exit status as the
+/// refusal's only signal.
+fn refuse(error: &HelperError) -> ExitCode {
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(stderr, "{error}");
+    let _ = stderr.flush();
+    ExitCode::FAILURE
 }

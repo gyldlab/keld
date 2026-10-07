@@ -1050,7 +1050,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-updater-helper
 - message: keld-updater-helper.exe was not started on Windows with exactly one accepted argument
-- fix: Only keld-host.exe starts it, on Windows, with exactly one argument: the activation rendezvous `\\.\pipe\keld-attempt-<64 lowercase hex>`. The argument conveys no authority, and the helper refuses before any open or write.
+- fix: It runs only on Windows and takes exactly one argument: keld-host.exe passes the activation rendezvous `\\.\pipe\keld-attempt-<64 lowercase hex>`, and keld-host.exe or an administrator passes `--recovery-role`. The argument conveys no authority, and the helper refuses before any open or write.
 
 ## KELD-HELPER-002
 

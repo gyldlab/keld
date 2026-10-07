@@ -2,10 +2,18 @@
 
 use std::fmt;
 
+#[cfg(windows)]
+use keld_runtime::windows_job::{WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR, WindowsDllSearchError};
+
 /// Why the helper refused. Every refusal precedes the writer lease and any write.
 #[derive(Debug)]
 pub(crate) enum HelperError {
-    /// `KELD-HELPER-001`: the helper was not started as `keld-host.exe` or an
+    /// `keld-runtime`'s `KELD-RUNTIME-018`, passed through: `main`'s first statement
+    /// could not restrict this process's DLL search to System32, so the helper exits
+    /// before anything else runs.
+    #[cfg(windows)]
+    DllSearch(WindowsDllSearchError),
+    /// `KELD-HELPER-001`: the helper was not started the way `keld-host.exe` or an
     /// administrator starts it, decided before any open or write.
     Invocation {
         /// What was refused. It never echoes the argument.
@@ -43,12 +51,16 @@ pub(crate) enum HelperError {
 impl fmt::Display for HelperError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invocation { detail } => write!(
-                f,
-                "KELD-HELPER-001: keld-updater-helper.exe refused how it was started ({detail}). \
-                 Only keld-host.exe starts it, on Windows, with exactly one argument: the \
-                 activation rendezvous `\\\\.\\pipe\\keld-attempt-<64 lowercase hex>`."
-            ),
+            #[cfg(windows)]
+            Self::DllSearch(source) => write!(f, "{source}"),
+            Self::Invocation { detail } => {
+                write!(
+                    f,
+                    "KELD-HELPER-001: keld-updater-helper.exe refused how it was started \
+                     ({detail}). "
+                )?;
+                fmt_accepted_starts(f)
+            }
             #[cfg(windows)]
             Self::OwnImage { detail, fix } => write!(
                 f,
@@ -74,13 +86,31 @@ impl fmt::Display for HelperError {
     }
 }
 
+/// The `KELD-HELPER-001` correction: the only starts the helper accepts (KEL-53 §4
+/// "Helper launch and self-anchor": the host starts it, and an administrator may start
+/// the same file directly).
+#[cfg(windows)]
+fn fmt_accepted_starts(f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+        f,
+        "It takes exactly one argument: keld-host.exe passes the activation rendezvous \
+         `\\\\.\\pipe\\keld-attempt-<64 lowercase hex>`, and keld-host.exe or an administrator \
+         passes `{WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR}`."
+    )
+}
+
+#[cfg(not(windows))]
+fn fmt_accepted_starts(f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("It runs only on Windows, where keld-host.exe or an administrator starts it.")
+}
+
 impl std::error::Error for HelperError {
     #[cfg(windows)]
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if let Self::Anchor(source) = self {
-            Some(source)
-        } else {
-            None
+        match self {
+            Self::DllSearch(source) => Some(source),
+            Self::Anchor(source) => Some(source),
+            _ => None,
         }
     }
 }
