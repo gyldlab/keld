@@ -23,12 +23,18 @@ packages=""
 nongtk_packages=""
 ubuntu_packages=""
 ts_packages=""
+codeql_rust="$FALSE"
+codeql_javascript_typescript="$FALSE"
+codeql_actions="$FALSE"
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
 consumer_contract=""
 local_force_all="$FALSE"
 declare -a changed_package_roots=()
+# Packages selected only because a reviewed documentation read changed. They
+# are tested themselves, without Cargo reverse-dependent expansion (#624).
+declare -a documentation_reader_roots=()
 declare -a changed_ts_package_dirs=()
 
 usage() {
@@ -51,6 +57,40 @@ mark_all() {
     deny="$TRUE"
     ts="$TRUE"
     all_workspace_packages="$TRUE"
+    select_every_codeql_language
+}
+
+# A push to main always analyses every language: skipping one there leaves the
+# default branch without the baseline that pull-request alerts compare against.
+# Unknown, all and workflow/router inputs use the same complete selection.
+select_every_codeql_language() {
+    codeql_rust="$TRUE"
+    codeql_javascript_typescript="$TRUE"
+    codeql_actions="$TRUE"
+}
+
+# CodeQL analyses source by language, independent of Cargo package ownership:
+# a documentation read that selects a Rust test package changes no analysed
+# source. Each pattern names what that language's extractor reads in build-mode
+# none. Every other path selects no analysis unless it falls back to all lanes.
+classify_codeql_path() {
+    case "$1" in
+        *.rs | Cargo.toml | */Cargo.toml | Cargo.lock | */Cargo.lock | rust-toolchain.toml | .cargo/*)
+            codeql_rust="$TRUE"
+            ;;
+    esac
+    case "$1" in
+        packages/* | *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.es | *.es6 | \
+            *.htm | *.html | *.xhtm | *.xhtml | *.vue | *.hbs | *.ejs | *.njk | *.json | *.yaml | *.yml | \
+            *.raml | *.xml)
+            codeql_javascript_typescript="$TRUE"
+            ;;
+    esac
+    case "$1" in
+        .github/workflows/* | .github/actions/* | action.yml | action.yaml | */action.yml | */action.yaml)
+            codeql_actions="$TRUE"
+            ;;
+    esac
 }
 
 # Unknown/shared inputs must not skip Linux GTK clippy. Workflow/router edits
@@ -76,6 +116,9 @@ emit() {
     printf 'nongtk_packages=%s\n' "$nongtk_packages"
     printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
     printf 'ts_packages=%s\n' "$ts_packages"
+    printf 'codeql_rust=%s\n' "$codeql_rust"
+    printf 'codeql_javascript_typescript=%s\n' "$codeql_javascript_typescript"
+    printf 'codeql_actions=%s\n' "$codeql_actions"
     if [[ -n "$consumer_contract" ]]; then
         if [[ "$local_force_all" == "$TRUE" ]]; then
             printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
@@ -256,6 +299,22 @@ package_requires_webkitgtk() {
 add_changed_package_root() {
     local package_name="$1"
     changed_package_roots+=("$package_name")
+}
+
+# An external consumer edge (the CLI registry reader or a declared
+# input_package_* reader) adds its package. When tools/ci_inputs.py reports
+# that every changed path behind that edge is a reviewed documentation read,
+# the package is tested without its Cargo reverse dependents: documentation
+# bytes change no reverse dependent's compiled API or test input. Any other
+# matching path keeps today's reverse-dependent expansion.
+add_consumer_package_root() {
+    local package_name="$1"
+    local edge="$2"
+    if grep -Fxq "documentation_only_${edge}=true" <<<"$consumer_contract"; then
+        documentation_reader_roots+=("$package_name")
+    else
+        add_changed_package_root "$package_name"
+    fi
 }
 
 add_changed_ts_package_dir() {
@@ -440,10 +499,17 @@ finalize_rust_packages() {
     local expanded=""
     if [[ "$all_workspace_packages" == "$TRUE" ]]; then
         expanded="$(all_workspace_package_names)"
-    elif [[ ${#changed_package_roots[@]} -gt 0 ]]; then
-        for package_name in "${changed_package_roots[@]}"; do
-            expanded+="$(reverse_dependency_closure "$package_name")"$'\n'
-        done
+    elif [[ ${#changed_package_roots[@]} -gt 0 || ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        if [[ ${#changed_package_roots[@]} -gt 0 ]]; then
+            for package_name in "${changed_package_roots[@]}"; do
+                expanded+="$(reverse_dependency_closure "$package_name")"$'\n'
+            done
+        fi
+        if [[ ${#documentation_reader_roots[@]} -gt 0 ]]; then
+            for package_name in "${documentation_reader_roots[@]}"; do
+                expanded+="$package_name"$'\n'
+            done
+        fi
     else
         # A Rust lane without an attributable workspace package must never
         # become an empty success. Use the complete workspace as the safe
@@ -506,7 +572,7 @@ finalize_selection() {
             all_workspace_packages="$TRUE"
         elif registry_owner="$(package_for_path crates/keld-cli/tests/error_registry.rs)"; then
             rust="$TRUE"
-            add_changed_package_root "$registry_owner"
+            add_consumer_package_root "$registry_owner" registry
         else
             mark_unknown
         fi
@@ -522,7 +588,7 @@ finalize_selection() {
                 break
             fi
             rust="$TRUE"
-            add_changed_package_root "$consumer_package"
+            add_consumer_package_root "$consumer_package" "package_${consumer_package}"
         fi
     done <<<"$consumer_contract"
     if grep -Fxq 'input_rust=true' <<<"$consumer_contract" && [[ "$rust" != "$TRUE" ]]; then
@@ -555,6 +621,8 @@ host_path_is_affected() {
 
 classify_path() {
     local changed_file="$1"
+
+    classify_codeql_path "$changed_file"
 
     # Crate-local reports/fixtures can be include_bytes!/include_str! inputs.
     # Documentation routing below is additive, never an exemption from its owner.
@@ -798,6 +866,8 @@ classify_github_event() {
         push)
             base_sha="${KELD_CI_BEFORE_SHA:-}"
             head_sha="${GITHUB_SHA:-}"
+            # Only pull requests skip unaffected CodeQL languages (#624).
+            select_every_codeql_language
             ;;
         *)
             mark_unknown

@@ -195,10 +195,31 @@ def rebind(root: Path) -> int:
     return 0
 
 
+def patterns_list(value, label: str, *, allow_empty: bool) -> list[str]:
+    if (not isinstance(value, list) or (not value and not allow_empty)
+            or any(not isinstance(pattern, str) or not pattern for pattern in value)):
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def documentation_only(changed: list[str], other: list[str], documentation: list[str]) -> bool:
+    """True when this edge matched only reviewed documentation reads.
+
+    A path that also matches a non-documentation input or reader pattern is
+    never documentation-only, so a real source or build input keeps the
+    caller's reverse-dependent expansion.
+    """
+    return (any(matches(path, documentation) for path in changed)
+            and not any(matches(path, other) for path in changed))
+
+
 def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
     selected = {"local_" + gate: True for gate in MANDATORY}
     selected.update({"input_rust": False, "input_ts": False, "input_all": False,
                      "input_router": False, "local_default": True})
+    # Computed per edge below and reset after every fallback: a fallback can
+    # only widen a selection, never turn on narrowing.
+    narrowing: dict[str, bool] = {}
     try:
         contract = load(root)
         census = files(root)
@@ -236,22 +257,32 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
                 # metadata (including a host/build reader). Its old package or
                 # platform exclusions are no longer proven.
                 selected["input_all"] = True
-            relevant = uncertain or drift or any(
-                matches(path, consumer["inputs"] + reader_set["patterns"]) for path in changed)
+            documentation = patterns_list(consumer.get("documentation_inputs", []),
+                                          "consumer documentation inputs", allow_empty=True)
+            other = consumer["inputs"] + reader_set["patterns"]
+            relevant = uncertain or drift or any(matches(path, other + documentation) for path in changed)
             for output in outputs:
                 selected[output] = selected.get(output, False) or relevant
+            if "input_registry" in outputs:
+                narrowing["documentation_only_registry"] = (
+                    not drift and documentation_only(changed, other, documentation))
         package_inputs = contract.get("rust_package_inputs", {})
-        if not isinstance(package_inputs, dict):
+        package_documentation = contract.get("rust_package_documentation_inputs", {})
+        if not isinstance(package_inputs, dict) or not isinstance(package_documentation, dict):
             raise ValueError("invalid Rust consumer package mapping")
-        for package, inputs in package_inputs.items():
+        for package in sorted(set(package_inputs) | set(package_documentation)):
             if (not isinstance(package, str) or not package.startswith("keld-")
                     or not package.isascii() or not package.replace("-", "").isalnum()):
                 raise ValueError("invalid Rust consumer package")
-            if (not isinstance(inputs, list) or not inputs
-                    or any(not isinstance(pattern, str) or not pattern for pattern in inputs)):
-                raise ValueError("invalid Rust consumer input patterns")
-            relevant = any(matches(path, inputs) for path in changed)
+            inputs = patterns_list(package_inputs.get(package, []), "Rust consumer input patterns",
+                                   allow_empty=package not in package_inputs)
+            documentation = patterns_list(package_documentation.get(package, []),
+                                          "Rust consumer documentation patterns",
+                                          allow_empty=package not in package_documentation)
+            relevant = any(matches(path, inputs + documentation) for path in changed)
             selected["input_package_" + package] = relevant
+            narrowing["documentation_only_package_" + package] = documentation_only(
+                changed, inputs, documentation)
             if relevant:
                 selected["input_rust"] = True
                 for gate in ("fmt-check", "clippy", "test", "doc"):
@@ -264,6 +295,9 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
             selected["input_all"] = unknown
         if uncertain or selected["input_all"]:
             selected = dict.fromkeys(selected, True)
+        widened = uncertain or selected["input_all"] or "tools/ci-inputs.json" in changed
+        for key, value in narrowing.items():
+            selected[key] = value and not widened
     except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         raise ValueError(f"input contract unavailable: {error}") from error
     return selected

@@ -42,6 +42,17 @@
         "packages/*",
         "tools/*.rs",
         "tools/*.ts",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        "clippy.toml",
+        ".cargo/*",
+        ".config/nextest.toml",
+        "crates/*",
+        "crates/keld-compat/fixtures/lifecycle-corpus/report.md"
+      ],
+      "documentation_inputs": [
         "llms-full.txt",
         "docs/onboarding/README.md",
         "docs/onboarding/04-wire-formats-and-contracts.md",
@@ -56,18 +67,9 @@
         "docs/engineering/decisions.md",
         "docs/engineering/keld-error-codes.md",
         "docs/engineering/budget-scoreboard.md",
-        "docs/engineering/compat-scoreboard.md",
-        "Cargo.toml",
-        "Cargo.lock",
-        "rust-toolchain.toml",
-        "rustfmt.toml",
-        "clippy.toml",
-        ".cargo/*",
-        ".config/nextest.toml",
-        "crates/*",
-        "crates/keld-compat/fixtures/lifecycle-corpus/report.md"
+        "docs/engineering/compat-scoreboard.md"
       ],
-      "contract": "Rust external reads include the CLI recursive tools registry scan, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant.",
+      "contract": "Rust external reads include the CLI recursive tools registry scan, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant. documentation_inputs are read only as text by keld-cli: docs_search embeds llms-full.txt behind keld_cli::mcp, which no reverse dependent calls (keld-host tests use keld_cli::boot, create and dev only), and the registry and doctor tests are keld-cli's own. A diff whose only matching paths are documentation_inputs therefore selects keld-cli without Cargo reverse dependents (#624). A reverse dependent that starts reading one of these documents, or calling keld_cli::mcp, must move that document into inputs in the same change.",
       "reader_set": "rust-readers"
     },
     {
@@ -340,7 +342,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "d22b39c38ec658ccd4123d3fb7a10274c4e820d4278b1a11b468947b39df3319"
+      "sha256": "1930dad69e931b08153995a738c38f58cdb0e6a9083be2e45381c82b823cde2d"
     },
     "audit-readers": {
       "patterns": [
@@ -404,11 +406,16 @@
       "crates/keld-compat/fixtures/lifecycle-corpus/*"
     ],
     "keld-update": [
-      "crates/keld-pack/tests/fixtures/windows-v0-content.tar",
-      "docs/specs/kel53-full-package-activation.md"
+      "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
     ],
     "keld-updater-helper": [
       "clippy.toml"
     ]
-  }
+  },
+  "rust_package_documentation_inputs": {
+    "keld-update": [
+      "docs/specs/kel53-full-package-activation.md"
+    ]
+  },
+  "rust_package_documentation_contract": "Each listed document is read only as text by its package's own #[cfg(test)] code (keld-update: include_str! in src/records/tests.rs), so no reverse dependent compiles or reads it. A diff whose only matching paths are these documents selects that package without Cargo reverse dependents (#624); any other input of the same package keeps the expansion."
 }
