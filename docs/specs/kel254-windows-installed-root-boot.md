@@ -541,9 +541,8 @@ demonstrated). By KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`
 (2026-10-07, item 1), the single `keld-guard` verifier therefore binds the file it
 opens to the running image once KEL-53 slice S9d lands, for this host and for
 `keld-updater-helper.exe` (KEL-53 §4 "Helper launch and self-anchor", *Running-image
-binding*). In
-`PerUserDirect` only the same user, who is outside the threat claim, could otherwise
-diverge them. No install mode, owner, root, volume,
+binding*). In `PerUserDirect` only the same user, who is outside the threat claim,
+could otherwise diverge them. No install mode, owner, root, volume,
 baseline,
 current selection,
 protection profile or profile digest, and no trust decision, comes from path shape,

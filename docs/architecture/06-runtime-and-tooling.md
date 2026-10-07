@@ -505,9 +505,9 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   running image, for the host and the helper alike, the two are not proven to be one
   file (KEL-270 owner decision `740998f4`, 2026-10-07, item 1). The entrypoint takes a
   closed image choice, `keld-host.exe` or `keld-updater-helper.exe`, and the verified
-  signer, and
-  `keld-update` requires the record's publisher scope and app id to equal that signer
-  before the snapshot lease, the one rule for both images (KEL-53 T4d S9a). The same
+  signer, and `keld-update` requires the record's publisher scope and app id to equal
+  that signer before the snapshot lease, the one rule for both images (KEL-53 T4d
+  S9a). The same
   locator anchors the elevated helper itself: `anchor_updater_helper` reads the helper's
   own expectation, refuses every mode but `MachineUacDirect`, applies the signer rule and
   requires its own image to be the journaled one or, without a journal, its role's
