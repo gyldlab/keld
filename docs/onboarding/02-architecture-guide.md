@@ -622,6 +622,6 @@ delegation and must be listed under `## Review gates` in the PR (root `AGENTS.md
 "none" when none apply. `.agents/coordination.md` owns the final merge predicate.
 
 **Phasing** is tracked in the generated
-[product-status ledger](../engineering/product-status.md); Linear owns live scheduling,
-dependencies, and claims. Phase classification never substitutes for a named product or
+[product-status ledger](../engineering/product-status.md); the tracker issue (Linear, or
+GitHub under #517) owns live scheduling, dependencies, and claims. Phase classification never substitutes for a named product or
 real-OS acceptance result.

@@ -14,7 +14,7 @@ in agent-facing files. Architecture specs remain prose.
   is its ordered corpus. Included-source changes MUST pass `just llms-check`.
 - Code/spec mismatch is a bug in one. Fix both in the same PR or state the blocker;
   MUST NOT drift silently.
-- Features require an approved `docs/agents/spec-template.md` spec plus Linear (KELD).
+- Features require an approved `docs/agents/spec-template.md` spec plus a tracker issue.
   `docs/agents/workflow.md` owns execution; routed review/coordination playbooks own
   their operational rules.
 - Read nearest crate `AGENTS.md` before editing there.

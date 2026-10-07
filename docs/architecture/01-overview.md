@@ -8,7 +8,7 @@
 
 The generated [Current/Target/Evidence ledger](../engineering/product-status.md) owns
 repository maturity and evidence. This section describes process and trust relationships
-only; Linear continues to own execution state.
+only; the tracker issue (Linear, or GitHub under #517) continues to own execution state.
 
 Three principal classes, with host-minted instances inside each class:
 1. **keld-host** (Rust): the authority root for every framework-controlled privileged

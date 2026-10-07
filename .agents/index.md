@@ -18,7 +18,7 @@ do not silently choose the less restrictive rule.
 |---|---|
 | Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, relevant architecture and nearest crate `AGENTS.md`; query only relevant-area entries in `docs/agents/learnings.md` |
 | Starting, resuming, or closing non-trivial repository work: implementation, research, audit, review, or cleanup | [`docs/agents/workflow.md`](../docs/agents/workflow.md) |
-| Using Linear, creating/using a branch or worktree, OS-scoped acceptance, or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
+| Using an issue tracker, creating/using a branch or worktree, OS-scoped acceptance, or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
 | Opening/updating/rebasing/pushing/reviewing a PR or resolving review feedback | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
 | Editing GitHub Actions, the CI router/checkers, required checks, KeldBot, or branch protection | [`ci.md`](ci.md) and [`testing.md`](testing.md) |
 | Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository harness assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |

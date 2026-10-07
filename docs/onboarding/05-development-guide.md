@@ -334,7 +334,7 @@ is the process of record. Condensed:
    shape, not implicit approval for a new implementation. Bug fixes skip the spec but
    not the regression test.
 3. **Isolate** — one concern per branch; work in a git worktree sibling
-   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` from `origin/main`
+   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` (or `agent/gh-<n>-<slug>` for a GitHub tracker issue) from `origin/main`
    (`.agents/review.md` § Branch and commit contract). Never two people building in one
    tree at once.
 4. **Write the test first**, then implement. Vertical slices, no placeholders.
@@ -387,7 +387,7 @@ reach for them:
 | What has already bitten someone? | [`docs/agents/learnings.md`](../agents/learnings.md) |
 | What is the system supposed to be? | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Why did we choose this? | [`docs/engineering/decisions.md`](../engineering/decisions.md) (engineering narrative, not RFC 2119). [`AGENTS.md`](../../AGENTS.md) still binds. Canonical categorized `docs/research/library/` is exploratory evidence, not required reading. |
-| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); Linear owns live scheduling |
+| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); the tracker issue (Linear, or GitHub under #517) owns live scheduling |
 | Which of these actually binds me? | [`06-documentation-map.md`](./06-documentation-map.md) |
 
 There is no `.claude/project-calibration.json` and no `project-conventions` skill in this
@@ -464,8 +464,8 @@ the PR rather than fixing it silently in an unrelated diff.
 ### Local agent workspace
 
 Keld keeps new task worktrees and command scratch below the primary checkout's
-gitignored `.keld-work/`. Git remains the worktree authority and Linear the issue/claim
-authority. Commands resolve the same primary directory when invoked inside a linked
+gitignored `.keld-work/`. Git remains the worktree authority and the tracker issue (Linear, or
+GitHub under #517) the issue/claim authority. Commands resolve the same primary directory when invoked inside a linked
 checkout; this is cooperative file management, not an OS sandbox.
 
 From a reviewed checkout, after claiming the issue:
@@ -487,7 +487,7 @@ on start to generate one; retain the returned ID for subsequent runs. Start defa
 local `origin/main`, resolves a commit before writes, and accepts an explicit `--base`.
 Fetch explicitly when the local remote-tracking ref needs updating. Existing task paths,
 branches and another session's ownership are never overwritten. Repeating the same
-start returns that session's valid task. These records do not replace the Linear claim.
+start returns that session's valid task. These records do not replace the tracker claim.
 
 The returned task path is `.keld-work/worktrees/kel-245-workspace`. Run evidence lives in
 `.keld-work/sessions/manual-session-1/evidence/run-ID/`. Scratch uses a private

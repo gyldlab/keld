@@ -5,7 +5,7 @@ Strip every HTML comment from the submitted PR body (this block and the per-head
 Branch: `agent/kel-<n>-<slug>` from `origin/main` (`.agents/review.md` § Branch and commit contract).
 
 Required headings below: keep the names. Fill them. Omit any optional heading that would be empty — do not write N/A.
-Optional (only if they have content): `## Linear` (KEL-n), `## Rollback`, `## Screenshots`.
+Optional (only if they have content): `## Linear` (KEL-n or GH-n), `## Rollback`, `## Screenshots`.
 Do not paste review-bot release notes into this body.
 -->
 

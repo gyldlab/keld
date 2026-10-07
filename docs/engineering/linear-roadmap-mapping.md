@@ -23,8 +23,8 @@ Backlog placement in Phase 2 does not mean “implement now.” The issue's spec
 dependencies, current active PRs and roadmap exit order still control sequencing.
 
 The selection flow below shows ownership and gating, not dates. The status ledger owns
-phase classification, approved issue specs own scoped acceptance, and Linear owns live
-execution state.
+phase classification, approved issue specs own scoped acceptance, and the tracker issue
+(Linear, or GitHub under #517) owns live execution state.
 
 ```mermaid
 flowchart TD
