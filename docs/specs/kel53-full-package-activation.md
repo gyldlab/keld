@@ -2650,8 +2650,8 @@ Must not touch in Slice A:
   resolves it from a fresh UAC prompt without ordinary host boot, writing nothing when
   revalidation or the process-family proof fails. The §7 rows for criteria 8, 17 and 20
   define the expected results. Implementation follows these dependency-ordered slices,
-  each one PR (S4 is two, S4a and S4b; S6 is five, S6a, S6b, S6b2, S6c and S6d; S9 is
-  four, S9a to S9d) with its crates, gates and evidence:
+  each one PR (S4 is two, S4a and S4b; S6 is six, S6a, S6b, S6b2, S6b3, S6c and S6d; S9
+  is four, S9a to S9d) with its crates, gates and evidence:
   - S1, native qualification spike, in the nested research checkout only (no Keld
     code; no gate): `hProcess` and its rights from an elevated `runas` launch; the
     elevated helper opening the host process and its token after own-account and
@@ -2703,12 +2703,16 @@ Must not touch in Slice A:
     new `WindowsLaunchedProcess`, `WindowsClaimantRefusal`). Evidence: the
     process-object cells of the claimant-binding row at the binding; pipe, token,
     deadline and one-shot cells close in S6/S11.
-  - S6, `PerUserDirect` connect-back end to end, in five PRs. Coordination record
+  - S6, `PerUserDirect` connect-back end to end, in six PRs. Coordination record
     (Linear KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6
     splits into S6a to S6d; S6a and S6b are independent, S6c composes them, and S6d
     composes the landed lifecycle keeper into S6c's coordinator. Owner decision (Linear
     KEL-270 comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 3) adds
     S6b2, which changes the coordinator input that S6c composes and lands before it.
+    Item 2 of the same decision, under the owner's rule in reply `559c07ac` and the
+    failed option-A qualification in reply `079b239d`, adds S6b3, the candidate release
+    that S6c composes; it also lands before S6c (coordinator decisions under the
+    owner's delegation, 2026-10-08; "Candidate release after commit").
     Until S6d lands, an owner lost at any point after the candidate launch (`AwaitingHealth`,
     `HealthAccepted` or `RollbackPending`) leaves its journal pending; `recover` needs a
     retirement binding that only the keeper's `KELD-QF1` witness supplies once the owner
@@ -2783,6 +2787,28 @@ Must not touch in Slice A:
       unchanged). Evidence: the "10, 17 (coordinator image)" row; the landed
       activation, recovery and crash-cut tests pass through the crate-private
       file-taking function in place of each raw digest.
+    - S6b3, the candidate release primitives in `keld-runtime` (`windows_job.rs`), with
+      the mechanical call-site updates in `keld-host` (§5). Owner decision (Linear
+      KEL-270 comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 2, under
+      replies `559c07ac` and `079b239d`; coordinator decisions under the owner's
+      delegation, 2026-10-08; "Candidate release after commit"): the retained
+      `WindowsHostDeathJob` capability that `install_host_death_job` returns; the one
+      clear-with-read-back primitive with its two consuming entries,
+      `WindowsProcessJob::release_family` and `WindowsHostDeathJob::release_for_exit`;
+      the host-death Job process-ID lister; and the census, with its termination of
+      members outside the family and its deadline refusal. It lands before S6c, which
+      composes it in the §4 order and measures the census deadline; S11 reuses
+      `release_family`; S12 reuses the lister. It changes crash ownership and handle
+      ownership, so it needs an architecture review. Gates: unsafe (`keld-runtime`
+      amendment: the §5 scopes on listed calls, no new function names, and the
+      limit-change rule narrowed to this strip), public API (breaking:
+      `install_host_death_job`'s return type; new: `WindowsHostDeathJob`,
+      `release_for_exit`, `release_family`, `WindowsReleasedAttempt` and
+      `WindowsExitCensus`); permission model, dependency and wire: none (every call
+      and constant is under a `windows-sys` feature the crate already enables, and
+      the clear removes only a termination the host could already perform on its own
+      family). Evidence: the "8, 9 (candidate release)" row except its S6c cells, in
+      child processes that stand in for the host and the candidate.
     - S6c, the composition in `keld-core` and `keld-host`, and the measured G constant
       in the `keld-ipc` attempt module. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): the `PerUserDirect` host
@@ -2803,20 +2829,29 @@ Must not touch in Slice A:
       (health sequence)" row with the G measurement, except its owner-killed cell (S6d).
       S6c keeps the host's boot `VerifiedWindowsImage` for that call; today
       `validate_installed_current_exe` drops it on return
-      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c also waits for the KEL-53
-      amendment that specifies item 2 of `740998f4`, the candidate's lifetime after
-      commit: the native qualification of option A (breakaway from the host-death Job)
-      failed its acceptance test, so the owner's rule selects option B, in which the
-      old host clears kill-on-close on its own host-death Job just before it exits,
-      after commit and after reaping its roles (Linear KEL-270 replies `559c07ac` and
-      `079b239d`, 2026-10-07); this spec does not yet specify B.
+      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c composes S6b3's release
+      in the order of "Candidate release after commit": after `complete()`,
+      `release_family`; then the host's own role teardown, the landed WebView2
+      `BrowserProcessExited` barrier and the Bun teardown; then `release_for_exit`,
+      with the census deadline that S6c measures from the reaping latencies its PR
+      records and fixes beside G; then exit. It keeps `install_host_death_job` first on
+      the rendezvous-argument path, so the candidate's own host-death Job nests under
+      the attempt Job. Its evidence adds the S6c cells of the "8, 9 (candidate
+      release)" row: survival through the real host coordinator, the ten in-session
+      updates and the measured deadline.
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
       executable entry. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6c's coordinator starts a
       dedicated one-shot keeper process outside the attempt Job and hands it the Job and
       lease retention through the landed `KELD-HO1`/`KELD-HR1` handoff; the next writer,
       as successor, takes the `KELD-QO1`/`KELD-QA1`/`KELD-QF1` witness before `recover`.
-      S6d names the keeper's executable entry and its crates; none exists today. The
+      S6d names the keeper's executable entry and its crates; none exists today.
+      Design item, which S6d's own specification solves at the root before S6d starts
+      (§10): a keeper that the host starts inherits the host's host-death Job and is
+      outside the attempt Job, so option B does not cover it, and the S6b3 census would
+      terminate it as a member outside the family at a committed exit; it has no
+      release path today ("Candidate release after commit"). A criterion-10 post-exit
+      helper, if one is used, has the same gap. The
       adversarial controls of "Bounded per-attempt lifecycle keeper" pass before S6d
       connects the keeper to production writes. After S6d, recovery when every owner is
       lost, or across a reboot or hibernation, remains unsupported and halts with its
@@ -2930,18 +2965,27 @@ Must not touch in Slice A:
     source-locator encoding, `BQ1` field set and `BO1` classes its wire review fixes
     under *Bootstrap records*; approved: KEL-270 owner decision `eff8e2fb`,
     2026-10-06), and the `keld-runtime` token launch: `CreateProcessWithTokenW` with
-    `CREATE_SUSPENDED`, the token-launch Job assignment and the
-    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` clear after `health-accepted` (§5; Coordination
-    record, Linear KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07).
-    S11 removes the activation role's interim refusal (*Interim*). Gates: all five.
-    Evidence: the bootstrap rows under the UAC operator evidence protocol, including
-    the second ordinary account and alternate-administrator rows. It starts only after
-    S1 showed that the helper can open the host process and its token after
-    alternate-administrator consent, or after the owner decided otherwise.
+    `CREATE_SUSPENDED`, the token-launch Job assignment and, after `health-accepted`,
+    the attempt Job's release through S6b3's `WindowsProcessJob::release_family`, the
+    one clear primitive (§5; Coordination record, Linear KEL-270 comment
+    `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07; "Candidate release after
+    commit"). S11 removes the activation role's interim refusal (*Interim*). Gates: all
+    five. Evidence: the bootstrap rows under the UAC operator evidence protocol,
+    including the second ordinary account and alternate-administrator rows, and the
+    "17 (Machine-UAC Job inheritance)" row. It starts only after S1 showed that the
+    helper can open the host process and its token after alternate-administrator
+    consent, or after the owner decided otherwise. Start condition (coordinator
+    decision under the owner's delegation, 2026-10-08): its §7 rows record the elevated
+    helper's and the candidate's membership of the initiating host's host-death Job and
+    of the helper's attempt Job, and whether the candidate survives the initiating
+    host's exit; if the candidate is in that host-death Job, S11 stops for an owner
+    decision ("Machine-UAC owner-loss retirement"). This amendment specifies no probe.
   - S12, enabling owner-loss retirement (`keld-updater-helper`, `keld-guard`'s logon
-    wrapper, `keld-runtime`'s census seam). Gates: permission model, unsafe review of
-    the exact diff. Evidence: the owner-loss retirement row with its census and static
-    scan; only then does `RestartFirst` replace `RecoveryDisabled` for launched attempts.
+    wrapper, and the Machine-UAC census over `keld-runtime`'s S6b3 process-ID lister,
+    which S12 reuses rather than adding a seam). Gates: permission model, unsafe review
+    of the exact diff. Evidence: the owner-loss retirement row with its census and
+    static scan; only then does `RestartFirst` replace `RecoveryDisabled` for launched
+    attempts.
   T4d also updates the `activate.rs` retirement-binding documentation to name the
   recovery-only helper as a producer. FFI wrappers stay minimal beneath safe typed
   wrappers with owned handles and minimum access rights; no raw handle crosses a normal
