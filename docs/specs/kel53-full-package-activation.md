@@ -1753,7 +1753,7 @@ fixes the `BQ1` field set and the `BO1` class values.
 field lists above leave the following values and rules open. Each was this amendment's
 proposal for the wire review and is approved with it; its rationale follows:
 - the locator's BLAKE3 hash and NUL-terminated `keld.<name>/v1` domain, the style of the
-  landed domain-separated derivations (`records.rs:19-22`, `:239-280`; `keld-pack`
+  landed domain-separated derivations (`records.rs:22-25`, `:337-378`; `keld-pack`
   `expected_identity.rs:16`); its purposes `1` and `2`, numbered from `1` as the landed
   lifecycle purposes are (`bootstrap.rs:815-820`) but in their own closed type; the zero
   `b` of purpose `2`, which keeps one input shape and one encoder; and the refusals of
@@ -1793,7 +1793,7 @@ proposal for the wire review and is approved with it; its rationale follows:
   bind keld-core already denies on its own (`app_session.rs:3253-3260`). Deferring the
   arm alone leaves the host alive with no generation and lets the owner commit. With
   both moved, a process exit that the kernel reports carries the failure, with no new
-  wire value, and the landed `ProcessCrash` class (`records.rs:110-111`) records it. As
+  wire value, and the landed `ProcessCrash` class (`records.rs:187-188`) records it. As
   under the alternative, the surviving host must act on the revocation, and its
   revocation-to-close latency G is a window edge that both options share. `AK1` accepted
   becomes load-bearing for in-process recovery, so the owner waits under a deadline for
@@ -2629,7 +2629,7 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `WindowsJournaledAttempt` handles and its `AttemptOwner` and `InitiatingLogon`
   inputs (named for the KEL-270 T4d S3 public-API review); Machine-UAC admission in
   `load_windows_activation_write_snapshot` and `load_windows_recovery_inspection`,
-  which today admit only `PerUserDirect` (`windows_baseline/load.rs:353`, `:382-385`),
+  which today admit only `PerUserDirect` (`windows_baseline/load.rs:447`, `:476-479`),
   through the existing `require_windows_machine_uac_owner_token` predicate rather than a
   second one; the recovery-role entry point for the D1 (refined) abandon intent, with the
   abandon-intent step mappings and `retirement_due` change behind it (§5); the
