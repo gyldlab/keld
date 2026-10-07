@@ -1345,8 +1345,9 @@ before mutation. LC1/LA1/LR1 version this KEL-53 protocol separately from generi
 frames; production capability handoff remains disconnected until lifecycle proof gates
 pass. See KEL-53 for the record and failure contract.
 
-**Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer current, message
-records target):** the candidate connect-back and the Machine-UAC helper bootstrap use a
+**Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer, claim and health
+record codec and connect-back locator current; record exchange and bootstrap records
+target):** the candidate connect-back and the Machine-UAC helper bootstrap use a
 third one-peer protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>`
 namespace, disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
@@ -1366,8 +1367,15 @@ named-pipe owner's one comparison, which the app-link and lifecycle pipes also u
 a DACL-only form. The shared token-fact reader
 `query_windows_peer_token_facts` also reports each token's logon session
 (`TokenStatistics.AuthenticationId`), elevation and elevation type, the facts KEL-53
-requires of the claim writer's token and of the initiating token. No record or locator
-exists until KEL-53 fixes their byte layouts.
+requires of the claim writer's token and of the initiating token. On the byte layouts
+KEL-53 fixes (owner decision `eff8e2fb`), `keld-ipc::attempt` also owns the claim and
+health record codec (`KELD-AH1` to `KELD-AK1`), whose reader takes the 8-byte magic
+first and refuses a record its position does not admit before reading further, and
+the purpose-`1` connect-back locator, which shares its one prefix constant with
+`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is pure
+bytes and builds on every platform; the locator is Windows-only. No component
+exchanges these records yet (KEL-53 §6 S6), and the bootstrap records and purpose-`2`
+locator land with S11.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
