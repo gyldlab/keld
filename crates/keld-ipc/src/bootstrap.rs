@@ -208,7 +208,7 @@ impl BootstrapRejectionObserver for NoopRejectionObserver {
     fn rejected(&self, _rejection: BootstrapRejection) {}
 }
 
-fn peer_handshake_window(
+pub(crate) fn peer_handshake_window(
     started: Instant,
     generation_deadline: Option<Instant>,
     handshake_limit: Duration,

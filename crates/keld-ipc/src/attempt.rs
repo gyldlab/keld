@@ -7,25 +7,50 @@
 //! readback of the server descriptor before it sends anything, and the
 //! purpose-`1` endpoint locator. Comparing a readback with a form is not
 //! repeated here: it is the named-pipe owner's single comparison, which the
-//! app-link and lifecycle pipes share. The claim and health record codec is
-//! pure bytes and builds on every platform; KEL-53 owns its byte layouts
-//! (approved: KEL-270 owner decision `eff8e2fb`).
+//! app-link and lifecycle pipes share. KEL-53 owns the claim and health
+//! records' byte layouts (approved: KEL-270 owner decision `eff8e2fb`).
+//!
+//! The claim (`KELD-AH1` to `KELD-AR1`, `claim.rs`) and the health records
+//! after it (`channel.rs`) run inside the endpoint and the client, which never
+//! expose their stream: the owner's endpoint derives its name from the IDs
+//! that its `KELD-AC1` carries, and the client runs the locator check before
+//! it sends `KELD-AA1`. The record codec is therefore crate-private pure
+//! bytes (KEL-270 comment `136c2682`); it builds where the exchange does, for
+//! its tests, and with the non-product `fuzzing` feature, which adds only its
+//! raw-byte fuzz hook.
 
 #[cfg(windows)]
+mod channel;
+#[cfg(windows)]
+mod claim;
+#[cfg(windows)]
 mod locator;
+#[cfg(any(windows, test, feature = "fuzzing"))]
 mod records;
+#[cfg(any(windows, test))]
+mod window;
 
+#[cfg(windows)]
+pub use channel::{
+    WindowsAttemptClaimantChannel, WindowsAttemptCloseWait, WindowsAttemptExchangeError,
+    WindowsAttemptOwnerChannel, WindowsAttemptRollBack,
+};
 #[cfg(windows)]
 pub(crate) use locator::ATTEMPT_ENDPOINT_PREFIX;
 #[cfg(windows)]
 pub use locator::{
     WindowsAttemptLocatorError, WindowsAttemptLocatorInput, windows_attempt_connect_back_endpoint,
 };
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use records::fuzz_attempt_records;
+#[cfg(windows)]
 pub use records::{
-    AttemptBootAcknowledgement, AttemptChallenge, AttemptClaim, AttemptFailureClass,
-    AttemptHealthResult, AttemptReadPosition, AttemptRecord, AttemptRecordError, AttemptRecordKind,
+    AttemptFailureClass, AttemptReadPosition, AttemptRecordError, AttemptRecordKind,
     AttemptTranscript,
 };
+#[cfg(windows)]
+pub use window::{ATTEMPT_HEALTH_WINDOW, AttemptHealthWindowFailure};
 
 #[cfg(windows)]
 use std::fmt::{self, Write as _};
@@ -180,6 +205,19 @@ impl WindowsAttemptEndpointSecurity {
     }
 }
 
+/// The minted IDs that a connect-back endpoint's name derives from and that
+/// its `KELD-AC1` carries.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConnectBackIds {
+    /// The provenance-derived installation ID, the owner's own.
+    pub(crate) installation: [u8; 32],
+    /// The attempt ID that `keld-update` minted.
+    pub(crate) attempt: [u8; 32],
+    /// The health-channel ID that `keld-update` minted.
+    pub(crate) health_channel: [u8; 32],
+}
+
 /// The owner-held `keld-attempt` endpoint: the only instance of its name,
 /// created first and read back before the owner reveals the name to anyone.
 ///
@@ -187,27 +225,25 @@ impl WindowsAttemptEndpointSecurity {
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct WindowsAttemptEndpoint {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "held for its Drop: the instance reserves the name until the owner releases it"
-        )
-    )]
     server: WindowsNamedPipeServer,
     endpoint: String,
+    ids: ConnectBackIds,
 }
 
 #[cfg(windows)]
 impl WindowsAttemptEndpoint {
-    /// Creates `endpoint` as its only, first instance under `security`, with
-    /// remote clients rejected and a non-inheritable handle, then reads the
-    /// descriptor back and requires it to be exactly `security`.
+    /// Creates the purpose-`1` connect-back endpoint of one minted attempt.
+    /// Its name is [`windows_attempt_connect_back_endpoint`] over exactly the
+    /// IDs that this endpoint's `KELD-AC1` then carries, so the name and the
+    /// challenge cannot drift apart (KEL-53 §4 "Candidate connect-back",
+    /// *Locator*). It is created as its name's only, first instance under
+    /// `security`, with remote clients rejected and a non-inheritable handle,
+    /// and its descriptor is read back and required to be exactly `security`.
     ///
     /// # Errors
     ///
-    /// - [`WindowsAttemptEndpointError::EndpointShape`] before any creation
-    ///   when `endpoint` is not an exact `keld-attempt` name;
+    /// - [`WindowsAttemptEndpointError::Locator`] before any creation when the
+    ///   locator refuses the IDs (an all-zero or a repeated ID);
     /// - [`WindowsAttemptEndpointError::NameInUse`] when the name already
     ///   exists, whoever created it;
     /// - [`WindowsAttemptEndpointError::SecurityMismatch`] when the readback
@@ -215,14 +251,45 @@ impl WindowsAttemptEndpoint {
     /// - [`WindowsAttemptEndpointError::Os`] for any other Windows failure,
     ///   including `ERROR_INVALID_OWNER` when the creating token cannot assign
     ///   the form's owner.
-    pub fn create(
+    pub fn create_connect_back(
+        installation_id: &[u8; 32],
+        attempt_id: &[u8; 32],
+        health_channel_id: &[u8; 32],
+        security: &WindowsAttemptEndpointSecurity,
+    ) -> Result<Self, WindowsAttemptEndpointError> {
+        let endpoint =
+            windows_attempt_connect_back_endpoint(installation_id, attempt_id, health_channel_id)
+                .map_err(WindowsAttemptEndpointError::Locator)?;
+        Self::create_named(
+            &endpoint,
+            ConnectBackIds {
+                installation: *installation_id,
+                attempt: *attempt_id,
+                health_channel: *health_channel_id,
+            },
+            security,
+        )
+    }
+
+    /// Creates `endpoint`, bound to `ids`, as [`Self::create_connect_back`]
+    /// does. Production passes the name derived from `ids`; a test passes
+    /// another to stand in for an owner whose challenge does not derive its
+    /// name.
+    ///
+    /// # Errors
+    ///
+    /// [`WindowsAttemptEndpointError::EndpointShape`] before any creation when
+    /// `endpoint` is not an exact `keld-attempt` name, and otherwise as
+    /// [`Self::create_connect_back`].
+    pub(crate) fn create_named(
         endpoint: &str,
+        ids: ConnectBackIds,
         security: &WindowsAttemptEndpointSecurity,
     ) -> Result<Self, WindowsAttemptEndpointError> {
         if !WindowsNamedPipeBootstrapStream::is_attempt_endpoint(endpoint) {
             return Err(WindowsAttemptEndpointError::EndpointShape);
         }
-        Self::create_from(endpoint, security, &security.descriptor()?)
+        Self::create_from(endpoint, ids, security, &security.descriptor()?)
     }
 
     /// Creates the instance under `descriptor` and admits it only if the
@@ -231,6 +298,7 @@ impl WindowsAttemptEndpoint {
     /// assigning something other than what was requested.
     fn create_from(
         endpoint: &str,
+        ids: ConnectBackIds,
         security: &WindowsAttemptEndpointSecurity,
         descriptor: &LocalBox<SecurityDescriptor>,
     ) -> Result<Self, WindowsAttemptEndpointError> {
@@ -263,6 +331,7 @@ impl WindowsAttemptEndpoint {
         Ok(Self {
             server,
             endpoint: endpoint.to_owned(),
+            ids,
         })
     }
 
@@ -275,11 +344,15 @@ impl WindowsAttemptEndpoint {
 
 /// A client connection to a `keld-attempt` endpoint whose server was found in
 /// this process's session, with its descriptor read back and matched, before
-/// this value existed. Nothing has been sent on it.
+/// this value existed. Nothing has been sent on it; [`Self::claim`] runs the
+/// claim on it.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct WindowsAttemptClient {
     stream: WindowsNamedPipeStream,
+    /// The rendezvous name this client opened: the claim's locator check
+    /// requires the offered IDs to derive exactly this name.
+    endpoint: String,
 }
 
 #[cfg(windows)]
@@ -355,7 +428,10 @@ impl WindowsAttemptClient {
                     source,
                 })?;
         expected.verify(&readback)?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            endpoint: endpoint.to_owned(),
+        })
     }
 
     /// Process ID of the server end, from `GetNamedPipeServerProcessId`. It
@@ -379,7 +455,8 @@ impl WindowsAttemptClient {
     /// # Errors
     ///
     /// Returns [`WindowsAttemptEndpointError::Os`] if Windows cannot report it.
-    pub fn server_session_id(&self) -> Result<u32, WindowsAttemptEndpointError> {
+    #[cfg(test)]
+    pub(crate) fn server_session_id(&self) -> Result<u32, WindowsAttemptEndpointError> {
         self.stream
             .peer_session_id()
             .map_err(|source| WindowsAttemptEndpointError::Os {
@@ -427,6 +504,9 @@ pub enum WindowsAttemptEndpointError {
         /// This client process's own session.
         own_session: u32,
     },
+    /// `KELD-IPC-014`: the locator refused the connect-back IDs before any
+    /// creation.
+    Locator(WindowsAttemptLocatorError),
 }
 
 #[cfg(windows)]
@@ -472,6 +552,7 @@ impl fmt::Display for WindowsAttemptEndpointError {
                  process's session {own_session}. Refuse the endpoint without sending \
                  anything: only an owner in the client's own session is admitted."
             ),
+            Self::Locator(source) => write!(f, "{source}"),
         }
     }
 }
@@ -481,6 +562,7 @@ impl std::error::Error for WindowsAttemptEndpointError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NameInUse { source } | Self::Os { source, .. } => Some(source),
+            Self::Locator(source) => Some(source),
             Self::EndpointShape
             | Self::SecurityMismatch { .. }
             | Self::InvalidSid

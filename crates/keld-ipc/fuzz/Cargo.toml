@@ -20,7 +20,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-keld-ipc = { path = ".." }
+# `fuzzing` exposes the crate-private keld-attempt codec's raw-byte hook.
+keld-ipc = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
 name = "raw_receive"

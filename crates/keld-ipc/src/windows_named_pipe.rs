@@ -1632,10 +1632,45 @@ fn closed_pipe_error() -> io::Error {
 }
 
 fn abort_if_revert_failed(reverted: bool) {
+    #[cfg(test)]
+    let reverted = reverted && !REVERT_FAILURE_INJECTED.with(std::cell::Cell::get);
     if !reverted {
         // Microsoft documents that the process must shut down because it
         // otherwise continues under the impersonated client's security context.
         std::process::abort();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Seam: on a thread that set it, a revert that succeeded counts as failed,
+    /// so a test can observe what a real `RevertToSelf` failure does to its
+    /// caller. The thread has still reverted.
+    static REVERT_FAILURE_INJECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes every later revert on this thread count as failed
+/// ([`REVERT_FAILURE_INJECTED`]), which aborts the process.
+#[cfg(test)]
+pub(crate) fn inject_revert_failure_on_this_thread() {
+    REVERT_FAILURE_INJECTED.with(|injected| injected.set(true));
+}
+
+/// Test-only access to a stream's own handle.
+#[cfg(test)]
+impl WindowsNamedPipeStream {
+    /// Lends this endpoint's own pipe handle to a test oracle, as
+    /// [`WindowsNamedPipeServer::inspect_owned_pipe`] does for a server.
+    pub(crate) fn inspect_owned_pipe<T>(
+        &self,
+        inspect: impl FnOnce(&OwnedHandle) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let pipe = self
+            .inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        inspect(pipe.as_ref().ok_or_else(closed_pipe_error)?)
     }
 }
 
