@@ -269,7 +269,7 @@ keld-wv owns. The keld-core window registry owns window identity (the host-minte
 state machine. It drives keld-wv's native handles through the UI-loop command and event
 queue. The app-link `window` channel carries these to the app process, and webview
 principals cannot reach it until KEL-102's per-window grants exist. The contract is
-`docs/specs/gh531-window-registry-close-state-machine.md` (GH-531, draft).
+`docs/specs/gh531-window-registry-close-state-machine.md` (GH-531, approved).
 
 Implementation notes: objc2/objc2-app-kit on macOS (no deprecated cocoa crate);
 windows-rs on Windows; gtk4 + ashpd (XDG portals — file dialogs, notifications,

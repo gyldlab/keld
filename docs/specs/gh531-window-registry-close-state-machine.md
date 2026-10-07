@@ -332,6 +332,11 @@ fail. "Owner" is the implementing ticket.
     default `Quit` written, `destroy()` returns, and the host reads no `Quit` before it
     has written the `Destroy` reply. *NC:* letting the lifecycle applier run the
     last-window policy in the wake drain writes `Quit` before `'closed'` and fails.
+    **Creation in flight:** given window A `Open` and window B `Opening`, when A
+    reaches `Destroyed`, then no `LastWindowClosed` is written and B then reaches
+    `Open`; if B's build fails instead (O2), the caller gets `ERR 041` and still no
+    `LastWindowClosed` is written. *NC:* excluding `Opening` from the T11 check writes
+    `LastWindowClosed`, the facade's default `Quit` follows, and the test fails.
     Owner: F02-T3.
 33. **Quit keeps asking every window (#419 rule; registry half).** Given windows A and
     B and the facade's quit loop, when A vetoes, then a close request for B is still
@@ -445,8 +450,9 @@ Edges promoted from hidden coupling:
   A11 depend on #528.
 - A7 → A5. The parked path uses gh527's applier cursor. The unparked path uses the
   same per-channel applier on the dispatch cursor. There is one applier per channel.
-- A10 ↔ KEL-75 T4a. Only the `Allow`, `Destroy` and terminal-end transitions linearize
-  `WindowClosing(w)`. `CloseRequested` does not, because a veto must leave the window
+- A10 ↔ KEL-75 T4a. Only the `Allow`, `Destroy` and terminal-end transitions, and role
+  loss of an `Opening` window (O10), linearize `WindowClosing(w)`; role loss of an
+  adoptable window (P10, Q11) does not. `CloseRequested` does not, because a veto must leave the window
   fully live.
 - A12 ↔ F01-T3. A terminate-later wait runs in `NSModalPanelRunLoopMode`, so the same
   common-modes rule covers quit.
@@ -456,8 +462,9 @@ Edges promoted from hidden coupling:
 - Handles. Native `NSWindow`/`WKWebView` stay owned by keld-wv on the UI thread (A2).
   The registry holds only `WindowId → (WindowGeneration, WebviewId,
   owner_role_generation, state)`. `owner_role_generation` is the RoleInstance
-  generation of the link whose `Create` minted the window; it never changes in this
-  slice. It never
+  generation of the link that owns the window: set at `Create` admission, and changed
+  only by the explicit transfer to the recovered successor when it subscribes (D6,
+  criterion 30). It never
   holds a native handle, and no handle crosses kipc (epic #447 never-list).
 - Identity. Only the registry mints `WindowId`, `WindowGeneration` and `close_seq`. The
   facade receives them and never invents them (A1).
@@ -713,7 +720,7 @@ Host registry, per window:
 
 | State | Meaning | Native view |
 |---|---|---|
-| `Opening` | pair minted, native build in progress on the UI thread; not live for the last-window policy | being created |
+| `Opening` | pair minted, native build in progress on the UI thread; counted by the last-window check (T11) | being created |
 | `Open` | live, no request pending | live |
 | `ClosePending(close_seq)` | `CloseRequested` written, reply awaited | live |
 | `Closing` | KEL-75 `WindowClosing(w)` linearized; teardown in progress (or awaiting a late build result) | bridge destroyed, then webview, then window |
@@ -764,7 +771,7 @@ test enumerates every pair and asserts its row.
 | O7 | `Opening` | `Setter` | `Opening` | ERR 038 |
 | O8 | `Opening` | `Destroy` | `Opening` | ERR 038 |
 | O9 | `Opening` | `Released` | `Opening` | one host diagnostic (invariant violation); ignored |
-| O10 | `Opening` | `Role loss` | `Closing` | the build result is awaited as a late input (C1, C2); no frame; no pair was ever delivered, so nothing is adopted (T9) |
+| O10 | `Opening` | `Role loss` | `Closing` | `WindowClosing(w)`; the build result is awaited as a late input (C1, C2); no frame; no pair was ever delivered, so nothing is adopted (T9) |
 | O11 | `Opening` | `Session end` | `Closing` | as the `Role loss` row; the blocked `Create` caller gets gh527's `KELD-IPC-024` from the host drain (T10) |
 | O12 | `Opening` | `Bounds fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
 | O13 | `Opening` | `Focus fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
@@ -840,8 +847,11 @@ when a request is pending and the sequence matches, so in every other state it i
 link is live and not retired (after a `Role loss` row nothing is written): `Destroyed`, if a
 `Created` was written for this window; then `LastWindowClosed`, if no live window
 remains and the step is outside a session end; then every deferred `REPLY Destroyed`.
-*Live* means `Open`, `ClosePending` or `Closing`; an `Opening` window is not live until
-it reaches `Open`.
+*Live* means `Opening`, `Open`, `ClosePending` or `Closing`. An `Opening` window counts
+because its `Create` was admitted before this step, as an Electron constructor returns
+before any later close completes; so the session cannot quit before it opens. If that
+build then fails (O2), no `LastWindowClosed` is written: the `Create` caller's
+`ERR 041` is the app's signal (criterion 32).
 
 The facade runs no last-window policy for that `LastWindowClosed` until the `Destroy`
 caller has emitted `'closed'` (§4.e facade rules).
@@ -896,7 +906,7 @@ Rules:
   the session terminal end (T10). `Destroy` (T8) is the app's own exit and is not a host completion.
 - **Fail-closed.** Absence of `Allow` never closes a window. A veto, a stale reply and
   a throwing listener (criterion 29) all keep it open. Only `Allow`, `Destroy`, role
-  loss and session end close it, and each is an explicit input.
+  loss (of an `Opening` window only) and session end close it, and each is an explicit input.
 - **Re-emission and merge.** Each native close attempt made while no request is pending
   writes a fresh `CloseRequested` (T3). An attempt made while one is pending merges
   into it (T4). This reconciles F02-T3's "every native attempt re-emits `close`" with
@@ -904,8 +914,10 @@ Rules:
   because its `'close'` runs synchronously inside `windowShouldClose:`
   (`electron_ns_window_delegate.mm:411-414`). AppKit itself never delivered
   `performClose:` to the hook during the modal (10/10 in the harness).
-- **KEL-75 tombstone.** `WindowClosing(w)` is linearized at T6, T8, T9 and T10, never
-  at T3. Window-bound roles (KEL-75/T4) hook there later.
+- **KEL-75 tombstone.** `WindowClosing(w)` is linearized at T6, T8 and T10, and at T9
+  only in O10, where the window closes because no pair was delivered. It is never
+  linearized at T3, nor at P10 or Q11: there the window stays `Open` for adoption, and
+  the tombstone would forbid the successor's window-bound roles. Window-bound roles (KEL-75/T4) hook there later.
 - **Teardown order.** At `Closing` the UI loop destroys the renderer bridge, then drops
   the `View`, whose field order releases the webview before the window (A3). Page
   `unload` dispatch during WKWebView teardown is unknown (A19). The machine never waits
@@ -1199,7 +1211,7 @@ pub struct WindowSnapshot { pub x: i32, pub y: i32, pub width: u32, pub height: 
 `WindowSnapshot` is the only source of `Created.state` (criterion 1).
 
 For facade boots the existing `LastWindowClosed` variant is not used. The registry
-derives last-window from its own states (T11), because an `Opening` window is not
+derives last-window from its own states (T11), because an `Opening` window counts as
 live and keld-wv cannot see registry states.
 
 ### Capabilities and manifest changes (spec 03)
