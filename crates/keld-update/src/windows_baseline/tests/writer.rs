@@ -1443,7 +1443,7 @@ fn run_recovery_composition_coordinator() {
         .expect("create exact unnamed attempt Job");
     let mut member = ChildReaper::new(spawn_lifecycle_process_helper("member"));
     attempt
-        .assign_child(&member)
+        .assign_child(&*member)
         .expect("assign exact attempt-family member");
     member.disarm();
     let locator = *inspection.lifecycle_installation_id();

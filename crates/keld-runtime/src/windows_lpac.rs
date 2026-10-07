@@ -1,8 +1,12 @@
-//! Zero-capability Less Privileged `AppContainer` process admission for Windows.
+//! Zero-capability Less Privileged `AppContainer` process admission for Windows,
+//! and the one suspended-child type that every Keld suspended launch shares.
 //!
 //! The profile SID, ACL grants, creation attributes, admitted environment and
 //! inherited handles are constructed explicitly. A child starts suspended so
 //! its token and raw handle table can be audited before untrusted code runs.
+//! The `PerUserDirect` candidate's same-token launch uses the same creation call
+//! and the same suspended-child type, without the LPAC attributes and without
+//! any inherited handle (KEL-53 §5).
 
 #![allow(unsafe_code)] // isolated Win32 security/process ABI; every call has a local proof
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -40,8 +44,8 @@ use windows_sys::Win32::System::Threading::{
     InitializeProcThreadAttributeList, OpenProcessToken,
     PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
 
@@ -72,11 +76,24 @@ pub struct WindowsLpacTokenObservation {
     pub capability_count: u32,
 }
 
-/// Typed failure while constructing or using the Windows strict boundary.
+/// Typed failure while constructing or using a suspended launch: the Windows
+/// strict boundary (`KELD-RUNTIME-015`) or the `PerUserDirect` candidate's
+/// same-token launch (`KELD-RUNTIME-020`).
 #[derive(Debug)]
 pub struct WindowsLpacError {
     phase: &'static str,
     detail: String,
+    launch: SuspendedLaunch,
+}
+
+/// Which suspended launch a child or an error belongs to. It selects the error's
+/// code and fix guidance, and whether the LPAC creation attributes were supplied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuspendedLaunch {
+    /// The zero-capability LPAC launch.
+    Lpac,
+    /// The `PerUserDirect` candidate's launch under the caller's own token.
+    SameToken,
 }
 
 impl WindowsLpacError {
@@ -84,6 +101,7 @@ impl WindowsLpacError {
         Self {
             phase,
             detail: io::Error::last_os_error().to_string(),
+            launch: SuspendedLaunch::Lpac,
         }
     }
 
@@ -91,6 +109,7 @@ impl WindowsLpacError {
         Self {
             phase,
             detail: format!("HRESULT/NT status 0x{:08x}", status.cast_unsigned()),
+            launch: SuspendedLaunch::Lpac,
         }
     }
 
@@ -98,6 +117,7 @@ impl WindowsLpacError {
         Self {
             phase,
             detail: io::Error::from_raw_os_error(status.cast_signed()).to_string(),
+            launch: SuspendedLaunch::Lpac,
         }
     }
 
@@ -105,18 +125,34 @@ impl WindowsLpacError {
         Self {
             phase,
             detail: detail.into(),
+            launch: SuspendedLaunch::Lpac,
         }
+    }
+
+    /// The same failure, attributed to `launch`.
+    const fn in_launch(mut self, launch: SuspendedLaunch) -> Self {
+        self.launch = launch;
+        self
     }
 }
 
 impl std::fmt::Display for WindowsLpacError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "KELD-RUNTIME-015: Windows LPAC admission failed during {}: {}. \
-             Do not start an unconfined replacement; repair the profile, ACL, or handle list.",
-            self.phase, self.detail
-        )
+        match self.launch {
+            SuspendedLaunch::Lpac => write!(
+                f,
+                "KELD-RUNTIME-015: Windows LPAC admission failed during {}: {}. \
+                 Do not start an unconfined replacement; repair the profile, ACL, or handle list.",
+                self.phase, self.detail
+            ),
+            SuspendedLaunch::SameToken => write!(
+                f,
+                "KELD-RUNTIME-020: the same-token suspended candidate launch failed during {}: {}. \
+                 Start no candidate in its place: end the attempt Job and roll the attempt back; \
+                 never resume a child whose creation, Job membership or launch record was not proved.",
+                self.phase, self.detail
+            ),
+        }
     }
 }
 
@@ -192,9 +228,8 @@ impl WindowsLpacProfile {
             if unsafe { *raw.add(length) } == 0 {
                 // SAFETY: `raw` is live UTF-16 storage of `length` units.
                 let units = unsafe { std::slice::from_raw_parts(raw, length) };
-                let value = String::from_utf16(units).map_err(|error| WindowsLpacError {
-                    phase: "AppContainer SID serialization",
-                    detail: error.to_string(),
+                let value = String::from_utf16(units).map_err(|error| {
+                    WindowsLpacError::contract("AppContainer SID serialization", error.to_string())
                 })?;
                 drop(allocation);
                 return Ok(value);
@@ -220,10 +255,8 @@ impl WindowsLpacProfile {
         access: WindowsLpacPathAccess,
     ) -> Result<(), WindowsLpacError> {
         let path_wide = wide_nul(path.as_os_str(), "ACL path")?;
-        let metadata = std::fs::metadata(path).map_err(|error| WindowsLpacError {
-            phase: "ACL path metadata",
-            detail: error.to_string(),
-        })?;
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| WindowsLpacError::contract("ACL path metadata", error.to_string()))?;
 
         let mut old_acl = std::ptr::null_mut();
         let mut security_descriptor = std::ptr::null_mut();
@@ -394,8 +427,10 @@ impl WindowsLpacProfile {
             &mut command_line,
             &environment,
             current_dir.as_deref(),
-            &startup,
-            !inherited_handles.is_empty(),
+            SuspendedStartup::Lpac {
+                startup: &startup,
+                inherit_handles: !inherited_handles.is_empty(),
+            },
         )
     }
 }
@@ -412,21 +447,62 @@ impl Drop for WindowsLpacProfile {
     }
 }
 
+/// The startup information of one suspended creation.
+#[derive(Clone, Copy)]
+enum SuspendedStartup<'a> {
+    /// The LPAC launch: its attribute list, and handle inheritance only together
+    /// with its explicit handle-list attribute.
+    Lpac {
+        startup: &'a STARTUPINFOEXW,
+        inherit_handles: bool,
+    },
+    /// The same-token candidate launch: no attribute list and no inheritance.
+    SameToken(&'a STARTUPINFOW),
+}
+
+/// The one `CreateProcessW` call of every Keld suspended launch.
 fn create_suspended_process(
     application: &[u16],
     command_line: &mut [u16],
     environment: &[u16],
     current_dir: Option<&[u16]>,
-    startup: &STARTUPINFOEXW,
-    inherit_handles: bool,
+    startup: SuspendedStartup<'_>,
 ) -> Result<WindowsSuspendedChild, WindowsLpacError> {
+    let (launch, startup_info, inherit_handles, extended, phase): (
+        _,
+        *const STARTUPINFOW,
+        _,
+        _,
+        _,
+    ) = match startup {
+        SuspendedStartup::Lpac {
+            startup,
+            inherit_handles,
+        } => (
+            SuspendedLaunch::Lpac,
+            (&raw const startup.StartupInfo).cast(),
+            inherit_handles,
+            EXTENDED_STARTUPINFO_PRESENT,
+            "CreateProcessW LPAC launch",
+        ),
+        SuspendedStartup::SameToken(startup) => (
+            SuspendedLaunch::SameToken,
+            std::ptr::from_ref(startup),
+            false,
+            0,
+            "CreateProcessW same-token launch",
+        ),
+    };
     let mut process = PROCESS_INFORMATION::default();
-    let creation_flags =
-        CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+    let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | extended;
     // SAFETY: every pointer refers to live storage through this synchronous
-    // call; command line is mutable as required; attributes retain their
-    // backing values; process/thread outputs are writable. TRUE inheritance
-    // is used only together with the explicit handle-list attribute.
+    // call; command line is mutable as required; `startup_info` points at a
+    // borrowed STARTUPINFOW, which for the LPAC launch heads a STARTUPINFOEXW
+    // whose attribute list retains its backing values, and
+    // EXTENDED_STARTUPINFO_PRESENT is set only then; process/thread outputs are
+    // writable. TRUE inheritance is used only by the LPAC launch, together with
+    // its explicit handle-list attribute; the same-token launch passes FALSE and
+    // no token, so the child runs under a copy of this process's primary token.
     let created = unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -437,12 +513,12 @@ fn create_suspended_process(
             creation_flags,
             environment.as_ptr().cast(),
             current_dir.map_or(std::ptr::null(), <[u16]>::as_ptr),
-            (&raw const startup.StartupInfo).cast(),
+            startup_info,
             &raw mut process,
         )
     };
     if created == 0 {
-        return Err(WindowsLpacError::last_os("CreateProcessW LPAC launch"));
+        return Err(WindowsLpacError::last_os(phase).in_launch(launch));
     }
     if process.hProcess.is_null() || process.hThread.is_null() {
         // SAFETY: any non-null output belongs to this failed construction.
@@ -455,9 +531,10 @@ fn create_suspended_process(
             }
         }
         return Err(WindowsLpacError::contract(
-            "CreateProcessW LPAC launch",
+            phase,
             "success returned a null process or thread handle",
-        ));
+        )
+        .in_launch(launch));
     }
 
     Ok(WindowsSuspendedChild {
@@ -467,6 +544,7 @@ fn create_suspended_process(
         thread: Some(unsafe { OwnedHandle::from_raw_handle(process.hThread.cast()) }),
         pid: process.dwProcessId,
         terminated: false,
+        launch,
     })
 }
 
@@ -484,20 +562,98 @@ pub struct WindowsLpacStdio<'a> {
 /// Owning handle pair for one process that a Keld launch path created suspended.
 ///
 /// This is the single suspended-child type (KEL-53 §5 reuse decisions). The LPAC
-/// launch creates it; any other suspended launch, such as the attempt owner's
-/// token launch, must adopt its created process into this same type, so the
-/// resume-once state and its one primary-thread resume are never duplicated. The
-/// process handle stays retained after resume; it is the launch handle that
-/// [`crate::windows_job::WindowsLaunchedProcess`] binds a connect-back claimant to.
+/// launch and the `PerUserDirect` candidate's same-token launch
+/// ([`Self::spawn_same_token`]) create it; any other suspended launch, such as
+/// the attempt owner's token launch, must adopt its created process into this
+/// same type, so the resume-once state and its one primary-thread resume are
+/// never duplicated. The process handle stays retained after resume; it is the
+/// launch handle that [`crate::windows_job::WindowsLaunchedProcess`] binds a
+/// connect-back claimant to.
 #[derive(Debug)]
 pub struct WindowsSuspendedChild {
     process: OwnedHandle,
     thread: Option<OwnedHandle>,
     pid: u32,
     terminated: bool,
+    launch: SuspendedLaunch,
 }
 
 impl WindowsSuspendedChild {
+    /// Creates the `PerUserDirect` candidate suspended, under the caller's own
+    /// token (KEL-53 §5, §6 S6b).
+    ///
+    /// The one suspended creation call runs with `CREATE_SUSPENDED`, without the
+    /// LPAC attribute list and with handle inheritance off, so the child inherits
+    /// no handle of the caller: no attempt endpoint, no start-gate pipe and no
+    /// standard handle. It runs under a copy of the caller's primary token.
+    /// `environment` is its complete environment block, as for the LPAC launch,
+    /// and `current_dir` its working directory. `program` and `current_dir` must
+    /// be absolute: `program` names the image exactly, and Windows neither
+    /// searches for it nor resolves it against a current directory.
+    ///
+    /// The caller records the child with
+    /// [`crate::windows_job::WindowsLaunchedProcess::record`] and assigns it to
+    /// its attempt Job with
+    /// [`crate::windows_job::WindowsProcessJob::assign_child`]. The record's one
+    /// resume requires the membership proof that call returns, so the child is a
+    /// Job member before its first instruction. The stdin start gate is not used.
+    ///
+    /// # Errors
+    ///
+    /// `KELD-RUNTIME-020` for a relative path, a NUL in any input, a malformed
+    /// environment, or a refused creation; no child exists then.
+    pub fn spawn_same_token(
+        program: &Path,
+        args: &[OsString],
+        environment: &[(OsString, OsString)],
+        current_dir: &Path,
+    ) -> Result<Self, WindowsLpacError> {
+        let same_token = |error: WindowsLpacError| error.in_launch(SuspendedLaunch::SameToken);
+        for (path, phase) in [
+            (program, "application path"),
+            (current_dir, "current directory"),
+        ] {
+            if !path.is_absolute() {
+                return Err(same_token(WindowsLpacError::contract(
+                    phase,
+                    "path is not absolute",
+                )));
+            }
+        }
+        let application = wide_nul(program.as_os_str(), "application path").map_err(same_token)?;
+        let mut command_line =
+            encode_command_line(program.as_os_str(), args).map_err(same_token)?;
+        let environment = encode_environment(environment).map_err(same_token)?;
+        let current_dir =
+            wide_nul(current_dir.as_os_str(), "current directory").map_err(same_token)?;
+        let startup = STARTUPINFOW {
+            cb: u32::try_from(std::mem::size_of::<STARTUPINFOW>()).map_err(|_| {
+                same_token(WindowsLpacError::contract(
+                    "STARTUPINFOW size",
+                    "structure exceeds u32",
+                ))
+            })?,
+            ..STARTUPINFOW::default()
+        };
+        create_suspended_process(
+            &application,
+            &mut command_line,
+            &environment,
+            Some(&current_dir),
+            SuspendedStartup::SameToken(&startup),
+        )
+    }
+
+    /// Whether the one resume was already spent.
+    pub(crate) const fn is_resumed(&self) -> bool {
+        self.thread.is_none()
+    }
+
+    /// A refusal of an operation on this child, coded for the launch that made it.
+    pub(crate) fn refusal(&self, phase: &'static str, detail: &str) -> WindowsLpacError {
+        WindowsLpacError::contract(phase, detail).in_launch(self.launch)
+    }
+
     /// Returns the process ID that process creation reported for this child.
     ///
     /// The ID is evidence correlation only, not an identity on its own: an ID
@@ -533,43 +689,86 @@ impl WindowsSuspendedChild {
             )
         } == 0
         {
-            return Err(WindowsLpacError::last_os("LPAC child token open"));
+            return Err(WindowsLpacError::last_os("child token open").in_launch(self.launch));
         }
         if raw_token.is_null() {
             return Err(WindowsLpacError::contract(
-                "LPAC child token open",
+                "child token open",
                 "success returned a null token handle",
-            ));
+            )
+            .in_launch(self.launch));
         }
         // SAFETY: fresh non-null owning token handle converted once.
         let token = unsafe { OwnedHandle::from_raw_handle(raw_token.cast()) };
-        let is_app_container = query_token_u32(&token, TokenIsAppContainer, "TokenIsAppContainer")?;
-        let capabilities = query_token_buffer(&token, TokenCapabilities, "TokenCapabilities")?;
+        let is_app_container = query_token_u32(&token, TokenIsAppContainer, "TokenIsAppContainer")
+            .map_err(|error| error.in_launch(self.launch))?;
+        let capabilities = query_token_buffer(&token, TokenCapabilities, "TokenCapabilities")
+            .map_err(|error| error.in_launch(self.launch))?;
         // SAFETY: query_token_buffer returns aligned storage filled for the
         // requested TOKEN_GROUPS class and keeps it live for this read.
         let capability_count =
             unsafe { (*(capabilities.as_ptr().cast::<TOKEN_GROUPS>())).GroupCount };
         Ok(WindowsLpacTokenObservation {
             is_app_container: is_app_container != 0,
-            all_application_packages_opt_out_configured: true,
+            // Only the LPAC launch supplies the creation attribute.
+            all_application_packages_opt_out_configured: self.launch == SuspendedLaunch::Lpac,
             capability_count,
         })
     }
 
     /// Resumes the initially suspended primary thread exactly once.
     ///
+    /// A same-token child refuses here: it runs only through its launch record,
+    /// whose resume requires the child's attempt-Job membership proof
+    /// ([`crate::windows_job::WindowsLaunchedProcess::resume`]). The refusal
+    /// spends nothing, so that record can still resume it.
+    ///
+    /// The thread's previous suspend count must be exactly 1, the one suspension
+    /// of `CREATE_SUSPENDED`: a count other than 1 shows a resume or suspend of
+    /// the thread since creation that was not balanced, and refuses. A balanced
+    /// resume-and-suspend pair by another process that holds a thread handle is
+    /// not visible here; that is same-user code, which is outside the
+    /// `PerUserDirect` boundary (KEL-53 criterion 12).
+    ///
     /// # Errors
     ///
-    /// Fails if the child was already resumed or the kernel rejects resume.
+    /// Fails for a same-token child, if the child was already resumed, the kernel
+    /// rejects resume, or the previous suspend count was not 1. In that last case
+    /// the resume is spent and the caller must terminate the child.
     pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
+        if self.launch == SuspendedLaunch::SameToken {
+            return Err(self.refusal(
+                "child resume",
+                "a same-token candidate resumes only through its launch record and attempt-Job membership proof",
+            ));
+        }
+        self.resume_held()
+    }
+
+    /// The one resume of the primary thread, for any launch, with the suspend-count
+    /// check of [`Self::resume`]. The launch record calls it after checking the
+    /// child's attempt-Job membership proof.
+    pub(crate) fn resume_held(&mut self) -> Result<(), WindowsLpacError> {
         let thread = self.thread.as_ref().ok_or_else(|| {
-            WindowsLpacError::contract("LPAC child resume", "primary thread already resumed")
+            WindowsLpacError::contract("child resume", "primary thread already resumed")
+                .in_launch(self.launch)
         })?;
         // SAFETY: the primary-thread handle is live and still owned here.
-        if unsafe { ResumeThread(thread.as_raw_handle().cast()) } == u32::MAX {
-            return Err(WindowsLpacError::last_os("LPAC child resume"));
+        let previous = unsafe { ResumeThread(thread.as_raw_handle().cast()) };
+        if previous == u32::MAX {
+            return Err(WindowsLpacError::last_os("child resume").in_launch(self.launch));
         }
         self.thread = None;
+        if previous != 1 {
+            return Err(WindowsLpacError::contract(
+                "child resume",
+                format!(
+                    "the primary thread's previous suspend count was {previous}, not 1: it was \
+                     not held suspended from creation"
+                ),
+            )
+            .in_launch(self.launch));
+        }
         Ok(())
     }
 
@@ -584,18 +783,19 @@ impl WindowsSuspendedChild {
             WAIT_OBJECT_0 => {}
             WAIT_TIMEOUT => {
                 return Err(WindowsLpacError::contract(
-                    "LPAC child wait",
+                    "child wait",
                     format!("process {} exceeded {timeout_ms} ms", self.pid),
-                ));
+                )
+                .in_launch(self.launch));
             }
-            _ => return Err(WindowsLpacError::last_os("LPAC child wait")),
+            _ => return Err(WindowsLpacError::last_os("child wait").in_launch(self.launch)),
         }
         let mut exit_code = STILL_ACTIVE;
         // SAFETY: live process handle and writable exit-code storage.
         if unsafe { GetExitCodeProcess(self.process.as_raw_handle().cast(), &raw mut exit_code) }
             == 0
         {
-            return Err(WindowsLpacError::last_os("LPAC child exit code"));
+            return Err(WindowsLpacError::last_os("child exit code").in_launch(self.launch));
         }
         self.terminated = true;
         Ok(exit_code)
@@ -609,7 +809,7 @@ impl WindowsSuspendedChild {
     pub fn terminate(&mut self, exit_code: u32) -> Result<(), WindowsLpacError> {
         // SAFETY: live owning process handle; the caller owns this child.
         if unsafe { TerminateProcess(self.process.as_raw_handle().cast(), exit_code) } == 0 {
-            return Err(WindowsLpacError::last_os("LPAC child terminate"));
+            return Err(WindowsLpacError::last_os("child terminate").in_launch(self.launch));
         }
         self.terminated = true;
         Ok(())
@@ -961,7 +1161,41 @@ mod tests {
 
     use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
 
-    use super::InheritedHandleCopies;
+    use super::{InheritedHandleCopies, WindowsSuspendedChild};
+
+    #[test]
+    fn resume_refuses_a_primary_thread_not_held_suspended_exactly_once() {
+        // Seam-injected: a second suspension stands in for any count but the one of
+        // CREATE_SUSPENDED. A thread that already ran shows count 0 and refuses the
+        // same way; that case cannot be built without resuming the thread here.
+        let system32 =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+                .join("System32");
+        let mut child = WindowsSuspendedChild::spawn_same_token(
+            &system32.join("cmd.exe"),
+            &[std::ffi::OsString::from("/d")],
+            &[],
+            &system32,
+        )
+        .expect("create a suspended child");
+        let thread = child.thread.as_ref().expect("the primary thread is held");
+        // SAFETY: the primary-thread handle is live and owned by `child`.
+        let previous = unsafe {
+            windows_sys::Win32::System::Threading::SuspendThread(thread.as_raw_handle().cast())
+        };
+        assert_eq!(previous, 1, "CREATE_SUSPENDED leaves one suspension");
+        let refusal = child
+            .resume_held()
+            .expect_err("a count other than 1 refuses the resume");
+        assert!(
+            refusal
+                .to_string()
+                .contains("previous suspend count was 2, not 1"),
+            "{refusal}"
+        );
+        assert!(child.resume_held().is_err(), "the refused resume is spent");
+        child.terminate(1).expect("terminate the refused child");
+    }
 
     #[test]
     fn admitted_handle_uses_private_inheritable_copy_without_mutating_caller() {

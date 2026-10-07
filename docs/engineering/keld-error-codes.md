@@ -692,6 +692,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process handle is retained
 - fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM or shell failure, report the detail. When the shell returned no process handle, or the handle could not report its process ID, an elevated helper may already be running unbound: close the bootstrap endpoint so that the helper's server check refuses and it exits without a protected write, then report the detail.
 
+## KELD-RUNTIME-020
+
+- crate: keld-runtime
+- message: The PerUserDirect candidate's same-token suspended launch, or an operation on its suspended child, failed
+- fix: Start no candidate in its place: end the attempt Job and roll the attempt back, and never resume a child whose creation, Job membership or launch record was not proved. Correct the reported program path, working directory, environment or creation failure before the next attempt.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
@@ -942,7 +948,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The common journaled activation transaction refused or could not confirm a step
-- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. Outside `MachineUacDirect`, with a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved any activation journal, the pointers and the versions: start nothing, and follow the reported guidance, which names the recovery-only role of the elevated `keld-updater-helper.exe`; while this release does not provide that role, no supported resolution exists other than administrator action.
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. Outside `MachineUacDirect`, with a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, or an accepted connect-back candidate's boot read finds that the pending attempt is not the one whose owner accepted it, nothing was written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved any activation journal, the pointers and the versions: start nothing, and follow the reported guidance, which names the recovery-only role of the elevated `keld-updater-helper.exe`; while this release does not provide that role, no supported resolution exists other than administrator action.
 
 ## KELD-UPDATE-017
 
