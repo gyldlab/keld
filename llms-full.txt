@@ -3060,9 +3060,16 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   `keld-updater-helper.exe`, opened without following a reparse point under the recorded
   mode's profile and held while its path is offered, and nothing outside
   `MachineUacDirect`. No `keld build` step embeds the
-  container yet (KEL-19 T3). Live feed orchestration, host candidate launch, the private
-  health channel and its 30-second `Ready` observation, installed-host lifecycle
-  composition and candidate-mode selection remain unimplemented. Planned Windows
+  container yet (KEL-19 T3). KEL-53 T4d S6b adds the primitives that the host
+  coordinator and candidate mode compose (S6c): the candidate's lease-less provenance
+  read (`locate_candidate_claimant`), criterion 20's candidate-boot read with the
+  `KELD-AB1` health-receipt digest, the owner's expected digest and the two-step
+  `accept_health` (a durable `health-accepted` before completion), the launch handle's
+  liveness check, and the same-token `CREATE_SUSPENDED` candidate launch whose
+  attempt-Job membership precedes its first instruction. Live feed orchestration, that
+  composition (host candidate launch, the private health channel and its 30-second
+  `Ready` observation, candidate-mode selection) and installed-host lifecycle
+  composition remain unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
   lifecycle proof and a separately approved architecture/spec amendment selects and
