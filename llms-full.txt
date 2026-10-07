@@ -1621,27 +1621,13 @@ remain the runtime wire oracle. This echo-only bootstrap does not make Rust the 
 schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
 
 **Channel table: live slice and destination
-([GH-508 spec](../specs/gh508-kipc-channel-table.md), draft).** The live slice of the
-channel table that `keld gen` would emit is a *static* table. `keld-ipc` owns it as a
-single file, `crates/keld-ipc/src/channel_table.rs`. Each entry holds an
-Electron-neutral name, its `u16` id, a receive-policy class (a KEL-133 `ReceivePolicy`
-family) and either a `keld-guard` capability reference or an explicit host-internal
-marker. The table does not register capability names; `keld-guard` and architecture 03
-§2 stay their only owner. Entries are append-only: a new channel takes the current
-maximum id plus one, an id is never renumbered or reused, and id `0` stays reserved for
-`HELLO`. No range is reserved per Electron family. Electron channel strings travel as
-payload data under `el:` window grants. The host sends unprompted `EVENT` frames on a
-channel only to a role that has registered for that channel by calling on it; the
-v0 `lifecycle` events are the one baseline exception, because every version-2 peer
-admits them. Every production consumer derives its id from
-the table. The TypeScript transport constants are generated into
-`packages/@keld/kipc/src/transport.ts` by the KEL-98 cold generator, with a drift check.
-The macOS renderer bridge receives its id from the host at construction. **Status:** the
-table goes live with X05-T4 (#597). Until then the ids are the hand-held constants
-echo = 1 and lifecycle = 3 (`keld-ipc`) and fs = 2 (`keld-native`), plus the
-TypeScript and macOS-bridge copies, and wire bytes and protocol version 2 are
-unchanged. **Destination, not live:** handshake-time resolution of ids from schema names
-and full `keld gen` emission of the table and permission stubs. Either one needs a `HELLO` change, a protocol bump and wire review.
+([GH-508 spec](../specs/gh508-kipc-channel-table.md), draft).** The live slice is one
+static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
+guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
+reused. TypeScript constants are generated from it by the KEL-98 generator. It goes
+live with X05-T4 (#597); until then echo = 1, fs = 2 and lifecycle = 3 stay hand-held
+and the wire is unchanged. Handshake-time name resolution and full `keld gen` emission
+remain destination work that needs a `HELLO` change, a protocol bump and wire review.
 
 The destination authoring shape remains:
 
