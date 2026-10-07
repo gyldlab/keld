@@ -561,9 +561,10 @@ at most create a `PerUserDirect` record in its own owner-private directory, whic
 within the documented same-user exclusion and grants nothing a genuine per-user install
 does not. KEL-53 refuses unless the record matches that expectation, and
 KEL-96 independently requires the record's publisher scope and app id to equal the
-KEL-135 Authenticode identity of the same executable. The entrypoint reads no
-environment payload or argv for authority. In T2b it is journal-free: like the landed
-`select_windows_active_package`, it refuses any pending journal with
+KEL-135 Authenticode identity of the same executable; from KEL-53 T4d S9a it does so
+through the `keld-update` owner of that rule, which the host calls. The entrypoint
+reads no environment payload or argv for authority. In T2b it is journal-free: like the
+landed `select_windows_active_package`, it refuses any pending journal with
 `JournalBoundRecoveryRequired`, and in `MachineUacDirect` with KEL-53's typed
 `MachineRecoveryRequired` instead (KEL-53 "Machine-UAC recovery-required state and
 recovery-only role"). It repairs an invalid `current` only when the located
