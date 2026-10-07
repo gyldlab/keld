@@ -122,8 +122,13 @@ negative control: the one mutation that MUST make the test fail.
    handler (a test-only uncaught error). A test counter shows main's liveness branch
    never ran: the exit handler's `STATE` compare-and-exchange woke it. *Control:*
    removing that compare-and-exchange leaves the wake to the liveness branch, so the
-   counter is 1 and the arm fails. (b) *Abrupt termination:* a test thread terminates
-   the Worker, so no exit handler runs. (c) *Wedge:* a test-only hook stops the
+   counter is 1 and the arm fails. (b) *Abrupt termination:* before main parks, the
+   test posts a test-only message that makes the Worker call `self.close()` (or
+   `process.exit`) N ms after it reads `BLOCKING` as 1. Main parks, then observes
+   `KELD-IPC-025`. A test counter MUST show the Worker's exit handler did not run, so
+   the wake comes from the liveness branch; a termination path that runs the exit
+   handler does not satisfy (b). The message handler exists only in the test build;
+   the production Worker has no such message. (c) *Wedge:* a test-only hook stops the
    Worker's event loop. *Control for (b) and (c):* removing the liveness check
    (§4.5) makes the call fail with `KELD-IPC-006` at its deadline, so the code
    assertion fails (#418 risk 1).
@@ -262,7 +267,12 @@ negative control: the one mutation that MUST make the test fail.
     compare-and-exchange fails, and the call MUST throw before that count reaches
     `2 * WORKER_LIVENESS_WINDOW_MS / WORKER_HEARTBEAT_INTERVAL_MS`. *Negative
     control:* removing the post-claim bound (§4.5) leaves main parked while the
-    heartbeat advances, so the watchdog reaches its limit and the test fails.
+    heartbeat advances, so the watchdog reaches its limit and the test fails. In the
+    throw arm, with a 30 s deadline, the call throws `KELD-IPC-025` within
+    `WORKER_LIVENESS_WINDOW_MS` of the throw, and a test counter shows main's
+    post-claim branch never ran. *Second negative control:* removing the Worker's own
+    25 record on a throw (§4.5 step 2) leaves the wake to the post-claim bound after
+    the deadline, so the timing and counter assertions fail.
 
 ## 4. Design
 
@@ -645,9 +655,22 @@ test lands with #528.
   `event_receiver`) take `&'static ChannelEntry` and return
   `Result<ReceivePolicy, IpcError>`, like #613's `privileged_call_receiver`.
   `event_receiver` refuses an entry whose class carries no host EVENTs, with
-  `KELD-IPC-005`. #528 lands after #613; if #613 changes that type first, #528 follows
-  it. On the TypeScript side, channel values are #613's generated constants, never
-  literals. The now-public `reply_waiter` MUST carry a doc comment stating its kinds,
+  `KELD-IPC-005`. When #613 is approved, #528 lands after it; if #613 changes that
+  type first, #528 follows it. On the TypeScript side, channel values are #613's
+  generated constants, never literals. `lifecycle_reply_waiter(corr)` and
+  `lifecycle_event_receiver()` keep their current public signatures; both delegate to
+  the constructors above with the lifecycle channel.
+
+  *Fallback if #613 is not approved:* this spec stands on its own. `reply_waiter` and
+  `event_receiver` take today's `ChannelId` and still return
+  `Result<ReceivePolicy, IpcError>`, and `WorkerLink` uses the current hand-held
+  channel constants: echo = 1 (`ECHO_CHANNEL`) and lifecycle = 3
+  (`LIFECYCLE_CHANNEL`), both in `keld-ipc` and in `@keld/kipc` `transport.ts`, and
+  fs = 2. The fs channel has no named constant today (`ChannelId(2)` appears only in
+  `keld-ipc` tests), so it reaches `WorkerLink` only as the role's
+  `privilegedCallReceiver(channel)` argument, and this spec adds no constant for it.
+  Lifecycle is the only channel with host EVENTs today, so under the fallback
+  `event_receiver` refuses every other channel with `KELD-IPC-005`. The now-public `reply_waiter` MUST carry a doc comment stating its kinds,
   its correlation rule and the KEL-133 row it serves.
 
   A frame with no selected policy is validated against a policy that admits no kind,
@@ -897,8 +920,9 @@ unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
 `WorkerReceiveTable`, `WorkerCallReceiver`, `replyWaiter(channel, corr)`,
 `eventReceiver(channel)`, the `replyBytes` option, the constants); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
-`ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` and
-returning `Result<ReceivePolicy, IpcError>`; and the new `CallError` codes.
+`ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (today's
+`ChannelId` under the §4.7 fallback) and returning `Result<ReceivePolicy, IpcError>`,
+with `lifecycle_reply_waiter` and `lifecycle_event_receiver` unchanged; and the new `CallError` codes.
 permission model: none (no capability, manifest or mount change). dependency addition: none. **wire protocol**: new receiver
 corpus rows, the host `ERR` on retire and Quit, the Worker as the link endpoint, and
 (T4) the `GRANT` payload with the version-3 bump. Review rejects any draft that opens a
