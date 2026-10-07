@@ -1,5 +1,5 @@
 # Spec: worker-owned single-link blocking host CALL transport for Bun roles
-Status: draft
+Status: approved
 Linear: GH-527 (#517) · Owner: @0monish · Updated: 2026-10-07
 
 ## 1. Goal & non-goals
