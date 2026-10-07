@@ -84,35 +84,9 @@ pub fn select_active_package_for_executable(
             ),
         ));
     }
-    // Defence in depth that A3 §4 requires literally: every located component is held
-    // open without delete sharing, so none can be renamed or replaced, and the
-    // located-image identity with the version equality above already implies this check.
-    let selected = open_image(&selection.tree, image).map_err(|cause| {
-        binding(
-            image,
-            step_for(image, "selected host", "selected image"),
-            cause,
-        )
-    })?;
-    if ObjectIdentity::of_cap_file(&selected).map_err(|cause| {
-        binding(
-            image,
-            step_for(image, "selected host", "selected image"),
-            cause,
-        )
-    })? != installation.executable
-    {
-        return Err(binding(
-            image,
-            step_for(image, "selected host identity", "selected image identity"),
-            format!(
-                "the executable is not the selected tree's {}",
-                image.file_name()
-            ),
-        ));
-    }
+    installation.require_selected_image(&selection)?;
     // The located pins and the record handle are held until the selection is proven.
-    drop((selected, installation));
+    drop(installation);
     Ok(selection)
 }
 
@@ -142,8 +116,9 @@ impl LocatedInstallation {
 
     /// Every root the record names must be the located root by volume serial and file
     /// ID; the recorded mode's profiles and volume are enforced by `open_roots`, whose
-    /// refusals are typed as the installed-root selector types them.
-    pub(super) fn require_recorded_roots(&self) -> Result<(), UpdateError> {
+    /// refusals are typed as the installed-root selector types them. Returns the
+    /// recorded roots it opened and compared, holding no record and no lease.
+    pub(super) fn require_recorded_roots(&self) -> Result<super::Roots, UpdateError> {
         let roots = super::open_roots(&self.trust, false)
             .map_err(|cause| error("recorded roots", cause))?;
         let recorded_install = roots
@@ -173,6 +148,42 @@ impl LocatedInstallation {
                     "the record names a root that is not the located root",
                 ));
             }
+        }
+        Ok(roots)
+    }
+
+    /// Requires `selection`'s tree to hold this image as the executable itself, by file
+    /// identity. Defence in depth that A3 §4 requires literally: every located component
+    /// is held open without delete sharing, so none can be renamed or replaced, and the
+    /// located-image identity with an equal selected version already implies this check.
+    pub(super) fn require_selected_image(
+        &self,
+        selection: &ActivePackageSelection,
+    ) -> Result<(), UpdateError> {
+        let image = self.image;
+        let selected = open_image(&selection.tree, image).map_err(|cause| {
+            binding(
+                image,
+                step_for(image, "selected host", "selected image"),
+                cause,
+            )
+        })?;
+        if ObjectIdentity::of_cap_file(&selected).map_err(|cause| {
+            binding(
+                image,
+                step_for(image, "selected host", "selected image"),
+                cause,
+            )
+        })? != self.executable
+        {
+            return Err(binding(
+                image,
+                step_for(image, "selected host identity", "selected image identity"),
+                format!(
+                    "the executable is not the selected tree's {}",
+                    image.file_name()
+                ),
+            ));
         }
         Ok(())
     }

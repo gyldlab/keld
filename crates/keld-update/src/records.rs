@@ -132,7 +132,9 @@ impl InitiatingLogon {
 ///
 /// keld-update records this value and cannot observe it: the owner supplies its own
 /// process ID and `GetProcessTimes` creation FILETIME. A claimant binds the journaled
-/// values to the endpoint's server process after acceptance.
+/// values to the endpoint's server process after acceptance: it supplies the same two
+/// facts as it observed them on that process to
+/// [`crate::WindowsCandidateClaimant::read_candidate_boot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptOwner {
     owner_process_id: u32,
@@ -150,6 +152,18 @@ impl AttemptOwner {
             owner_process_id,
             owner_creation_time,
         }
+    }
+
+    /// The owner's process ID.
+    #[cfg(windows)]
+    pub(crate) const fn process_id(self) -> u32 {
+        self.owner_process_id
+    }
+
+    /// The owner's process creation time, in FILETIME units.
+    #[cfg(windows)]
+    pub(crate) const fn creation_time(self) -> u64 {
+        self.owner_creation_time
     }
 }
 

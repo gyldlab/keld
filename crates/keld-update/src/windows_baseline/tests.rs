@@ -2,6 +2,7 @@
 
 mod alias;
 mod capture;
+mod claimant;
 mod helper;
 mod installed_host_operator;
 mod locate;

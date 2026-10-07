@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod activate;
+mod claimant;
 mod helper;
 mod initialize;
 mod load;
@@ -33,6 +34,7 @@ pub use activate::{
     WindowsActivationOutcome, WindowsActivationResolution, WindowsHealthAcceptedAttempt,
     WindowsJournaledAttempt, WindowsMintedAttempt, WindowsRecoveryOutcome,
 };
+pub use claimant::{WindowsCandidateBoot, WindowsCandidateClaimant, locate_candidate_claimant};
 pub use helper::{
     UpdaterHelperAnchor, UpdaterHelperImage, UpdaterHelperRole, anchor_updater_helper,
 };
@@ -187,7 +189,10 @@ impl LoadedWindowsBaseline {
 /// The exact immutable package tree KEL-53 selects for an ordinary startup.
 ///
 /// It names one committed artifact from a journal-free, coherent snapshot of the protected
-/// records: `current`, which equals last-known-good or previous-known-good. The selected
+/// records: `current`, which equals last-known-good or previous-known-good. The one
+/// exception is the accepted connect-back candidate's boot read
+/// ([`WindowsCandidateClaimant::read_candidate_boot`]), which selects the candidate of the
+/// `AwaitingHealth` attempt that accepted it, from its own tree. The selected
 /// version and tree, and every protected ancestor through the install and update roots,
 /// stay open for the owner's lifetime, so neither the version nor a path above it can be
 /// renamed or retired while the application runs from it. It holds no mutable-record
@@ -660,6 +665,37 @@ fn read_record(
     let file = open_machine_file(parent, leaf, profile)
         .map_err(|cause| error("protected record open", cause))?;
     read_open_record(file)
+}
+
+/// BLAKE3 of every byte of an executable image, read with positioned reads through
+/// `image` and never by path: the one image digest that an attempt owner journals as
+/// `helper_image_blake3`, and that the updater helper's self-anchor and the connect-back
+/// claimant's candidate-boot read compare with that journaled value (KEL-53 §4). The
+/// caller's handle shares no write access, so the image's length is fixed while it is
+/// held; a read that ends short of that length refuses.
+fn image_blake3(image: &std::fs::File) -> io::Result<[u8; 32]> {
+    use std::os::windows::fs::FileExt as _;
+
+    let length = image.metadata()?.len();
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut offset = 0_u64;
+    loop {
+        let read = image.seek_read(&mut buffer, offset)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::other("image length overflows"))?;
+    }
+    if offset != length {
+        return Err(io::Error::other(format!(
+            "read {offset} bytes of a {length}-byte image"
+        )));
+    }
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// Reads an open protected record of at most 64 KiB, returning the handle so the caller

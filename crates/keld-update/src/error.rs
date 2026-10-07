@@ -41,6 +41,12 @@ pub enum ActivationEffect {
     /// A conflicting handle holds the installation's `activation.lock`, normally the
     /// updater's exclusive writer lease, so this call read and wrote nothing. Startup
     /// selects no package while that conflict lasts.
+    ///
+    /// It is also every refusal of the connect-back claimant's candidate-boot read (KEL-53
+    /// criterion 20, "Candidate connect-back"), the one reader exception to that lease: the
+    /// read took no lease and wrote nothing, but it read the mutable records and found
+    /// that they do not name the attempt whose owner accepted this process, or could not
+    /// read them. The candidate starts no application code.
     WriterActive,
     /// An ordinary startup of a `MachineUacDirect` installation found a pending activation
     /// journal, or no journal with an absent or undecodable `current` beside a valid
@@ -595,7 +601,7 @@ fn fmt_activation_error(
             "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease. If that repair refuses an unknown or damaged entry, that entry needs manual recovery."
         }
         ActivationEffect::WriterActive => {
-            "A conflicting handle, normally the updater's exclusive writer lease, holds the installation's activation lock and nothing was read or written; start nothing from this state, and select again only after that handle is released."
+            "A conflicting handle, normally the updater's exclusive writer lease, holds the installation's activation lock, or an accepted candidate's boot read found that the pending attempt is not the one whose owner accepted it. Nothing was written, and only that boot read read any record; start nothing from this state, and select again only after that handle is released."
         }
         ActivationEffect::MachineRecoveryRequired(guidance) => guidance.fix_guidance(),
     };

@@ -50,9 +50,19 @@ pub(super) fn begin_with(
     version: &str,
     content: &[u8],
 ) -> WindowsActivationAttempt {
+    begin_by(trust, version, content, COORDINATOR)
+}
+
+/// [`begin_with`] by an attempt owner whose image digest is `coordinator`.
+pub(super) fn begin_by(
+    trust: &WindowsBaselineTrust,
+    version: &str,
+    content: &[u8],
+    coordinator: [u8; 32],
+) -> WindowsActivationAttempt {
     let (root, stage) = complete_with(trust, version, content);
     let minted = root
-        .begin_activation(stage, COORDINATOR)
+        .begin_activation(stage, coordinator)
         .expect("mint the attempt identities without writing");
     awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON))
 }
@@ -122,7 +132,7 @@ fn legacy_orphan(trust: &WindowsBaselineTrust, version: &str) -> crate::Artifact
     stage.identity().clone()
 }
 
-fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
+pub(super) fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
     ActivationHealthReceipt::new(
         *attempt.attempt_id(),
         *attempt.health_channel_id(),
@@ -1668,7 +1678,7 @@ fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
 
 /// Replaces the protected journal with the landed v1 encoding of the same attempt, which
 /// carries no owner facts.
-fn downgrade_journal_to_v1(trust: &WindowsBaselineTrust) {
+pub(super) fn downgrade_journal_to_v1(trust: &WindowsBaselineTrust) {
     let path = trust.installation.update_root.join("activation-journal");
     let mut journal = crate::records::decode_activation_journal(
         &std::fs::read(&path).expect("protected journal bytes"),
