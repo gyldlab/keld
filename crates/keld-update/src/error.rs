@@ -339,7 +339,7 @@ pub enum UpdateError {
         /// Failing part: a keld-pack payload detail, the channel or the public key.
         detail: String,
     },
-    /// The verified host image does not carry exactly one readable, canonical
+    /// The verified executable image does not carry exactly one readable, canonical
     /// expected-identity container.
     ExpectedIdentityContainer {
         /// The keld-pack container-reader code, such as `KELD-PACK-007`.
@@ -550,14 +550,14 @@ fn fmt_binding_error(
 fn fmt_expectation_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
     write!(
         f,
-        "KELD-UPDATE-017: the host's expected app identity is invalid ({detail}). Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then."
+        "KELD-UPDATE-017: the executable's expected app identity is invalid ({detail}). Rebuild `keld-host.exe` or `keld-updater-helper.exe` so keld-pack embeds a supported channel and the release's valid Ed25519 public key; the installed image refuses to run until then."
     )
 }
 
 fn fmt_container_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
     write!(
         f,
-        "KELD-UPDATE-019: the signed host's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container."
+        "KELD-UPDATE-019: the signed image's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container."
     )
 }
 

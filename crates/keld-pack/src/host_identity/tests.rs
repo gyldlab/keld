@@ -43,7 +43,7 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         (
             PackError::HostImageInvalid { detail: "d" },
             "KELD-PACK-006",
-            "unmodified prebuilt `keld-host.exe`",
+            "unmodified prebuilt `keld-host.exe` or `keld-updater-helper.exe`",
         ),
         (
             PackError::IdentityContainerMissing,
@@ -63,7 +63,7 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         (
             PackError::HostImageNoRoom { detail: "d" },
             "KELD-PACK-010",
-            "Keld host-build defect to report",
+            "Keld build defect to report",
         ),
         (
             PackError::IdentityContainerInvalid { detail: "d" },
@@ -83,6 +83,12 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         let text = error.to_string();
         assert!(text.starts_with(&format!("{code}: ")), "{text}");
         assert!(text.contains(fix), "{text}");
+        // The same container serves keld-host.exe and keld-updater-helper.exe (KEL-19
+        // container spec §1), so no text names the host alone.
+        assert!(
+            !text.replace("keld-host.exe", "").contains("host"),
+            "{code} names only the host: {text}"
+        );
     }
     let read = PackError::IdentityContainerRead {
         source: std::io::Error::other("injected"),

@@ -285,4 +285,13 @@ fn container_error_has_stable_code_and_reinstall_guidance() {
     assert!(text.contains("Reinstall the signed package"), "{text}");
     assert!(text.contains("`keld build`"), "{text}");
     assert!(text.contains("exactly one valid container"), "{text}");
+    assert!(
+        text.contains("rebuild `keld-host.exe` or `keld-updater-helper.exe`"),
+        "{text}"
+    );
+    let guidance = text.replace("(KELD-PACK-007: host image carries no container)", "");
+    assert!(
+        !guidance.replace("keld-host.exe", "").contains("host"),
+        "{text}"
+    );
 }
