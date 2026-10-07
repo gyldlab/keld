@@ -5699,6 +5699,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: A Windows connect-back claimant was not the exact launched and retained candidate process
 - fix: No operator action for one refusal: the attempt owner disconnects that client and re-arms the endpoint, and a process that keeps connecting can at most cause a health timeout and the ordinary rollback. If the launched candidate itself is refused, report the refusal detail; do not weaken the process-object comparison.
 
+## KELD-RUNTIME-018
+
+- crate: keld-runtime
+- message: Restricting a Windows process's DLL search to System32 failed
+- fix: The process exits before loading any library or doing protected work; it never continues on the standard search path, which includes the current directory and PATH. Report the Windows error; the updater helper cannot run on a system that refuses `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

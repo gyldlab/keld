@@ -6,8 +6,12 @@
 //! race. The sole Job handle intentionally lives until process termination;
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` then terminates the enrolled tree even
 //! when host destructors cannot run.
+//!
+//! The module also holds the updater helper's System32-only DLL search
+//! (KEL-53 §4 "Helper launch and self-anchor"), because it owns the crate's
+//! KEL-270 FFI whitelist.
 
-#![allow(unsafe_code)] // isolated Win32 Job ABI; every call has a local handle/pointer proof
+#![allow(unsafe_code)] // isolated Win32 Job/loader ABI; every call has a local handle/pointer proof
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::io;
@@ -42,6 +46,9 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+};
+use windows_sys::Win32::System::LibraryLoader::{
+    LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE};
@@ -3099,6 +3106,57 @@ pub fn install_host_death_job() -> Result<WindowsHostJobObservation, WindowsHost
     Ok(observation)
 }
 
+/// Failure to restrict this process's DLL search to System32
+/// (`KELD-RUNTIME-018`).
+#[derive(Debug)]
+pub struct WindowsDllSearchError {
+    source: io::Error,
+}
+
+impl std::fmt::Display for WindowsDllSearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-RUNTIME-018: restricting this process's DLL search to System32 failed: {}. \
+             Exit before loading any library or doing protected work; never continue on the \
+             standard search path, which includes the current directory and PATH.",
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for WindowsDllSearchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Restricts every later DLL search of this process to System32.
+///
+/// This is the updater helper's first statement (KEL-53 §4 "Helper launch and
+/// self-anchor"): `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
+/// Microsoft documents the resulting search path as process-wide, lasting for
+/// the life of the process and impossible to revert to the standard search
+/// path. Afterwards a `LoadLibraryW` by module name searches none of the
+/// application directory, the current directory and `PATH`. It does not cover
+/// the static imports that the loader resolved before `main`.
+///
+/// # Errors
+///
+/// Returns [`WindowsDllSearchError`] when Windows refuses the call; the caller
+/// must then exit without loading anything.
+pub fn restrict_dll_search_to_system32() -> Result<(), WindowsDllSearchError> {
+    // SAFETY: SetDefaultDllDirectories takes one flags value and no pointer;
+    // LOAD_LIBRARY_SEARCH_SYSTEM32 is a documented flag, and the call changes
+    // only this process's loader search path.
+    if unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) } == 0 {
+        return Err(WindowsDllSearchError {
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(unsafe_code)] // test-only native Job-limit negative control
 #[allow(clippy::expect_used, clippy::panic)] // subprocess contract failures abort the proof
@@ -4168,5 +4226,28 @@ mod tests {
             }
         }
         assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn dll_search_refusal_names_its_code_cause_and_exit_guidance() {
+        let error = WindowsDllSearchError {
+            source: io::Error::from_raw_os_error(87),
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with("KELD-RUNTIME-018: restricting this process's DLL search"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("(os error 87)"), "{rendered}");
+        assert!(
+            rendered.contains("Exit before loading any library"),
+            "{rendered}"
+        );
+        assert_eq!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .and_then(io::Error::raw_os_error),
+            Some(87)
+        );
     }
 }
