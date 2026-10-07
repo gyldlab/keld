@@ -1,15 +1,17 @@
-//! The updater helper's self-anchor (KEL-53 "Helper launch and self-anchor", criterion 17;
-//! KEL-270 T4d slice S9a).
+//! The updater helper's self-anchor and the activation role's helper image (KEL-53
+//! "Helper launch and self-anchor", criterion 17; KEL-270 T4d slice S9a).
 //!
 //! `keld-updater-helper.exe` locates its own installation through the same
 //! executable-located rule as the host, with its own image name, and refuses every role
-//! before any lease or write unless the recorded mode is `MachineUacDirect`, its verified
-//! signer is the recorded publisher and app, and its own image is the expected one.
+//! before the writer lease or any write unless the recorded mode is `MachineUacDirect`,
+//! its verified signer is the recorded publisher and app, and its own image is the
+//! expected one. The host derives the activation role's helper only from its own
+//! selection: the selected tree's file, never a path it was given or searched for.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::locate::{LocatedInstallation, locate};
-use super::{WindowsBaselineTrust, load};
+use super::{ActivePackageSelection, WindowsBaselineTrust, load};
 use crate::{DirectInstallMode, ExpectedAppIdentity, UpdateError, WindowsLocatedImage};
 
 /// The role `keld-updater-helper.exe` was started for.
@@ -158,6 +160,60 @@ pub(super) fn anchor_located(
     Ok(UpdaterHelperAnchor {
         trust: installation.trust,
     })
+}
+
+/// The activation role's updater helper, opened beneath the selected version tree.
+///
+/// Only [`ActivePackageSelection::open_activation_helper`] constructs it. Its handle
+/// shares only reads, so the file cannot be written, renamed or deleted while this value
+/// lives.
+#[derive(Debug)]
+pub struct UpdaterHelperImage {
+    path: PathBuf,
+    _image: cap_std::fs::File,
+}
+
+impl UpdaterHelperImage {
+    /// The exact absolute path of the opened file, the selected version tree's
+    /// `keld-updater-helper.exe`, derived only from the protected record and the
+    /// selected version: the one path a launcher may start.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl ActivePackageSelection {
+    /// Derives the activation role's updater helper from this selection (KEL-53 "Helper
+    /// launch and self-anchor"): `keld-updater-helper.exe` beneath this selection's own
+    /// pinned version tree, opened without following a reparse point and sharing only
+    /// reads, and admitted as a regular file on the tree's volume under the recorded
+    /// mode's protection profile. Nothing is searched for and no given path is used.
+    ///
+    /// # Errors
+    /// [`UpdateError::UpdaterHelper`] when the installation's mode is not
+    /// `MachineUacDirect`, before anything is opened, so no helper is offered; and when
+    /// the tree's helper is absent, not a regular file, or not protected as the recorded
+    /// mode requires.
+    pub fn open_activation_helper(&self) -> Result<UpdaterHelperImage, UpdateError> {
+        require_machine_uac(self.identity.install_mode, "install mode")?;
+        self.open_tree_helper()
+    }
+
+    /// The derivation after the mode gate.
+    pub(super) fn open_tree_helper(&self) -> Result<UpdaterHelperImage, UpdateError> {
+        let name = WindowsLocatedImage::UpdaterHelper.file_name();
+        let image = super::open_machine_file(
+            &self.tree,
+            name,
+            self.identity.install_mode.protection_profile(),
+        )
+        .map_err(|cause| refusal("activation image", cause))?;
+        Ok(UpdaterHelperImage {
+            path: self.tree_root.join(name),
+            _image: image,
+        })
+    }
 }
 
 /// The one rule that only a `MachineUacDirect` installation runs the updater helper,

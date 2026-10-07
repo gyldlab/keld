@@ -22,7 +22,7 @@ use crate::windows_baseline::helper::{anchor_located, require_machine_uac};
 use crate::windows_baseline::locate::locate;
 use crate::windows_baseline::{
     UpdaterHelperAnchor, UpdaterHelperRole, WindowsBaselineTrust, anchor_updater_helper,
-    load_windows_activation_write_snapshot,
+    load_windows_activation_write_snapshot, select_windows_active_package,
 };
 use crate::{DirectInstallMode, ProvenanceField, UpdateError, WindowsLocatedImage};
 
@@ -499,5 +499,99 @@ fn with_a_journal_only_the_journaled_image_anchors_in_any_version() {
                 }
             }
         }
+    }
+}
+
+/// Whether an ordinary writer can open `path` for writing now; a derived helper image
+/// shares only reads, so while one is held the open fails with a sharing violation.
+fn writable(path: &Path) -> bool {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(_) => true,
+        Err(error) => {
+            assert_eq!(
+                error.raw_os_error(),
+                Some(32),
+                "a sharing violation: {error}"
+            );
+            false
+        }
+    }
+}
+
+#[test]
+fn a_per_user_selection_offers_no_activation_helper() {
+    let install = installed_with(b"keld-updater-helper fixture image");
+    let selection =
+        select_windows_active_package(&install.trust).expect("the per-user baseline selects");
+    let error = selection
+        .open_activation_helper()
+        .expect_err("only MachineUacDirect activates through the helper");
+    assert_eq!(helper_step(&error), "install mode");
+    assert!(helper_detail(&error).contains("`PerUserDirect`"), "{error}");
+    // Nothing was opened: the tree's helper stays writable by its owner.
+    assert!(writable(&helper_path(&install.trust, "1.0.0")));
+}
+
+#[test]
+fn the_activation_helper_is_the_selected_trees_file() {
+    let install = installed_with(b"keld-updater-helper fixture image");
+    let trust = &install.trust;
+    commit_with(trust, "2.0.0", &install.content);
+    // Copies beside the install root and in the previous version's tree are never derived.
+    let planted = trust
+        .installation
+        .install_root
+        .with_file_name("keld-updater-helper.exe");
+    std::fs::copy(helper_path(trust, "1.0.0"), &planted).expect("plant a copy");
+    let selection = select_windows_active_package(trust).expect("2.0.0 is selected");
+    assert_eq!(selection.artifact().version, "2.0.0");
+    let selected = helper_path(trust, "2.0.0");
+    assert!(writable(&selected), "nothing holds the selected helper yet");
+    let image = selection
+        .open_tree_helper()
+        .expect("the selected tree's helper is derived");
+    assert_eq!(
+        image.path(),
+        selected,
+        "the path is the selected tree's helper"
+    );
+    // The derived handle is on exactly that file: it alone is pinned against writers.
+    assert!(
+        !writable(&selected),
+        "the derived image pins the selected file"
+    );
+    assert!(
+        writable(&helper_path(trust, "1.0.0")),
+        "the previous tree's helper"
+    );
+    assert!(writable(&planted), "the planted copy");
+    drop(image);
+    assert!(writable(&selected), "the pin ends with the derived image");
+}
+
+#[test]
+fn a_selected_tree_without_its_helper_file_derives_nothing() {
+    for (label, replace) in [("absent", false), ("a directory", true)] {
+        let install = installed_with(b"keld-updater-helper fixture image");
+        let trust = &install.trust;
+        let selected = helper_path(trust, "1.0.0");
+        std::fs::remove_file(&selected).expect("remove the tree's helper");
+        if replace {
+            std::fs::create_dir(&selected).expect("a directory in the helper's place");
+        }
+        // A copy beside the install root is never a fallback.
+        std::fs::write(
+            trust
+                .installation
+                .install_root
+                .with_file_name("keld-updater-helper.exe"),
+            b"keld-updater-helper fixture image",
+        )
+        .expect("plant a copy");
+        let selection = select_windows_active_package(trust).expect("the baseline selects");
+        let error = selection
+            .open_tree_helper()
+            .expect_err("no helper is derived without the tree's file");
+        assert_eq!(helper_step(&error), "activation image", "{label}: {error}");
     }
 }

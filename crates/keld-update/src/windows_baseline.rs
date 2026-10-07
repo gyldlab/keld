@@ -33,7 +33,9 @@ pub use activate::{
     WindowsActivationOutcome, WindowsActivationResolution, WindowsJournaledAttempt,
     WindowsMintedAttempt, WindowsRecoveryOutcome,
 };
-pub use helper::{UpdaterHelperAnchor, UpdaterHelperRole, anchor_updater_helper};
+pub use helper::{
+    UpdaterHelperAnchor, UpdaterHelperImage, UpdaterHelperRole, anchor_updater_helper,
+};
 pub use initialize::{
     initialize_windows_baseline, initialize_windows_machine_uac_baseline,
     initialize_windows_per_user_baseline,
