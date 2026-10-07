@@ -102,7 +102,14 @@ fail. "Owner" is the implementing ticket.
    `new BrowserWindow(opts)` returns, then `win.id` equals the `WindowId` in the host's
    `Created` event for that window, and the `Create` request schema has no identity
    field. *NC:* minting the id in the facade, so the id was never delivered by the host,
-   fails the id-equality assertion. Owner: F02-T2.
+   fails the id-equality assertion. **Snapshot source:** `Created.state` is always the
+   `WindowSnapshot` carried by keld-wv's `WindowBuilt`, read from the built native
+   window (with any buffered facts overlaid, §4.e), including when `Create` has `x` and
+   `y` as `None`. Given a fake UI port whose `WindowBuilt` snapshot is
+   `(x 37, y 91, 800×600, focused, not maximized, not full-screen)` for a `Create` with
+   no position, the `Created` event carries exactly that state. *NC:* a registry that
+   fills `Created.state` from the `Create` request or from defaults (no snapshot
+   source) writes `x 0, y 0` and fails. Owner: F02-T2.
 2. **Never a native number.** Given a registry test harness in which keld-wv returns
    `WebviewId` values 7 and 8, when two windows are created, then their WindowIds are 1
    and 2. *NC:* returning the `WebviewId`, tao `WindowId` or `NSWindow` `windowNumber`
@@ -275,18 +282,32 @@ fail. "Owner" is the implementing ticket.
     behaviour). *NC:* letting
     the exception escape the dispatcher sends no reply, and the window stays in
     `ClosePending` forever. Owner: F02-T3.
-30. **Exit on RoleInstance generation loss (PANEL-D19; owner decision D6).** Given
-    `ClosePending(s)` on window A, when the primary role is killed, then `s` gets
-    exactly one terminal outcome (`Abandoned`); `CloseRequested(s)` is never written to
-    any successor role; and A goes through `Closing` to `Destroyed`, writing no frame to
-    any link, because retiring a role generation destroys that generation's windows in
-    this slice (T9). Given the successor role, when it calls with A's `(WindowId,
-    WindowGeneration)` while A is still `Closing`, then the host answers the
-    registered window-not-owned `ERR` (`owner_role_generation` does not match), and A's
-    state is unchanged. *NC 1:* replaying the pending `CloseRequested` to a successor
-    fails. *NC 2:* removing the `owner_role_generation` check makes the successor's
-    call reach the transition table and answer the stale-window code instead, so the
-    exact-code assertion fails. Owner: F02-T3.
+30. **Exit on RoleInstance generation loss (PANEL-D19; D6 pending owner decision).**
+    Common to both options: given `ClosePending(s)` on window A, when the primary role
+    is killed, then `s` gets exactly one terminal outcome (`Abandoned`) and
+    `CloseRequested(s)` is never written to any successor role. *NC 1:* replaying the
+    pending `CloseRequested` to a successor fails. The owner's D6 choice selects exactly
+    one of the two sets below; the other is deleted.
+    - **30A (option A).** A goes through `Closing` to `Destroyed`, writing no frame to
+      any link (T9 = destroy). Given the successor, when it calls with A's
+      `(WindowId, WindowGeneration)` while A is still `Closing`, then the host answers
+      `KELD-CORE-043` (`owner_role_generation` does not match) and A's state is
+      unchanged. *NC 2:* removing the `owner_role_generation` check lets the call reach
+      the table, which answers by its row and never with `KELD-CORE-043`: a setter
+      gets C7's stale-window `ERR` (038), `RequestClose` gets C4's `AlreadyClosing`,
+      and `Destroy` gets C8's deferred `REPLY Destroyed`. The exact-code assertion fails
+      for each.
+    - **30B (option B).** A stays `Open` with its pair unchanged (KEL-139 AC5). When the
+      recovered successor of the same declared role subscribes, the host transfers
+      ownership explicitly (`owner_role_generation` := the successor's generation) and
+      replays one `Created { window, state }` per live window, in creation order, with
+      the registry's current state, before any other window frame on that link. Calls
+      from any other link with A's pair, including a late frame attributed to the
+      retired generation, get `KELD-CORE-043`. *NC 2:* omitting the replay leaves the
+      successor's mirror empty, so `getAllWindows()` returns `[]` and fails. *NC 3:*
+      transferring ownership to a role of a different declaration (an `app-bound`
+      role) fails, because that role's call must get `KELD-CORE-043`.
+    Owner: F02-T3.
 31. **Exit on session terminal end.** Given `ClosePending(s)`, when the host accepts
     `Quit`, then the window reaches `Destroyed` with no `CloseRequested` written and no
     reply awaited. *NC:* making `Quit` wait for the pending reply leaves the host alive,
@@ -395,7 +416,7 @@ Atomic decomposition. Each atom has one owner and its own falsifier. Status is
 | A7 | Staleness under park | gh527 wake rule (consumed) | stale read after wake | criterion 19 | unknown until #528 lands; prototype FACT in #418 |
 | A8 | Close state and `close_seq` | keld-core registry | stale accept, stacked prompts | criteria 25–27 | passed: FACT, harness `p3`/`n3` 5/5 |
 | A9 | No timer | keld-core registry | timed auto-close | criterion 21 | passed: FACT, harness `n2` fails as required 5/5; PANEL-D19 |
-| A10 | Exits on loss and terminal end | registry plus KEL-75 revoke; `owner_role_generation` | replay to a successor; a successor addressing a predecessor's window | criteria 30, 31 | passed as a design input: PANEL-D19; owner decision D6 (retire destroys; falsifier KEL-143) |
+| A10 | Exits on loss and terminal end | registry plus KEL-75 revoke; `owner_role_generation` | replay to a successor; a successor addressing a predecessor's window | criteria 30, 31 | passed as a design input: PANEL-D19; **blocker:** D6 pending owner decision (A destroy on retire, or B AC5 transfer; recommendation B) |
 | A11 | Facade tombstones | `@keld/electron` | wrong `isDestroyed` at `closed` | criteria 23, 24 | passed: FACT, Electron E1 5/5 |
 | A12 | Run-loop mode delivery | keld-wv wake bridge over tao's proxy | reply never delivered inside a nested loop | criterion 28 | source registered in common modes: FACT (tao 0.35.3 `event_loop.rs:336`). Whether tao dispatches its user callback inside a nested modal loop: **unknown** |
 | A13 | Synchronous `id` and `closed` | `Create`/`Destroy` as blocking calls | `win.id` undefined after the constructor; a fabricated `closed` | criteria 1, 24 | decided (D1, §4.i): blocking calls over F04-T18 #528; edges #449 ← #528 and #450 ← #528 |
@@ -621,12 +642,11 @@ This spec consumes F01-T2's rule (#446) and adds no adoption shim.
   F01-T2. Removal condition: F01-T2 decision (b) ("whether renderer-declared boots keep
   `CreateInitialWindow` before Ready"). If those boots move onto the registry, the
   legacy arm is deleted in that change.
-- Ready meaning per RoleInstance generation is F01-T2's. Successor roles (D6, §4.i):
-  in this slice, retiring a role generation destroys that generation's windows (T9).
-  The registry writes no window event to a successor about them, and a successor's
-  call with a predecessor's pair is refused `KELD-CORE-043` (criterion 30). This
-  deviates from KEL-139 AC5 ("recovery keeps the same window") for facade boots until
-  KEL-143 window retention lands with an explicit ownership transfer.
+- Ready meaning per RoleInstance generation is F01-T2's. Successor roles are the
+  pending owner decision D6 (§4.i): option A destroys a retired generation's windows
+  and refuses successors (deviating from KEL-139 AC5 until KEL-143); option B keeps
+  the windows and transfers ownership to the recovered successor with a state replay.
+  Criterion 30A or 30B applies accordingly.
 
 ### 4.d Mirror primitive
 
@@ -709,11 +729,18 @@ RoleInstance generation equals the entry's `owner_role_generation`, else
 | `Setter` | app `SetMaximized` / `SetFullScreen` |
 | `Destroy` | app call |
 | `Released` | UI loop reports bridge, webview and window released |
+| `Bounds fact` | UI loop `WindowBounds` (move or resize) |
+| `Focus fact` | UI loop `WindowFocus` |
+| `Maximized fact` | UI loop `WindowMaximized` |
+| `FullScreen fact` | UI loop `WindowFullScreen` |
 | `Role loss` | the `owner_role_generation` is retired (KEL-75 `RevokeAll`) |
 | `Session end` | accepted `Quit`, or no successor role will be provisioned |
 
+Rows marked "A:" / "B:" depend on the pending D6 owner decision (§4.i); the chosen
+option's branch stays and the other is deleted. All other rows are option-independent.
+
 **Transition table.** Total and deterministic: one row per (state, input) pair
-(56 rows; `Reply current` in `ClosePending` has one row per verdict), and nothing
+(76 rows; `Reply current` in `ClosePending` has one row per verdict), and nothing
 else. "ERR 038" is the stale-window `ERR`; it changes no state. A pure registry unit
 test enumerates every pair and asserts its row.
 
@@ -728,8 +755,12 @@ test enumerates every pair and asserts its row.
 | O7 | `Opening` | `Setter` | `Opening` | ERR 038 |
 | O8 | `Opening` | `Destroy` | `Opening` | ERR 038 |
 | O9 | `Opening` | `Released` | `Opening` | one host diagnostic (invariant violation); ignored |
-| O10 | `Opening` | `Role loss` | `Closing` | the build result is awaited as a late input (C1, C2); no frame (T9) |
+| O10 | `Opening` | `Role loss` | `Closing` | the build result is awaited as a late input (C1, C2); no frame (T9; same under options A and B, because no pair was ever delivered) |
 | O11 | `Opening` | `Session end` | `Closing` | as the `Role loss` row; the blocked `Create` caller gets gh527's `KELD-IPC-024` from the host drain (T10) |
+| O12 | `Opening` | `Bounds fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
+| O13 | `Opening` | `Focus fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
+| O14 | `Opening` | `Maximized fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
+| O15 | `Opening` | `FullScreen fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
 | P1 | `Open` | `BuildOk` | `Open` | one host diagnostic (invariant violation); ignored |
 | P2 | `Open` | `BuildFail` | `Open` | one host diagnostic (invariant violation); ignored |
 | P3 | `Open` | `Native close` | `ClosePending(n)` | `n` = last `close_seq` + 1 by checked `u64` add; `CloseRequested(n)` (T3). On overflow: stays `Open`, one diagnostic, no write (T3x) |
@@ -739,8 +770,12 @@ test enumerates every pair and asserts its row.
 | P7 | `Open` | `Setter` | `Open` | `REPLY Accepted`; the fact follows as an `EVENT` (T12) |
 | P8 | `Open` | `Destroy` | `Closing` | `WindowClosing(w)`; teardown command; the `REPLY Destroyed` is deferred to C9 (T8) |
 | P9 | `Open` | `Released` | `Open` | one host diagnostic (invariant violation); ignored |
-| P10 | `Open` | `Role loss` | `Closing` | `WindowClosing(w)`; teardown command; no frame to any link (T9) |
+| P10 | `Open` | `Role loss` | A: `Closing`. B: `Open` | A: `WindowClosing(w)`; teardown command; no frame to any link. B: no frame; ownership transfers to the recovered successor of the same declared role, with a `Created` replay (criterion 30B) (T9) |
 | P11 | `Open` | `Session end` | `Closing` | `WindowClosing(w)`; teardown command; no `CloseRequested` (T10) |
+| P12 | `Open` | `Bounds fact` | `Open` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing |
+| P13 | `Open` | `Focus fact` | `Open` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing |
+| P14 | `Open` | `Maximized fact` | `Open` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing |
+| P15 | `Open` | `FullScreen fact` | `Open` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing |
 | Q1 | `ClosePending(s)` | `BuildOk` | `ClosePending(s)` | one host diagnostic (invariant violation); ignored |
 | Q2 | `ClosePending(s)` | `BuildFail` | `ClosePending(s)` | one host diagnostic (invariant violation); ignored |
 | Q3 | `ClosePending(s)` | `Native close` | `ClosePending(s)` | merged; nothing written (T4) |
@@ -751,8 +786,12 @@ test enumerates every pair and asserts its row.
 | Q8 | `ClosePending(s)` | `Setter` | `ClosePending(s)` | `REPLY Accepted`; the fact follows as an `EVENT`; `s` stays pending (T12) |
 | Q9 | `ClosePending(s)` | `Destroy` | `Closing` | `s` abandoned; then as the `Open`/`Destroy` row (T8) |
 | Q10 | `ClosePending(s)` | `Released` | `ClosePending(s)` | one host diagnostic (invariant violation); ignored |
-| Q11 | `ClosePending(s)` | `Role loss` | `Closing` | `s` gets the one terminal outcome `Abandoned`; then as the `Open`/`Role loss` row (T9) |
+| Q11 | `ClosePending(s)` | `Role loss` | A: `Closing`. B: `Open` | `s` gets the one terminal outcome `Abandoned`; then as the `Open`/`Role loss` row for the chosen option (T9) |
 | Q12 | `ClosePending(s)` | `Session end` | `Closing` | `s` gets the one terminal outcome `Abandoned`; then as the `Open`/`Session end` row (T10) |
+| Q13 | `ClosePending(s)` | `Bounds fact` | `ClosePending(s)` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing; `s` stays pending |
+| Q14 | `ClosePending(s)` | `Focus fact` | `ClosePending(s)` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing; `s` stays pending |
+| Q15 | `ClosePending(s)` | `Maximized fact` | `ClosePending(s)` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing; `s` stays pending |
+| Q16 | `ClosePending(s)` | `FullScreen fact` | `ClosePending(s)` | applied to the registry's last-sent state; if the value differs, one `EVENT` of that kind, in arrival order (§4.b ordering rules 2 and 3); otherwise nothing; `s` stays pending |
 | C1 | `Closing` | `BuildOk` (late, after a `Role loss` or `Session end` in `Opening`) | `Closing` | teardown command for the just-built view; no frame |
 | C2 | `Closing` | `BuildFail` (late, as above) | `Destroyed` | nothing to release; no frame (no `Created` was ever written) |
 | C3 | `Closing` | `Native close` | `Closing` | nothing written |
@@ -764,6 +803,10 @@ test enumerates every pair and asserts its row.
 | C9 | `Closing` | `Released` | `Destroyed` | T11 below |
 | C10 | `Closing` | `Role loss` | `Closing` | nothing; already closing (an earlier `Destroy` reply is not written, because the owner link is retired) |
 | C11 | `Closing` | `Session end` | `Closing` | nothing; already closing |
+| C12 | `Closing` | `Bounds fact` | `Closing` | dropped, never written; counted in a saturating per-window `u64` drop counter that the T11 diagnostic reports once |
+| C13 | `Closing` | `Focus fact` | `Closing` | dropped, never written; counted in a saturating per-window `u64` drop counter that the T11 diagnostic reports once |
+| C14 | `Closing` | `Maximized fact` | `Closing` | dropped, never written; counted in a saturating per-window `u64` drop counter that the T11 diagnostic reports once |
+| C15 | `Closing` | `FullScreen fact` | `Closing` | dropped, never written; counted in a saturating per-window `u64` drop counter that the T11 diagnostic reports once |
 | D1 | `Destroyed` | `BuildOk` | `Destroyed` | one host diagnostic (invariant violation); ignored |
 | D2 | `Destroyed` | `BuildFail` | `Destroyed` | one host diagnostic (invariant violation); ignored |
 | D3 | `Destroyed` | `Native close` | `Destroyed` | ignored |
@@ -775,6 +818,10 @@ test enumerates every pair and asserts its row.
 | D9 | `Destroyed` | `Released` | `Destroyed` | one host diagnostic (invariant violation); ignored |
 | D10 | `Destroyed` | `Role loss` | `Destroyed` | nothing |
 | D11 | `Destroyed` | `Session end` | `Destroyed` | nothing |
+| D12 | `Destroyed` | `Bounds fact` | `Destroyed` | dropped, never written; counted in the registry's saturating session-level `u64` drop counter, reported at session end |
+| D13 | `Destroyed` | `Focus fact` | `Destroyed` | dropped, never written; counted in the registry's saturating session-level `u64` drop counter, reported at session end |
+| D14 | `Destroyed` | `Maximized fact` | `Destroyed` | dropped, never written; counted in the registry's saturating session-level `u64` drop counter, reported at session end |
+| D15 | `Destroyed` | `FullScreen fact` | `Destroyed` | dropped, never written; counted in the registry's saturating session-level `u64` drop counter, reported at session end |
 
 The "impossible" rows are not gaps: a `CloseReply` is classified as `Reply current` only
 when a request is pending and the sequence matches, so in every other state it is
@@ -785,12 +832,18 @@ link is live and not retired (after a `Role loss` row nothing is written): `Dest
 `Created` was written for this window; then `LastWindowClosed`, if no live window
 remains and the step is outside a session end; then every deferred `REPLY Destroyed`.
 *Live* means `Open`, `ClosePending` or `Closing`; an `Opening` window is not live until
-it reaches `Open`. The facade runs no last-window policy for that `LastWindowClosed`
+it reaches `Open`.
+
+**State facts.** keld-wv writes `WindowBuilt` before any fact for that view on the one
+FIFO UI → core channel, so the `Opening` fact rows guard against reordering rather
+than a normal path: a fact for a view that no `WindowBuilt` has mapped yet is held in
+that build's four slots and overlaid at O1. Drops in `Closing` and `Destroyed` are
+counted, never logged per fact, so a resize storm during teardown cannot flood the log. The facade runs no last-window policy for that `LastWindowClosed`
 until the `Destroy` caller has emitted `'closed'` (§4.e facade rules).
 
 The T-numbers used elsewhere in this spec name these rows: T1 = O1, T2 = O2, T3 =
 P3/P4, T3x = their overflow branch, T4 = Q3/Q4, T5 = Q5, T6 = Q6, T7 = O6/P6/Q7/C6, T8 =
-P8/Q9, T9 = O10/P10/Q11 (role loss), T10 = O11/P11/Q12 (session end), T11 = C9, T12 =
+P8/Q9, T9 = O10/P10/Q11 (role loss; option-dependent), T10 = O11/P11/Q12 (session end), T11 = C9, T12 =
 P7/Q8.
 
 Rules:
@@ -809,7 +862,7 @@ Rules:
   (02 §7). It never completes or vetoes a close; on expiry the facade throws
   `KELD-IPC-006` and emits no `'closed'`.
 - **Three exits (PANEL-D19).** `ClosePending` leaves only by the reply (T5, T6), by
-  RoleInstance generation loss (T9, which in this slice destroys the window; D6), or by
+  RoleInstance generation loss (T9: destroys the window under D6 option A, keeps it under option B), or by
   the session terminal end (T10). `Destroy` (T8) is the app's own exit and is not a host completion.
 - **Fail-closed.** Absence of `Allow` never closes a window. A veto, a stale reply and
   a throwing listener (criterion 29) all keep it open. Only `Allow`, `Destroy`, role
@@ -910,7 +963,7 @@ Security decomposition:
 | Authentication | the existing 32-byte `HELLO` possession proof (02 §2); no change |
 | Authorization | first proof: window `CALL`s admitted only on the primary app link (receive policy), and each window call only from the window's `owner_role_generation`; window `EVENT`s only after a `Subscribe` admitted for the declared `primary` role (#613 criterion 16). The table entry is host-internal, like lifecycle: window UI is the app's own surface and grants no OS resource (01 principle 2). No `keld-guard` evaluation runs, and no capability name is added |
 | OS containment | unchanged; window calls touch only host-owned UI state on the UI thread |
-| Lifecycle and revocation | RoleInstance generation revocation (KEL-75 `RevokeAll`) drops the link; that generation's windows take T9 and are destroyed; nothing is replayed; a successor is refused the predecessor's pairs (`KELD-CORE-043`) |
+| Lifecycle and revocation | RoleInstance generation revocation (KEL-75 `RevokeAll`) drops the link; that generation's windows take T9 (D6 pending: A destroys them; B keeps them and transfers ownership with a replay); a link that is not the owner is refused (`KELD-CORE-043`) |
 | Evidence provenance | registry transitions are host facts; every app-supplied pair and `close_seq` is validated (criteria 4, 5, 27) |
 
 Webview-originated window operations (the renderer bridge, page `window.close()`)
@@ -969,14 +1022,29 @@ reversible, and each names the observation that reopens it.
   pending (T4). F02-T3's "every native attempt re-emits" applies outside a pending
   prompt (T3). This matches #419. *Falsifier:* an Electron 44.4.5 observation of a
   second `'close'` emitted for an attempt made while the first `'close'` is unanswered.
-- **D6. Successor roles (owner decision, 2026-10-07).** In this slice, retiring a
-  RoleInstance generation destroys that generation's windows (T9), and a successor that
-  calls with a predecessor's `(WindowId, WindowGeneration)` is refused `KELD-CORE-043`,
-  because `owner_role_generation` must match (criterion 30). Rejected: keeping the
-  windows open with no owner (no role can veto or close them, and a successor would
-  inherit pairs it never created). *Falsifier:* KEL-143 window retention lands; window
-  ownership is then transferred to a successor explicitly, and T9 changes in that
-  spec.
+- **D6. Successor roles — PENDING OWNER DECISION.** This is an architecture decision:
+  it sets the crash ownership of windows, and option A deviates from the approved
+  KEL-139 AC5 ("recovery keeps the same window and document"). The orchestrator does
+  not resolve it. Criteria 30A and 30B and the "A:"/"B:" rows of §4.e are written for
+  both options; the owner's choice keeps one set and deletes the other.
+  - **(A) Destroy on retire.** A role's windows are destroyed when its generation is
+    retired, and successors are refused the predecessor's pairs (`KELD-CORE-043`).
+    *Consequences:* simplest state machine, and no replay path in this slice; facade
+    boots deviate from KEL-139 AC5 until KEL-143 window retention lands, and a crash
+    of the primary role loses the user's open windows.
+  - **(B) Follow AC5.** On crash recovery the window persists, and ownership transfers
+    explicitly to the recovered successor of the same declared role. Old-generation
+    handles are refused (`KELD-CORE-043`), and the successor gets a host replay of
+    window state (`Created` per live window) to rebuild its mirror. *Consequences:*
+    consistent with the macOS spine in every boot mode; more work in this slice (the
+    transfer, the replay and their tests), and it overlaps KEL-143 and F02-T11's
+    adoption work, which this spec lists as a non-goal, so that boundary must move.
+  - **Recommendation: (B).** It keeps one invariant across renderer-declared and
+    facade boots (renderer boots already keep the window), and root `AGENTS.md`
+    forbids silently deviating from an approved contract: choosing (A) would need
+    KEL-139 AC5 amended in the same change, not a local exception. *Falsifier for
+    (B):* KEL-143 or F02-T11 shows that a successor cannot safely adopt a window it
+    did not create (for example, renderer state that cannot be re-bound).
 - **D5. Channel id.** F02-T2 appends the window-state channel entry under #508's rule
   (draft PR #613). This spec fixes no number. *Falsifier:* #613's approved rule
   assigns ids by a mechanism other than an appended table entry.
@@ -1084,7 +1152,9 @@ pub enum AppWindowCommand {
 pub enum AppWindowEvent {
     NavigationReady,
     LastWindowClosed,
-    WindowBuilt { build: u64, view: WebviewId },
+    /// `snapshot` is read from the built native window on the UI thread, so it holds the
+    /// OS-chosen position when `CreateWindow` had `x`/`y` as `None`.
+    WindowBuilt { build: u64, view: WebviewId, snapshot: WindowSnapshot },
     /// `stage` is a `Copy` enum (`Window` | `Webview`); the `WvError` text is written to
     /// the host log on the UI thread, so the event stays `Copy`.
     WindowBuildFailed { build: u64, stage: BuildStage },
@@ -1096,6 +1166,14 @@ pub enum AppWindowEvent {
     WindowReleased { view: WebviewId },
 }
 ```
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSnapshot { pub x: i32, pub y: i32, pub width: u32, pub height: u32,
+    pub focused: bool, pub maximized: bool, pub full_screen: bool }
+```
+
+`WindowSnapshot` is the only source of `Created.state` (criterion 1).
 
 For facade boots the existing `LastWindowClosed` variant is not used. The registry
 derives last-window from its own states (T11), because an `Opening` window is not
@@ -1159,7 +1237,7 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   - a new keld-core registry module composed by `crates/keld-core/src/app_session.rs`,
     and the `crates/keld-core/src/lib.rs` doc;
   - `crates/keld-wv/src/engine.rs` (the `Copy` `AppWindowCommand`/`AppWindowEvent`
-    variants listed under "Public surface", and `BuildStage`),
+    variants listed under "Public surface", `BuildStage` and `WindowSnapshot`),
     `crates/keld-wv/src/wkwebview/mod.rs` (macOS loop);
   - `packages/@keld/api/src/` (mirror, window adapter), `packages/@keld/electron/src/`
     (`BrowserWindow`, triage);
@@ -1207,7 +1285,7 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 
 | Criteria | Test | Kind |
 |---|---|---|
-| 2–6, 21, 25–27, 30, 31, 33 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 56 (state, input) rows of §4.e | unit |
+| 2–6, 21, 25–27, 30, 31, 33 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 76 (state, input) rows of §4.e (the chosen D6 branch) | unit |
 | 20 | `lifecycle.rs` pinned `Subscribe` bytes; `app_session.rs` link tests for an unsubscribed primary, a subscribed primary and a refused `app-bound` role | unit, integration |
 | 8, 10, 11 | the golden-vector file replayed by `cargo test -p keld-ipc` and `bun test`; existing vectors and the KEL-133 corpus unmodified | unit, cross-language |
 | 9, 43 | the X05-T4 drift check and table validation | unit |
@@ -1237,7 +1315,7 @@ Counts, not durations, are the oracle.
   `BrowserWindowOptions`, `WebPreferences` and the event maps ("Public surface"); the
   `@keld/api` internal mirror; keld-ipc public wire types and the lifecycle
   `Subscribe` messages; the keld-wv `AppWindowCommand`/`AppWindowEvent` variants and
-  `BuildStage`; `KELD-CORE-038` to `043`.
+  `BuildStage` and `WindowSnapshot`; `KELD-CORE-038` to `043`.
 - **Permission model:** yes. The host-internal marker and app-process-only admission;
   webview denial kept (§4.g). Listed on the ticket (#531 "Ownership and gates").
 - `unsafe`: none in production. Criterion 28's test, and the fallback path if it
@@ -1257,5 +1335,11 @@ there (gh527 §10 Q1).
 
 ## 10. Open questions
 
-None. The questions raised in the first draft were decided under the orchestrator's
+1. **D6, successor roles: PENDING OWNER DECISION** (§4.i). Options: (A) destroy a
+   retired generation's windows and refuse successors; (B) follow KEL-139 AC5 and
+   transfer ownership to the recovered successor with a state replay. Recommendation:
+   (B). The owner's choice keeps criterion 30A or 30B and the matching §4.e branches.
+   This spec cannot be approved until D6 is decided.
+
+The other questions raised in the first draft were decided under the orchestrator's
 delegation and are recorded, with falsifiers, in §4.i.
