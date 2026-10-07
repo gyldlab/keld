@@ -145,14 +145,21 @@ fail. "Owner" is the implementing ticket.
     hostile corpus pass unmodified. Only rows for the new channel are added. *NC:*
     bumping the version or changing a header field fails the existing vectors. Owner:
     F02-T2.
-11. **Unknown fact is terminal.** Given a window `EVENT` whose discriminant is unknown
-    to the adapter, when it arrives, then the link ends with `KELD-IPC-005` (the
-    gh527 throwing-applier rule) after earlier records are delivered, and no getter
-    returns a value newer than the last applied fact. `KELD-IPC-005` is the only
-    observable code for this case: the codec's internal `KELD-IPC-003` is never the
-    link-terminal code, as 02 §2 already surfaces an undecodable `ERR` payload. *NC:* skipping the unknown record
-    and continuing fails, because the mirror then serves state that the host has
-    already changed. Owner: F02-T2.
+11. **Undecodable fact is terminal.** This criterion covers decode failures only.
+    Given a window `EVENT` whose discriminant is unknown to the adapter, or whose
+    payload is not valid postcard for `WindowEvent`, when it arrives, then the link
+    closes with the cause `KELD-IPC-005` (gh527 §4.4: a throwing applier records
+    `STATE = 22`, and the cause is written to the role log) after earlier records are
+    delivered, and no getter returns a value newer than the last applied fact. A
+    parked `Create` or `Destroy`, and every pending call, then throws `KELD-IPC-022`
+    whose detail names that `KELD-IPC-005` cause. The codec's internal `KELD-IPC-003`
+    is never surfaced. The other gh527 transport wake codes (`KELD-IPC-022` to
+    `KELD-IPC-027`, gh527 §4.4) stay distinct and pass through to a parked `Create` or
+    `Destroy` unchanged; the facade never remaps or swallows them. *NC 1:* skipping the
+    unknown record and continuing fails, because the mirror then serves state that the
+    host has already changed. *NC 2:* a facade that rethrows the parked call's
+    `KELD-IPC-022` as `KELD-IPC-005`, or as any `KELD-COMPAT-*` code, fails the
+    pass-through assertion. Owner: F02-T2.
 12. **One transport owner.** The window codec is one thin adapter module over the
     shared transport; it opens no socket and owns no reader. *NC:* a second `connect`
     or `FrameReader` in the window adapter fails the single-owner source check that
@@ -194,13 +201,18 @@ fail. "Owner" is the implementing ticket.
     then run in issue order after the synchronous continuation. *NC:* dispatching
     listeners inside the wake drain fails (gh527 criterion 4, #419 E3). Owner: F04-T18
     #528 lands the sequence test; F02-T2 registers the window applier.
-20. **Admission.** Window events are written only to the current primary RoleInstance
-    generation's app link, and only after that link has subscribed to the window
-    channel with the X05-T2 `lifecycle` `Subscribe` call (#613 criterion 16). The
-    facade subscribes before its first `Create`. A second authenticated role link
-    receives no window frame.
-    *NC:* broadcasting to every connected role fails. Owner: F02-T2. F06-T5 reuses this
-    rule for display and theme facts.
+20. **Admission and subscription.** The window channel is a host-internal event
+    entry (`Authority::HostInternal`, #613 criterion 16). Window events for a window are
+    written only to the app link of that window's `owner_role_generation`, which is
+    always a `primary` role declared in KEL-75, and only after that link subscribed with
+    the X05-T2 `lifecycle` `Subscribe` call. The facade subscribes before its first
+    `Create`. `SubscribeRefused` applies, and changes no state, when the link's role is
+    not the declared `primary` (`RoleNotAdmitted`), when the host has no window entry
+    (`UnknownChannel`, a peer newer than its host), or for the reasons #613 defines.
+    *NC 1:* broadcasting to every connected role fails, because a second authenticated
+    `app-bound` role link that also sends `Subscribe` is refused `RoleNotAdmitted` and
+    receives no window frame. *NC 2:* an unsubscribed primary link receives zero window
+    frames. Owner: F02-T2. F06-T5 reuses this rule for display and theme facts.
 
 ### (e) Close state machine (the #419 rules plus PANEL-D19)
 
@@ -252,20 +264,29 @@ fail. "Owner" is the implementing ticket.
 28. **Replies delivered in common run-loop modes (#419 rule).** Given the macOS UI
     thread inside a nested run loop in `NSModalPanelRunLoopMode`, when an `Allow` reply
     for another window arrives, then the teardown command reaches the UI loop before the
-    nested loop ends. *NC:* registering the wake source in `kCFRunLoopDefaultMode` only
-    fails, as harness scenario `s3d_terminate_later_default_mode_delivery` failed 5/5.
-    Owner: F02-T3.
+    nested loop ends. *NC:* a keld-wv mutation that queues `AppWindowCommand`s in a
+    keld-wv-owned buffer drained only from the outer loop's `MainEventsCleared`
+    callback (so delivery waits for the nested loop to end) fails. That is the same
+    default-mode-only failure harness scenario `s3d_terminate_later_default_mode_delivery`
+    showed 5/5, produced by changing Keld code, not tao. Owner: F02-T3.
 29. **Throwing listener.** A `'close'` listener that throws produces exactly one reply
     for its `close_seq` and exactly one diagnostic. The reply is `Veto` (fail-closed,
     decision D2 in §4.i; ▲ until the Electron 44.4.5 oracle cell records the real
     behaviour). *NC:* letting
     the exception escape the dispatcher sends no reply, and the window stays in
     `ClosePending` forever. Owner: F02-T3.
-30. **Exit on RoleInstance generation loss (PANEL-D19).** Given `ClosePending(s)`, when
-    the primary role is killed, then `s` gets exactly one terminal outcome
-    (`Abandoned`); `CloseRequested(s)` is never written to any successor role; and the
-    window closes only through the session's terminal path. *NC:* replaying the pending
-    `CloseRequested` to a successor fails. Owner: F02-T3.
+30. **Exit on RoleInstance generation loss (PANEL-D19; owner decision D6).** Given
+    `ClosePending(s)` on window A, when the primary role is killed, then `s` gets
+    exactly one terminal outcome (`Abandoned`); `CloseRequested(s)` is never written to
+    any successor role; and A goes through `Closing` to `Destroyed`, writing no frame to
+    any link, because retiring a role generation destroys that generation's windows in
+    this slice (T9). Given the successor role, when it calls with A's `(WindowId,
+    WindowGeneration)` while A is still `Closing`, then the host answers the
+    registered window-not-owned `ERR` (`owner_role_generation` does not match), and A's
+    state is unchanged. *NC 1:* replaying the pending `CloseRequested` to a successor
+    fails. *NC 2:* removing the `owner_role_generation` check makes the successor's
+    call reach the transition table and answer the stale-window code instead, so the
+    exact-code assertion fails. Owner: F02-T3.
 31. **Exit on session terminal end.** Given `ClosePending(s)`, when the host accepts
     `Quit`, then the window reaches `Destroyed` with no `CloseRequested` written and no
     reply awaited. *NC:* making `Quit` wait for the pending reply leaves the host alive,
@@ -283,7 +304,8 @@ fail. "Owner" is the implementing ticket.
 33. **Quit keeps asking every window (#419 rule; registry half).** Given windows A and
     B and the facade's quit loop, when A vetoes, then a close request for B is still
     accepted and `CloseRequested` is written for B. The registry holds no cross-window
-    latch. *NC:* a stop-at-first-veto latch in the registry writes nothing for B.
+    latch. The facade's quit loop asks windows in reverse creation order (newest
+    first), as PANEL-P2 E5 recorded `w2` then `w1`. *NC:* a stop-at-first-veto latch in the registry writes nothing for B.
     Owner: F02-T3 (registry). F01-T3 owns re-emitting `before-quit` on every
     `app.quit()`.
 34. **`window-all-closed` suppressed during quit (#419 rule; facade half).** Given the
@@ -335,9 +357,13 @@ fail. "Owner" is the implementing ticket.
     path creates, closes or mutates a registry window. *NC:* adding the window channel
     to the bridge's admitted set fails. Owner: F02-T2. The amendment that lifts this is
     KEL-102's per-window grants (F04-A1).
-43. **Host-internal table entry.** The X05-T4 table entry for the window channel
-    carries the host-internal marker and no capability name. *NC:* an entry with neither
-    a marker nor a capability fails X05-T4's table validation. Owner: F02-T2.
+43. **Host-internal table entry.** The X05-T4 table entry for the window channel has
+    `authority() == Authority::HostInternal` and class
+    `ReceiveClass::HostCallWithEvents`; a unit test asserts both. *NC:* changing the
+    entry to `Authority::Guarded(&[keld_guard::capability::FS_READ])` (a real
+    two-variant `Authority` value) fails that assertion, and the facade's `Subscribe`
+    is then refused `GuardedNotSupported` (#613 criterion 16), so criterion 20 fails
+    too. `Authority::Guarded(&[])` fails X05-T4's `EmptyCapabilityList`. Owner: F02-T2.
 
 ### (h) Drift
 
@@ -369,7 +395,7 @@ Atomic decomposition. Each atom has one owner and its own falsifier. Status is
 | A7 | Staleness under park | gh527 wake rule (consumed) | stale read after wake | criterion 19 | unknown until #528 lands; prototype FACT in #418 |
 | A8 | Close state and `close_seq` | keld-core registry | stale accept, stacked prompts | criteria 25–27 | passed: FACT, harness `p3`/`n3` 5/5 |
 | A9 | No timer | keld-core registry | timed auto-close | criterion 21 | passed: FACT, harness `n2` fails as required 5/5; PANEL-D19 |
-| A10 | Exits on loss and terminal end | registry plus KEL-75 revoke | replay to a successor | criteria 30, 31 | passed as a design input: PANEL-D19 |
+| A10 | Exits on loss and terminal end | registry plus KEL-75 revoke; `owner_role_generation` | replay to a successor; a successor addressing a predecessor's window | criteria 30, 31 | passed as a design input: PANEL-D19; owner decision D6 (retire destroys; falsifier KEL-143) |
 | A11 | Facade tombstones | `@keld/electron` | wrong `isDestroyed` at `closed` | criteria 23, 24 | passed: FACT, Electron E1 5/5 |
 | A12 | Run-loop mode delivery | keld-wv wake bridge over tao's proxy | reply never delivered inside a nested loop | criterion 28 | source registered in common modes: FACT (tao 0.35.3 `event_loop.rs:336`). Whether tao dispatches its user callback inside a nested modal loop: **unknown** |
 | A13 | Synchronous `id` and `closed` | `Create`/`Destroy` as blocking calls | `win.id` undefined after the constructor; a fabricated `closed` | criteria 1, 24 | decided (D1, §4.i): blocking calls over F04-T18 #528; edges #449 ← #528 and #450 ← #528 |
@@ -396,7 +422,10 @@ Edges promoted from hidden coupling:
 **Ownership, process, memory, I/O, lifecycle, trust and failure facts.**
 
 - Handles. Native `NSWindow`/`WKWebView` stay owned by keld-wv on the UI thread (A2).
-  The registry holds only `WindowId → (WindowGeneration, WebviewId, state)`. It never
+  The registry holds only `WindowId → (WindowGeneration, WebviewId,
+  owner_role_generation, state)`. `owner_role_generation` is the RoleInstance
+  generation of the link whose `Create` minted the window; it never changes in this
+  slice. It never
   holds a native handle, and no handle crosses kipc (epic #447 never-list).
 - Identity. Only the registry mints `WindowId`, `WindowGeneration` and `close_seq`. The
   facade receives them and never invents them (A1).
@@ -407,7 +436,7 @@ Edges promoted from hidden coupling:
   link writer. App → host: `CALL`s through the existing primary reader. Core → UI:
   the existing `AppWindowCommand` channel bridged by tao's `EventLoopProxy`. UI → core:
   the existing `AppWindowEvent` channel. No new thread or socket is added.
-- Lifecycle. A window is `Open`, `ClosePending`, `Closing` or `Destroyed`. Entries for
+- Lifecycle. A window is `Opening`, `Open`, `ClosePending`, `Closing` or `Destroyed`. Entries for
   destroyed windows stay as tombstones for the session, so a pair is never reused.
 - Trust. The app process is semi-trusted (02 §4). Every app-supplied pair and
   `close_seq` is validated against registry state, never trusted.
@@ -469,8 +498,15 @@ pub struct WindowRef { pub id: WindowId, pub incarnation: WindowGeneration }
 
 **Channel.** One new app-link channel named `window`, with its id allocated by the
 X05-T2 rule in the keld-ipc table (X05-T4 #597). The name is host-neutral. The entry's
-receive-policy class is "host `CALL` receiver plus app `EVENT` receiver", like
-lifecycle. Its capability field is the host-internal marker (§4.g). This spec does not
+receive class is `HostCallWithEvents`, like lifecycle. Its authority is
+`Authority::HostInternal` (§4.g). It is the primary link's third channel, so it does
+not lengthen `ReceivePolicy::also_channel` (`receive.rs:132-136`: "a third channel is a
+new spec row, not a longer list"). App side: the window id is listed in #610's
+per-frame `WorkerReceiveTable.eventChannels`, and replies to the role's own window
+calls are admitted by correlation, as gh527 §4.7 defines. Host side: the primary
+reader selects the KEL-133 policy per frame by channel from a fixed table of named
+constructors (today's echo and lifecycle row, plus one new window row) under the
+KEL-133 owner; no second `also_channel` slot is added. This spec does not
 choose the number: F02-T2 appends the entry under #508's rule (draft PR #613), which
 assigns the id (D5, §4.i).
 
@@ -516,11 +552,21 @@ pub enum WindowResponse {
 }
 ```
 
-Every `ERR` is a `CallError` with a registered code (02 §2): stale or forged pair;
-WindowId exhaustion; registry not ready; native create failure (wrapping the keld-wv
-`WvError` text); unsupported platform (Windows/Linux, F02-T12). F02-T2 and F02-T3
-allocate each as the next free `KELD-CORE-*` number in
-`docs/engineering/keld-error-codes.md`, with a fix sentence. The facade's own
+Every `ERR` is a `CallError` with a registered code (02 §2). This spec reserves the
+next free numbers. FACT (2026-10-07): `origin/main`'s registry ends at
+`KELD-CORE-037`, and no open PR's diff adds a higher `KELD-CORE-*` code (#609 and #287
+only cite `KELD-CORE-037`). The implementing PR re-checks main and open PRs before it
+registers each code in `docs/engineering/keld-error-codes.md` with a fix sentence.
+
+| Code | Meaning | Registered by |
+|---|---|---|
+| `KELD-CORE-038` | stale or forged `(WindowId, WindowGeneration)`, or an app call in a state that refuses it | F02-T2 |
+| `KELD-CORE-039` | a registry counter is exhausted (`WindowId`, `WindowGeneration` or `close_seq`; the detail names it) | F02-T2 |
+| `KELD-CORE-040` | registry not ready | F02-T2 |
+| `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
+| `KELD-CORE-042` | window calls unsupported on this platform (Windows/Linux, F02-T12) | F02-T2 |
+| `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T3 |
+ The facade's own
 "Object has been destroyed" and triage errors are `KELD-COMPAT-*`.
 
 **Ordering contract** (the stream the mirror consumes):
@@ -575,10 +621,12 @@ This spec consumes F01-T2's rule (#446) and adds no adoption shim.
   F01-T2. Removal condition: F01-T2 decision (b) ("whether renderer-declared boots keep
   `CreateInitialWindow` before Ready"). If those boots move onto the registry, the
   legacy arm is deleted in that change.
-- Ready meaning per RoleInstance generation, and whether a recovered successor adopts
-  windows, are F01-T2's and the compat main-role loss decision's. Until they decide,
-  the registry writes no window event to a successor role and keeps its windows as
-  they are (KEL-139 AC5). The pending-close rule (§4.e) applies either way.
+- Ready meaning per RoleInstance generation is F01-T2's. Successor roles (D6, §4.i):
+  in this slice, retiring a role generation destroys that generation's windows (T9).
+  The registry writes no window event to a successor about them, and a successor's
+  call with a predecessor's pair is refused `KELD-CORE-043` (criterion 30). This
+  deviates from KEL-139 AC5 ("recovery keeps the same window") for facade boots until
+  KEL-143 window retention lands with an explicit ownership transfer.
 
 ### 4.d Mirror primitive
 
@@ -589,7 +637,7 @@ F02 owns one primitive in `@keld/api`. F06-T5 reuses it for display and theme fa
 export interface MirrorSource<Fact> {
   /** Channel id from the X05-T4 generated constants. */
   readonly channel: number;
-  /** Throws on an unknown discriminant; the link then ends with KELD-IPC-005 (criterion 11). */
+  /** Throws on an unknown discriminant or bad payload; the link closes with cause KELD-IPC-005 (criterion 11). */
   decode(payload: Uint8Array): Fact;
   /** Synchronous; mutates mirror state only; never calls user code. */
   apply(fact: Fact): void;
@@ -610,11 +658,13 @@ channel) and `dispatch` on the same channel's event delivery. The contract:
    before `callBlocking` returns; listeners run after resume (criterion 19). A read is
    never fresher than the last applied host fact. ▲ divergence: Electron reads native
    state synchronously, so a user resize in progress is visible to Electron sooner.
-4. **Terminal on failure.** A throwing `apply` or `decode` makes the link terminal
-   with `KELD-IPC-005` (gh527 §4.6; criterion 11). keld-ipc's meanings are kept:
-   `KELD-IPC-003` is the codec failure inside `decode`, and `KELD-IPC-005` ("unexpected
-   kipc frame or session state") is what the link and the app observe, the same
-   layering 02 §2 uses for an undecodable `ERR` payload. A mirror that missed a fact must not serve state.
+4. **Terminal on failure.** A throwing `apply` or `decode` closes the link with the
+   cause `KELD-IPC-005` (gh527 §4.4 and §4.6; criterion 11), and parked or pending
+   calls throw `KELD-IPC-022` naming that cause. keld-ipc's meanings are kept:
+   `KELD-IPC-003` is the codec failure inside `decode` and is never surfaced, and
+   `KELD-IPC-005` ("unexpected kipc frame or session state") is the link-close cause,
+   the same layering 02 §2 uses for an undecodable `ERR` payload. gh527's other wake
+   codes pass through unchanged. A mirror that missed a fact must not serve state.
 5. **Admission.** Facts reach only roles the host admits (criterion 20). For the first
    proof, that is the current primary RoleInstance generation.
 6. **Writes.** Setters are non-blocking `CALL`s, legal in `Open` and in
@@ -629,33 +679,119 @@ pending `close_seq`). The Electron-facing tombstones are separate (§4.e).
 
 Host registry, per window:
 
-| State | Meaning | Native view | Accepts new window calls |
-|---|---|---|---|
-| `Opening` | pair minted, native build in progress on the UI thread | being created | no (the `Create` caller is blocked) |
-| `Open` | live, no request pending | live | yes |
-| `ClosePending(close_seq)` | `CloseRequested` written, reply awaited | live | yes |
-| `Closing` | KEL-75 `WindowClosing(w)` linearized; teardown in progress | bridge destroyed, then webview, then window | no: stale-window `ERR`, except `Destroy`, which waits |
-| `Destroyed` | tombstone; pair retired for the session | none | no: stale-window `ERR` |
+| State | Meaning | Native view |
+|---|---|---|
+| `Opening` | pair minted, native build in progress on the UI thread; not live for the last-window policy | being created |
+| `Open` | live, no request pending | live |
+| `ClosePending(close_seq)` | `CloseRequested` written, reply awaited | live |
+| `Closing` | KEL-75 `WindowClosing(w)` linearized; teardown in progress (or awaiting a late build result) | bridge destroyed, then webview, then window |
+| `Destroyed` | tombstone; pair retired for the session | none |
 
-Transitions (the only ones; everything else is forbidden). A call that the state table
-refuses (`Opening`, `Closing` except `Destroy`, `Destroyed`) answers as that table says
-and changes no state; it is not a transition.
+Per-window registry state is `(WindowGeneration, WebviewId, owner_role_generation,
+state, last close_seq)`. `Create` admission mints a new entry in `Opening` with
+`owner_role_generation` set to the calling link's RoleInstance generation.
 
-| # | From | Input | To | Writes |
+**Admission before the table.** Every app call that names a window passes two checks,
+in order, before the transition table: (1) the pair resolves to an entry with the same
+`WindowGeneration`, else `KELD-CORE-038` (criteria 4, 5); (2) the calling link's
+RoleInstance generation equals the entry's `owner_role_generation`, else
+`KELD-CORE-043` (criterion 30). Neither changes state.
+
+**Inputs.** Each is distinct; none is an alias of another:
+
+| Input | Source |
+|---|---|
+| `BuildOk` / `BuildFail` | UI loop result of the native build (late if it arrives after T9 or T10) |
+| `Native close` | tao `CloseRequested` for the window |
+| `RequestClose` | app call |
+| `Reply current` | app `CloseReply(s, v)` with `s` equal to the pending `close_seq` |
+| `Reply stale` | app `CloseReply(t, _)` with `t` not the pending `close_seq` (superseded, or no request pending) |
+| `Setter` | app `SetMaximized` / `SetFullScreen` |
+| `Destroy` | app call |
+| `Released` | UI loop reports bridge, webview and window released |
+| `Role loss` | the `owner_role_generation` is retired (KEL-75 `RevokeAll`) |
+| `Session end` | accepted `Quit`, or no successor role will be provisioned |
+
+**Transition table.** Total and deterministic: one row per (state, input) pair
+(56 rows; `Reply current` in `ClosePending` has one row per verdict), and nothing
+else. "ERR 038" is the stale-window `ERR`; it changes no state. A pure registry unit
+test enumerates every pair and asserts its row.
+
+| # | State | Input | Next state | Writes / effects |
 |---|---|---|---|---|
-| T1 | `Opening` | native build ok | `Open` | `Created`, then `REPLY Created` |
-| T2 | `Opening` | native build failed | `Destroyed` | `ERR` (create failure); no `Created` |
-| T3 | `Open` | tao `CloseRequested`, or `RequestClose` | `ClosePending(n)`, with `n` = the window's last `close_seq` + 1 by checked `u64` add | `CloseRequested(n)`; `RequestClose` replies `CloseRequested(n)` |
-| T3x | `Open` | as T3, but the checked add overflows | `Open` (unchanged) | `RequestClose`: exhaustion `ERR`; a native attempt: one host diagnostic; never `CloseRequested` |
-| T4 | `ClosePending(s)` | tao `CloseRequested`, or `RequestClose` | `ClosePending(s)` (merged) | nothing; `RequestClose` replies `Merged(s)` |
-| T5 | `ClosePending(s)` | `CloseReply(s, Veto)` | `Open` | `REPLY ReplyApplied` |
-| T6 | `ClosePending(s)` | `CloseReply(s, Allow)` | `Closing` | `REPLY ReplyApplied`; core sends the teardown command |
-| T7 | any non-`Destroyed` | `CloseReply(t, _)` with `t` not the pending `close_seq` | unchanged | `REPLY ReplyStale`, plus one host diagnostic |
-| T8 | `Open` or `ClosePending(s)` | `Destroy` | `Closing` (`s` abandoned) | the reply is deferred until T11 |
-| T9 | `ClosePending(s)` | loss of the owning RoleInstance generation | `Open` (`s` gets the one terminal outcome `Abandoned`) | nothing to any successor; one host diagnostic |
-| T10 | any non-`Destroyed` | session terminal end (accepted `Quit`, or no successor role will be provisioned) | `Closing` | no `CloseRequested`; no reply awaited |
-| T11 | `Closing` | UI loop reports bridge, webview and window released | `Destroyed` | in one step on the link's single writer: `Destroyed`; then `LastWindowClosed` if no live window remains (outside T10); then any deferred `REPLY Destroyed`. The facade runs no last-window policy for that `LastWindowClosed` until the `Destroy` caller has emitted `'closed'` (§4.e facade rules) |
-| T12 | `Open` or `ClosePending(s)` | `SetMaximized` / `SetFullScreen` | unchanged (`Open`, or `ClosePending(s)` with `s` still pending) | `REPLY Accepted`; the fact follows as an `EVENT`; a pending close is neither answered nor abandoned |
+| O1 | `Opening` | `BuildOk` | `Open` | `Created`, then `REPLY Created` (T1) |
+| O2 | `Opening` | `BuildFail` | `Destroyed` | `ERR 041`; no `Created` (T2) |
+| O3 | `Opening` | `Native close` | `Opening` | one host diagnostic; ignored (no `Created` yet) |
+| O4 | `Opening` | `RequestClose` | `Opening` | ERR 038 |
+| O5 | `Opening` | `Reply current` | — | impossible: no request pending; classified as `Reply stale` |
+| O6 | `Opening` | `Reply stale` | `Opening` | `REPLY ReplyStale`, one host diagnostic (T7) |
+| O7 | `Opening` | `Setter` | `Opening` | ERR 038 |
+| O8 | `Opening` | `Destroy` | `Opening` | ERR 038 |
+| O9 | `Opening` | `Released` | `Opening` | one host diagnostic (invariant violation); ignored |
+| O10 | `Opening` | `Role loss` | `Closing` | the build result is awaited as a late input (C1, C2); no frame (T9) |
+| O11 | `Opening` | `Session end` | `Closing` | as the `Role loss` row; the blocked `Create` caller gets gh527's `KELD-IPC-024` from the host drain (T10) |
+| P1 | `Open` | `BuildOk` | `Open` | one host diagnostic (invariant violation); ignored |
+| P2 | `Open` | `BuildFail` | `Open` | one host diagnostic (invariant violation); ignored |
+| P3 | `Open` | `Native close` | `ClosePending(n)` | `n` = last `close_seq` + 1 by checked `u64` add; `CloseRequested(n)` (T3). On overflow: stays `Open`, one diagnostic, no write (T3x) |
+| P4 | `Open` | `RequestClose` | `ClosePending(n)` | as the `Native close` row, plus `REPLY CloseRequested(n)` (T3). On overflow: stays `Open`, ERR 039 (T3x) |
+| P5 | `Open` | `Reply current` | — | impossible: no request pending; classified as `Reply stale` |
+| P6 | `Open` | `Reply stale` | `Open` | `REPLY ReplyStale`, one host diagnostic (T7) |
+| P7 | `Open` | `Setter` | `Open` | `REPLY Accepted`; the fact follows as an `EVENT` (T12) |
+| P8 | `Open` | `Destroy` | `Closing` | `WindowClosing(w)`; teardown command; the `REPLY Destroyed` is deferred to C9 (T8) |
+| P9 | `Open` | `Released` | `Open` | one host diagnostic (invariant violation); ignored |
+| P10 | `Open` | `Role loss` | `Closing` | `WindowClosing(w)`; teardown command; no frame to any link (T9) |
+| P11 | `Open` | `Session end` | `Closing` | `WindowClosing(w)`; teardown command; no `CloseRequested` (T10) |
+| Q1 | `ClosePending(s)` | `BuildOk` | `ClosePending(s)` | one host diagnostic (invariant violation); ignored |
+| Q2 | `ClosePending(s)` | `BuildFail` | `ClosePending(s)` | one host diagnostic (invariant violation); ignored |
+| Q3 | `ClosePending(s)` | `Native close` | `ClosePending(s)` | merged; nothing written (T4) |
+| Q4 | `ClosePending(s)` | `RequestClose` | `ClosePending(s)` | `REPLY Merged(s)` (T4) |
+| Q5 | `ClosePending(s)` | `Reply current`, `Veto` | `Open` | `REPLY ReplyApplied` (T5) |
+| Q6 | `ClosePending(s)` | `Reply current`, `Allow` | `Closing` | `REPLY ReplyApplied`; `WindowClosing(w)`; teardown command (T6) |
+| Q7 | `ClosePending(s)` | `Reply stale` | `ClosePending(s)` | `REPLY ReplyStale`, one host diagnostic (T7) |
+| Q8 | `ClosePending(s)` | `Setter` | `ClosePending(s)` | `REPLY Accepted`; the fact follows as an `EVENT`; `s` stays pending (T12) |
+| Q9 | `ClosePending(s)` | `Destroy` | `Closing` | `s` abandoned; then as the `Open`/`Destroy` row (T8) |
+| Q10 | `ClosePending(s)` | `Released` | `ClosePending(s)` | one host diagnostic (invariant violation); ignored |
+| Q11 | `ClosePending(s)` | `Role loss` | `Closing` | `s` gets the one terminal outcome `Abandoned`; then as the `Open`/`Role loss` row (T9) |
+| Q12 | `ClosePending(s)` | `Session end` | `Closing` | `s` gets the one terminal outcome `Abandoned`; then as the `Open`/`Session end` row (T10) |
+| C1 | `Closing` | `BuildOk` (late, after a `Role loss` or `Session end` in `Opening`) | `Closing` | teardown command for the just-built view; no frame |
+| C2 | `Closing` | `BuildFail` (late, as above) | `Destroyed` | nothing to release; no frame (no `Created` was ever written) |
+| C3 | `Closing` | `Native close` | `Closing` | nothing written |
+| C4 | `Closing` | `RequestClose` | `Closing` | `REPLY AlreadyClosing`, the only writer of `AlreadyClosing` |
+| C5 | `Closing` | `Reply current` | — | impossible: no request pending in `Closing`; classified as `Reply stale` |
+| C6 | `Closing` | `Reply stale` | `Closing` | `REPLY ReplyStale`, one host diagnostic (T7) |
+| C7 | `Closing` | `Setter` | `Closing` | ERR 038 |
+| C8 | `Closing` | `Destroy` | `Closing` | one more deferred `REPLY Destroyed`, written at the `Released` row |
+| C9 | `Closing` | `Released` | `Destroyed` | T11 below |
+| C10 | `Closing` | `Role loss` | `Closing` | nothing; already closing (an earlier `Destroy` reply is not written, because the owner link is retired) |
+| C11 | `Closing` | `Session end` | `Closing` | nothing; already closing |
+| D1 | `Destroyed` | `BuildOk` | `Destroyed` | one host diagnostic (invariant violation); ignored |
+| D2 | `Destroyed` | `BuildFail` | `Destroyed` | one host diagnostic (invariant violation); ignored |
+| D3 | `Destroyed` | `Native close` | `Destroyed` | ignored |
+| D4 | `Destroyed` | `RequestClose` | `Destroyed` | ERR 038 |
+| D5 | `Destroyed` | `Reply current` | — | impossible; classified as `Reply stale` |
+| D6 | `Destroyed` | `Reply stale` | `Destroyed` | ERR 038 (a tombstone answers no close reply) |
+| D7 | `Destroyed` | `Setter` | `Destroyed` | ERR 038 |
+| D8 | `Destroyed` | `Destroy` | `Destroyed` | ERR 038 |
+| D9 | `Destroyed` | `Released` | `Destroyed` | one host diagnostic (invariant violation); ignored |
+| D10 | `Destroyed` | `Role loss` | `Destroyed` | nothing |
+| D11 | `Destroyed` | `Session end` | `Destroyed` | nothing |
+
+The "impossible" rows are not gaps: a `CloseReply` is classified as `Reply current` only
+when a request is pending and the sequence matches, so in every other state it is
+`Reply stale` by definition.
+
+**T11 (row C9).** In one step on the owner link's single writer, and only while that
+link is live and not retired (after a `Role loss` row nothing is written): `Destroyed`, if a
+`Created` was written for this window; then `LastWindowClosed`, if no live window
+remains and the step is outside a session end; then every deferred `REPLY Destroyed`.
+*Live* means `Open`, `ClosePending` or `Closing`; an `Opening` window is not live until
+it reaches `Open`. The facade runs no last-window policy for that `LastWindowClosed`
+until the `Destroy` caller has emitted `'closed'` (§4.e facade rules).
+
+The T-numbers used elsewhere in this spec name these rows: T1 = O1, T2 = O2, T3 =
+P3/P4, T3x = their overflow branch, T4 = Q3/Q4, T5 = Q5, T6 = Q6, T7 = O6/P6/Q7/C6, T8 =
+P8/Q9, T9 = O10/P10/Q11 (role loss), T10 = O11/P11/Q12 (session end), T11 = C9, T12 =
+P7/Q8.
 
 Rules:
 
@@ -673,10 +809,11 @@ Rules:
   (02 §7). It never completes or vetoes a close; on expiry the facade throws
   `KELD-IPC-006` and emits no `'closed'`.
 - **Three exits (PANEL-D19).** `ClosePending` leaves only by the reply (T5, T6), by
-  RoleInstance generation loss (T9, which keeps the window), or by the session terminal
-  end (T10). `Destroy` (T8) is the app's own exit and is not a host completion.
-- **Fail-closed.** Absence of `Allow` never closes a window. A veto, an abandoned
-  request, a stale reply and a throwing listener (criterion 29) all keep it open.
+  RoleInstance generation loss (T9, which in this slice destroys the window; D6), or by
+  the session terminal end (T10). `Destroy` (T8) is the app's own exit and is not a host completion.
+- **Fail-closed.** Absence of `Allow` never closes a window. A veto, a stale reply and
+  a throwing listener (criterion 29) all keep it open. Only `Allow`, `Destroy`, role
+  loss and session end close it, and each is an explicit input.
 - **Re-emission and merge.** Each native close attempt made while no request is pending
   writes a fresh `CloseRequested` (T3). An attempt made while one is pending merges
   into it (T4). This reconciles F02-T3's "every native attempt re-emits `close`" with
@@ -684,8 +821,8 @@ Rules:
   because its `'close'` runs synchronously inside `windowShouldClose:`
   (`electron_ns_window_delegate.mm:411-414`). AppKit itself never delivered
   `performClose:` to the hook during the modal (10/10 in the harness).
-- **KEL-75 tombstone.** `WindowClosing(w)` is linearized at T6, T8 and T10, never at
-  T3. Window-bound roles (KEL-75/T4) hook there later.
+- **KEL-75 tombstone.** `WindowClosing(w)` is linearized at T6, T8, T9 and T10, never
+  at T3. Window-bound roles (KEL-75/T4) hook there later.
 - **Teardown order.** At `Closing` the UI loop destroys the renderer bridge, then drops
   the `View`, whose field order releases the webview before the window (A3). Page
   `unload` dispatch during WKWebView teardown is unknown (A19). The machine never waits
@@ -697,8 +834,9 @@ Rules:
   falsifier. If it fails, F02-T3 must add a common-modes delivery path in the keld-wv
   macOS loop under keld-wv's existing CFRunLoop `unsafe` allowance and its review.
 - **Quit (F01-T3 consumes).** The registry has no cross-window quit state (criterion
-  33). The facade's quit loop sends `RequestClose` to every window and keeps going
-  after a veto (#419: continue asking). `RequestClose` is never blocking, so
+  33). The facade's quit loop sends `RequestClose` to every window in reverse creation
+  order (newest first, as PANEL-P2 E5 recorded `w2` then `w1`) and keeps going after
+  a veto (#419: continue asking). `RequestClose` is never blocking, so
   `app.quit()` can return before any `'closed'` (criterion 35). `window-all-closed`
   suppression during quit is facade state (criterion 34).
 
@@ -720,8 +858,10 @@ Facade (`@keld/electron`), per `BrowserWindow`:
 - Last-window policy: one facade function. While the role is parked, the lifecycle
   applier only records that a `LastWindowClosed` is pending; it never emits
   `'window-all-closed'` and never sends `Quit` (gh527 §4.6: appliers call no user code).
-  The policy consumes the pending record exactly once: it emits `'window-all-closed'`,
-  or, with no listener and outside a quit, sends the default non-blocking `Quit`. It
+  The policy consumes the pending record exactly once. While the facade quit state is
+  active it emits nothing and sends nothing (criterion 34). Otherwise it emits
+  `'window-all-closed'` if a listener exists, or, with no listener, sends the default
+  non-blocking `Quit`. It
   runs from `destroy()` after `'closed'` on the destroy path, and from the
   `LastWindowClosed` dispatch on the normal close path; whichever runs second finds
   nothing pending. So on the destroy path the step order is `REPLY Destroyed` read,
@@ -768,9 +908,9 @@ Security decomposition:
 |---|---|
 | Identity | the caller is the primary RoleInstance generation bound to this link (KEL-75); payload bytes never name a principal |
 | Authentication | the existing 32-byte `HELLO` possession proof (02 §2); no change |
-| Authorization | first proof: window `CALL`s admitted only on the primary app link (receive policy). The table entry is host-internal, like lifecycle: window UI is the app's own surface and grants no OS resource (01 principle 2). No `keld-guard` evaluation runs, and no capability name is added |
+| Authorization | first proof: window `CALL`s admitted only on the primary app link (receive policy), and each window call only from the window's `owner_role_generation`; window `EVENT`s only after a `Subscribe` admitted for the declared `primary` role (#613 criterion 16). The table entry is host-internal, like lifecycle: window UI is the app's own surface and grants no OS resource (01 principle 2). No `keld-guard` evaluation runs, and no capability name is added |
 | OS containment | unchanged; window calls touch only host-owned UI state on the UI thread |
-| Lifecycle and revocation | RoleInstance generation revocation (KEL-75 `RevokeAll`) drops the link; pending closes take T9; nothing is replayed |
+| Lifecycle and revocation | RoleInstance generation revocation (KEL-75 `RevokeAll`) drops the link; that generation's windows take T9 and are destroyed; nothing is replayed; a successor is refused the predecessor's pairs (`KELD-CORE-043`) |
 | Evidence provenance | registry transitions are host facts; every app-supplied pair and `close_seq` is validated (criteria 4, 5, 27) |
 
 Webview-originated window operations (the renderer bridge, page `window.close()`)
@@ -829,9 +969,137 @@ reversible, and each names the observation that reopens it.
   pending (T4). F02-T3's "every native attempt re-emits" applies outside a pending
   prompt (T3). This matches #419. *Falsifier:* an Electron 44.4.5 observation of a
   second `'close'` emitted for an attempt made while the first `'close'` is unanswered.
+- **D6. Successor roles (owner decision, 2026-10-07).** In this slice, retiring a
+  RoleInstance generation destroys that generation's windows (T9), and a successor that
+  calls with a predecessor's `(WindowId, WindowGeneration)` is refused `KELD-CORE-043`,
+  because `owner_role_generation` must match (criterion 30). Rejected: keeping the
+  windows open with no owner (no role can veto or close them, and a successor would
+  inherit pairs it never created). *Falsifier:* KEL-143 window retention lands; window
+  ownership is then transferred to a successor explicitly, and T9 changes in that
+  spec.
 - **D5. Channel id.** F02-T2 appends the window-state channel entry under #508's rule
   (draft PR #613). This spec fixes no number. *Falsifier:* #613's approved rule
   assigns ids by a mechanism other than an appended table entry.
+
+### Public surface
+
+**TypeScript (`@keld/electron`, public; Electron-shaped).** This is the #449 member
+subset plus the close members F02-T3 adds. No public signature uses `any`.
+
+```ts
+export interface Rectangle { x: number; y: number; width: number; height: number }
+export interface Point { x: number; y: number }
+export interface Size { width: number; height: number }
+
+/** draw.io's known fields. Any other key is typed `unknown`, accepted, and reported by
+ *  one diagnostic (§4.f); it never widens to `any`. */
+export interface WebPreferences {
+  preload?: string;
+  additionalArguments?: readonly string[];
+  webviewTag?: boolean;
+  contextIsolation?: boolean;
+  nodeIntegration?: boolean;
+  nodeIntegrationInWorker?: boolean;
+  nodeIntegrationInSubFrames?: boolean;
+  webSecurity?: boolean;
+  allowRunningInsecureContent?: boolean;
+  disableBlinkFeatures?: string;
+  spellcheck?: boolean;
+  readonly [unknownField: string]: unknown;
+}
+export interface BrowserWindowOptions {
+  width?: number;
+  height?: number;
+  x?: number;
+  y?: number;
+  backgroundColor?: string;
+  icon?: string;
+  webPreferences?: WebPreferences;
+  readonly [unknownField: string]: unknown;
+}
+
+export interface CloseEvent { preventDefault(): void; readonly defaultPrevented: boolean }
+export interface BrowserWindowEventMap {
+  close: [event: CloseEvent];
+  closed: [];
+  maximize: [];
+  unmaximize: [];
+  resize: [];
+}
+export interface WebContentsEventMap { destroyed: [] }
+
+/** The single host-created content view; F03-T2 owns its wider event vocabulary. */
+export interface WebContents {
+  isDestroyed(): boolean;
+  on<K extends keyof WebContentsEventMap>(event: K, listener: (...args: WebContentsEventMap[K]) => void): this;
+  once<K extends keyof WebContentsEventMap>(event: K, listener: (...args: WebContentsEventMap[K]) => void): this;
+  off<K extends keyof WebContentsEventMap>(event: K, listener: (...args: WebContentsEventMap[K]) => void): this;
+}
+
+export declare class BrowserWindow {
+  constructor(options?: BrowserWindowOptions);       // blocking Create (D1)
+  readonly id: number;                               // host WindowId
+  readonly webContents: WebContents;
+  static getAllWindows(): BrowserWindow[];           // creation order
+  static getFocusedWindow(): BrowserWindow | null;
+  getSize(): number[];
+  getPosition(): number[];
+  isMaximized(): boolean;
+  isFullScreen(): boolean;
+  isDestroyed(): boolean;
+  maximize(): void;
+  setFullScreen(flag: boolean): void;
+  close(): void;                                     // non-blocking RequestClose
+  destroy(): void;                                   // blocking Destroy
+  on<K extends keyof BrowserWindowEventMap>(event: K, listener: (...args: BrowserWindowEventMap[K]) => void): this;
+  once<K extends keyof BrowserWindowEventMap>(event: K, listener: (...args: BrowserWindowEventMap[K]) => void): this;
+  off<K extends keyof BrowserWindowEventMap>(event: K, listener: (...args: BrowserWindowEventMap[K]) => void): this;
+}
+```
+
+`getSize()` and `getPosition()` return `number[]`, as Electron's own declarations do,
+so migrated code type-checks unchanged. App events added by F02-T2:
+`'browser-window-created': [event: { preventDefault(): void }, window: BrowserWindow]`
+and `'web-contents-created': [event: { preventDefault(): void }, contents: WebContents]`.
+Every member outside this list is F02-T8 or F03.
+
+**keld-wv (`crates/keld-wv/src/engine.rs`, public).** The new variants carry only
+`Copy` data (ids, rectangles as integers, flags), so the existing
+`#[derive(Debug, Clone, Copy, PartialEq, Eq)]` on both enums (`engine.rs:90-105`) stays.
+keld-wv never sees a `WindowId` or `WindowGeneration` type (it has no keld-ipc
+dependency): it addresses views by its own `WebviewId`, and a build by an opaque `u64`
+token that the registry chooses.
+
+```rust
+pub enum AppWindowCommand {
+    Quit,
+    Fatal,
+    /// Build one native window plus webview; answered by `WindowBuilt` or `WindowBuildFailed`.
+    CreateWindow { build: u64, width: u32, height: u32, x: Option<i32>, y: Option<i32> },
+    SetMaximized { view: WebviewId, maximized: bool },
+    SetFullScreen { view: WebviewId, full_screen: bool },
+    /// Tear down bridge, then webview, then window; answered by `WindowReleased`.
+    DestroyWindow { view: WebviewId },
+}
+pub enum AppWindowEvent {
+    NavigationReady,
+    LastWindowClosed,
+    WindowBuilt { build: u64, view: WebviewId },
+    /// `stage` is a `Copy` enum (`Window` | `Webview`); the `WvError` text is written to
+    /// the host log on the UI thread, so the event stays `Copy`.
+    WindowBuildFailed { build: u64, stage: BuildStage },
+    WindowCloseRequested { view: WebviewId },
+    WindowBounds { view: WebviewId, x: i32, y: i32, width: u32, height: u32 },
+    WindowFocus { view: WebviewId, focused: bool },
+    WindowMaximized { view: WebviewId, maximized: bool },
+    WindowFullScreen { view: WebviewId, full_screen: bool },
+    WindowReleased { view: WebviewId },
+}
+```
+
+For facade boots the existing `LastWindowClosed` variant is not used. The registry
+derives last-window from its own states (T11), because an `Opening` window is not
+live and keld-wv cannot see registry states.
 
 ### Capabilities and manifest changes (spec 03)
 
@@ -879,12 +1147,20 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 
 - Implement in:
   - `crates/keld-ipc/src/window.rs` (new; wire types and vectors), plus receive-policy
-    rows in `crates/keld-ipc/src/receive.rs` and
-    `crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv`;
+    rows in `crates/keld-ipc/src/receive.rs` (a per-frame channel selection with one new
+    window row, not a longer `also_channel`) and
+    `crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv` (new rows only);
+  - `crates/keld-ipc/src/lifecycle.rs`: the #613 `LifecycleRequest::Subscribe`,
+    `LifecycleResponse::{Subscribed, SubscribeRefused}` and the closed `SubscribeRefusal`
+    enum, with pinned postcard byte tests; `crates/keld-core/src/app_session.rs`'s
+    lifecycle `CALL` arm as the `Subscribe` handler and per-link subscription state;
+    `crates/keld-core/src/lifecycle.rs`'s `LifecycleSession` answering
+    `SubscribeRefused { reason: NotSubscribable }`;
   - a new keld-core registry module composed by `crates/keld-core/src/app_session.rs`,
     and the `crates/keld-core/src/lib.rs` doc;
-  - `crates/keld-wv/src/engine.rs` (`AppWindowCommand`/`AppWindowEvent` variants
-    only), `crates/keld-wv/src/wkwebview/mod.rs` (macOS loop);
+  - `crates/keld-wv/src/engine.rs` (the `Copy` `AppWindowCommand`/`AppWindowEvent`
+    variants listed under "Public surface", and `BuildStage`),
+    `crates/keld-wv/src/wkwebview/mod.rs` (macOS loop);
   - `packages/@keld/api/src/` (mirror, window adapter), `packages/@keld/electron/src/`
     (`BrowserWindow`, triage);
   - `docs/engineering/keld-error-codes.md`, `docs/engineering/product-status.tsv`,
@@ -906,7 +1182,11 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [ ] T1 = F02-T2 (#449). The keld-ipc window types and vectors; the X05-T4 table
-  entry; the keld-core registry with T1, T2, T11 and T12; `Create` (blocking via #528)
+  entry; the `lifecycle.rs` `Subscribe` variant, its responses and `SubscribeRefusal`
+  with pinned byte tests, the `app_session.rs` handler and per-link subscription
+  state, the `LifecycleSession` refusal, and their criterion 20 tests; the keld-core
+  registry with T1, T2, T11 and T12, `owner_role_generation` and the admission checks;
+  the reserved `KELD-CORE-038` to `042`; `Create` (blocking via #528)
   and the state events; the mirror primitive; getters, setters, `id`, `getAllWindows`
   in creation order, `getFocusedWindow`; `browser-window-created` and
   `web-contents-created` emitted once per window by the constructor after `Create`
@@ -917,7 +1197,8 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   41–44.
 - [ ] T2 = F02-T3 (#450). T3–T10; `RequestClose`, `CloseReply`, `Destroy` (blocking);
   facade `'close'`, `close()`, `destroy()`, both tombstones, `'closed'`; common-modes
-  delivery; removal of T1's interim teardown. Criteria 15, 18, 21–33.
+  delivery; removal of T1's interim teardown; the full transition table with its
+  every-pair unit test; `KELD-CORE-043`. Criteria 15, 18, 21–33.
 - [ ] T3 = F02-T4 (#455). The triage table. Criteria 36–40.
 - F01-T3 (#451) owns criteria 34–35 and the `before-quit` half of 33. They are listed
   here only as consumed contracts.
@@ -926,7 +1207,8 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 
 | Criteria | Test | Kind |
 |---|---|---|
-| 2–6, 21, 25–27, 30, 31, 33 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit | unit |
+| 2–6, 21, 25–27, 30, 31, 33 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 56 (state, input) rows of §4.e | unit |
+| 20 | `lifecycle.rs` pinned `Subscribe` bytes; `app_session.rs` link tests for an unsubscribed primary, a subscribed primary and a refused `app-bound` role | unit, integration |
 | 8, 10, 11 | the golden-vector file replayed by `cargo test -p keld-ipc` and `bun test`; existing vectors and the KEL-133 corpus unmodified | unit, cross-language |
 | 9, 43 | the X05-T4 drift check and table validation | unit |
 | 1, 13, 14, 16, 17, 20, 22–24, 32, 36–38 | real-Mac host + Bun fixture (macOS GUI session); the frame counter is read from the host link | integration |
@@ -951,8 +1233,11 @@ Counts, not durations, are the oracle.
 
 - **Wire protocol:** yes. A new app-link channel, payloads and receive-policy rows; no
   `PROTOCOL_VERSION` bump (§4.b).
-- **Public API:** yes. `@keld/electron` `BrowserWindow`/`webContents`, the `@keld/api`
-  internal mirror, and keld-ipc public wire types.
+- **Public API:** yes. `@keld/electron` `BrowserWindow`, `WebContents`,
+  `BrowserWindowOptions`, `WebPreferences` and the event maps ("Public surface"); the
+  `@keld/api` internal mirror; keld-ipc public wire types and the lifecycle
+  `Subscribe` messages; the keld-wv `AppWindowCommand`/`AppWindowEvent` variants and
+  `BuildStage`; `KELD-CORE-038` to `043`.
 - **Permission model:** yes. The host-internal marker and app-process-only admission;
   webview denial kept (§4.g). Listed on the ticket (#531 "Ownership and gates").
 - `unsafe`: none in production. Criterion 28's test, and the fallback path if it
