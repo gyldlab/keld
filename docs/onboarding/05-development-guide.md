@@ -334,7 +334,7 @@ is the process of record. Condensed:
    shape, not implicit approval for a new implementation. Bug fixes skip the spec but
    not the regression test.
 3. **Isolate** — one concern per branch; work in a git worktree sibling
-   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` (or `gh-<n>`) from `origin/main`
+   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` (or `agent/gh-<n>-<slug>` for a GitHub tracker issue) from `origin/main`
    (`.agents/review.md` § Branch and commit contract). Never two people building in one
    tree at once.
 4. **Write the test first**, then implement. Vertical slices, no placeholders.
