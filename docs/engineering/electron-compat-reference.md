@@ -336,7 +336,7 @@ BrowserWindow
 
 `BrowserWindow` inherits much of `BaseWindow`.
 
-### Raw vs directly introduced members
+## Raw vs directly introduced members
 
 | Surface | Raw | Inherited duplicates | Directly introduced |
 |---|---:|---:|---:|
@@ -360,13 +360,13 @@ These are much more useful planning figures.
 
 Raw model:
 
-### BaseWindow
+## BaseWindow
 
 - 130 instance methods
 - 29 events
 - 23 properties
 
-### BrowserWindow
+## BrowserWindow
 
 - 141 instance methods
 - 34 events
