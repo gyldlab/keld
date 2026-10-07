@@ -169,6 +169,7 @@ fn machine_uac_ordinary_startup_returns_recovery_required_and_writes_nothing() {
         let locator = host_path(&trust, "1.0.0");
         let executable = open_image(&locator);
         let located = crate::windows_baseline::select_active_package_for_executable(
+            crate::WindowsLocatedImage::Host,
             &locator,
             &executable,
             &expected_for(&trust),

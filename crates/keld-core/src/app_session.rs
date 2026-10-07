@@ -2412,8 +2412,13 @@ fn validate_installed_from_verified(
 ) -> Result<ValidatedBootSelection, HostAppError> {
     let expected = keld_update::ExpectedAppIdentity::from_signed_image(image)
         .map_err(|source| installed_package_error(&source))?;
-    let active = keld_update::select_active_package_for_executable(locator, image, &expected)
-        .map_err(|source| installed_package_error(&source))?;
+    let active = keld_update::select_active_package_for_executable(
+        keld_update::WindowsLocatedImage::Host,
+        locator,
+        image,
+        &expected,
+    )
+    .map_err(|source| installed_package_error(&source))?;
     identity.require_recorded(active.publisher_scope(), &active.install_identity().app_id)?;
     let root = active.tree_root().to_path_buf();
     validate_windows_boot_files(
@@ -6281,6 +6286,7 @@ mod tests {
             || {
                 Err(installed_package_error(
                     &keld_update::UpdateError::ExecutableBinding {
+                        image: keld_update::WindowsLocatedImage::Host,
                         step: "locator",
                         detail: "synthetic staged layout".to_owned(),
                     },
@@ -6299,6 +6305,7 @@ mod tests {
     #[cfg(windows)]
     fn installed_package_refusal_carries_its_code_once() {
         let error = installed_package_error(&keld_update::UpdateError::ExecutableBinding {
+            image: keld_update::WindowsLocatedImage::Host,
             step: "locator",
             detail: "synthetic staged layout".to_owned(),
         });

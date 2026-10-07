@@ -5966,7 +5966,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The running executable is not bound to the installation it locates
-- fix: Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged.
+- fix: Launch keld-host.exe from its installation's selected version tree, and start keld-updater-helper.exe only from its installation's protected version tree, as keld-host.exe or an administrator starts it; repair or reinstall through the trusted installer if the layout is damaged.
 
 ## KELD-UPDATE-019
 

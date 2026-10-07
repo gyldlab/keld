@@ -28,7 +28,7 @@ use crate::windows_baseline::{
     WindowsBaselineTrust, initialize_windows_baseline, initialize_windows_machine_uac_baseline,
     select_active_package_for_executable,
 };
-use crate::{DirectInstallMode, UpdateError};
+use crate::{DirectInstallMode, UpdateError, WindowsLocatedImage};
 
 pub(super) const LABEL: &str = "application";
 const WEAKENED: &str = "ancestor-weakened";
@@ -352,6 +352,7 @@ fn an_executable_on_a_non_ntfs_volume_refuses_before_any_installation_read() {
     let executable = open_image(&locator);
     let before = census(&root);
     let error = select_active_package_for_executable(
+        WindowsLocatedImage::Host,
         &locator,
         &executable,
         &expected_for_identity(&crate::tests::expected_identity()),

@@ -184,8 +184,13 @@ fn kel254_per_user_install_fixture() {
     let image = open_image(&installed);
     let expected = ExpectedAppIdentity::from_signed_image(&image)
         .expect("the installed host carries its expectation");
-    let selection = select_active_package_for_executable(&installed, &image, &expected)
-        .expect("the installed host selects its installation");
+    let selection = select_active_package_for_executable(
+        crate::WindowsLocatedImage::Host,
+        &installed,
+        &image,
+        &expected,
+    )
+    .expect("the installed host selects its installation");
     assert_eq!(selection.publisher_scope(), &publisher_scope);
     assert_eq!(selection.install_identity().app_id, app_id);
     drop((selection, image));

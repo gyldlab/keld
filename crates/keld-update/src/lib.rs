@@ -49,6 +49,7 @@ pub use baseline::{BaselineVerifier, SelectedBaseline, VerifiedBaseline};
 pub use error::{
     ActivationEffect, ArtifactDomain, MachineRecoveryGuidance, ManifestIdentityField,
     ProvenanceField, ProvenanceUnavailable, UpdateError, VersionPublicationOutcome,
+    WindowsLocatedImage,
 };
 pub use full::VerifiedFull;
 #[cfg(feature = "fuzzing")]

@@ -869,6 +869,42 @@ fn archive_invalid_error_has_stable_code_and_repair_guidance() {
 }
 
 #[test]
+fn the_located_image_choice_is_closed_and_names_each_file_exactly() {
+    assert_eq!(WindowsLocatedImage::Host.file_name(), "keld-host.exe");
+    assert_eq!(
+        WindowsLocatedImage::UpdaterHelper.file_name(),
+        "keld-updater-helper.exe"
+    );
+}
+
+#[test]
+fn executable_binding_names_the_correction_for_its_image() {
+    for (image, correction) in [
+        (
+            WindowsLocatedImage::Host,
+            "Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged.",
+        ),
+        (
+            WindowsLocatedImage::UpdaterHelper,
+            "Start keld-updater-helper.exe only from its installation's protected version tree, as keld-host.exe or an administrator starts it; repair or reinstall through the trusted installer if the layout is damaged.",
+        ),
+    ] {
+        let error = UpdateError::ExecutableBinding {
+            image,
+            step: "locator",
+            detail: "synthetic layout".to_owned(),
+        };
+        assert_code(&error, "KELD-UPDATE-018");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "KELD-UPDATE-018: installed executable locator refused (synthetic layout). {correction}"
+            )
+        );
+    }
+}
+
+#[test]
 fn version_publication_errors_distinguish_pre_and_post_rename_effects() {
     let stage_retained = UpdateError::VersionPublication {
         version: "2.0.0".to_owned(),

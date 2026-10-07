@@ -41,8 +41,13 @@ fn the_tree_host_expectation_selects_through_the_same_handle() {
     let executable = open_image(&locator);
     let expected = ExpectedAppIdentity::from_signed_image(&executable)
         .expect("the installed host carries one canonical container");
-    let selection = select_active_package_for_executable(&locator, &executable, &expected)
-        .expect("the host's own expectation selects its installation");
+    let selection = select_active_package_for_executable(
+        crate::WindowsLocatedImage::Host,
+        &locator,
+        &executable,
+        &expected,
+    )
+    .expect("the host's own expectation selects its installation");
     assert_eq!(selection.artifact().version, "1.0.0");
     assert_eq!(selection.install_identity(), &trust.installation);
     assert_eq!(

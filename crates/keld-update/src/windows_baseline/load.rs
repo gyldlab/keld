@@ -119,18 +119,26 @@ pub fn select_windows_active_package(
     select_with_repair_gate(trust, None)
 }
 
-/// Shared selection body. `located_version`, when present, is the version tree that
-/// holds the running executable (KEL-254 T2b): an invalid `current` is then repaired
-/// only when last-known-good is exactly that version, so a host started from any other
+/// The image whose own path located its installation and the version tree that holds
+/// it (KEL-254 T2b executable-located selection).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LocatedVersion<'a> {
+    pub(super) image: crate::WindowsLocatedImage,
+    pub(super) version: &'a str,
+}
+
+/// Shared selection body. `located`, when present, is the version tree that holds the
+/// running executable (KEL-254 T2b): an invalid `current` is then repaired only when
+/// last-known-good is exactly that version, so an executable started from any other
 /// tree never causes a write.
 pub(super) fn select_with_repair_gate(
     trust: &WindowsBaselineTrust,
-    located_version: Option<&str>,
+    located: Option<LocatedVersion<'_>>,
 ) -> Result<super::ActivePackageSelection, UpdateError> {
     match select_committed_package(trust)? {
         CommittedSelection::Selected(selection) => Ok(*selection),
         CommittedSelection::CurrentInvalid(cause) => {
-            repair_invalid_current(trust, &cause, located_version)?;
+            repair_invalid_current(trust, &cause, located)?;
             // One reselection after a durable repair; a second failure is returned as is.
             match select_committed_package(trust)? {
                 CommittedSelection::Selected(selection) => Ok(*selection),
@@ -305,7 +313,7 @@ fn select_committed_package(
 pub(super) fn repair_invalid_current(
     trust: &WindowsBaselineTrust,
     invalid: &UpdateError,
-    located_version: Option<&str>,
+    located: Option<LocatedVersion<'_>>,
 ) -> Result<(), UpdateError> {
     match trust.installation.install_mode {
         DirectInstallMode::PerUserDirect => {}
@@ -345,14 +353,17 @@ pub(super) fn repair_invalid_current(
         // Another writer repaired it after the snapshot; nothing to do.
         return Ok(());
     }
-    if let Some(located) = located_version
-        && records.last_known_good.version != located
+    if let Some(located) = located
+        && records.last_known_good.version != located.version
     {
         return Err(UpdateError::ExecutableBinding {
+            image: located.image,
             step: "current pointer repair",
             detail: format!(
-                "the running executable is in version `{located}`, not last-known-good `{}`; only a last-known-good host repairs current",
-                records.last_known_good.version
+                "the running executable is in version `{}`, not last-known-good `{}`; only a last-known-good {} repairs current",
+                located.version,
+                records.last_known_good.version,
+                located.image.file_name()
             ),
         });
     }
