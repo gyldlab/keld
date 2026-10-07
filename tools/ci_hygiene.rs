@@ -32,6 +32,8 @@ const MERMAID_IMAGE_DIGEST: &str =
 const REQUIRED_OWNER_PATHS: &[&str] = &[
     "crates/keld-guard",
     "crates/keld-ipc",
+    // The elevated updater helper (KEL-270 T4d S9c; owner approved in session 2026-10-07).
+    "crates/keld-updater-helper",
     "Cargo.toml",
     ".github",
     "AGENTS.md",
@@ -3085,6 +3087,7 @@ mod tests {
         "/Cargo.toml @alice\n\
          /crates/keld-guard/ @alice\n\
          /crates/keld-ipc/ @alice\n\
+         /crates/keld-updater-helper/ @alice\n\
          /.github/ @alice\n\
          /AGENTS.md @alice\n\
          /.agents/ @alice\n\
@@ -4465,6 +4468,17 @@ mod tests {
         let error = check(temp.path()).expect_err("missing guard path must fail");
         assert!(error.contains("keld-guard"), "{error}");
         assert!(error.contains("@user"), "{error}");
+    }
+
+    #[test]
+    fn missing_updater_helper_codeowners_path_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            CODEOWNERS,
+            &valid_codeowners().replace("/crates/keld-updater-helper/ @alice\n", ""),
+        );
+        let error = check(temp.path()).expect_err("missing updater helper path must fail");
+        assert!(error.contains("crates/keld-updater-helper"), "{error}");
     }
 
     #[test]
