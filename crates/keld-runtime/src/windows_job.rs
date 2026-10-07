@@ -1506,6 +1506,9 @@ impl WindowsProcessJob {
                 "process was not observed in the assigned Job",
             ));
         }
+        // Read the proof's creation time before retaining the host or changing any
+        // state, so a failed read leaves this Job with no admitted direct host.
+        let creation_time = process_creation_time(raw_process, "attempt Job membership proof")?;
         let mut retained_process = std::ptr::null_mut();
         // SAFETY: both process handles refer to the current process and the live
         // borrowed process; `retained_process` is writable HANDLE storage. The
@@ -1535,7 +1538,7 @@ impl WindowsProcessJob {
         self.host_process = Some(retained_process);
         Ok(WindowsJobMembership {
             process_id: process.process_id,
-            creation_time: process_creation_time(raw_process, "attempt Job membership proof")?,
+            creation_time,
         })
     }
 
