@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
-use super::locate::{expected_for, host_path, open_image, state};
+use super::locate::{binding_step, expected_for, host_path, open_image, state};
 use super::support::{self, ATTEMPT_OWNER, host_package_content};
 use super::transaction::{begin_by, commit_with, downgrade_journal_to_v1, receipt};
 use super::writer::seed_per_user_baseline_with;
@@ -142,6 +142,50 @@ fn the_claimant_locates_from_immutable_provenance_while_every_mutable_record_is_
     );
     drop(held);
     assert_eq!(state(&candidate.trust), before, "locating writes nothing");
+}
+
+#[test]
+fn the_claimant_refuses_a_signer_or_a_record_that_does_not_name_its_installation() {
+    support::assert_user_principal_token();
+    let (candidate, _attempt) = Candidate::begin();
+    let path = host_path(&candidate.trust, "3.0.0");
+    let executable = open_image(&path);
+    let error = locate_candidate_claimant(
+        &path,
+        &executable,
+        &expected_for(&candidate.trust),
+        &[0xee; 32],
+        &candidate.trust.installation.app_id,
+    )
+    .expect_err("a signer the record does not name refuses");
+    assert!(
+        matches!(error, UpdateError::RecordedSignerMismatch { .. }),
+        "{error:?}"
+    );
+
+    // A valid record of another installation, with the same expected identity and
+    // signer, names roots that are not the located ones.
+    let other = tempfile::tempdir().expect("another installation");
+    let other_trust = seed_per_user_baseline_with(other.path(), &host_package_content());
+    std::fs::write(
+        candidate
+            .trust
+            .installation
+            .install_root
+            .join("install-provenance"),
+        std::fs::read(
+            other_trust
+                .installation
+                .install_root
+                .join("install-provenance"),
+        )
+        .expect("the other installation's record"),
+    )
+    .expect("substitute a record that names another installation");
+    let error = candidate
+        .claimant("3.0.0")
+        .expect_err("a record must name the located roots");
+    assert_eq!(binding_step(&error), "install root identity");
 }
 
 #[test]
