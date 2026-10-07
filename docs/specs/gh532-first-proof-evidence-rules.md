@@ -1,6 +1,6 @@
 # Spec: first-proof evidence rules (X01-T3)
 
-Status: draft
+Status: approved
 Linear: GH-532 (#517) · Owner: @0monish · Updated: 2026-10-07
 
 ## 1. Goal & non-goals
