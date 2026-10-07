@@ -139,7 +139,11 @@ These are the spec's contract for X05-T4. Each names its negative control.
    `test` is a top-level conjunct. For an inline `mod <name> {`, the exclusion is the
    module body up to its brace-matched close. For a single-line item, such as a `use`
    line, it is that one line. For `mod <name>;`, it is the file that the declaration
-   resolves to (`<name>.rs` or `<name>/mod.rs`, next to the declaring file). Any other
+   resolves to under Rust's module rules. From `lib.rs`, `main.rs` or `mod.rs` that
+   is `<name>.rs` or `<name>/mod.rs` beside it. From any other `<parent>.rs` it is
+   `<parent>/<name>.rs` or `<parent>/<name>/mod.rs`. A `#[path]` attribute overrides
+   both, and its target is used. For example, `bootstrap.rs:203` resolves to
+   `src/bootstrap/admission_deadline_tests.rs`. Any other
    form is scanned, not skipped, including `cfg(any(test, …))` and a non-test `cfg`, so
    the scan fails closed. The test passes if and only if the remaining text has zero matches of either
    regex: `ChannelId\(\s*[0-9]` and
@@ -150,7 +154,10 @@ These are the spec's contract for X05-T4. Each names its negative control.
    line 5. So does a `ChannelId(2)` placed after the `#[cfg(test)]` item at `fs.rs:591`.
    A test-gated module that contains `ChannelId(9)` passes. So do the live test-only
    literals in `bootstrap.rs`'s `#[cfg(all(test, windows))] mod named_pipe_tests` and in
-   `admission_deadline_tests.rs`, which `bootstrap.rs:203` declares behind a test gate.
+   `bootstrap/admission_deadline_tests.rs`, which `bootstrap.rs:203` declares behind a test gate.
+   On origin/main the rule leaves exactly seven hits, all of them production literals that X05-T4
+   replaces: `receive.rs:169`, `link.rs:633`, `echo.rs:10`, `lifecycle.rs:17`, `fs.rs:37`,
+   the fuzz target `raw_receive.rs:27` and `macos_bridge.rs:28`.
    The same literal under `#[cfg(any(test, windows))]` fails.
 7. **Hand-written constant (TypeScript and injected script).** Given production
    TypeScript under `packages/*/src` and `crates/keld-cli/templates/*/src`, and the macOS
