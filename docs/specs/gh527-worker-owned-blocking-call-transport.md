@@ -208,7 +208,12 @@ negative control: the one mutation that MUST make the test fail.
     when the ring goes from empty to non-empty, with no re-check before idle, makes the
     first task return with the second EVENT appended and no task requested, so the
     hook's assertion fails on that return. No step depends on timing: the listener
-    hook orders the append before the task returns.
+    hook orders the append before the task returns. Given a first EVENT whose listener
+    throws, then the second EVENT's listener still runs, the idle hook still sees
+    `R_RECS == W_RECS`, the link stays up, and the thrown error is reported once, as
+    an uncaught error in a later task (§4.6). *Second negative control:* letting the
+    throw leave the batch before the cursors advance and `KICK` is reset leaves
+    `KICK = 1` with the second EVENT undelivered, so the assertions fail.
 20. **Outbound path.** Given a test hook that holds the Worker's message handling until
     `BLOCKING` is nonzero, when main sends EVENT `e1`, then an asynchronous CALL `c1`,
     then a blocking CALL `c2` (so all three are queued before the Worker handles any),
@@ -233,11 +238,13 @@ negative control: the one mutation that MUST make the test fail.
     lookup, appends the unsolicited REPLY to the ring, so the `W_RECS` assertion fails.
 22. **Bounded abandoned set.** Given a host that never replies, when
     `MAX_ABANDONED_CALLS` calls expire, then each throws `KELD-IPC-006` and the link
-    stays up. When one more call expires, the link closes, that call and every pending
-    call throw `KELD-IPC-027`, and the host observes link loss. A late REPLY for any of
+    stays up. When one more call expires, that call still throws `KELD-IPC-006` (main
+    decides its deadline before the Worker sees the `abandon`), then the link closes,
+    every other pending call and every later call throw `KELD-IPC-027`, and the host
+    observes link loss. A late REPLY for any of
     the retained abandoned ids is discarded without closing the link. *Negative
-    control:* an unbounded abandoned set makes the extra expiry throw `KELD-IPC-006`
-    with the link still up, so the test fails.
+    control:* an unbounded abandoned set leaves the link up after the extra expiry, so
+    the following call does not throw `KELD-IPC-027` and the test fails.
 23. **GRANT window (T4).** Given credit enabled, when the Worker's first `GRANT` on a
     credited channel declares `(frames, bytes)`, and a later `GRANT` would raise the
     host's outstanding credit on that channel above either value, then the host closes
@@ -470,7 +477,7 @@ and updates this table in the same PR.
 | `KELD-IPC-024` | `keld-ipc` (host writes it with `write_call_error`) | the host accepted `Quit` and its drain ended with this call still pending | session ended by an accepted Quit before this call completed | The application is quitting. Do not issue new work; finish only the shutdown path. |
 | `KELD-IPC-025` | `@keld/kipc` | the transport Worker exited, or its heartbeat stopped for `WORKER_LIVENESS_WINDOW_MS`, while the role is open | transport Worker dead or unresponsive; the role's link is lost | The role has no link and cannot reconnect. Report the crash. The host restarts the role per its policy; check the role log for the Worker's last error. |
 | `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound (with the credit lane, its share of them, §4.7), or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, reduce the host event rate toward this role, or enable the credit lane (T4). Retained events were delivered in order. |
-| `KELD-IPC-027` | `@keld/kipc` | a call expired while `MAX_ABANDONED_CALLS` expired calls were already awaiting their late replies | too many unanswered calls; the link was closed rather than track another abandoned id | The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect. |
+| `KELD-IPC-027` | `@keld/kipc` | a call was pending, or was issued, after the Worker processed an `abandon` that exceeded `MAX_ABANDONED_CALLS` (the expiring call itself throws `KELD-IPC-006`) | too many unanswered calls; the link was closed rather than track another abandoned id | The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect. |
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
 an invalid `receive` table (§4.5), a second in-flight
@@ -593,7 +600,10 @@ asynchronous deadline), the entry stays, marked abandoned, until its late reply
 arrives and is discarded; an `abandon(id)` for an id no longer in the map is ignored.
 At most `MAX_ABANDONED_CALLS` entries may be abandoned. The
 abandon that would exceed that cap makes the link terminal: the Worker records 27,
-ends the socket, and every pending call throws `KELD-IPC-027`. Correlation ids, the
+ends the socket, and every other pending call and every later call throws
+`KELD-IPC-027`. The call whose `abandon` crossed the cap has already thrown
+`KELD-IPC-006`: the Worker is the one owner of the abandoned count, so main never
+counts abandons itself. Correlation ids, the
 one rule: main allocates every id, blocking or asynchronous, from one `u32` counter
 that skips 0 and the ids of main's own unresolved calls. Abandoned ids are tracked only
 in this map, not by main. A CALL whose id is still in the map (possible only after the `u32` counter
@@ -627,8 +637,9 @@ host has no path to a parked main except the dead link).
 
 ### 4.6 Wake-time rule (mirror facts before return, listeners after resume)
 
-No application JavaScript runs while main is parked. Main is inside `Atomics.wait`,
-and the Worker runs only transport code. This reproduces #419 E3: Electron 44.4.5 runs
+No application JavaScript runs on the main thread while it is parked. Main is inside
+`Atomics.wait`, and the transport Worker runs only transport code. Other application
+Workers are separate threads and keep running; this rule makes no claim about them. This reproduces #419 E3: Electron 44.4.5 runs
 no main-process JavaScript during `showMessageBoxSync`, then delivers queued work in
 order and loses none. Issue order is the order in which the host wrote frames to the
 link; the ring keeps arrival order, which is the same order on a stream.
@@ -645,7 +656,8 @@ The ring has two main-side cursors over one record sequence:
    never a microtask, so it runs only after the caller's synchronous continuation. It
    walks from `R_BYTES` up to the `W_BYTES` it loaded when it started. For a record
    at or after `A_BYTES` it first runs the applier and advances `A_BYTES` past it. It
-   then dispatches the record's listeners and advances `R_BYTES` and `R_RECS`, which
+   then dispatches the record's listeners (a throwing listener is handled as below)
+   and advances `R_BYTES` and `R_RECS`, which
    frees ring space. Invariant: `A_BYTES` is never behind `R_BYTES`, that is
    `((A_BYTES - R_BYTES) >>> 0) <= ((W_BYTES - R_BYTES) >>> 0)`. So the step-1 drain,
    which starts at `A_BYTES`, never re-applies a fact and never reads freed bytes.
@@ -693,6 +705,13 @@ No call handler starts and no `call()` Promise settles while main is parked, bec
 main does both only in the dispatch task. Once `STATE` is not 0 and the task has
 delivered every retained record, each unresolved `call()` rejects with the code
 `STATE` records.
+
+A throwing `onEvent` listener is application code, not a transport fault, so it does
+not end the link. The dispatcher catches the throw, finishes that record's other
+listeners, advances `R_BYTES` and `R_RECS` past the record, and continues the batch.
+After the batch's `KICK = 0` store and re-check (step 3), it rethrows the first caught
+error in a new `setImmediate` task, so the error reaches the role's uncaught-error
+handling and no record or `KICK` state is left behind (criterion 19).
 
 The ring is therefore also the listener FIFO. No second queue exists, and memory held
 for undispatched listeners stays inside the ring bound. An applier MUST be synchronous
