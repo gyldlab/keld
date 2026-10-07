@@ -14,13 +14,14 @@ import ci_inputs
 import ci_local
 
 
-def tracked_snapshot(source: Path, destination: Path) -> None:
+def tracked_snapshot(source: Path, destination: Path, *, bind: bool = True) -> None:
     """Make a real Git fixture from tracked working bytes, without touching source.
 
     Scopes/consumers are copied unchanged. Only the fixture's reader digests are
     bound to its controlled census, so clean-input controls do not inherit an
     unrelated unknown file from the developer's checkout. Live drift is tested
-    separately and must still select all its affected consumers.
+    separately and must still select all its affected consumers. bind=False keeps the
+    committed digests untouched so a freshness check sees exactly what CI checks out.
     """
     destination.mkdir(parents=True, exist_ok=True)
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=source)
@@ -36,6 +37,8 @@ def tracked_snapshot(source: Path, destination: Path) -> None:
         shutil.copy2(original, copied, follow_symlinks=False)
     for args in (("init", "-q"), ("config", "core.autocrlf", "false"), ("add", ".")):
         subprocess.run(["git", *args], cwd=destination, check=True, capture_output=True)
+    if not bind:
+        return
     contract = ci_inputs.load(destination)
     census = ci_inputs.files(destination)
     for reader_set in contract["reader_sets"].values():
@@ -177,6 +180,64 @@ class InputContractTests(unittest.TestCase):
         (self.root / "tools/ci-inputs.json").unlink()
         with self.assertRaises(ValueError):
             self.route()
+
+
+class FreshnessGateTests(unittest.TestCase):
+    """The live gate compares committed digests with live bytes and binds nothing first."""
+
+    tool = Path(__file__).resolve().parent / "ci_inputs.py"
+
+    def run_tool(self, mode, root):
+        return subprocess.run([sys.executable, "-B", str(self.tool), mode, str(root)],
+                              capture_output=True, text=True, encoding="utf-8")
+
+    def fixture(self):
+        temp = tempfile.TemporaryDirectory(prefix="keld-ci-fresh-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        for args in (("init", "-q"), ("config", "user.name", "t"), ("config", "user.email", "t@example.invalid")):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        (root / "readers").mkdir()
+        (root / "readers/check.py").write_text("print(1)\n", encoding="utf-8")
+        (root / "tools").mkdir()
+        census = ["readers/check.py", "tools/ci-inputs.json"]
+        contract = {"schema": ci_inputs.SCHEMA, "known_inputs": ["*"], "consumers": [],
+                    "reader_sets": {"fixture": {"patterns": ["readers/*.py"],
+                        "sha256": ci_inputs.fingerprint(root, census, ["readers/*.py"])}}}
+        (root / "tools/ci-inputs.json").write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "bind"], cwd=root, check=True, capture_output=True)
+        return root
+
+    def test_fresh_passes_and_stale_fails_with_typed_fix_message(self):
+        root = self.fixture()
+        self.assertEqual(self.run_tool("--check", root).returncode, 0)
+        (root / "readers/check.py").write_text("print(2)\n", encoding="utf-8")
+        result = self.run_tool("--check", root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("KELD-CI-INPUTS-STALE", result.stderr)
+        self.assertIn("fixture", result.stderr)
+        self.assertIn("just ci-inputs-rebind", result.stderr)
+
+    def test_rebind_rewrites_only_digest_values_and_names_changed_files(self):
+        root = self.fixture()
+        before = json.loads((root / "tools/ci-inputs.json").read_text(encoding="utf-8"))
+        (root / "readers/check.py").write_text("print(2)\n", encoding="utf-8")
+        result = self.run_tool("--rebind", root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fixture:", result.stdout)
+        self.assertIn("M readers/check.py", result.stdout)
+        after = json.loads((root / "tools/ci-inputs.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(before["reader_sets"]["fixture"]["sha256"], after["reader_sets"]["fixture"]["sha256"])
+        before["reader_sets"]["fixture"]["sha256"] = after["reader_sets"]["fixture"]["sha256"]
+        self.assertEqual(before, after, "rebind must not change any scope, input or pattern")
+        self.assertEqual(self.run_tool("--check", root).returncode, 0)
+
+    def test_rebind_is_a_noop_when_fresh(self):
+        root = self.fixture()
+        before = (root / "tools/ci-inputs.json").read_bytes()
+        self.assertEqual(self.run_tool("--rebind", root).returncode, 0)
+        self.assertEqual((root / "tools/ci-inputs.json").read_bytes(), before)
 
 
 class ExecutorTests(unittest.TestCase):
@@ -398,6 +459,34 @@ class ProductionConsumerTests(unittest.TestCase):
             self.assertTrue(unknown["input_all"])
             self.assertTrue(all(unknown.values()), "new unbound membership must never omit a consumer")
 
+    def test_committed_digests_match_live_bytes_and_stale_is_caught(self):
+        # Unbound snapshot: the digests are exactly what is committed, so this can fail.
+        source = Path(__file__).resolve().parent.parent
+        fixture = tempfile.TemporaryDirectory(prefix="keld-ci-fresh-prod-")
+        self.addCleanup(fixture.cleanup)
+        root = Path(fixture.name)
+        tracked_snapshot(source, root, bind=False)
+        live = subprocess.run([sys.executable, "-B", str(source / "tools/ci_inputs.py"), "--check", str(root)],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(live.returncode, 0, live.stderr)
+        # Negative control: a deliberately stale digest must fail and keep the fallback.
+        path = root / "tools/ci-inputs.json"
+        text = path.read_text(encoding="utf-8")
+        contract = ci_inputs.load(root)
+        victim = "policy-readers"
+        recorded = contract["reader_sets"][victim]["sha256"]
+        path.write_text(text.replace(recorded, "0" * 64), encoding="utf-8", newline="\n")
+        self.assertEqual(ci_inputs.stale(root), [victim])
+        failed = subprocess.run([sys.executable, "-B", str(source / "tools/ci_inputs.py"), "--check", str(root)],
+                                capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn(victim, failed.stderr)
+        selection = ci_inputs.classify(root, [], paths_only=True)
+        for consumer in contract["consumers"]:
+            if consumer["reader_set"] == victim:
+                for output in consumer["outputs"]:
+                    self.assertTrue(selection[output], f"stale {victim} must still enable {output}")
+
     def test_bound_production_readers_and_real_cross_tree_inputs(self):
         source = Path(__file__).resolve().parent.parent
         live_contract = ci_inputs.load(source)
@@ -424,11 +513,6 @@ class ProductionConsumerTests(unittest.TestCase):
         self.assertEqual(len(outputs), len(set(outputs)), "each consumer output has exactly one owner")
         self.assertTrue({"input_rust", "input_ts", "input_registry", "input_mermaid"} <= set(outputs),
                         "cross-tree consumer owners cannot be removed from the production contract")
-        for name, reader_set in contract["reader_sets"].items():
-            self.assertEqual(
-                ci_inputs.fingerprint(root, census, reader_set["patterns"]), reader_set["sha256"],
-                f"{name}: reader inventory changed; review its actual reads, update inputs, "
-                "then renew the digest. Routing remains conservative until that review.")
         examples = {
             "crates/keld-ipc/src/lib.rs": ("input_ts", "local_fmt-check", "local_clippy", "local_test"),
             "crates/keld-ipc/src/frame.rs": ("input_ts",),

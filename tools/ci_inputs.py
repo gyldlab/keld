@@ -3,6 +3,8 @@
 ci-inputs.json owns reviewed scopes and the reader source inventories behind them.
 Changing any reader byte or adding/removing a reader invalidates that consumer's
 exclusions. The fallback runs its gates until the scopes are reviewed and rebound.
+`--check` fails when a recorded digest is stale; `--rebind` (`just ci-inputs-rebind`) renews
+only the digest values after review.
 This is deliberately a proof boundary, not a source-code dependency guesser.
 """
 
@@ -82,6 +84,91 @@ def load(root: Path) -> dict:
     return data
 
 
+def bindings(root: Path, contract: dict, census: list[str]) -> list[tuple[str, str, str, list[str]]]:
+    """Every recorded digest as (name, committed, live, patterns); the one comparison owner."""
+    rows = []
+    for name, reader_set in contract["reader_sets"].items():
+        try:
+            live = fingerprint(root, census, reader_set["patterns"])
+        except (OSError, ValueError) as error:
+            live = f"unreadable: {error}"
+        rows.append((name, reader_set["sha256"], live, reader_set["patterns"]))
+    census_binding = contract.get("rust_source_census")
+    if census_binding:
+        rows.append(("rust_source_census", census_binding["membership_sha256"],
+                     membership_fingerprint(census, census_binding["patterns"]), census_binding["patterns"]))
+    return rows
+
+
+def stale(root: Path) -> list[str]:
+    """Names whose committed digest differs from the live bytes. Binds nothing first."""
+    return [name for name, recorded, live, _ in bindings(root, load(root), files(root)) if recorded != live]
+
+
+def review_hint(root: Path, recorded: str, census: list[str], patterns: list[str]) -> list[str]:
+    """Files to review: set members changed since the commit that recorded the digest."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "log", "-1", "--format=%H", f"-S{recorded}", "--", "tools/ci-inputs.json"],
+            cwd=root, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = ""
+    members = [path for path in census if path != "tools/ci-inputs.json" and matches(path, patterns)]
+    if not commit:
+        return [f"? {path}" for path in members]
+    lines = []
+    old = {path for path in subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "-z", commit], cwd=root, text=True).split("\0") if path}
+    old_members = {path for path in old if path != "tools/ci-inputs.json" and matches(path, patterns)}
+    lines += [f"+ {path}" for path in sorted(set(members) - old_members)]
+    lines += [f"- {path}" for path in sorted(old_members - set(members))]
+    shared = old_members & set(members)
+    changed = subprocess.check_output(
+        ["git", "diff", "--name-only", "-z", commit, "--"], cwd=root, text=True).split(chr(0))
+    lines += [f"M {path}" for path in changed if path in shared]
+    lines.append(f"(since digest recorded in {commit[:8]}; the digest was not necessarily correct there)")
+    return lines
+
+
+def check(root: Path) -> int:
+    """Live freshness gate: committed digests against live bytes, never rebinding."""
+    names = stale(root)
+    if not names:
+        print("ci-inputs: every reader digest and the rust source census match the live bytes")
+        return 0
+    print(f"KELD-CI-INPUTS-STALE: tools/ci-inputs.json is not bound to the live bytes for: {', '.join(names)}.\n"
+          "The router fails safe by enabling their consumers, so CI runs every lane until this is fixed.\n"
+          "Fix: review the reader changes, then run `just ci-inputs-rebind` and commit tools/ci-inputs.json.",
+          file=sys.stderr)
+    return 1
+
+
+def rebind(root: Path) -> int:
+    """Rewrite only the digest values in tools/ci-inputs.json using fingerprint()/membership_fingerprint()."""
+    contract = load(root)
+    census = files(root)
+    path = root / "tools/ci-inputs.json"
+    text = path.read_bytes().decode("utf-8")
+    changed = 0
+    for name, recorded, live, patterns in bindings(root, contract, census):
+        if live.startswith("unreadable"):
+            raise ValueError(f"{name}: {live}")
+        if recorded == live:
+            continue
+        if text.count(recorded) != 1:
+            raise ValueError(f"{name}: recorded digest is not a unique value in tools/ci-inputs.json")
+        text = text.replace(recorded, live)
+        changed += 1
+        print(f"{name}: {recorded[:12]} -> {live[:12]}; review:")
+        for line in review_hint(root, recorded, census, patterns):
+            print(f"  {line}")
+    if changed:
+        path.write_bytes(text.encode("utf-8"))
+    else:
+        print("ci-inputs: nothing to rebind")
+    return 0
+
+
 def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
     selected = {"local_" + gate: True for gate in MANDATORY}
     selected.update({"input_rust": False, "input_ts": False, "input_all": False,
@@ -157,6 +244,9 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] in ("--check", "--rebind"):
+        root = Path(sys.argv[2] if len(sys.argv) > 2 else Path(__file__).resolve().parent.parent).resolve()
+        return check(root) if sys.argv[1] == "--check" else rebind(root)
     root = Path(sys.argv[1]).resolve()
     changed = [item.decode("utf-8", "strict") for item in sys.stdin.buffer.read().split(b"\0") if item]
     result = classify(root, changed, comparison_unknown="--unknown" in sys.argv[2:],
