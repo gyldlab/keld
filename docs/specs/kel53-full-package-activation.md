@@ -2575,6 +2575,13 @@ Must not touch in Slice A:
       shape)" row for the candidate's rendezvous argument; row 20's typed `WriterActive`
       for every launch during an attempt that is not the accepted claimant; and the "8
       (health sequence)" row with the G measurement, except its owner-killed cell (S6d).
+      S6c keeps the handle of the host's boot verification for that call; today
+      `validate_installed_current_exe` drops it on return
+      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c also waits for the KEL-53
+      amendment that specifies item 2 of `740998f4`, the candidate's lifetime after
+      commit: the native qualification of option A failed its acceptance test, so the
+      owner's rule selects option B (Linear KEL-270 replies `559c07ac` and
+      `079b239d`, 2026-10-07); this spec does not yet specify B.
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
       executable entry. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6c's coordinator starts a
