@@ -884,7 +884,11 @@ the veto held: nothing closes the window, and `n` is delivered as
 `Created.pending_close` in the replay, so the successor answers it. The gap ends only
 with the successor's `Subscribe` (transfer and replay, criterion 30B) or with `Session
 end`, including a failed recovery in which KEL-75 provisions no successor; P11 or Q12
-then applies on the quit path. No timer ends it.
+then applies on the quit path. No timer ends it. The replay sends `Created` only for
+windows in `Open` or `ClosePending`. A window already in `Closing` finishes its
+teardown, is not replayed, and reaches the successor only as nothing at all, because
+it is never adoptable (criterion 30B-gap gains a negative control: a `Closing` window
+appearing in the replay fails).
 
 The T-numbers used elsewhere in this spec name these rows: T1 = O1, T2 = O2, T3 =
 P3/P4, T3x = their overflow branch, T4 = Q3/Q4, T5 = Q5, T6 = Q6, T7 = O6/P6/Q7/C6, T8 =
