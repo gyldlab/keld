@@ -11,8 +11,8 @@ use super::writer::{higher_release_version, higher_release_version_with, seed_pe
 use crate::records::{ActivationJournal, ActivationPhase, AttemptOwnership, PointerKind};
 use crate::windows_baseline::{
     ActivationHealthReceipt, ProcessFamilyRetirement, WindowsActivationAttempt,
-    WindowsActivationOutcome, WindowsBaselineTrust, WindowsJournaledAttempt,
-    WindowsRecoveryOutcome, load_windows_activation_write_snapshot,
+    WindowsActivationOutcome, WindowsBaselineTrust, WindowsHealthAcceptedAttempt,
+    WindowsJournaledAttempt, WindowsRecoveryOutcome, load_windows_activation_write_snapshot,
     load_windows_recovery_inspection,
 };
 use crate::{ActivationEffect, ActivationFailureClass, UpdateError};
@@ -26,6 +26,9 @@ const OWNERSHIP: AttemptOwnership = AttemptOwnership {
 const COORDINATOR: [u8; 32] = [0x5a; 32];
 const CRASH_HELPER: &str = "windows_baseline::tests::transaction::windows_activation_crash_helper";
 const CRASH_EXIT: i32 = 93;
+/// The cut between the two health steps: `accept_health` returned and `complete` has
+/// not run. It is a call boundary, not a record write, so the helper reaches it itself.
+const HEALTH_STEP_RETURNED: &str = "health-step-returned";
 
 pub(super) fn verifier(trust: &WindowsBaselineTrust) -> crate::UpdateVerifier {
     crate::UpdateVerifier::new(
@@ -47,9 +50,19 @@ pub(super) fn begin_with(
     version: &str,
     content: &[u8],
 ) -> WindowsActivationAttempt {
+    begin_by(trust, version, content, COORDINATOR)
+}
+
+/// [`begin_with`] by an attempt owner whose image digest is `coordinator`.
+pub(super) fn begin_by(
+    trust: &WindowsBaselineTrust,
+    version: &str,
+    content: &[u8],
+    coordinator: [u8; 32],
+) -> WindowsActivationAttempt {
     let (root, stage) = complete_with(trust, version, content);
     let minted = root
-        .begin_activation(stage, COORDINATOR)
+        .begin_activation(stage, coordinator)
         .expect("mint the attempt identities without writing");
     awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON))
 }
@@ -119,7 +132,7 @@ fn legacy_orphan(trust: &WindowsBaselineTrust, version: &str) -> crate::Artifact
     stage.identity().clone()
 }
 
-fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
+pub(super) fn receipt(attempt: &WindowsActivationAttempt) -> ActivationHealthReceipt {
     ActivationHealthReceipt::new(
         *attempt.attempt_id(),
         *attempt.health_channel_id(),
@@ -145,6 +158,7 @@ pub(super) fn commit_with(trust: &WindowsBaselineTrust, version: &str, content: 
     let health = receipt(&attempt);
     let resolution = attempt
         .accept_health(&health)
+        .and_then(WindowsHealthAcceptedAttempt::complete)
         .expect("exact health commits the candidate");
     assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
     assert_eq!(resolution.current().version, version);
@@ -395,8 +409,24 @@ fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versio
 
     let health = receipt(&attempt);
 
-    let resolution = attempt
+    let accepted = attempt
         .accept_health(&health)
+        .expect("exact health is durably accepted");
+    let durable = observe(&trust);
+    assert!(
+        matches!(
+            durable.journal.as_ref().map(|journal| &journal.phase),
+            Some(ActivationPhase::HealthAccepted { .. })
+        ),
+        "the first health step returns at the durable HealthAccepted record: {durable:?}"
+    );
+    assert_eq!(
+        (durable.current.as_str(), durable.last_known_good.as_str()),
+        ("2.0.0", "1.0.0"),
+        "the first health step commits nothing"
+    );
+    let resolution = accepted
+        .complete()
         .expect("exact health commits the first update");
     assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
     assert!(resolution.cleanup_error().is_none());
@@ -487,6 +517,50 @@ fn substituted_health_receipts_refuse_before_any_write_and_leave_recovery_author
         );
         assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
     }
+}
+
+#[test]
+fn the_expected_digest_is_the_receipt_digest_of_the_journaled_attempt_channel_and_candidate() {
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("expected digest fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let attempt = begin(&trust, "2.0.0");
+    let expected = *attempt.health_receipt_digest();
+    let journal = observe(&trust).journal.expect("live attempt is journaled");
+    let digest = |channel: &[u8; 32]| {
+        crate::records::activation_health_receipt_digest(
+            &journal.attempt_id,
+            channel,
+            &journal.candidate,
+        )
+        .expect("digest of a journaled attempt")
+    };
+    // The protected record, read back from disk, names the inputs; the accessor must
+    // bind exactly the health channel, never the lifecycle channel that the same
+    // journal also carries.
+    assert_eq!(expected, digest(&journal.health_channel_id));
+    assert_ne!(expected, digest(&journal.lifecycle_channel_id));
+
+    let health = receipt(&attempt);
+    // Dropping the accepted attempt releases the lease without completing.
+    drop(
+        attempt
+            .accept_health(&health)
+            .expect("exact health is durably accepted"),
+    );
+    assert_eq!(
+        observe(&trust).journal.map(|journal| journal.phase),
+        Some(ActivationPhase::HealthAccepted {
+            health_receipt_digest: expected
+        }),
+        "HealthAccepted records the digest the owner compared with KELD-AB1"
+    );
+    // Recovery recomputes the digest from the journal and finishes the commit.
+    assert_eq!(
+        recover_exact(&trust).expect("recovery finishes an accepted attempt"),
+        WindowsActivationOutcome::Committed
+    );
+    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
 }
 
 #[test]
@@ -1392,6 +1466,7 @@ fn minting_writes_nothing_until_the_owner_journals_its_facts() {
     assert_eq!(
         attempt
             .accept_health(&health)
+            .and_then(WindowsHealthAcceptedAttempt::complete)
             .expect("exact health commits")
             .outcome(),
         WindowsActivationOutcome::Committed
@@ -1462,6 +1537,7 @@ fn journal_bound_recovery_re_mints_an_unlaunched_attempt_without_writing() {
     assert_eq!(
         attempt
             .accept_health(&health)
+            .and_then(WindowsHealthAcceptedAttempt::complete)
             .expect("exact health commits")
             .outcome(),
         WindowsActivationOutcome::Committed
@@ -1604,7 +1680,7 @@ fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
 
 /// Replaces the protected journal with the landed v1 encoding of the same attempt, which
 /// carries no owner facts.
-fn downgrade_journal_to_v1(trust: &WindowsBaselineTrust) {
+pub(super) fn downgrade_journal_to_v1(trust: &WindowsBaselineTrust) {
     let path = trust.installation.update_root.join("activation-journal");
     let mut journal = crate::records::decode_activation_journal(
         &std::fs::read(&path).expect("protected journal bytes"),
@@ -1711,8 +1787,11 @@ fn an_open_nested_handle_in_the_retiring_tree_preserves_the_journal() {
     let holder = std::fs::File::open(nested_file(&retiring_tree))
         .expect("hold a nested file inside the version being retired");
     let health = receipt(&attempt);
+    let accepted = attempt
+        .accept_health(&health)
+        .expect("health is durably accepted before completion retires anything");
     assert_refusal(
-        attempt.accept_health(&health),
+        accepted.complete(),
         "version retirement",
         ActivationEffect::JournalBoundRecoveryRequired,
     );
@@ -1764,6 +1843,7 @@ fn a_process_running_from_a_retired_tree_defers_only_its_deletion() {
     let health = receipt(&attempt);
     let resolution = attempt
         .accept_health(&health)
+        .and_then(WindowsHealthAcceptedAttempt::complete)
         .expect("a mapped image does not block the directory rename");
     assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
     match resolution.cleanup_error() {
@@ -1820,7 +1900,7 @@ fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcom
             );
             assert_eq!(journal.ownership, Some(OWNERSHIP));
             let health = receipt(&attempt);
-            let resolution = attempt.accept_health(&health)?;
+            let resolution = attempt.accept_health(&health)?.complete()?;
             Ok(resolution.outcome())
         }
     }
@@ -1869,6 +1949,9 @@ const COMMIT_PATH: &[(&str, AfterCut)] = &[
     ("awaiting-health", AfterCut::RollsBack),
     ("prepared:health-accepted", AfterCut::RollsBack),
     ("health-accepted", AfterCut::FinishesCommit),
+    // The owner is lost after the first health step returned and before completion:
+    // where it sends `KELD-AK1` accepted (KEL-53 §4 *Health sequence*).
+    (HEALTH_STEP_RETURNED, AfterCut::FinishesCommit),
     (
         "prepared:prior-known-good-preserved",
         AfterCut::FinishesCommit,
@@ -2270,7 +2353,10 @@ fn windows_activation_crash_helper() {
     let attempt = begin(&trust, candidate);
     if case.ends_with("commit") {
         let health = receipt(&attempt);
-        let _ = attempt.accept_health(&health);
+        if let Ok(accepted) = attempt.accept_health(&health) {
+            crash_at_requested_cut(true, HEALTH_STEP_RETURNED);
+            let _ = accepted.complete();
+        }
     } else if case.ends_with("rollback") {
         let retirement = retirement(&attempt);
         let _ = attempt.roll_back(ActivationFailureClass::HealthRejected, &retirement);

@@ -1,0 +1,41 @@
+# keld-updater-helper edge set (KEL-53 §4 "Helper launch and self-anchor", criterion 17).
+#
+# This file owns only the elevated helper's banned crates; the root deny.toml owns every
+# other dependency policy. CI (`.github/workflows/ci.yml` `deny` job) runs it with this
+# crate as the sole graph root:
+#   cargo deny --manifest-path crates/keld-updater-helper/Cargo.toml --all-features \
+#     --config crates/keld-updater-helper/deny.toml check bans
+# tests/edge_set.rs reads the same list and checks it against `cargo tree`.
+
+[graph]
+# The helper's normal edges exist only on Windows.
+targets = ["x86_64-pc-windows-msvc"]
+all-features = true
+# Test-only dependencies never enter the elevated image.
+exclude-dev = true
+
+[bans]
+# The root configuration owns duplicate-version and wildcard policy.
+multiple-versions = "allow"
+wildcards = "allow"
+# The host's package graph, the native broker and every WebView binding crate.
+deny = [
+    { crate = "keld-core", reason = "the host's app runtime never enters the elevated helper" },
+    { crate = "keld-wv", reason = "the WebView layer never enters the elevated helper" },
+    { crate = "keld-host", reason = "the host executable never enters the elevated helper" },
+    { crate = "keld-cli", reason = "the developer CLI never enters the elevated helper" },
+    { crate = "keld-native", reason = "the native capability broker never enters the elevated helper" },
+    { crate = "wry", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "tao", reason = "a WebView windowing binding never enters the elevated helper" },
+    { crate = "webview2-com", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "webview2-com-sys", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "webview2-com-macros", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "webkit2gtk", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "webkit2gtk-sys", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "javascriptcore-rs", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "javascriptcore-rs-sys", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "soup3", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "soup3-sys", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "objc2-web-kit", reason = "a WebView binding never enters the elevated helper" },
+    { crate = "gtk", reason = "a WebView toolkit binding never enters the elevated helper" },
+]

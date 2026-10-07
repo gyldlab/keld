@@ -620,6 +620,9 @@ classify_path() {
             rust="$TRUE"
             case "$changed_file" in
                 crates/*/tests/fixtures/*) resolve_crate_fixture_consumers "$changed_file" ;;
+                # The elevated updater helper's own ban list is also a cargo-deny
+                # input (KEL-53 §4 "Helper launch and self-anchor").
+                crates/keld-updater-helper/deny.toml) deny="$TRUE" ;;
             esac
             local package_name
             if ! package_name="$(package_for_path "$changed_file")"; then

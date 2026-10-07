@@ -6,32 +6,43 @@
 //! race. The sole Job handle intentionally lives until process termination;
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` then terminates the enrolled tree even
 //! when host destructors cannot run.
+//!
+//! The module also holds the updater helper's System32-only DLL search and its
+//! elevated `runas` launch (KEL-53 §4 "Helper launch and self-anchor"), because
+//! it owns the crate's KEL-270 FFI whitelist.
 
-#![allow(unsafe_code)] // isolated Win32 Job ABI; every call has a local handle/pointer proof
+#![allow(unsafe_code)] // isolated Win32 Job/loader/shell ABI; every call has a local handle/pointer proof
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::ffi::OsStr;
 use std::io;
 use std::io::{Read as _, Write as _};
-use std::os::windows::ffi::OsStringExt as _;
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::path::PathBuf;
+use std::marker::PhantomData;
+use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+use std::os::windows::io::{
+    AsHandle, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
 use keld_ipc::{
     WindowsLifecycleBinding, WindowsLifecyclePurpose, WindowsLifecycleRendezvousClient,
-    WindowsLifecycleRendezvousPeer,
+    WindowsLifecycleRendezvousPeer, WindowsNamedPipeBootstrapStream,
 };
 
-use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild};
+use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild, nul_terminated_wide};
 
 use windows_sys::Win32::Foundation::{
-    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_NOT_SAME_OBJECT, FILETIME,
-    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_CANCELLED,
+    ERROR_NOT_SAME_OBJECT, FILETIME, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+    INVALID_HANDLE_VALUE, S_FALSE, S_OK, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType, ReadFile,
+};
+use windows_sys::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE};
 use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
@@ -43,6 +54,9 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
+use windows_sys::Win32::System::LibraryLoader::{
+    LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+};
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE};
 use windows_sys::Win32::System::Threading::{
@@ -50,6 +64,10 @@ use windows_sys::Win32::System::Threading::{
     OpenProcessToken, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     PROCESS_TERMINATE, QueryFullProcessImageNameW, SetWaitableTimer, TerminateProcess,
     WaitForSingleObject,
+};
+use windows_sys::Win32::UI::Shell::{
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    ShellExecuteExW,
 };
 
 const HOST_START_TOKEN_V1: &[u8; 10] = b"KELDHOST/1";
@@ -1071,19 +1089,25 @@ pub struct WindowsLaunchedProcess {
 
 impl WindowsLaunchedProcess {
     /// Records the launch identity of a child that a launch path created
-    /// suspended.
+    /// suspended and has not resumed.
     ///
     /// The process ID is the child's own, which process creation reported; the
-    /// creation time is read from the retained launch handle. Creation time is
-    /// fixed for the process object, so recording after resume is harmless: it
-    /// reads the same value as recording before resume, and the record names the
-    /// object the child retains, not the moment of the call.
+    /// creation time is read from the retained launch handle. A record names only
+    /// a child whose primary thread was never resumed, so the record's one
+    /// [`Self::resume`], which requires the child's attempt-Job membership, is the
+    /// only way it runs.
     ///
     /// # Errors
     ///
-    /// Returns an error, and terminates the child as it drops, when Windows
-    /// cannot read the creation time.
+    /// Returns an error, and terminates the child as it drops, when the child was
+    /// already resumed or Windows cannot read the creation time.
     pub fn record(child: WindowsSuspendedChild) -> Result<Self, WindowsHostJobError> {
+        if child.is_resumed() {
+            return Err(WindowsHostJobError::contract(
+                "launch identity record",
+                "the child was already resumed, so its Job membership can no longer precede its first instruction",
+            ));
+        }
         let creation_time = process_creation_time(
             child.process_handle().as_raw_handle().cast(),
             "launch identity record",
@@ -1101,13 +1125,29 @@ impl WindowsLaunchedProcess {
     }
 
     /// Resumes the retained child's primary thread exactly once, through
-    /// [`WindowsSuspendedChild::resume`].
+    /// [`WindowsSuspendedChild::resume`], after its attempt-Job assignment.
+    ///
+    /// `membership` is the proof that [`WindowsProcessJob::assign_child`] returned
+    /// for this exact process, by process ID and creation time. Because a record
+    /// names only a never-resumed child, the child is a Job member before its
+    /// first instruction.
     ///
     /// # Errors
     ///
-    /// Fails if the child was already resumed or the kernel rejects resume.
-    pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
-        self.child.resume()
+    /// Fails before any resume if `membership` names another process. Otherwise
+    /// fails if the child was already resumed, the kernel rejects resume, or the
+    /// primary thread's previous suspend count was not 1; in that last case the
+    /// resume is spent and the caller must terminate the child.
+    pub fn resume(&mut self, membership: &WindowsJobMembership) -> Result<(), WindowsLpacError> {
+        if membership.process_id != self.child.id()
+            || membership.creation_time != self.creation_time
+        {
+            return Err(self.child.refusal(
+                "child resume",
+                "the attempt-Job membership proof names another process",
+            ));
+        }
+        self.child.resume_held()
     }
 
     /// Waits for the retained child to terminate and returns its exact Windows
@@ -1150,6 +1190,27 @@ impl WindowsLaunchedProcess {
             ProcessObservation::of_peer(claimant),
             ProcessObservation::of_launch(self),
         )
+    }
+
+    /// Reports whether the retained launch handle is signaled: the launched
+    /// process has exited (KEL-53 §4 "Candidate connect-back", *Health
+    /// sequence*: the owner's launch handle must be unsignaled).
+    ///
+    /// It waits for nothing and consumes nothing: it neither reaps nor
+    /// terminates the child and leaves the retained handle open, so it may be
+    /// asked any number of times. It reads the same fact as the second check of
+    /// [`Self::bind_claimant`], through the same query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Windows cannot query the retained launch handle.
+    pub fn has_exited(&self) -> Result<bool, WindowsHostJobError> {
+        process_signaled(self.child.process_handle().as_raw_handle().cast()).map_err(|source| {
+            WindowsHostJobError {
+                phase: "launch handle state query",
+                source,
+            }
+        })
     }
 }
 
@@ -1250,15 +1311,15 @@ fn bind_observed_claimant(
             });
         }
     }
-    // SAFETY: the launch observation borrows its owner, which retains the launch
-    // handle through this zero-time, read-only signal query.
-    match unsafe { WaitForSingleObject(launch.handle, 0) } {
-        WAIT_TIMEOUT => {}
-        WAIT_OBJECT_0 => return Err(WindowsClaimantRefusal::LaunchExited),
-        _ => {
+    // The launch observation borrows its owner, which retains the launch handle
+    // through this query.
+    match process_signaled(launch.handle) {
+        Ok(false) => {}
+        Ok(true) => return Err(WindowsClaimantRefusal::LaunchExited),
+        Err(source) => {
             return Err(WindowsClaimantRefusal::Unverifiable {
                 phase: "launch handle state query",
-                source: io::Error::last_os_error(),
+                source,
             });
         }
     }
@@ -1266,6 +1327,21 @@ fn bind_observed_claimant(
         return Err(WindowsClaimantRefusal::LaunchIdentityMismatch);
     }
     Ok(())
+}
+
+/// Reports whether a process handle is signaled, with a zero-time wait that
+/// consumes nothing. The caller retains the handle through the call.
+fn process_signaled(process: HANDLE) -> io::Result<bool> {
+    // SAFETY: WaitForSingleObject reads no caller memory and resolves `process`
+    // only through this process's handle table, so no value makes the call
+    // unsound. That the caller retains this handle through the call is a
+    // correctness precondition: a closed value that was reused would name another
+    // object and would not fail.
+    match unsafe { WaitForSingleObject(process, 0) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(io::Error::last_os_error()),
+    }
 }
 
 /// Reports whether two handles name one kernel object.
@@ -1320,6 +1396,56 @@ fn process_creation_time(process: HANDLE, phase: &'static str) -> Result<u64, Wi
     Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+/// One live process that an attempt Job admits as its direct host, borrowed
+/// from the owner that retains it.
+///
+/// Two owners lend one: a [`Child`] that a launcher spawned, and a
+/// [`WindowsSuspendedChild`] that a suspended launch created, such as the
+/// `PerUserDirect` candidate, which is assigned before its one resume (KEL-53
+/// §5). Only those two conversions construct it, so no other handle reaches a
+/// Job call.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowsJobProcess<'a> {
+    process: std::os::windows::io::BorrowedHandle<'a>,
+    process_id: u32,
+}
+
+impl<'a> From<&'a Child> for WindowsJobProcess<'a> {
+    fn from(child: &'a Child) -> Self {
+        Self {
+            process: std::os::windows::io::AsHandle::as_handle(child),
+            process_id: child.id(),
+        }
+    }
+}
+
+impl<'a> From<&'a WindowsSuspendedChild> for WindowsJobProcess<'a> {
+    fn from(child: &'a WindowsSuspendedChild) -> Self {
+        Self {
+            process: child.process_handle(),
+            process_id: child.id(),
+        }
+    }
+}
+
+impl WindowsJobProcess<'_> {
+    fn raw(self) -> HANDLE {
+        self.process.as_raw_handle().cast()
+    }
+}
+
+/// Proof that [`WindowsProcessJob::assign_child`] assigned one process to an
+/// attempt Job and read its membership back.
+///
+/// Only that call constructs it. It names the process by process ID and creation
+/// time, and [`WindowsLaunchedProcess::resume`] requires it for the same
+/// process, so a recorded launch cannot run before it is a Job member.
+#[derive(Debug)]
+pub struct WindowsJobMembership {
+    process_id: u32,
+    creation_time: u64,
+}
+
 impl WindowsProcessJob {
     /// Creates an unnamed, non-inheritable Job with kill-on-last-handle-close.
     ///
@@ -1335,17 +1461,26 @@ impl WindowsProcessJob {
         })
     }
 
-    /// Assigns one live process to this exact Job.
+    /// Assigns one live process to this exact Job and returns the proof of its
+    /// read-back membership.
     ///
     /// The owner must assign the host before its application resources can start.
-    /// Windows may reject assignment when the process's existing Job hierarchy is
-    /// incompatible; callers must fail closed in that case.
+    /// A [`WindowsSuspendedChild`], such as the `PerUserDirect` candidate, is
+    /// assigned before its one resume, which [`WindowsLaunchedProcess::resume`]
+    /// enforces by requiring the returned proof, so it is a member before its
+    /// first instruction. Windows may reject assignment when the process's
+    /// existing Job hierarchy is incompatible; callers must fail closed in that
+    /// case.
     ///
     /// # Errors
     ///
-    /// Returns an error if the process cannot be assigned or exact membership cannot
-    /// be verified.
-    pub fn assign_child(&mut self, process: &Child) -> Result<(), WindowsHostJobError> {
+    /// Returns an error if the process cannot be assigned, exact membership cannot
+    /// be verified, or its creation time cannot be read for the proof.
+    pub fn assign_child<'a>(
+        &mut self,
+        process: impl Into<WindowsJobProcess<'a>>,
+    ) -> Result<WindowsJobMembership, WindowsHostJobError> {
+        let process = process.into();
         if self.host_assigned {
             return Err(WindowsHostJobError::contract(
                 "attempt Job process assignment",
@@ -1353,13 +1488,15 @@ impl WindowsProcessJob {
             ));
         }
         let raw_job = self.handle.as_raw_handle().cast();
-        let raw_process = process.as_raw_handle().cast();
-        // SAFETY: `Child` retains its process handle through this synchronous call.
+        let raw_process = process.raw();
+        // SAFETY: the borrowed process's owner retains its handle through this
+        // synchronous call.
         if unsafe { AssignProcessToJobObject(raw_job, raw_process) } == 0 {
             return Err(WindowsHostJobError::new("attempt Job process assignment"));
         }
         let mut in_job = 0;
-        // SAFETY: `Child` and this owner retain both handles, and `in_job` is writable BOOL storage.
+        // SAFETY: the process's owner and this owner retain both handles, and
+        // `in_job` is writable BOOL storage.
         if unsafe { IsProcessInJob(raw_process, raw_job, &raw mut in_job) } == 0 {
             return Err(WindowsHostJobError::new("attempt Job membership read-back"));
         }
@@ -1369,10 +1506,14 @@ impl WindowsProcessJob {
                 "process was not observed in the assigned Job",
             ));
         }
+        // Read the proof's creation time before retaining the host or changing any
+        // state, so a failed read leaves this Job with no admitted direct host.
+        let creation_time = process_creation_time(raw_process, "attempt Job membership proof")?;
         let mut retained_process = std::ptr::null_mut();
-        // SAFETY: both process handles refer to the current process and live
-        // Child; `retained_process` is writable HANDLE storage. The duplicate is
-        // non-inheritable and has the same synchronization/query rights.
+        // SAFETY: both process handles refer to the current process and the live
+        // borrowed process; `retained_process` is writable HANDLE storage. The
+        // duplicate is non-inheritable and has the same synchronization/query
+        // rights.
         if unsafe {
             DuplicateHandle(
                 GetCurrentProcess(),
@@ -1393,9 +1534,12 @@ impl WindowsProcessJob {
         // process handle, converted exactly once into the retained owner.
         let retained_process = unsafe { OwnedHandle::from_raw_handle(retained_process.cast()) };
         self.host_assigned = true;
-        self.host_process_id = Some(process.id());
+        self.host_process_id = Some(process.process_id);
         self.host_process = Some(retained_process);
-        Ok(())
+        Ok(WindowsJobMembership {
+            process_id: process.process_id,
+            creation_time,
+        })
     }
 
     /// Duplicates a least-rights inheritable handle for the surviving stage-cleanup
@@ -2013,12 +2157,17 @@ impl WindowsProcessJob {
     /// # Errors
     ///
     /// Returns an error if the OS cannot observe membership.
-    pub fn contains_child(&self, process: &Child) -> Result<bool, WindowsHostJobError> {
+    pub fn contains_child<'a>(
+        &self,
+        process: impl Into<WindowsJobProcess<'a>>,
+    ) -> Result<bool, WindowsHostJobError> {
+        let process = process.into();
         let mut in_job = 0;
-        // SAFETY: `Child` and this owner retain both handles, and `in_job` is writable BOOL storage.
+        // SAFETY: the process's owner and this owner retain both handles, and
+        // `in_job` is writable BOOL storage.
         if unsafe {
             IsProcessInJob(
-                process.as_raw_handle().cast(),
+                process.raw(),
                 self.handle.as_raw_handle().cast(),
                 &raw mut in_job,
             )
@@ -2058,18 +2207,19 @@ impl WindowsProcessJob {
     ///
     /// Returns an error if termination is denied, either wait times out, a wait fails,
     /// or Job accounting remains nonzero.
-    pub fn terminate_and_wait(
+    pub fn terminate_and_wait<'a>(
         self,
-        direct_host: &Child,
+        direct_host: impl Into<WindowsJobProcess<'a>>,
         timeout: Duration,
     ) -> Result<(), WindowsHostJobError> {
+        let direct_host = direct_host.into();
         if !self.host_assigned {
             return Err(WindowsHostJobError::contract(
                 "attempt Job termination",
                 "no host was admitted to this attempt Job",
             ));
         }
-        if self.host_process_id != Some(direct_host.id()) || self.host_process.is_none() {
+        if self.host_process_id != Some(direct_host.process_id) || self.host_process.is_none() {
             return Err(WindowsHostJobError::contract(
                 "attempt Job termination",
                 "the supplied direct host is not the exact process admitted to this Job",
@@ -3099,14 +3249,677 @@ pub fn install_host_death_job() -> Result<WindowsHostJobObservation, WindowsHost
     Ok(observation)
 }
 
+/// Failure to restrict this process's DLL search to System32
+/// (`KELD-RUNTIME-018`).
+#[derive(Debug)]
+pub struct WindowsDllSearchError {
+    source: io::Error,
+}
+
+impl std::fmt::Display for WindowsDllSearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-RUNTIME-018: restricting this process's DLL search to System32 failed: {}. \
+             Exit before loading any library or doing protected work; never continue on the \
+             standard search path, which includes the current directory and PATH.",
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for WindowsDllSearchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Restricts every later DLL search of this process to System32.
+///
+/// This is the updater helper's first statement (KEL-53 §4 "Helper launch and
+/// self-anchor"): `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
+/// Microsoft documents the resulting search path as process-wide, lasting for
+/// the life of the process and impossible to revert to the standard search
+/// path. Afterwards a `LoadLibraryW` by module name searches none of the
+/// application directory, the current directory and `PATH`. It does not cover
+/// the static imports that the loader resolved before `main`.
+///
+/// # Errors
+///
+/// Returns [`WindowsDllSearchError`] when Windows refuses the call; the caller
+/// must then exit without loading anything.
+pub fn restrict_dll_search_to_system32() -> Result<(), WindowsDllSearchError> {
+    // SAFETY: SetDefaultDllDirectories takes one flags value and no pointer;
+    // LOAD_LIBRARY_SEARCH_SYSTEM32 is a documented flag, and the call changes
+    // only this process's loader search path.
+    if unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) } == 0 {
+        return Err(WindowsDllSearchError {
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
+/// The updater helper's fixed recovery-role selector (KEL-53 §4 "Helper launch
+/// and self-anchor"; Coordination record, Linear KEL-270 comment
+/// `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07).
+///
+/// Exact ASCII and case-sensitive. It is the helper's only accepted argument
+/// besides an attempt rendezvous name, and the helper's argument parser imports
+/// this constant rather than restating it. It is a cross-version argument
+/// contract: a host may start an older tree's helper for recovery.
+pub const WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR: &str = "--recovery-role";
+
+/// The updater helper's single argument, from a closed set (KEL-53 §4
+/// "Machine-UAC bootstrap" items 1 and 3).
+///
+/// It is either the activation role's bootstrap rendezvous name, exactly
+/// `\\.\pipe\keld-attempt-<64 lowercase hex>`, or
+/// [`WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR`]. Neither conveys authority.
+/// Both are a single command-line token, because neither contains whitespace
+/// or a quotation mark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsUpdaterHelperArgument {
+    role: UpdaterHelperRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdaterHelperRole {
+    Activation { rendezvous: String },
+    Recovery,
+}
+
+impl WindowsUpdaterHelperArgument {
+    /// The activation role's argument: the name of the bootstrap endpoint that
+    /// the host created before the launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WindowsUpdaterHelperLaunchError::ArgumentShape`] unless
+    /// `rendezvous` passes keld-ipc's
+    /// [`WindowsNamedPipeBootstrapStream::is_attempt_endpoint`], the one owner
+    /// of that shape.
+    pub fn activation(rendezvous: &str) -> Result<Self, WindowsUpdaterHelperLaunchError> {
+        if !WindowsNamedPipeBootstrapStream::is_attempt_endpoint(rendezvous) {
+            return Err(WindowsUpdaterHelperLaunchError::ArgumentShape);
+        }
+        Ok(Self {
+            role: UpdaterHelperRole::Activation {
+                rendezvous: rendezvous.to_owned(),
+            },
+        })
+    }
+
+    /// The recovery role's argument,
+    /// [`WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR`].
+    #[must_use]
+    pub const fn recovery() -> Self {
+        Self {
+            role: UpdaterHelperRole::Recovery,
+        }
+    }
+
+    /// The exact argument text the helper receives.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match &self.role {
+            UpdaterHelperRole::Activation { rendezvous } => rendezvous,
+            UpdaterHelperRole::Recovery => WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR,
+        }
+    }
+}
+
+/// A Win32-canonical drive-letter `.exe` path for
+/// [`launch_elevated_updater_helper`].
+///
+/// `SHELLEXECUTEINFO` resolves a file name without a path against the current
+/// directory, and hands a document file to its associated application. This
+/// type admits a path only when all of these hold:
+/// - it starts at a drive root (`C:\...`): no UNC, `\\?\` or `\\.\` prefix,
+///   and no relative or drive-relative form;
+/// - it names an `.exe`;
+/// - Win32 would not rewrite it: no `.` or `..` component, only single `\`
+///   separators, and `GetFullPathNameW` (through `std::path::absolute`)
+///   returns it unchanged;
+/// - no component ends in `.` or a space, which Win32 strips;
+/// - no component holds `<>:"|?*`, NUL or another character below 0x20
+///   (`:` would name an alternate data stream);
+/// - no component is a reserved device name (`CON`, `PRN`, `AUX`, `NUL`,
+///   `COM1`-`COM9`, `LPT1`-`LPT9` and their superscript-digit forms), with or
+///   without an extension.
+///
+/// So the shell receives exactly the spelling the caller derived. The type
+/// checks spelling only. It does not decide whether the drive is local (a
+/// `subst` or mapped drive letter passes), resolve 8.3 aliases or reparse
+/// points, or prove which file runs. The host's derivation from admitted
+/// provenance (KEL-53 §6 S9a) and the helper's self-anchor (S9c) own those
+/// facts (KEL-53 §4 "Helper launch and self-anchor").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsUpdaterHelperPath {
+    path: PathBuf,
+    file: Vec<u16>,
+    directory: Vec<u16>,
+}
+
+impl WindowsUpdaterHelperPath {
+    /// Admits `path` if it is a Win32-canonical drive-letter `.exe` path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WindowsUpdaterHelperLaunchError::HelperPath`] naming the first
+    /// rule that `path` breaks.
+    pub fn new(path: &Path) -> Result<Self, WindowsUpdaterHelperLaunchError> {
+        let refuse = |rule| Err(WindowsUpdaterHelperLaunchError::HelperPath { rule });
+        let mut components = path.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return refuse("it does not start with a drive letter");
+        };
+        if !matches!(prefix.kind(), Prefix::Disk(_)) {
+            return refuse("its prefix is not a plain drive letter");
+        }
+        if components.next() != Some(Component::RootDir) {
+            return refuse("it is not absolute from the drive root");
+        }
+        let mut names = Vec::new();
+        for component in components {
+            let Component::Normal(name) = component else {
+                return refuse("it has a `..` component");
+            };
+            if name.encode_wide().any(|unit| unit == u16::from(b':')) {
+                return refuse("it names an alternate data stream");
+            }
+            if name.encode_wide().any(is_forbidden_name_unit) {
+                return refuse("it holds a character that Win32 forbids in a name");
+            }
+            // Checked before the full-path check: Microsoft documents that
+            // before Windows 11 that normalization turns a path naming a legacy
+            // device into a `\\.\` device path, which would change the rule.
+            if is_reserved_device_name(name) {
+                return refuse("a component is a reserved device name");
+            }
+            names.push(name);
+        }
+        let Some(file_name) = names.last() else {
+            return refuse("it names no file");
+        };
+        if !Path::new(file_name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        {
+            return refuse("it does not name an `.exe` image");
+        }
+        // Component parsing drops `.` components and repeated or trailing
+        // separators and reads `/` as a separator, so a path is canonical
+        // exactly when its components rebuild the same text.
+        if path.components().collect::<PathBuf>().as_os_str() != path.as_os_str() {
+            return refuse(
+                "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
+            );
+        }
+        // Win32's own normalization (GetFullPathNameW) also removes a single
+        // trailing `.` from an inner component.
+        if std::path::absolute(path)
+            .ok()
+            .as_deref()
+            .map(Path::as_os_str)
+            != Some(path.as_os_str())
+        {
+            return refuse("Win32 rewrites it to a different full path");
+        }
+        // GetFullPathNameW keeps an inner trailing space and a run of periods,
+        // but Win32 file names must not end in either.
+        for name in &names {
+            if name
+                .encode_wide()
+                .last()
+                .is_some_and(|unit| unit == u16::from(b'.') || unit == u16::from(b' '))
+            {
+                return refuse("a component ends in `.` or a space");
+            }
+        }
+        let (Some(file), Some(directory)) = (
+            nul_terminated_wide(path.as_os_str()),
+            path.parent()
+                .and_then(|parent| nul_terminated_wide(parent.as_os_str())),
+        ) else {
+            return refuse("it contains a NUL");
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            directory,
+        })
+    }
+
+    /// The admitted path, unchanged.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Whether `unit` is one of the characters that Microsoft's "Naming Files,
+/// Paths, and Namespaces" forbids in a file or directory name: `<>"/\|?*` or
+/// a value from 0 through 31. `:` is checked separately, and the separators
+/// never reach a component.
+fn is_forbidden_name_unit(unit: u16) -> bool {
+    unit < 0x20
+        || b"<>\"|?*"
+            .iter()
+            .any(|forbidden| unit == u16::from(*forbidden))
+}
+
+/// Whether `name` is a reserved device name, alone or followed by an
+/// extension: `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `COM¹`-`COM³`,
+/// `LPT1`-`LPT9` or `LPT¹`-`LPT³`, in any case ("Naming Files, Paths, and
+/// Namespaces": "NUL.txt and NUL.tar.gz are both equivalent to NUL"). Spaces
+/// before the first `.` are ignored, so a spelling such as `NUL .exe` is also
+/// refused.
+fn is_reserved_device_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|digit| {
+                matches!(
+                    digit,
+                    "1" | "2"
+                        | "3"
+                        | "4"
+                        | "5"
+                        | "6"
+                        | "7"
+                        | "8"
+                        | "9"
+                        | "\u{b9}"
+                        | "\u{b2}"
+                        | "\u{b3}"
+                )
+            })
+}
+
+/// Why an elevated updater-helper launch refused or failed
+/// (`KELD-RUNTIME-019`).
+///
+/// No variant retains a helper process handle. [`Self::HelperPath`],
+/// [`Self::ArgumentShape`] and [`Self::ComInitialization`] refuse before the
+/// shell is called, and [`Self::Declined`] means the user refused consent, so
+/// no helper started. After [`Self::NoProcessHandle`] or
+/// [`Self::ProcessIdentity`] an elevated helper may already be running, unbound
+/// to this launch: the caller must close its bootstrap endpoint, so that the
+/// helper's server check refuses and it exits without a protected write
+/// (KEL-53 §4 "Machine-UAC bootstrap" item 3; S11 composes this).
+#[derive(Debug)]
+pub enum WindowsUpdaterHelperLaunchError {
+    /// The helper path is not a Win32-canonical drive-letter `.exe` path.
+    HelperPath {
+        /// The first rule the path breaks.
+        rule: &'static str,
+    },
+    /// The rendezvous argument is not an exact `keld-attempt` name.
+    ArgumentShape,
+    /// The dedicated launch thread could not start, or ended without a result.
+    LaunchThread {
+        /// What the thread reported.
+        source: io::Error,
+    },
+    /// `CoInitializeEx` refused the launch thread's single-threaded apartment.
+    ComInitialization {
+        /// The `HRESULT` it returned.
+        hresult: i32,
+    },
+    /// The user declined the UAC prompt: `ShellExecuteExW` failed with
+    /// `ERROR_CANCELLED`.
+    Declined,
+    /// `ShellExecuteExW` failed with another error.
+    ShellExecute {
+        /// The Windows error.
+        source: io::Error,
+        /// The `hInstApp` value, an `SE_ERR_*` code or `0`, kept as a
+        /// diagnostic.
+        inst_app: usize,
+    },
+    /// `ShellExecuteExW` succeeded without returning a process handle, so no
+    /// launched process can be bound to the launch. A helper may still be
+    /// running.
+    NoProcessHandle,
+    /// The returned handle could not report its process ID; it was closed. The
+    /// helper may still be running.
+    ProcessIdentity {
+        /// The Windows error.
+        source: io::Error,
+    },
+}
+
+impl std::fmt::Display for WindowsUpdaterHelperLaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KELD-RUNTIME-019: elevated updater-helper launch refused: ")?;
+        match self {
+            Self::HelperPath { rule } => write!(
+                f,
+                "the helper path is not a Win32-canonical drive-letter `.exe` path: {rule}. \
+                 Derive it again \
+                 from the selected tree's admitted provenance; never pass a searched, relative \
+                 or caller-supplied name."
+            ),
+            Self::ArgumentShape => f.write_str(
+                "the rendezvous argument is not exactly `\\\\.\\pipe\\keld-attempt-<64 \
+                 lowercase hex>`. Pass the name of the bootstrap endpoint this host created, \
+                 unchanged.",
+            ),
+            Self::LaunchThread { source } => write!(
+                f,
+                "the dedicated launch thread failed: {source}. Free process resources and \
+                 offer the elevated action again only on a new user request."
+            ),
+            Self::ComInitialization { hresult } => write!(
+                f,
+                "COM refused the launch thread's single-threaded apartment (HRESULT \
+                 {hresult:#010x}). No consent was requested; report the HRESULT and never \
+                 launch the helper without COM initialized."
+            ),
+            Self::Declined => f.write_str(
+                "the user declined the UAC prompt. Nothing was launched and no protected state \
+                 changed; offer the elevated action again only on a new user request.",
+            ),
+            Self::ShellExecute { source, inst_app } => write!(
+                f,
+                "ShellExecuteExW failed: {source} (hInstApp {inst_app}). No helper process is \
+                 retained; if the image is missing, repair the installation rather than \
+                 searching for another helper."
+            ),
+            Self::NoProcessHandle => f.write_str(
+                "ShellExecuteExW returned no process handle, so no connecting client can be \
+                 bound to the launch. A helper may already be running: close the bootstrap \
+                 endpoint so that its server check refuses and it exits without a protected \
+                 write, and report the detail.",
+            ),
+            Self::ProcessIdentity { source } => write!(
+                f,
+                "the returned process handle could not report its process ID: {source}. The \
+                 handle was closed, so no connecting client can be bound to the launch. A \
+                 helper may already be running: close the bootstrap endpoint so that its server \
+                 check refuses and it exits without a protected write, and report the detail."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WindowsUpdaterHelperLaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::LaunchThread { source }
+            | Self::ShellExecute { source, .. }
+            | Self::ProcessIdentity { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// The elevated updater helper that [`launch_elevated_updater_helper`]
+/// started.
+///
+/// It owns the process handle that `ShellExecuteExW` returned under
+/// `SEE_MASK_NOCLOSEPROCESS` and closes it on drop; dropping it does not
+/// terminate the helper. Microsoft does not document which access rights that
+/// handle carries after a `runas` elevation; KEL-53 §6 S1 qualifies them.
+#[derive(Debug)]
+pub struct WindowsElevatedUpdaterHelper {
+    process: OwnedHandle,
+    process_id: u32,
+}
+
+impl WindowsElevatedUpdaterHelper {
+    /// The helper's process ID, read from the retained handle at launch.
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.process_id
+    }
+
+    /// Retains `process` with the process ID it reports, or closes it when it
+    /// cannot report one.
+    fn identify(process: OwnedHandle) -> Result<Self, WindowsUpdaterHelperLaunchError> {
+        // SAFETY: `process` owns a live handle for the duration of this call.
+        let process_id = unsafe { GetProcessId(process.as_raw_handle().cast()) };
+        if process_id == 0 {
+            return Err(WindowsUpdaterHelperLaunchError::ProcessIdentity {
+                source: io::Error::last_os_error(),
+            });
+        }
+        Ok(Self {
+            process,
+            process_id,
+        })
+    }
+}
+
+impl AsHandle for WindowsElevatedUpdaterHelper {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.process.as_handle()
+    }
+}
+
+/// Starts `path` elevated through the UAC `runas` verb with exactly one
+/// argument (KEL-53 §4 "Helper launch and self-anchor").
+///
+/// The call runs on a dedicated thread that first enters a COM single-threaded
+/// apartment with `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`, as the
+/// `ShellExecuteEx` remarks recommend, and leaves it on that thread before the
+/// thread ends. `ShellExecuteExW` receives:
+/// - `SEE_MASK_NOCLOSEPROCESS`, so it returns the process handle that the
+///   result owns;
+/// - `SEE_MASK_NOASYNC`, which the `SHELLEXECUTEINFO` remarks require when the
+///   calling thread has no message loop or ends soon after the call;
+/// - `SEE_MASK_FLAG_NO_UI`, so a failure returns its error instead of showing
+///   an error dialog; the UAC prompt is a security prompt and is still shown;
+/// - the helper's own directory as `lpDirectory`, because a null value passes
+///   on this process's current directory, which an ordinary user may choose;
+/// - no owner window and an `nShow` of `0` (`SW_HIDE`): the helper shows no
+///   window.
+///
+/// The call blocks until the user answers the prompt. It searches for nothing:
+/// the path and the argument are closed types.
+///
+/// # Errors
+///
+/// - [`WindowsUpdaterHelperLaunchError::Declined`] when the user declines;
+/// - [`WindowsUpdaterHelperLaunchError::ComInitialization`] before the shell
+///   is called, when the launch thread's apartment is refused;
+/// - [`WindowsUpdaterHelperLaunchError::ShellExecute`],
+///   [`WindowsUpdaterHelperLaunchError::NoProcessHandle`] and
+///   [`WindowsUpdaterHelperLaunchError::ProcessIdentity`] when the launch
+///   cannot produce one identified process handle;
+/// - [`WindowsUpdaterHelperLaunchError::LaunchThread`] when the thread cannot
+///   start or ends without a result.
+pub fn launch_elevated_updater_helper(
+    path: &WindowsUpdaterHelperPath,
+    argument: &WindowsUpdaterHelperArgument,
+) -> Result<WindowsElevatedUpdaterHelper, WindowsUpdaterHelperLaunchError> {
+    launch_updater_helper(path, argument, ShellVerb::RunAs)
+}
+
+/// The launch with its verb as a parameter. Production builds have only
+/// [`ShellVerb::RunAs`]; a unit test drives the same block with `open`, which
+/// needs no consent prompt.
+fn launch_updater_helper(
+    path: &WindowsUpdaterHelperPath,
+    argument: &WindowsUpdaterHelperArgument,
+    verb: ShellVerb,
+) -> Result<WindowsElevatedUpdaterHelper, WindowsUpdaterHelperLaunchError> {
+    let file = path.file.clone();
+    let directory = path.directory.clone();
+    let parameters = nul_terminated_wide(OsStr::new(argument.as_str()))
+        .ok_or(WindowsUpdaterHelperLaunchError::ArgumentShape)?;
+    let launch = std::thread::Builder::new()
+        .name("keld-updater-helper-launch".to_owned())
+        .spawn(move || shell_execute_on_this_thread(&file, &parameters, &directory, verb))
+        .map_err(|source| WindowsUpdaterHelperLaunchError::LaunchThread { source })?;
+    let process = launch
+        .join()
+        .map_err(|_| WindowsUpdaterHelperLaunchError::LaunchThread {
+            source: io::Error::other("the launch thread ended without a result"),
+        })??;
+    WindowsElevatedUpdaterHelper::identify(process)
+}
+
+/// Makes the one `ShellExecuteExW` call inside a COM apartment that the
+/// current thread enters first and leaves after the call, and returns the
+/// process handle.
+fn shell_execute_on_this_thread(
+    file: &[u16],
+    parameters: &[u16],
+    directory: &[u16],
+    verb: ShellVerb,
+) -> Result<OwnedHandle, WindowsUpdaterHelperLaunchError> {
+    let _apartment = ComApartment::enter()?;
+    let verb: Vec<u16> = verb
+        .name()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let size = u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>()).map_err(|_| {
+        WindowsUpdaterHelperLaunchError::ShellExecute {
+            source: io::Error::other("SHELLEXECUTEINFOW does not fit its u32 size field"),
+            inst_app: 0,
+        }
+    })?;
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+        lpVerb: verb.as_ptr(),
+        lpFile: file.as_ptr(),
+        lpParameters: parameters.as_ptr(),
+        lpDirectory: directory.as_ptr(),
+        // 0 is SW_HIDE (WinUser.h); windows-sys names it only behind
+        // Win32_UI_WindowsAndMessaging, which this crate does not enable.
+        nShow: 0,
+        ..SHELLEXECUTEINFOW::default()
+    };
+    // SAFETY: `info` is a live, writable SHELLEXECUTEINFOW whose cbSize is its
+    // exact size. Its four string fields point at NUL-terminated UTF-16 buffers
+    // (`verb` here; `file`, `parameters` and `directory` borrowed from the
+    // caller) that live until this function returns; SEE_MASK_NOASYNC makes the
+    // call finish its work before it returns, so nothing reads them later.
+    // Every other field is zero: no owner window, ID list, class or hot key.
+    let succeeded = unsafe { ShellExecuteExW(&raw mut info) } != 0;
+    // Read at once: nothing may run between the call and its last-error value.
+    let error = io::Error::last_os_error();
+    let process = shell_execute_outcome(succeeded, error, info.hInstApp.addr(), info.hProcess)?;
+    // SAFETY: `shell_execute_outcome` admits only a successful call's non-null
+    // hProcess, which SEE_MASK_NOCLOSEPROCESS makes this caller's to close;
+    // nothing else holds it, so it moves into exactly one owner here.
+    Ok(unsafe { OwnedHandle::from_raw_handle(process.cast()) })
+}
+
+/// Classifies one finished `ShellExecuteExW` call: a failure with
+/// `ERROR_CANCELLED` is the user's decline, any other failure is reported with
+/// its `hInstApp` diagnostic, and a success counts only with a process handle.
+fn shell_execute_outcome(
+    succeeded: bool,
+    error: io::Error,
+    inst_app: usize,
+    process: HANDLE,
+) -> Result<HANDLE, WindowsUpdaterHelperLaunchError> {
+    if !succeeded {
+        return Err(
+            if error.raw_os_error() == Some(ERROR_CANCELLED.cast_signed()) {
+                WindowsUpdaterHelperLaunchError::Declined
+            } else {
+                WindowsUpdaterHelperLaunchError::ShellExecute {
+                    source: error,
+                    inst_app,
+                }
+            },
+        );
+    }
+    if process.is_null() {
+        return Err(WindowsUpdaterHelperLaunchError::NoProcessHandle);
+    }
+    Ok(process)
+}
+
+/// The current thread's COM apartment, entered as `COINIT_APARTMENTTHREADED |
+/// COINIT_DISABLE_OLE1DDE`.
+///
+/// A value exists only after `CoInitializeEx` returned `S_OK` or `S_FALSE`,
+/// each of which Microsoft requires to be balanced by one `CoUninitialize` on
+/// the same thread; dropping the value makes that call. It is neither `Send`
+/// nor `Sync`, so it is dropped on the thread that entered. After
+/// `RPC_E_CHANGED_MODE` or any other failure there is nothing to balance and no
+/// value exists.
+#[derive(Debug)]
+struct ComApartment {
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl ComApartment {
+    fn enter() -> Result<Self, WindowsUpdaterHelperLaunchError> {
+        // SAFETY: the reserved first argument is null, as CoInitializeEx
+        // requires, the flags are documented COINIT values, and the call reads
+        // no caller memory.
+        let hresult = unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).cast_unsigned(),
+            )
+        };
+        if hresult == S_OK || hresult == S_FALSE {
+            Ok(Self {
+                _thread_bound: PhantomData,
+            })
+        } else {
+            Err(WindowsUpdaterHelperLaunchError::ComInitialization { hresult })
+        }
+    }
+}
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        // SAFETY: this value exists only after a successful CoInitializeEx on
+        // this thread, cannot leave the thread, and is dropped once, so this is
+        // that call's single balancing CoUninitialize.
+        unsafe { CoUninitialize() };
+    }
+}
+
+/// The `ShellExecuteExW` verb. Production builds have only `runas`, so no
+/// public path can select another verb.
+#[derive(Debug, Clone, Copy)]
+enum ShellVerb {
+    /// UAC elevation: the only production verb.
+    RunAs,
+    /// Ordinary activation without a consent prompt, for the unit test that
+    /// executes the launch block.
+    #[cfg(test)]
+    Open,
+}
+
+impl ShellVerb {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::RunAs => "runas",
+            #[cfg(test)]
+            Self::Open => "open",
+        }
+    }
+}
+
 #[cfg(test)]
-#[allow(unsafe_code)] // test-only native Job-limit negative control
+#[allow(unsafe_code)] // test-only Job, COM, loader and process-handle probes, each with a local ABI proof
 #[allow(clippy::expect_used, clippy::panic)] // subprocess contract failures abort the proof
 mod tests {
     use super::*;
     use crate::windows_lpac::{WindowsLpacProfile, WindowsLpacStdio};
     use std::ffi::{OsStr, OsString};
-    use std::os::windows::io::AsHandle as _;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -3926,7 +4739,14 @@ mod tests {
             .bind_claimant(&claimant)
             .expect("the exact suspended launch binds");
 
-        launch.launched.resume().expect("resume the launch once");
+        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
+        let membership = job
+            .assign_child(launch.launched.child())
+            .expect("assign the launch before its resume");
+        launch
+            .launched
+            .resume(&membership)
+            .expect("resume the launch once");
         assert!(
             !claimant
                 .has_exited()
@@ -4142,6 +4962,83 @@ mod tests {
         }
     }
 
+    /// A same-token `cmd.exe /d /c exit 7`, created suspended and not recorded.
+    fn same_token_exit_command() -> WindowsSuspendedChild {
+        let system32 = system32();
+        let environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+            .collect();
+        WindowsSuspendedChild::spawn_same_token(
+            &system32.join("cmd.exe"),
+            &[
+                OsString::from("/d"),
+                OsString::from("/c"),
+                OsString::from("exit 7"),
+            ],
+            &environment,
+            &system32,
+        )
+        .expect("create a same-token child suspended")
+    }
+
+    #[test]
+    fn a_membership_proof_must_name_both_the_process_id_and_the_creation_time() {
+        // Seam-injected: forged proofs that each match one of the two facts.
+        let mut launched =
+            WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the launch");
+        let process_id = launched.child().id();
+        let creation_time = launched.creation_time;
+        for forged in [
+            WindowsJobMembership {
+                process_id,
+                creation_time: creation_time ^ 1,
+            },
+            WindowsJobMembership {
+                process_id: process_id ^ 4,
+                creation_time,
+            },
+        ] {
+            let refusal = launched
+                .resume(&forged)
+                .expect_err("a proof that matches only one fact refuses");
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("the attempt-Job membership proof names another process"),
+                "{forged:?}: {refusal}"
+            );
+            assert!(
+                !launched.has_exited().expect("query the launch"),
+                "{forged:?}: the refused launch stays suspended"
+            );
+        }
+        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
+        let membership = job
+            .assign_child(launched.child())
+            .expect("assign the launch");
+        launched
+            .resume(&membership)
+            .expect("the real proof resumes the launch");
+        assert_eq!(launched.wait(10_000).expect("the launch exits"), 7);
+    }
+
+    #[test]
+    fn a_launch_record_names_only_a_never_resumed_child() {
+        let mut child = same_token_exit_command();
+        child
+            .resume_held()
+            .expect("spend the resume below the launch record");
+        let refusal = WindowsLaunchedProcess::record(child)
+            .expect_err("a resumed child has no launch record");
+        assert!(
+            refusal.to_string().contains(
+                "the child was already resumed, so its Job membership can no longer precede its first instruction"
+            ),
+            "{refusal}"
+        );
+    }
+
     #[test]
     fn suspended_child_owns_the_sole_resume_thread_call() {
         // KEL-53 §5 reuse decision: one suspended-child type owns the only
@@ -4168,5 +5065,241 @@ mod tests {
             }
         }
         assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn dll_search_refusal_names_its_code_cause_and_exit_guidance() {
+        let error = WindowsDllSearchError {
+            source: io::Error::from_raw_os_error(87),
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with("KELD-RUNTIME-018: restricting this process's DLL search"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("(os error 87)"), "{rendered}");
+        assert!(
+            rendered.contains("Exit before loading any library"),
+            "{rendered}"
+        );
+        assert_eq!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .and_then(io::Error::raw_os_error),
+            Some(87)
+        );
+    }
+
+    #[test]
+    fn shell_execute_outcome_separates_decline_failure_and_a_missing_process_handle() {
+        // Only compared, never used as a handle.
+        let returned: HANDLE = std::ptr::without_provenance_mut(0x1234);
+        let cancelled = || io::Error::from_raw_os_error(ERROR_CANCELLED.cast_signed());
+        assert!(matches!(
+            shell_execute_outcome(false, cancelled(), 5, std::ptr::null_mut()),
+            Err(WindowsUpdaterHelperLaunchError::Declined)
+        ));
+        match shell_execute_outcome(
+            false,
+            io::Error::from_raw_os_error(2),
+            2,
+            std::ptr::null_mut(),
+        ) {
+            Err(WindowsUpdaterHelperLaunchError::ShellExecute { source, inst_app }) => {
+                assert_eq!((source.raw_os_error(), inst_app), (Some(2), 2));
+            }
+            other => panic!("expected a ShellExecute failure, got {other:?}"),
+        }
+        // A failed call is a failure even if a handle value is present.
+        assert!(matches!(
+            shell_execute_outcome(false, io::Error::from_raw_os_error(5), 5, returned),
+            Err(WindowsUpdaterHelperLaunchError::ShellExecute { .. })
+        ));
+        assert!(matches!(
+            shell_execute_outcome(true, cancelled(), 42, std::ptr::null_mut()),
+            Err(WindowsUpdaterHelperLaunchError::NoProcessHandle)
+        ));
+        assert_eq!(
+            shell_execute_outcome(true, cancelled(), 42, returned)
+                .expect("a success with a handle"),
+            returned
+        );
+    }
+
+    #[test]
+    fn launched_process_is_retained_only_with_the_id_its_handle_reports() {
+        // SAFETY: OpenProcess dereferences no caller memory.
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, std::process::id()) };
+        assert!(!raw.is_null(), "open this test process");
+        // SAFETY: OpenProcess succeeded, so this is the handle's sole owner.
+        let process = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+        let helper =
+            WindowsElevatedUpdaterHelper::identify(process).expect("a process handle has an ID");
+        assert_eq!(helper.id(), std::process::id());
+
+        let not_a_process = OwnedHandle::from(std::fs::File::open("NUL").expect("open NUL"));
+        match WindowsElevatedUpdaterHelper::identify(not_a_process) {
+            Err(WindowsUpdaterHelperLaunchError::ProcessIdentity { source }) => {
+                assert!(source.raw_os_error().is_some(), "{source}");
+            }
+            other => panic!("a file handle has no process ID, got {other:?}"),
+        }
+    }
+
+    /// Runs the production `ShellExecuteExW` block with the `open` verb, which
+    /// needs no consent prompt. The image is a `.cmd` script that the shell
+    /// starts through its association (`cmd.exe`): it records the arguments and
+    /// working directory it received, then exits 7. The closed path type admits
+    /// only `.exe`, so this test builds the path value directly.
+    #[test]
+    fn shell_launch_owns_the_process_handle_and_passes_the_argument_and_directory() {
+        let fixture = tempfile::tempdir().expect("launch fixture");
+        let directory = fixture.path().join("helper dir");
+        std::fs::create_dir(&directory).expect("helper directory");
+        let script = directory.join("probe.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\n>\"%~dp0observed.txt\" (\r\n echo ARG1=%~1\r\n echo ALL=%*\r\n \
+             echo CWD=%CD%\r\n)\r\nexit /b 7\r\n",
+        )
+        .expect("probe script");
+        let path = WindowsUpdaterHelperPath {
+            path: script.clone(),
+            file: nul_terminated_wide(script.as_os_str()).expect("script path"),
+            directory: nul_terminated_wide(directory.as_os_str()).expect("script directory"),
+        };
+        let rendezvous = format!(r"\\.\pipe\keld-attempt-{}", "0123456789abcdef".repeat(4));
+        let argument = WindowsUpdaterHelperArgument::activation(&rendezvous).expect("rendezvous");
+
+        let launched =
+            launch_updater_helper(&path, &argument, ShellVerb::Open).expect("open-verb launch");
+        let handle: HANDLE = launched.as_handle().as_raw_handle().cast();
+        // SAFETY: `launched` retains `handle` for each call below.
+        assert_eq!(unsafe { GetProcessId(handle) }, launched.id());
+        // SAFETY: as above; the wait is bounded.
+        assert_eq!(
+            unsafe { WaitForSingleObject(handle, 60_000) },
+            WAIT_OBJECT_0
+        );
+        let mut exit_code = u32::MAX;
+        // SAFETY: as above; `exit_code` is writable.
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::Threading::GetExitCodeProcess(
+                    handle,
+                    &raw mut exit_code,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            exit_code, 7,
+            "the retained handle is the launched script's process"
+        );
+
+        let observed =
+            std::fs::read_to_string(directory.join("observed.txt")).expect("the script's record");
+        let lines: Vec<&str> = observed.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some(format!("ARG1={rendezvous}").as_str())
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some(format!("ALL={rendezvous}").as_str()),
+            "the argument arrives as exactly one token"
+        );
+        let cwd = lines
+            .get(2)
+            .and_then(|line| line.strip_prefix("CWD="))
+            .expect("the working-directory record");
+        assert_eq!(
+            std::fs::canonicalize(cwd).expect("canonical working directory"),
+            std::fs::canonicalize(&directory).expect("canonical helper directory"),
+            "lpDirectory is the launched process's working directory"
+        );
+    }
+
+    /// Enters COM's multithreaded apartment directly, as an independent probe of
+    /// the thread's COM state, and returns the raw `HRESULT`.
+    fn enter_multithreaded_apartment() -> i32 {
+        // SAFETY: the reserved argument is null and the flag is a documented
+        // COINIT value; the caller balances every success on this thread.
+        unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                windows_sys::Win32::System::Com::COINIT_MULTITHREADED.cast_unsigned(),
+            )
+        }
+    }
+
+    #[test]
+    fn launch_apartment_is_left_on_its_own_thread_when_dropped() {
+        std::thread::spawn(|| {
+            let apartment = ComApartment::enter().expect("a fresh thread enters an STA");
+            drop(apartment);
+            // Microsoft: once COM is uninitialized on a thread it may be
+            // reinitialized in any mode. While the STA were still entered, this
+            // multithreaded request would fail with RPC_E_CHANGED_MODE.
+            assert_eq!(enter_multithreaded_apartment(), S_OK);
+            // SAFETY: balances the successful probe above on this thread.
+            unsafe { CoUninitialize() };
+        })
+        .join()
+        .expect("apartment thread");
+    }
+
+    #[test]
+    fn launch_apartment_reentered_on_an_sta_thread_balances_only_its_own_entry() {
+        std::thread::spawn(|| {
+            // SAFETY: the reserved argument is null and the flags are documented
+            // COINIT values; the success is balanced below on this thread.
+            let outer = unsafe {
+                CoInitializeEx(
+                    std::ptr::null(),
+                    (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).cast_unsigned(),
+                )
+            };
+            assert_eq!(outer, S_OK);
+            // Microsoft: a repeated compatible call returns S_FALSE and still
+            // needs its own CoUninitialize.
+            let apartment = ComApartment::enter().expect("S_FALSE is an entered apartment");
+            drop(apartment);
+            // The outer entry is still open, so the thread is still an STA.
+            assert_eq!(
+                enter_multithreaded_apartment(),
+                windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE
+            );
+            // SAFETY: balances the outer entry on this thread.
+            unsafe { CoUninitialize() };
+            assert_eq!(enter_multithreaded_apartment(), S_OK);
+            // SAFETY: balances the successful probe above on this thread.
+            unsafe { CoUninitialize() };
+        })
+        .join()
+        .expect("apartment thread");
+    }
+
+    #[test]
+    fn launch_apartment_refuses_a_thread_in_another_apartment_and_leaves_it_entered() {
+        std::thread::spawn(|| {
+            assert_eq!(enter_multithreaded_apartment(), S_OK);
+            match ComApartment::enter() {
+                Err(WindowsUpdaterHelperLaunchError::ComInitialization { hresult }) => {
+                    assert_eq!(hresult, windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE);
+                }
+                other => panic!("expected RPC_E_CHANGED_MODE, got {other:?}"),
+            }
+            // The refusal made no CoUninitialize: the thread's own MTA is still
+            // entered, so a repeated request reports S_FALSE, not S_OK.
+            assert_eq!(enter_multithreaded_apartment(), S_FALSE);
+            // SAFETY: balances the two successful probes on this thread.
+            unsafe {
+                CoUninitialize();
+                CoUninitialize();
+            }
+        })
+        .join()
+        .expect("apartment thread");
     }
 }

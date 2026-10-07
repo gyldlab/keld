@@ -2459,10 +2459,16 @@ Must not touch in Slice A:
       accessors, and its derivation stays crate-private. S6b and S9b both amend
       `crates/keld-runtime/AGENTS.md`, so they land one after the other, and the second
       carries an explained instruction-budget change. Gates: unsafe (`keld-runtime`
-      amendment), public API (breaking: `accept_health` becomes two steps; new: the two
-      reads, the digest accessors, the liveness check and the launch), permission model
-      (criterion 20's reader exception); dependency and wire: none (it reads the landed
-      journal v2). Evidence: each candidate-boot refusal with a typed `WriterActive`;
+      amendment), public API (breaking: `accept_health` becomes two steps;
+      `WindowsProcessJob::assign_child` returns a `WindowsJobMembership` proof, and it,
+      `contains_child` and `terminate_and_wait` take `impl Into<WindowsJobProcess>`;
+      `WindowsLaunchedProcess::resume` takes that proof, and `record` refuses an
+      already-resumed child; `WindowsSuspendedChild::resume` refuses a same-token child,
+      which resumes only through its launch record, and refuses a previous suspend count
+      other than 1; new: the two reads, the digest accessors, the liveness check, the
+      launch, and the `WindowsJobProcess` and `WindowsJobMembership` types), permission
+      model (criterion 20's reader exception); dependency and wire: none (it reads the
+      landed journal v2). Evidence: each candidate-boot refusal with a typed `WriterActive`;
       the process-object cells of the claimant-binding row at the owner; a subprocess
       crash cut between the durable `HealthAccepted` step and completion (rows 6–7, 9);
       and the candidate's Job membership before its first instruction.

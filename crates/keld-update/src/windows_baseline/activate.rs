@@ -282,10 +282,7 @@ impl WindowsMintedAttempt {
         }
         match transaction.advance()? {
             Progress::AwaitingHealth => Ok(WindowsJournaledAttempt::AwaitingHealth(Box::new(
-                WindowsActivationAttempt {
-                    transaction,
-                    installation_id,
-                },
+                WindowsActivationAttempt::awaiting_health(transaction, installation_id)?,
             ))),
             Progress::Resolved(resolution) if reminted.is_some() => {
                 Ok(WindowsJournaledAttempt::Resolved(resolution))
@@ -318,9 +315,30 @@ impl WindowsMintedAttempt {
 pub struct WindowsActivationAttempt {
     transaction: Transaction,
     installation_id: [u8; 32],
+    health_receipt_digest: [u8; 32],
 }
 
 impl WindowsActivationAttempt {
+    /// The live attempt at its health decision, with the digest of the one health
+    /// receipt that it accepts, derived once from its own journaled fields.
+    fn awaiting_health(
+        transaction: Transaction,
+        installation_id: [u8; 32],
+    ) -> Result<Self, UpdateError> {
+        let journal = &transaction.journal;
+        let health_receipt_digest = records::activation_health_receipt_digest(
+            &journal.attempt_id,
+            &journal.health_channel_id,
+            &journal.candidate,
+        )
+        .map_err(|cause| transaction.refault(&cause))?;
+        Ok(Self {
+            transaction,
+            installation_id,
+            health_receipt_digest,
+        })
+    }
+
     /// Attempt identity recorded in the protected journal; a resumed owner keeps it and
     /// receives fresh channel identities instead.
     #[must_use]
@@ -352,6 +370,20 @@ impl WindowsActivationAttempt {
         &self.transaction.journal.candidate
     }
 
+    /// The health-receipt digest that the candidate must send as the last field of
+    /// `KELD-AB1` (KEL-53 §4 "Candidate connect-back", *Health records*): the §4 receipt
+    /// digest over this attempt's ID, its health-channel ID and its candidate's canonical
+    /// artifact identity, as journaled.
+    ///
+    /// It is the value that [`Self::accept_health`] records in `HealthAccepted` and that
+    /// recovery recomputes from the journal. The owner compares the candidate's `KELD-AB1`
+    /// with it. Only this accessor and the candidate-boot read expose the digest; its
+    /// derivation stays private to keld-update.
+    #[must_use]
+    pub const fn health_receipt_digest(&self) -> &[u8; 32] {
+        &self.health_receipt_digest
+    }
+
     /// Creates a non-writable, non-inheritable reference to this attempt's exact
     /// share-zero activation lease for the bounded lifecycle keeper.
     ///
@@ -363,21 +395,27 @@ impl WindowsActivationAttempt {
         super::duplicate_lifecycle_lease_retention(&self.transaction.lease)
     }
 
-    /// Durably records the exact health receipt, then commits the candidate as
-    /// last-known-good.
+    /// Durably records the exact health receipt: the first of the two health steps.
     ///
-    /// The prior last-known-good moves to `previous-known-good`, a superseded older
-    /// version (if any) is retired and the journal is removed, in that order.
+    /// It writes only the `HealthAccepted` journal, whose digest is
+    /// [`Self::health_receipt_digest`], and returns once that record is durable and read
+    /// back. That return is the point after which the owner may send `KELD-AK1` accepted
+    /// (KEL-53 §4 *Health sequence*): an owner lost before it leaves `AwaitingHealth`,
+    /// which recovery rolls back, and an owner lost after it leaves `HealthAccepted`,
+    /// which recovery commits. [`WindowsHealthAcceptedAttempt::complete`] is the second
+    /// step.
     ///
     /// # Errors
     /// A receipt for another attempt, channel or candidate refuses before any write.
-    /// Every refusal consumes the attempt and releases the lease; the journal stays
-    /// authoritative ([`ActivationEffect::JournalBoundRecoveryRequired`]) and recovery
-    /// rolls an unaccepted attempt back.
+    /// Every refusal consumes the attempt and releases the lease, and the journal stays
+    /// authoritative ([`ActivationEffect::JournalBoundRecoveryRequired`]): recovery rolls
+    /// the attempt back, or finishes the commit if the `HealthAccepted` record became
+    /// durable before the refusal. A caller that gets an error sends no `KELD-AK1`
+    /// accepted.
     pub fn accept_health(
         mut self,
         receipt: &ActivationHealthReceipt,
-    ) -> Result<WindowsActivationResolution, UpdateError> {
+    ) -> Result<WindowsHealthAcceptedAttempt, UpdateError> {
         let journal = &self.transaction.journal;
         if receipt.attempt_id != journal.attempt_id
             || receipt.health_channel_id != journal.health_channel_id
@@ -388,19 +426,15 @@ impl WindowsActivationAttempt {
                 "receipt does not name this exact attempt, health channel and candidate",
             ));
         }
-        let health_receipt_digest = records::activation_health_receipt_digest(
-            &receipt.attempt_id,
-            &receipt.health_channel_id,
-            &receipt.candidate,
-        )
-        .map_err(|cause| self.transaction.fault("health receipt digest", cause))?;
         self.transaction.write_phase(
             ActivationPhase::HealthAccepted {
-                health_receipt_digest,
+                health_receipt_digest: self.health_receipt_digest,
             },
             "health-accepted",
         )?;
-        self.transaction.run_to_resolution()
+        Ok(WindowsHealthAcceptedAttempt {
+            transaction: self.transaction,
+        })
     }
 
     /// Durably records the failure and restores the journaled rollback target.
@@ -423,6 +457,34 @@ impl WindowsActivationAttempt {
             ActivationPhase::RollbackPending { failure },
             "rollback-pending",
         )?;
+        self.transaction.run_to_resolution()
+    }
+}
+
+/// Live attempt whose `HealthAccepted` journal is durable, retaining the share-zero
+/// writer lease: the result of [`WindowsActivationAttempt::accept_health`].
+///
+/// Its only step is [`Self::complete`]. Dropping it without completion, or a refusal
+/// from that step, releases the lease and leaves the `HealthAccepted` journal
+/// authoritative; recovery then finishes the commit once the attempt's process family is
+/// proven retired. It is never rolled back.
+#[derive(Debug)]
+#[must_use = "call complete(); dropping releases the lease and leaves HealthAccepted for recovery"]
+pub struct WindowsHealthAcceptedAttempt {
+    transaction: Transaction,
+}
+
+impl WindowsHealthAcceptedAttempt {
+    /// Commits the candidate as last-known-good: the second health step.
+    ///
+    /// The prior last-known-good moves to `previous-known-good`, a superseded older
+    /// version (if any) is retired and the journal is removed, in that order.
+    ///
+    /// # Errors
+    /// A failed durable step refuses with
+    /// [`ActivationEffect::JournalBoundRecoveryRequired`]; the `HealthAccepted` journal
+    /// stays authoritative and recovery finishes the commit.
+    pub fn complete(self) -> Result<WindowsActivationResolution, UpdateError> {
         self.transaction.run_to_resolution()
     }
 }

@@ -111,7 +111,8 @@ pub(super) fn anchor_located(
     let located = installation.located().version;
     match records.journaled_helper_image {
         Some(journaled) => {
-            let actual = image_blake3(executable)?;
+            let actual =
+                super::image_blake3(executable).map_err(|cause| refusal("image digest", cause))?;
             if actual != journaled {
                 return Err(refusal(
                     "journaled image",
@@ -232,40 +233,6 @@ pub(super) fn require_machine_uac(
             ),
         ))
     }
-}
-
-/// BLAKE3 of every byte of the verified image, read with positioned reads through the
-/// verified handle and never by path. The handle shares no write access, so its length
-/// is fixed while it is held.
-fn image_blake3(image: &std::fs::File) -> Result<[u8; 32], UpdateError> {
-    use std::os::windows::fs::FileExt as _;
-
-    let length = image
-        .metadata()
-        .map_err(|cause| refusal("image digest", cause))?
-        .len();
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    let mut offset = 0_u64;
-    loop {
-        let read = image
-            .seek_read(&mut buffer, offset)
-            .map_err(|cause| refusal("image digest", cause))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        offset = offset
-            .checked_add(read as u64)
-            .ok_or_else(|| refusal("image digest", "image length overflows"))?;
-    }
-    if offset != length {
-        return Err(refusal(
-            "image digest",
-            format!("read {offset} bytes of a {length}-byte image"),
-        ));
-    }
-    Ok(*hasher.finalize().as_bytes())
 }
 
 fn refusal(step: &'static str, detail: impl std::fmt::Display) -> UpdateError {

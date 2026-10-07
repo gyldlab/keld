@@ -10,7 +10,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
   `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
-  `keld-pack` `src`, `keld-cli` templates, or workspace
+  `keld-pack` / `keld-updater-helper` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -680,6 +680,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: A Windows connect-back claimant was not the exact launched and retained candidate process
 - fix: No operator action for one refusal: the attempt owner disconnects that client and re-arms the endpoint, and a process that keeps connecting can at most cause a health timeout and the ordinary rollback. If the launched candidate itself is refused, report the refusal detail; do not weaken the process-object comparison.
 
+## KELD-RUNTIME-018
+
+- crate: keld-runtime
+- message: Restricting a Windows process's DLL search to System32 failed
+- fix: The process exits before loading any library or doing protected work; it never continues on the standard search path, which includes the current directory and PATH. Report the Windows error; the updater helper cannot run on a system that refuses `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
+
+## KELD-RUNTIME-019
+
+- crate: keld-runtime
+- message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process handle is retained
+- fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM or shell failure, report the detail. When the shell returned no process handle, or the handle could not report its process ID, an elevated helper may already be running unbound: close the bootstrap endpoint so that the helper's server check refuses and it exits without a protected write, then report the detail.
+
+## KELD-RUNTIME-020
+
+- crate: keld-runtime
+- message: The PerUserDirect candidate's same-token suspended launch, or an operation on its suspended child, failed
+- fix: Start no candidate in its place: end the attempt Job and roll the attempt back, and never resume a child whose creation, Job membership or launch record was not proved. Correct the reported program path, working directory, environment or creation failure before the next attempt.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
@@ -930,7 +948,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The common journaled activation transaction refused or could not confirm a step
-- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. Outside `MachineUacDirect`, with a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, nothing was read or written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved any activation journal, the pointers and the versions: start nothing, and follow the reported guidance, which names the recovery-only role of the elevated `keld-updater-helper.exe`; while this release does not provide that role, no supported resolution exists other than administrator action.
+- fix: Follow the reported effect. Without a journal, correct the refused input before a new attempt. Outside `MachineUacDirect`, with a journal, preserve it and the versions and continue only through journal-bound recovery under the writer lease. Resolved leftovers need no action. An unjournaled published version halts later writers until the explicit unjournaled-version repair retires it under the writer lease; an unknown or damaged entry that the repair refuses needs manual recovery. When a conflicting handle, normally the updater's exclusive writer lease, holds the activation lock, or an accepted connect-back candidate's boot read finds that the pending attempt is not the one whose owner accepted it, nothing was written: start nothing, and select again after that handle is released. When a `MachineUacDirect` startup reports that machine recovery is required, the ordinary process wrote nothing and preserved any activation journal, the pointers and the versions: start nothing, and follow the reported guidance, which names the recovery-only role of the elevated `keld-updater-helper.exe`; while this release does not provide that role, no supported resolution exists other than administrator action.
 
 ## KELD-UPDATE-017
 
@@ -1033,3 +1051,27 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-pack
 - message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
+
+## KELD-HELPER-001
+
+- crate: keld-updater-helper
+- message: keld-updater-helper.exe was not started on Windows with exactly one accepted argument
+- fix: It runs only on Windows and takes exactly one argument: keld-host.exe passes the activation rendezvous `\\.\pipe\keld-attempt-<64 lowercase hex>`, and keld-host.exe or an administrator passes `--recovery-role`. The argument conveys no authority, and the helper refuses before any open or write.
+
+## KELD-HELPER-002
+
+- crate: keld-updater-helper
+- message: The updater helper could not verify its own image through the KEL-135 Authenticode verifier, so it could not anchor itself
+- fix: Run only the signed keld-updater-helper.exe from its installation's protected version tree; repair or reinstall through the trusted installer if it is damaged.
+
+## KELD-HELPER-003
+
+- crate: keld-updater-helper
+- message: The updater helper's activation role is not available in this release; it refused after anchoring itself, before the writer lease and any write
+- fix: Nothing changed; keep running the current version. Activation through the updater helper ships with a later release.
+
+## KELD-HELPER-004
+
+- crate: keld-updater-helper
+- message: The updater helper's recovery-only role is disabled in this release (RecoveryDisabled); it refused after anchoring itself, before the writer lease and any write
+- fix: No supported resolution exists other than administrator action; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them.

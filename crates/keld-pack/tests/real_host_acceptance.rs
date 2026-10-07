@@ -8,6 +8,12 @@
 //! that output that the operator signed once on the KEL-135 signed-fixture path with the
 //! program name `keld.app-id/v1:com.example.app`, and runs every row through the single
 //! KEL-135 Authenticode verifier owner in `keld-guard`.
+//!
+//! The container spec's §1 helper amendment also runs these rows on the workspace-built
+//! release `keld-updater-helper.exe` (KEL-270 T4d S9c). The helper's AC2 row reads
+//! `KELD_PACK_REAL_HELPER` and writes `KELD_PACK_EMBEDDED_HELPER`. AC8 runs unchanged:
+//! `KELD_PACK_REAL_HOST` names the release helper, and `KELD_PACK_SIGNED_HOST` names a
+//! once-signed copy of its embedded output.
 #![cfg(windows)]
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 

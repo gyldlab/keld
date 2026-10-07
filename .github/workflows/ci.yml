@@ -336,6 +336,32 @@ jobs:
           out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 1 passed;' <<<"$out"
+      # KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c) on the workspace-built
+      # release helper: its import table, load flags and subsystem, and a copy started
+      # beside planted DLLs; then the KEL-19 container amendment's release-helper AC1 run
+      # of the round trip above, and its AC2 launch of the embedded unsigned helper, which
+      # needs no signature. Each test fails, never skips, without its variable.
+      - name: Real Windows release updater helper loader and container (KEL-53 T4d S9c)
+        if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
+        shell: bash
+        env:
+          KELD_UPDATER_HELPER_RELEASE: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_REAL_HELPER: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_EMBEDDED_HELPER: ${{ runner.temp }}/ac2-helper/keld-updater-helper.exe
+        run: |
+          set -euo pipefail
+          cargo build --release -p keld-updater-helper
+          out="$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)"
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 2 passed;' <<<"$out"
+          out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
+          mkdir -p "$RUNNER_TEMP/ac2-helper"
+          out="$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)"
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
       - name: rustdoc (warnings deny)
         if: matrix.os == 'ubuntu-latest'
         env:
@@ -474,6 +500,15 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
+      # KEL-53 §4: the elevated updater helper's edge set, with the helper as the sole
+      # graph root and the ban list its own deny.toml owns.
+      - name: Updater helper edge set (KEL-53 T4d S9c)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: crates/keld-updater-helper/Cargo.toml
+          arguments: --all-features --config crates/keld-updater-helper/deny.toml
+          command: check
+          command-arguments: bans
 
   secrets:
     name: gitleaks

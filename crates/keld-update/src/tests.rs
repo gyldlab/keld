@@ -977,6 +977,28 @@ fn activation_errors_name_what_remains_and_the_only_safe_next_action() {
     }
 }
 
+/// KEL-53 criterion 20 and "Candidate connect-back" (T4d slice S6b): `WriterActive` also
+/// covers the accepted candidate's boot read, which read records but wrote nothing.
+#[test]
+fn writer_active_names_the_candidate_boot_read_as_its_second_producer() {
+    let text = UpdateError::Activation {
+        step: "candidate attempt phase",
+        effect: crate::ActivationEffect::WriterActive,
+        detail: "the pending journal is HealthAccepted".to_owned(),
+    }
+    .to_string();
+    assert!(
+        text.ends_with(
+            "A conflicting handle, normally the updater's exclusive writer lease, holds the \
+             installation's activation lock, or an accepted candidate's boot read found that \
+             the pending attempt is not the one whose owner accepted it. Nothing was written, \
+             and outside that boot read nothing was read either; start nothing from this \
+             state, and select again only after that handle is released."
+        ),
+        "{text}"
+    );
+}
+
 /// KEL-53 criterion 17 (T4d slice S2): each closed Machine-UAC recovery guidance renders
 /// exactly one pinned fix-guidance text, byte for byte, after the shared activation prefix.
 #[test]
