@@ -36,7 +36,8 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use crate::WindowsPeerTokenFacts;
 use crate::attempt::{
-    WindowsAttemptEndpoint, WindowsAttemptEndpointError, WindowsPipeSecurityFact,
+    ConnectBackIds, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
+    WindowsAttemptEndpointSecurity, WindowsPipeSecurityFact,
 };
 use crate::bootstrap::random_test_locator;
 use crate::windows_named_pipe::current_process_query_token;
@@ -56,6 +57,25 @@ fn wide(value: &str) -> Vec<u16> {
 
 pub(super) fn random_attempt_name() -> io::Result<String> {
     Ok(format!(r"\\.\pipe\keld-attempt-{}", random_test_locator()?))
+}
+
+/// IDs for an endpoint that a test creates by name. They do not derive that
+/// name, so a claim on such an endpoint fails the claimant's locator check.
+pub(super) const UNRELATED_IDS: ConnectBackIds = ConnectBackIds {
+    installation: [0x11; 32],
+    attempt: [0x22; 32],
+    health_channel: [0x33; 32],
+};
+
+impl WindowsAttemptEndpoint {
+    /// Creates `endpoint` by name, bound to [`UNRELATED_IDS`], for the tests of
+    /// creation, readback and refusal that never claim it.
+    pub(super) fn create(
+        endpoint: &str,
+        security: &WindowsAttemptEndpointSecurity,
+    ) -> Result<Self, WindowsAttemptEndpointError> {
+        Self::create_named(endpoint, UNRELATED_IDS, security)
+    }
 }
 
 /// This process's own token facts, through the shared reader.

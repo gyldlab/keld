@@ -11,8 +11,9 @@
 //! record under the stream's own deadline. Class and result bytes are closed
 //! sets numbered from `1`, so a zeroed byte never decodes.
 //!
-//! This is the codec only; nothing exchanges these records yet (KEL-53 §6 S6).
-//! The bootstrap records `BH1` to `BO1` land with S11.
+//! This is the codec only. The claim and health exchange that sends and reads
+//! these records runs inside the endpoint and the client (`claim.rs`,
+//! `channel.rs`). The bootstrap records `BH1` to `BO1` land with S11.
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -143,7 +144,7 @@ impl AttemptReadPosition {
     /// The application starts only after `KELD-AB1`: a refused bootstrap read
     /// can only precede it, an application exit before Ready can only follow
     /// it, and a boot error can come on either side.
-    const fn admits_failure(self, class: AttemptFailureClass) -> bool {
+    pub(crate) const fn admits_failure(self, class: AttemptFailureClass) -> bool {
         use AttemptFailureClass as Class;
         matches!(
             (self, class),
@@ -318,11 +319,10 @@ impl AttemptChallenge {
 ///
 /// A transcript is the body that each side's acceptance check returns. The
 /// codec does not make it unforgeable: [`AttemptRecord::decode`] and
-/// [`AttemptRecord::read_from`] return any well-formed transcript, and either
-/// side can call [`Self::for_owner`]. KEL-53 §6 S6's client and server must
-/// send only the transcript that `for_claimant` (claimant) or `for_owner`
-/// (owner) returned, and the claimant must run `for_claimant` before it
-/// writes `KELD-AA1`.
+/// [`AttemptRecord::read_from`] return any well-formed transcript. The
+/// exchange (`claim.rs`) sends only the transcript that `for_claimant`
+/// (claimant) or `for_owner` (owner) returned, and the claimant runs
+/// `for_claimant` before it writes `KELD-AA1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptTranscript {
     installation_id: [u8; ID_LEN],
@@ -564,6 +564,20 @@ impl AttemptRecord {
             Self::Ready => AttemptRecordKind::Ready,
             Self::Failure(_) => AttemptRecordKind::Failure,
             Self::HealthResult(_) => AttemptRecordKind::HealthResult,
+        }
+    }
+
+    /// The refusal for this record read at `position`, which does not admit
+    /// it. A reader that names its position never returns such a record; the
+    /// exchange uses this where it matches the record that position admits.
+    #[cfg(windows)]
+    pub(crate) const fn not_admitted_at(
+        &self,
+        position: AttemptReadPosition,
+    ) -> AttemptRecordError {
+        AttemptRecordError::MagicNotAdmitted {
+            position,
+            magic: self.kind().magic(),
         }
     }
 

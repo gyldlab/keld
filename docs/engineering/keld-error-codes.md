@@ -128,6 +128,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: keld-attempt record I/O failed (end of file, read or write failure, or expired deadline)
 - fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
 
+## KELD-IPC-018
+
+- crate: keld-ipc
+- message: no keld-attempt claimant was accepted before the claim deadline; the endpoint is closed
+- fix: Roll the attempt back: health cannot commit, and refused claimants never extend this deadline.
+
+## KELD-IPC-019
+
+- crate: keld-ipc
+- message: keld-attempt exchange step refused out of order; nothing was sent or read
+- fix: Follow the KEL-53 health sequence: the claim, KELD-AB1, KELD-AY1 (or KELD-AF1), the owner's health window, then one KELD-AK1; after a failure the owner only rolls back and the candidate never arms.
+
+## KELD-IPC-020
+
+- crate: keld-ipc
+- message: keld-attempt health not proven (the candidate reported KELD-AF1, or the owner's health window saw a byte, end of file, or an exited or unreadable launched process)
+- fix: The owner cannot commit health: roll the attempt back, writing KELD-AK1 rolled back once while the connection is still open, then end the candidate family.
+
+## KELD-IPC-021
+
+- crate: keld-ipc
+- message: keld-attempt health rolled back by the owner (KELD-AK1 result 2)
+- fix: Never arm the recovery gate: end the host on any later application-generation exit.
+
 ## KELD-WV-001
 
 - crate: keld-wv

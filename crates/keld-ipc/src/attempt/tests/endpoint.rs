@@ -15,13 +15,14 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Pipes::PIPE_REJECT_REMOTE_CLIENTS;
 
 use super::oracle::{
-    LABEL, MASK, READBACK_LABEL, SQUAT, Squat, endpoint_sddl, independent_handle_and_pipe_flags,
-    mismatch_fact, own_token_facts, own_user_sid_bytes, own_user_sid_text, probe_exists,
-    random_attempt_name, soon, squat,
+    LABEL, MASK, READBACK_LABEL, SQUAT, Squat, UNRELATED_IDS, endpoint_sddl,
+    independent_handle_and_pipe_flags, mismatch_fact, own_token_facts, own_user_sid_bytes,
+    own_user_sid_text, probe_exists, random_attempt_name, soon, squat,
 };
 use crate::attempt::{
     WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
-    WindowsAttemptEndpointSecurity, WindowsPipeSecurityFact,
+    WindowsAttemptEndpointSecurity, WindowsAttemptLocatorError, WindowsAttemptLocatorInput,
+    WindowsPipeSecurityFact,
 };
 use crate::windows_named_pipe::{
     PipeSecuritySections, WindowsNamedPipeServer, read_pipe_descriptor,
@@ -282,7 +283,7 @@ fn owner_refuses_and_closes_an_instance_whose_readback_deviates() -> io::Result<
     let deviating: LocalBox<SecurityDescriptor> =
         format!("O:{user}D:P(A;;{MASK};;;{user})").parse()?;
     let name = random_attempt_name()?;
-    let error = WindowsAttemptEndpoint::create_from(&name, &security, &deviating)
+    let error = WindowsAttemptEndpoint::create_from(&name, UNRELATED_IDS, &security, &deviating)
         .expect_err("a deviating readback must not be admitted");
     assert_eq!(mismatch_fact(error), WindowsPipeSecurityFact::Label);
     let absent = probe_exists(&name).expect_err("the refused instance is closed");
@@ -369,6 +370,13 @@ fn every_error_names_its_code_and_fix() {
             },
             "KELD-IPC-013",
             "own session",
+        ),
+        (
+            WindowsAttemptEndpointError::Locator(WindowsAttemptLocatorError::ZeroInput {
+                input: WindowsAttemptLocatorInput::AttemptId,
+            }),
+            "KELD-IPC-014",
+            "keld-update minted",
         ),
     ];
     for (error, code, fix) in cases {
