@@ -18,7 +18,8 @@ errata.
 Post-approval amendment (2026-10-07, KEL-270 T4d S9; Coordination record, Linear
 KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): §1 replaces the
 non-goal that excluded `keld-updater-helper.exe`. Container v1 applies to that helper
-unchanged, and AC1, AC2 and AC8 also run on the release helper.
+unchanged, and AC1, AC2 and AC8 also run on the release helper; the `keld build` order,
+T3 and rows 11–13 still cover only `keld-host.exe` until a later amendment (§1).
 Owner decisions: the two product questions of the first draft (the packaging-input host
 form and the app-id dual carrier) were decided by the owner on 2026-10-05 and recorded
 by Linear KEL-19 comment `eebf7987-6c56-4fd5-9ad3-4d7096d055a6`; §4 "Owner decisions
@@ -71,7 +72,18 @@ Non-goals:
   lands before KEL-53 T4d slice S9a, whose self-anchor is the first reader of the helper
   payload. The release-helper rows run from slice S9c, which first builds the helper,
   and no self-anchor acceptance on a real signed helper is claimed before its AC2 and
-  AC8 rows pass;
+  AC8 rows pass. This amendment does not extend §4 "`keld build` order" (steps 1, 2, 5,
+  6 and 7), T3 or rows 11–13 to the helper; they still cover only `keld-host.exe`. A
+  later amendment of this spec, approved before any `keld build` output contains
+  `keld-updater-helper.exe`, requires Keld to publish the unsigned helper with its own
+  authenticated SHA-256 (T3 prerequisite (b)), `keld build` to verify it before
+  embedding, and the post-sign check to run on the signed helper. The messages and fix
+  guidance of `KELD-PACK-005` to `KELD-PACK-012`, `KELD-UPDATE-017` and
+  `KELD-UPDATE-019` (§4 "Proposed typed errors" and the landed `keld-pack` and
+  `keld-update` texts) name only the host; KEL-53 T4d slice S9a generalizes these texts
+  to name the failing image, adding no variant, code path or error code. The
+  release-helper AC1 run also triggers on `keld-updater-helper` changes, beside the §5
+  step's `keld-pack` and `keld-host` triggers;
 - no macOS or Linux container: neither platform has an installed-root successor (A3 AC2);
 - no fallback carrier: a host without the container is refused, never read from a
   sidecar, resource, environment value or path;
