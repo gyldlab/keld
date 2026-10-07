@@ -87,9 +87,9 @@ scorer and parser (task T2). "v1 manifest" means a manifest carrying
    `implementing_ticket`. `implementing_ticket` matches `GH-` or `KEL-` plus decimal
    digits. The mapped test passes execution admission. *Negative control:* deleting
    `implementing_ticket` from a red fixture cell is rejected (a `fail` cell with
-   neither key). So is a red cell that carries both keys, and so is a red cell that
-   reuses `intentional_divergence` with no implementing-ticket key. The last one is
-   validated as a divergence cell and is reported as a scoreboard ▲, never as pending
+   neither key), and so is a red cell that carries both keys. *Positive control:* a
+   red cell with only `intentional_divergence` and no implementing-ticket key is
+   accepted as a divergence cell and reported as a scoreboard ▲, never as pending
    work.
 5. **Flip.** Given the implementing change for a red cell, when the validator runs,
    then the cell has `expected_verdict: pass`, has no `implementing_ticket`, and its
