@@ -317,8 +317,11 @@ negative control: the one mutation that MUST make the test fail.
 29. **Credit shares are never empty (T4).** Given credit enabled with 2 credited
     channels, `ringRecords = 3` makes `WorkerLink.open` throw `KELD-IPC-005` before
     the Worker spawns (the uncredited share would be 0 records), and `ringRecords = 8`
-    opens with shares of 2, 3 and 3 records. *Negative control:* removing the
-    empty-share check makes the `ringRecords = 3` open succeed, so the test fails.
+    opens with shares of 2, 3 and 3 records. Credit enabled with an empty
+    `eventChannels` set (`n = 0`) also throws `KELD-IPC-005` before the Worker
+    spawns. *Negative control:* removing the empty-share check makes the
+    `ringRecords = 3` open succeed, and removing the `n = 0` check makes that open
+    divide by zero instead of throwing 005, so the test fails.
 
 ## 4. Design
 
@@ -841,7 +844,8 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   `floor((ringBytes - floor(ringBytes / 4)) / n)` bytes and
   `floor((ringRecords - floor(ringRecords / 4)) / n)` records; any remainder is
   unused. With the credit lane enabled, `WorkerLink.open` throws `KELD-IPC-005` before
-  the Worker spawns when any share would be 0 records or smaller than one
+  computing shares when there are no credited channels (`n = 0`), and before the
+  Worker spawns when any share would be 0 records or smaller than one
   `16 + 1`-byte envelope (criterion 29). The first
   `GRANT` per channel declares that channel's window: both fields MUST be nonzero, and
   the host records them as the channel's maximum outstanding credit. The Worker writes
