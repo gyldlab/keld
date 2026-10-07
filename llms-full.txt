@@ -5754,6 +5754,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: A Windows connect-back claimant was not the exact launched and retained candidate process
 - fix: No operator action for one refusal: the attempt owner disconnects that client and re-arms the endpoint, and a process that keeps connecting can at most cause a health timeout and the ordinary rollback. If the launched candidate itself is refused, report the refusal detail; do not weaken the process-object comparison.
 
+## KELD-RUNTIME-018
+
+- crate: keld-runtime
+- message: Restricting a Windows process's DLL search to System32 failed
+- fix: The process exits before loading any library or doing protected work; it never continues on the standard search path, which includes the current directory and PATH. Report the Windows error; the updater helper cannot run on a system that refuses `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
+
+## KELD-RUNTIME-019
+
+- crate: keld-runtime
+- message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process handle is retained
+- fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM or shell failure, report the detail. When the shell returned no process handle, or the handle could not report its process ID, an elevated helper may already be running unbound: close the bootstrap endpoint so that the helper's server check refuses and it exits without a protected write, then report the detail.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

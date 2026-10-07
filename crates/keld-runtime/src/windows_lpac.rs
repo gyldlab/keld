@@ -938,12 +938,20 @@ fn encode_environment(environment: &[(OsString, OsString)]) -> Result<Vec<u16>, 
 }
 
 fn wide_nul(value: &OsStr, phase: &'static str) -> Result<Vec<u16>, WindowsLpacError> {
+    nul_terminated_wide(value)
+        .ok_or_else(|| WindowsLpacError::contract(phase, "value contains NUL"))
+}
+
+/// Encodes `value` as NUL-terminated UTF-16 for a Win32 string parameter, or
+/// returns `None` when it contains a NUL, which Windows would read as an
+/// earlier end of the string.
+pub(crate) fn nul_terminated_wide(value: &OsStr) -> Option<Vec<u16>> {
     let mut encoded: Vec<u16> = value.encode_wide().collect();
     if encoded.contains(&0) {
-        return Err(WindowsLpacError::contract(phase, "value contains NUL"));
+        return None;
     }
     encoded.push(0);
-    Ok(encoded)
+    Some(encoded)
 }
 
 #[cfg(test)]
@@ -978,5 +986,16 @@ mod tests {
             std::io::Error::last_os_error()
         );
         flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    #[test]
+    fn nul_terminated_wide_appends_one_terminator_and_refuses_an_interior_nul() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            super::nul_terminated_wide(OsStr::new("ab")),
+            Some(vec![u16::from(b'a'), u16::from(b'b'), 0])
+        );
+        assert_eq!(super::nul_terminated_wide(OsStr::new("")), Some(vec![0]));
+        assert_eq!(super::nul_terminated_wide(OsStr::new("a\0b")), None);
     }
 }
