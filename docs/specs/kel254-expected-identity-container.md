@@ -1,6 +1,6 @@
 # Spec: ExpectedAppIdentity Windows host container and writer
 Status: approved
-Linear: KEL-19 (packaging work: container and writer) · related KEL-254 amendment A3 and KEL-96 T3 Part B · Owner: GYLDLAB · Updated: 2026-10-06
+Linear: KEL-19 (packaging work: container and writer) · related KEL-254 amendment A3 and KEL-96 T3 Part B · Owner: GYLDLAB · Updated: 2026-10-07
 Approval: exact content approved by Linear KEL-19 owner approval comment
 `9ac5ecb2-7bd1-4805-80d4-460fd89e553b` (2026-10-06), binding PR #382 head
 `213834b1a6dc1a51fccc7a9ac05ac07b7ce1d247` and the approved spec-content SHA-256
@@ -15,6 +15,11 @@ section, or a section whose `VirtualSize` is 0 is `KELD-PACK-006`, and a contain
 is the only section, or a failed writer read-back, is `KELD-PACK-011`. The SHA-256 above
 binds the PR #382 head only; this file differs from it by the approval receipt and these
 errata.
+Post-approval amendment (2026-10-07, KEL-270 T4d S9; Coordination record, Linear
+KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): §1 replaces the
+non-goal that excluded `keld-updater-helper.exe`. Container v1 applies to that helper
+unchanged, and AC1, AC2 and AC8 also run on the release helper; the `keld build` order,
+T3 and rows 11–13 still cover only `keld-host.exe` until a later amendment (§1).
 Owner decisions: the two product questions of the first draft (the packaging-input host
 form and the app-id dual carrier) were decided by the owner on 2026-10-05 and recorded
 by Linear KEL-19 comment `eebf7987-6c56-4fd5-9ad3-4d7096d055a6`; §4 "Owner decisions
@@ -50,12 +55,39 @@ Non-goals:
   or signing-tool selection; those stay with the `keld build` signing step (Architecture
   06 §3);
 - no installer, update-feed, `produce_windows_v0` or KEL-53 record change;
-- no embedding into `keld-updater-helper.exe`: this spec covers `keld-host.exe` only.
-  The KEL-270 T4d draft also expects KEL-19's writer to embed the helper's own
-  `ExpectedAppIdentity` before the helper's final signature (branch
-  `agent/kel-270-t4d-uac-spec-v2`, committed head `8562776`,
-  `kel53-full-package-activation.md` lines 918–920); that needs a later amendment to
-  this spec when T4d slice S9 lands;
+- no second container format, writer or reader for `keld-updater-helper.exe`.
+  Amendment (Coordination record, Linear KEL-270 comment
+  `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): container v1, its writer and both
+  readers apply unchanged to the KEL-53 T4d updater helper `keld-updater-helper.exe`.
+  The helper carries its own `ExpectedAppIdentity` payload, which this writer embeds
+  before the helper's final Authenticode signature and which the helper reads through
+  `ExpectedAppIdentity::from_signed_image` on its own verified handle
+  (`kel53-full-package-activation.md` "Helper launch and self-anchor"). The writer and
+  the readers take image bytes or an open handle and no image name, so the helper adds
+  no format, code path or error code. Three rows also run on the workspace-built release
+  helper: AC1, through a release-helper run of the §5 `ci.yml` mechanism; AC2, where the
+  embedded unsigned helper, started with its `--recovery-role` argument outside any
+  installation, must start and exit with its own typed self-anchor refusal instead of
+  `KELD-WV-009`, and a loader rejection fails the row; and AC8 unchanged. This amendment
+  lands before KEL-53 T4d slice S9a, whose self-anchor is the first reader of the helper
+  payload. The release-helper rows run from slice S9c, which first builds the helper,
+  and no self-anchor acceptance on a real signed helper is claimed before its AC2 and
+  AC8 rows pass. This amendment does not extend §4 "`keld build` order" (steps 1, 2, 5,
+  6 and 7), T3 or rows 11–13 to the helper; they still cover only `keld-host.exe`. Once
+  KEL-53 T4d slice S9a makes `produce_windows_v0` require exactly one root
+  `keld-updater-helper.exe`, a `keld build` that follows only these steps refuses before
+  any Windows package output, through that producer check, and never emits a package
+  without the helper until the later amendment below lands. A
+  later amendment of this spec, approved before any `keld build` output contains
+  `keld-updater-helper.exe`, requires Keld to publish the unsigned helper with its own
+  authenticated SHA-256 (T3 prerequisite (b)), `keld build` to verify it before
+  embedding, and the post-sign check to run on the signed helper. The messages and fix
+  guidance of `KELD-PACK-005` to `KELD-PACK-012`, `KELD-UPDATE-017` and
+  `KELD-UPDATE-019` (§4 "Proposed typed errors" and the landed `keld-pack` and
+  `keld-update` texts) name only the host; KEL-53 T4d slice S9a generalizes these texts
+  to name the failing image, adding no variant, code path or error code. The
+  release-helper AC1 run also triggers on `keld-updater-helper` changes, beside the §5
+  step's `keld-pack` and `keld-host` triggers;
 - no macOS or Linux container: neither platform has an installed-root successor (A3 AC2);
 - no fallback carrier: a host without the container is refused, never read from a
   sidecar, resource, environment value or path;

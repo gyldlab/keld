@@ -30,8 +30,8 @@ owner-loss retirement). Three of these edits lie inside A3's approved §4: the
 active-selection atom row, the active-resolver sentence in the reuse decision, and the
 helper sentence after the executable-located rule. The third changes landed code, not
 only text: the landed
-locator has a fixed `HOST` constant (`crates/keld-update/src/windows_baseline/locate.rs:21`),
-which KEL-53 T4d slice S9 replaces with a closed choice of the two image names, a
+locator has a fixed `HOST` constant (`crates/keld-update/src/windows_baseline/locate.rs:22`),
+which KEL-53 T4d slice S9a replaces with a closed choice of the two image names, a
 public-API change of the executable-located entry point under KEL-53's public-API gate,
 owned by KEL-53. These sentences carry no approval from A3 or from the earlier
 revisions; their exact content was approved with the KEL-53 T4d amendment by owner
@@ -561,9 +561,10 @@ at most create a `PerUserDirect` record in its own owner-private directory, whic
 within the documented same-user exclusion and grants nothing a genuine per-user install
 does not. KEL-53 refuses unless the record matches that expectation, and
 KEL-96 independently requires the record's publisher scope and app id to equal the
-KEL-135 Authenticode identity of the same executable. The entrypoint reads no
-environment payload or argv for authority. In T2b it is journal-free: like the landed
-`select_windows_active_package`, it refuses any pending journal with
+KEL-135 Authenticode identity of the same executable; from KEL-53 T4d S9a it does so
+through the `keld-update` owner of that rule, which the host calls. The entrypoint
+reads no environment payload or argv for authority. In T2b it is journal-free: like the
+landed `select_windows_active_package`, it refuses any pending journal with
 `JournalBoundRecoveryRequired`, and in `MachineUacDirect` with KEL-53's typed
 `MachineRecoveryRequired` instead (KEL-53 "Machine-UAC recovery-required state and
 recovery-only role"). It repairs an invalid `current` only when the located
