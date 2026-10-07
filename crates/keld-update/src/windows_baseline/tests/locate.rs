@@ -115,6 +115,8 @@ pub(super) fn select_from(
         &path,
         &executable,
         &expected_for(trust),
+        &trust.publisher_scope,
+        &trust.installation.app_id,
     )
 }
 
@@ -136,7 +138,8 @@ pub(super) fn refuses(
     )
 }
 
-/// A selection located from `image` that must refuse and write nothing.
+/// A selection located from `image`, presenting the recorded signer, that must refuse
+/// and write nothing.
 pub(super) fn refuses_as(
     image: WindowsLocatedImage,
     trust: &WindowsBaselineTrust,
@@ -145,9 +148,26 @@ pub(super) fn refuses_as(
     expected: &ExpectedAppIdentity,
     why: &str,
 ) -> UpdateError {
+    let signer = (&trust.publisher_scope, trust.installation.app_id.as_str());
+    refuses_signed_by(signer, image, trust, locator, executable, expected, why)
+}
+
+/// A selection presenting `signer` as the verified signer that must refuse and write
+/// nothing.
+fn refuses_signed_by(
+    signer: (&[u8; 32], &str),
+    image: WindowsLocatedImage,
+    trust: &WindowsBaselineTrust,
+    locator: &Path,
+    executable: &std::fs::File,
+    expected: &ExpectedAppIdentity,
+    why: &str,
+) -> UpdateError {
     let before = state(trust);
-    let error =
-        select_active_package_for_executable(image, locator, executable, expected).expect_err(why);
+    let error = select_active_package_for_executable(
+        image, locator, executable, expected, signer.0, signer.1,
+    )
+    .expect_err(why);
     assert_eq!(state(trust), before, "{why}: the refusal writes nothing");
     error
 }
@@ -174,7 +194,10 @@ pub(super) fn baseline_step(error: &UpdateError) -> &'static str {
     }
 }
 
-fn rewrite_provenance(trust: &WindowsBaselineTrust, edit: impl FnOnce(&mut WindowsBaselineTrust)) {
+pub(super) fn rewrite_provenance(
+    trust: &WindowsBaselineTrust,
+    edit: impl FnOnce(&mut WindowsBaselineTrust),
+) {
     let mut recorded = trust.clone();
     edit(&mut recorded);
     let bytes = crate::records::encode_provenance(
@@ -482,6 +505,8 @@ fn the_updater_helper_image_locates_and_selects_its_installation() {
         &locator,
         &executable,
         &expected_for(&install.trust),
+        &install.trust.publisher_scope,
+        &install.trust.installation.app_id,
     )
     .expect("the tree's updater helper locates the installation that holds it");
     assert_eq!(selection.artifact().version, "1.0.0");
@@ -561,6 +586,110 @@ fn each_image_binds_only_its_own_file() {
         );
         assert_eq!(binding_image(&error), image, "{why}");
     }
+}
+
+#[test]
+fn the_record_must_name_the_verified_publisher_and_app() {
+    // The rule moved from keld-core (KEL-270 T4d S9a) keeps its two refusals' details.
+    let mut trust = WindowsBaselineTrust {
+        installation: crate::tests::expected_identity(),
+        owner: crate::InstallOwner::Direct,
+        publisher_scope: [9; 32],
+        volume_guid: String::new(),
+    };
+    "com.example.app".clone_into(&mut trust.installation.app_id);
+    trust
+        .require_verified_signer(&[9; 32], "com.example.app")
+        .expect("the record names the verified publisher and app");
+    for (scope, app_id, detail) in [
+        (
+            [8; 32],
+            "com.example.app",
+            "the installation's protected provenance records a different publisher than the verified signer",
+        ),
+        (
+            [9; 32],
+            "com.example.other",
+            "the installation's protected provenance records app id `com.example.app`, not the verified `com.example.other`",
+        ),
+    ] {
+        let error = trust
+            .require_verified_signer(&scope, app_id)
+            .expect_err("a signer the record does not name refuses");
+        assert_eq!(error.code(), "KELD-UPDATE-020");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "KELD-UPDATE-020: verified signer refused ({detail}). Reinstall the package from the publisher its installer recorded, signed for the app it recorded; an executable signed by another publisher or for another app never runs against this installation."
+            )
+        );
+    }
+}
+
+#[test]
+fn a_signer_the_record_does_not_name_refuses_before_the_snapshot_lease() {
+    let install = installed();
+    let locator = host_path(&install.trust, "1.0.0");
+    let executable = open_image(&locator);
+    let expected = expected_for(&install.trust);
+    // A held writer lease would make any snapshot reader report `WriterActive`.
+    let writer = crate::windows_baseline::load_windows_activation_write_snapshot(
+        &install.trust,
+        &super::transaction::verifier(&install.trust),
+    )
+    .expect("hold the exclusive writer lease");
+    let app_id = install.trust.installation.app_id.clone();
+    for (why, scope, verified_app) in [
+        ("another publisher", [0x08; 32], app_id.as_str()),
+        (
+            "another app",
+            install.trust.publisher_scope,
+            "dev.keld.other",
+        ),
+    ] {
+        let error = refuses_signed_by(
+            (&scope, verified_app),
+            WindowsLocatedImage::Host,
+            &install.trust,
+            &locator,
+            &executable,
+            &expected,
+            why,
+        );
+        assert_eq!(error.code(), "KELD-UPDATE-020", "{why}: {error}");
+        assert!(
+            matches!(error, UpdateError::RecordedSignerMismatch { .. }),
+            "{why}: {error:?}"
+        );
+    }
+    drop(writer);
+}
+
+#[test]
+fn a_signer_the_record_does_not_name_never_repairs_current() {
+    let install = installed();
+    commit_with(&install.trust, "2.0.0", &install.content);
+    let current = install.trust.installation.update_root.join("current");
+    std::fs::write(&current, b"not a pointer").expect("invalidate current");
+    // The last-known-good host would repair `current` if its signer were recorded.
+    let locator = host_path(&install.trust, "2.0.0");
+    let executable = open_image(&locator);
+    let error = refuses_signed_by(
+        (&[0x08; 32], install.trust.installation.app_id.as_str()),
+        WindowsLocatedImage::Host,
+        &install.trust,
+        &locator,
+        &executable,
+        &expected_for(&install.trust),
+        "another publisher's host must not repair current",
+    );
+    assert_eq!(error.code(), "KELD-UPDATE-020", "{error}");
+    assert_eq!(
+        std::fs::read(&current).expect("current bytes"),
+        b"not a pointer"
+    );
+    drop(executable);
+    select_from(&install.trust, "2.0.0").expect("the recorded signer's host still repairs");
 }
 
 #[test]

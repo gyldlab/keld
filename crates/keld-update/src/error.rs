@@ -347,6 +347,20 @@ pub enum UpdateError {
         /// The keld-pack refusal message, beginning with that code.
         detail: String,
     },
+    /// The verified signer of an installed executable is not the publisher or the app that
+    /// the installation's protected provenance records.
+    RecordedSignerMismatch {
+        /// Which recorded fact differs from the verified signer.
+        detail: String,
+    },
+    /// The updater helper refused to anchor itself to its installation before any lease
+    /// or write, or its image was not derived for a launch.
+    UpdaterHelper {
+        /// Boundary that refused.
+        step: &'static str,
+        /// Non-secret failure detail.
+        detail: String,
+    },
     /// The common journaled activation transaction refused or could not confirm a step.
     Activation {
         /// Transaction boundary that refused the operation.
@@ -409,6 +423,8 @@ impl UpdateError {
             Self::ExpectedIdentityInvalid { .. } => "KELD-UPDATE-017",
             Self::ExecutableBinding { .. } => "KELD-UPDATE-018",
             Self::ExpectedIdentityContainer { .. } => "KELD-UPDATE-019",
+            Self::RecordedSignerMismatch { .. } => "KELD-UPDATE-020",
+            Self::UpdaterHelper { .. } => "KELD-UPDATE-021",
         }
     }
 }
@@ -453,6 +469,8 @@ impl fmt::Display for UpdateError {
             } => fmt_binding_error(f, *image, step, detail),
             Self::ExpectedIdentityInvalid { detail } => fmt_expectation_error(f, detail),
             Self::ExpectedIdentityContainer { detail, .. } => fmt_container_error(f, detail),
+            Self::RecordedSignerMismatch { detail } => fmt_signer_error(f, detail),
+            Self::UpdaterHelper { step, detail } => fmt_helper_error(f, step, detail),
             Self::ManifestInvalid { detail } => write!(
                 f,
                 "KELD-UPDATE-005: authenticated update manifest is not valid v0 ({detail}). Publish one closed, duplicate-free v0 manifest with canonical fields."
@@ -540,6 +558,20 @@ fn fmt_container_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result 
     write!(
         f,
         "KELD-UPDATE-019: the signed host's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container."
+    )
+}
+
+fn fmt_signer_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-020: verified signer refused ({detail}). Reinstall the package from the publisher its installer recorded, signed for the app it recorded; an executable signed by another publisher or for another app never runs against this installation."
+    )
+}
+
+fn fmt_helper_error(f: &mut fmt::Formatter<'_>, step: &str, detail: &str) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-021: updater helper {step} refused ({detail}). Only a MachineUacDirect installation runs keld-updater-helper.exe, and only its journaled image or the image of the version its role requires; start nothing in its place, and repair or reinstall through the trusted installer if the installation is damaged."
     )
 }
 

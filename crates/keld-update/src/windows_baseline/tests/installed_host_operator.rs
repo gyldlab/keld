@@ -180,6 +180,8 @@ fn kel254_per_user_install_fixture() {
     fs::remove_file(&archive).expect("remove the baseline source");
 
     // The installed host's own container selects its installation, as the host will.
+    // This fixture check presents the recorded signer; the keld-host rows present the
+    // signer that verification of the installed host proves.
     let installed = host_path(&trust, &trust.installation.baseline.version);
     let image = open_image(&installed);
     let expected = ExpectedAppIdentity::from_signed_image(&image)
@@ -189,6 +191,8 @@ fn kel254_per_user_install_fixture() {
         &installed,
         &image,
         &expected,
+        &publisher_scope,
+        &app_id,
     )
     .expect("the installed host selects its installation");
     assert_eq!(selection.publisher_scope(), &publisher_scope);

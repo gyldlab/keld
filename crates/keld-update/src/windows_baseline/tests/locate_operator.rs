@@ -356,6 +356,8 @@ fn an_executable_on_a_non_ntfs_volume_refuses_before_any_installation_read() {
         &locator,
         &executable,
         &expected_for_identity(&crate::tests::expected_identity()),
+        &[0x26; 32],
+        &crate::tests::expected_identity().app_id,
     )
     .expect_err("an executable on a non-NTFS volume refuses");
     assert_eq!(binding_step(&error), "executable volume", "{error}");

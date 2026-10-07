@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod activate;
+mod helper;
 mod initialize;
 mod load;
 mod locate;
@@ -32,6 +33,7 @@ pub use activate::{
     WindowsActivationOutcome, WindowsActivationResolution, WindowsJournaledAttempt,
     WindowsMintedAttempt, WindowsRecoveryOutcome,
 };
+pub use helper::{UpdaterHelperAnchor, UpdaterHelperRole, anchor_updater_helper};
 pub use initialize::{
     initialize_windows_baseline, initialize_windows_machine_uac_baseline,
     initialize_windows_per_user_baseline,
@@ -71,6 +73,32 @@ impl WindowsBaselineTrust {
                 mechanism: mechanism.clone(),
             }),
         }
+    }
+
+    /// Requires this record to name exactly the publisher scope and app id that the single
+    /// `keld-guard` Authenticode owner verified for the running image (KEL-254 AC11; KEL-53
+    /// "Helper launch and self-anchor"): signature success never runs an executable
+    /// against another publisher's or another app's installation. The one owner of this
+    /// rule for both `keld-host.exe` and `keld-updater-helper.exe`.
+    fn require_verified_signer(
+        &self,
+        publisher_scope: &[u8; 32],
+        app_id: &str,
+    ) -> Result<(), UpdateError> {
+        if *publisher_scope != self.publisher_scope {
+            return Err(UpdateError::RecordedSignerMismatch {
+                detail: "the installation's protected provenance records a different publisher than the verified signer".to_owned(),
+            });
+        }
+        if app_id != self.installation.app_id {
+            return Err(UpdateError::RecordedSignerMismatch {
+                detail: format!(
+                    "the installation's protected provenance records app id `{}`, not the verified `{app_id}`",
+                    self.installation.app_id
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Derives the lifecycle installation ID expected from this trusted install choice.
@@ -163,8 +191,8 @@ impl LoadedWindowsBaseline {
 /// renamed or retired while the application runs from it. It holds no mutable-record
 /// handle and no activation lease, grants no updater authority, and does not authenticate
 /// the host executable or boot files; those remain with their own owners (KEL-254,
-/// KEL-96), which compare [`Self::install_identity`] and [`Self::publisher_scope`] with
-/// the verified image identity.
+/// KEL-96). [`select_active_package_for_executable`] requires the record to name the
+/// verified signer's publisher scope and app id before it selects.
 #[derive(Debug)]
 pub struct ActivePackageSelection {
     identity: DirectInstallationIdentity,

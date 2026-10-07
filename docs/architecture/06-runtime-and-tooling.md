@@ -485,7 +485,7 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   journal-bound and a lease sharing conflict (normally the held writer lease) as
   `WriterActive`, and keeps the selected version,
   its tree and the protected ancestry pinned. It carries the protected installation
-  identity and publisher scope for the host's comparison with the verified image. When the
+  identity and publisher scope. When the
   `current` record is absent or does not decode, a `PerUserDirect` selection republishes
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
@@ -499,9 +499,16 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   and its payload codec, the KEL-19 `.keldeai` host container (T1) and its boot-time
   reader `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and
   the KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
-  through `keld-guard`, reads the expectation from that pinned handle, selects its
-  installation and requires the record's publisher and app id to equal the verified
-  identity before any listener, child or window. No `keld build` step embeds the
+  through `keld-guard`, reads the expectation from that pinned handle and selects its
+  installation before any listener, child or window. The entrypoint takes a closed image
+  choice, `keld-host.exe` or `keld-updater-helper.exe`, and the verified signer, and
+  `keld-update` requires the record's publisher scope and app id to equal that signer
+  before the snapshot lease, the one rule for both images (KEL-53 T4d S9a). The same
+  locator anchors the elevated helper itself: `anchor_updater_helper` reads the helper's
+  own expectation, refuses every mode but `MachineUacDirect`, applies the signer rule and
+  requires its own image to be the journaled one or, without a journal, its role's
+  version (`current` for activation, last-known-good for recovery), all before the writer
+  lease or any write. No `keld build` step embeds the
   container yet (KEL-19 T3). Live feed orchestration, host candidate launch, the private
   health channel and its 30-second `Ready` observation, installed-host lifecycle
   composition and candidate-mode selection remain unimplemented. Planned Windows

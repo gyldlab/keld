@@ -422,6 +422,37 @@ pub(super) fn validate_current_repair_source(
     Ok(())
 }
 
+/// What the updater helper's self-anchor reads in one snapshot under the shared lease
+/// (KEL-53 "Helper launch and self-anchor").
+pub(super) struct AnchorRecords {
+    /// The pending activation journal's `helper_image_blake3`, when a journal exists.
+    pub(super) journaled_helper_image: Option<[u8; 32]>,
+    /// The `current` pointer, or why it is absent or does not decode.
+    pub(super) current: Result<crate::ArtifactIdentity, UpdateError>,
+    /// The last-known-good pointer.
+    pub(super) last_known_good: crate::ArtifactIdentity,
+}
+
+/// Reads, under the shared snapshot lease, the record bound to `trust` and the activation
+/// records the self-anchor decides on, admitting a pending journal of any phase. It
+/// writes nothing and closes the lease and every record before it returns.
+pub(super) fn read_anchor_records(
+    trust: &WindowsBaselineTrust,
+) -> Result<AnchorRecords, UpdateError> {
+    let roots =
+        open_roots(trust, false).map_err(|cause| error("self-anchor root admission", cause))?;
+    let lease = super::open_activation_lease(&roots.update, roots.profile(), false)
+        .map_err(|cause| lease_error("self-anchor snapshot lease", &cause))?;
+    drop(read_writer_provenance(trust, &roots)?);
+    let records = read_records(&roots, true)?;
+    drop(lease);
+    Ok(AnchorRecords {
+        journaled_helper_image: records.journal.map(|journal| journal.helper_image_blake3),
+        current: records.current,
+        last_known_good: records.last_known_good,
+    })
+}
+
 /// Checks one immutable tree's signed no-migration policy (KEL-53 criterion 13): the
 /// exact `.keld/update-policy.v1` bytes owned by `keld-pack`. An absent, unprotected or
 /// changed policy refuses before launch.

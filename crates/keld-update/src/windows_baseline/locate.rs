@@ -36,6 +36,11 @@ const PROVENANCE: &str = "install-provenance";
 /// serial number and file ID on the fixed NTFS volume whose GUID the record carries; and
 /// the selected tree's file of that image must be the executable itself.
 ///
+/// `publisher_scope` and `app_id` are what the single `keld-guard` Authenticode owner
+/// verified for `executable`'s image. The admitted record must name exactly them, the
+/// one rule both images share, before the snapshot lease: a signer that the record does
+/// not name reads no activation state and writes nothing.
+///
 /// The selection is journal-free: a pending activation journal refuses with
 /// [`crate::ActivationEffect::JournalBoundRecoveryRequired`]. An invalid `current` is
 /// repaired only when last-known-good is the located version, so an executable started
@@ -47,7 +52,8 @@ const PROVENANCE: &str = "install-provenance";
 /// [`UpdateError::ExecutableBinding`] when the locator shape, executable identity, located
 /// layout or volume, recorded-root identity, record volume or selected version does not
 /// bind; [`UpdateError::ProvenanceMismatch`] when the record does not carry the expected
-/// app id, channel, target or signing key; and, typed as
+/// app id, channel, target or signing key; [`UpdateError::RecordedSignerMismatch`] when
+/// it names another publisher or app than the verified signer; and, typed as
 /// [`super::select_windows_active_package`] types them, every refusal to read, decode
 /// or admit the protected record against the recorded mode's profile and every
 /// `open_roots` refusal of the recorded roots ([`UpdateError::Baseline`], step
@@ -57,8 +63,13 @@ pub fn select_active_package_for_executable(
     locator: &Path,
     executable: &std::fs::File,
     expected: &ExpectedAppIdentity,
+    publisher_scope: &[u8; 32],
+    app_id: &str,
 ) -> Result<ActivePackageSelection, UpdateError> {
     let installation = locate(image, locator, executable, expected)?;
+    installation
+        .trust
+        .require_verified_signer(publisher_scope, app_id)?;
     installation.require_recorded_roots()?;
 
     let selection =

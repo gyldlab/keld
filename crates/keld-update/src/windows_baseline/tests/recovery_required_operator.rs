@@ -173,6 +173,8 @@ fn machine_uac_ordinary_startup_returns_recovery_required_and_writes_nothing() {
             &locator,
             &executable,
             &expected_for(&trust),
+            &trust.publisher_scope,
+            &trust.installation.app_id,
         )
         .expect_err("an ordinary located Machine-UAC startup selects nothing");
         drop(executable);

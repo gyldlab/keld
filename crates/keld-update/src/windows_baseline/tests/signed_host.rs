@@ -21,7 +21,7 @@ pub(super) fn fixture_payload(app_id: &str) -> keld_pack::ExpectedAppIdentityPay
 }
 
 /// This test executable with a canonical container for `app_id`.
-fn host_embedded_for(app_id: &str) -> Vec<u8> {
+pub(super) fn host_embedded_for(app_id: &str) -> Vec<u8> {
     let image = std::fs::read(std::env::current_exe().expect("test executable path"))
         .expect("read the test executable image");
     keld_pack::embed_host_identity(&image, &fixture_payload(app_id))
@@ -46,6 +46,8 @@ fn the_tree_host_expectation_selects_through_the_same_handle() {
         &locator,
         &executable,
         &expected,
+        &trust.publisher_scope,
+        &trust.installation.app_id,
     )
     .expect("the host's own expectation selects its installation");
     assert_eq!(selection.artifact().version, "1.0.0");

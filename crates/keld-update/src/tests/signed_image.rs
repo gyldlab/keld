@@ -141,12 +141,18 @@ fn signed_image_without_a_container_is_keld_update_019() {
     assert_eq!(pack_code_of(&error), "KELD-PACK-007");
 }
 
+/// Renames `image`'s first section header to `name`. In an image that already carries
+/// the container, renaming it to `.keldeai` makes two containers.
+pub(crate) fn rename_first_section(image: &mut [u8], name: [u8; 8]) {
+    let first = section_header(image, 0);
+    image[first..first + 8].copy_from_slice(&name);
+}
+
 #[test]
 fn signed_image_with_two_containers_is_keld_update_019() {
     let mut image = embedded(&payload(APP_ID, "stable", release_key()));
     // Rename the first section: the image now carries two sections named `.keldeai`.
-    let first = section_header(&image, 0);
-    image[first..first + 8].copy_from_slice(b".keldeai");
+    rename_first_section(&mut image, *b".keldeai");
     let error = ExpectedAppIdentity::from_signed_image(&handle(&image))
         .expect_err("a duplicated container is refused");
     assert_eq!(pack_code_of(&error), "KELD-PACK-008");

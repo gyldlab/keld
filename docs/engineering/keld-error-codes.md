@@ -926,6 +926,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The verified host image does not carry exactly one readable, canonical expected-identity container
 - fix: Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container.
 
+## KELD-UPDATE-020
+
+- crate: keld-update
+- message: The verified signer of an installed executable is not the publisher or the app that the installation's protected provenance records
+- fix: Reinstall the package from the publisher its installer recorded, signed for the app it recorded; an executable signed by another publisher or for another app never runs against this installation.
+
+## KELD-UPDATE-021
+
+- crate: keld-update
+- message: The updater helper refused to anchor itself to its installation, or its image was not derived for a launch
+- fix: Only a MachineUacDirect installation runs keld-updater-helper.exe, and only its journaled image or the image of the version its role requires; start nothing in its place, and repair or reinstall through the trusted installer if the installation is damaged.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

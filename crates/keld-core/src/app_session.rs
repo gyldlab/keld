@@ -2286,32 +2286,6 @@ impl ValidatedAppIdentity {
         })
     }
 
-    /// Requires the selected installation's protected record to name exactly this
-    /// verified publisher and app (KEL-254 AC11): signature success never boots
-    /// another publisher's or app's installation.
-    fn require_recorded(
-        &self,
-        publisher_scope: &[u8; 32],
-        app_id: &str,
-    ) -> Result<(), HostAppError> {
-        if *publisher_scope != self.publisher_scope {
-            return Err(windows_identity_error(
-                "the installation's protected provenance records a different publisher than the verified signer",
-                "Reinstall the package from the publisher its installer recorded; a host signed by another publisher never boots this installation.",
-            ));
-        }
-        if app_id != &*self.app_id {
-            return Err(windows_identity_error(
-                format!(
-                    "the installation's protected provenance records app id `{app_id}`, not the verified `{}`",
-                    self.app_id
-                ),
-                "Reinstall the package whose signed app id its installer recorded; a host signed for another app never boots this installation.",
-            ));
-        }
-        Ok(())
-    }
-
     fn into_profile_selection(self) -> Result<WebProfileSelection, HostAppError> {
         debug_assert_eq!(
             ProfileIdentity::from_host_verified_parts(self.publisher_scope, &self.app_id),
@@ -2401,9 +2375,9 @@ fn validate_installed_current_exe() -> Result<ValidatedBootSelection, HostAppErr
 /// handle whose image produced `identity`.
 ///
 /// The expectation is read from `image` before any installation is located; KEL-53
-/// then binds `image` to the selected tree by file identity, and the record's
-/// publisher and app must equal `identity`. Every refusal precedes any listener,
-/// child or window.
+/// then requires the record to name `identity`'s publisher and app, the one signer rule
+/// it owns for both installed images, and binds `image` to the selected tree by file
+/// identity. Every refusal precedes any listener, child or window.
 #[cfg(windows)]
 fn validate_installed_from_verified(
     locator: &Path,
@@ -2417,9 +2391,10 @@ fn validate_installed_from_verified(
         locator,
         image,
         &expected,
+        &identity.publisher_scope,
+        &identity.app_id,
     )
     .map_err(|source| installed_package_error(&source))?;
-    identity.require_recorded(active.publisher_scope(), &active.install_identity().app_id)?;
     let root = active.tree_root().to_path_buf();
     validate_windows_boot_files(
         root,
@@ -6405,33 +6380,6 @@ mod tests {
         assert_eq!(
             error.resources, before,
             "installed boot advanced app resources"
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn installed_record_must_name_the_verified_publisher_and_app() {
-        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.app")
-            .expect("synthetic verified identity");
-        identity
-            .require_recorded(&[9; 32], "com.example.app")
-            .expect("the record names the verified publisher and app");
-
-        let error = identity
-            .require_recorded(&[8; 32], "com.example.app")
-            .expect_err("another recorded publisher refuses");
-        assert_eq!(error.code(), "KELD-WV-009");
-        assert!(error.to_string().contains("different publisher"), "{error}");
-
-        let error = identity
-            .require_recorded(&[9; 32], "com.example.other")
-            .expect_err("another recorded app refuses");
-        assert_eq!(error.code(), "KELD-WV-009");
-        assert!(
-            error
-                .to_string()
-                .contains("records app id `com.example.other`"),
-            "{error}"
         );
     }
 
