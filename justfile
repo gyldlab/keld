@@ -267,6 +267,10 @@ hygiene:
     rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
     target/ci-hygiene/ci-hygiene check .
 
+# KEL-333: after reviewing reader changes, renew only the digests in tools/ci-inputs.json.
+ci-inputs-rebind:
+    {{python_command}} -B tools/ci_inputs.py --rebind
+
 # KEL-81: keep change-based CI routing falsifiable outside GitHub Actions too.
 ci-router-test:
     tools/ci_changes_test.sh
