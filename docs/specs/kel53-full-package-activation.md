@@ -1693,7 +1693,7 @@ bootstrap records, and the locator purpose separates their endpoint names.
 channel and the artifact. Criterion 8 and Architecture 06 §4a "Health identity", as this
 amendment rewords them, require the receipt to bind the attempt ID and the full artifact
 identity through the §4 receipt digest. The last field of `AB1` is that health-receipt
-digest (`records.rs:265-280`) over the attempt ID, the health-channel ID and the
+digest (`records.rs:363-378`) over the attempt ID, the health-channel ID and the
 candidate artifact identity that the candidate matched to its own version tree
 (*After acceptance*). The owner recomputes that digest from the journal, refuses a
 mismatch, and on exact health `HealthAccepted` records the same value. `AY1`, `AF1` and
@@ -1710,7 +1710,7 @@ exactly one `AK1`. In candidate mode the host neither arms its landed recovery g
 `Ready` nor treats the revocation of an application generation after `Ready` as
 recoverable until it reads `AK1` accepted: from its `AY1` until then it handles such a
 revocation as it already handles one before `Ready` (`keld-core`
-`app_session.rs:4994-4999`): it denies the gate, which then provisions no successor
+`app_session.rs:5129-5134`): it denies the gate, which then provisions no successor
 (`role.rs:731-744`), and ends the host, so the owner observes end of file or its
 signaled launch handle. On such a revocation the host first closes its attempt
 connection, then denies its gate and ends. The owner accepts health only when, 30
@@ -1725,7 +1725,7 @@ before `AR1` it refuses the claimant (*Refusal*); after `AR1` it cannot commit h
 `HealthAccepted` is durable, because an owner lost before that write leaves
 `AwaitingHealth`, which recovery rolls back. On the accept path the owner, after it
 writes `AK1` accepted, waits under a deadline on its landed deadline-bounded read
-(`windows_named_pipe.rs:640-647`, `:761-766`, `:996-1005`, `:1082-1086`, `:1129-1135`)
+(`windows_named_pipe.rs:757-764`, `:889-894`, `:1230-1239`, `:1316-1320`, `:1363-1369`)
 for the candidate's end of file before it disconnects or closes the endpoint, so
 `DisconnectNamedPipe` never discards an unread `AK1`; the candidate closes its attempt
 connection after it reads `AK1`. The candidate reads `AK1` under a deadline; on end of
@@ -1788,9 +1788,9 @@ proposal for the wire review and is approved with it; its rationale follows:
   two landed decision points to `AK1` accepted: the arm of the `keld-runtime`
   `RoleRecoveryGate` (`role.rs:40-47`), which only holds successor provisioning while
   undecided (`role.rs:731-744`), and the `keld-core` predicate that makes a revocation
-  terminal, today `window_ready` (`app_session.rs:4994-4999`), which the host sets at
-  `Ready` just before it requests the arm (`app_session.rs:4426-4427`); before the first
-  bind keld-core already denies on its own (`app_session.rs:3101-3125`). Deferring the
+  terminal, today `window_ready` (`app_session.rs:5129-5134`), which the host sets at
+  `Ready` just before it requests the arm (`app_session.rs:4561-4562`); before the first
+  bind keld-core already denies on its own (`app_session.rs:3253-3260`). Deferring the
   arm alone leaves the host alive with no generation and lets the owner commit. With
   both moved, a process exit that the kernel reports carries the failure, with no new
   wire value, and the landed `ProcessCrash` class (`records.rs:110-111`) records it. As
@@ -2191,7 +2191,7 @@ Implement in:
   KEL-254 T3 Part B's `ExpectedAppIdentity::from_signed_image`;
 - landed-code changes in `keld-update` (safe code; owner KEL-53):
   - the executable-located locator replaces its fixed `HOST` constant
-    (`windows_baseline/locate.rs:21`) with the closed choice of `keld-host.exe` or
+    (`windows_baseline/locate.rs:22`) with the closed choice of `keld-host.exe` or
     `keld-updater-helper.exe` ("Helper launch and self-anchor"), which changes the
     public entry point's signature (slice S9a);
   - the rule that the verified signer equals the recorded publisher scope moves from
@@ -2634,7 +2634,7 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   second one; the recovery-role entry point for the D1 (refined) abandon intent, with the
   abandon-intent step mappings and `retirement_due` change behind it (§5); the
   executable-located entry point's closed
-  image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:21`);
+  image choice that replaces the fixed `HOST` constant (`windows_baseline/locate.rs:22`);
   the helper role entry points; the helper's self-anchor and helper-image derivation
   entry points and the signer rule that S9a moves into `keld-update`; the `keld-guard`
   Authenticode owner moved
