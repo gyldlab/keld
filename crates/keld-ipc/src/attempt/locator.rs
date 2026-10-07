@@ -95,9 +95,10 @@ impl std::error::Error for WindowsAttemptLocatorError {}
 /// provenance-derived installation ID and the minted attempt and
 /// health-channel IDs: `\\.\pipe\keld-attempt-<64 lowercase hex>`.
 ///
-/// The owner names the endpoint it creates with it, and the claimant requires
-/// it to yield its own rendezvous name before it sends `KELD-AA1`
-/// ([`AttemptTranscript::for_claimant`](super::AttemptTranscript::for_claimant)).
+/// The owner names the endpoint it creates with it
+/// ([`WindowsAttemptEndpoint::create_connect_back`](super::WindowsAttemptEndpoint::create_connect_back)),
+/// and the claimant requires it to yield its own rendezvous name before it
+/// sends `KELD-AA1` ([`WindowsAttemptClient::claim`](super::WindowsAttemptClient::claim)).
 ///
 /// # Errors
 ///

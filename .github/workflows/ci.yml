@@ -122,6 +122,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
         run: |
           cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml
+      - name: Test keld-ipc fuzzing hook
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
+        run: |
+          cargo test -p keld-ipc --features fuzzing --lib attempt::records
       - name: Check keld-wv fuzz workspace
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
         run: |

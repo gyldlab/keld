@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Non-product: exposes only the `#[doc(hidden)]` raw-byte hook of the crate-private
+# keld-attempt record codec to the separate fuzz workspace (crates/keld-ipc/fuzz), as
+# keld-update's `fuzzing` feature does for its journal decoder (KEL-270 comment
+# 136c2682). No product crate enables it.
+fuzzing = []
+
 [dependencies]
 keld-guard = { workspace = true }
 postcard = { workspace = true }

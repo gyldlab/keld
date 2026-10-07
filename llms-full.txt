@@ -1346,8 +1346,9 @@ frames; production capability handoff remains disconnected until lifecycle proof
 pass. See KEL-53 for the record and failure contract.
 
 **Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer, claim and health
-record codec and connect-back locator current; record exchange and bootstrap records
-target):** the candidate connect-back and the Machine-UAC helper bootstrap use a
+record codec, connect-back locator and the claim and health exchange current; host
+composition and bootstrap records target):** the candidate connect-back and the
+Machine-UAC helper bootstrap use a
 third one-peer protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>`
 namespace, disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
@@ -1372,10 +1373,24 @@ KEL-53 fixes (owner decision `eff8e2fb`), `keld-ipc::attempt` also owns the clai
 health record codec (`KELD-AH1` to `KELD-AK1`), whose reader takes the 8-byte magic
 first and refuses a record its position does not admit before reading further, and
 the purpose-`1` connect-back locator, which shares its one prefix constant with
-`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is pure
-bytes and builds on every platform; the locator is Windows-only. No component
-exchanges these records yet (KEL-53 §6 S6a), and the bootstrap records and purpose-`2`
-locator land with S11.
+`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is
+crate-private pure bytes: it builds on Windows, for its tests, and with the
+non-product `fuzzing` feature, which exposes only its raw-byte fuzz hook; the locator
+is Windows-only. The exchange runs inside the endpoint and the client, which never
+expose their stream, so no other crate builds, sends or reads a record. The owner's
+connect-back endpoint derives its name from the IDs its `KELD-AC1` carries; per
+connection, under the landed per-connection deadline clamped to the claim deadline, it
+reads the client's process ID and session, `KELD-AH1`, the claim writer's
+identification-level token and the retained process pin that the caller's claimant
+policy returns, disconnects and re-arms on any refusal, and consumes its one-shot
+before `KELD-AR1`. After `KELD-AR1` the owner reads `KELD-AB1` and `KELD-AY1` by
+position, decides the health window (30 seconds plus a margin G, which the caller
+passes until KEL-53 §6 S6c fixes it from its measurement) as a state machine over an
+injected clock, and then either writes `KELD-AK1` accepted and waits for the
+candidate's end of file before it closes, or writes `KELD-AK1` rolled back once without
+waiting; the candidate arms only on `KELD-AK1` accepted, read under its deadline. No
+host component composes the exchange yet (KEL-53 §6 S6c), and the bootstrap records and
+purpose-`2` locator land with S11.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -5170,6 +5185,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-ipc
 - message: keld-attempt record I/O failed (end of file, read or write failure, or expired deadline)
 - fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
+
+## KELD-IPC-018
+
+- crate: keld-ipc
+- message: no keld-attempt claimant was accepted before the claim deadline; the endpoint is closed
+- fix: Roll the attempt back: health cannot commit, and refused claimants never extend this deadline.
+
+## KELD-IPC-019
+
+- crate: keld-ipc
+- message: keld-attempt exchange step refused out of order; nothing was sent or read
+- fix: Follow the KEL-53 health sequence: the claim, KELD-AB1, KELD-AY1 (or KELD-AF1), the owner's health window, then one KELD-AK1; after a failure the owner only rolls back and the candidate never arms.
+
+## KELD-IPC-020
+
+- crate: keld-ipc
+- message: keld-attempt health not proven (the candidate reported KELD-AF1, or the owner's health window saw a byte, end of file, an exited or unreadable launched process, or a window already over when first awaited)
+- fix: The owner cannot commit health: roll the attempt back, writing KELD-AK1 rolled back once while the connection is still open, then end the candidate family.
+
+## KELD-IPC-021
+
+- crate: keld-ipc
+- message: keld-attempt health rolled back by the owner (KELD-AK1 result 2)
+- fix: Never arm the recovery gate: end the host on any later application-generation exit.
 
 ## KELD-WV-001
 
