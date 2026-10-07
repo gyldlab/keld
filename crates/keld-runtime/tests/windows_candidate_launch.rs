@@ -210,16 +210,36 @@ fn a_launch_resumes_only_with_the_membership_proof_of_its_own_process() {
 }
 
 #[test]
-fn a_launch_record_names_only_a_never_resumed_child() {
+fn a_bare_same_token_resume_refuses_and_leaves_the_child_to_its_launch_record() {
     let mut child = suspended_exit_command();
-    child.resume().expect("resume the bare child");
-    let refusal =
-        WindowsLaunchedProcess::record(child).expect_err("a resumed child has no launch record");
+    let refusal = child
+        .resume()
+        .expect_err("a same-token child never runs outside its launch record");
+    assert_eq!(
+        refusal.to_string(),
+        "KELD-RUNTIME-020: the same-token suspended candidate launch failed during child \
+         resume: a same-token candidate resumes only through its launch record and \
+         attempt-Job membership proof. Start no candidate in its place: end the attempt Job \
+         and roll the attempt back; never resume a child whose creation, Job membership or \
+         launch record was not proved."
+    );
+    // The refusal ran and spent nothing: the record and its Job membership resume it.
+    let mut job = WindowsProcessJob::create().expect("create the attempt Job");
+    let mut launched = WindowsLaunchedProcess::record(child)
+        .expect("a refused bare resume leaves the child unresumed");
     assert!(
-        refusal.to_string().contains(
-            "the child was already resumed, so its Job membership can no longer precede its first instruction"
-        ),
-        "{refusal}"
+        !launched.has_exited().expect("query the launch"),
+        "the child is still suspended"
+    );
+    let membership = job
+        .assign_child(launched.child())
+        .expect("assign the suspended candidate");
+    launched
+        .resume(&membership)
+        .expect("its launch record resumes it");
+    assert_eq!(
+        launched.wait(WAIT_MS).expect("the candidate exits"),
+        COMMAND_EXIT
     );
 }
 

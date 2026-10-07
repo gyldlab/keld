@@ -718,6 +718,11 @@ impl WindowsSuspendedChild {
 
     /// Resumes the initially suspended primary thread exactly once.
     ///
+    /// A same-token child refuses here: it runs only through its launch record,
+    /// whose resume requires the child's attempt-Job membership proof
+    /// ([`crate::windows_job::WindowsLaunchedProcess::resume`]). The refusal
+    /// spends nothing, so that record can still resume it.
+    ///
     /// The thread's previous suspend count must be exactly 1, the one suspension
     /// of `CREATE_SUSPENDED`: a count other than 1 shows a resume or suspend of
     /// the thread since creation that was not balanced, and refuses. A balanced
@@ -727,10 +732,23 @@ impl WindowsSuspendedChild {
     ///
     /// # Errors
     ///
-    /// Fails if the child was already resumed, the kernel rejects resume, or the
-    /// previous suspend count was not 1. In that last case the resume is spent
-    /// and the caller must terminate the child.
+    /// Fails for a same-token child, if the child was already resumed, the kernel
+    /// rejects resume, or the previous suspend count was not 1. In that last case
+    /// the resume is spent and the caller must terminate the child.
     pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
+        if self.launch == SuspendedLaunch::SameToken {
+            return Err(self.refusal(
+                "child resume",
+                "a same-token candidate resumes only through its launch record and attempt-Job membership proof",
+            ));
+        }
+        self.resume_held()
+    }
+
+    /// The one resume of the primary thread, for any launch, with the suspend-count
+    /// check of [`Self::resume`]. The launch record calls it after checking the
+    /// child's attempt-Job membership proof.
+    pub(crate) fn resume_held(&mut self) -> Result<(), WindowsLpacError> {
         let thread = self.thread.as_ref().ok_or_else(|| {
             WindowsLpacError::contract("child resume", "primary thread already resumed")
                 .in_launch(self.launch)
@@ -1167,7 +1185,7 @@ mod tests {
         };
         assert_eq!(previous, 1, "CREATE_SUSPENDED leaves one suspension");
         let refusal = child
-            .resume()
+            .resume_held()
             .expect_err("a count other than 1 refuses the resume");
         assert!(
             refusal
@@ -1175,7 +1193,7 @@ mod tests {
                 .contains("previous suspend count was 2, not 1"),
             "{refusal}"
         );
-        assert!(child.resume().is_err(), "the refused resume is spent");
+        assert!(child.resume_held().is_err(), "the refused resume is spent");
         child.terminate(1).expect("terminate the refused child");
     }
 

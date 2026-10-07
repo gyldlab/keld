@@ -1147,7 +1147,7 @@ impl WindowsLaunchedProcess {
                 "the attempt-Job membership proof names another process",
             ));
         }
-        self.child.resume()
+        self.child.resume_held()
     }
 
     /// Waits for the retained child to terminate and returns its exact Windows
@@ -1333,9 +1333,10 @@ fn bind_observed_claimant(
 /// consumes nothing. The caller retains the handle through the call.
 fn process_signaled(process: HANDLE) -> io::Result<bool> {
     // SAFETY: WaitForSingleObject reads no caller memory and resolves `process`
-    // only through this process's handle table. Soundness rests on the caller's
-    // precondition that it retains this handle through the call: a closed value
-    // that was reused would name another object and would not fail.
+    // only through this process's handle table, so no value makes the call
+    // unsound. That the caller retains this handle through the call is a
+    // correctness precondition: a closed value that was reused would name another
+    // object and would not fail.
     match unsafe { WaitForSingleObject(process, 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
@@ -4956,6 +4957,83 @@ mod tests {
             assert!(text.starts_with("KELD-RUNTIME-017: "), "{text}");
             assert!(text.contains("re-arm the endpoint"), "{text}");
         }
+    }
+
+    /// A same-token `cmd.exe /d /c exit 7`, created suspended and not recorded.
+    fn same_token_exit_command() -> WindowsSuspendedChild {
+        let system32 = system32();
+        let environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+            .collect();
+        WindowsSuspendedChild::spawn_same_token(
+            &system32.join("cmd.exe"),
+            &[
+                OsString::from("/d"),
+                OsString::from("/c"),
+                OsString::from("exit 7"),
+            ],
+            &environment,
+            &system32,
+        )
+        .expect("create a same-token child suspended")
+    }
+
+    #[test]
+    fn a_membership_proof_must_name_both_the_process_id_and_the_creation_time() {
+        // Seam-injected: forged proofs that each match one of the two facts.
+        let mut launched =
+            WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the launch");
+        let process_id = launched.child().id();
+        let creation_time = launched.creation_time;
+        for forged in [
+            WindowsJobMembership {
+                process_id,
+                creation_time: creation_time ^ 1,
+            },
+            WindowsJobMembership {
+                process_id: process_id ^ 4,
+                creation_time,
+            },
+        ] {
+            let refusal = launched
+                .resume(&forged)
+                .expect_err("a proof that matches only one fact refuses");
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("the attempt-Job membership proof names another process"),
+                "{forged:?}: {refusal}"
+            );
+            assert!(
+                !launched.has_exited().expect("query the launch"),
+                "{forged:?}: the refused launch stays suspended"
+            );
+        }
+        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
+        let membership = job
+            .assign_child(launched.child())
+            .expect("assign the launch");
+        launched
+            .resume(&membership)
+            .expect("the real proof resumes the launch");
+        assert_eq!(launched.wait(10_000).expect("the launch exits"), 7);
+    }
+
+    #[test]
+    fn a_launch_record_names_only_a_never_resumed_child() {
+        let mut child = same_token_exit_command();
+        child
+            .resume_held()
+            .expect("spend the resume below the launch record");
+        let refusal = WindowsLaunchedProcess::record(child)
+            .expect_err("a resumed child has no launch record");
+        assert!(
+            refusal.to_string().contains(
+                "the child was already resumed, so its Job membership can no longer precede its first instruction"
+            ),
+            "{refusal}"
+        );
     }
 
     #[test]
