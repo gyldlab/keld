@@ -807,7 +807,7 @@ pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, ErrorKind, Write as _};
+    use std::io::{Cursor, ErrorKind};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
@@ -871,7 +871,7 @@ mod tests {
         assert_eq!(header.channel, ChannelId(7));
         assert_eq!(header.corr, CorrelationId(9));
         assert_eq!(header.len, 0);
-        assert!(payload.is_empty());
+        assert_eq!(payload, [] as [u8; 0]);
     }
 
     #[test]
@@ -1456,7 +1456,7 @@ mod tests {
             .expect("completed header after poll retry");
         let (got, payload) = result.expect("I/O").expect("stop was not set");
         assert_eq!(got.kind, FrameKind::Ping);
-        assert!(payload.is_empty());
+        assert_eq!(payload, [] as [u8; 0]);
     }
 
     #[test]

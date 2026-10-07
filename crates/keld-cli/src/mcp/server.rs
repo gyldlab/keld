@@ -111,6 +111,7 @@ impl ServerHandler for KeldMcpServer {
     }
 
     /// Fixed order for prompt-cache stability (spec AC2) — router sorts alphabetically.
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)]
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,

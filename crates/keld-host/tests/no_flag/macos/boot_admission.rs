@@ -71,7 +71,7 @@ fn invalid_dev_lease_contract_fails_before_app_resources() {
         let stderr = String::from_utf8(output.stderr).expect("invalid lease stderr UTF-8");
         assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
         assert!(stderr.contains(expected), "{stderr}");
-        assert!(native_windows(pid, TITLE).is_empty());
+        assert_eq!(native_windows(pid, TITLE), [] as [u32; 0]);
         assert!(
             session_dirs_for(pid).is_empty(),
             "invalid lease created an app-link session"

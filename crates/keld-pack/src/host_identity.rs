@@ -409,7 +409,7 @@ fn admit_structure(source: &impl ImageSource) -> Result<Layout, PackError> {
     let mut sections = [Section::ZERO; LOADER_MAX_SECTIONS];
     for (slot, header) in sections
         .iter_mut()
-        .zip(raw_table.chunks_exact(SECTION_HEADER_BYTES))
+        .zip(raw_table.as_chunks::<SECTION_HEADER_BYTES>().0.iter())
     {
         *slot = Section::parse(header);
     }

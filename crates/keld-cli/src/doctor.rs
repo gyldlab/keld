@@ -530,7 +530,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert!(value.is_array(), "doctor JSON must be a top-level array");
         let arr = value.as_array().expect("array");
-        assert!(!arr.is_empty());
+        assert_ne!(arr.len(), 0);
         for item in arr {
             assert!(
                 item.get("label")
@@ -572,7 +572,7 @@ mod tests {
             } else {
                 let err = f.error.as_ref().expect("failed finding needs §2 error");
                 assert!(err.code.starts_with("KELD-"), "{}", err.code);
-                assert!(!err.fix.is_empty());
+                assert_ne!(err.fix.len(), 0);
             }
         }
         let project = findings
