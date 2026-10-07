@@ -152,7 +152,8 @@ const PRODUCT_STATUS_WINDOWS_COMMANDS: &[&str] = &[
 ];
 
 /// KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c): the release updater
-/// helper's loader acceptance and the KEL-19 container amendment's release-helper AC1.
+/// helper's loader acceptance and the KEL-19 container amendment's release-helper AC1
+/// and AC2 rows.
 const RELEASE_HELPER_STEP: &str =
     "Real Windows release updater helper loader and container (KEL-53 T4d S9c)";
 const RELEASE_HELPER_CONDITION: &str = "matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))";
@@ -165,6 +166,14 @@ const RELEASE_HELPER_ENV: &[(&str, &str)] = &[
         "KELD_PACK_REAL_HOST",
         "${{ github.workspace }}/target/release/keld-updater-helper.exe",
     ),
+    (
+        "KELD_PACK_REAL_HELPER",
+        "${{ github.workspace }}/target/release/keld-updater-helper.exe",
+    ),
+    (
+        "KELD_PACK_EMBEDDED_HELPER",
+        "${{ runner.temp }}/ac2-helper/keld-updater-helper.exe",
+    ),
 ];
 const RELEASE_HELPER_COMMANDS: &[&str] = &[
     "set -euo pipefail",
@@ -173,6 +182,10 @@ const RELEASE_HELPER_COMMANDS: &[&str] = &[
     "printf '%s\\n' \"$out\"",
     "grep -q 'test result: ok\\. 2 passed;' <<<\"$out\"",
     "out=\"$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)\"",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+    "mkdir -p \"$RUNNER_TEMP/ac2-helper\"",
+    "out=\"$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)\"",
     "printf '%s\\n' \"$out\"",
     "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
 ];
@@ -2109,7 +2122,7 @@ fn check_release_updater_helper_step(text: &str) -> Result<(), String> {
         .collect();
     if workflow_named_step_mapping(&block, step, "env") != Some(expected_env) {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must name the absolute release helper in exactly `KELD_UPDATER_HELPER_RELEASE` and `KELD_PACK_REAL_HOST`."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must name the absolute release helper in exactly `KELD_UPDATER_HELPER_RELEASE`, `KELD_PACK_REAL_HOST` and `KELD_PACK_REAL_HELPER`, and the AC2 output in `KELD_PACK_EMBEDDED_HELPER` under the runner temp directory."
         ));
     }
     let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
@@ -2121,7 +2134,7 @@ fn check_release_updater_helper_step(text: &str) -> Result<(), String> {
         .ne(RELEASE_HELPER_COMMANDS.iter().copied())
     {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must build the release helper and require both ignored release-image passes and the AC1 round trip, without wrappers or suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must build the release helper and require both ignored release-image passes, the AC1 round trip and the AC2 helper launch, without wrappers or suppression."
         ));
     }
     Ok(())
@@ -4703,6 +4716,23 @@ mod tests {
             (
                 "          set -euo pipefail\n",
                 "          set -euo pipefail\n          exit 0\n",
+            ),
+            // The AC2 launch of the embedded release helper cannot be dropped or redirected.
+            (
+                "          KELD_PACK_EMBEDDED_HELPER: ${{ runner.temp }}/ac2-helper/keld-updater-helper.exe\n",
+                "",
+            ),
+            (
+                "KELD_PACK_REAL_HELPER: ${{ github.workspace }}/target/release/keld-updater-helper.exe",
+                "KELD_PACK_REAL_HELPER: ${{ github.workspace }}/target/release/keld-host.exe",
+            ),
+            (
+                "-- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal",
+                "-- --ignored --exact launch::ac2_embedded_release_host_launches_to_the_identity_refusal",
+            ),
+            (
+                "          mkdir -p \"$RUNNER_TEMP/ac2-helper\"\n",
+                "",
             ),
         ] {
             let workflow = valid_workflow();

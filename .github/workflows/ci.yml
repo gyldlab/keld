@@ -339,13 +339,16 @@ jobs:
       # KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c) on the workspace-built
       # release helper: its import table, load flags and subsystem, and a copy started
       # beside planted DLLs; then the KEL-19 container amendment's release-helper AC1 run
-      # of the round trip above. Each test fails, never skips, without its variable.
+      # of the round trip above, and its AC2 launch of the embedded unsigned helper, which
+      # needs no signature. Each test fails, never skips, without its variable.
       - name: Real Windows release updater helper loader and container (KEL-53 T4d S9c)
         if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
         shell: bash
         env:
           KELD_UPDATER_HELPER_RELEASE: ${{ github.workspace }}/target/release/keld-updater-helper.exe
           KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_REAL_HELPER: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_EMBEDDED_HELPER: ${{ runner.temp }}/ac2-helper/keld-updater-helper.exe
         run: |
           set -euo pipefail
           cargo build --release -p keld-updater-helper
@@ -353,6 +356,10 @@ jobs:
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 2 passed;' <<<"$out"
           out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
+          mkdir -p "$RUNNER_TEMP/ac2-helper"
+          out="$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)"
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 1 passed;' <<<"$out"
       - name: rustdoc (warnings deny)
