@@ -29,5 +29,15 @@ test = false
 doc = false
 bench = false
 
+# KEL-53 §6 S4b: the keld-attempt claim and health record codec (raw bytes at
+# every read position). Its retained inputs become deterministic tests in
+# crates/keld-ipc/src/attempt/records/tests.rs.
+[[bin]]
+name = "attempt_records"
+path = "fuzz_targets/attempt_records.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
