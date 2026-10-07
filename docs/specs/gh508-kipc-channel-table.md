@@ -94,22 +94,33 @@ These are the spec's contract for X05-T4. Each names its negative control.
    Ordering alone does not prove append-only, because a renumbered entry can still rise
    (criterion 3a).
 
-   **3a. Append-only against the committed baseline.** Given the committed allocation
-   baseline `crates/keld-ipc/tests/channel_allocations.rs` (a literal list of
-   `(name, id)` pairs, one per allocation ever made, in allocation order), when
-   `check_allocations(CHANNEL_TABLE, ALLOCATED)` runs, then every baseline pair is in
-   the table with the same id at the same position, and the table has no entry the
-   baseline does not list. It returns `AllocationDefect::Removed { name, id }` for a
-   baseline name absent from the table, `Changed { name, baseline, table }` for a
-   baseline name whose id or position differs, and `Unrecorded { name, id }` for a
-   table entry beyond the baseline (so an appending PR also appends its pair). *Negative controls:* with a fixture table
-   `echo 1, fs 2, lifecycle 3, probe 4` and the matching baseline, renumbering `probe`
-   to `5` passes `validate_table` (ids still rise) but fails with
-   `Changed { name: "probe", baseline: 4, table: 5 }`; renumbering `lifecycle` to `4`
-   fails the same way; deleting `fs` fails with `Removed`. Existing baseline lines are
-   frozen by §4.4 step 2: a diff that edits or deletes one is a wire-protocol review
-   finding by rule, and for `echo` and `lifecycle` it also fails the KEL-133 corpus
-   rows that carry those ids on the wire (criterion 11).
+   **3a. Append-only against the committed baseline.** Two independent checks, each
+   with its own negative control.
+   - *Table matches baseline (in-crate unit test).* The baseline is the committed file
+     `crates/keld-ipc/channel_allocations.txt`: one `name id` line per allocation ever
+     made, in allocation order, decimal ids, no other content. It is covered by the
+     existing `/crates/keld-ipc/` CODEOWNERS line. A `#[cfg(test)]` module inside
+     `channel_table.rs` reads it with `include_str!` and runs the crate-private
+     `check_allocations(table, baseline) -> Result<(), AllocationDefect>`. Being in the
+     crate, its fixtures can use the private `ChannelEntry::new`. Every baseline pair
+     must be in the table with the same id at the same position, and the table has no
+     entry the baseline does not list. It returns `AllocationDefect::Removed { name,
+     id }` for a baseline name absent from the table, `Changed { name, baseline, table }`
+     for a baseline name whose id or position differs, and `Unrecorded { name, id }` for
+     a table entry beyond the baseline (so an appending PR also appends its line).
+     *Negative controls:* with a fixture table `echo 1, fs 2, lifecycle 3, probe 4` and
+     the matching baseline, renumbering `probe` to `5` passes `validate_table` (ids still
+     rise) but fails with `Changed { name: "probe", baseline: 4, table: 5 }`; deleting
+     `fs` from the table fails with `Removed`.
+   - *Baseline is append-only (CI hygiene rule).* `tools/ci_hygiene.rs` gains
+     `check_channel_allocations_append_only`. It resolves the merge base with
+     `origin/main` the same way `tools/ci_changes.sh` does, reads the baseline at that
+     base with `git show`, and passes only if the base file's lines are an exact prefix
+     of the current file's lines. A base without the file (the PR that introduces it)
+     passes; an unresolvable base fails closed with a named error, never passes.
+     *Negative controls:* renumbering `fs` from 2 to 4 in both the table and the
+     baseline passes the unit test but fails this rule; deleting the `fs` line from the
+     baseline fails it too.
 4. **Authority field.** Given a fixture entry with `Authority::Guarded(&[])` (an empty
    list), when `validate_table` runs, then it returns `EmptyCapabilityList`. Every
    `Authority` value is either `HostInternal` or a non-empty list of `keld-guard`-owned
@@ -120,11 +131,16 @@ These are the spec's contract for X05-T4. Each names its negative control.
    `[a-z][a-z0-9-]{0,31}`. No hyphen segment equals `el`, and no name contains
    `electron`. The type has no range field. *Negative control:* adding an entry named
    `el-reserved` fails.
-6. **Hand-written constant (Rust).** Given production Rust under `crates/*/src`, when the
-   no-literal test scans for `ChannelId(` followed by a digit and for `u16` channel
-   constants outside `channel_table.rs`, then it finds none. Test modules are excluded
-   (`#[cfg(test)]` blocks and `tests/` directories). *Negative control:* putting back
-   `const ECHO_CHANNEL: u16 = 1;` in `macos_bridge.rs` fails the scan.
+6. **Hand-written constant (Rust).** The scan input is every `.rs` file under
+   `crates/*/src` and `crates/keld-ipc/fuzz/fuzz_targets`, except
+   `crates/keld-ipc/src/channel_table.rs`. In each file, the text from the first line
+   that starts with `#[cfg(test)]` to the end of the file is excluded, and `tests/`
+   directories are never scanned. The test passes if and only if the remaining text has
+   zero matches of either regex: `ChannelId\(\s*[0-9]` and
+   `const\s+[A-Z0-9_]*CHANNEL[A-Z0-9_]*\s*:\s*u16\s*=\s*[0-9]`. A file whose
+   production code continues after a `#[cfg(test)]` module therefore fails closed.
+   *Negative controls:* putting back `const ECHO_CHANNEL: u16 = 1;` in `macos_bridge.rs`
+   fails the scan, and so does putting back `ChannelId(0)` in `link.rs`'s `write_hello`.
 7. **Hand-written constant (TypeScript and injected script).** Given production
    TypeScript under `packages/*/src` and `crates/keld-cli/templates/*/src`, and the macOS
    bridge's injected scripts, when the scan runs, then no numeric channel-id literal
@@ -154,11 +170,15 @@ These are the spec's contract for X05-T4. Each names its negative control.
 11. **Consumers derive their ids.** Given the built workspace, the following are
     expressions over table entries, not literals: `keld_ipc::ECHO_CHANNEL`,
     `keld_ipc::LIFECYCLE_CHANNEL`, `keld_native::fs::FS_CHANNEL`, the macOS bridge's
-    admitted id, and the generated TypeScript constants. *Negative control:* changing
-    `echo` to id `4` in the table (as an isolated mutation) changes all five together. It
-    also makes the existing golden vectors fail (`receiver-semantics-v0.tsv`
-    `echo-call-valid` and the echo link tests). That proves the ids are on the wire and
-    that the table, not a copy, sets them.
+    admitted id, and the generated TypeScript constants. Proof is automated, with no
+    hand-run mutation: (i) criteria 6 and 7 prove that no literal exists outside the
+    table; (ii) a `keld-ipc` unit test asserts `ECHO_CHANNEL == channel_table::ECHO.id()`
+    and `LIFECYCLE_CHANNEL == channel_table::LIFECYCLE.id()`, and a `keld-native` unit
+    test asserts the same for `FS_CHANNEL`; (iii) the existing golden vectors
+    (`receiver-semantics-v0.tsv` `echo-call-valid` and the echo link tests) pin the ids
+    on the wire. *Negative controls:* the generator test renders a fixture table with
+    `echo` at id `4` and asserts that the region reads `ECHO_CHANNEL = 4`; criterion 12
+    builds the bridge with id `7`; replacing any Rust consumer with a literal fails (i).
 12. **macOS bridge id from the host.** Given `keld-core` building the renderer bridge,
     when it calls `RendererBridgeEndpoint::new`, then it passes the admitted channel id
     from `channel_table::ECHO`. The bridge renders that id into its injected scripts at
@@ -168,7 +188,8 @@ These are the spec's contract for X05-T4. Each names its negative control.
     hard-coded.
 13. **Wire unchanged.** Given the change, `PROTOCOL_VERSION` stays `2`. Ids 1, 2 and 3
     keep their values. The canonical corpus digest and every golden vector pass
-    unmodified. *Negative control:* see criterion 11's renumbering mutation.
+    unmodified. *Negative control:* criterion 11's automated controls; any renumbering
+    also fails criterion 3a.
 14. **Parity test retired.** Given X05-T4, `transport.test.ts` no longer contains the
     `ChannelId(1)` / `ChannelId(3)` source-text expectations. Criterion 8 replaces them.
 15. **Permission literals have one owner.** Given X05-T4, `keld-guard` exports
@@ -187,18 +208,30 @@ These are the spec's contract for X05-T4. Each names its negative control.
     `CALL` on the target channel, so an `EVENT`-only channel such as `window-state` can
     be subscribed to. Calling on a channel does not subscribe. The one baseline
     exception is `lifecycle` itself, whose `Ready` / `LastWindowClosed` events every
-    version-2 peer admits (`lifecycle_event_receiver`). The first consumer that adds a
+    version-2 peer admits (`lifecycle_event_receiver`). **Decided for this slice:**
+    `Subscribe` is admitted only for an entry with `Authority::HostInternal` and an
+    event-bearing class. A `Guarded` entry is refused with `GuardedNotSupported`;
+    guarded event subscription is future work that needs its own spec and a
+    `keld-guard` API. A host-internal subscription binds to the authenticated principal
+    of the link it arrived on (the payload names no principal), and is admitted only if
+    that role's KEL-75 role declaration (host configuration, never child-supplied)
+    admits the channel. `window-state` is host-internal and admitted for the `primary`
+    lifecycle owner, so the first proof is unaffected. The first consumer that adds a
     host-initiated channel (F02-T2 `window-state`) lands the `Subscribe` variant, its
-    admission and the per-link subscription state in the host link owner `keld-core`,
+    admission and the per-link subscription state in `crates/keld-core/src/app_session.rs`,
     together with these tests: (i) given a role that never subscribed to `window-state`,
     when a window event occurs, then zero frames are written to that link; (ii) given a
     role that subscribed, then exactly one `EVENT` frame per window event is written;
-    (iii) `Subscribe` naming an unallocated id (`4` before F02-T2's id), an entry whose
-    class carries no host `EVENT`s (`echo`), or `lifecycle` itself is refused and changes
-    no subscription state; (iv) for a `Guarded` entry, a principal that `keld-guard`
-    denies is refused. *Negative controls:* removing the subscription check makes (i)
-    observe a frame and fail; removing the class check makes (iii) admit `echo` and fail.
-    Subscription is per link, so a supervised restart starts unsubscribed.
+    (iii) `Subscribe` naming an unallocated id (`4` before F02-T2's id) is refused
+    `UnknownChannel`, and naming `echo` or `lifecycle` is refused `NotSubscribable`;
+    (iv) `Subscribe` naming a `Guarded` fixture entry is refused `GuardedNotSupported`;
+    (v) an `app-bound` role link naming `window-state` (declared for `primary` only) is
+    refused `RoleNotAdmitted`; (vi) after role A subscribes, role B's link still
+    receives zero frames. Every refusal changes no subscription state. *Negative
+    controls:* removing the subscription check makes (i) and (vi) observe a frame;
+    removing the class check makes (iii) admit `echo`; removing the authority check
+    makes (iv) admit the `Guarded` entry; removing the declaration check makes (v)
+    admit. Subscription is per link, so a supervised restart starts unsubscribed.
 
 ## 4. Design
 
@@ -218,7 +251,7 @@ Atomic decomposition (each atom has its own observable; none relies on the synth
 | A7 macOS bridge id source | `keld-core` (constructs) → `keld-wv` (enforces) | admitted `u16` at construction → bridge admission and scripts | an upward or sideways crate edge, or a hard-coded id | criterion 12 |
 | A8 Wire invariance | `keld-ipc` frame/HELLO | ids and bytes before → the same after | silent renumbering breaks scaffolds already created | criteria 11, 13 |
 | A9 Admission of unknown ids | KEL-133 validator | frame on unallocated id → `KELD-IPC-005` | handler effect on an unregistered channel | criterion 10 |
-| A10 EVENT subscription | `keld-core` link owner (state); `lifecycle` codec in `keld-ipc` (request); `keld-guard` (Guarded entries) | `Subscribe { channel }` on a link → per-link subscription bit, or refusal | an unprompted `EVENT` reaches a peer that cannot decode it, or an `EVENT`-only channel cannot be subscribed | criterion 16 (lands with F02-T2) |
+| A10 EVENT subscription | `keld-core` `app_session.rs` link owner (state and admission); `lifecycle` codec in `keld-ipc` (request); KEL-75 role declaration (which roles may subscribe) | `Subscribe { channel }` on a link → per-link subscription bit, or refusal | an unprompted `EVENT` reaches a peer that cannot decode it, or an `EVENT`-only channel cannot be subscribed | criterion 16 (lands with F02-T2) |
 
 Edges between atoms are explicit. A5 reads only A1's source text. A6 and A7 read only
 A1's constants. A3 validation is local to the table, so authorization (guard
@@ -226,7 +259,8 @@ evaluation per request) is not changed by any atom. A9 already exists and is onl
 re-stated. A2 is enforced at compile time and by a unit fixture, independently. A2b
 reads A1's table and a separately committed baseline; A2 passing says nothing about
 A2b, because rising ids can still be renumbered. A10 reads A1 (the target entry's class
-and authority) and, for `Guarded` entries, asks `keld-guard`; it adds no X05-T4 code.
+and authority) and the link's KEL-75 declaration; it refuses every `Guarded` entry, so
+it never asks `keld-guard`, and it adds no X05-T4 code.
 
 Ownership, trust and lifecycle facts:
 
@@ -357,20 +391,19 @@ const _: () = assert!(validate_table(CHANNEL_TABLE).is_ok());
 `ReservedId`, `NotIncreasing`, `DuplicateId(u16)`, `InvalidName`, `DuplicateName` and
 `EmptyCapabilityList`. Strictly increasing ids imply uniqueness; `DuplicateId` is still
 reported separately so that the error names the cause. `validate_table` sees only the
-current table, so it cannot detect renumbering. Append-only is checked separately by
-`check_allocations` against the committed baseline (criterion 3a):
+current table, so it cannot detect renumbering. Append-only is checked separately
+(criterion 3a) against the committed baseline:
 
-```rust
-// crates/keld-ipc/tests/channel_allocations.rs
-/// Every allocation ever made, in allocation order. Append-only: an existing line is
-/// never edited or deleted (§4.4 step 2); a retired channel keeps its line.
-const ALLOCATED: &[(&str, u16)] = &[("echo", 1), ("fs", 2), ("lifecycle", 3)];
+```text
+# crates/keld-ipc/channel_allocations.txt (the whole file)
+echo 1
+fs 2
+lifecycle 3
 ```
 
-`check_allocations` (public in `channel_table.rs`, so fixtures can call it) compares
-position by position and returns `AllocationDefect::{Changed, Removed, Unrecorded}`.
-The baseline lives under `tests/`, outside criterion 6's production scan, and is the
-only other place an id literal appears in Rust. The exact line formatting is
+`check_allocations` and `AllocationDefect` are `#[cfg(test)]` items inside
+`channel_table.rs`, so they add no public API. The baseline and the hygiene rule are
+the only places, outside the table, where an allocated id is written down. The exact line formatting is
 whatever `cargo fmt` produces. The generator admits that form only (§4.3).
 
 Initial entries:
@@ -389,11 +422,24 @@ Derived consumers (X05-T4 rewrites these, keeping their names and values):
 - `crates/keld-ipc/src/lifecycle.rs`: the same for `LIFECYCLE`.
 - `crates/keld-ipc/src/receive.rs`: `hello()` uses `HANDSHAKE_CHANNEL`. The echo and
   lifecycle constructors use the entries. `privileged_call_receiver(entry: &'static
-  ChannelEntry)` asserts `entry.class() == ReceiveClass::GuardedCall`. The
-  It returns `Result<ReceivePolicy, IpcError>` and fails `KELD-IPC-005` for any other
-  class. The check runs at cold construction, never per frame, and it does not panic.
-  The `validate_primary_app_header_with_privileged_call` parameter changes the same way.
-  This is the public-API delta.
+  ChannelEntry)` checks `entry.class() == ReceiveClass::GuardedCall`. It returns
+  `Result<ReceivePolicy, IpcError>` and fails `KELD-IPC-005` for any other class. The
+  check runs at cold construction, never per frame, and it does not panic. This
+  signature is the public-API delta. The crate-private
+  `validate_primary_app_header_with_privileged_call` (`pub(crate)`) changes its
+  parameter the same way; that is not public API.
+- `crates/keld-ipc/src/link.rs`: `write_hello` (`link.rs:633`) passes
+  `HANDSHAKE_CHANNEL` in place of the literal `ChannelId(0)`. This is its only change,
+  with no behaviour change; the corpus `hello-*` rows and the HELLO golden bytes prove
+  it.
+- `crates/keld-ipc/fuzz/fuzz_targets/raw_receive.rs`: builds its policy from
+  `channel_table::FS` in place of `ChannelId(2)`.
+- Id lookup: `pub const fn channel_table::entry(id: ChannelId) -> Option<&'static
+  ChannelEntry>`, a linear scan of `CHANNEL_TABLE`. The KEL-133 corpus harness
+  (`crates/keld-ipc/tests/receiver_corpus.rs`) maps `privileged-fs-receiver:<id>` through
+  it and then calls `privileged_call_receiver`; an id with no entry fails the row's
+  policy construction, so the TSV stays unedited. `keld-core`'s `Subscribe` admission
+  uses the same lookup.
 - `crates/keld-native/src/fs.rs`: `pub const FS_CHANNEL: ChannelId = keld_ipc::channel_table::FS.id();`
   `FS_READ_CAPABILITY` and `FS_WRITE_CAPABILITY` re-export the `keld-guard` constants.
 - `crates/keld-core/src/app_session.rs`: unchanged call sites (it already imports
@@ -478,16 +524,25 @@ A new kipc channel gets an id and an entry only like this:
    shorter. The host therefore sends unprompted `EVENT` frames on a channel only to a
    role link that subscribed to it (criterion 16). The subscription is one `CALL` on
    `lifecycle`: `LifecycleRequest::Subscribe { channel: u16 }`, replied with
-   `LifecycleResponse::Subscribed` or `SubscribeRefused { reason }`. It names the target
+   `LifecycleResponse::Subscribed` or `LifecycleResponse::SubscribeRefused { reason:
+   SubscribeRefusal }`. `SubscribeRefusal` is a closed enum, `UnknownChannel`,
+   `NotSubscribable`, `GuardedNotSupported`, `RoleNotAdmitted`, with pinned
+   discriminants; a new reason is a public-API and vector change. It names the target
    by id, so it works for `EVENT`-only entries that admit no app `CALL`, and one codec
    and one handler serve every event-bearing entry (no per-channel subscribe message).
-   Admission, in the `keld-core` link owner, is default-deny: the id must be in
-   `CHANNEL_TABLE`, the entry's class must carry host `EVENT`s (`HostEvent` or
-   `HostCallWithEvents`) and must not be `lifecycle`; a `Guarded` entry is subscribed
-   only if `keld-guard` admits the link's principal for that entry's capability list,
-   the same evaluation a call on it would get; a `HostInternal` entry needs no guard
-   evaluation, because its events are host facts about the role's own session.
-   Otherwise the reply is `SubscribeRefused` and no state changes. Repeating a
+   Admission is default-deny, in this order: the id must resolve through
+   `channel_table::entry` (else `UnknownChannel`); the class must carry host `EVENT`s
+   (`HostEvent` or `HostCallWithEvents`) and the entry must not be `lifecycle` (else
+   `NotSubscribable`); the authority must be `HostInternal` (else
+   `GuardedNotSupported`: guarded event subscription is future work with its own spec
+   and `keld-guard` API); and the link's authenticated role must be admitted for the
+   channel by its KEL-75 role declaration (else `RoleNotAdmitted`). The subscription
+   binds to that link's principal only. Every refusal changes no state. **Handler
+   owner:** the production primary router in `crates/keld-core/src/app_session.rs`
+   (the `(FrameKind::Call, LIFECYCLE_CHANNEL)` arm, `app_session.rs:5730`), which owns
+   the per-link state. The KEL-72 `LifecycleSession` (`crates/keld-core/src/lifecycle.rs:231`)
+   serves no event entry, keeps no subscription state and answers every `Subscribe`
+   with `SubscribeRefused { reason: NotSubscribable }`. Repeating a
    subscription is idempotent. The state is one bit per table entry per link, sized at
    link open and dropped with the link; there is no unsubscribe (YAGNI). A template
    that predates the channel never subscribes, so it never receives frames on it, and
@@ -512,7 +567,7 @@ consumer's approved spec owns the final values.
 | F02-T2 (#449) host window registry | `window-state` | host-to-app `EVENT` only: needs a new `HostEvent` class (admits no app `CALL`) | `HostInternal` (window facts about windows the app created) | lands `LifecycleRequest::Subscribe`, the per-link subscription state and the criterion 16 tests (§4.4 step 6); the role subscribes on `lifecycle`, never on `window-state`. The gh531 draft (#614) currently proposes `window` with app `CALL`s plus host `EVENT`s; either shape subscribes the same way |
 | F04-T3 (#466) ipcMain facade over the control channel (structs owned by F04-T6, #540) | `compat-control`: one entry for both directions (decided, §4.5 note) | both directions | per-message checks are `windows.<w>.channels` exact-literal grants (F04-T8), which are not `app.*` capabilities; F04-T6 chooses `HostInternal` plus guard evaluation in the router, or a new `Authority` variant through the `keld-guard` owner | the name must not be `el-*` (criterion 5); Electron channel strings stay in the payload |
 | F06-T2 (#478) dialog | `dialog` | app-to-host `GuardedCall` | `Guarded(dialog)` against the `app.system` `dialog` literal (closed decision F06-D3 A) | the `keld-guard` constant for `dialog` is added by F06-T2, not by X05-T4 |
-| F06-T4 (#480) application menu | `menu` | app-to-host `GuardedCall` for the tree submission; menu activation back to the app needs an `EVENT` path (`HostCallWithEvents` or a second entry) | `Guarded(menu)` against the `app.system` `menu` literal (F06-D3 A) | activation EVENTs reach only a role that subscribed to `menu`, which `keld-guard` admits only with the `menu` grant (criterion 16) |
+| F06-T4 (#480) application menu | `menu` | app-to-host `GuardedCall` for the tree submission; menu activation back to the app needs an `EVENT` path (`HostCallWithEvents` or a second entry) | `Guarded(menu)` against the `app.system` `menu` literal (F06-D3 A) | activation EVENTs on a `Guarded` entry cannot be subscribed in this slice (`GuardedNotSupported`, criterion 16): F06-T4 either carries activation on a separate `HostInternal` event entry or first lands the guarded-subscription spec and `keld-guard` API |
 
 **F04 control channel (decided, YAGNI):** one `compat-control` entry carries both
 directions, distinguished by frame kind and direction, as `lifecycle` already does. A
@@ -606,7 +661,12 @@ policy); a keld-wv-local constant with a parity test (the mirror this spec remov
 
 ## 5. Boundaries
 
-- Implement in (X05-T4): `crates/keld-ipc/src/{channel_table.rs,lib.rs,echo.rs,lifecycle.rs,receive.rs}`;
+- Implement in (X05-T4): `crates/keld-ipc/src/{channel_table.rs,lib.rs,echo.rs,lifecycle.rs,receive.rs,link.rs}`
+  (`link.rs`: the `write_hello` literal only); `crates/keld-ipc/channel_allocations.txt`
+  (new; already under the `/crates/keld-ipc/` CODEOWNERS line);
+  `crates/keld-ipc/fuzz/fuzz_targets/raw_receive.rs`; `crates/keld-ipc/tests/receiver_corpus.rs`
+  (policy lookup through `channel_table::entry`); `tools/ci_hygiene.rs` (the append-only
+  rule);
   `crates/keld-guard/src/lib.rs` (two exported constants, re-pointed predicate);
   `crates/keld-native/src/fs.rs`; `crates/keld-core/src/app_session.rs` (bridge
   construction and privileged-receiver call sites);
@@ -617,7 +677,8 @@ policy); a keld-wv-local constant with a parity test (the mirror this spec remov
 - This PR (spec): `docs/specs/gh508-kipc-channel-table.md`;
   `docs/architecture/02-ipc.md` §2 (the "Correlation ids" bullet) and §4; generated `llms.txt` / `llms-full.txt`.
 - Must not touch: workspace `Cargo.toml` and any crate's `Cargo.toml` dependency list
-  (no new edge); `PROTOCOL_VERSION`; `receiver-semantics-v0.tsv`; the HELLO path;
+  (no new edge); `PROTOCOL_VERSION`; `receiver-semantics-v0.tsv`; no behaviour change
+  on the HELLO path;
   `keld-guard` evaluation logic; architecture 01 §3 crate table; any generated file by
   hand.
 
@@ -627,8 +688,8 @@ policy); a keld-wv-local constant with a parity test (the mirror this spec remov
   `HANDSHAKE_CHANNEL`, `validate_table` with its const assertion and fixtures, the
   `keld-guard` constants, derived constants in `keld-ipc` / `keld-native`, the
   entry-typed `privileged_call_receiver`, macOS bridge construction from the host, and
-  the Rust no-literal and permission-literal scans, `check_allocations` and the
-  committed baseline. Criteria 1–6 (with 3a), 10–13 and 15.
+  the Rust no-literal and permission-literal scans, `check_allocations`, the committed
+  baseline file and the `tools/ci_hygiene.rs` append-only rule. Criteria 1–6 (with 3a), 10–13 and 15.
   Criterion 16 belongs to F02-T2 (#449).
 - [ ] T2 (X05-T4, #597, TypeScript half): the generator target, the generated region,
   `HANDSHAKE_CHANNEL` in `RECEIVE_POLICIES`, the TypeScript and injected-script
@@ -641,16 +702,16 @@ policy); a keld-wv-local constant with a parity test (the mirror this spec remov
 |---|---|---|
 | 1 | `channel_table` unit test listing `(name, id)` pairs; compile-fail doc test for the private constructor | the literal expected list in the test |
 | 2–5 | `validate_table` fixtures: duplicate id, id 0, out of order, empty list, bad names; plus the const assertion on the real table | each fixture's expected `TableDefect` |
-| 3a | `crates/keld-ipc/tests/channel_allocations.rs`: the real table against `ALLOCATED`; fixtures for a rising renumber (`probe` 4 → 5), `lifecycle` 3 → 4, a removed entry and an unrecorded append | the committed baseline literal; each fixture's expected `AllocationDefect` |
-| 6 | Rust source scan over `crates/*/src`, skipping `#[cfg(test)]` modules, for `ChannelId(` followed by a digit and for `u16` channel constants outside `channel_table.rs` | the file list; a seeded-literal mutation |
+| 3a | in-crate `#[cfg(test)]` module of `channel_table.rs`: the real table against `channel_allocations.txt`; fixtures for a rising renumber (`probe` 4 → 5), a removed entry and an unrecorded append. `tools/ci_hygiene.rs` self-tests: a both-sides `fs` 2 → 4 renumber and a deleted line against a fixture base | the committed baseline file at the merge base; each fixture's expected `AllocationDefect` or hygiene error |
+| 6 | Rust source scan over `crates/*/src` and `crates/keld-ipc/fuzz/fuzz_targets`, with the exact exclusions and two regexes of criterion 6 | zero matches; seeded `macos_bridge.rs` and `link.rs` literals each fail |
 | 7 | Bun source scan over production TypeScript and the two injected scripts, for numeric channel comparisons and constants outside the generated region | a seeded-literal mutation |
 | 8–9 | `echo-codegen.test.ts`: freshness, stale-region mutation, malformed-source mutation | committed bytes; exact error text |
 | 10 | existing corpus rows `call-wrong-channel` and `primary-undeclared-channel` (unchanged); a new unit test applying id 4 to every live constructor; compile-fail doc test for `privileged_call_receiver(ChannelId(4))`; unit test for the class mismatch | `KELD-IPC-005` and zero handler effects; error detail |
-| 11, 13 | existing golden vectors and `echo_link` / `raw_bytes` tests, unmodified; the renumbering mutation run once by hand and recorded in the PR | the corpus digest `375f50c4...` unchanged |
+| 11, 13 | existing golden vectors and `echo_link` / `raw_bytes` tests, unmodified; consumer-equals-entry unit tests in `keld-ipc` and `keld-native`; the generator fixture with `echo` at 4 | the corpus digest `375f50c4...` unchanged; rendered `ECHO_CHANNEL = 4` |
 | 12 | `macos_bridge.rs` unit test: `BridgeState` built with admitted id 7 rejects 1 and admits 7; the rendered script contains `7` and no `channel !== 1` | the `KELD-WV-011` detail text |
 | 14 | grep assertion in the TypeScript scan that the parity expectations are gone | none needed beyond the scan |
 | 15 | Rust source scan of production code outside `crates/keld-guard/src` for string literals equal to any `keld_guard::capability` constant | a seeded `"fs.read"` literal in `channel_table.rs` |
-| 16 | lands with F02-T2 (#449), not X05-T4: `keld-core` link tests for an unsubscribed role (zero frames), a subscribed role (one frame per event), refused `Subscribe` targets (unallocated id, `echo`, `lifecycle`) and a guard-denied `Guarded` target; pinned postcard bytes for `Subscribe` in `lifecycle.rs` | frame counts on the link; removing the subscription or class check fails |
+| 16 | lands with F02-T2 (#449), not X05-T4: `keld-core` link tests for an unsubscribed role (zero frames), a subscribed role (one frame per event), refused `Subscribe` targets (unallocated id, `echo`, `lifecycle`, a `Guarded` fixture entry, an undeclared `app-bound` role), and a second role's link staying silent; pinned postcard bytes for `Subscribe` in `lifecycle.rs` | frame counts on the link; removing the subscription or class check fails |
 
 Anti-flake: every test is a pure source or const check, or an existing deterministic
 fixture. None depends on timing, ports or platform. The macOS bridge test is a
@@ -660,9 +721,13 @@ fixture. None depends on timing, ports or platform. The macOS bridge test is a
 
 - **wire protocol:** yes. This is the channel-id allocation rule and the table of record
   for `channel:u16`. Values and bytes are unchanged.
-- **public API:** yes. `keld_ipc::channel_table` (new); `privileged_call_receiver`
-  parameter type; `RendererBridgeEndpoint::new` gains a parameter; TypeScript gains
-  `FS_CHANNEL` and `HANDSHAKE_CHANNEL`.
+- **public API:** yes. `keld_ipc::channel_table` (new: `ChannelEntry`, `ReceiveClass`,
+  `Authority`, `TableDefect`, `validate_table`, `entry`, `HANDSHAKE_CHANNEL`,
+  `CHANNEL_TABLE` and the entry constants); `privileged_call_receiver` parameter and
+  return type; `RendererBridgeEndpoint::new` gains a parameter; TypeScript gains
+  `FS_CHANNEL` and `HANDSHAKE_CHANNEL`. `check_allocations` and `AllocationDefect` are
+  `#[cfg(test)]` and not public. F02-T2 later adds `LifecycleRequest::Subscribe`,
+  `LifecycleResponse::{Subscribed, SubscribeRefused}` and `SubscribeRefusal`.
 - **permission model:** yes (listed by #508's body). The `Authority` declaration
   references `keld-guard` names, and X05-T4 adds two exported `keld-guard` constants.
   Guard evaluation is unchanged.
