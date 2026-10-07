@@ -1,5 +1,7 @@
 """Real Git and reader-drift controls for selective local CI."""
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -9,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import ci_inputs
 import ci_local
@@ -254,6 +257,23 @@ class FreshnessGateTests(unittest.TestCase):
         result = self.run_tool("--check", root)
         self.assertEqual(result.returncode, 1)
         self.assertIn("unreadable", result.stderr)
+
+    def test_rebind_survives_an_unreadable_recording_commit(self):
+        root = self.fixture()
+        (root / "readers/check.py").write_text("print(2)\n", encoding="utf-8")
+        real = ci_inputs.subprocess.check_output
+
+        def partial_clone(args, *a, **kw):
+            if args[:2] == ["git", "ls-tree"]:
+                raise subprocess.CalledProcessError(128, args)
+            return real(args, *a, **kw)
+
+        with unittest.mock.patch.object(ci_inputs.subprocess, "check_output", partial_clone), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ci_inputs.rebind(root), 0)
+        self.assertIn("recording commit unreadable", out.getvalue())
+        self.assertIn("readers/check.py", out.getvalue())
+        self.assertEqual(self.run_tool("--check", root).returncode, 0, "digests must still be written")
 
     def test_rebind_is_a_noop_when_fresh(self):
         root = self.fixture()

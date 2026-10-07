@@ -123,16 +123,22 @@ def review_hint(root: Path, recorded: str, census: list[str], patterns: list[str
         return ["recording commit not found; review all members of this set"] + (
             [] if membership_only else members)
     lines = []
-    old = {path for path in subprocess.check_output(
-        ["git", "ls-tree", "-r", "--name-only", "-z", commit], cwd=root, text=True).split(chr(0)) if path}
-    old_members = {path for path in old if path != "tools/ci-inputs.json" and matches(path, patterns)}
-    lines += [f"+ {path}" for path in sorted(set(members) - old_members)]
-    lines += [f"- {path}" for path in sorted(old_members - set(members))]
-    if not membership_only:
-        shared = old_members & set(members)
-        changed = subprocess.check_output(
-            ["git", "diff", "--name-only", "-z", commit, "--"], cwd=root, text=True).split(chr(0))
-        lines += [f"M {path}" for path in changed if path in shared]
+    try:
+        old = {path for path in subprocess.check_output(
+            ["git", "ls-tree", "-r", "--name-only", "-z", commit], cwd=root, text=True).split(chr(0)) if path}
+        old_members = {path for path in old if path != "tools/ci-inputs.json" and matches(path, patterns)}
+        lines += [f"+ {path}" for path in sorted(set(members) - old_members)]
+        lines += [f"- {path}" for path in sorted(old_members - set(members))]
+        if not membership_only:
+            shared = old_members & set(members)
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", "-z", commit, "--"], cwd=root, text=True).split(chr(0))
+            lines += [f"M {path}" for path in changed if path in shared]
+    except (OSError, subprocess.CalledProcessError):
+        # Partial or shallow clone: the recording commit's tree may be absent. The hint is advisory,
+        # so it must never abort the rebind.
+        return ["recording commit unreadable; review all members of this set"] + (
+            [] if membership_only else members)
     lines.append(f"(since digest recorded in {commit[:8]}; the digest was not necessarily correct there)")
     return lines
 
