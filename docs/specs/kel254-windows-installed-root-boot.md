@@ -534,8 +534,16 @@ never reopens the executable by path. T3 opens that handle without write or dele
 sharing and without following reparse points, replacing the landed KEL-135 open that
 canonicalizes and opens by path with default sharing, and reuses it for the signature
 check, the payload read and this comparison. In machine modes the protected ancestry
-keeps that path bound to the running image; in `PerUserDirect` only the same user, who
-is outside the threat claim, could diverge them. No install mode, owner, root, volume,
+binds the opened file to the selected tree but not, by itself, to the running image: an
+image started through a user-owned junction that is retargeted afterwards could diverge
+from it (KEL-270 review finding, Linear KEL-270 comment `c4921888`; inferred, not
+demonstrated). By KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`
+(2026-10-07, item 1), the single `keld-guard` verifier therefore binds the file it
+opens to the running image once KEL-53 slice S9d lands, for this host and for
+`keld-updater-helper.exe` (KEL-53 §4 "Helper launch and self-anchor", *Running-image
+binding*). In
+`PerUserDirect` only the same user, who is outside the threat claim, could otherwise
+diverge them. No install mode, owner, root, volume,
 baseline,
 current selection,
 protection profile or profile digest, and no trust decision, comes from path shape,
@@ -577,9 +585,10 @@ admission join it only with KEL-53's later recovery and candidate slices, under 
 own discovery rules. If another live coordinator owns the journal, process state is
 unknown, or recovery is incomplete, KEL-53 returns no selection. The record's publisher/app fields are compared with the KEL-135 verified
 identity inside that selection (above); KEL-96 checks the effective access boundary, and relies on the T2b handle identity
-(never `tree_root` path text) to prove that the running executable is the exact host
-inside the selected tree. It may consume but MUST NOT construct or clone the
-selection. `DirectInstallationIdentity` and its OS-protected record are KEL-53
+(never `tree_root` path text) to prove that the verified executable is the exact host
+inside the selected tree; once it lands, KEL-53 slice S9d's running-image binding makes
+the verified executable the running one (KEL-270 owner decision `740998f4`, item 1). It
+may consume but MUST NOT construct or clone the selection. `DirectInstallationIdentity` and its OS-protected record are KEL-53
 deliverables; the record's format stays OS-local. No code may construct installed mode
 from paths or test observations.
 `ValidatedBootSelection` remains opaque and is the only selection accepted by

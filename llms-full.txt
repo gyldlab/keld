@@ -3047,8 +3047,12 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   reader `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and
   the KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
   through `keld-guard`, reads the expectation from that pinned handle and selects its
-  installation before any listener, child or window. The entrypoint takes a closed image
-  choice, `keld-host.exe` or `keld-updater-helper.exe`, and the verified signer, and
+  installation before any listener, child or window. That verification opens the
+  `current_exe()` path, so until KEL-53 T4d slice S9d binds the opened file to the
+  running image, for the host and the helper alike, the two are not proven to be one
+  file (KEL-270 owner decision `740998f4`, 2026-10-07, item 1). The entrypoint takes a
+  closed image choice, `keld-host.exe` or `keld-updater-helper.exe`, and the verified
+  signer, and
   `keld-update` requires the record's publisher scope and app id to equal that signer
   before the snapshot lease, the one rule for both images (KEL-53 T4d S9a). The same
   locator anchors the elevated helper itself: `anchor_updater_helper` reads the helper's
