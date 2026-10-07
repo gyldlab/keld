@@ -1,5 +1,5 @@
 # Spec: one keld-ipc-owned kipc channel table (minimum slice of architecture 02 §4)
-Status: draft
+Status: approved
 Linear: GH-508 (#517) · Owner: @0monish · Updated: 2026-10-07
 
 ## 1. Goal & non-goals
