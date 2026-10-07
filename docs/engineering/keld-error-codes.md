@@ -104,6 +104,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: keld-attempt server runs in another session than the client
 - fix: Refuse the endpoint without sending anything: only an owner in the client's own session is admitted.
 
+## KELD-IPC-014
+
+- crate: keld-ipc
+- message: keld-attempt locator input refused
+- fix: Pass the provenance-derived installation ID and the attempt and health-channel IDs that keld-update minted: each nonzero and no two equal.
+
+## KELD-IPC-015
+
+- crate: keld-ipc
+- message: keld-attempt record refused (magic not admitted at its position, truncated, trailing bytes, or a class or result byte outside its closed set or position)
+- fix: End the exchange without reading further: before KELD-AR1 refuse the claimant, which then refuses its own start with WriterActive; after it, health cannot commit and the owner rolls back.
+
+## KELD-IPC-016
+
+- crate: keld-ipc
+- message: keld-attempt record does not bind this attempt (foreign installation, process ID, locator, transcript or boot acknowledgement mismatch)
+- fix: The peer is not bound to this attempt. End the exchange: before KELD-AR1 refuse the claimant; after it, the owner rolls back.
+
+## KELD-IPC-017
+
+- crate: keld-ipc
+- message: keld-attempt record I/O failed (end of file, read or write failure, or expired deadline)
+- fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, health cannot commit and the owner rolls back.
+
 ## KELD-WV-001
 
 - crate: keld-wv

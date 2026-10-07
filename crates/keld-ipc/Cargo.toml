@@ -15,6 +15,15 @@ serde = { workspace = true }
 getrandom = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# KEL-53 §4 "Candidate connect-back" *Locator* and §8 (approved: KEL-270 owner
+# decision `eff8e2fb`): the keld-attempt endpoint locator hashes with the
+# workspace-pinned BLAKE3 that keld-update and keld-pack already lock, so no new
+# crate, version or feature enters Cargo.lock. Windows-only: only the Windows pipe
+# namespace uses it, once per endpoint or claim, off the kipc hot path. Rejected: a
+# digest in keld-update (splits the locator rule across two crates and makes the
+# claimant's check before AA1 a caller callback), a keld-ipc -> keld-update edge
+# (pulls the updater into every keld-ipc consumer) and a hand-written hash.
+blake3 = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_System_IO"] }
 
