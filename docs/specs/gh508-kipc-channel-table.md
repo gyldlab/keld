@@ -134,18 +134,24 @@ These are the spec's contract for X05-T4. Each names its negative control.
 6. **Hand-written constant (Rust).** The scan input is every `.rs` file under
    `crates/*/src` and `crates/keld-ipc/fuzz/fuzz_targets`, except
    `crates/keld-ipc/src/channel_table.rs`. `tests/` directories are never scanned.
-   Inside a file, only an item that a `#[cfg(test)]` attribute directly gates is
-   excluded. For `#[cfg(test)] mod <name> {`, that is the module body up to its
-   brace-matched close. For a single-line item, such as a `use` line, it is that one
-   line only. Any other `#[cfg(test)]` form is scanned, not skipped, so the scan fails
-   closed. The test passes if and only if the remaining text has zero matches of either
+   Inside a file, only an item that a test-only attribute directly gates is excluded.
+   A test-only attribute is `#[cfg(test)]` or `#[cfg(all(test, <predicates>))]`, where
+   `test` is a top-level conjunct. For an inline `mod <name> {`, the exclusion is the
+   module body up to its brace-matched close. For a single-line item, such as a `use`
+   line, it is that one line. For `mod <name>;`, it is the file that the declaration
+   resolves to (`<name>.rs` or `<name>/mod.rs`, next to the declaring file). Any other
+   form is scanned, not skipped, including `cfg(any(test, …))` and a non-test `cfg`, so
+   the scan fails closed. The test passes if and only if the remaining text has zero matches of either
    regex: `ChannelId\(\s*[0-9]` and
    `const\s+[A-Z0-9_]*CHANNEL[A-Z0-9_]*\s*:\s*u16\s*=\s*[0-9]`.
    *Negative controls:* putting back `const ECHO_CHANNEL: u16 = 1;` in
    `macos_bridge.rs` fails the scan. Putting back `ChannelId(0)` in `link.rs`'s
    `write_hello` also fails, although `link.rs` gates a `use` with `#[cfg(test)]` at
    line 5. So does a `ChannelId(2)` placed after the `#[cfg(test)]` item at `fs.rs:591`.
-   A test-gated module that contains `ChannelId(9)` passes.
+   A test-gated module that contains `ChannelId(9)` passes. So do the live test-only
+   literals in `bootstrap.rs`'s `#[cfg(all(test, windows))] mod named_pipe_tests` and in
+   `admission_deadline_tests.rs`, which `bootstrap.rs:203` declares behind a test gate.
+   The same literal under `#[cfg(any(test, windows))]` fails.
 7. **Hand-written constant (TypeScript and injected script).** Given production
    TypeScript under `packages/*/src` and `crates/keld-cli/templates/*/src`, and the macOS
    bridge's injected scripts, when the scan runs, then no numeric channel-id literal
