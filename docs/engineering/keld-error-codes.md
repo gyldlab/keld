@@ -662,6 +662,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Restricting a Windows process's DLL search to System32 failed
 - fix: The process exits before loading any library or doing protected work; it never continues on the standard search path, which includes the current directory and PATH. Report the Windows error; the updater helper cannot run on a system that refuses `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
 
+## KELD-RUNTIME-019
+
+- crate: keld-runtime
+- message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process is retained
+- fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM, shell or process-handle failure, report the detail; the launch is refused rather than continued without a bound process handle.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

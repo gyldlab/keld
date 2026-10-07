@@ -26,7 +26,12 @@ seccompiler = { workspace = true }
 landlock = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Security", "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemServices"] }
+# KEL-270 T4d S9b dependency gate: Win32_UI_Shell (ShellExecuteExW, SHELLEXECUTEINFOW,
+# SEE_MASK_*) and Win32_System_Com (CoInitializeEx, CoUninitialize, COINIT_*) are
+# enabled here, not in the workspace pin, for windows_job.rs's elevated updater-helper
+# launch. windows-sys has no optional dependencies, so they add no crate and leave
+# Cargo.lock unchanged.
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_System_Com", "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemServices", "Win32_UI_Shell"] }
 
 # KEL-77 differential harness only (test-only; no shipped API).
 # - serde_json: parse fixture observation lines and emit evidence JSON.
