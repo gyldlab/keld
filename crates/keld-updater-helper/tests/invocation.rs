@@ -2,6 +2,7 @@
 //! on its redirected stderr (KEL-53 §7 "17 (argument shape)" and "17 (helper launch and
 //! self-anchor)").
 #![allow(clippy::expect_used)] // extra test crate: expect is an assertion oracle
+#![allow(clippy::disallowed_methods)] // test-only: Command::output runs the built helper, the product under test
 
 use std::process::{Command, Output};
 

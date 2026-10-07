@@ -8,8 +8,13 @@ allow-panic-in-tests = true
 allow-dbg-in-tests = true
 
 # The elevated helper starts no Bun child, app role or shell (KEL-53 §4, criterion 17):
-# every keld-runtime entry point that starts one is disallowed in this crate.
+# every keld-runtime entry point that starts one is disallowed in this crate, and so is
+# every std::process::Command method that starts a process directly. Only the test
+# crates that run the built helper or cargo allow the std methods, each with a reason.
 disallowed-methods = [
+    { path = "std::process::Command::spawn", reason = "starts a process; the elevated helper starts no Bun, app role or shell (KEL-53 criterion 17)" },
+    { path = "std::process::Command::output", reason = "starts a process; the elevated helper starts no Bun, app role or shell (KEL-53 criterion 17)" },
+    { path = "std::process::Command::status", reason = "starts a process; the elevated helper starts no Bun, app role or shell (KEL-53 criterion 17)" },
     { path = "keld_runtime::Supervisor::start", reason = "starts a supervised Bun child; the elevated helper starts no Bun or app role (KEL-53 criterion 17)" },
     { path = "keld_runtime::Supervisor::start_with_stdout_markers", reason = "starts a supervised Bun child; the elevated helper starts no Bun or app role (KEL-53 criterion 17)" },
     { path = "keld_runtime::primary::PrimaryRoleSupervisor::start", reason = "starts an app role; the elevated helper starts no Bun or app role (KEL-53 criterion 17)" },

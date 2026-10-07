@@ -3,6 +3,7 @@
 //! independently of the `cargo-deny` run in CI. `deny.toml` owns the list.
 #![cfg(windows)]
 #![allow(clippy::expect_used)] // extra test crate: expect is an assertion oracle
+#![allow(clippy::disallowed_methods)] // test-only: Command::output runs `cargo tree`, the independent edge-set observer
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -10,20 +11,33 @@ use std::process::Command;
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
-/// The crate names of `deny.toml`'s `[bans] deny` entries.
+/// The crate names of `deny.toml`'s `[bans] deny` entries. Every non-comment line of
+/// the list must be one `{ crate = "…", … }` entry, so a reformatted entry fails here
+/// instead of silently leaving the check.
 fn banned() -> BTreeSet<String> {
     let config = std::fs::read_to_string(Path::new(MANIFEST_DIR).join("deny.toml"))
         .expect("read the helper's deny.toml");
-    config
+    let (_, list) = config
+        .split_once("\ndeny = [")
+        .expect("deny.toml has a `deny = [` list");
+    let (list, _) = list.split_once("\n]").expect("the deny list closes");
+    let entries: Vec<&str> = list
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("{ crate = \""))
-        .map(|rest| {
-            rest.split('"')
-                .next()
-                .expect("a quoted crate name")
-                .to_owned()
-        })
-        .collect()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let names: BTreeSet<String> = entries
+        .iter()
+        .filter_map(|line| line.strip_prefix("{ crate = \""))
+        .filter_map(|rest| rest.split_once('"'))
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    assert_eq!(
+        names.len(),
+        entries.len(),
+        "every deny.toml ban must be one distinct `{{ crate = \"…\" }}` line: {entries:?}"
+    );
+    names
 }
 
 /// Every package in the helper's normal closure for the Windows MSVC target.

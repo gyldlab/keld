@@ -8,6 +8,7 @@
 //! read by the PE format, independently of the build script that produced it.
 #![cfg(windows)]
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
+#![allow(clippy::disallowed_methods)] // test-only: Command::output runs a copy of the release helper, the product under test
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
