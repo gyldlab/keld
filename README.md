@@ -27,33 +27,42 @@ architecture already buying us today?**
 
 | What we measured | KELD | Comparison | What that means in plain English |
 |---|---:|---:|---|
-| **Windows host working set** · 30 paired rounds | **22,788 KiB** | Tauri **26,856 KiB** | **~15.2% less resident memory in KELD's native host.** Host scope only: this excludes KELD's supervised Bun child and is **not total application memory**. This is the strongest paired KELD-vs-Tauri memory result so far; CI95 for the paired ratio is **[0.846864, 0.849548]**. |
-| **Windows main-process RSS** · same direct-COM benchmark session | **19,552 KB** | Electron **89,140 KB** | **~78% less main-process RSS.** Electron's main process used about **4.6× as much** as KELD's in this session. This is **not total application memory**. |
-| **Windows host executable** | **484,864 B** | Tauri **8,634,880 B** | **~94.4% smaller by bytes.** Tauri's recorded host executable is about **17.8× as large** as KELD's current direct-COM host. This is **not installer-to-installer** because KELD packaging is not shipped yet. |
-| **Windows first paint** · host-only `keld-host --hello` diagnostic | **469 ms** | Tauri **479 ms** · Electron **275 ms** | Host-only diagnostic; the full product-boot arm remains unmeasured. KELD and Tauri were close in this session; the KELD/Tauri margin is too small to call a speed win. Electron was faster here. |
+| **Windows host working set** · 30 paired rounds | **22,788 KiB** | Tauri **26,856 KiB** | **~15.2% less resident memory in KELD's native host.** A working set is the memory Windows currently keeps resident in RAM for the process. Host scope only: this excludes KELD's supervised Bun child and is **not total application memory**. The paired ratio has a **95% confidence interval (CI95)** of **[0.846864, 0.849548]**; this interval shows the statistical uncertainty around the measured ratio. |
+| **Windows main-process RSS** · same direct-COM benchmark session | **19,552 KB** | Electron **89,140 KB** | **~78% less main-process RSS.** RSS means **Resident Set Size**: memory for that process that is currently resident in RAM. COM means **Component Object Model**, a native Windows interface; “direct-COM” means the KELD host calls those Windows interfaces directly. Electron's main process used about **4.6× as much** as KELD's in this session. This is **not total application memory**. |
+| **Windows host executable** | **484,864 B** | Tauri **8,634,880 B** | **~94.4% smaller by bytes.** Tauri's recorded host executable is about **17.8× as large** as KELD's current Windows host. This is **not installer-to-installer** because KELD packaging is not shipped yet. |
+| **Windows first paint** · host-only `keld-host --hello` diagnostic | **469 ms** | Tauri **479 ms** · Electron **275 ms** | This is a host-only diagnostic, not a full application-startup measurement. KELD and Tauri were close in this session, so the margin is too small to call a speed win. Electron was faster here. |
 
-**Why these matter:** lower host memory leaves more RAM for the application;
-a smaller host binary reduces the native framework footprint; and the first-paint
-benchmark records a double-rAF **paint-opportunity proxy**, not compositor completion
-or display scanout. They answer different
-questions, so we do not combine them into one "overall winner" score.
+**Why these matter:** lower host memory leaves more RAM for the application,
+and a smaller host binary reduces the native framework footprint. The first-paint
+benchmark uses **double-rAF**: two `requestAnimationFrame` callbacks that act as a
+browser signal that a paint opportunity occurred. It does **not** prove that the
+operating system finished composing the frame or that the pixels reached the display.
+These measurements answer different questions, so we do not combine them into one
+"overall winner" score.
+
+> Unit note: **KiB** means kibibytes (1 KiB = 1,024 bytes). **KB** is kept where
+> the benchmark source reported that unit.
 
 [See the reproducible benchmark repository](https://github.com/gyldlab/keld-benches) ·
 [Full engineering scoreboard](docs/engineering/budget-scoreboard.md) ·
 [Paired KELD vs Tauri memory result](https://github.com/gyldlab/keld-benches/blob/main/windows/bench/results/mem-idle/2026-08-25.kel25-windows-keld-vs-tauri-canonical-30.fresh-process.json)
 
 > **Read the scope, not just the headline.** KELD does not currently lead every
-> metric. Electron had lower **total process-tree RSS** and faster first paint in
-> the cited Windows sessions. Current Linux KELD-vs-Tauri paint intervals cross
-> 1.0, so they do not support a directional speed claim. We publish those
-> non-wins too.
+> metric. Electron had lower **total process-tree RSS**—resident RAM summed across
+> the measured application processes—and faster first paint in the cited Windows
+> sessions. The pinned Linux result is a KELD-only paint-opportunity measurement
+> without a paired Tauri arm, and it is not publication-eligible. It does not
+> support a KELD-vs-Tauri interval comparison or a directional speed claim. We
+> publish this non-comparison result too.
 
 <details>
-<summary><strong>Inside KELD: IPC latency</strong></summary>
+<summary><strong>Inside KELD: IPC (inter-process communication) latency</strong></summary>
 
-On macOS, the authenticated Rust-to-Rust KIPC library path recorded p99 round
-trips of **9.375 µs** for a 6-byte payload and **10.25 µs** for a 1,024-byte
-payload on an Apple M4 Mac mini.
+On macOS, the authenticated Rust-to-Rust **KIPC** path recorded p99 round trips
+of **9.375 µs** for a 6-byte message and **10.25 µs** for a 1,024-byte message on
+an Apple M4 Mac mini. KIPC is KELD's authenticated inter-process communication
+protocol. “Authenticated” means the two sides verify the connection before
+accepting application messages. **µs** means microseconds.
 
 | Message payload | Recorded p99 round trip |
 |---|---:|
@@ -61,35 +70,74 @@ payload on an Apple M4 Mac mini.
 | **1,024 bytes** | **10.25 µs** |
 
 These September 10, 2026 measurements use two separate **Rust processes** over
-an authenticated Unix socket. They measure the KIPC library, **not** Bun-to-host
-latency, app startup, or a complete KELD application. Each payload tier uses
-**20 independent sessions × 100,000 calls**. Each session performs the
-handshake first, then records **99,999 post-handshake CALL→REPLY round trips**.
-The handshake is excluded from the reported p99. **p99 (99th percentile)** is
-the round-trip time at or below which 99% of those timed calls fall.
+an authenticated Unix socket, which is a local operating-system communication
+channel. They measure the KIPC library, **not** Bun-to-host latency, app startup,
+or a complete KELD application. Each message-size tier uses
+**20 independent sessions × 100,000 calls**. Each session performs the initial
+authentication handshake first, then records **99,999 CALL→REPLY round trips**.
+A round trip is one request plus its reply. The handshake is excluded from the
+reported p99. **p99 (99th percentile)** is the round-trip time at or below which
+99% of those timed calls fall.
 
 [Fixture and reproduction steps](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/keld/kipc-rust-echo) ·
 [Raw sessions](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/bench/results/ipc-rtt)
 
-Reported session-block bootstrap 95% intervals for those p99 values are
-**9.25–9.625 µs** and **10.083–10.459 µs**, respectively. KELD source:
-`4fbf94bbb755854058067b986877177f00b25a39`.
+The reported **95% bootstrap confidence intervals** for those p99 values are
+**9.25–9.625 µs** and **10.083–10.459 µs**, respectively. A bootstrap interval
+estimates uncertainty by repeatedly resampling the recorded session blocks.
+KELD source: `4fbf94bbb755854058067b986877177f00b25a39`.
 
 </details>
 
 ## Run the demo
 
-You need **Git**, **Rust through rustup**, and **Bun on `PATH`**, plus the
-prerequisites for your platform. The repository selects its Rust toolchain.
+You need **Git**, **Rust installed through rustup**, and **Bun**, plus the build
+tools for your operating system. The commands must be available on your shell's
+`PATH`, which is the list of directories the shell searches when you type a
+command such as `cargo` or `bun`.
+
+KELD pins **Rust 1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml).
+**rustup** is Rust's toolchain manager. It reads that file and selects the
+required Rust compiler automatically. **rustc** is the Rust compiler, and
+**Cargo** is Rust's build and package tool.
+
+### 1. Install the core tools
+
+1. **Git** — install it from [git-scm.com/downloads](https://git-scm.com/downloads).
+2. **Rust through rustup** — install it from [rustup.rs](https://rustup.rs/).
+   Restart your terminal after installation if the `cargo` command is not found.
+3. **Bun** — install it from the [Bun installation guide](https://bun.sh/docs/installation).
+   The source-built demo needs Bun available on `PATH`. The full repository
+   verification gate, `just ci`, currently requires **Bun 1.4.2**.
+
+Verify the core tools:
+
+```sh
+git --version
+rustup --version
+rustc --version
+cargo --version
+bun --version
+```
+
+After you clone the repository and enter the `keld` directory,
+`rustc --version` should use the pinned **1.97.1** toolchain.
+
+### 2. Install the platform build tools
 
 | Platform | Before you build |
 |---|---|
-| **macOS** | Apple command-line developer tools. WKWebView comes with macOS. |
-| **Windows** | Rust's MSVC build tools and the WebView2 runtime. Use an interactive PowerShell session. |
-| **Linux** | The current source-built product path is qualified on Ubuntu 26.04.1 x86_64 with GNOME Wayland. Install GTK3/WebKitGTK 4.1 development libraries, a C compiler, `pkg-config`, and `bwrap`; use an owner-controlled checkout and a host that supports the required containment. Bounded shipping-product evidence also exists for X11 through the same host's Mutter Xwayland server, but the canonical product-status ledger still leaves X11/native Xorg qualification open. Fedora 43 and Arch package/build portability have separate bounded evidence; see the platform setup guide for what that does **not** qualify. |
+| **macOS** | Install Apple's command-line developer tools with `xcode-select --install` if they are missing. **WKWebView**, the system webview used by KELD on macOS, is included with macOS. |
+| **Windows** | Install the Microsoft C++ build tools required by Rust's **MSVC** target (Microsoft Visual C++ toolchain) and the **Microsoft Edge WebView2 Runtime**, which renders KELD's Windows interface. Use an interactive PowerShell session for the demo. |
+| **Ubuntu / Debian x86_64** | Install a C/C++ build toolchain, `pkg-config` (used to locate native libraries), GTK3 development files (Linux UI toolkit), WebKitGTK 4.1 development files (Linux system webview), and `bubblewrap` / `bwrap` (the sandbox helper used by KELD's strict Linux launch). The currently qualified source-built product path is Ubuntu 26.04.1 x86_64 with GNOME Wayland. |
 
-[Platform setup and troubleshooting](docs/onboarding/README.md#prerequisites).
-Contributors running the full `just ci` suite need **Bun 1.4.2**.
+For Fedora, Arch, X11/Xorg status, Linux containment requirements, and
+platform-specific troubleshooting, see the
+[platform setup guide](docs/onboarding/README.md#prerequisites).
+
+The full contributor gate needs additional tools beyond this quick start.
+See the [development guide](docs/onboarding/05-development-guide.md#1-prerequisites)
+before running `just ci`.
 
 ### Build KELD
 
