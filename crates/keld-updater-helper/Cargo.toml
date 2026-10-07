@@ -18,7 +18,14 @@ path = "src/main.rs"
 [target.'cfg(windows)'.dependencies]
 keld-guard = { workspace = true }
 keld-ipc = { workspace = true }
+# KEL-53 §5 normal edge (Job, launch and process identity); clippy.toml's
+# disallowed-methods name its process-starting entry points through it.
+keld-runtime = { workspace = true }
 keld-update = { workspace = true }
+
+# tests/release_image.rs plants DLLs beside a copy of the release helper.
+[target.'cfg(windows)'.dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

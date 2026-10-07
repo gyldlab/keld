@@ -61,6 +61,7 @@
         "Cargo.lock",
         "rust-toolchain.toml",
         "rustfmt.toml",
+        "clippy.toml",
         ".cargo/*",
         ".config/nextest.toml",
         "crates/*",
@@ -161,6 +162,7 @@
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_baseline/tests/support.rs",
         "crates/keld-update/src/records/tests.rs",
+        "crates/keld-updater-helper/tests/lint_config.rs",
         "tools/llms_docs.rs"
       ],
       "contract": "",
@@ -275,6 +277,7 @@
         "Cargo.lock",
         "crates/*/Cargo.toml",
         "deny.toml",
+        "crates/keld-updater-helper/deny.toml",
         "rust-toolchain.toml",
         ".cargo/*"
       ],
@@ -317,6 +320,7 @@
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_baseline/tests/support.rs",
         "crates/keld-update/src/records/tests.rs",
+        "crates/keld-updater-helper/tests/lint_config.rs",
         "tools/llms_docs.rs"
       ],
       "sha256": "9b084f4893efea5c4315364212a59bad4c7cdf5d4461a6f80a725f3dddeece2a"
@@ -402,6 +406,9 @@
     "keld-update": [
       "crates/keld-pack/tests/fixtures/windows-v0-content.tar",
       "docs/specs/kel53-full-package-activation.md"
+    ],
+    "keld-updater-helper": [
+      "clippy.toml"
     ]
   }
 }

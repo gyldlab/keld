@@ -312,6 +312,7 @@ doc:
 # Supply-chain checks (requires `cargo install cargo-deny --locked`).
 deny:
     cargo deny check
+    cargo deny --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans
 
 # ── Maintainer local-only sync (never CI; trees stay gitignored) ─────────────
 

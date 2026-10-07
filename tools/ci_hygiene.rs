@@ -149,6 +149,45 @@ const PRODUCT_STATUS_WINDOWS_COMMANDS: &[&str] = &[
     "target/product-status/product-status-test",
 ];
 
+/// KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c): the release updater
+/// helper's loader acceptance and the KEL-19 container amendment's release-helper AC1.
+const RELEASE_HELPER_STEP: &str =
+    "Real Windows release updater helper loader and container (KEL-53 T4d S9c)";
+const RELEASE_HELPER_CONDITION: &str = "matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))";
+const RELEASE_HELPER_ENV: &[(&str, &str)] = &[
+    (
+        "KELD_UPDATER_HELPER_RELEASE",
+        "${{ github.workspace }}/target/release/keld-updater-helper.exe",
+    ),
+    (
+        "KELD_PACK_REAL_HOST",
+        "${{ github.workspace }}/target/release/keld-updater-helper.exe",
+    ),
+];
+const RELEASE_HELPER_COMMANDS: &[&str] = &[
+    "set -euo pipefail",
+    "cargo build --release -p keld-updater-helper",
+    "out=\"$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)\"",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 2 passed;' <<<\"$out\"",
+    "out=\"$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)\"",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+];
+
+/// KEL-53 §4: the updater helper's edge set, with the helper as the sole cargo-deny root.
+const HELPER_DENY_STEP: &str = "Updater helper edge set (KEL-53 T4d S9c)";
+const HELPER_DENY_ACTION: &str = "EmbarkStudios/cargo-deny-action@";
+const HELPER_DENY_WITH: &[(&str, &str)] = &[
+    ("manifest-path", "crates/keld-updater-helper/Cargo.toml"),
+    (
+        "arguments",
+        "--all-features --config crates/keld-updater-helper/deny.toml",
+    ),
+    ("command", "check"),
+    ("command-arguments", "bans"),
+];
+
 const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings",
     "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }",
@@ -2028,6 +2067,105 @@ fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_release_updater_helper_step(text: &str) -> Result<(), String> {
+    let step = RELEASE_HELPER_STEP;
+    let Some(check_job) = workflow_job_block(text, "check") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for `{step}`."
+        ));
+    };
+    let count = workflow_direct_named_step_count(&check_job, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+    })?;
+    let expected_keys = ["if", "shell", "env", "run"].map(str::to_owned);
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: bash`, `env`, and `run` keys."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "if").as_deref()
+        != Some(RELEASE_HELPER_CONDITION)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `{RELEASE_HELPER_CONDITION}`: the helper, its keld-pack writer and the KEL-19 host trigger."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("bash") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must set `shell: bash`; `set -euo pipefail` must fail the step on a failed build."
+        ));
+    }
+    let expected_env: Vec<(String, String)> = RELEASE_HELPER_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&block, step, "env") != Some(expected_env) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must name the absolute release helper in exactly `KELD_UPDATER_HELPER_RELEASE` and `KELD_PACK_REAL_HOST`."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(RELEASE_HELPER_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must build the release helper and require both ignored release-image passes and the AC1 round trip, without wrappers or suppression."
+        ));
+    }
+    Ok(())
+}
+
+fn check_updater_helper_deny_step(text: &str) -> Result<(), String> {
+    let step = HELPER_DENY_STEP;
+    let Some(deny_job) = workflow_job_block(text, "deny") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `deny` job for `{step}`."
+        ));
+    };
+    let count = workflow_direct_named_step_count(&deny_job, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `deny` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&deny_job, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `deny.steps`.")
+    })?;
+    let expected_keys = ["uses", "with"].map(str::to_owned);
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `uses` and `with` keys."
+        ));
+    }
+    if !workflow_named_step_direct_value(&block, step, "uses")
+        .is_some_and(|uses| uses.starts_with(HELPER_DENY_ACTION))
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the pinned `{HELPER_DENY_ACTION}` action."
+        ));
+    }
+    let expected_with: Vec<(String, String)> = HELPER_DENY_WITH
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&block, step, "with") != Some(expected_with) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must check `bans` with the helper as the sole root and its own `crates/keld-updater-helper/deny.toml`."
+        ));
+    }
+    Ok(())
+}
+
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -2462,6 +2600,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
     check_windows_media_acceptance_step(&text)?;
+    check_release_updater_helper_step(&text)?;
+    check_updater_helper_deny_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_agent_context_step(&text)?;
     check_public_audit_step(&text)?;
@@ -2649,6 +2789,41 @@ mod tests {
         )
     }
 
+    fn release_helper_step() -> String {
+        let mut lines = vec![
+            format!("      - name: {RELEASE_HELPER_STEP}"),
+            format!("        if: {RELEASE_HELPER_CONDITION}"),
+            "        shell: bash".to_owned(),
+            "        env:".to_owned(),
+        ];
+        lines.extend(
+            RELEASE_HELPER_ENV
+                .iter()
+                .map(|(key, value)| format!("          {key}: {value}")),
+        );
+        lines.push("        run: |".to_owned());
+        lines.extend(
+            RELEASE_HELPER_COMMANDS
+                .iter()
+                .map(|command| format!("          {command}")),
+        );
+        lines.join("\n")
+    }
+
+    fn helper_deny_step() -> String {
+        let mut lines = vec![
+            format!("      - name: {HELPER_DENY_STEP}"),
+            "        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1".to_owned(),
+            "        with:".to_owned(),
+        ];
+        lines.extend(
+            HELPER_DENY_WITH
+                .iter()
+                .map(|(key, value)| format!("          {key}: {value}")),
+        );
+        lines.join("\n")
+    }
+
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
     fn gitleaks_scan_step() -> String {
         let mut lines = vec!["      - name: Scan".to_owned(), "        env:".to_owned()];
@@ -2726,6 +2901,7 @@ mod tests {
             "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
             "          target/product-status/product-status-test",
             windows_media_step.as_str(),
+            &release_helper_step(),
             "  bun-test:",
             "    if: needs.changes.outputs.ts == 'true'",
             "    steps:",
@@ -2749,6 +2925,13 @@ mod tests {
             "    runs-on: macos-latest",
             "    steps:",
             "      - run: cargo +1.97 check -p fixture --all-targets",
+            "  deny:",
+            "    if: needs.changes.outputs.deny == 'true'",
+            "    steps:",
+            "      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1",
+            "        with:",
+            "          command: check",
+            &helper_deny_step(),
             "  secrets:",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -4470,6 +4653,85 @@ mod tests {
             error.contains("KEL-132") || error.contains("continue-on-error"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn release_updater_helper_step_is_unique_and_direct() {
+        let step = release_helper_step();
+        let temp = complete_fixture();
+        temp.write(WORKFLOW, &valid_workflow().replacen(&step, "", 1));
+        let error = check(temp.path()).expect_err("missing release helper step must fail");
+        assert!(error.contains("KEL-53 T4d S9c"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(&step, &format!("{step}\n{step}"), 1),
+        );
+        let error = check(temp.path()).expect_err("duplicate release helper step must fail");
+        assert!(error.contains("exactly one"), "{error}");
+    }
+
+    #[test]
+    fn release_updater_helper_step_cannot_be_narrowed_or_made_inert() {
+        for (needle, replacement) in [
+            (
+                "contains(needs.changes.outputs.packages, 'keld-updater-helper') || ",
+                "",
+            ),
+            ("        shell: bash\n        env:", "        env:"),
+            (
+                "          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-updater-helper.exe\n",
+                "",
+            ),
+            ("cargo build --release -p keld-updater-helper", "true"),
+            ("--test release_image -- --ignored", "--test release_image"),
+            ("ok\\. 2 passed;", "ok\\."),
+            (
+                "          set -euo pipefail\n",
+                "          set -euo pipefail\n          exit 0\n",
+            ),
+        ] {
+            let workflow = valid_workflow();
+            assert!(workflow.contains(needle), "fixture holds {needle}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("weakened release helper step must fail");
+            assert!(error.contains("KEL-53 T4d S9c"), "{needle}: {error}");
+        }
+    }
+
+    #[test]
+    fn updater_helper_deny_step_is_unique_and_exact() {
+        let step = helper_deny_step();
+        let temp = complete_fixture();
+        temp.write(WORKFLOW, &valid_workflow().replacen(&step, "", 1));
+        let error = check(temp.path()).expect_err("missing helper deny step must fail");
+        assert!(error.contains("Updater helper edge set"), "{error}");
+
+        for (needle, replacement) in [
+            ("command-arguments: bans", "command-arguments: licenses"),
+            (
+                "arguments: --all-features --config crates/keld-updater-helper/deny.toml",
+                "arguments: --all-features",
+            ),
+            (
+                "manifest-path: crates/keld-updater-helper/Cargo.toml",
+                "manifest-path: ./Cargo.toml",
+            ),
+            (
+                "uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
+                "uses: example/deny@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
+            ),
+        ] {
+            let workflow = valid_workflow();
+            assert!(workflow.contains(needle), "fixture holds {needle}");
+            temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("weakened helper deny step must fail");
+            assert!(
+                error.contains("Updater helper edge set"),
+                "{needle}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -248,6 +248,17 @@ pack_classification="$(result_for_paths crates/keld-pack/src/host_identity.rs)"
 expect_flags "keld-pack change routes the Rust lane that builds the keld-update fuzz workspace" "$runtime_flags" "$pack_classification"
 expect_package_token "keld-pack change includes its keld-update consumer" keld-update "$pack_classification"
 
+# The elevated updater helper's ban list is a cargo-deny input as well as a crate file
+# that its edge-set test reads (KEL-53 §4, KEL-270 T4d S9c); its other files are not.
+helper_deny_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
+helper_source_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
+helper_deny_classification="$(result_for_paths crates/keld-updater-helper/deny.toml)"
+expect_flags "updater helper ban list routes cargo-deny and the helper's Rust lane" "$helper_deny_flags" "$helper_deny_classification"
+expect_package_token "updater helper ban list selects the helper" keld-updater-helper "$helper_deny_classification"
+helper_source_classification="$(result_for_paths crates/keld-updater-helper/src/main.rs)"
+expect_flags "updater helper source routes only the Rust lane" "$helper_source_flags" "$helper_source_classification"
+expect_package_token "updater helper source selects the helper" keld-updater-helper "$helper_source_classification"
+
 manifest_classification="$(result_for_paths Cargo.lock)"
 expect_flags "workspace manifest routes every dependent Rust lane" "$manifest" "$manifest_classification"
 expect_package_token "workspace manifest selects host" keld-host "$manifest_classification"
