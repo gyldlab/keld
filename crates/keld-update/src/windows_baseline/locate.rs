@@ -87,15 +87,24 @@ pub fn select_active_package_for_executable(
     // Defence in depth that A3 §4 requires literally: every located component is held
     // open without delete sharing, so none can be renamed or replaced, and the
     // located-image identity with the version equality above already implies this check.
-    let selected = open_image(&selection.tree, image)
-        .map_err(|cause| binding(image, "selected image", cause))?;
-    if ObjectIdentity::of_cap_file(&selected)
-        .map_err(|cause| binding(image, "selected image", cause))?
-        != installation.executable
+    let selected = open_image(&selection.tree, image).map_err(|cause| {
+        binding(
+            image,
+            step_for(image, "selected host", "selected image"),
+            cause,
+        )
+    })?;
+    if ObjectIdentity::of_cap_file(&selected).map_err(|cause| {
+        binding(
+            image,
+            step_for(image, "selected host", "selected image"),
+            cause,
+        )
+    })? != installation.executable
     {
         return Err(binding(
             image,
-            "selected image identity",
+            step_for(image, "selected host identity", "selected image identity"),
             format!(
                 "the executable is not the selected tree's {}",
                 image.file_name()
@@ -235,11 +244,20 @@ impl Located {
         let tree = version
             .open_dir_nofollow("tree")
             .map_err(|cause| binding(image, "located tree", cause))?;
-        let file =
-            open_image(&tree, image).map_err(|cause| binding(image, "located image", cause))?;
-        if ObjectIdentity::of_cap_file(&file)
-            .map_err(|cause| binding(image, "located image", cause))?
-            != *executable
+        let file = open_image(&tree, image).map_err(|cause| {
+            binding(
+                image,
+                step_for(image, "located host", "located image"),
+                cause,
+            )
+        })?;
+        if ObjectIdentity::of_cap_file(&file).map_err(|cause| {
+            binding(
+                image,
+                step_for(image, "located host", "located image"),
+                cause,
+            )
+        })? != *executable
         {
             return Err(binding(
                 image,
@@ -440,6 +458,19 @@ fn require_volume(
             step,
             "located root is not on the executable's volume",
         ))
+    }
+}
+
+/// The refusal step that names `image`: the host keeps its landed `host` labels, so the
+/// host's `KELD-UPDATE-018` text is unchanged.
+const fn step_for(
+    image: WindowsLocatedImage,
+    host: &'static str,
+    other: &'static str,
+) -> &'static str {
+    match image {
+        WindowsLocatedImage::Host => host,
+        WindowsLocatedImage::UpdaterHelper => other,
     }
 }
 

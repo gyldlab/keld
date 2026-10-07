@@ -293,6 +293,33 @@ fn an_invalid_current_is_repaired_only_for_the_last_known_good_host() {
 }
 
 #[test]
+fn the_updater_helper_never_repairs_current() {
+    let install = installed();
+    let current = install.trust.installation.update_root.join("current");
+    std::fs::write(&current, b"not a pointer").expect("invalidate current");
+    // The helper is in the last-known-good tree, so only its image keeps it from the
+    // repair write that the last-known-good host would perform.
+    let locator = helper_path(&install.trust, "1.0.0");
+    let executable = open_image(&locator);
+    let error = refuses_as(
+        WindowsLocatedImage::UpdaterHelper,
+        &install.trust,
+        &locator,
+        &executable,
+        &expected_for(&install.trust),
+        "a per-user helper must not repair current",
+    );
+    assert_eq!(binding_step(&error), "current pointer repair", "{error}");
+    assert_eq!(binding_image(&error), WindowsLocatedImage::UpdaterHelper);
+    assert_eq!(
+        std::fs::read(&current).expect("current bytes"),
+        b"not a pointer"
+    );
+    drop(executable);
+    select_from(&install.trust, "1.0.0").expect("the last-known-good host still repairs");
+}
+
+#[test]
 fn locator_shape_refuses_before_any_installation_read() {
     let install = installed();
     let real = host_path(&install.trust, "1.0.0");

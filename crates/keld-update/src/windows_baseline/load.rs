@@ -337,6 +337,18 @@ pub(super) fn repair_invalid_current(
             ));
         }
     }
+    // Only a per-user host repairs `current`: the updater helper runs only in
+    // `MachineUacDirect` (KEL-53 "Helper launch and self-anchor"), so a helper locator
+    // never reaches the writer lease or a write in any mode.
+    if let Some(located) = located
+        && located.image == crate::WindowsLocatedImage::UpdaterHelper
+    {
+        return Err(UpdateError::ExecutableBinding {
+            image: located.image,
+            step: "current pointer repair",
+            detail: "only a host repairs current; keld-updater-helper.exe never does".to_owned(),
+        });
+    }
     let roots = open_roots(trust, false).map_err(|cause| error("repair root admission", cause))?;
     let profile = roots.profile();
     let lease = super::open_activation_lease(&roots.update, profile, true)
@@ -363,7 +375,10 @@ pub(super) fn repair_invalid_current(
                 "the running executable is in version `{}`, not last-known-good `{}`; only a last-known-good {} repairs current",
                 located.version,
                 records.last_known_good.version,
-                located.image.file_name()
+                match located.image {
+                    crate::WindowsLocatedImage::Host => "host",
+                    crate::WindowsLocatedImage::UpdaterHelper => "keld-updater-helper.exe",
+                }
             ),
         });
     }
