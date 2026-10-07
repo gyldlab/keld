@@ -2272,13 +2272,20 @@ Implement in:
     and `WaitForSingleObject` are already listed;
   - reuse decisions in `keld-runtime`: the suspended child's resume-once state and its
     single `ResumeThread` call in `windows_lpac.rs` (`spawn_suspended` at :313,
-    `resume` at :564) are generalized into one suspended-child type that both the LPAC
-    launch and the token launch use, so no second `ResumeThread` call is added; the LPAC
+    `resume` at :564) are generalized into one suspended-child type that the LPAC
+    launch, the token launch and the `PerUserDirect` candidate launch use, so no second
+    `ResumeThread` call is added; the LPAC
     `spawn_suspended` itself is not reused, because it creates through `CreateProcessW`
-    with an LPAC attribute list and the caller's own token. `assign_child`
+    with an LPAC attribute list and the caller's own token. The `PerUserDirect`
+    candidate, which runs under its owner's own token, is created through
+    `CreateProcessW` with `CREATE_SUSPENDED`, under the caller's own token and without
+    the LPAC attribute list, beside the LPAC creation in `windows_lpac.rs` (an existing
+    call with a new scope; slice S6b; Coordination record, Linear KEL-270 comment
+    `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07). `assign_child`
     (`windows_job.rs:1348`) takes a `std::process::Child`, which cannot represent the
-    process that `CreateProcessWithTokenW` returns, so it is extended to accept that
-    suspended child's owned process handle rather than duplicated. The attempt-Job
+    process that `CreateProcessWithTokenW` or that suspended creation returns, so it is
+    extended to accept the suspended child's owned process handle rather than
+    duplicated. The attempt-Job
     stdin start gate (`windows_job.rs:2323-2341`) is not reused for the candidate:
     suspended creation gives Job membership before the first instruction without an
     inherited pipe, and handle inheritance through `CreateProcessWithTokenW` is not
