@@ -73,7 +73,11 @@ Non-goals:
   payload. The release-helper rows run from slice S9c, which first builds the helper,
   and no self-anchor acceptance on a real signed helper is claimed before its AC2 and
   AC8 rows pass. This amendment does not extend §4 "`keld build` order" (steps 1, 2, 5,
-  6 and 7), T3 or rows 11–13 to the helper; they still cover only `keld-host.exe`. A
+  6 and 7), T3 or rows 11–13 to the helper; they still cover only `keld-host.exe`. Once
+  KEL-53 T4d slice S9a makes `produce_windows_v0` require exactly one root
+  `keld-updater-helper.exe`, a `keld build` that follows only these steps refuses before
+  any Windows package output, through that producer check, and never emits a package
+  without the helper until the later amendment below lands. A
   later amendment of this spec, approved before any `keld build` output contains
   `keld-updater-helper.exe`, requires Keld to publish the unsigned helper with its own
   authenticated SHA-256 (T3 prerequisite (b)), `keld build` to verify it before
