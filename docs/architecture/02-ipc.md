@@ -280,7 +280,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
   never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
-  u16 handles resolved at handshake from schema names (string names never travel per-call).
+  u16 handles whose ids come from the static `keld-ipc` channel table (§4; live with
+  X05-T4, #597), so string names never travel per-call. Resolving ids from schema
+  names at handshake is destination work (§4).
 - **Receiver semantics (KEL-133, live):** one `keld-ipc` validator owns which
   kind/flags/channel/correlation/declared-length combination each session state
   admits. The host selects a static `ReceivePolicy` (no frame chooses its
@@ -343,6 +345,15 @@ consumes them through type-only imports. The hand-written TypeScript payload mir
 gone; the independently implemented postcard codec and shared golden-vector validation
 remain the runtime wire oracle. This echo-only bootstrap does not make Rust the general
 schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
+
+**Channel table: live slice and destination
+([GH-508 spec](../specs/gh508-kipc-channel-table.md), approved).** The live slice is one
+static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
+guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
+reused. TypeScript constants are generated from it by the KEL-98 generator. It goes
+live with X05-T4 (#597); until then echo = 1, fs = 2 and lifecycle = 3 stay hand-held
+and the wire is unchanged. Handshake-time name resolution and full `keld gen` emission
+remain destination work that needs a `HELLO` change, a protocol bump and wire review.
 
 The destination authoring shape remains:
 
