@@ -40,6 +40,7 @@ const BOOT_SOURCE_ENV: &str = "KELD_KEL254_BOOT_SOURCE";
 const INSTALL_PARENT_ENV: &str = "KELD_KEL254_INSTALL_PARENT";
 const LABEL: &str = "KeldPerUserFixture";
 const HOST: &str = "keld-host.exe";
+const HELPER: &str = "keld-updater-helper.exe";
 
 fn env_path(name: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name} must be set")))
@@ -74,15 +75,20 @@ fn collect(source: &Path, prefix: &str, entries: &mut BTreeMap<String, Option<Ve
     }
 }
 
-/// Canonical package content holding the boot source and `host` as `keld-host.exe`.
+/// Canonical package content holding the boot source, `host` as `keld-host.exe` and a
+/// fixture `keld-updater-helper.exe`, which these host rows never start.
 fn installed_tree_content(source: &Path, host: &[u8]) -> Vec<u8> {
     let mut tree = BTreeMap::new();
     collect(source, "", &mut tree);
     assert!(
-        !tree.contains_key(HOST) && !tree.contains_key(".keld"),
-        "the boot source holds neither a host nor the producer-owned .keld policy"
+        !tree.contains_key(HOST) && !tree.contains_key(HELPER) && !tree.contains_key(".keld"),
+        "the boot source holds no host, no updater helper and no producer-owned .keld policy"
     );
     tree.insert(HOST.to_owned(), Some(host.to_vec()));
+    tree.insert(
+        HELPER.to_owned(),
+        Some(b"keld-updater-helper fixture image".to_vec()),
+    );
     // `String` orders by bytes, the producer's strict member order.
     let mut inputs: Vec<(&str, Option<&[u8]>)> = tree
         .iter()
@@ -174,12 +180,21 @@ fn kel254_per_user_install_fixture() {
     fs::remove_file(&archive).expect("remove the baseline source");
 
     // The installed host's own container selects its installation, as the host will.
+    // This fixture check presents the recorded signer; the keld-host rows present the
+    // signer that verification of the installed host proves.
     let installed = host_path(&trust, &trust.installation.baseline.version);
     let image = open_image(&installed);
     let expected = ExpectedAppIdentity::from_signed_image(&image)
         .expect("the installed host carries its expectation");
-    let selection = select_active_package_for_executable(&installed, &image, &expected)
-        .expect("the installed host selects its installation");
+    let selection = select_active_package_for_executable(
+        crate::WindowsLocatedImage::Host,
+        &installed,
+        &image,
+        &expected,
+        &publisher_scope,
+        &app_id,
+    )
+    .expect("the installed host selects its installation");
     assert_eq!(selection.publisher_scope(), &publisher_scope);
     assert_eq!(selection.install_identity().app_id, app_id);
     drop((selection, image));

@@ -1346,8 +1346,9 @@ frames; production capability handoff remains disconnected until lifecycle proof
 pass. See KEL-53 for the record and failure contract.
 
 **Windows activation-attempt subprotocol (KEL-53 T4d; endpoint layer, claim and health
-record codec and connect-back locator current; record exchange and bootstrap records
-target):** the candidate connect-back and the Machine-UAC helper bootstrap use a
+record codec, connect-back locator and the claim and health exchange current; host
+composition and bootstrap records target):** the candidate connect-back and the
+Machine-UAC helper bootstrap use a
 third one-peer protocol on the dedicated `\\.\pipe\keld-attempt-<64 lowercase hex>`
 namespace, disjoint from app-link and lifecycle pipes. As `keld-ipc` requires for a
 separate-version protocol, its clients reject the other `keld-*` namespaces before
@@ -1372,10 +1373,24 @@ KEL-53 fixes (owner decision `eff8e2fb`), `keld-ipc::attempt` also owns the clai
 health record codec (`KELD-AH1` to `KELD-AK1`), whose reader takes the 8-byte magic
 first and refuses a record its position does not admit before reading further, and
 the purpose-`1` connect-back locator, which shares its one prefix constant with
-`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is pure
-bytes and builds on every platform; the locator is Windows-only. No component
-exchanges these records yet (KEL-53 §6 S6a), and the bootstrap records and purpose-`2`
-locator land with S11.
+`is_attempt_endpoint` and is the claimant's check before `KELD-AA1`. The codec is
+crate-private pure bytes: it builds on Windows, for its tests, and with the
+non-product `fuzzing` feature, which exposes only its raw-byte fuzz hook; the locator
+is Windows-only. The exchange runs inside the endpoint and the client, which never
+expose their stream, so no other crate builds, sends or reads a record. The owner's
+connect-back endpoint derives its name from the IDs its `KELD-AC1` carries; per
+connection, under the landed per-connection deadline clamped to the claim deadline, it
+reads the client's process ID and session, `KELD-AH1`, the claim writer's
+identification-level token and the retained process pin that the caller's claimant
+policy returns, disconnects and re-arms on any refusal, and consumes its one-shot
+before `KELD-AR1`. After `KELD-AR1` the owner reads `KELD-AB1` and `KELD-AY1` by
+position, decides the health window (30 seconds plus a margin G, which the caller
+passes until KEL-53 §6 S6c fixes it from its measurement) as a state machine over an
+injected clock, and then either writes `KELD-AK1` accepted and waits for the
+candidate's end of file before it closes, or writes `KELD-AK1` rolled back once without
+waiting; the candidate arms only on `KELD-AK1` accepted, read under its deadline. No
+host component composes the exchange yet (KEL-53 §6 S6c), and the bootstrap records and
+purpose-`2` locator land with S11.
 
 **macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -3016,7 +3031,7 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   journal-bound and a lease sharing conflict (normally the held writer lease) as
   `WriterActive`, and keeps the selected version,
   its tree and the protected ancestry pinned. It carries the protected installation
-  identity and publisher scope for the host's comparison with the verified image. When the
+  identity and publisher scope. When the
   `current` record is absent or does not decode, a `PerUserDirect` selection republishes
   last-known-good under the exclusive writer lease after re-validating both known-good
   slots and the floor; a decoded non-known-good `current` still halts, and a machine
@@ -3030,9 +3045,20 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   and its payload codec, the KEL-19 `.keldeai` host container (T1) and its boot-time
   reader `ExpectedAppIdentity::from_signed_image` (KEL-254 T3 Part B) have landed, and
   the KEL-96 host consumes them: a lease-less Windows launch verifies its own image once
-  through `keld-guard`, reads the expectation from that pinned handle, selects its
-  installation and requires the record's publisher and app id to equal the verified
-  identity before any listener, child or window. No `keld build` step embeds the
+  through `keld-guard`, reads the expectation from that pinned handle and selects its
+  installation before any listener, child or window. The entrypoint takes a closed image
+  choice, `keld-host.exe` or `keld-updater-helper.exe`, and the verified signer, and
+  `keld-update` requires the record's publisher scope and app id to equal that signer
+  before the snapshot lease, the one rule for both images (KEL-53 T4d S9a). The same
+  locator anchors the elevated helper itself: `anchor_updater_helper` reads the helper's
+  own expectation, refuses every mode but `MachineUacDirect`, applies the signer rule and
+  requires its own image to be the journaled one or, without a journal, its role's
+  version (`current` for activation, last-known-good for recovery), all before the writer
+  lease or any write. The host derives the activation role's helper only through
+  `ActivePackageSelection::open_activation_helper`: the selected tree's
+  `keld-updater-helper.exe`, opened without following a reparse point under the recorded
+  mode's profile and held while its path is offered, and nothing outside
+  `MachineUacDirect`. No `keld build` step embeds the
   container yet (KEL-19 T3). Live feed orchestration, host candidate launch, the private
   health channel and its 30-second `Ready` observation, installed-host lifecycle
   composition and candidate-mode selection remain unimplemented. Planned Windows
@@ -3479,7 +3505,12 @@ The canonical tar contains `.keld/update-policy.v1` with exact UTF-8 bytes
 file. `keld-pack` is the single owner of its path and portable byte constant, and
 `keld-update` consumes that owner through a one-way internal dependency. Missing,
 duplicate or different policy refuses activation. The package producer includes it;
-the consumer checks its exact bytes before any extraction. macOS/Linux and any
+the consumer checks its exact bytes before any extraction. Every Windows package also
+carries exactly one regular file `keld-updater-helper.exe` at its tree root, beside
+`keld-host.exe`, in every install mode, because the signed artifact is mode-agnostic
+(KEL-53 T4d). `keld-pack` owns that path and the presence rule: its producer refuses a
+tree without it before any I/O, and `keld-update` refuses an archive without it only
+after the content digest, as it does the policy. macOS/Linux and any
 package requiring executable modes, links or other v0-excluded metadata remain blocked
 on an approved KEL-137 representation.
 
@@ -5171,6 +5202,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: keld-attempt record I/O failed (end of file, read or write failure, or expired deadline)
 - fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
 
+## KELD-IPC-018
+
+- crate: keld-ipc
+- message: no keld-attempt claimant was accepted before the claim deadline; the endpoint is closed
+- fix: Roll the attempt back: health cannot commit, and refused claimants never extend this deadline.
+
+## KELD-IPC-019
+
+- crate: keld-ipc
+- message: keld-attempt exchange step refused out of order; nothing was sent or read
+- fix: Follow the KEL-53 health sequence: the claim, KELD-AB1, KELD-AY1 (or KELD-AF1), the owner's health window, then one KELD-AK1; after a failure the owner only rolls back and the candidate never arms.
+
+## KELD-IPC-020
+
+- crate: keld-ipc
+- message: keld-attempt health not proven (the candidate reported KELD-AF1, or the owner's health window saw a byte, end of file, an exited or unreadable launched process, or a window already over when first awaited)
+- fix: The owner cannot commit health: roll the attempt back, writing KELD-AK1 rolled back once while the connection is still open, then end the candidate family.
+
+## KELD-IPC-021
+
+- crate: keld-ipc
+- message: keld-attempt health rolled back by the owner (KELD-AK1 result 2)
+- fix: Never arm the recovery gate: end the host on any later application-generation exit.
+
 ## KELD-WV-001
 
 - crate: keld-wv
@@ -5954,20 +6009,32 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-UPDATE-017
 
 - crate: keld-update
-- message: The host's build-time expected app identity is not a valid expectation
-- fix: Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then.
+- message: The executable's build-time expected app identity is not a valid expectation
+- fix: Rebuild `keld-host.exe` or `keld-updater-helper.exe` so keld-pack embeds a supported channel and the release's valid Ed25519 public key; the installed image refuses to run until then.
 
 ## KELD-UPDATE-018
 
 - crate: keld-update
 - message: The running executable is not bound to the installation it locates
-- fix: Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged.
+- fix: Launch keld-host.exe from its installation's selected version tree, and start keld-updater-helper.exe only from its installation's protected version tree, as keld-host.exe or an administrator starts it; repair or reinstall through the trusted installer if the layout is damaged.
 
 ## KELD-UPDATE-019
 
 - crate: keld-update
-- message: The verified host image does not carry exactly one readable, canonical expected-identity container
-- fix: Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container.
+- message: The verified executable image does not carry exactly one readable, canonical expected-identity container
+- fix: Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container.
+
+## KELD-UPDATE-020
+
+- crate: keld-update
+- message: The verified signer of an installed executable is not the publisher or the app that the installation's protected provenance records
+- fix: Reinstall the package from the publisher its installer recorded, signed for the app it recorded; an executable signed by another publisher or for another app never runs against this installation.
+
+## KELD-UPDATE-021
+
+- crate: keld-update
+- message: The updater helper refused to anchor itself to its installation, or its image was not derived for a launch
+- fix: Only a MachineUacDirect installation runs keld-updater-helper.exe, and only its journaled image or the image of the version its role requires; start nothing in its place, and repair or reinstall through the trusted installer if the installation is damaged.
 
 ## KELD-PACK-001
 
@@ -5997,48 +6064,48 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: Expected-app-identity payload bytes or fields are not canonical
-- fix: Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the host; never hand-edit the embedded bytes.
+- fix: Correct the app id (1-255 bytes), channel (1-16) or target (1-64) in the packaging configuration, with no control characters, and rebuild the image (`keld-host.exe` or `keld-updater-helper.exe`); never hand-edit the embedded bytes.
 
 ## KELD-PACK-006
 
 - crate: keld-pack
-- message: The host image is not an admissible Windows x64 PE32+ executable
-- fix: Use the unmodified prebuilt `keld-host.exe` of this Keld release; reinstall the signed package if an installed host is damaged.
+- message: The executable image is not an admissible Windows x64 PE32+ executable
+- fix: Use the unmodified prebuilt `keld-host.exe` or `keld-updater-helper.exe` of this Keld release; reinstall the signed package if an installed image is damaged.
 
 ## KELD-PACK-007
 
 - crate: keld-pack
-- message: The host image carries no `.keldeai` expected-identity container
-- fix: Rebuild with `keld build` so `keld-pack` embeds the expected identity before signing.
+- message: The executable image carries no `.keldeai` expected-identity container
+- fix: Rebuild with `keld build` so `keld-pack` embeds the expected identity into `keld-host.exe` or `keld-updater-helper.exe` before signing.
 
 ## KELD-PACK-008
 
 - crate: keld-pack
-- message: The host image already carries a `.keldeai` expected-identity container, or more than one
-- fix: Embed exactly once into the unmodified prebuilt host; never re-run embedding on its output.
+- message: The executable image already carries a `.keldeai` expected-identity container, or more than one
+- fix: Embed exactly once into the unmodified prebuilt `keld-host.exe` or `keld-updater-helper.exe`; never re-run embedding on its output.
 
 ## KELD-PACK-009
 
 - crate: keld-pack
-- message: The host image is signed or has bytes after its last section
-- fix: Embed into the unsigned prebuilt host before signing; never embed into a signed image or after appending data.
+- message: The executable image is signed or has bytes after its last section
+- fix: Embed into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing; never embed into a signed image or after appending data.
 
 ## KELD-PACK-010
 
 - crate: keld-pack
-- message: The host image has no header room for the expected-identity container
-- fix: Use a Keld-released prebuilt host; a host without header room is a Keld host-build defect to report.
+- message: The executable image has no header room for the expected-identity container
+- fix: Use a Keld-released prebuilt `keld-host.exe` or `keld-updater-helper.exe`; an image without header room is a Keld build defect to report.
 
 ## KELD-PACK-011
 
 - crate: keld-pack
 - message: The expected-identity container is not canonical
-- fix: The host's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`.
+- fix: The image's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`.
 
 ## KELD-PACK-012
 
 - crate: keld-pack
-- message: Reading the host's identity container from the verified executable failed
+- message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
 
 ---

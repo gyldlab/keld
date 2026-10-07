@@ -15,9 +15,12 @@
 // is written out literally, and the silent-peer observer and the claimant's
 // Windows-only AC1 checks reuse those same fixtures; splitting by size would
 // duplicate them or add a support module that exists only for a counter.
-// Tracking: KEL-270. Revisit when S6 adds the record exchange (move `mod claimant`
-// and the exchange scenarios beside the S6 client) or S11 adds BH1 to BO1,
-// whichever comes first.
+// Revisited at S6a (KEL-270 T4d), which added the record exchange: its scenarios
+// live beside the endpoint and client tests (`attempt/tests/claim.rs`,
+// `health.rs`) on the shipped pipe; `mod claimant` stays here, because it checks
+// the codec-level `for_claimant` on these goldens, and moving it would duplicate
+// them or make that scenario tree depend on this suite.
+// Tracking: KEL-270. Revisit when S11 adds BH1 to BO1.
 
 use std::io::{self, Cursor, Read};
 
@@ -706,6 +709,26 @@ fn every_record_error_names_its_code_and_fix() {
     }
 }
 
+/// With the non-product `fuzzing` feature: the fuzz hook holds every property
+/// on each golden record and replays the committed coverage corpus clean.
+#[cfg(feature = "fuzzing")]
+#[test]
+fn the_fuzz_hook_holds_on_the_goldens_and_the_committed_corpus() -> io::Result<()> {
+    for (_, golden, _, _) in goldens() {
+        super::fuzz_attempt_records(&golden).map_err(io::Error::other)?;
+    }
+    let corpus =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/attempt_records");
+    let mut replayed = 0_usize;
+    for entry in std::fs::read_dir(corpus)? {
+        let bytes = std::fs::read(entry?.path())?;
+        super::fuzz_attempt_records(&bytes).map_err(io::Error::other)?;
+        replayed += 1;
+    }
+    assert!(replayed > 0, "the committed corpus is empty");
+    Ok(())
+}
+
 #[cfg(windows)]
 mod claimant {
     //! The claimant's `KELD-AC1` checks, which use the Windows-only locator.
@@ -717,7 +740,7 @@ mod claimant {
         ATTEMPT, CHANNEL, CLIENT_PID, CandidateChallenge, INSTALLATION, OwnerClaim, SERVER_NONCE,
         SERVER_PID, challenge, claim, encode, golden_transcript,
     };
-    use crate::attempt::{
+    use crate::attempt::records::{
         AttemptChallenge, AttemptClaim, AttemptRecord, AttemptRecordError, AttemptTranscript,
     };
     use crate::bootstrap::connected_named_pipe_pair;
