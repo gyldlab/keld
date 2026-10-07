@@ -17,7 +17,8 @@ validator enforces with the negative controls in §3. Under it, every new corpus
 carries one Electron pin and per-cell pinned citations. Its pending cells are
 red-until-implemented rather than hidden. Its uncited cells can never score `pass`.
 Its `artifact.sha256`, authority label and engine identity each have one declared
-meaning.
+meaning, and a run without verified containment is recorded as `unverified`, never
+as strict or legacy evidence.
 
 Non-goals:
 
@@ -26,9 +27,10 @@ Non-goals:
 - Re-recording `electron-lifecycle-v0` at v44.4.5 (a KEL-237 decision).
 - Adding a product corpus id to `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` (X02-T6, in
   the same reviewed change that flips the product cells).
-- Any change to the KEL-74 record or denominator formats, the verdict set, or the
-  authority-profile set in `crates/keld-compat/src/evidence.rs`.
-- Reconciling KEL-78 `unverified` with the KEL-74 authority vocabulary (KEL-78 owner).
+- Any change to the KEL-74 denominator format, the verdict set, the `schema` id, or
+  the four existing authority values. The one KEL-74 change is the added
+  `unverified` authority value (§4.4, task T2).
+- Implementing the KEL-78 OS sandbox, or changing how KEL-78 assigns a profile state.
 - The Zettlr pin question (its `^43.6.0` range excludes 44.4.5). It is parked until
   Zettlr work starts.
 
@@ -38,13 +40,16 @@ Non-goals:
   versus showcase panels) and §6 (migration corpus). This spec deviates from neither,
   and architecture 04 is unchanged.
 - `docs/specs/kel74-compat-evidence-schema.md` §4.1–§4.3: record fields, denominator,
-  the `score()` honesty gate. Consumed unchanged.
+  the `score()` honesty gate. This PR amends only the §4.1 `authority_profile` row,
+  which adds `unverified`. The rest is consumed unchanged.
 - `docs/engineering/compat-scoreboard.md`: denominator honesty rules. Consumed unchanged.
 - `docs/specs/kel77-bun-child-process-differential.md` §4.3 (fixture-set digest) and
   §4.5 (record mapping and the `legacy_sandbox_off` rationale for a test-process
   harness).
 - `docs/specs/kel78-strict-profile-sandbox.md` § Profile states (`unverified`,
-  `legacy`, `strict`).
+  `legacy`, `strict`; "Reporting must say `unverified`").
+- Owner decision on Linear KEL-78 (@0monish, 2026-10-07): option (b), an explicit
+  `unverified` authority value (§4.4).
 - `docs/engineering/electron-compat-reference.md` §20 (L0–L4 maturity levels) and §25
   (status vocabulary, non-normative). The v44.4.5 census pin is the `electron-api.json`
   release asset.
@@ -54,7 +59,8 @@ Non-goals:
 ## 3. Acceptance criteria (binary, each becomes a test)
 
 Each criterion names the one mutation that must fail it (its negative control).
-"Validator" means the X01-T4 owner in §4.3. "v1 manifest" means a manifest carrying
+"Validator" means the X01-T4 owner in §4.2 rule 8. AC13–AC15 test the KEL-74
+scorer and parser (task T2). "v1 manifest" means a manifest carrying
 `schema: keld.compat.corpus/v1` (§4.2).
 
 1. **One pin.** Given a v1 manifest with a single `upstream` object whose
@@ -100,12 +106,15 @@ Each criterion names the one mutation that must fail it (its negative control).
    SHA-256 of the exact committed manifest bytes. *Negative control:* flipping one
    manifest byte fails the digest assertion (the live KEL-237 control). Omitting
    `artifact_digest`, or giving any other value, is rejected.
-8. **Authority label.** Given a product-panel (corpus-app) record with
-   `authority_profile: legacy_sandbox_off`, when the validator runs, then it is
-   admitted only if the run's receipt records the KEL-78 `legacy` state from the
-   explicit Keld legacy declaration. *Negative control:* the same record bound to a
-   receipt that records `unverified` is rejected, so that cell stays `missing`. A
-   `strict_bun` label on a conformance-harness record is also rejected.
+8. **Authority label.** Given a product-panel (corpus-app) run whose receipt records
+   the KEL-78 `unverified` state, when the validator runs, then the run has a record
+   and that record has `authority_profile: unverified`. Given a corpus-app record with
+   `authority_profile: legacy_sandbox_off`, it is admitted only if the run's receipt
+   records the KEL-78 `legacy` state from the explicit Keld legacy declaration.
+   *Negative control:* an `unverified` receipt with no record for its cell is
+   rejected, because the run must not be dropped. A `legacy_sandbox_off` corpus-app
+   record whose receipt does not record the `legacy` state is also rejected. So is a
+   `strict_bun` label on a conformance-harness record.
 9. **Engine identity.** Given a v1 manifest whose `engine` maps each admitted
    platform to one identity, when the validator runs, then every record's
    `revisions.engine` equals that identity, then `@`, then a non-empty pinned
@@ -126,15 +135,49 @@ Each criterion names the one mutation that must fail it (its negative control).
     shape (no `schema` field) is admitted only for that corpus id. *Negative
     control:* a new corpus id using the v0 shape is rejected. Changing one v0 cell's
     `oracle_id` to `electron-v44.4.5.` inside the 44.3.0 corpus is also rejected.
+12. **No relabelling.** Given a corpus-app record bound to a receipt whose profile
+    state is `unverified`, when the validator runs, then it is admitted only with
+    `authority_profile: unverified`. *Negative control:* the same record labelled
+    `legacy_sandbox_off` is rejected, and so is the same record labelled
+    `strict_bun`. Each rejection names the receipt state and the record label.
+13. **No aggregation merge.** Given a two-cell showcase denominator filled by two
+    `pass` records that agree on artifact digest and engine, where one record is
+    `unverified` and the other is `legacy_sandbox_off`, when `score` runs, then
+    `complete` is false and `unweighted_percent` is `None`. The same holds when the
+    other record is `strict_bun`, `sandboxed_addon_worker` or
+    `user_approved_tool_child`. *Negative control:* a `parse_authority` that maps
+    `"unverified"` to `LegacySandboxOff` (or to `StrictBun`) makes this test fail.
+    So does a profile comparison in the `contributing_identity_consistent` check
+    (`evidence.rs:1415` at 9d26d488) that treats `Unverified` as equal to another
+    variant.
+14. **No scoring promotion.** Given a scoreboard whose contributing records are all
+    `unverified`, when `score` runs, then `Scoreboard::authority_profile()` is
+    `Some(Unverified)` and renders as `unverified`. Given a scoreboard whose records
+    mix `unverified` with any other value, it is `None`. The `claim` string contains
+    neither `strict_bun` nor `legacy_sandbox_off`, and its format is unchanged (KEL-74
+    §4.3 rule 7). *Negative control:* an accessor that returns the first record's
+    profile for a mixed board fails the test. So does one that reports
+    `LegacySandboxOff` or `StrictBun` for an all-`unverified` board, and so does a
+    claim or report line that names `strict_bun` or `legacy_sandbox_off` for an
+    `unverified` run.
+15. **Distinct vocabulary.** Given each of the five authority strings, when a v1
+    record carrying it is parsed, then `parse_authority` returns its own variant,
+    `AuthorityProfile::as_str` returns the same string, and `Unverified` is unequal
+    to each of the other four variants. The record `schema` stays
+    `keld.compat.evidence/v1`. *Negative control:* a sixth, unknown string still
+    fails with `KELD-COMPAT-005`, and swapping any two `as_str` arms fails the round
+    trip.
 
 ## 4. Design
 
 ### 4.1 First-principles and reuse decision
 
 No boundary change. This spec moves no handle ownership, crash ownership or
-principal minting. It adds no public API, no production dependency and no wire
-format. The KEL-74 ledger format is unchanged. The manifest is a test-fixture format,
-read only by keld-compat integration tests.
+principal minting. It adds no production dependency and no wire format. The manifest
+is a test-fixture format, read only by keld-compat integration tests. The one
+public-contract change is task T2: the `unverified` value in the KEL-74 authority
+vocabulary, a `Scoreboard::authority_profile()` accessor, and no `schema` change
+(§4.4).
 
 Live facts (origin/main at 9d26d488):
 
@@ -150,7 +193,23 @@ Live facts (origin/main at 9d26d488):
   else panics.
 - FACT: the KEL-74 verdict set is closed at `pass | fail | unknown | waived`, and
   records reject unknown fields. The authority set is `strict_bun |
-  sandboxed_addon_worker | legacy_sandbox_off | user_approved_tool_child`.
+  sandboxed_addon_worker | legacy_sandbox_off | user_approved_tool_child`, and any
+  other string fails `parse_authority` with `KELD-COMPAT-005`.
+- FACT: `AuthorityProfile` is an exhaustive public enum with a derived `PartialEq`. It
+  has no `as_str` and no `Serialize`, because records are parsed and never written by
+  keld-compat. Records are written as JSON text by their producers, for example the
+  `AUTHORITY_PROFILE` constant in `keld-runtime/tests/child_process_differential.rs`.
+  `score()` compares profiles only in `contributing_identity_consistent`
+  (`evidence.rs:1415`). Outside `evidence.rs`, the only uses of a variant are two test
+  assertions on `LegacySandboxOff`. One is in `child_process_differential.rs:854` and
+  the other is in `lifecycle_evidence_report.rs:454`.
+- FACT: KEL-74 versions its ledger with a closed `schema` string
+  (`EVIDENCE_SCHEMA = "keld.compat.evidence/v1"`, `evidence.rs:17`). An unknown
+  `schema` fails with `KELD-COMPAT-004`. Every value vocabulary inside v1 is a closed
+  `match`.
+- FACT: KEL-78 § Profile states makes `unverified` the default state, and it is the
+  live state on macOS, Windows and Linux. Its table says "Reporting must say
+  `unverified`". `legacy` comes only from an explicit Keld profile key.
 - FACT: `artifact.sha256` in the lifecycle records equals the denominator's
   `corpus_sha256`, which is the SHA-256 of the exact `corpus.json` bytes. KEL-77 §4.5
   uses the length-framed fixture-set digest of §4.3 instead.
@@ -172,12 +231,17 @@ Atoms (each falsified independently by the §3 control named):
 | Red cell | cell `implementing_ticket` | pending cell → `fail` + key | pending work read as ▲ or hidden | AC4, AC5 |
 | Observed-only | cell without citation | cell → `unknown` | uncited cell inflates score | AC6 |
 | Digest meaning | manifest `artifact_digest` | bytes → `artifact.sha256` | two meanings in one corpus | AC7 |
-| Authority | receipt profile state | run → label or no record | `unverified` run labelled | AC8 |
+| Authority | receipt profile state | run → one label | `unverified` run dropped or relabelled | AC8, AC12 |
+| Aggregation | `score()` identity check | records → consistent or not | `unverified` merged with another profile | AC13 |
+| Reporting | `Scoreboard::authority_profile()` | board → one profile or `None` | `unverified` board reported as strict or legacy | AC14 |
+| Vocabulary | `parse_authority` and `as_str` | string ↔ variant | `unverified` aliased to another variant | AC15 |
 | Engine | manifest `engine` | platform → identity | mixed engines in one row | AC9 |
 | Owner | test support module | all corpora → one parser | parallel validators drift | AC10, AC11 |
 
 Reuse: the eight rules extend the KEL-237 manifest and reuse KEL-74's parser,
-`score()` and its closed vocabularies. Nothing is rewritten. Compatibility fallback:
+`score()` and its closed vocabularies. The one widening is the `unverified` value,
+which is added to the owning `parse_authority` table rather than to a parallel
+mapping. Nothing is rewritten. Compatibility fallback:
 the v0 manifest shape stays readable for `electron-lifecycle-v0` only, until KEL-237
 re-records it. Performance claim: none.
 
@@ -258,15 +322,23 @@ and need no rung.
 | Product corpus (panel `product`, corpus-app rows; `electron-apps-v0`) | SHA-256 of the exact committed manifest bytes | first-proof |
 | Differential fixture corpus (KEL-77, X01-T1) | KEL-77 §4.3 fixture-set digest | next. X01-T1 adds its declared value in its own spec, and v1 rejects it |
 
-**Rule 6 — Authority label.** A conformance-harness record keeps the live
-`legacy_sandbox_off` label: it comes from an ordinary test process with no Keld
-session (KEL-237 report, KEL-77 §4.5), and it is never `strict_bun`. A corpus-app
-(product-panel) record is labelled `legacy_sandbox_off` only when the run's receipt
-records the KEL-78 `legacy` state, which comes from the explicit Keld legacy
-declaration. A run in the KEL-78 `unverified` state emits no record, so the cell
-stays `missing`. No authority value is invented. The product receipt schema
-(X02-T5) names the receipt field. The `unverified` vocabulary gap is raised with
-the KEL-78 owner (§10).
+**Rule 6 — Authority label.** A corpus-app (product-panel) run carries a KEL-78
+profile state in its receipt, and its record's label follows that state exactly:
+
+| Receipt profile state (KEL-78) | `authority_profile` | Admitted when |
+|---|---|---|
+| `unverified` | `unverified` | always. The run is recorded, never dropped |
+| `legacy` | `legacy_sandbox_off` | the receipt records the explicit Keld legacy declaration |
+| `strict` | `strict_bun` | the receipt records KEL-78 admission plus the complete OS-containment archive |
+
+`unverified` means the run had no verified containment. It is never strict or legacy
+evidence, and no validator, scorer or report may promote it to another value, merge
+it with another value or relabel it (AC12–AC15). A conformance-harness record keeps
+the live `legacy_sandbox_off` label. It comes from an ordinary test process with no
+Keld session and so has no KEL-78 state (KEL-237 report, KEL-77 §4.5), and it is
+never `strict_bun` (§10 Q2 records the scope of this exception). The product receipt
+schema (X02-T5) names the receipt field. KEL-74 task T2 adds the `unverified` value
+(§4.4).
 
 **Rule 7 — Engine identity.** Each v1 manifest declares `engine` *(addition)*. It
 maps each admitted `artifact.platform` value (`macos`, `windows`, `linux`) to one
@@ -373,8 +445,43 @@ pub fn sha256_uri(bytes: &[u8]) -> String {
   score past what a pinned sentence supports.
 - **Two owners**, one in test support and one public. That is parallel validators,
   which root `AGENTS.md` names as a defect.
+- **Dropping `unverified` runs** (option (a), the earlier draft of rule 6). It hides
+  the live state of every OS behind `missing` and contradicts KEL-78's "Reporting
+  must say `unverified`". The owner rejected it (§4.4).
+- **Labelling `unverified` runs `legacy_sandbox_off`.** `legacy` needs the explicit
+  Keld declaration and prints a forfeit, so the label would claim a declaration that
+  no one made.
+- **A `keld.compat.evidence/v2` schema for the new value.** The reasons are in §4.4.
 
-### 4.4 Other template items
+### 4.4 Owner decision and schema version
+
+Decision: the repository owner (@0monish) chose option (b) on Linear KEL-78 on
+2026-10-07. The KEL-74 authority vocabulary gets an explicit `unverified` value.
+Runs whose KEL-78 profile state is `unverified` are recorded with that value and are
+not dropped. `unverified` stays distinct from `strict_bun`,
+`sandboxed_addon_worker`, `legacy_sandbox_off` and `user_approved_tool_child`, and
+in particular from strict and legacy. Negative controls prove that it is never
+promoted, merged or relabelled in the row label (AC12), in aggregation (AC13), in
+scoring and reporting (AC14) or in the vocabulary (AC15). The KEL-78 OS sandbox is
+not part of this work.
+
+Schema version: no bump. The record `schema` stays `keld.compat.evidence/v1`, and
+T2 adds `unverified` as a fifth arm of the closed v1 `authority_profile` set. The
+reasons are these:
+
+- The change is additive. Every v1 record that parses today still parses, with the
+  same variant and the same meaning, including the frozen lifecycle records (AC11)
+  and the KEL-77 records.
+- A parser built before T2 rejects an `unverified` record with `KELD-COMPAT-005`.
+  It fails closed and cannot misread the value as another profile.
+- A v2 id would force a dual-version reader for those frozen v1 records with no
+  change of meaning for any of them, which is a second parse path for one format.
+
+Falsifier: a reader that must tell a four-value v1 record from a five-value one, and
+cannot treat `KELD-COMPAT-005` as the answer. In that case T2 bumps to v2 with a
+v1 fallback reader instead. The format review gate on T2 (§8) checks this decision.
+
+### 4.5 Other template items
 
 - Capabilities / manifest (spec 03): none.
 - Wire/protocol (spec 02): none.
@@ -389,32 +496,48 @@ pub fn sha256_uri(bytes: &[u8]) -> String {
 
 ## 5. Boundaries
 
-- Implement in (this spec): `docs/specs/gh532-first-proof-evidence-rules.md`, plus
-  the generated `llms.txt` and `llms-full.txt`.
+- Implement in (this spec): `docs/specs/gh532-first-proof-evidence-rules.md`, the
+  `authority_profile` row of `docs/specs/kel74-compat-evidence-schema.md` §4.1, plus
+  the generated `llms.txt` and `llms-full.txt`. No Rust changes.
+- Implement in (T2): `crates/keld-compat/src/evidence.rs` (the `AuthorityProfile`
+  variant, `parse_authority`, `as_str`, the `Scoreboard` accessor and the colocated
+  tests) and `docs/engineering/compat-scoreboard.md` (the reporting rule).
 - Implement in (X01-T4): `crates/keld-compat/tests/support/corpus_manifest.rs`,
   `crates/keld-compat/tests/lifecycle_corpus.rs`,
   `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
-- Must not touch: `crates/keld-compat/src/` (public API, vocabularies,
-  `DOCUMENTED_COMMITTED_PRODUCT_CORPORA`), `crates/keld-compat/Cargo.toml`
+- Must not touch: the rest of `crates/keld-compat/src/` (other vocabularies, the
+  `schema` ids, `DOCUMENTED_COMMITTED_PRODUCT_CORPORA`), `crates/keld-compat/Cargo.toml`
   dependencies, the bytes under `crates/keld-compat/fixtures/lifecycle-corpus/`,
-  `docs/architecture/`, `docs/research/`.
+  `docs/architecture/`, `docs/research/`, and the KEL-78 sandbox code.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [ ] T1 This spec (X01-T3, #532): rules, ACs and rejected alternatives, reviewed to
       `Status: approved`.
-- [ ] T2 X01-T4 (#566): its own spec gate, then the shared owner, with AC1–AC11 as
+- [ ] T2 KEL-74 `unverified` authority value (tracked on #532, decision on KEL-78).
+      Add `AuthorityProfile::Unverified` with a doc comment ("run without verified
+      containment; never strict or legacy evidence"). Add the `"unverified"` arm to
+      `parse_authority`. Add `AuthorityProfile::as_str` as the one variant-to-string
+      map, which records, reports and the AC14 render use. Add
+      `Scoreboard::authority_profile()`, which is `Some` only when every contributing
+      record shares one profile. Keep `schema` at `keld.compat.evidence/v1` (§4.4) and
+      add the AC13–AC15 colocated unit tests, each with its named mutation. Add the
+      reporting rule to `compat-scoreboard.md`. It lands before T3, because the T3
+      validator must parse `unverified` records.
+- [ ] T3 X01-T4 (#566): its own spec gate, then the shared owner, with AC1–AC12 as
       tests and the byte-identical lifecycle migration.
 
-The tracker actions are not PRs. They are the KEL-78 vocabulary note (§10), and the
-consumer edges, which the F01–F09 and X02 repairs own.
+The consumer edges are tracker actions, not PRs, and the F01–F09 and X02 repairs own
+them.
 
 ## 7. Test plan
 
-| AC | Test (X01-T4, `crates/keld-compat/tests/`) | Kind |
+| AC | Test (X01-T4 in `crates/keld-compat/tests/` unless marked T2) | Kind |
 |---|---|---|
 | 1–7, 9 | validator unit cases on in-test v1 fixture manifests and records, one accept case plus the named mutation each | integration (test-only) |
-| 8 | product receipt fixture with `legacy` versus `unverified` profile state | integration |
+| 8, 12 | product receipt fixtures with `unverified` and `legacy` profile states, each paired with every label, plus a receipt with no record | integration (X01-T4) |
+| 13, 14 | `score()` unit cases in `evidence.rs`: `unverified` paired with each other profile, and an all-`unverified` board | unit (T2) |
+| 15 | `parse_authority` and `as_str` round trip over all five strings, plus an unknown string | unit (T2) |
 | 10 | source census over `crates/keld-compat/tests/**/*.rs` and `src/lib.rs` exports; `cargo metadata` dependency kind for `sha2` | integration |
 | 11 | digest and byte equality of the committed lifecycle fixtures against constants pinned from `origin/main` | integration |
 
@@ -425,8 +548,16 @@ admission keeps the live Rust and Bun exact-case controls. Run with `CLAUDECODE`
 
 ## 8. Review gates triggered
 
-none. The work is test-only: no `unsafe`, no public API, no permission-model change,
-no dependency addition (`sha2` stays a dev-dependency) and no wire protocol change.
+This PR (T1) is documentation only and triggers none.
+
+- T2: public API yes, because `keld_compat::evidence` gains a variant on an
+  exhaustive public enum and the `Scoreboard::authority_profile()` accessor. A
+  downstream exhaustive `match` breaks, and the workspace has none. Format review
+  yes, because the versioned JSON ledger vocabulary widens without a `schema` bump
+  (§4.4). `unsafe`, permission model, dependency addition and kipc wire protocol:
+  none.
+- T3 (X01-T4): none. It is test-only, `sha2` stays a dev-dependency, and it has no
+  wire protocol change.
 
 ## 9. Perf impact
 
@@ -442,6 +573,12 @@ none. These are cold test-time JSON checks, off every budgeted path.
    at the same pin. electron-updater is outside the Electron repository, so it would
    also need its own pin rule. Falsifier: a first-proof exit that cannot be met
    without one of these cells reaching `pass`.
-2. **KEL-78 `unverified` versus KEL-74 authority values.** Rule 6 emits no record
-   for an `unverified` run and invents nothing. The gap is raised on KEL-78 for its
-   owner (GYLDLAB). The orchestrator posts that note, and it does not block this spec.
+2. **Scope of the harness label.** The owner decision (§4.4) restricts
+   `legacy_sandbox_off` to runs with the explicit legacy declaration. Draft decision
+   (delegated, reversible): it governs runs that carry a KEL-78 profile state, which
+   are the corpus-app runs. Conformance-harness records keep `legacy_sandbox_off`,
+   because they come from a plain test process with no KEL-78 state, the frozen
+   lifecycle records use it (AC11), and KEL-77 §4.5 relies on it. Falsifier: the
+   owner reads the decision as covering harness records. In that case new harness
+   corpora are labelled `unverified`, and `electron-lifecycle-v0` stays frozen until
+   KEL-237 re-records it.
