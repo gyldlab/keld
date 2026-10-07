@@ -10,7 +10,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
   `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
-  `keld-pack` `src`, `keld-cli` templates, or workspace
+  `keld-pack` / `keld-updater-helper` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -1045,3 +1045,27 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-pack
 - message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
+
+## KELD-HELPER-001
+
+- crate: keld-updater-helper
+- message: keld-updater-helper.exe was not started on Windows with exactly one accepted argument
+- fix: Only keld-host.exe starts it, on Windows, with exactly one argument: the activation rendezvous `\.\pipe\keld-attempt-<64 lowercase hex>`. The argument conveys no authority, and the helper refuses before any open or write.
+
+## KELD-HELPER-002
+
+- crate: keld-updater-helper
+- message: The updater helper could not verify its own image through the KEL-135 Authenticode verifier, so it could not anchor itself
+- fix: Run only the signed keld-updater-helper.exe from its installation's protected version tree; repair or reinstall through the trusted installer if it is damaged.
+
+## KELD-HELPER-003
+
+- crate: keld-updater-helper
+- message: The updater helper's activation role is not available in this release; it refused after anchoring itself, before the writer lease and any write
+- fix: Nothing changed; keep running the current version. Activation through the updater helper ships with a later release.
+
+## KELD-HELPER-004
+
+- crate: keld-updater-helper
+- message: The updater helper's recovery-only role is disabled in this release (RecoveryDisabled); it refused after anchoring itself, before the writer lease and any write
+- fix: No supported resolution exists other than administrator action; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them.
