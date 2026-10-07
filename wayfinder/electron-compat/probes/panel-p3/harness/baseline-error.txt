@@ -1,0 +1,3 @@
+SyntaxError: Export named 'BrowserWindow' not found in module '/private/tmp/claude-501/-Users-centillionaire-WORK-keld/9d46ef65-830a-4067-90bc-f68a26ad7f85/scratchpad/p3/drawio-desktop/node_modules/.bun/electron@44.5.1/node_modules/electron/index.js'.
+
+Bun v1.4.2 (macOS arm64)

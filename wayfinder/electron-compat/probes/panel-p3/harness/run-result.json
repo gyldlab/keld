@@ -1,0 +1,588 @@
+{
+  "steps": [
+    {
+      "phase": "import",
+      "step": "import src/main/electron.js",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "boot",
+      "step": "first window constructed",
+      "ok": true,
+      "detail": {
+        "winId": 1,
+        "seq": 114
+      }
+    },
+    {
+      "phase": "boot",
+      "step": "main sent 'args-obj' (boot handshake complete)",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "boot",
+      "step": "onBeforeRequest in-app file",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "phase": "boot",
+      "step": "onBeforeRequest outside file",
+      "ok": true,
+      "detail": {
+        "cancel": true
+      }
+    },
+    {
+      "phase": "open",
+      "step": "getDocumentsFolder",
+      "ok": true,
+      "detail": "/private/tmp/claude-501/-Users-centillionaire-WORK-keld/9d46ef65-830a-4067-90bc-f68a26ad7f85/scratchpad/p3/fakehome/Documents"
+    },
+    {
+      "phase": "open",
+      "step": "showOpenDialog -> fixture",
+      "ok": true,
+      "detail": [
+        "/private/tmp/claude-501/-Users-centillionaire-WORK-keld/9d46ef65-830a-4067-90bc-f68a26ad7f85/scratchpad/p3/fixtures/sample.drawio"
+      ]
+    },
+    {
+      "phase": "open",
+      "step": "readFile (blessed fixture)",
+      "ok": true,
+      "detail": {
+        "len": 993
+      }
+    },
+    {
+      "phase": "open",
+      "step": "fileStat",
+      "ok": true,
+      "detail": {
+        "size": 993,
+        "mtimeMs": true
+      }
+    },
+    {
+      "phase": "open",
+      "step": "isFileWritable",
+      "ok": true,
+      "detail": true
+    },
+    {
+      "phase": "open",
+      "step": "getFileDrafts",
+      "ok": true,
+      "detail": {
+        "count": 0
+      }
+    },
+    {
+      "phase": "open",
+      "step": "watchFile",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "open",
+      "step": "edit is renderer-only (no main-process events expected)",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "open",
+      "step": "NEG readFile of unblessed file is refused",
+      "ok": true,
+      "detail": "path not authorised"
+    },
+    {
+      "phase": "open",
+      "step": "NEG readFile via ../ traversal is refused",
+      "ok": true,
+      "detail": "path not authorised"
+    },
+    {
+      "phase": "open",
+      "step": "NEG readFile inside app bundle is refused",
+      "ok": true,
+      "detail": "path not authorised"
+    },
+    {
+      "phase": "save",
+      "step": "saveDraft (autosave while editing)",
+      "ok": true,
+      "detail": "<P3>/fixtures/.$sample.drawio.dtmp"
+    },
+    {
+      "phase": "save",
+      "step": "saveFile to opened file (backup + write + verify)",
+      "ok": true,
+      "detail": {
+        "size": 1002
+      }
+    },
+    {
+      "phase": "save",
+      "step": "deleteFile (draft removed after save)",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "save",
+      "step": "showSaveDialog -> new path",
+      "ok": true,
+      "detail": "<P3>/fixtures/saved-as.drawio"
+    },
+    {
+      "phase": "save",
+      "step": "saveFile to new path (Save As)",
+      "ok": true,
+      "detail": {
+        "size": 1002
+      }
+    },
+    {
+      "phase": "save",
+      "step": "writeFile to dialog-blessed path",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "save",
+      "step": "NEG writeFile to unblessed path is refused",
+      "ok": true,
+      "detail": "path not authorised"
+    },
+    {
+      "phase": "save",
+      "step": "NEG saveFile into userData is refused",
+      "ok": true,
+      "detail": "path not authorised"
+    },
+    {
+      "phase": "save",
+      "step": "NEG saveFile outside p3 is refused by the app",
+      "ok": true,
+      "detail": "path not authorised"
+    },
+    {
+      "phase": "close",
+      "step": "saveDraft (unsaved changes pending at close)",
+      "ok": true,
+      "detail": "<P3>/fixtures/.$sample.drawio.dtmp"
+    },
+    {
+      "phase": "close",
+      "step": "cancel: 'close' prevented and isModified requested",
+      "ok": true,
+      "detail": {
+        "channel": "isModified"
+      }
+    },
+    {
+      "phase": "close",
+      "step": "window survives Cancel",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "close",
+      "step": "discard: 'close' prevented and isModified requested",
+      "ok": true,
+      "detail": {
+        "channel": "isModified"
+      }
+    },
+    {
+      "phase": "close",
+      "step": "window destroyed after Discard",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "phase": "close",
+      "step": "'window-all-closed' handled; macOS keeps the app resident (no app.quit expected)",
+      "ok": true,
+      "detail": {
+        "openWindows": 0,
+        "quitRequested": 0
+      }
+    }
+  ],
+  "importError": null,
+  "notes": [],
+  "loadedModules": 777,
+  "loadedPackages": [
+    "@cantoo/pdf-lib",
+    "ajv",
+    "ajv-formats",
+    "ansi-regex",
+    "ansi-styles",
+    "app:src/main/args.js",
+    "app:src/main/backup-file.js",
+    "app:src/main/disableUpdate.js",
+    "app:src/main/electron.js",
+    "app:src/main/export-files.js",
+    "app:src/main/file-watcher.js",
+    "app:src/main/progress-bar.js",
+    "app:src/main/system-path.js",
+    "app:src/main/update-channel.js",
+    "app:src/main/window-bounds.js",
+    "atomically",
+    "builder-util-runtime",
+    "cli-truncate",
+    "conf",
+    "crc",
+    "culori",
+    "debounce-fn",
+    "debug",
+    "dot-prop",
+    "electron-context-menu",
+    "electron-dl",
+    "electron-is-dev",
+    "electron-log",
+    "electron-store",
+    "electron-updater",
+    "env-paths",
+    "escape-goat",
+    "escape-string-regexp",
+    "ext-list",
+    "ext-name",
+    "fast-deep-equal",
+    "fast-uri",
+    "fflate",
+    "fs-extra",
+    "get-east-asian-width",
+    "graceful-fs",
+    "has-flag",
+    "html-entities",
+    "is-fullwidth-code-point",
+    "is-plain-obj",
+    "is-safe-filename",
+    "js-yaml",
+    "json-schema-traverse",
+    "jsonfile",
+    "lazy-val",
+    "lodash.escaperegexp",
+    "lodash.isequal",
+    "mime-db",
+    "mimic-function",
+    "ms",
+    "node-html-better-parser",
+    "path-exists",
+    "pupa",
+    "sax",
+    "semver",
+    "slice-ansi",
+    "sort-keys",
+    "sort-keys-length",
+    "string-width",
+    "strip-ansi",
+    "stubborn-fs",
+    "stubborn-utils",
+    "supports-color",
+    "tslib",
+    "uint8array-extras",
+    "universalify",
+    "unused-filename",
+    "when-exit"
+  ],
+  "counts": {
+    "seq": 518
+  },
+  "unresolved": [],
+  "thrown": [
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '/nonexistent-keld-canary-read'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.promises.readFile",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '/nonexistent-keld-canary-p'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.promises.readFile",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '/nonexistent-keld-canary-p2'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.writeFileSync",
+      "error": "EPERM",
+      "message": "EPERM: keld harness blocked a write outside p3/: /private/tmp/keld-harness-canary-must-not-exist",
+      "blocked": true
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "import",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "boot",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "boot",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "boot",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "boot",
+      "kind": "fs",
+      "op": "fs.readFileSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "boot",
+      "kind": "fs",
+      "op": "fs.realpathSync",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<HOME>/Library/Application Support/draw.io/config.json'"
+    },
+    {
+      "phase": "boot",
+      "kind": "fs",
+      "op": "fs.readFile",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, open '<HOME>/Library/Application Support/draw.io/.updaterId'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/.$sample.drawio.dtmp'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/.$sample.drawio.dtmp'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/.$sample.drawio.bkp'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/.$sample.drawio.bkp'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.realpathSync.native",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, realpath '<P3>/fixtures/saved-as.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/saved-as.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/saved-as.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.realpathSync.native",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, realpath '<P3>/fixtures/export-out.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/export-out.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/export-out.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/unblessed.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/unblessed.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '/private/tmp/keld-harness-should-never-exist.drawio'"
+    },
+    {
+      "phase": "save",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '/private/tmp/keld-harness-should-never-exist.drawio'"
+    },
+    {
+      "phase": "close",
+      "kind": "fs",
+      "op": "fs.promises.realpath",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/.$sample.drawio.dtmp'"
+    },
+    {
+      "phase": "close",
+      "kind": "fs",
+      "op": "fs.promises.lstat",
+      "error": "ENOENT",
+      "message": "ENOENT: no such file or directory, lstat '<P3>/fixtures/.$sample.drawio.dtmp'"
+    }
+  ],
+  "console": [
+    {
+      "phase": "boot",
+      "step": "boot.ready",
+      "level": "error",
+      "text": "14:28:58.248 › Error: Error: net::ERR_INTERNET_DISCONNECTED (blocked by keld harness)\n    at <anonymous> (<P3>/harness/lib/fake-electron.cjs:180:112)"
+    },
+    {
+      "phase": "boot",
+      "step": "boot.ready",
+      "level": "error",
+      "text": "14:28:58.252 › Update failure (autoUpdater error event): Error: net::ERR_INTERNET_DISCONNECTED (blocked by keld harness)\n    at <anonymous> (<P3>/harness/lib/fake-electron.cjs:180:112)"
+    },
+    {
+      "phase": "boot",
+      "step": "boot.ready",
+      "level": "error",
+      "text": "14:28:58.253 › Update failure (checkForUpdates (boot)): Error: net::ERR_INTERNET_DISCONNECTED (blocked by keld harness)\n    at <anonymous> (<P3>/harness/lib/fake-electron.cjs:180:112)"
+    },
+    {
+      "phase": "boot",
+      "step": "boot.probe-webRequest",
+      "level": "log",
+      "text": "Blocked loading file from file://<HOME>/secret file://<HOME>/secret file://<APP>/drawio/src/main/webapp"
+    }
+  ],
+  "processShape": {
+    "process.type": "ok",
+    "process.defaultApp": "ok",
+    "process.resourcesPath": "ok",
+    "process.versions.electron": "ok",
+    "process.versions.chrome": "ok"
+  },
+  "envProxyInstalled": true,
+  "quit": {
+    "quitRequested": 0,
+    "exitRequested": null
+  },
+  "sentToRenderer": [
+    {
+      "win": 1,
+      "channel": "args-obj",
+      "args": [
+        {
+          "args": [],
+          "create": "<undefined>",
+          "layout": "<undefined>",
+          "normalize": "<undefined>",
+          "mermaidImage": "<undefined>"
+        }
+      ]
+    },
+    {
+      "win": 1,
+      "channel": "isModified",
+      "args": [
+        "81l9vd7ux6r9sbzfkfkbhu"
+      ]
+    },
+    {
+      "win": 1,
+      "channel": "isModified",
+      "args": [
+        "cl5h246mbeuhlacuq2j7s"
+      ]
+    }
+  ],
+  "variant": {
+    "packaged": true,
+    "suffix": ""
+  }
+}

@@ -1,0 +1,132 @@
+site	api	phase	class	grant_shape	first_proof_needed	evidence
+src/main/electron.js:30	electron-store constructor: app.getPath(userData)+fs.readFileSync(config.json)+fs.mkdirSync(userData)	import	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 41,44,46; electron-store/index.js:17,63
+src/main/electron.js:50	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 76; electron.js:50
+src/main/electron.js:52	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 79 (store.size); electron.js:52
+src/main/electron.js:199	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	import	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 53; electron.js:199
+src/main/electron.js:201	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	import	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 56; electron.js:201
+src/main/electron.js:229	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	import	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 59 (persisted blessedPaths load); electron.js:229
+src/main/electron.js:561	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 177; electron.js:561
+src/main/electron.js:605	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 174; electron.js:605
+src/main/electron.js:646	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	import	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 62; electron.js:646
+src/main/electron.js:704	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:activation	trace seq 110 (createWindow lastWinSize); electron.js:704
+src/main/electron.js:1957	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:activation	trace seq 144 (menu template); electron.js:1957
+src/main/electron.js:1970	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	trace static electron.js:1970 (update-interval menu); electron.js:1970
+src/main/electron.js:2087	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:activation	trace seq 153; electron.js:2087
+src/main/electron.js:2089	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:activation	trace seq 154; electron.js:2089
+src/main/electron.js:2092	electron-store get: conf fs.readFileSync(userData/config.json)+fs.mkdirSync(userData)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	trace seq 155; absent with DRAWIO_DISABLE_UPDATE=true (negctl trace); electron.js:2092
+src/main/electron.js:70	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 85-99 (first-run migration key)
+src/main/electron.js:256	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	open,save	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:open	trace seq 243-254 (persistBlessedPaths after dialog mint)
+src/main/electron.js:587	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 199-210
+src/main/electron.js:642	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 187-198
+src/main/electron.js:830	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	close	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:close	trace seq 472-483 (rememberWinSize on every close event)
+src/main/electron.js:1847	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:1847
+src/main/electron.js:1860	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:1860
+src/main/electron.js:1873	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:1873
+src/main/electron.js:1962	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:1962
+src/main/electron.js:1987	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:1987
+src/main/electron.js:2096	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	trace seq 156-167; absent with DRAWIO_DISABLE_UPDATE=true (negctl trace)
+src/main/electron.js:2394	electron-store set: conf atomic rewrite of userData/config.json (realpathSync,statSync,openSync tmp,writeSync,fsyncSync,closeSync,chownSync,renameSync; env SNAP)	user	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:2394
+src/main/electron.js:58	app.getPath('userData')	boot	declared-role	boot descriptor userData (sync)	yes:install,activation	trace seq 82
+src/main/electron.js:59	fs.existsSync(userData/Local Storage/leveldb)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	yes:install,activation	trace seq 83
+src/main/electron.js:59	fs.readdirSync(userData/Local Storage/leveldb)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	static electron.js:59 (short-circuit: dir absent on fresh install)
+src/main/electron.js:77	fs.existsSync('/.flatpak-info')	import	declared-role	literal stat /.flatpak-info (deny==false is correct)	no	trace seq 48; absent with DRAWIO_DISABLE_UPDATE=true (|| short-circuit, electron.js:74-77)
+src/main/electron.js:651	fs.existsSync(codeDir/js/diagramly/Devel.js)	import	declared-role	app bundle resource read (KEL-79 root)	no	static electron.js:651 (only when DRAWIO_ENV=dev)
+src/main/electron.js:675	fs.existsSync(process.cwd()+'/urlParams.json')	import	declared-role	literal read <role cwd>/urlParams.json (deny==absent is correct)	yes:activation	trace seq 65
+src/main/electron.js:677	fs.readFileSync(process.cwd()+'/urlParams.json')	import	declared-role	literal read <role cwd>/urlParams.json	no	static electron.js:677 (file absent)
+src/main/electron.js:75	env get DRAWIO_DISABLE_UPDATE	import	declared-role	role env key DRAWIO_DISABLE_UPDATE=true	yes:install,activation	trace seq 47; negctl seq 47
+src/main/electron.js:78	env get DRAWIO_NO_SILENT_UPDATE	import	declared-role	role env key (absent)	no	trace seq 49; absent in negctl (short-circuit electron.js:78)
+src/main/electron.js:181	env get DRAWIO_ENV	import	declared-role	role env key (absent in release)	yes:activation	trace seq 52
+src/main/electron.js:196	env set NoDefaultCurrentDirectoryInExePath	import	declared-role	role env (win32 only)	no	static electron.js:194-197 (isWin)
+src/main/system-path.js:9	env get SystemRoot/windir	user	declared-role	role env (win32 only)	no	static system-path.js:7-9
+pkg:electron-log/src/node/transforms/object.js:3	env NODE_DEBUG	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 17; negctl same seq
+pkg:electron-log/src/node/transports/console.js:56	env FORCE_STYLES	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 20; negctl same seq
+pkg:graceful-fs/polyfills.js:6	env GRACEFUL_FS_PLATFORM	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 23; negctl same seq
+pkg:graceful-fs/graceful-fs.js:84	env NODE_DEBUG	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 24; negctl same seq
+pkg:graceful-fs/graceful-fs.js:97	env TEST_GRACEFUL_FS_GLOBAL_PATCH	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 25; negctl same seq
+pkg:supports-color/index.js:21	env has FORCE_COLOR	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 26; negctl same seq
+pkg:debug/src/node.js:124	env enumerate all env keys (DEBUG_*)	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 27; negctl same seq
+pkg:debug/src/node.js:221	env DEBUG	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 28; negctl same seq
+pkg:debug/src/node.js:209	env delete DEBUG	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 29; negctl same seq
+pkg:semver/internal/debug.js:6	env NODE_DEBUG	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 30; negctl same seq
+pkg:electron-updater/out/differentialDownloader/downloadPlanBuilder.js:73	env DIFFERENTIAL_DOWNLOAD_PLAN_BUILDER_VALIDATE_RANGES	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 31; negctl same seq
+pkg:electron-is-dev/index.js:8-9	env has/get ELECTRON_IS_DEV	import	declared-role	role env (host-composed; key absent)	yes:activation	trace seq 38,39; negctl same seq
+pkg:env-paths/index.js:5-6	os.homedir/os.tmpdir (conf default paths)	import	declared-role	boot descriptor HOME,TMPDIR	yes:activation	trace seq 36,37
+pkg:electron-log/src/node/NodeExternalApi.js:107-131	os.homedir/os.tmpdir + app.getPath(appData) (log path vars)	boot	declared-role	boot descriptor HOME,TMPDIR,appData	no	trace seq 219-223; absent in negctl
+src/main/electron.js:2078	electron-updater setFeedURL({provider:github,owner:jgraph,repo:drawio-desktop}) (no I/O)	boot	declared-role	recorded no-op (map decision); no grant	yes:activation	static electron.js:2078-2083 (outside the disableUpdate guard)
+src/main/electron.js:2099	electron-updater checkForUpdates -> fs.readFile userData/.updaterId (graceful-fs)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared); route to keld-update instead	no	trace seq 170-171; absent in negctl
+src/main/electron.js:2099	electron-updater checkForUpdates -> fs.access(userData) (universalify)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	trace seq 212; absent in negctl
+src/main/electron.js:2099	electron-updater checkForUpdates -> fs.writeFile userData/.updaterId (persistent per-install id)	boot	declared-role	app.fs.read+write [$APPDATA/draw.io/**] (userData; role-declared)	no	trace seq 213; absent in negctl
+src/main/electron.js:2099	electron-updater -> session.fromPartition('electron-updater')	boot	declared-role	host session subset (F05); none if disabled	no	trace seq 214; absent in negctl
+src/main/electron.js:2099	electron-updater -> electron.net.request GET https://github.com/jgraph/drawio-desktop/releases.atom (header x-user-staging-id)	boot	declared-role	app.net.connect [https://github.com/jgraph/drawio-desktop/releases.atom] (+ unknown redirect/download hosts); first proof: disabled via env key	no	trace seq 215-216 (refused by harness); absent in negctl
+src/main/electron.js:1901	electron-updater checkForUpdates (manual, IPC checkForUpdates)	user	declared-role	same as boot check; handler returns null when disabled (electron.js:1894)	no	static electron.js:1892-1901
+src/main/electron.js:2350	electron-updater quitAndInstall / downloadUpdate (2360,2389)	user	declared-role	keld-update adapter (arch 04 §7); not legacy-admissible (arch 03 §5: legacy same-user role mode refuses direct update)	no	static electron.js:2350,2360,2389
+src/main/electron.js:98	electron-log file transport: mkdirSync+writeFileSync+statSync ~/Library/Logs/draw.io/main.log	boot	declared-role	app.fs.write [<logs>/draw.io/**] (role-declared)	no	trace seq 225-229 (update-error path only); absent in negctl
+src/main/electron.js:4195	dialog.showOpenDialog (blessPath on result)	open	dialog-minted	mint: host file-picker result -> per-path read+write grant + sibling set {.$N*, ~$N*, .drawio-bkp-*.tmp} in same dir	yes:open	trace seq 241; electron.js:4191-4208
+src/main/electron.js:4216	dialog.showSaveDialog (blessPath on result)	save	dialog-minted	mint: host file-picker result -> per-path read+write grant + sibling set {.$N*, ~$N*, .drawio-bkp-*.tmp} in same dir (create-new)	no	trace seq 359 (Save As; full_feature)
+src/main/electron.js:4175	app.getPath('documents') (dialog defaultPath)	open	declared-role	boot descriptor $DOCUMENTS path fact (no fs)	yes:open	trace seq 236
+src/main/electron.js:277	fs.realpathSync.native(dialog path) in blessPath	open,save	dialog-minted	canonicalise at mint (host-side)	yes:open	trace seq 242
+src/main/electron.js:285	fs.realpathSync.native(parent dir) in blessPath (new file)	save	dialog-minted	parent canonicalise at mint for create-new	no	trace seq 362 (Save As)
+src/main/electron.js:3727	fsProm.realpath (canonicalisePath)	open,edit,save,close	dialog-minted	stat within minted grant	yes:open,edit,save,close	trace seq 261
+src/main/electron.js:3737	fsProm.lstat (canonicalisePath, missing file)	edit,save,close	dialog-minted	stat within minted sibling set	yes:edit,close	trace seq 308
+src/main/electron.js:3754	fsProm.realpath(parent dir) (canonicalisePath)	edit,save,close	dialog-minted	stat of minted file's parent dir	yes:edit,close	trace seq 310
+src/main/electron.js:3796	app.getPath('userData') (assertWritablePath deny-list)	edit,save,close	declared-role	boot descriptor userData (no fs)	yes:edit,save,close	trace seq 311
+src/main/electron.js:4238	fsProm.readFile (rendererReq readFile)	open	dialog-minted	read within minted grant	yes:open	trace seq 262
+src/main/electron.js:4257	fsProm.stat (fileStat)	open	dialog-minted	stat within minted grant	yes:open	trace seq 267
+src/main/electron.js:4266	fsProm.access W_OK (isFileWritable)	open	dialog-minted	stat within minted grant	yes:open	trace seq 272
+src/main/electron.js:3898	fs.existsSync(.$N.dtmp) (getFileDrafts)	open	dialog-minted	sibling stat	yes:open	trace seq 277
+src/main/electron.js:3908	fs.existsSync(~$N.dtmp) (getFileDrafts, legacy)	open	dialog-minted	sibling stat	yes:open	trace seq 278
+src/main/electron.js:3913	fsProm.rename(~$ draft -> .$ draft)	open	dialog-minted	sibling rename	no	static electron.js:3913 (no legacy draft)
+src/main/electron.js:3925	fsProm.lstat+readFile(draft) (getFileDrafts)	open	dialog-minted	sibling read	no	static electron.js:3925-3926 (no drafts)
+src/main/file-watcher.js:36	fs.watchFile (5 s stat poll)	open	dialog-minted	stat-watch within minted grant	yes:open	trace seq 284
+src/main/file-watcher.js:60	fs.unwatchFile (unwatch)	user	dialog-minted	stat-watch within minted grant	no	static file-watcher.js:60
+src/main/file-watcher.js:77	fs.unwatchFile (unwatchAll on destroy)	close	dialog-minted	stat-watch within minted grant	yes:close	trace seq 518
+src/main/electron.js:3878	fs.existsSync(draft name probe) (getDraftFileName)	edit,close	dialog-minted	sibling stat	yes:edit,close	trace seq 305
+src/main/electron.js:3952	fsProm.open(draft, O_SYNC|O_CREAT|O_WRONLY|O_TRUNC)+writeFile+sync+close (3953-3958)	edit,close	dialog-minted	sibling create/write .$N.dtmp	yes:edit,close	trace seq 312-315
+src/main/electron.js:3966	child_process.spawn(System32\attrib.exe, ['+h', draft])	edit	declared-role	app.shell.spawn [{cmd:$SYSTEM32/attrib.exe, args:reviewed}] (win32 only)	no	static electron.js:3961-3966 (isWin); 0 child_process events in trace
+src/main/electron.js:4132	fs.existsSync(file) (saveFile conflict check)	save	dialog-minted	stat within minted grant	yes:save	trace seq 321
+src/main/electron.js:4133	fsProm.stat(file) (saveFile conflict check)	save	dialog-minted	stat within minted grant	yes:save	trace seq 322
+src/main/electron.js:4095	fsProm.readFile(file) (content for backup)	save	dialog-minted	read within minted grant	yes:save	trace seq 329
+src/main/backup-file.js:17	fsProm.open(.drawio-bkp-<uuid>.tmp, O_CREAT|O_EXCL, 0600)+writeFile+sync+close (20-22)	save	dialog-minted	sibling create .drawio-bkp-*.tmp (NOT checked by draw.io's own gate)	yes:save	trace seq 330-333
+src/main/backup-file.js:24	fsProm.rename(tmp -> .$N.bkp)	save	dialog-minted	sibling rename within minted dir	yes:save	trace seq 334
+src/main/backup-file.js:37	fsProm.unlink(tmp) on failure	save	dialog-minted	sibling delete	no	static backup-file.js:35-37
+src/main/electron.js:4113	child_process.spawn(System32\attrib.exe, ['+h', bkp])	save	declared-role	app.shell.spawn [{cmd:$SYSTEM32/attrib.exe, args:reviewed}] (win32 only)	no	static electron.js:4108-4113 (isWin)
+src/main/electron.js:4035	fsProm.open(file, O_SYNC|O_CREAT|O_WRONLY|O_TRUNC)+writeFile+sync+close (4036-4041)	save	dialog-minted	write within minted grant	yes:save	trace seq 335-338
+src/main/electron.js:4044	fsProm.stat (post-write verify)	save	dialog-minted	stat within minted grant	yes:save	trace seq 339
+src/main/electron.js:4047	fsProm.readFile (post-write verify)	save	dialog-minted	read within minted grant	yes:save	trace seq 340
+src/main/electron.js:4070	fs.existsSync(~$N.bkp) (old backup)	save	dialog-minted	sibling stat	yes:save	trace seq 341
+src/main/electron.js:4075	fs.unlink(~$N.bkp)	save	dialog-minted	sibling delete	no	static electron.js:4075 (absent)
+src/main/electron.js:4304	fsProm.open(O_RDONLY)+read 16 B+close (deleteFile sniff, 4306-4307)	save,close	dialog-minted	sibling read	yes:save,close	trace seq 347-349
+src/main/electron.js:4311	fsProm.unlink(draft) (deleteFile)	save,close	dialog-minted	sibling delete .$N.dtmp	yes:save,close	trace seq 350, 514
+src/main/electron.js:4160	fsProm.open+writeFile+sync+close (rendererReq writeFile; 4161-4166)	user	dialog-minted	write within minted grant	no	trace seq 423-426 (export writeFile; full_feature)
+src/main/electron.js:4188	fs.existsSync (checkFileExists, after assertReadablePath)	user	dialog-minted	stat within minted grant	no	static electron.js:4182-4188
+src/main/electron.js:3996	fsProm.lstat+readFile(bkp) (getBkpFile)	user	dialog-minted	sibling read	no	static electron.js:3996-3997
+src/main/electron.js:1801	fs.existsSync(argv path) -> blessPath	boot	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant)	no	static electron.js:1797-1805 (no argv in first proof; args-obj seq 186 has args:[])
+src/main/electron.js:541	fs.statSync (statSafe on argv/second-instance path)	boot	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant)	no	static electron.js:541,1748,1790
+src/main/electron.js:2152	app 'open-file' -> blessPath	boot	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant) (macOS file association)	no	static electron.js:2152; open-file registered boot (trace_summary §9.7)
+src/main/electron.js:1114	fs.statSync(-o output) (CLI export)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant) (argv output path)	no	static electron.js:1114
+src/main/electron.js:1273	fs.statSync(input) (CLI export)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant)	no	static electron.js:1273
+src/main/electron.js:1348	fs.readFileSync(input) (CLI export)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant)	no	static electron.js:1348
+src/main/electron.js:1567	fs.writeFileSync+fsyncSync+closeSync(export fd) (1568,1572)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant) (output subtree)	no	static electron.js:1567-1572
+src/main/export-files.js:18	fs.lstatSync (lstatSafe)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant) (input subtree)	no	static export-files.js:18
+src/main/export-files.js:56	fs.readdirSync (recursive folder export)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant) (input subtree)	no	static export-files.js:56,63
+src/main/export-files.js:102	fs.openSync (openExportFile)	cli	dialog-minted	launch-minted grant (host mints from argv/open-file; same shape as dialog grant) (output subtree)	no	static export-files.js:102
+src/main/electron.js:513	fs.realpathSync.native(config-declared library/template/font path)	open	unscopable	none: renderer configuration nominates read paths; no trusted mint	no	static electron.js:478-513; trace seq 293 executeJavaScript, no realpath (empty config)
+src/main/electron.js:577	fs.existsSync(localStorage .recent entry) -> blessPath (TOFU migration)	boot	unscopable	none: renderer localStorage nominates paths to bless	no	static electron.js:560-587; trace seq 178 (no entries on fresh install)
+src/main/electron.js:632	fs.existsSync(legacy custom library) -> blessPath (TOFU migration)	boot	unscopable	none: renderer localStorage nominates paths	no	static electron.js:604-642; trace seq 175
+src/main/electron.js:229	persisted blessedPaths reused without a dialog (Open Recent)	boot	unscopable	none today: needs host-persisted grant (bookmark analog)	no	electron.js:216-238; trace seq 59
+src/main/electron.js:4355	shell.openExternal(renderer-supplied http(s)/mailto/tel/callto URL; also setWindowOpenHandler 2219)	user	unscopable	none: any-host URL scope is not expressible (03-security.md:120-121)	no	static electron.js:4350-4357, 2219
+src/main/electron.js:4413	child_process.execFile('fc-list', fixed args) (getLocalFonts)	user	unscopable	none as written: bare name resolved via ambient PATH; spawn grants name an absolute cmd (03-security.md:86)	no	static electron.js:4396-4413; 0 child_process events in trace
+src/main/electron.js:2024	shell.openExternal('https://www.drawio.com')	user	declared-role	app.shell.open [https://www.drawio.com]	no	static electron.js:2024
+src/main/electron.js:2028	shell.openExternal('https://github.com/jgraph/drawio-desktop/issues')	user	declared-role	app.shell.open [https://github.com/jgraph/drawio-desktop/issues]	no	static electron.js:2028
+src/main/electron.js:4282	clipboard.writeText	user	declared-role	app.system [clipboard.write]	no	static electron.js:4282
+src/main/electron.js:4286	clipboard.readText	user	declared-role	app.system [clipboard.read]	no	static electron.js:4286
+src/main/electron.js:4290	clipboard.write([ClipboardItem])	user	declared-role	app.system [clipboard.write]	no	static electron.js:4290
+src/main/electron.js:994	session.defaultSession.webRequest.onHeadersReceived (CSP header)	boot	declared-role	windows.main.web.csp = draw.io policy (host-injected); listener recorded no-op	yes:activation	trace seq 102
+src/main/electron.js:1010	session.defaultSession.webRequest.onBeforeRequest({urls:[file://*]}) (file allow-list)	boot	declared-role	KEL-79 resource root = drawio/src/main/webapp; listener recorded no-op	yes:activation	trace seq 105
+src/main/electron.js:876	dialog.showMessageBoxSync (unsaved-changes prompt)	close	declared-role	host window-modal dialog (no fs); SYNC: needs blocking Bun->host call	yes:close	trace seq 486; negctl seq 446,468
+src/main/electron.js:107	dialog.showMessageBox (update error)	boot	declared-role	host dialog (no fs)	no	trace seq 230; absent in negctl
+src/main/electron.js:1974	dialog.showMessageBox (update menu/update events/print error)	user	declared-role	host dialog (no fs)	no	static electron.js:1974
+src/main/electron.js:2235	dialog.showMessageBox (update menu/update events/print error)	user	declared-role	host dialog (no fs)	no	static electron.js:2235
+src/main/electron.js:2339	dialog.showMessageBox (update menu/update events/print error)	user	declared-role	host dialog (no fs)	no	static electron.js:2339
+src/main/electron.js:2366	dialog.showMessageBox (update menu/update events/print error)	user	declared-role	host dialog (no fs)	no	static electron.js:2366
+src/main/electron.js:3295	dialog.showMessageBox (update menu/update events/print error)	user	declared-role	host dialog (no fs)	no	static electron.js:3295
