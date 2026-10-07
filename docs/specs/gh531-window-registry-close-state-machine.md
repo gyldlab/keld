@@ -1,5 +1,5 @@
 # Spec: first-proof window registry, window wire contract and two-phase close state machine (macOS)
-Status: draft
+Status: approved
 Linear: GH-531 (#517) · Owner: @0monish · Updated: 2026-10-07
 
 ## 1. Goal & non-goals
@@ -551,9 +551,9 @@ pub struct WindowState { pub bounds: Rect, pub focused: bool, pub maximized: boo
 
 /// Host → app EVENTs on the window channel.
 pub enum WindowEvent {
-    Created { window: WindowRef, state: WindowState },   // 0: first record for a window
-    // `Created` also carries `pending_close: Option<u64>` (D6): the close_seq of a close
-    // entered during the recovery gap, sent only in a replay; None on every ordinary create.
+    // 0: first record for a window. `pending_close` (D6) is the close_seq of a close
+    // entered during the recovery gap, Some only in a replay; None on every ordinary create.
+    Created { window: WindowRef, state: WindowState, pending_close: Option<u64> },
     Bounds { window: WindowRef, bounds: Rect },           // 1: move or resize, on change
     Focus { window: WindowRef, focused: bool },            // 2
     Maximized { window: WindowRef, maximized: bool },      // 3
