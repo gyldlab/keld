@@ -1858,6 +1858,15 @@ pub(super) fn seed_pending_activation_journal(
     trust: &WindowsBaselineTrust,
     phase: ActivationPhase,
 ) -> ([u8; 32], [u8; 32]) {
+    seed_pending_activation_journal_with(trust, phase, [0x55; 32])
+}
+
+/// [`seed_pending_activation_journal`] whose journal names `helper_image_blake3`.
+pub(super) fn seed_pending_activation_journal_with(
+    trust: &WindowsBaselineTrust,
+    phase: ActivationPhase,
+    helper_image_blake3: [u8; 32],
+) -> ([u8; 32], [u8; 32]) {
     let profile = trust.installation.install_mode.protection_profile();
     let baseline = trust.installation.baseline.clone();
     let mut candidate = baseline.clone();
@@ -1936,7 +1945,7 @@ pub(super) fn seed_pending_activation_journal(
         prior_floor: baseline.version.clone(),
         prior_last_known_good: baseline,
         prior_previous_known_good: None,
-        helper_image_blake3: [0x55; 32],
+        helper_image_blake3,
         health_channel_id: [0x66; 32],
         lifecycle_channel_id,
         ownership: Some(crate::records::AttemptOwnership {

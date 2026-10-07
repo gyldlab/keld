@@ -2,7 +2,8 @@ use std::io::{self, Read, Write};
 
 use crate::{
     ARCHIVE_BLOCK_BYTES, ArchiveEntryKind, ArchiveMember, MAX_ARTIFACT_BYTES, NO_MIGRATION_POLICY,
-    PackError, PackageEntry, ProducedFull, UPDATE_POLICY_PATH, invalid, validate_v0_members,
+    PackError, PackageEntry, ProducedFull, UPDATE_POLICY_PATH, invalid, require_updater_helper,
+    validate_v0_members,
 };
 
 const BLOCK_SIZE: u64 = ARCHIVE_BLOCK_BYTES as u64;
@@ -140,6 +141,8 @@ fn plan<'a>(entries: &[PackageEntry<'a>]) -> Result<(Vec<PlannedMember<'a>>, u64
     paths.extend(members.iter().map(|member| member.name));
     keld_guard::validate_windows_package_paths(&paths)
         .map_err(|_| invalid("Windows package namespace is invalid"))?;
+    // Last of the metadata rules, so each earlier rule keeps its own refusal.
+    require_updater_helper(&members)?;
     let size = members.iter().try_fold(BLOCK_SIZE * 2, |total, member| {
         total
             .checked_add(BLOCK_SIZE)

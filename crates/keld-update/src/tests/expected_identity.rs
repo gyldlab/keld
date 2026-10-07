@@ -157,5 +157,12 @@ fn error_has_stable_code_and_rebuild_guidance() {
     let text = error.to_string();
     assert!(text.starts_with("KELD-UPDATE-017: "), "{text}");
     assert!(text.contains("(unsupported channel)"), "{text}");
-    assert!(text.contains("Rebuild the host"), "{text}");
+    assert!(
+        text.contains("Rebuild `keld-host.exe` or `keld-updater-helper.exe`"),
+        "{text}"
+    );
+    assert!(
+        !text.replace("keld-host.exe", "").contains("host"),
+        "{text}"
+    );
 }

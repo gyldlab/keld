@@ -1,6 +1,7 @@
 //! Installed-package refusals (KEL-254 A3 AC2/AC11, T3 Part B): signature success alone
 //! never admits installed mode, and an installation never boots a host whose verified
-//! publisher or app id differs from the protected record.
+//! publisher or app id differs from the protected record (`KELD-UPDATE-020`, the
+//! keld-update signer rule since KEL-270 T4d S9a).
 //!
 //! Each launch is lease-less, as a user starts the app, from a fresh per-run
 //! installation (`support::installed`). These rows are native controls of the installed
@@ -60,7 +61,8 @@ fn kel254_installed_host_under_another_recorded_publisher_is_refused() {
         .output()
         .expect("launch the installed host");
     let stderr = refused_before_resources(&output);
-    assert!(stderr.contains("KELD-WV-009"), "{stderr}");
+    // KEL-270 T4d S9a moved the signer rule into keld-update, which owns it for both images.
+    assert!(stderr.contains("KELD-UPDATE-020"), "{stderr}");
     assert!(stderr.contains("records a different publisher"), "{stderr}");
 }
 
@@ -78,7 +80,7 @@ fn kel254_installed_host_signed_for_another_app_is_refused() {
         .output()
         .expect("launch the installed host");
     let stderr = refused_before_resources(&output);
-    assert!(stderr.contains("KELD-WV-009"), "{stderr}");
+    assert!(stderr.contains("KELD-UPDATE-020"), "{stderr}");
     let mismatch = format!(
         "records app id `{}`, not the verified `{FOREIGN_SIGNED_APP_ID}`",
         installed.recorded_app_id()

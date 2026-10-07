@@ -97,6 +97,42 @@ impl ProvenanceUnavailable {
     }
 }
 
+/// The executable image whose own path locates its installation (KEL-254 §4
+/// executable-located rule; KEL-53 "Helper launch and self-anchor").
+///
+/// A closed choice of the two installed images, never a free-form name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsLocatedImage {
+    /// `keld-host.exe`, the installed host.
+    Host,
+    /// `keld-updater-helper.exe`, the elevated updater helper (KEL-53 T4d).
+    UpdaterHelper,
+}
+
+impl WindowsLocatedImage {
+    /// The image's exact file name in a version tree. The helper's is `keld-pack`'s
+    /// canonical member path, because the package carries it at the tree root.
+    #[must_use]
+    pub const fn file_name(self) -> &'static str {
+        match self {
+            Self::Host => "keld-host.exe",
+            Self::UpdaterHelper => keld_pack::UPDATER_HELPER_PATH,
+        }
+    }
+
+    /// The `KELD-UPDATE-018` correction for a refusal of this image.
+    const fn binding_fix(self) -> &'static str {
+        match self {
+            Self::Host => {
+                "Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged."
+            }
+            Self::UpdaterHelper => {
+                "Start keld-updater-helper.exe only from its installation's protected version tree, as keld-host.exe or an administrator starts it; repair or reinstall through the trusted installer if the layout is damaged."
+            }
+        }
+    }
+}
+
 /// Provenance identity field that disagreed with the running host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvenanceField {
@@ -291,6 +327,8 @@ pub enum UpdateError {
     },
     /// The running executable is not bound to the installation it locates.
     ExecutableBinding {
+        /// The image the executable runs as, which names the correction.
+        image: WindowsLocatedImage,
         /// Selection boundary that refused the executable.
         step: &'static str,
         /// Non-secret failure detail.
@@ -301,12 +339,26 @@ pub enum UpdateError {
         /// Failing part: a keld-pack payload detail, the channel or the public key.
         detail: String,
     },
-    /// The verified host image does not carry exactly one readable, canonical
+    /// The verified executable image does not carry exactly one readable, canonical
     /// expected-identity container.
     ExpectedIdentityContainer {
         /// The keld-pack container-reader code, such as `KELD-PACK-007`.
         pack_code: &'static str,
         /// The keld-pack refusal message, beginning with that code.
+        detail: String,
+    },
+    /// The verified signer of an installed executable is not the publisher or the app that
+    /// the installation's protected provenance records.
+    RecordedSignerMismatch {
+        /// Which recorded fact differs from the verified signer.
+        detail: String,
+    },
+    /// The updater helper refused to anchor itself to its installation before any lease
+    /// or write, or its image was not derived for a launch.
+    UpdaterHelper {
+        /// Boundary that refused.
+        step: &'static str,
+        /// Non-secret failure detail.
         detail: String,
     },
     /// The common journaled activation transaction refused or could not confirm a step.
@@ -371,6 +423,8 @@ impl UpdateError {
             Self::ExpectedIdentityInvalid { .. } => "KELD-UPDATE-017",
             Self::ExecutableBinding { .. } => "KELD-UPDATE-018",
             Self::ExpectedIdentityContainer { .. } => "KELD-UPDATE-019",
+            Self::RecordedSignerMismatch { .. } => "KELD-UPDATE-020",
+            Self::UpdaterHelper { .. } => "KELD-UPDATE-021",
         }
     }
 }
@@ -408,15 +462,15 @@ impl fmt::Display for UpdateError {
                 f,
                 "KELD-UPDATE-004: detached manifest authentication failed ({detail}). Do not parse or activate the feed; publish bytes signed by the compiled-in release key."
             ),
-            Self::ExecutableBinding { step, detail } => write!(
-                f,
-                "KELD-UPDATE-018: installed executable {step} refused ({detail}). Launch keld-host.exe from its installation's selected version tree; repair or reinstall through the trusted installer if the layout is damaged."
-            ),
-            Self::ExpectedIdentityInvalid { detail } => write!(
-                f,
-                "KELD-UPDATE-017: the host's expected app identity is invalid ({detail}). Rebuild the host so keld-pack embeds a supported channel and the release's valid Ed25519 public key; installed boot refuses until then."
-            ),
+            Self::ExecutableBinding {
+                image,
+                step,
+                detail,
+            } => fmt_binding_error(f, *image, step, detail),
+            Self::ExpectedIdentityInvalid { detail } => fmt_expectation_error(f, detail),
             Self::ExpectedIdentityContainer { detail, .. } => fmt_container_error(f, detail),
+            Self::RecordedSignerMismatch { detail } => fmt_signer_error(f, detail),
+            Self::UpdaterHelper { step, detail } => fmt_helper_error(f, step, detail),
             Self::ManifestInvalid { detail } => write!(
                 f,
                 "KELD-UPDATE-005: authenticated update manifest is not valid v0 ({detail}). Publish one closed, duplicate-free v0 manifest with canonical fields."
@@ -480,10 +534,44 @@ impl fmt::Display for UpdateError {
     }
 }
 
+fn fmt_binding_error(
+    f: &mut fmt::Formatter<'_>,
+    image: WindowsLocatedImage,
+    step: &str,
+    detail: &str,
+) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-018: installed executable {step} refused ({detail}). {}",
+        image.binding_fix()
+    )
+}
+
+fn fmt_expectation_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-017: the executable's expected app identity is invalid ({detail}). Rebuild `keld-host.exe` or `keld-updater-helper.exe` so keld-pack embeds a supported channel and the release's valid Ed25519 public key; the installed image refuses to run until then."
+    )
+}
+
 fn fmt_container_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
     write!(
         f,
-        "KELD-UPDATE-019: the signed host's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild the host with `keld build`; installed boot refuses until the signed host carries exactly one valid container."
+        "KELD-UPDATE-019: the signed image's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container."
+    )
+}
+
+fn fmt_signer_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-020: verified signer refused ({detail}). Reinstall the package from the publisher its installer recorded, signed for the app it recorded; an executable signed by another publisher or for another app never runs against this installation."
+    )
+}
+
+fn fmt_helper_error(f: &mut fmt::Formatter<'_>, step: &str, detail: &str) -> fmt::Result {
+    write!(
+        f,
+        "KELD-UPDATE-021: updater helper {step} refused ({detail}). Only a MachineUacDirect installation runs keld-updater-helper.exe, and only its journaled image or the image of the version its role requires; start nothing in its place, and repair or reinstall through the trusted installer if the installation is damaged."
     )
 }
 

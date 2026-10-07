@@ -309,12 +309,26 @@ pub(super) fn host_package_content() -> Vec<u8> {
 
 /// [`host_package_content`] whose `keld-host.exe` holds exactly `image`.
 pub(super) fn host_package_content_with(image: &[u8]) -> Vec<u8> {
-    let mut input = image;
-    let mut entries = [keld_pack::PackageEntry::File {
-        name: "keld-host.exe",
-        size: u64::try_from(image.len()).expect("fixture image length"),
-        input: &mut input,
-    }];
+    package_content_with(image, b"keld-updater-helper fixture image")
+}
+
+/// Canonical package content whose tree holds exactly `host` as `keld-host.exe` and
+/// `helper` as `keld-updater-helper.exe`, made by keld-pack's producer.
+pub(super) fn package_content_with(host: &[u8], helper: &[u8]) -> Vec<u8> {
+    let mut host_input = host;
+    let mut helper_input = helper;
+    let mut entries = [
+        keld_pack::PackageEntry::File {
+            name: "keld-host.exe",
+            size: u64::try_from(host.len()).expect("fixture image length"),
+            input: &mut host_input,
+        },
+        keld_pack::PackageEntry::File {
+            name: "keld-updater-helper.exe",
+            size: u64::try_from(helper.len()).expect("fixture helper length"),
+            input: &mut helper_input,
+        },
+    ];
     let mut compressed = Vec::new();
     keld_pack::produce_windows_v0(&mut entries, &mut compressed).expect("native producer");
     zstd::stream::decode_all(compressed.as_slice()).expect("canonical package content")

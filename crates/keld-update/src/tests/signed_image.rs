@@ -141,12 +141,18 @@ fn signed_image_without_a_container_is_keld_update_019() {
     assert_eq!(pack_code_of(&error), "KELD-PACK-007");
 }
 
+/// Renames `image`'s first section header to `name`. In an image that already carries
+/// the container, renaming it to `.keldeai` makes two containers.
+pub(crate) fn rename_first_section(image: &mut [u8], name: [u8; 8]) {
+    let first = section_header(image, 0);
+    image[first..first + 8].copy_from_slice(&name);
+}
+
 #[test]
 fn signed_image_with_two_containers_is_keld_update_019() {
     let mut image = embedded(&payload(APP_ID, "stable", release_key()));
     // Rename the first section: the image now carries two sections named `.keldeai`.
-    let first = section_header(&image, 0);
-    image[first..first + 8].copy_from_slice(b".keldeai");
+    rename_first_section(&mut image, *b".keldeai");
     let error = ExpectedAppIdentity::from_signed_image(&handle(&image))
         .expect_err("a duplicated container is refused");
     assert_eq!(pack_code_of(&error), "KELD-PACK-008");
@@ -279,4 +285,13 @@ fn container_error_has_stable_code_and_reinstall_guidance() {
     assert!(text.contains("Reinstall the signed package"), "{text}");
     assert!(text.contains("`keld build`"), "{text}");
     assert!(text.contains("exactly one valid container"), "{text}");
+    assert!(
+        text.contains("rebuild `keld-host.exe` or `keld-updater-helper.exe`"),
+        "{text}"
+    );
+    let guidance = text.replace("(KELD-PACK-007: host image carries no container)", "");
+    assert!(
+        !guidance.replace("keld-host.exe", "").contains("host"),
+        "{text}"
+    );
 }
