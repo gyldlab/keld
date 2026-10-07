@@ -36,6 +36,16 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
+**Destination Bun-side link owner (GH-527, draft
+[spec](../specs/gh527-worker-owned-blocking-call-transport.md)):** inside a role
+process, one transport Worker owns the client end of the role generation's one
+authenticated link, from `HELLO` to close. The role's main thread opens no socket.
+Every frame it sends or receives, blocking or asynchronous, passes through that Worker
+and one bounded, ordered shared-memory ring. The main thread can therefore park in a
+blocking host `CALL` while the link keeps draining. A second link for the same
+generation is refused, and the Worker's death is that role's link loss. v0 Bun
+consumers still own the socket on the main thread (§2).
+
 **v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
 (`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
 `keld-ipc::BootstrapListener`: a domain socket inside an owner-only (`0o700`)
@@ -289,7 +299,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
-  readiness-driven reader remains destination work (see §7).
+  readiness-driven reader remains destination work (see §7). GH-527 (draft) gives
+  `GRANT` its first payload, optional app-to-host credit for the transport Worker's
+  ring, and ships it only behind a protocol-version bump.
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
@@ -391,6 +403,9 @@ compromised keeps the host's threat model uniform).
   (credit hits zero), emits a role-qualified `runtime-crashed` event and restarts per
   policy. Its in-flight calls reject with a registered role-qualified `KELD-*` error;
   other principals continue. KEL-70 currently proves generic child restart only.
+  Under GH-527 (draft), the death of a role's transport Worker is that role's link
+  loss and follows this path. A parked caller wakes with `KELD-IPC-025`, not at its
+  call deadline.
 - Window close: the destination host revokes that window generation and virtual-port
   routes, then drains only roles declared `window-bound` to it. App-bound roles remain
   live until the host application session stops.
