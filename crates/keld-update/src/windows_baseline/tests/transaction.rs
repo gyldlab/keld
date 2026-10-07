@@ -542,9 +542,12 @@ fn the_expected_digest_is_the_receipt_digest_of_the_journaled_attempt_channel_an
     assert_ne!(expected, digest(&journal.lifecycle_channel_id));
 
     let health = receipt(&attempt);
-    attempt
-        .accept_health(&health)
-        .expect("exact health is durably accepted");
+    // Dropping the accepted attempt releases the lease without completing.
+    drop(
+        attempt
+            .accept_health(&health)
+            .expect("exact health is durably accepted"),
+    );
     assert_eq!(
         observe(&trust).journal.map(|journal| journal.phase),
         Some(ActivationPhase::HealthAccepted {
@@ -552,8 +555,7 @@ fn the_expected_digest_is_the_receipt_digest_of_the_journaled_attempt_channel_an
         }),
         "HealthAccepted records the digest the owner compared with KELD-AB1"
     );
-    // Dropping the accepted attempt releases the lease; recovery recomputes the
-    // digest from the journal and finishes the commit.
+    // Recovery recomputes the digest from the journal and finishes the commit.
     assert_eq!(
         recover_exact(&trust).expect("recovery finishes an accepted attempt"),
         WindowsActivationOutcome::Committed

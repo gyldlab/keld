@@ -601,7 +601,7 @@ fn fmt_activation_error(
             "A published version is referenced by no journal and could not be retired; later writers halt until the explicit unjournaled-version repair retires it under the writer lease. If that repair refuses an unknown or damaged entry, that entry needs manual recovery."
         }
         ActivationEffect::WriterActive => {
-            "A conflicting handle, normally the updater's exclusive writer lease, holds the installation's activation lock, or an accepted candidate's boot read found that the pending attempt is not the one whose owner accepted it. Nothing was written, and only that boot read read any record; start nothing from this state, and select again only after that handle is released."
+            "A conflicting handle, normally the updater's exclusive writer lease, holds the installation's activation lock, or an accepted candidate's boot read found that the pending attempt is not the one whose owner accepted it. Nothing was written, and outside that boot read nothing was read either; start nothing from this state, and select again only after that handle is released."
         }
         ActivationEffect::MachineRecoveryRequired(guidance) => guidance.fix_guidance(),
     };

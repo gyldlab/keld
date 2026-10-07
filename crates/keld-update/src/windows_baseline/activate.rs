@@ -469,6 +469,7 @@ impl WindowsActivationAttempt {
 /// authoritative; recovery then finishes the commit once the attempt's process family is
 /// proven retired. It is never rolled back.
 #[derive(Debug)]
+#[must_use = "call complete(); dropping releases the lease and leaves HealthAccepted for recovery"]
 pub struct WindowsHealthAcceptedAttempt {
     transaction: Transaction,
 }
