@@ -35,7 +35,7 @@ def tracked_snapshot(source: Path, destination: Path, *, bind: bool = True) -> N
         copied = destination / relative
         copied.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(original, copied, follow_symlinks=False)
-    for args in (("init", "-q"), ("config", "core.autocrlf", "false"), ("add", ".")):
+    for args in (("init", "-q"), ("config", "core.autocrlf", "false"), ("add", "-f", ".")):
         subprocess.run(["git", *args], cwd=destination, check=True, capture_output=True)
     if not bind:
         return
@@ -215,7 +215,7 @@ class FreshnessGateTests(unittest.TestCase):
         (root / "readers/check.py").write_text("print(2)\n", encoding="utf-8")
         result = self.run_tool("--check", root)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("KELD-CI-INPUTS-STALE", result.stderr)
+        self.assertIn("CI-INPUTS-STALE", result.stderr)
         self.assertIn("fixture", result.stderr)
         self.assertIn("just ci-inputs-rebind", result.stderr)
 
@@ -232,6 +232,28 @@ class FreshnessGateTests(unittest.TestCase):
         before["reader_sets"]["fixture"]["sha256"] = after["reader_sets"]["fixture"]["sha256"]
         self.assertEqual(before, after, "rebind must not change any scope, input or pattern")
         self.assertEqual(self.run_tool("--check", root).returncode, 0)
+
+    def test_rebind_refuses_untracked_bound_files_and_prints_review_criterion(self):
+        root = self.fixture()
+        (root / "readers/check.py").write_text("print(2)\n", encoding="utf-8")
+        (root / "readers/scratch.py").write_text("print(3)\n", encoding="utf-8")
+        before = (root / "tools/ci-inputs.json").read_bytes()
+        refused = self.run_tool("--rebind", root)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("readers/scratch.py", refused.stderr)
+        self.assertEqual((root / "tools/ci-inputs.json").read_bytes(), before, "refusal must not write")
+        # Negative control: removing the untracked file lets the same rebind proceed.
+        (root / "readers/scratch.py").unlink()
+        done = self.run_tool("--rebind", root)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("consumers[].inputs", done.stdout)
+
+    def test_unreadable_set_reason_is_reported(self):
+        root = self.fixture()
+        (root / "readers/check.py").unlink()
+        result = self.run_tool("--check", root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unreadable", result.stderr)
 
     def test_rebind_is_a_noop_when_fresh(self):
         root = self.fixture()
@@ -466,6 +488,9 @@ class ProductionConsumerTests(unittest.TestCase):
         self.addCleanup(fixture.cleanup)
         root = Path(fixture.name)
         tracked_snapshot(source, root, bind=False)
+        self.assertEqual((root / "tools/ci-inputs.json").read_bytes().replace(b"\r\n", b"\n"),
+                         (source / "tools/ci-inputs.json").read_bytes().replace(b"\r\n", b"\n"),
+                         "bind=False must keep the committed digests byte-for-byte")
         live = subprocess.run([sys.executable, "-B", str(source / "tools/ci_inputs.py"), "--check", str(root)],
                               capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(live.returncode, 0, live.stderr)
@@ -508,7 +533,6 @@ class ProductionConsumerTests(unittest.TestCase):
         root = Path(fixture.name)
         tracked_snapshot(source, root)
         contract = ci_inputs.load(root)
-        census = ci_inputs.files(root)
         outputs = [output for consumer in contract["consumers"] for output in consumer["outputs"]]
         self.assertEqual(len(outputs), len(set(outputs)), "each consumer output has exactly one owner")
         self.assertTrue({"input_rust", "input_ts", "input_registry", "input_mermaid"} <= set(outputs),

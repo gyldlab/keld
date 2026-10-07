@@ -357,7 +357,7 @@ recipe invocations retain their prerequisites. `ci-full` additionally forces Mer
 Each consumer binds its reader/helper source inventory and contents by digest. A new,
 removed or changed reader invalidates its exclusions until the input scope is reviewed
 and rebound; unknown, deleted, untracked or unavailable comparison inputs select all.
-This fallback intentionally costs more work. It avoids guessing dependencies from
+This fallback intentionally costs more work. `ci_inputs.py --check`, run by the router contract tests, fails on a stale digest so the fallback cannot persist unnoticed; `just ci-inputs-rebind` renews digests after the readers are reviewed. It avoids guessing dependencies from
 filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
 of IPC constants and CLI templates are included. Live workspace, audit-history,
 product-status and advisory checks still run with an empty Git diff; their expensive

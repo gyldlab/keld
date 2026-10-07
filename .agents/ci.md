@@ -25,7 +25,6 @@ are source of truth; this file owns the design invariants.
   including Ubuntu WebKitGTK apt.
 - Workflow/router edits exercise every conditional lane. Linux GUI smoke owns live
   WebKitGTK apt; Ubuntu clippy and MSRV MUST NOT duplicate `apt-get update`.
-- Stale `ci-inputs.json` digests fail router tests: review readers, `just ci-inputs-rebind`.
 - Router metadata/parse failure fails the router job before outputs. It MUST NOT emit an
   empty/skipped-green selection.
 - Contract tests cover relevant, unrelated, unknown, empty, PR, and push diffs. Verify

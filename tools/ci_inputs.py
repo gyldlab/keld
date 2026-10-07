@@ -105,7 +105,12 @@ def stale(root: Path) -> list[str]:
     return [name for name, recorded, live, _ in bindings(root, load(root), files(root)) if recorded != live]
 
 
-def review_hint(root: Path, recorded: str, census: list[str], patterns: list[str]) -> list[str]:
+REVIEW = ("Review first: a reader that gained a new cross-tree read needs its input edge in "
+          "consumers[].inputs of tools/ci-inputs.json before you rebind; a digest alone adds no edge.")
+
+
+def review_hint(root: Path, recorded: str, census: list[str], patterns: list[str],
+                *, membership_only: bool = False) -> list[str]:
     """Files to review: set members changed since the commit that recorded the digest."""
     try:
         commit = subprocess.check_output(
@@ -115,30 +120,34 @@ def review_hint(root: Path, recorded: str, census: list[str], patterns: list[str
         commit = ""
     members = [path for path in census if path != "tools/ci-inputs.json" and matches(path, patterns)]
     if not commit:
-        return [f"? {path}" for path in members]
+        return ["recording commit not found; review all members of this set"] + (
+            [] if membership_only else members)
     lines = []
     old = {path for path in subprocess.check_output(
-        ["git", "ls-tree", "-r", "--name-only", "-z", commit], cwd=root, text=True).split("\0") if path}
+        ["git", "ls-tree", "-r", "--name-only", "-z", commit], cwd=root, text=True).split(chr(0)) if path}
     old_members = {path for path in old if path != "tools/ci-inputs.json" and matches(path, patterns)}
     lines += [f"+ {path}" for path in sorted(set(members) - old_members)]
     lines += [f"- {path}" for path in sorted(old_members - set(members))]
-    shared = old_members & set(members)
-    changed = subprocess.check_output(
-        ["git", "diff", "--name-only", "-z", commit, "--"], cwd=root, text=True).split(chr(0))
-    lines += [f"M {path}" for path in changed if path in shared]
+    if not membership_only:
+        shared = old_members & set(members)
+        changed = subprocess.check_output(
+            ["git", "diff", "--name-only", "-z", commit, "--"], cwd=root, text=True).split(chr(0))
+        lines += [f"M {path}" for path in changed if path in shared]
     lines.append(f"(since digest recorded in {commit[:8]}; the digest was not necessarily correct there)")
     return lines
 
 
 def check(root: Path) -> int:
     """Live freshness gate: committed digests against live bytes, never rebinding."""
-    names = stale(root)
-    if not names:
+    rows = [row for row in bindings(root, load(root), files(root)) if row[1] != row[2]]
+    if not rows:
         print("ci-inputs: every reader digest and the rust source census match the live bytes")
         return 0
-    print(f"KELD-CI-INPUTS-STALE: tools/ci-inputs.json is not bound to the live bytes for: {', '.join(names)}.\n"
+    detail = "".join(f"\n  {name}: {live}" for name, _, live, _ in rows if live.startswith("unreadable"))
+    print(f"CI-INPUTS-STALE: tools/ci-inputs.json is not bound to the live bytes for: "
+          f"{', '.join(row[0] for row in rows)}.{detail}\n"
           "The router fails safe by enabling their consumers, so CI runs every lane until this is fixed.\n"
-          "Fix: review the reader changes, then run `just ci-inputs-rebind` and commit tools/ci-inputs.json.",
+          f"Fix: run `just ci-inputs-rebind`, then commit tools/ci-inputs.json. {REVIEW}",
           file=sys.stderr)
     return 1
 
@@ -147,6 +156,16 @@ def rebind(root: Path) -> int:
     """Rewrite only the digest values in tools/ci-inputs.json using fingerprint()/membership_fingerprint()."""
     contract = load(root)
     census = files(root)
+    bound = [pattern for reader_set in contract["reader_sets"].values() for pattern in reader_set["patterns"]]
+    bound += contract.get("rust_source_census", {}).get("patterns", [])
+    untracked = [item for item in subprocess.check_output(
+        ["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=root, text=True).split(chr(0))
+        if item and matches(item, bound)]
+    if untracked:
+        print("CI-INPUTS-REBIND: refusing to bind untracked, non-ignored files that match a bound pattern "
+              "(CI never sees them, so the digests would be wrong there):\n  " + "\n  ".join(untracked) +
+              "\nRemove or git-ignore them, then rerun `just ci-inputs-rebind`.", file=sys.stderr)
+        return 1
     path = root / "tools/ci-inputs.json"
     text = path.read_bytes().decode("utf-8")
     changed = 0
@@ -160,10 +179,11 @@ def rebind(root: Path) -> int:
         text = text.replace(recorded, live)
         changed += 1
         print(f"{name}: {recorded[:12]} -> {live[:12]}; review:")
-        for line in review_hint(root, recorded, census, patterns):
+        for line in review_hint(root, recorded, census, patterns, membership_only=name == "rust_source_census"):
             print(f"  {line}")
     if changed:
         path.write_bytes(text.encode("utf-8"))
+        print(REVIEW)
     else:
         print("ci-inputs: nothing to rebind")
     return 0
@@ -261,5 +281,8 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (KeyError, ValueError, OSError, subprocess.CalledProcessError) as error:
-        print(f"ci router: {error}; refusing incomplete input selection", file=sys.stderr)
+        if sys.argv[1:2] in (["--check"], ["--rebind"]):
+            print(f"ci-inputs {sys.argv[1][2:]}: {error}", file=sys.stderr)
+        else:
+            print(f"ci router: {error}; refusing incomplete input selection", file=sys.stderr)
         sys.exit(1)
