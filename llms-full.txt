@@ -1554,7 +1554,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
   never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
-  u16 handles resolved at handshake from schema names (string names never travel per-call).
+  u16 handles whose ids come from the static `keld-ipc` channel table (§4; live with
+  X05-T4, #597), so string names never travel per-call. Resolving ids from schema
+  names at handshake is destination work (§4).
 - **Receiver semantics (KEL-133, live):** one `keld-ipc` validator owns which
   kind/flags/channel/correlation/declared-length combination each session state
   admits. The host selects a static `ReceivePolicy` (no frame chooses its
@@ -1617,6 +1619,29 @@ consumes them through type-only imports. The hand-written TypeScript payload mir
 gone; the independently implemented postcard codec and shared golden-vector validation
 remain the runtime wire oracle. This echo-only bootstrap does not make Rust the general
 schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
+
+**Channel table: live slice and destination
+([GH-508 spec](../specs/gh508-kipc-channel-table.md), draft).** The live slice of the
+channel table that `keld gen` would emit is a *static* table. `keld-ipc` owns it as a
+single file, `crates/keld-ipc/src/channel_table.rs`. Each entry holds an
+Electron-neutral name, its `u16` id, a receive-policy class (a KEL-133 `ReceivePolicy`
+family) and either a `keld-guard` capability reference or an explicit host-internal
+marker. The table does not register capability names; `keld-guard` and architecture 03
+§2 stay their only owner. Entries are append-only: a new channel takes the current
+maximum id plus one, an id is never renumbered or reused, and id `0` stays reserved for
+`HELLO`. No range is reserved per Electron family. Electron channel strings travel as
+payload data under `el:` window grants. The host sends unprompted `EVENT` frames on a
+channel only to a role that has registered for that channel by calling on it; the
+v0 `lifecycle` events are the one baseline exception, because every version-2 peer
+admits them. Every production consumer derives its id from
+the table. The TypeScript transport constants are generated into
+`packages/@keld/kipc/src/transport.ts` by the KEL-98 cold generator, with a drift check.
+The macOS renderer bridge receives its id from the host at construction. **Status:** the
+table goes live with X05-T4 (#597). Until then the ids are the hand-held constants
+echo = 1 and lifecycle = 3 (`keld-ipc`) and fs = 2 (`keld-native`), plus the
+TypeScript and macOS-bridge copies, and wire bytes and protocol version 2 are
+unchanged. **Destination, not live:** handshake-time resolution of ids from schema names
+and full `keld gen` emission of the table and permission stubs. Either one needs a `HELLO` change, a protocol bump and wire review.
 
 The destination authoring shape remains:
 
