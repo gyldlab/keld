@@ -148,7 +148,9 @@ fail. "Owner" is the implementing ticket.
 11. **Unknown fact is terminal.** Given a window `EVENT` whose discriminant is unknown
     to the adapter, when it arrives, then the link ends with `KELD-IPC-005` (the
     gh527 throwing-applier rule) after earlier records are delivered, and no getter
-    returns a value newer than the last applied fact. *NC:* skipping the unknown record
+    returns a value newer than the last applied fact. `KELD-IPC-005` is the only
+    observable code for this case: the codec's internal `KELD-IPC-003` is never the
+    link-terminal code, as 02 §2 already surfaces an undecodable `ERR` payload. *NC:* skipping the unknown record
     and continuing fails, because the mirror then serves state that the host has
     already changed. Owner: F02-T2.
 12. **One transport owner.** The window codec is one thin adapter module over the
@@ -193,7 +195,10 @@ fail. "Owner" is the implementing ticket.
     listeners inside the wake drain fails (gh527 criterion 4, #419 E3). Owner: F04-T18
     #528 lands the sequence test; F02-T2 registers the window applier.
 20. **Admission.** Window events are written only to the current primary RoleInstance
-    generation's app link. A second authenticated role link receives no window frame.
+    generation's app link, and only after that link has subscribed to the window
+    channel with the X05-T2 `lifecycle` `Subscribe` call (#613 criterion 16). The
+    facade subscribes before its first `Create`. A second authenticated role link
+    receives no window frame.
     *NC:* broadcasting to every connected role fails. Owner: F02-T2. F06-T5 reuses this
     rule for display and theme facts.
 
@@ -233,7 +238,12 @@ fail. "Owner" is the implementing ticket.
 26. **Re-emission per attempt.** Given three close attempts, each made after the
     previous reply was a veto, the app observes three `'close'` events with strictly
     increasing `close_seq`. *NC:* caching the first verdict and auto-replying fails.
-    Owner: F02-T3.
+    **Exhaustion:** given a window whose last `close_seq` is `u64::MAX` (a registry
+    test constructor), when `RequestClose` arrives, then it answers the registered
+    registry-counter exhaustion `ERR`, no `CloseRequested` is written and the window
+    stays `Open`; a native close attempt in that state writes nothing and records one
+    diagnostic. `Destroy` (T8) and the terminal end (T10) still close it. *NC:* a
+    wrapping increment writes `CloseRequested(0)` and fails. Owner: F02-T3.
 27. **Stale reply ignored.** Given `ClosePending(s+1)`, when a reply carrying `s`
     arrives with `Allow`, then the window stays in `ClosePending(s+1)`, the call answers
     `Stale`, and the host records one diagnostic. *NC:* accepting a reply that does not
@@ -264,6 +274,11 @@ fail. "Owner" is the implementing ticket.
     outside a quit, then the host writes `Destroyed` before `LastWindowClosed`, and the
     facade emits `'closed'` before `'window-all-closed'`. The existing KEL-237
     `window-all-closed` cell passes. *NC:* writing `LastWindowClosed` first fails.
+    **Destroy path:** given one window and no `'window-all-closed'` listener, when
+    `destroy()` is called, then the step log is `REPLY Destroyed` read, `'closed'`,
+    default `Quit` written, `destroy()` returns, and the host reads no `Quit` before it
+    has written the `Destroy` reply. *NC:* letting the lifecycle applier run the
+    last-window policy in the wake drain writes `Quit` before `'closed'` and fails.
     Owner: F02-T3.
 33. **Quit keeps asking every window (#419 rule; registry half).** Given windows A and
     B and the facade's quit loop, when A vetoes, then a close request for B is still
@@ -473,7 +488,7 @@ pub enum WindowEvent {
     Focus { window: WindowRef, focused: bool },            // 2
     Maximized { window: WindowRef, maximized: bool },      // 3
     FullScreen { window: WindowRef, full_screen: bool },   // 4
-    CloseRequested { window: WindowRef, close_seq: u32 },  // 5
+    CloseRequested { window: WindowRef, close_seq: u64 },  // 5
     Destroyed { window: WindowRef },                       // 6: last record for a window
 }
 
@@ -483,7 +498,7 @@ pub enum WindowRequest {
     SetMaximized { window: WindowRef, maximized: bool },                           // 1
     SetFullScreen { window: WindowRef, full_screen: bool },                        // 2
     RequestClose { window: WindowRef },                                            // 3, never blocking
-    CloseReply { window: WindowRef, close_seq: u32, verdict: CloseVerdict },       // 4
+    CloseReply { window: WindowRef, close_seq: u64, verdict: CloseVerdict },       // 4
     Destroy { window: WindowRef },                                                 // 5, blocking
 }
 pub enum CloseVerdict { Allow, Veto }
@@ -492,8 +507,8 @@ pub enum CloseVerdict { Allow, Veto }
 pub enum WindowResponse {
     Created { window: WindowRef },       // 0; written after the Created EVENT
     Accepted,                            // 1; setters (the state change arrives as an EVENT)
-    CloseRequested { close_seq: u32 },   // 2; RequestClose started a request
-    Merged { close_seq: u32 },           // 3; RequestClose merged into the pending one
+    CloseRequested { close_seq: u64 },   // 2; RequestClose started a request
+    Merged { close_seq: u64 },           // 3; RequestClose merged into the pending one
     AlreadyClosing,                      // 4
     ReplyApplied,                        // 5
     ReplyStale,                          // 6; plus one host diagnostic
@@ -518,7 +533,8 @@ allocate each as the next free `KELD-CORE-*` number in
    each `Moved`, `Resized`, `Focused` or full-screen transition and forwards a fact only
    when the value differs from the last one sent.
 4. Reply placement: a `REPLY` is written after every `EVENT` that its call caused
-   (`Created` before `Created`, `Destroyed` before `Destroyed`). With gh527 step 1, the
+   (`Created` before `Created`; `Destroyed`, then any `LastWindowClosed`, before
+   `Destroyed`, T11). With gh527 step 1, the
    caller therefore sees host state as of the reply.
 5. Cross-channel: for the last window, `Destroyed` (window channel) is written before
    `LastWindowClosed` (lifecycle channel) on the same link (criterion 32).
@@ -573,7 +589,7 @@ F02 owns one primitive in `@keld/api`. F06-T5 reuses it for display and theme fa
 export interface MirrorSource<Fact> {
   /** Channel id from the X05-T4 generated constants. */
   readonly channel: number;
-  /** Throws KELD-IPC-003 on an unknown discriminant (link becomes terminal). */
+  /** Throws on an unknown discriminant; the link then ends with KELD-IPC-005 (criterion 11). */
   decode(payload: Uint8Array): Fact;
   /** Synchronous; mutates mirror state only; never calls user code. */
   apply(fact: Fact): void;
@@ -595,10 +611,14 @@ channel) and `dispatch` on the same channel's event delivery. The contract:
    never fresher than the last applied host fact. ▲ divergence: Electron reads native
    state synchronously, so a user resize in progress is visible to Electron sooner.
 4. **Terminal on failure.** A throwing `apply` or `decode` makes the link terminal
-   (`KELD-IPC-005`, gh527 §4.6). A mirror that missed a fact must not serve state.
+   with `KELD-IPC-005` (gh527 §4.6; criterion 11). keld-ipc's meanings are kept:
+   `KELD-IPC-003` is the codec failure inside `decode`, and `KELD-IPC-005` ("unexpected
+   kipc frame or session state") is what the link and the app observe, the same
+   layering 02 §2 uses for an undecodable `ERR` payload. A mirror that missed a fact must not serve state.
 5. **Admission.** Facts reach only roles the host admits (criterion 20). For the first
    proof, that is the current primary RoleInstance generation.
-6. **Writes.** Setters are non-blocking `CALL`s. The mirror changes only when the host
+6. **Writes.** Setters are non-blocking `CALL`s, legal in `Open` and in
+   `ClosePending` (T12). The mirror changes only when the host
    `EVENT` arrives (#449). So `isMaximized()` immediately after `maximize()` may still
    be false. Inside the `'maximize'` listener it is true.
 
@@ -617,13 +637,16 @@ Host registry, per window:
 | `Closing` | KEL-75 `WindowClosing(w)` linearized; teardown in progress | bridge destroyed, then webview, then window | no: stale-window `ERR`, except `Destroy`, which waits |
 | `Destroyed` | tombstone; pair retired for the session | none | no: stale-window `ERR` |
 
-Transitions (the only ones; everything else is forbidden):
+Transitions (the only ones; everything else is forbidden). A call that the state table
+refuses (`Opening`, `Closing` except `Destroy`, `Destroyed`) answers as that table says
+and changes no state; it is not a transition.
 
 | # | From | Input | To | Writes |
 |---|---|---|---|---|
 | T1 | `Opening` | native build ok | `Open` | `Created`, then `REPLY Created` |
 | T2 | `Opening` | native build failed | `Destroyed` | `ERR` (create failure); no `Created` |
-| T3 | `Open` | tao `CloseRequested`, or `RequestClose` | `ClosePending(n)`, with `n` the window's last `close_seq` + 1 | `CloseRequested(n)`; `RequestClose` replies `CloseRequested(n)` |
+| T3 | `Open` | tao `CloseRequested`, or `RequestClose` | `ClosePending(n)`, with `n` = the window's last `close_seq` + 1 by checked `u64` add | `CloseRequested(n)`; `RequestClose` replies `CloseRequested(n)` |
+| T3x | `Open` | as T3, but the checked add overflows | `Open` (unchanged) | `RequestClose`: exhaustion `ERR`; a native attempt: one host diagnostic; never `CloseRequested` |
 | T4 | `ClosePending(s)` | tao `CloseRequested`, or `RequestClose` | `ClosePending(s)` (merged) | nothing; `RequestClose` replies `Merged(s)` |
 | T5 | `ClosePending(s)` | `CloseReply(s, Veto)` | `Open` | `REPLY ReplyApplied` |
 | T6 | `ClosePending(s)` | `CloseReply(s, Allow)` | `Closing` | `REPLY ReplyApplied`; core sends the teardown command |
@@ -631,11 +654,19 @@ Transitions (the only ones; everything else is forbidden):
 | T8 | `Open` or `ClosePending(s)` | `Destroy` | `Closing` (`s` abandoned) | the reply is deferred until T11 |
 | T9 | `ClosePending(s)` | loss of the owning RoleInstance generation | `Open` (`s` gets the one terminal outcome `Abandoned`) | nothing to any successor; one host diagnostic |
 | T10 | any non-`Destroyed` | session terminal end (accepted `Quit`, or no successor role will be provisioned) | `Closing` | no `CloseRequested`; no reply awaited |
-| T11 | `Closing` | UI loop reports bridge, webview and window released | `Destroyed` | `Destroyed`; then `LastWindowClosed` if no live window remains (outside T10); then any deferred `REPLY Destroyed` |
-| T12 | `Open` | `SetMaximized` / `SetFullScreen` | `Open` | `REPLY Accepted`; the fact follows as an `EVENT` |
+| T11 | `Closing` | UI loop reports bridge, webview and window released | `Destroyed` | in one step on the link's single writer: `Destroyed`; then `LastWindowClosed` if no live window remains (outside T10); then any deferred `REPLY Destroyed`. The facade runs no last-window policy for that `LastWindowClosed` until the `Destroy` caller has emitted `'closed'` (§4.e facade rules) |
+| T12 | `Open` or `ClosePending(s)` | `SetMaximized` / `SetFullScreen` | unchanged (`Open`, or `ClosePending(s)` with `s` still pending) | `REPLY Accepted`; the fact follows as an `EVENT`; a pending close is neither answered nor abandoned |
 
 Rules:
 
+- **`close_seq` never wraps.** It is a per-window `u64`, starting at 1, advanced only
+  by T3's checked add. Each advance needs one written `CloseRequested` and its reply, so
+  even 10^9 close round trips per second (well beyond a kipc round trip) take about 584
+  years to exhaust it. A `u32` would not be enough: a hostile app looping
+  `RequestClose` and `Veto` at 10^6 round trips per second exhausts it in about 72
+  minutes. Exhaustion is still defined (T3x, criterion 26) because a library must not
+  panic or wrap. It decodes as `bigint` in TypeScript, like `WindowGeneration`, and is
+  never shown to app code.
 - **No timer.** No transition has elapsed time as its input. The registry has an
   injected clock only so the test can prove that (criterion 21). The gh527 call
   deadline on blocking `Create` and `Destroy` is the transport's per-wait I/O deadline
@@ -683,16 +714,30 @@ Facade (`@keld/electron`), per `BrowserWindow`:
 - `close()`: a non-blocking `RequestClose`. ▲ divergence: Electron emits `'close'`
   inside `close()`; Keld emits it after `close()` returns, in issue order.
 - `destroy()`: a blocking `Destroy`. After it returns: if `!winDestroyed`, flip it and
-  emit `'closed'`, then return. No `'close'` is emitted. `wcDestroyed` stays false.
+  emit `'closed'`; then, if the wake drain applied a `LastWindowClosed`, run the
+  last-window policy (below); then return. No `'close'` is emitted. `wcDestroyed`
+  stays false.
+- Last-window policy: one facade function. While the role is parked, the lifecycle
+  applier only records that a `LastWindowClosed` is pending; it never emits
+  `'window-all-closed'` and never sends `Quit` (gh527 §4.6: appliers call no user code).
+  The policy consumes the pending record exactly once: it emits `'window-all-closed'`,
+  or, with no listener and outside a quit, sends the default non-blocking `Quit`. It
+  runs from `destroy()` after `'closed'` on the destroy path, and from the
+  `LastWindowClosed` dispatch on the normal close path; whichever runs second finds
+  nothing pending. So on the destroy path the step order is `REPLY Destroyed` read,
+  `'closed'`, last-window policy (and any `Quit`), `destroy()` returns, as Electron E1
+  recorded: `'closed'` fires inside `destroy()` and the quit cascade follows within
+  that call. No `Quit` can be written before the `Destroy` reply is read.
 - `Destroyed` dispatch: if `!wcDestroyed`, flip it and emit webContents `'destroyed'`.
   Then, if `!winDestroyed`, flip it and emit `'closed'`. This yields `destroyed` →
   `closed` on the normal path and `closed` (inside `destroy()`) → `destroyed` on the
   destroy path, as Electron E1 recorded 5/5. Neither event is ever emitted twice.
 - KEL-139 T1b: `'closed'` is emitted only after the host's `Destroyed` fact, so the
-  facade fabricates no native completion. ▲ divergences recorded as cells: on the
-  destroy path, Electron emits `window-all-closed` inside `destroy()` and webContents
-  `'destroyed'` after app `'quit'`; Keld emits `window-all-closed` after resume, and
-  webContents `'destroyed'` before it.
+  facade fabricates no native completion. ▲ divergence recorded as a cell: on the
+  destroy path, Electron emits webContents `'destroyed'` after app `'quit'`; Keld emits
+  it in the dispatch phase after `destroy()` returns, and its order relative to
+  `'quit'` is F01-T3's quit cell. `window-all-closed` inside `destroy()` now matches
+  Electron.
 
 ### 4.f Constructor triage
 
