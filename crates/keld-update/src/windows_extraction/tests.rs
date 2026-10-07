@@ -26,8 +26,8 @@ use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READONLY, PAGE
 
 use super::*;
 use crate::tests::{
-    append_required_policy, append_ustar_entry, digest_hex, expected_identity, finish_ustar,
-    manifest_json, observation, release_json, signing_key,
+    append_required_helper, append_required_policy, append_ustar_entry, digest_hex,
+    expected_identity, finish_ustar, manifest_json, observation, release_json, signing_key,
 };
 use crate::{
     DirectInstallMode, DirectInstallationIdentity, InstallOwner, ManifestDecision, ProvenanceField,
@@ -498,6 +498,7 @@ fn tilde_archive_member_still_refuses_before_stage_creation() {
     let fixture = Fixture::new();
     let mut content = Vec::new();
     append_required_policy(&mut content);
+    append_required_helper(&mut content);
     append_ustar_entry(&mut content, "payload~1.bin", b'0', b"forbidden alias");
     finish_ustar(&mut content);
     let source = fixture.source(&content);

@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
 use crate::tests::{
-    append_required_policy, digest_hex, expected_identity, finish_ustar, manifest_json,
-    observation, release_json, sign, signing_key,
+    append_required_helper, append_required_policy, digest_hex, expected_identity, finish_ustar,
+    manifest_json, observation, release_json, sign, signing_key,
 };
 use crate::{BaselineVerifier, InstallOwner, ManifestDecision, UpdateError, UpdateVerifier};
 
@@ -198,6 +198,7 @@ fn baseline_full_verifier_enforces_signed_compressed_and_content_domains() {
 fn baseline_uses_shared_canonical_archive_and_policy_validation() {
     let mut canonical = Vec::new();
     append_required_policy(&mut canonical);
+    append_required_helper(&mut canonical);
     finish_ustar(&mut canonical);
     for content in [&canonical[..], &[0_u8; 1024][..]] {
         let (verifier, manifest, compressed) = fixture("1.0.0", content);

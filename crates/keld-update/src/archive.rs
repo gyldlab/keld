@@ -197,7 +197,8 @@ where
             input.bytes_read.to_string(),
         ));
     }
-    validate_archive_members(&entries, validate_windows_paths)?;
+    let members = archive_members(&entries)?;
+    validate_archive_members(&members, validate_windows_paths)?;
 
     let actual_digest = *input.hasher.finalize().as_bytes();
     if actual_digest != receipt.content_blake3 {
@@ -207,8 +208,9 @@ where
             actual: hex_digest(&actual_digest),
         });
     }
-    // Decide policy only after authenticating the entire byte stream. A changed
-    // input must remain a digest failure rather than masquerading as signed policy.
+    // Decide policy and the required helper only after authenticating the entire byte
+    // stream. A changed input must remain a digest failure rather than masquerading as
+    // signed content.
     if !policy_seen {
         return Err(invalid_archive("required no-migration policy is missing"));
     }
@@ -217,6 +219,7 @@ where
             "no-migration policy is not the exact required regular file",
         ));
     }
+    keld_pack::require_updater_helper(&members).map_err(|error| pack_metadata_refusal(&error))?;
     Ok(ValidatedArchive {
         identity: receipt.identity.clone(),
         content_size: receipt.content_size,
@@ -240,13 +243,7 @@ fn read_policy<R: Read>(
     Ok(bytes == NO_MIGRATION_POLICY)
 }
 
-fn validate_archive_members<V>(
-    entries: &[ArchiveEntry],
-    validate_windows_paths: V,
-) -> Result<(), UpdateError>
-where
-    V: FnOnce(&[&str]) -> Result<(), String>,
-{
+fn archive_members(entries: &[ArchiveEntry]) -> Result<Vec<ArchiveMember<'_>>, UpdateError> {
     let mut members = Vec::new();
     members
         .try_reserve_exact(entries.len())
@@ -256,17 +253,32 @@ where
         kind: entry.kind,
         size: entry.size,
     }));
-    keld_pack::validate_v0_members(&members).map_err(|error| match error {
-        keld_pack::PackError::InvalidMetadata { detail } => invalid_archive(detail),
-        _ => invalid_archive("canonical archive metadata is invalid"),
-    })?;
+    Ok(members)
+}
+
+fn validate_archive_members<V>(
+    members: &[ArchiveMember<'_>],
+    validate_windows_paths: V,
+) -> Result<(), UpdateError>
+where
+    V: FnOnce(&[&str]) -> Result<(), String>,
+{
+    keld_pack::validate_v0_members(members).map_err(|error| pack_metadata_refusal(&error))?;
     let mut path_refs = Vec::new();
     path_refs
-        .try_reserve_exact(entries.len())
+        .try_reserve_exact(members.len())
         .map_err(|_| invalid_archive("archive path table allocation failed"))?;
-    path_refs.extend(entries.iter().map(|entry| entry.name.as_str()));
+    path_refs.extend(members.iter().map(|member| member.name));
     validate_windows_paths(&path_refs)
         .map_err(|_| invalid_archive("Windows package namespace is invalid"))
+}
+
+/// A `keld-pack` canonical-member refusal keeps its stable detail as an archive refusal.
+fn pack_metadata_refusal(error: &keld_pack::PackError) -> UpdateError {
+    match *error {
+        keld_pack::PackError::InvalidMetadata { detail } => invalid_archive(detail),
+        _ => invalid_archive("canonical archive metadata is invalid"),
+    }
 }
 
 struct HashingReader<'a, R> {

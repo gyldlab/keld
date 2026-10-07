@@ -9,10 +9,17 @@ use std::io::{self, Read, Write};
 // its defaults differ from the specified profile: directory trailing slashes were
 // removed, unused device fields set to seven octal zeros plus NUL, and checksums
 // recalculated. Every header field and padding block was inspected before check-in.
-// SHA-256 of the resulting independent fixture:
-// 02c6d279be74c9a82b0f90fa1214b4e8147d09f5747d3f050a3c97dfa8f1961b
+// KEL-270 T4d S9a regenerated it with the same procedure, adding the root regular file
+// `keld-updater-helper.exe` (27 bytes); the same script reproduces the previous fixture
+// (SHA-256 02c6d279be74c9a82b0f90fa1214b4e8147d09f5747d3f050a3c97dfa8f1961b) byte for
+// byte from the previous entry list. SHA-256 of the resulting independent fixture:
+// 60ea733b9f0ca5efc5b85f9e2a0691a9b35a0fca95e243fc4ba21fa9eab3c05e
 #[cfg(windows)]
 const GOLDEN_TAR: &[u8] = include_bytes!("../tests/fixtures/windows-v0-content.tar");
+
+/// The golden's updater-helper bytes; any regular file satisfies the presence rule.
+#[cfg(windows)]
+const HELPER: &[u8] = b"keld-updater-helper fixture";
 
 #[derive(Default)]
 struct CountReader {
@@ -43,7 +50,11 @@ impl Write for CountWriter {
 }
 
 #[cfg(windows)]
-fn golden_entries<'a>(one: &'a mut dyn Read, multi: &'a mut dyn Read) -> [PackageEntry<'a>; 4] {
+fn golden_entries<'a>(
+    one: &'a mut dyn Read,
+    multi: &'a mut dyn Read,
+    helper: &'a mut dyn Read,
+) -> [PackageEntry<'a>; 5] {
     [
         PackageEntry::Directory { name: "empty" },
         PackageEntry::Directory { name: "nest" },
@@ -57,6 +68,11 @@ fn golden_entries<'a>(one: &'a mut dyn Read, multi: &'a mut dyn Read) -> [Packag
             size: 1025,
             input: multi,
         },
+        PackageEntry::File {
+            name: "keld-updater-helper.exe",
+            size: HELPER.len() as u64,
+            input: helper,
+        },
     ]
 }
 
@@ -65,10 +81,22 @@ fn produce_golden() -> (Vec<u8>, ProducedFull) {
     let mut one = Cursor::new(b"!");
     let multi_bytes: Vec<u8> = (0u8..=255).cycle().take(1024).chain(*b"Z").collect();
     let mut multi = Cursor::new(multi_bytes);
-    let mut entries = golden_entries(&mut one, &mut multi);
+    let mut helper = Cursor::new(HELPER);
+    let mut entries = golden_entries(&mut one, &mut multi, &mut helper);
     let mut compressed = Vec::new();
     let receipt = produce_windows_v0(&mut entries, &mut compressed).expect("golden package");
     (compressed, receipt)
+}
+
+/// A zero-length updater helper that counts its source reads, so a fixture that
+/// isolates another metadata rule is otherwise canonical.
+#[cfg(windows)]
+fn idle_helper(source: &mut CountReader) -> PackageEntry<'_> {
+    PackageEntry::File {
+        name: "keld-updater-helper.exe",
+        size: 0,
+        input: source,
+    }
 }
 
 #[cfg(windows)]
@@ -81,7 +109,7 @@ fn canonical_tar_matches_independent_ustar_golden_and_receipt() {
         GOLDEN_TAR,
         "every header, payload, pad and trailer byte"
     );
-    assert_eq!(receipt.content_size(), 6656);
+    assert_eq!(receipt.content_size(), 7680);
     assert_eq!(
         receipt.content_blake3(),
         blake3::hash(GOLDEN_TAR).as_bytes()
@@ -161,11 +189,12 @@ fn fragmented_sources_and_partial_sink_writes_preserve_bytes_and_receipt() {
     let mut one = FragmentedReader::new(b"!".to_vec());
     let multi_bytes: Vec<u8> = (0u8..=255).cycle().take(1024).chain(*b"Z").collect();
     let mut multi = FragmentedReader::new(multi_bytes);
-    let mut entries = golden_entries(&mut one, &mut multi);
+    let mut helper = FragmentedReader::new(HELPER.to_vec());
+    let mut entries = golden_entries(&mut one, &mut multi, &mut helper);
     let mut sink = ShortWriter::default();
     let receipt = produce_windows_v0(&mut entries, &mut sink).expect("short writes are retried");
 
-    assert!(one.interrupted_once && multi.interrupted_once);
+    assert!(one.interrupted_once && multi.interrupted_once && helper.interrupted_once);
     assert!(
         multi.successful_reads > 342,
         "fragmented reads include an EOF probe"
@@ -194,6 +223,148 @@ fn portable_policy_constant_is_pinned() {
     );
 }
 
+#[test]
+fn portable_updater_helper_path_is_pinned() {
+    assert_eq!(UPDATER_HELPER_PATH, "keld-updater-helper.exe");
+}
+
+fn helper_detail(members: &[ArchiveMember<'_>]) -> Option<&'static str> {
+    match require_updater_helper(members) {
+        Ok(()) => None,
+        Err(PackError::InvalidMetadata { detail }) => Some(detail),
+        Err(other) => panic!("the helper rule refuses only as KELD-PACK-002: {other:?}"),
+    }
+}
+
+const fn member(name: &str, kind: ArchiveEntryKind) -> ArchiveMember<'_> {
+    ArchiveMember {
+        name,
+        kind,
+        size: 0,
+    }
+}
+
+#[test]
+fn shared_member_rule_requires_exactly_one_root_helper_file() {
+    use ArchiveEntryKind::{Directory, File};
+    assert_eq!(
+        helper_detail(&[member("keld-updater-helper.exe", File)]),
+        None
+    );
+    assert_eq!(
+        helper_detail(&[
+            member("a", Directory),
+            member("a/b", File),
+            member("keld-updater-helper.exe", File),
+        ]),
+        None,
+        "the helper is admitted beside other members"
+    );
+    for (why, members, detail) in [
+        (
+            "empty",
+            vec![],
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "absent",
+            vec![member("keld-host.exe", File)],
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "case variant only",
+            vec![member("KELD-UPDATER-HELPER.EXE", File)],
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "nested only",
+            vec![
+                member("nested", Directory),
+                member("nested/keld-updater-helper.exe", File),
+            ],
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "directory",
+            vec![member("keld-updater-helper.exe", Directory)],
+            "keld-updater-helper.exe is not a regular file",
+        ),
+        (
+            "duplicated",
+            vec![
+                member("keld-updater-helper.exe", File),
+                member("keld-updater-helper.exe", File),
+            ],
+            "keld-updater-helper.exe appears more than once",
+        ),
+    ] {
+        assert_eq!(helper_detail(&members), Some(detail), "{why}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn producer_requires_the_updater_helper_before_any_source_or_sink_io() {
+    // Each tree is otherwise canonical; the helper rule alone refuses it, in metadata
+    // pass 1, before any source is read or any compressed byte is written.
+    for (why, helper_name, kind, detail) in [
+        (
+            "absent",
+            None,
+            ArchiveEntryKind::File,
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "case variant only",
+            Some("KELD-UPDATER-HELPER.EXE"),
+            ArchiveEntryKind::File,
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "nested only",
+            Some("nested/keld-updater-helper.exe"),
+            ArchiveEntryKind::File,
+            "required keld-updater-helper.exe is missing",
+        ),
+        (
+            "directory",
+            Some("keld-updater-helper.exe"),
+            ArchiveEntryKind::Directory,
+            "keld-updater-helper.exe is not a regular file",
+        ),
+    ] {
+        let mut app = CountReader::default();
+        let mut helper = CountReader::default();
+        let mut sink = CountWriter::default();
+        let mut entries = vec![
+            PackageEntry::Directory { name: "nested" },
+            PackageEntry::File {
+                name: "app.bin",
+                size: 1,
+                input: &mut app,
+            },
+        ];
+        match (helper_name, kind) {
+            (None, _) => {}
+            (Some(name), ArchiveEntryKind::Directory) => {
+                entries.push(PackageEntry::Directory { name });
+            }
+            (Some(name), ArchiveEntryKind::File) => entries.push(PackageEntry::File {
+                name,
+                size: 1,
+                input: &mut helper,
+            }),
+        }
+        let error = produce_windows_v0(&mut entries, &mut sink).expect_err(why);
+        assert!(
+            matches!(error, PackError::InvalidMetadata { detail: found } if found == detail),
+            "{why}: {error}"
+        );
+        assert_eq!(error.code(), "KELD-PACK-002", "{why}");
+        assert_eq!((app.reads, helper.reads, sink.writes), (0, 0, 0), "{why}");
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn native_namespace_rejects_before_any_source_or_sink_io() {
@@ -214,15 +385,19 @@ fn native_namespace_rejects_before_any_source_or_sink_io() {
         "a/./b",
     ] {
         let mut source = CountReader::default();
+        let mut helper = CountReader::default();
         let mut sink = CountWriter::default();
-        let mut entries = [PackageEntry::File {
-            name,
-            size: 0,
-            input: &mut source,
-        }];
+        let mut entries = [
+            PackageEntry::File {
+                name,
+                size: 0,
+                input: &mut source,
+            },
+            idle_helper(&mut helper),
+        ];
         let error = produce_windows_v0(&mut entries, &mut sink).expect_err(name);
         assert_eq!(error.code(), "KELD-PACK-002", "{name}");
-        assert_eq!(source.reads, 0, "{name}");
+        assert_eq!(source.reads + helper.reads, 0, "{name}");
         assert_eq!(sink.writes, 0, "{name}");
     }
 }
@@ -237,18 +412,23 @@ fn policy_namespace_and_aliases_are_reserved_before_io() {
         ".keld/UPDATE-POLICY.V1",
     ] {
         let mut source = CountReader::default();
+        let mut helper = CountReader::default();
         let mut sink = CountWriter::default();
-        let mut entries = [PackageEntry::File {
-            name,
-            size: 0,
-            input: &mut source,
-        }];
+        let mut entries = [
+            PackageEntry::File {
+                name,
+                size: 0,
+                input: &mut source,
+            },
+            idle_helper(&mut helper),
+        ];
         let error = produce_windows_v0(&mut entries, &mut sink).expect_err(name);
         assert_eq!(error.code(), "KELD-PACK-002", "{name}");
-        assert_eq!((source.reads, sink.writes), (0, 0), "{name}");
+        assert_eq!((source.reads + helper.reads, sink.writes), (0, 0), "{name}");
     }
 
     let mut source = CountReader::default();
+    let mut helper = CountReader::default();
     let mut sink = CountWriter::default();
     let mut entries = [
         PackageEntry::Directory { name: ".keld" },
@@ -257,6 +437,7 @@ fn policy_namespace_and_aliases_are_reserved_before_io() {
             size: 0,
             input: &mut source,
         },
+        idle_helper(&mut helper),
     ];
     assert_eq!(
         produce_windows_v0(&mut entries, &mut sink)
@@ -264,7 +445,7 @@ fn policy_namespace_and_aliases_are_reserved_before_io() {
             .code(),
         "KELD-PACK-002"
     );
-    assert_eq!((source.reads, sink.writes), (0, 0));
+    assert_eq!((source.reads + helper.reads, sink.writes), (0, 0));
 }
 
 #[cfg(windows)]
@@ -276,33 +457,37 @@ fn producer_rejects_missing_parent_file_ancestor_and_case_alias_before_io() {
         ("readme", Some("README")),
     ] {
         let mut source = CountReader::default();
+        let mut helper = CountReader::default();
         let mut sink = CountWriter::default();
-        let mut entries = if let Some(second) = second {
-            vec![
-                PackageEntry::File {
-                    name: first,
-                    size: 0,
-                    input: &mut source,
-                },
-                PackageEntry::Directory { name: second },
-            ]
-        } else {
-            vec![PackageEntry::File {
+        let mut entries = vec![
+            PackageEntry::File {
                 name: first,
                 size: 0,
                 input: &mut source,
-            }]
-        };
+            },
+            idle_helper(&mut helper),
+        ];
+        if let Some(second) = second {
+            entries.push(PackageEntry::Directory { name: second });
+        }
         let error = produce_windows_v0(&mut entries, &mut sink).unwrap_err();
         assert_eq!(error.code(), "KELD-PACK-002", "{first}");
-        assert_eq!((source.reads, sink.writes), (0, 0), "{first}");
+        assert_eq!(
+            (source.reads + helper.reads, sink.writes),
+            (0, 0),
+            "{first}"
+        );
     }
 }
 
 #[cfg(windows)]
 #[test]
 fn explicit_exact_keld_directory_is_accepted_once() {
-    let mut entries = [PackageEntry::Directory { name: ".keld" }];
+    let mut helper = CountReader::default();
+    let mut entries = [
+        PackageEntry::Directory { name: ".keld" },
+        idle_helper(&mut helper),
+    ];
     let mut output = Vec::new();
     produce_windows_v0(&mut entries, &mut output).expect("exact reserved parent is allowed");
     let tar = zstd::stream::decode_all(output.as_slice()).expect("valid zstd");
@@ -404,11 +589,15 @@ fn portable_member_validator_pins_ustar_name_and_size_limits() {
 fn source_length_must_equal_declared_size() {
     for (bytes, declared) in [(b"".as_slice(), 1), (b"ab".as_slice(), 1)] {
         let mut source = Cursor::new(bytes);
-        let mut entries = [PackageEntry::File {
-            name: "x",
-            size: declared,
-            input: &mut source,
-        }];
+        let mut helper = CountReader::default();
+        let mut entries = [
+            PackageEntry::File {
+                name: "x",
+                size: declared,
+                input: &mut source,
+            },
+            idle_helper(&mut helper),
+        ];
         let mut output = Vec::new();
         assert_eq!(
             produce_windows_v0(&mut entries, &mut output)
@@ -461,11 +650,15 @@ impl Write for WriteZeroSink {
 #[test]
 fn stream_failures_return_no_receipt() {
     let mut source = BrokenReader;
-    let mut entries = [PackageEntry::File {
-        name: "x",
-        size: 1,
-        input: &mut source,
-    }];
+    let mut helper = CountReader::default();
+    let mut entries = [
+        PackageEntry::File {
+            name: "x",
+            size: 1,
+            input: &mut source,
+        },
+        idle_helper(&mut helper),
+    ];
     assert_eq!(
         produce_windows_v0(&mut entries, &mut Vec::new())
             .unwrap_err()
@@ -474,11 +667,15 @@ fn stream_failures_return_no_receipt() {
     );
 
     let mut source = Cursor::new(b"x");
-    let mut entries = [PackageEntry::File {
-        name: "x",
-        size: 1,
-        input: &mut source,
-    }];
+    let mut helper = CountReader::default();
+    let mut entries = [
+        PackageEntry::File {
+            name: "x",
+            size: 1,
+            input: &mut source,
+        },
+        idle_helper(&mut helper),
+    ];
     let error = produce_windows_v0(&mut entries, &mut BrokenWriter).unwrap_err();
     assert_eq!(error.code(), "KELD-PACK-004");
     assert!(
@@ -493,11 +690,15 @@ fn stream_failures_return_no_receipt() {
     );
 
     let mut source = Cursor::new(b"x");
-    let mut entries = [PackageEntry::File {
-        name: "x",
-        size: 1,
-        input: &mut source,
-    }];
+    let mut helper = CountReader::default();
+    let mut entries = [
+        PackageEntry::File {
+            name: "x",
+            size: 1,
+            input: &mut source,
+        },
+        idle_helper(&mut helper),
+    ];
     let error = produce_windows_v0(&mut entries, &mut WriteZeroSink).unwrap_err();
     assert_eq!(error.code(), "KELD-PACK-004");
 }

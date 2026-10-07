@@ -23,11 +23,13 @@ use super::locate_operator::census;
 use super::support::host_package_content;
 use super::writer::{seed_pending_activation_journal, seed_per_user_baseline_with};
 use crate::records::{ActivationPhase, PointerKind};
-use crate::windows_baseline::load::{pending_journal_refusal, repair_invalid_current};
+use crate::windows_baseline::load::{
+    LocatedVersion, pending_journal_refusal, repair_invalid_current,
+};
 use crate::windows_baseline::{WindowsBaselineTrust, select_windows_active_package};
 use crate::{
     ActivationEffect, ActivationFailureClass, DirectInstallMode, MachineRecoveryGuidance,
-    UpdateError,
+    UpdateError, WindowsLocatedImage,
 };
 
 /// The interim Machine-UAC state: this release does not provide the recovery-only role.
@@ -191,6 +193,10 @@ fn a_machine_uac_invalid_current_is_typed_recovery_required_and_writes_nothing()
             );
             let install = &trust.installation.install_root;
             let before = census(install);
+            let located = located.map(|version| LocatedVersion {
+                image: WindowsLocatedImage::Host,
+                version,
+            });
             let error = repair_invalid_current(&machine, &cause, located)
                 .expect_err("an ordinary process never repairs a Machine-UAC current");
             assert_eq!(census(install), before, "{label}/{located:?}: no write");

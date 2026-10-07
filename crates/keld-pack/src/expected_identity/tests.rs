@@ -220,4 +220,12 @@ fn error_has_stable_code_and_fix_guidance() {
     assert!(text.contains("(domain tag)"), "{text}");
     assert!(text.contains("never hand-edit"), "{text}");
     assert!(text.contains("packaging configuration"), "{text}");
+    assert!(
+        text.contains("rebuild the image (`keld-host.exe` or `keld-updater-helper.exe`)"),
+        "{text}"
+    );
+    assert!(
+        !text.replace("keld-host.exe", "").contains("host"),
+        "{text}"
+    );
 }

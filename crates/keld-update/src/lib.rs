@@ -49,6 +49,7 @@ pub use baseline::{BaselineVerifier, SelectedBaseline, VerifiedBaseline};
 pub use error::{
     ActivationEffect, ArtifactDomain, MachineRecoveryGuidance, ManifestIdentityField,
     ProvenanceField, ProvenanceUnavailable, UpdateError, VersionPublicationOutcome,
+    WindowsLocatedImage,
 };
 pub use full::VerifiedFull;
 #[cfg(feature = "fuzzing")]
@@ -70,12 +71,14 @@ pub use records::{ActivationFailureClass, AttemptOwner, InitiatingLogon};
 #[cfg(windows)]
 pub use windows_baseline::{
     ActivationHealthReceipt, ActivePackageSelection, LoadedWindowsBaseline,
-    ProcessFamilyRetirement, WindowsActivationAttempt, WindowsActivationOutcome,
-    WindowsActivationResolution, WindowsActivationWriteSnapshot, WindowsBaselineReceipt,
-    WindowsBaselineTrust, WindowsJournaledAttempt, WindowsMintedAttempt, WindowsRecoveryInspection,
-    WindowsRecoveryOutcome, initialize_windows_baseline, initialize_windows_machine_uac_baseline,
-    initialize_windows_per_user_baseline, load_windows_activation_write_snapshot,
-    load_windows_baseline, load_windows_recovery_inspection, repair_windows_unjournaled_versions,
+    ProcessFamilyRetirement, UpdaterHelperAnchor, UpdaterHelperImage, UpdaterHelperRole,
+    WindowsActivationAttempt, WindowsActivationOutcome, WindowsActivationResolution,
+    WindowsActivationWriteSnapshot, WindowsBaselineReceipt, WindowsBaselineTrust,
+    WindowsJournaledAttempt, WindowsMintedAttempt, WindowsRecoveryInspection,
+    WindowsRecoveryOutcome, anchor_updater_helper, initialize_windows_baseline,
+    initialize_windows_machine_uac_baseline, initialize_windows_per_user_baseline,
+    load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection, repair_windows_unjournaled_versions,
     select_active_package_for_executable, select_windows_active_package,
 };
 #[cfg(windows)]
