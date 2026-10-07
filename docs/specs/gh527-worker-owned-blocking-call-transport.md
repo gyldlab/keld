@@ -549,7 +549,7 @@ export class WorkerLink {
    `MAX_BLOCKING_CALL_DEADLINE_MS`. Otherwise it throws `KELD-IPC-005`.
 2. No blocking call may be in flight; otherwise it throws `KELD-IPC-005`. "In
    flight" is a main-only flag, never `BLOCKING`, which the Worker clears at its
-   claim. Main sets the flag here and clears it only after step 4, so it covers the
+   claim. Main sets the flag here and clears it only after step 4, in every outcome including a throw from the drain or the copy (a throw closes the link, so later calls throw the recorded code, never 005), so it covers the
    step-1 drain (§4.6) and the copy out of the reply slot; the slot stays owned by
    the outer call until then. Main
    allocates the correlation id (the rule is under "Pending-CALL map" below). Main
