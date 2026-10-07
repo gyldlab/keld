@@ -314,6 +314,11 @@ negative control: the one mutation that MUST make the test fail.
     link loss. *Negative control:* checking an uncredited frame against the whole
     ring's free space instead of its share admits the frame into credited space, so
     the test fails.
+29. **Credit shares are never empty (T4).** Given credit enabled with 2 credited
+    channels, `ringRecords = 3` makes `WorkerLink.open` throw `KELD-IPC-005` before
+    the Worker spawns (the uncredited share would be 0 records), and `ringRecords = 8`
+    opens with shares of 2, 3 and 3 records. *Negative control:* removing the
+    empty-share check makes the `ringRecords = 3` open succeed, so the test fails.
 
 ## 4. Design
 
@@ -830,7 +835,14 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   REPLY and `ERR`, host CALLs, lifecycle). Credit never suspends an uncredited frame,
   so one that does not fit this share fails closed with 26 (§4.7, criterion 28). The
   blocking reply needs no share, because it uses the reply slot (§4.3). The Worker
-  splits the rest equally among the credited channels. The first
+  splits the rest equally among the credited channels. All shares use integer
+  division: the uncredited share is `floor(ringBytes / 4)` bytes and
+  `floor(ringRecords / 4)` records, and each of `n` credited channels gets
+  `floor((ringBytes - floor(ringBytes / 4)) / n)` bytes and
+  `floor((ringRecords - floor(ringRecords / 4)) / n)` records; any remainder is
+  unused. With the credit lane enabled, `WorkerLink.open` throws `KELD-IPC-005` before
+  the Worker spawns when any share would be 0 records or smaller than one
+  `16 + 1`-byte envelope (criterion 29). The first
   `GRANT` per channel declares that channel's window: both fields MUST be nonzero, and
   the host records them as the channel's maximum outstanding credit. The Worker writes
   it only after it has validated the host's `HELLO` reply. It grants freed capacity
@@ -992,7 +1004,7 @@ not.
   strict self-entry mount proof; remove `DirectedReader` and the main-thread client
   path; update the arch 02, arch 06 and product-status current state.
 - [ ] T4 — conditional: only when a consumer shows the ring bound is insufficient.
-  `GrantCredit`, the version-3 bump, criteria 17, 23, 24 and 28, and the credit case of 18.
+  `GrantCredit`, the version-3 bump, criteria 17, 23, 24, 28 and 29, and the credit case of 18.
 - [ ] T5 — Linux and Windows qualification of criteria 1 to 14 and 18 to 20 on real
   hosts.
 
@@ -1019,6 +1031,7 @@ not.
 | 26 | claim-then-skip-publish and claim-step-throw hooks with a heartbeat-counting watchdog thread |
 | 27 | the criterion-1 harness with a host that answers two `call()`s out of order and writes an echo CALL during a park, recording a step log and the host's read frames |
 | 28 | T4 harness with credit enabled, a small ring and a host that fills the uncredited share with lifecycle EVENTs |
+| 29 | T4 Bun `open` cases with credit enabled and two credited channels, `ringRecords` 3 and 8 |
 
 Anti-flake: no sleep is used for synchronization. The host's 100 EVENT/s pacing is load
 generation only. Every assertion is a code, a count or a step log, never a duration. The
