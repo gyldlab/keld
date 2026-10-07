@@ -115,12 +115,7 @@ export const RECEIVE_POLICIES = {
     corr: { rule: "non-zero" },
     allowPing: true,
   } as ReceivePolicy,
-  lifecycleEventReceiver: {
-    channel: LIFECYCLE_CHANNEL,
-    kinds: [FrameKind.Event],
-    corr: { rule: "zero" },
-    allowPing: true,
-  } as ReceivePolicy,
+  lifecycleEventReceiver: eventReceiverOn(LIFECYCLE_CHANNEL),
 } as const;
 
 /** Scaffold alias for `RECEIVE_POLICIES.clientAwaitHello`. */
@@ -131,11 +126,42 @@ export function echoReplyWaiter(corr: number): ReceivePolicy {
 }
 
 export function lifecycleReplyWaiter(corr: number): ReceivePolicy {
-  return {
-    channel: LIFECYCLE_CHANNEL,
-    kinds: [FrameKind.Reply, FrameKind.Err],
-    corr: { rule: "exactly", id: corr },
-  };
+  return replyWaiter(LIFECYCLE_CHANNEL, corr);
+}
+
+/**
+ * Mirror of `keld_ipc::receive::ReceivePolicy::reply_waiter` (GH-527 §4.7,
+ * corpus `reply-waiter:<channel>:<corr>`): `REPLY` or the CallError-carrying
+ * `ERR` on `channel` with exactly `corr`, no `PING`. Channel 0 carries only
+ * `HELLO`, and echo replies keep KEL-133 row 4's REPLY-only
+ * `echoReplyWaiter`, so both are `KELD-IPC-005`.
+ */
+export function replyWaiter(channel: number, corr: number): ReceivePolicy {
+  if (channel === 0) {
+    throw kipcError("KELD-IPC-005", "channel 0 carries only HELLO");
+  }
+  if (channel === ECHO_CHANNEL) {
+    throw kipcError("KELD-IPC-005", "echo replies use the REPLY-only echo reply waiter");
+  }
+  return { channel, kinds: [FrameKind.Reply, FrameKind.Err], corr: { rule: "exactly", id: corr } };
+}
+
+function eventReceiverOn(channel: number): ReceivePolicy {
+  return { channel, kinds: [FrameKind.Event], corr: { rule: "zero" }, allowPing: true };
+}
+
+/**
+ * Mirror of `keld_ipc::receive::ReceivePolicy::event_receiver` (GH-527 §4.7,
+ * corpus `event-receiver:<channel>`): uncorrelated `EVENT`s on `channel` plus
+ * the live `PING` probe. Lifecycle is the only channel with host EVENTs until
+ * the channel table (#613) declares another, so any other channel is
+ * `KELD-IPC-005`.
+ */
+export function eventReceiver(channel: number): ReceivePolicy {
+  if (channel !== LIFECYCLE_CHANNEL) {
+    throw kipcError("KELD-IPC-005", "channel carries no host EVENTs");
+  }
+  return eventReceiverOn(channel);
 }
 
 export function privilegedCallReceiver(channel: number): ReceivePolicy {

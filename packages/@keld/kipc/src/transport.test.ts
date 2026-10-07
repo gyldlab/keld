@@ -40,8 +40,10 @@ import {
   decodeVarint,
   echoReplyWaiter,
   encodeHeader,
+  eventReceiver,
   kipcError,
   lifecycleReplyWaiter,
+  replyWaiter,
   validateReceivedHeader,
   withIoDeadline,
 } from "./transport.ts";
@@ -51,7 +53,7 @@ const CORPUS_PATH = join(
   import.meta.dir,
   "../../../../crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
 );
-const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
+const CORPUS_SHA256 = "0cebb6e00c15a03028c6a29c725eb0e607ff66ee1cae04e227d18b9e49d0213e";
 const SKIP_DIR_NAMES = new Set([".git", "node_modules", "target"]);
 const SKIP_REPO_DIRS = new Set([
   join(REPO_ROOT, ".keld-work"),
@@ -192,6 +194,42 @@ describe("fail-closed header semantics", () => {
     expect(() => validateReceivedHeader(waiter, wrongChannelErr)).toThrow("wrong channel");
     const good = { kind: FrameKind.Err, flags: 0, channel: LIFECYCLE_CHANNEL, corr: 7, len: 4 };
     expect(validateReceivedHeader(waiter, good)).toEqual(good);
+  });
+});
+
+describe("GH-527 receive policy mirrors", () => {
+  function frame(kind: number, channel: number, corr: number) {
+    return { kind, flags: 0, channel, corr, len: 4 };
+  }
+
+  test("replyWaiter is the row-7 shape on its channel; lifecycle is its channel-3 call", () => {
+    const fs = replyWaiter(2, 7);
+    expect(validateReceivedHeader(fs, frame(FrameKind.Reply, 2, 7)).corr).toBe(7);
+    expect(validateReceivedHeader(fs, frame(FrameKind.Err, 2, 7)).kind).toBe(FrameKind.Err);
+    expect(() => validateReceivedHeader(fs, frame(FrameKind.Reply, 2, 8))).toThrow(
+      "KELD-IPC-005: correlation does not match the awaited call",
+    );
+    expect(() => validateReceivedHeader(fs, frame(FrameKind.Reply, 3, 7))).toThrow(
+      "KELD-IPC-005: wrong channel for the session policy",
+    );
+    expect(() => validateReceivedHeader(fs, { ...frame(FrameKind.Ping, 2, 7), len: 0 })).toThrow(
+      "KELD-IPC-005: frame kind is not declared by the session policy",
+    );
+    expect(lifecycleReplyWaiter(9)).toEqual(replyWaiter(LIFECYCLE_CHANNEL, 9));
+  });
+
+  test("replyWaiter refuses the HELLO channel and the REPLY-only echo channel", () => {
+    expect(() => replyWaiter(0, 7)).toThrow("KELD-IPC-005: channel 0 carries only HELLO");
+    expect(() => replyWaiter(ECHO_CHANNEL, 7)).toThrow(
+      "KELD-IPC-005: echo replies use the REPLY-only echo reply waiter",
+    );
+  });
+
+  test("eventReceiver equals the lifecycle event policy and refuses other channels", () => {
+    expect(eventReceiver(LIFECYCLE_CHANNEL)).toEqual(RECEIVE_POLICIES.lifecycleEventReceiver);
+    for (const channel of [0, ECHO_CHANNEL, 2, 0xffff]) {
+      expect(() => eventReceiver(channel)).toThrow("KELD-IPC-005: channel carries no host EVENTs");
+    }
   });
 });
 

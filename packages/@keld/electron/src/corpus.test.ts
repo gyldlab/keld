@@ -22,9 +22,11 @@ import {
   type ReceivePolicy,
   echoReplyWaiter,
   errorFromErrFrame,
+  eventReceiver,
   lifecycleReplyWaiter,
   primaryAppReceiver,
   privilegedCallReceiver,
+  replyWaiter,
   validateReceivedHeader,
 } from "../../kipc/src/transport.ts";
 
@@ -34,7 +36,7 @@ const CORPUS_PATH = join(
 );
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
-const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
+const CORPUS_SHA256 = "0cebb6e00c15a03028c6a29c725eb0e607ff66ee1cae04e227d18b9e49d0213e";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set(["server-pre-auth-hello", "client-await-hello"]);
 
@@ -85,7 +87,8 @@ function unhex(hex: string): Uint8Array {
 }
 
 function policyByName(name: string): ReceivePolicy {
-  const [base, arg] = name.includes(":") ? name.split(":", 2) : [name, undefined];
+  const separator = name.indexOf(":");
+  const [base, arg] = separator < 0 ? [name, undefined] : [name.slice(0, separator), name.slice(separator + 1)];
   switch (base) {
     case "server-pre-auth-hello":
       return RECEIVE_POLICIES.serverPreAuthHello;
@@ -105,6 +108,12 @@ function policyByName(name: string): ReceivePolicy {
       return privilegedCallReceiver(Number(arg));
     case "primary-app-receiver":
       return primaryAppReceiver();
+    case "reply-waiter": {
+      const [channel, corr] = (arg ?? "").split(":");
+      return replyWaiter(Number(channel), Number(corr));
+    }
+    case "event-receiver":
+      return eventReceiver(Number(arg));
     default:
       throw new Error(`unknown corpus policy: ${name}`);
   }
@@ -192,6 +201,15 @@ function decodeCallErrorShape(payload: Uint8Array): void {
   if (message.next !== payload.length) throw new Error("KELD-IPC-003: trailing bytes");
 }
 
+function decodeCorpusCallError(payload: Uint8Array): void {
+  decodeCallErrorShape(payload);
+  // Production decoder agreement: the code must be recoverable from the
+  // Error the library builds for this ERR payload.
+  if (!errorFromErrFrame(payload).message.includes("KELD-GUARD001")) {
+    throw new Error("KELD-IPC-003: production CallError decode disagrees");
+  }
+}
+
 function stageTwo(policyName: string, kind: number, payload: Uint8Array): void {
   const base = policyName.split(":", 1)[0];
   if (kind === FrameKind.Ping) return;
@@ -215,15 +233,17 @@ function stageTwo(policyName: string, kind: number, payload: Uint8Array): void {
     case "lifecycle-event-receiver":
       decodeUnitEnum(payload, 1); // Ready | LastWindowClosed
       return;
+    case "event-receiver":
+      decodeUnitEnum(payload, 1); // the only EVENT channel today is lifecycle (GH-527 §4.9)
+      return;
+    case "reply-waiter":
+      // A generic waiter's REPLY codec belongs to the channel that issued the
+      // CALL (GH-527 §4.7); its ERR is the shared CallError.
+      if (kind === FrameKind.Err) decodeCorpusCallError(payload);
+      return;
     case "lifecycle-reply-waiter":
-      if (kind === FrameKind.Err) {
-        decodeCallErrorShape(payload);
-        // Production decoder agreement: the code must be recoverable from
-        // the Error the library builds for this ERR payload.
-        if (!errorFromErrFrame(payload).message.includes("KELD-GUARD001")) {
-          throw new Error("KELD-IPC-003: production CallError decode disagrees");
-        }
-      } else decodeUnitEnum(payload, 0); // LifecycleResponse::Quit
+      if (kind === FrameKind.Err) decodeCorpusCallError(payload);
+      else decodeUnitEnum(payload, 0); // LifecycleResponse::Quit
       return;
     case "privileged-fs-receiver":
     case "primary-app-receiver":
