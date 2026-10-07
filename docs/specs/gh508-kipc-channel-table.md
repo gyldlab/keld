@@ -133,14 +133,19 @@ These are the spec's contract for X05-T4. Each names its negative control.
    `el-reserved` fails.
 6. **Hand-written constant (Rust).** The scan input is every `.rs` file under
    `crates/*/src` and `crates/keld-ipc/fuzz/fuzz_targets`, except
-   `crates/keld-ipc/src/channel_table.rs`. In each file, the text from the first line
-   that starts with `#[cfg(test)]` to the end of the file is excluded, and `tests/`
-   directories are never scanned. The test passes if and only if the remaining text has
-   zero matches of either regex: `ChannelId\(\s*[0-9]` and
-   `const\s+[A-Z0-9_]*CHANNEL[A-Z0-9_]*\s*:\s*u16\s*=\s*[0-9]`. A file whose
-   production code continues after a `#[cfg(test)]` module therefore fails closed.
-   *Negative controls:* putting back `const ECHO_CHANNEL: u16 = 1;` in `macos_bridge.rs`
-   fails the scan, and so does putting back `ChannelId(0)` in `link.rs`'s `write_hello`.
+   `crates/keld-ipc/src/channel_table.rs`. `tests/` directories are never scanned.
+   Inside a file, only an item that a `#[cfg(test)]` attribute directly gates is
+   excluded. For `#[cfg(test)] mod <name> {`, that is the module body up to its
+   brace-matched close. For a single-line item, such as a `use` line, it is that one
+   line only. Any other `#[cfg(test)]` form is scanned, not skipped, so the scan fails
+   closed. The test passes if and only if the remaining text has zero matches of either
+   regex: `ChannelId\(\s*[0-9]` and
+   `const\s+[A-Z0-9_]*CHANNEL[A-Z0-9_]*\s*:\s*u16\s*=\s*[0-9]`.
+   *Negative controls:* putting back `const ECHO_CHANNEL: u16 = 1;` in
+   `macos_bridge.rs` fails the scan. Putting back `ChannelId(0)` in `link.rs`'s
+   `write_hello` also fails, although `link.rs` gates a `use` with `#[cfg(test)]` at
+   line 5. So does a `ChannelId(2)` placed after the `#[cfg(test)]` item at `fs.rs:591`.
+   A test-gated module that contains `ChannelId(9)` passes.
 7. **Hand-written constant (TypeScript and injected script).** Given production
    TypeScript under `packages/*/src` and `crates/keld-cli/templates/*/src`, and the macOS
    bridge's injected scripts, when the scan runs, then no numeric channel-id literal
