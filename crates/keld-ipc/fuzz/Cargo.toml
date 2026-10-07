@@ -30,8 +30,10 @@ doc = false
 bench = false
 
 # KEL-53 §6 S4b: the keld-attempt claim and health record codec (raw bytes at
-# every read position). Its retained inputs become deterministic tests in
-# crates/keld-ipc/src/attempt/records/tests.rs.
+# every read position). Every crash- or invariant-finding input a campaign
+# retains is minimized into a named test in
+# crates/keld-ipc/src/attempt/records/tests.rs (none so far); the committed
+# coverage corpus only seeds future campaigns.
 [[bin]]
 name = "attempt_records"
 path = "fuzz_targets/attempt_records.rs"

@@ -114,7 +114,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: keld-attempt record refused (magic not admitted at its position, truncated, trailing bytes, or a class or result byte outside its closed set or position)
-- fix: End the exchange without reading further: before KELD-AR1 refuse the claimant, which then refuses its own start with WriterActive; after it, health cannot commit and the owner rolls back.
+- fix: End the exchange without reading further: before KELD-AR1 refuse the claimant, which then refuses its own start with WriterActive; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
 
 ## KELD-IPC-016
 
@@ -126,7 +126,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: keld-attempt record I/O failed (end of file, read or write failure, or expired deadline)
-- fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, health cannot commit and the owner rolls back.
+- fix: End the exchange; never retry or wait past the deadline: before KELD-AR1 refuse the claimant; after it, the owner cannot commit health and rolls back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.
 
 ## KELD-WV-001
 

@@ -316,9 +316,13 @@ impl AttemptChallenge {
 /// together: the body of `KELD-AA1` and of its same-context receipt
 /// `KELD-AR1` (176 bytes each), which differ only in magic.
 ///
-/// Each side obtains its transcript only through its acceptance check, so no
-/// `KELD-AA1` or `KELD-AR1` can be built for a claim or challenge that the
-/// check refused.
+/// A transcript is the body that each side's acceptance check returns. The
+/// codec does not make it unforgeable: [`AttemptRecord::decode`] and
+/// [`AttemptRecord::read_from`] return any well-formed transcript, and either
+/// side can call [`Self::for_owner`]. KEL-53 §6 S6's client and server must
+/// send only the transcript that `for_claimant` (claimant) or `for_owner`
+/// (owner) returned, and the claimant must run `for_claimant` before it
+/// writes `KELD-AA1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptTranscript {
     installation_id: [u8; ID_LEN],
@@ -888,11 +892,13 @@ impl AttemptRecordError {
 
 const MALFORMED_FIX: &str = "End the exchange without reading further: before KELD-AR1 \
      refuse the claimant, which then refuses its own start with WriterActive; after it, \
-     health cannot commit and the owner rolls back.";
+     the owner cannot commit health and rolls back, and a candidate that cannot read a \
+     valid KELD-AK1 never arms its recovery gate.";
 const MISMATCH_FIX: &str = "The peer is not bound to this attempt. End the exchange: \
      before KELD-AR1 refuse the claimant; after it, the owner rolls back.";
 const IO_FIX: &str = "End the exchange; never retry or wait past the deadline: before \
-     KELD-AR1 refuse the claimant; after it, health cannot commit and the owner rolls back.";
+     KELD-AR1 refuse the claimant; after it, the owner cannot commit health and rolls \
+     back, and a candidate that cannot read a valid KELD-AK1 never arms its recovery gate.";
 
 impl fmt::Display for AttemptRecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

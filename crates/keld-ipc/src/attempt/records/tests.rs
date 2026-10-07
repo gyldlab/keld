@@ -9,6 +9,16 @@
 //! past the magic. No expected byte or admission comes from the code under
 //! test.
 
+// Cohesion exception (.agents/test-layout.md): keld-ipc owns this suite, the one
+// contract suite for KEL-53 §7 "8 (keld-attempt codec)" (KEL-270 T4d S4b). Its
+// goldens are assembled from the spec table's literal segments, its admission table
+// is written out literally, and the silent-peer observer and the claimant's
+// Windows-only AC1 checks reuse those same fixtures; splitting by size would
+// duplicate them or add a support module that exists only for a counter.
+// Tracking: KEL-270. Revisit when S6 adds the record exchange (move `mod claimant`
+// and the exchange scenarios beside the S6 client) or S11 adds BH1 to BO1,
+// whichever comes first.
+
 use std::io::{self, Cursor, Read};
 
 use super::{
