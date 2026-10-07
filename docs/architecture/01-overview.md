@@ -114,6 +114,7 @@ view and links each claim to tracked evidence.
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
 | `keld-host` | Shipping host executable that assembles the core and platform backends | core |
+| `keld-updater-helper` | Elevated Machine-UAC updater helper binary (KEL-53 T4d); nothing depends on it | update, ipc, runtime, guard (Windows only) |
 
 npm packages (TypeScript, in `packages/`):
 

@@ -4,7 +4,7 @@
 # other dependency policy. CI (`.github/workflows/ci.yml` `deny` job) runs it with this
 # crate as the sole graph root:
 #   cargo deny --manifest-path crates/keld-updater-helper/Cargo.toml --all-features \
-#     check --config crates/keld-updater-helper/deny.toml bans
+#     --config crates/keld-updater-helper/deny.toml check bans
 # tests/edge_set.rs reads the same list and checks it against `cargo tree`.
 
 [graph]

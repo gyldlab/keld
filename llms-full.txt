@@ -1126,6 +1126,7 @@ view and links each claim to tracked evidence.
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
 | `keld-host` | Shipping host executable that assembles the core and platform backends | core |
+| `keld-updater-helper` | Elevated Machine-UAC updater helper binary (KEL-53 T4d); nothing depends on it | update, ipc, runtime, guard (Windows only) |
 
 npm packages (TypeScript, in `packages/`):
 
@@ -6125,7 +6126,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-updater-helper
 - message: keld-updater-helper.exe was not started on Windows with exactly one accepted argument
-- fix: Only keld-host.exe starts it, on Windows, with exactly one argument: the activation rendezvous `\.\pipe\keld-attempt-<64 lowercase hex>`. The argument conveys no authority, and the helper refuses before any open or write.
+- fix: Only keld-host.exe starts it, on Windows, with exactly one argument: the activation rendezvous `\\.\pipe\keld-attempt-<64 lowercase hex>`. The argument conveys no authority, and the helper refuses before any open or write.
 
 ## KELD-HELPER-002
 

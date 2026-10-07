@@ -29,6 +29,13 @@ pub(crate) enum HelperError {
     ActivationDisabled,
     /// `KELD-HELPER-004`: the recovery-only role, which refuses after a passing
     /// self-anchor until KEL-270 T4d slice S10 lands (KEL-53 §4 *Interim*).
+    ///
+    /// Its text is not `keld-update`'s `MachineRecoveryGuidance::RecoveryDisabled`
+    /// guidance, on purpose. That guidance tells an ordinary launch that *this
+    /// installation needs* recovery the release cannot perform. The helper refuses the
+    /// role right after its self-anchor, without deciding whether any journal phase or
+    /// `current` needs recovery, so it states only that the role is disabled and that the
+    /// protected state is preserved.
     #[cfg(windows)]
     RecoveryDisabled,
 }
