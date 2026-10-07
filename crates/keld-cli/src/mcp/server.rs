@@ -111,6 +111,8 @@ impl ServerHandler for KeldMcpServer {
     }
 
     /// Fixed order for prompt-cache stability (spec AC2) — router sorts alphabetically.
+    // Preserve the async handler's evaluation timing; `unknown_lints` keeps this Rust 1.99-only
+    // Clippy allowance source-compatible with the Rust 1.97.1 MSRV.
     #[allow(unknown_lints, clippy::unused_async_trait_impl)]
     async fn list_tools(
         &self,
