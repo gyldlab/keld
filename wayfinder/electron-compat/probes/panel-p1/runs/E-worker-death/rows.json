@@ -1,0 +1,32 @@
+[
+ {
+  "spec": "E-worker-death",
+  "run": 1,
+  "main_error": "KELD-IPC-006",
+  "main_woke_after_death_ms": 2503.154,
+  "typed_close_wake": false,
+  "no_fabricated_reply": true,
+  "host_writer_error": "KELD-IPC-001: I/O error — Broken pipe (os error 32). Check t",
+  "host_ended": null,
+  "host_ipc006": false,
+  "no_hang": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 3021
+ },
+ {
+  "spec": "E-worker-death",
+  "run": 2,
+  "main_error": "KELD-IPC-006",
+  "main_woke_after_death_ms": 2504.28,
+  "typed_close_wake": false,
+  "no_fabricated_reply": true,
+  "host_writer_error": "KELD-IPC-001: I/O error — Broken pipe (os error 32). Check t",
+  "host_ended": null,
+  "host_ipc006": false,
+  "no_hang": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 3024
+ }
+]

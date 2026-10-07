@@ -1,0 +1,6 @@
+{"ev":"listening","link":"s.sock#40e524a3ba4449fce0fe8308ef74bfccf76e4a8c8551d9b6f9b6ae3af505bade","arm":"e-retire","burst":10000,"rate":100,"steady_ms":10000,"credit_window":0,"io_deadline_ms":5000,"reader_poll_ms":200}
+{"ev":"authenticated","wall_us":1791367361401739}
+{"ev":"scenario_start","t_ms":0,"wall_us":1791367361402261}
+{"ev":"burst_done","burst_ms":11,"bytes":640000,"events":10000,"max_block_us":606,"wall_us":1791367361413725}
+{"ev":"retire","events_written":10200,"bytes":652800,"t_ms":2014,"wall_us":1791367363415822}
+{"ev":"summary","arm":"e-retire","bytes":652800,"frames":10200,"events":10200,"max_block_us":606,"write_stalls_ge_250ms":0,"credit_waits":0,"credit_wait_max_us":0,"credit_wait_total_us":0,"credit_stalls_ge_250ms":0,"error":null,"ipc006":false,"ended":"generation retired by host","quit_replied":false,"serve_returned":true,"t_ms":2014,"wall_us":1791367363415903}

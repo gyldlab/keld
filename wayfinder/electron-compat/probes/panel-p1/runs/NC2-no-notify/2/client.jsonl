@@ -1,0 +1,7 @@
+{"ev":"ready","mode":"nc-notify","ring_bytes":1048576,"wall_us":1791367377107474}
+{"ev":"worker_reply","corr":1,"events_in":0,"last_event_wall_us":0,"wall_us":1791367377107696}
+{"ev":"rtt","mode":"nc-notify","calls":1,"error":"KELD-IPC-006: blocking CALL deadline 2000 ms exceeded","p50_ms":2002.6032,"p99_ms":2002.6032,"max_ms":2002.603}
+{"ev":"worker_reply","corr":2,"events_in":0,"last_event_wall_us":0,"wall_us":1791367379110367}
+{"ev":"worker_closed","code":1,"detail":"KELD-IPC-001: connection closed by peer","events_in":0,"replies_from_host":2,"wall_us":1791367379110520}
+{"ev":"end","quit_reply":false,"error":"KELD-IPC-006: blocking CALL deadline 5000 ms exceeded"}
+{"ev":"exit","replayed_total":0,"wall_us":1791367384115311}

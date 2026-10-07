@@ -1,0 +1,24 @@
+[
+ {
+  "spec": "NC2-no-notify",
+  "run": 1,
+  "call_timed_out": true,
+  "elapsed_ms": 2005.528,
+  "error": "KELD-IPC-006: blocking CALL deadline 2000 ms exceeded",
+  "negative_control_holds": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 7037
+ },
+ {
+  "spec": "NC2-no-notify",
+  "run": 2,
+  "call_timed_out": true,
+  "elapsed_ms": 2002.603,
+  "error": "KELD-IPC-006: blocking CALL deadline 2000 ms exceeded",
+  "negative_control_holds": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 7027
+ }
+]

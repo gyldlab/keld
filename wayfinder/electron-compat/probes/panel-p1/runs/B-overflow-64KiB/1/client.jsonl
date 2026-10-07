@@ -1,0 +1,5 @@
+{"ev":"ready","mode":"scenario","ring_bytes":65536,"wall_us":1791367404186087}
+{"ev":"worker_closed","code":2,"detail":"parked replay ring full (65536 bytes)","events_in":1025,"replies_from_host":0,"wall_us":1791367404188495}
+{"ev":"woke","mode":"scenario","reply_ok":false,"error":{"code":"KELD-IPC-004","message":"KELD-IPC-004: parked EVENT replay ring is full; the link was closed, no reply was received"},"replay_error":null,"parked_ms":2.542,"waits":null,"last_wait":null,"park_start_wall_us":1791367404186110,"wake_wall_us":1791367404188652,"ring_events_published":1024,"ring_high_water_bytes":65536,"replayed_after_wake":1024,"order":{"received":1024,"expected":11000,"dupes":0,"gaps":0,"outOfOrder":0,"inOrder":false}}
+{"ev":"end","close":null}
+{"ev":"exit","replayed_total":1024,"wall_us":1791367404189670}

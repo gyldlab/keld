@@ -1,0 +1,5 @@
+{"ev":"listening","link":"s.sock#a67cf417d7cec3016468162c68f97e0f0e16cdf1f5d4fb47bac407aec61f8976","arm":"a","burst":10000,"rate":100,"steady_ms":10000,"credit_window":0,"io_deadline_ms":5000,"reader_poll_ms":200}
+{"ev":"authenticated","wall_us":1791367272987006}
+{"ev":"scenario_start","t_ms":0,"wall_us":1791367272987440}
+{"ev":"write_error","error":"KELD-IPC-006: app-link I/O deadline exceeded. Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.","ipc006":true,"blocked_ms":5001,"bytes_before":8192,"frames_before":128,"events_before":128,"t_ms":5001,"wall_us":1791367277988598}
+{"ev":"summary","arm":"a","bytes":8192,"frames":128,"events":128,"max_block_us":1,"write_stalls_ge_250ms":0,"credit_waits":0,"credit_wait_max_us":0,"credit_wait_total_us":0,"credit_stalls_ge_250ms":0,"error":"KELD-IPC-006: app-link I/O deadline exceeded. Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.","ipc006":true,"ended":null,"quit_replied":false,"serve_returned":true,"t_ms":5001,"wall_us":1791367277988652}

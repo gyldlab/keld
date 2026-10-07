@@ -1,0 +1,50 @@
+[
+ {
+  "spec": "B-overflow-64KiB",
+  "run": 1,
+  "typed_overflow_error": "KELD-IPC-004",
+  "no_fabricated_reply": true,
+  "events_replayed_before_overflow": 1024,
+  "replayed_prefix_in_order": true,
+  "worker_events_in_at_overflow": 1025,
+  "host_writer_error": "KELD-IPC-001: I/O error — Broken pipe (os error 32). Check t",
+  "host_ipc006": false,
+  "host_max_write_block_us": 481,
+  "no_hang": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 15
+ },
+ {
+  "spec": "B-overflow-64KiB",
+  "run": 2,
+  "typed_overflow_error": "KELD-IPC-004",
+  "no_fabricated_reply": true,
+  "events_replayed_before_overflow": 1024,
+  "replayed_prefix_in_order": true,
+  "worker_events_in_at_overflow": 1025,
+  "host_writer_error": "KELD-IPC-001: I/O error — Broken pipe (os error 32). Check t",
+  "host_ipc006": false,
+  "host_max_write_block_us": 356,
+  "no_hang": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 15
+ },
+ {
+  "spec": "B-overflow-64KiB",
+  "run": 3,
+  "typed_overflow_error": "KELD-IPC-004",
+  "no_fabricated_reply": true,
+  "events_replayed_before_overflow": 1024,
+  "replayed_prefix_in_order": true,
+  "worker_events_in_at_overflow": 1025,
+  "host_writer_error": "KELD-IPC-001: I/O error — Broken pipe (os error 32). Check t",
+  "host_ipc006": false,
+  "host_max_write_block_us": 446,
+  "no_hang": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 15
+ }
+]

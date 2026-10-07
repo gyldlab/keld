@@ -1,0 +1,4 @@
+{"ev":"authenticated","arm":"c","wall_us":1791367476191530}
+{"ev":"parked","arm":"c","wait":"timed-out","parked_ms":12000.9,"park_start_wall_us":1791367476191641,"bytes_in_before_park":48,"bytes_in_during_park":0,"sync_reply_while_parked":false}
+{"ev":"after_wake","arm":"c","order":{"received":11000,"expected":11000,"dupes":0,"gaps":0,"outOfOrder":0,"inOrder":true},"reply_received":true,"reply_ok":true,"reply_after_wake_ms":10008.3,"end_error":null,"bytes_in_total":704074}
+{"ev":"quit","ok":true}

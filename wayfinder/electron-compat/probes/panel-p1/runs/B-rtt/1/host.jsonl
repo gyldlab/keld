@@ -1,0 +1,5 @@
+{"ev":"listening","link":"s.sock#270b2b0c76dd432aafa42e55996d55e65025afc8b9f09d32699bf87252f904f0","arm":"b","burst":10000,"rate":100,"steady_ms":10000,"credit_window":0,"io_deadline_ms":5000,"reader_poll_ms":200}
+{"ev":"authenticated","wall_us":1791367404239125}
+{"ev":"quit_received","wall_us":1791367404274146}
+{"ev":"quit_replied","ok":true,"events_before_reply":0,"wall_us":1791367404274151}
+{"ev":"summary","arm":"b","bytes":21889,"frames":1001,"events":0,"max_block_us":18,"write_stalls_ge_250ms":0,"credit_waits":0,"credit_wait_max_us":0,"credit_wait_total_us":0,"credit_stalls_ge_250ms":0,"error":null,"ipc006":false,"ended":null,"quit_replied":true,"serve_returned":true,"t_ms":35,"wall_us":1791367404274190}

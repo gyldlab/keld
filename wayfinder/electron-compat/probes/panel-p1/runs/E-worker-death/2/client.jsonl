@@ -1,0 +1,5 @@
+{"ev":"ready","mode":"scenario","ring_bytes":1048576,"wall_us":1791367583048176}
+{"ev":"worker_dying","wall_us":1791367583549321}
+{"ev":"woke","mode":"scenario","reply_ok":false,"error":{"code":"KELD-IPC-006","message":"KELD-IPC-006: blocking CALL deadline 3000 ms exceeded"},"replay_error":null,"parked_ms":3005.4,"waits":null,"last_wait":null,"park_start_wall_us":1791367583048201,"wake_wall_us":1791367586053601,"ring_events_published":10049,"ring_high_water_bytes":643136,"replayed_after_wake":10049,"order":{"received":10049,"expected":11000,"dupes":0,"gaps":0,"outOfOrder":0,"inOrder":false}}
+{"ev":"end","close":null}
+{"ev":"exit","replayed_total":10049,"wall_us":1791367586058691}

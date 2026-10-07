@@ -1,0 +1,34 @@
+[
+ {
+  "spec": "NC3-drop-one",
+  "run": 1,
+  "order": {
+   "received": 10999,
+   "expected": 11000,
+   "dupes": 0,
+   "gaps": 1,
+   "outOfOrder": 1,
+   "inOrder": false
+  },
+  "negative_control_holds": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 10021
+ },
+ {
+  "spec": "NC3-drop-one",
+  "run": 2,
+  "order": {
+   "received": 10999,
+   "expected": 11000,
+   "dupes": 0,
+   "gaps": 1,
+   "outOfOrder": 1,
+   "inOrder": false
+  },
+  "negative_control_holds": true,
+  "host_exit": 0,
+  "client_exit": 0,
+  "wall_ms": 10019
+ }
+]

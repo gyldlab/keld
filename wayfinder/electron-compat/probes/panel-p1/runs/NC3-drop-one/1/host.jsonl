@@ -1,0 +1,9 @@
+{"ev":"listening","link":"s.sock#d6a40249c822917063394b6910d6e95f13e3e787e0396157c4bdf84af9b5c559","arm":"b","burst":10000,"rate":100,"steady_ms":10000,"credit_window":0,"io_deadline_ms":5000,"reader_poll_ms":200}
+{"ev":"authenticated","wall_us":1791367384135226}
+{"ev":"scenario_start","t_ms":0,"wall_us":1791367384135900}
+{"ev":"burst_done","burst_ms":11,"bytes":640000,"events":10000,"max_block_us":586,"wall_us":1791367384147767}
+{"ev":"steady_done","events":11000,"bytes":704000,"wall_us":1791367394138382}
+{"ev":"reply_written","ok":true,"backlog":0,"t_ms":10003,"wall_us":1791367394138389}
+{"ev":"quit_received","wall_us":1791367394143528}
+{"ev":"quit_replied","ok":true,"events_before_reply":11000,"wall_us":1791367394143536}
+{"ev":"summary","arm":"b","bytes":704043,"frames":11002,"events":11000,"max_block_us":586,"write_stalls_ge_250ms":0,"credit_waits":0,"credit_wait_max_us":0,"credit_wait_total_us":0,"credit_stalls_ge_250ms":0,"error":null,"ipc006":false,"ended":null,"quit_replied":true,"serve_returned":true,"t_ms":10008,"wall_us":1791367394143571}

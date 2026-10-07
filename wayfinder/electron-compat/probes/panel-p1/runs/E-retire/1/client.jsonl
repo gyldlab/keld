@@ -1,0 +1,4 @@
+{"ev":"ready","mode":"retire","ring_bytes":1048576,"wall_us":1791367359367032}
+{"ev":"worker_closed","code":1,"detail":"KELD-IPC-001: connection closed by peer","events_in":10200,"replies_from_host":0,"wall_us":1791367361384686}
+{"ev":"woke","mode":"retire","fabricated_reply":false,"error":{"code":"KELD-IPC-001","message":"KELD-IPC-001: link closed (peer close or generation retire) during a blocking CALL; no reply was received"},"park_start_wall_us":1791367359367080,"wake_wall_us":1791367361384857,"parked_ms":2017.777,"replayed_after_wake":10200,"order":{"received":10200,"expected":10200,"dupes":0,"gaps":0,"outOfOrder":0,"inOrder":true},"close":null}
+{"ev":"exit","replayed_total":10200,"wall_us":1791367361389375}

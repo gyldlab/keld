@@ -1,0 +1,6 @@
+{"ev":"listening","link":"s.sock#2aee9e03da32c06eec5f350c71c5bf1053a9ed38a1f4c62d426d8aaba839ac2d","arm":"b","burst":10000,"rate":100,"steady_ms":10000,"credit_window":0,"io_deadline_ms":5000,"reader_poll_ms":200}
+{"ev":"authenticated","wall_us":1791367580026495}
+{"ev":"scenario_start","t_ms":0,"wall_us":1791367580027022}
+{"ev":"burst_done","burst_ms":11,"bytes":640000,"events":10000,"max_block_us":606,"wall_us":1791367580038760}
+{"ev":"write_error","error":"KELD-IPC-001: I/O error — Broken pipe (os error 32). Check the app-link path is live and the peer has not closed the socket.","ipc006":false,"blocked_ms":0,"bytes_before":643136,"frames_before":10049,"events_before":10049,"t_ms":504,"wall_us":1791367580530794}
+{"ev":"summary","arm":"b","bytes":643136,"frames":10049,"events":10049,"max_block_us":606,"write_stalls_ge_250ms":0,"credit_waits":0,"credit_wait_max_us":0,"credit_wait_total_us":0,"credit_stalls_ge_250ms":0,"error":"KELD-IPC-001: I/O error — Broken pipe (os error 32). Check the app-link path is live and the peer has not closed the socket.","ipc006":false,"ended":null,"quit_replied":false,"serve_returned":true,"t_ms":504,"wall_us":1791367580530812}

@@ -1,0 +1,15 @@
+# PANEL-P1 scratch host. NOT a Keld crate: it links the real keld-ipc by path
+# (read-only checkout) and drives its public writer/reader/handshake entry points.
+[package]
+name = "p1host"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+keld-ipc = { path = "/Users/centillionaire/WORK/keld/crates/keld-ipc" }
+
+[profile.release]
+debug = false

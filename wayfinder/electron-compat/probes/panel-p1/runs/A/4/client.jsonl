@@ -1,0 +1,3 @@
+{"ev":"authenticated","arm":"a","wall_us":1791367285003403}
+{"ev":"parked","arm":"a","wait":"timed-out","parked_ms":12003.5,"park_start_wall_us":1791367285003496,"bytes_in_before_park":48,"bytes_in_during_park":0,"sync_reply_while_parked":false}
+{"ev":"after_wake","arm":"a","order":{"received":128,"expected":11000,"dupes":0,"gaps":0,"outOfOrder":0,"inOrder":false},"reply_received":false,"reply_ok":false,"reply_after_wake_ms":null,"end_error":"KELD-IPC-001: connection closed by peer","bytes_in_total":8240}

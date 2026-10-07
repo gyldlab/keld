@@ -1,0 +1,5 @@
+{"ev":"ready","mode":"quit","ring_bytes":1048576,"wall_us":1791367369783683}
+{"ev":"worker_reply","corr":1,"events_in":10000,"last_event_wall_us":1791367369816957,"wall_us":1791367369816989}
+{"ev":"worker_closed","code":1,"detail":"KELD-IPC-001: connection closed by peer","events_in":10000,"replies_from_host":1,"wall_us":1791367369817189}
+{"ev":"woke","mode":"quit","quit_reply":true,"error":null,"parked_ms":33.4,"park_start_wall_us":1791367369783723,"wake_wall_us":1791367369817236,"replayed_after_wake":10000,"order":{"received":10000,"expected":10000,"dupes":0,"gaps":0,"outOfOrder":0,"inOrder":true},"link_closed_after_quit":true,"close":{"code":1,"detail":"KELD-IPC-001: connection closed by peer"}}
+{"ev":"exit","replayed_total":10000,"wall_us":1791367369824541}
