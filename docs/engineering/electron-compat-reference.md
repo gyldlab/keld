@@ -65,6 +65,9 @@ KELD can have a completely different architecture internally—Rust host, Bun ru
 | Supporting source | Generated `electron.d.ts` |
 | Counting approach | Top-level entities + documented methods/events/properties/constructors/structure fields |
 | Inheritance treatment | Raw totals include inherited members; direct totals remove detected repeated inherited entries |
+| Pinned input | `https://github.com/electron/electron/releases/download/v44.4.5/electron-api.json`, sha256 `0f309fd2513694ca932e44fc87750d72e43a76a434a1e5fbaecc5fa4b933a4d6` |
+| Counting steps | (1) count top-level entries by `type`: Module, Class, Structure, Element. (2) Emit one row per documented member (methods, events and properties at module, static and instance level, constructors, and structure fields): **2,128 raw**. (3) Drop rows a subclass repeats from its parent (BaseWindow 182, View 2, InputEvent 2, MouseInputEvent 1 = 187): **1,941 direct**, of which 566 are structure fields (**1,375** callable/observable members). The ≈1,383 "direct runtime contracts" figure below is an earlier estimate that this method does not reproduce exactly; the 1,941 / 1,375 figures are the reproducible ones. |
+| Reproduction | `wayfinder/electron-compat/compat-matrix.tsv` and its generator on branch `research/electron-compat-map` emit one row per member from the pinned asset |
 
 Electron's generated API data is more useful than manually counting documentation pages because it models the public API structure directly.
 
@@ -712,7 +715,7 @@ It should be marked complete only after behavioral conformance passes.
 
 # 21. What Easy Migration Should Mean
 
-## L0-style migration
+## Zero-rewrite migration (migration effort, not the L0 API maturity level)
 
 ```text
 Existing Electron source
@@ -726,7 +729,7 @@ No meaningful source rewrite.
 
 ---
 
-## L1-style migration
+## Minor-adaptation migration (migration effort, not the L1 API maturity level)
 
 Small mechanical changes:
 
@@ -908,6 +911,8 @@ BEHAVIOR_MATCH
 CONFORMANCE_PASS
 CORPUS_VERIFIED
 ```
+
+These describe implementation maturity, not scoring. They map onto the existing scoreboard and evidence terms (`compat-scoreboard.md`, KEL-74) as follows: `UNSUPPORTED` → scoreboard *unsupported*; `SCAFFOLDED` and `PARTIAL` → *compatible with caveats* (evidence `fail` or `unknown` on the uncovered cells); `BEHAVIOR_MATCH`, `CONFORMANCE_PASS` and `CORPUS_VERIFIED` → *compatible* once every mapped cell is `pass` (or `waived` with a recorded reason). The scoreboard terms stay authoritative.
 
 ---
 
@@ -1318,7 +1323,7 @@ If KELD reaches full Electron-compatibility while also meeting its architecture 
 |---|---:|---|
 | Packaged size | **~75–87% smaller** than historical Electron range | Medium as target, not yet product-proven |
 | Native/main-process memory | **~78% lower** already seen in one Windows host benchmark | Strong for that exact benchmark only |
-| Total app memory | **~40–70% lower target range** | Low–medium until full-process benchmarks exist |
+| Host-process idle RSS budget (excludes WebKit helper processes) | **~40–70% lower target range** | Low–medium; not a total-app comparison until process-tree measurements exist |
 | Cold start | **~70–90% lower latency target** | Low today; Electron currently wins cited Windows first-paint test |
 | Bun runtime bootstrap | **~53% faster initialization observed** in narrow VS Code extension-host PoC | Strong for that PoC only |
 | Bun process RSS | **~43% lower observed** in same PoC | Strong for that PoC only |
