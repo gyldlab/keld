@@ -566,8 +566,11 @@ internal path rather than a second check.
 
 ### Proposed typed errors
 
-Proposed only; each is registered in `docs/engineering/keld-error-codes.md` in the PR
-that first emits it, because that registry rejects headings no crate emits.
+Historical proposal. Each code is registered in `docs/engineering/keld-error-codes.md`,
+which owns the landed message and fix texts; since KEL-53 T4d S9a those texts name
+either image (`keld-host.exe` or `keld-updater-helper.exe`), so the fix column below is
+the original host-only wording and is not authoritative. The registry rejects headings
+no crate emits.
 
 | Code | Variant (proposed) | Emitted by | Fix guidance |
 |---|---|---|---|
