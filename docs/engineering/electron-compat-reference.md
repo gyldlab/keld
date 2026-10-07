@@ -25,8 +25,8 @@ Using Electron v44.4.5's official generated API model as the baseline:
 | Runtime properties | **264** |
 | Structure/config fields | **566** |
 | Raw documented member entries | **2,128** |
-| Direct runtime-facing contracts after detected inheritance overlap | **≈1,383** |
-| Direct documented members overall after detected inheritance overlap | **≈1,946** |
+| Direct runtime-facing contracts after detected inheritance overlap | **1,378** (historical estimate ≈1,383) |
+| Direct documented members overall after detected inheritance overlap | **1,941** (historical estimate ≈1,946) |
 | Explicitly read-only properties | **104** |
 | Callable parameter slots | **781** |
 | Event argument slots | **460** |
@@ -66,7 +66,7 @@ KELD can have a completely different architecture internally—Rust host, Bun ru
 | Counting approach | Top-level entities + documented methods/events/properties/constructors/structure fields |
 | Inheritance treatment | Raw totals include inherited members; direct totals remove detected repeated inherited entries |
 | Pinned input | `https://github.com/electron/electron/releases/download/v44.4.5/electron-api.json`, sha256 `0f309fd2513694ca932e44fc87750d72e43a76a434a1e5fbaecc5fa4b933a4d6` |
-| Counting steps | (1) count top-level entries by `type`: Module, Class, Structure, Element. (2) Emit one row per documented member (methods, events and properties at module, static and instance level, constructors, and structure fields): **2,128 raw**. (3) Drop rows a subclass repeats from its parent (BaseWindow 182, View 2, InputEvent 2, MouseInputEvent 1 = 187): **1,941 direct**, of which 566 are structure fields (**1,375** callable/observable members). The ≈1,383 "direct runtime contracts" figure below is an earlier estimate that this method does not reproduce exactly; the 1,941 / 1,375 figures are the reproducible ones. |
+| Counting steps | (1) count top-level entries by `type`: Module, Class, Structure, Element. (2) Emit one row per documented member (methods, events and properties at module, static and instance level, constructors, and structure fields): **2,128 raw**. (3) Drop rows a subclass repeats from its parent (BaseWindow 182, View 2, InputEvent 2, MouseInputEvent 1 = 187): **1,941 direct**: 563 directly introduced structure fields and **1,378** callable/observable members. The ≈1,946 / ≈1,383 figures elsewhere in this document are historical estimates that counted 182 inherited duplicates; 1,941 / 1,378 are the current census. |
 | Reproduction | `wayfinder/electron-compat/compat-matrix.tsv` and its generator on branch `research/electron-compat-map` emit one row per member from the pinned asset |
 
 Electron's generated API data is more useful than manually counting documentation pages because it models the public API structure directly.
@@ -349,8 +349,8 @@ BrowserWindow
 
 After removing detected inheritance overlap:
 
-- direct runtime-facing contracts: **≈1,383**
-- direct documented members overall: **≈1,946**
+- direct runtime-facing contracts: **1,378** (historical estimate ≈1,383)
+- direct documented members overall: **1,941** (historical estimate ≈1,946)
 
 These are much more useful planning figures.
 
@@ -678,7 +678,7 @@ KELD should expose Electron-compatible behavior while implementing these interna
 
 # 19. API Parity Is Necessary — But Not Sufficient
 
-Even perfect coverage of the 1,383 direct runtime contracts would not automatically mean every Electron application works unchanged.
+Even perfect coverage of the 1,378 direct runtime contracts would not automatically mean every Electron application works unchanged.
 
 Real migration compatibility requires several layers.
 
@@ -954,7 +954,7 @@ Think:
 ```text
 Electron public contract
         ↓
-~1,383 direct runtime contracts
+1,378 direct runtime contracts
         ↓
 collapse into reusable capability families
         ↓
@@ -1092,7 +1092,7 @@ KELD already has architecture-level budgets. These are useful as the intended ta
 | Installer, Bun runtime | **≤ 20 MB** | **85–150 MB** |
 | Installer, no bundled runtime | **≤ 6 MB** | Electron comparison not directly equivalent |
 | Cold start → first paint | **≤ 300 ms** | **1–3 s** survey/reference range |
-| Idle RSS, one window | **≤ 90 MiB** | **150–300 MB** survey/reference range |
+| Idle RSS, one window (host + guardian + Bun; webview engine helpers excluded) | **≤ 90 MiB** | **150–300 MB** historical Electron reference; process scope not stated, so not directly comparable |
 | KIPC small-message p99 | **≤ 100 µs** | approximately ms-class comparison |
 | KIPC bulk/shared-memory throughput | **≥ 1 GB/s** | no direct Electron baseline in current scoreboard |
 | One-line JS update patch | **≤ 50 KB** | full-installer style comparison in planning baseline |
@@ -1180,14 +1180,7 @@ Historical Electron reference:
 150–300 MB
 ```
 
-At a rough planning level, this corresponds to approximately:
-
-- **~40% lower** versus the low end
-- **~70% lower** versus the high end
-
-Therefore a reasonable target envelope is:
-
-> **Target: roughly 40–70% lower framework/runtime memory than the historical Electron range.**
+The KELD target covers the host, guardian and Bun processes and excludes webview engine helpers; the Electron reference does not state its process scope. No percentage comparison is derived until both sides are measured over the same process tree.
 
 Important caveat:
 
@@ -1323,7 +1316,7 @@ If KELD reaches full Electron-compatibility while also meeting its architecture 
 |---|---:|---|
 | Packaged size | **~75–87% smaller** than historical Electron range | Medium as target, not yet product-proven |
 | Native/main-process memory | **~78% lower** already seen in one Windows host benchmark | Strong for that exact benchmark only |
-| Host-process idle RSS budget (excludes WebKit helper processes) | **~40–70% lower target range** | Low–medium; not a total-app comparison until process-tree measurements exist |
+| KELD-owned-process idle RSS budget (host + guardian + Bun; webview engine helpers excluded) | **≤ 90 MiB target** | Electron reference scope is unspecified; no percentage comparison |
 | Cold start | **~70–90% lower latency target** | Low today; Electron currently wins cited Windows first-paint test |
 | Bun runtime bootstrap | **~53% faster initialization observed** in narrow VS Code extension-host PoC | Strong for that PoC only |
 | Bun process RSS | **~43% lower observed** in same PoC | Strong for that PoC only |
@@ -1337,7 +1330,7 @@ If KELD reaches full Electron-compatibility while also meeting its architecture 
 
 A safe statement today is:
 
-> **KELD is designed to reproduce Electron's application-facing contract on a lean Rust host, Bun processes, and system webviews. Early evidence shows a substantially smaller native-host memory footprint and promising Bun runtime efficiency, while startup and total-process performance are still being validated. The architecture targets a ≤20 MB Bun-runtime package, ≤300 ms first paint, ≤90 MiB one-window idle RSS, and ~100 µs small-message IPC p99. These are engineering targets, not blanket claims that KELD already beats Electron on every metric.**
+> **KELD is designed to reproduce Electron's application-facing contract on a lean Rust host, Bun processes, and system webviews. Early evidence shows a substantially smaller native-host memory footprint and promising Bun runtime efficiency, while startup and total-process performance are still being validated. The architecture targets a ≤20 MB Bun-runtime package, ≤300 ms first paint, ≤90 MiB one-window idle RSS for the host, guardian and Bun processes (excluding webview engine helpers), and ~100 µs small-message IPC p99. These are engineering targets, not blanket claims that KELD already beats Electron on every metric.**
 
 A future statement—only after full-product benchmarks validate it—could become:
 
@@ -1384,7 +1377,7 @@ The most promising performance opportunities are not all equally proven. They sh
 |---|---|---|---|
 | Native/main-process memory | **~78% lower already observed in one Windows session** | Measured, narrow | Lean Rust host instead of Electron's heavier main-process stack |
 | Packaged size | **~75–87% smaller target projection** | Architecture target | System webview means KELD does not need to bundle a complete Chromium engine |
-| Total runtime memory | **~40–70% lower target envelope** | Target, not yet proven | Lean host + Bun + system webview; helper processes still matter |
+| Total runtime memory | **≤ 90 MiB KELD-owned processes (target)** | Target, not yet proven; no Electron percentage until same-scope measurements | Lean host + Bun + system webview; helper processes still matter |
 | Cold start / first paint | **~70–90% lower target projection** | Target only; current Windows result does not lead Electron | Smaller framework boot path may help once optimized |
 | Bun process bootstrap | **53.3% sooner to Initialized in narrow VS Code PoC** | Measured, narrow | Bun startup/runtime behavior in that workload |
 | Bun child RSS | **42.8% lower in same PoC** | Measured, narrow | Lower runtime overhead in tested extension-host bootstrap |
