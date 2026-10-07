@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use keld_runtime::windows_job::{
-    WindowsClaimantRefusal, WindowsLaunchedProcess, WindowsProcessJob, WindowsProcessPeer,
+    WindowsClaimantRefusal, WindowsJobMembership, WindowsLaunchedProcess, WindowsProcessJob,
+    WindowsProcessPeer,
 };
 use keld_runtime::windows_lpac::{WindowsLpacTokenObservation, WindowsSuspendedChild};
 use windows_sys::Win32::Foundation::{
@@ -64,6 +65,21 @@ fn suspended_exit_command() -> WindowsSuspendedChild {
         &system32,
     )
     .expect("create the same-token candidate suspended")
+}
+
+/// A recorded same-token launch assigned to its own attempt Job, not yet resumed.
+fn launched_member() -> (
+    WindowsProcessJob,
+    WindowsLaunchedProcess,
+    WindowsJobMembership,
+) {
+    let mut job = WindowsProcessJob::create().expect("create the attempt Job");
+    let launched =
+        WindowsLaunchedProcess::record(suspended_exit_command()).expect("record the launch");
+    let membership = job
+        .assign_child(launched.child())
+        .expect("assign the suspended candidate to the attempt Job");
+    (job, launched, membership)
 }
 
 #[test]
@@ -120,12 +136,14 @@ fn the_candidate_inherits_no_handle_of_the_caller() {
 
 #[test]
 fn the_candidate_is_an_attempt_job_member_before_its_first_instruction() {
-    // Never resumed: the Job admits it and then ends it before its command runs.
+    // Never resumed: the Job admits it and then ends it.
     let mut job = WindowsProcessJob::create().expect("create the attempt Job");
     let mut launched =
         WindowsLaunchedProcess::record(suspended_exit_command()).expect("record the launch");
     assert_eq!(job.active_processes().expect("Job accounting"), 0);
-    job.assign_child(launched.child())
+    // This member is never resumed, so its membership proof goes unused.
+    let _unused_proof = job
+        .assign_child(launched.child())
         .expect("assign the suspended candidate to the attempt Job");
     assert_eq!(
         job.active_processes().expect("Job accounting"),
@@ -142,16 +160,15 @@ fn the_candidate_is_an_attempt_job_member_before_its_first_instruction() {
     assert_eq!(
         launched.wait(WAIT_MS).expect("reap the candidate"),
         JOB_TERMINATION_EXIT,
-        "the candidate never ran its command: it was a member before its first instruction"
+        "the Job ends its never-resumed member, which never ran its command"
     );
 
-    // Resumed after membership: it runs its command inside the Job.
-    let mut job = WindowsProcessJob::create().expect("create the attempt Job");
-    let mut launched =
-        WindowsLaunchedProcess::record(suspended_exit_command()).expect("record the launch");
-    job.assign_child(launched.child())
-        .expect("assign the suspended candidate");
-    launched.resume().expect("resume the member once");
+    // Assigned with read-back, then resumed: the resume reports a previous suspend
+    // count of 1, so the primary thread ran nothing before its Job membership.
+    let (job, mut launched, membership) = launched_member();
+    launched
+        .resume(&membership)
+        .expect("resume the member once, from a previous suspend count of 1");
     assert_eq!(
         launched.wait(WAIT_MS).expect("the candidate exits"),
         COMMAND_EXIT
@@ -159,22 +176,63 @@ fn the_candidate_is_an_attempt_job_member_before_its_first_instruction() {
     job.terminate_and_wait(launched.child(), Duration::from_secs(10))
         .expect("an exited member leaves the Job at zero");
     assert!(
-        launched.resume().is_err(),
+        launched.resume(&membership).is_err(),
         "the one resume is spent: the suspended-child type owns it"
     );
 }
 
 #[test]
+fn a_launch_resumes_only_with_the_membership_proof_of_its_own_process() {
+    let (_job, mut launched, membership) = launched_member();
+    let (_other_job, _other, other_membership) = launched_member();
+    let refusal = launched
+        .resume(&other_membership)
+        .expect_err("another process's membership proof refuses");
+    assert_eq!(
+        refusal.to_string(),
+        "KELD-RUNTIME-020: the same-token suspended candidate launch failed during child \
+         resume: the attempt-Job membership proof names another process. Start no candidate \
+         in its place: end the attempt Job and roll the attempt back; never resume a child \
+         whose creation, Job membership or launch record was not proved."
+    );
+    assert!(
+        !launched.has_exited().expect("query the launch"),
+        "the refused launch stays suspended"
+    );
+    // The resume was not spent: its own proof still resumes it.
+    launched
+        .resume(&membership)
+        .expect("its own membership proof resumes it");
+    assert_eq!(
+        launched.wait(WAIT_MS).expect("the launch exits"),
+        COMMAND_EXIT
+    );
+}
+
+#[test]
+fn a_launch_record_names_only_a_never_resumed_child() {
+    let mut child = suspended_exit_command();
+    child.resume().expect("resume the bare child");
+    let refusal =
+        WindowsLaunchedProcess::record(child).expect_err("a resumed child has no launch record");
+    assert!(
+        refusal.to_string().contains(
+            "the child was already resumed, so its Job membership can no longer precede its first instruction"
+        ),
+        "{refusal}"
+    );
+}
+
+#[test]
 fn the_launch_liveness_check_reads_the_retained_handle_without_consuming_it() {
-    let mut launched =
-        WindowsLaunchedProcess::record(suspended_exit_command()).expect("record the launch");
+    let (_job, mut launched, membership) = launched_member();
     for _ in 0..2 {
         assert!(
             !launched.has_exited().expect("query the live launch"),
             "a suspended launch is live"
         );
     }
-    launched.resume().expect("resume the launch");
+    launched.resume(&membership).expect("resume the launch");
     assert_eq!(
         launched.wait(WAIT_MS).expect("the launch exits"),
         COMMAND_EXIT
@@ -196,8 +254,7 @@ fn the_launch_liveness_check_reads_the_retained_handle_without_consuming_it() {
 
 #[test]
 fn the_owner_binds_only_its_launched_candidate_and_only_while_it_lives() {
-    let mut launched =
-        WindowsLaunchedProcess::record(suspended_exit_command()).expect("record the launch");
+    let (_job, mut launched, membership) = launched_member();
     let claimant = claimant_by_pid(launched.child().id());
     launched
         .bind_claimant(&claimant)
@@ -211,7 +268,7 @@ fn the_owner_binds_only_its_launched_candidate_and_only_while_it_lives() {
         "{refusal:?}"
     );
 
-    launched.resume().expect("resume the launch");
+    launched.resume(&membership).expect("resume the launch");
     assert_eq!(
         launched.wait(WAIT_MS).expect("the launch exits"),
         COMMAND_EXIT

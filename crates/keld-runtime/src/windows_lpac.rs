@@ -591,11 +591,12 @@ impl WindowsSuspendedChild {
     /// be absolute: `program` names the image exactly, and Windows neither
     /// searches for it nor resolves it against a current directory.
     ///
-    /// The caller assigns the child to its attempt Job with
-    /// [`crate::windows_job::WindowsProcessJob::assign_child`] and records it
-    /// with [`crate::windows_job::WindowsLaunchedProcess::record`] before the one
-    /// [`Self::resume`], so the child is a Job member before its first
-    /// instruction. The stdin start gate is not used.
+    /// The caller records the child with
+    /// [`crate::windows_job::WindowsLaunchedProcess::record`] and assigns it to
+    /// its attempt Job with
+    /// [`crate::windows_job::WindowsProcessJob::assign_child`]. The record's one
+    /// resume requires the membership proof that call returns, so the child is a
+    /// Job member before its first instruction. The stdin start gate is not used.
     ///
     /// # Errors
     ///
@@ -641,6 +642,16 @@ impl WindowsSuspendedChild {
             Some(&current_dir),
             SuspendedStartup::SameToken(&startup),
         )
+    }
+
+    /// Whether the one resume was already spent.
+    pub(crate) const fn is_resumed(&self) -> bool {
+        self.thread.is_none()
+    }
+
+    /// A refusal of an operation on this child, coded for the launch that made it.
+    pub(crate) fn refusal(&self, phase: &'static str, detail: &str) -> WindowsLpacError {
+        WindowsLpacError::contract(phase, detail).in_launch(self.launch)
     }
 
     /// Returns the process ID that process creation reported for this child.
@@ -707,11 +718,12 @@ impl WindowsSuspendedChild {
 
     /// Resumes the initially suspended primary thread exactly once.
     ///
-    /// The thread's previous suspend count must be exactly 1: the one suspension
-    /// of `CREATE_SUSPENDED`. So a successful resume proves that the primary
-    /// thread ran no instruction between creation and this call, and that
-    /// anything the caller did first, such as attempt-Job assignment, preceded
-    /// the child's first instruction.
+    /// The thread's previous suspend count must be exactly 1, the one suspension
+    /// of `CREATE_SUSPENDED`: a count other than 1 shows a resume or suspend of
+    /// the thread since creation that was not balanced, and refuses. A balanced
+    /// resume-and-suspend pair by another process that holds a thread handle is
+    /// not visible here; that is same-user code, which is outside the
+    /// `PerUserDirect` boundary (KEL-53 criterion 12).
     ///
     /// # Errors
     ///

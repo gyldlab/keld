@@ -1089,19 +1089,25 @@ pub struct WindowsLaunchedProcess {
 
 impl WindowsLaunchedProcess {
     /// Records the launch identity of a child that a launch path created
-    /// suspended.
+    /// suspended and has not resumed.
     ///
     /// The process ID is the child's own, which process creation reported; the
-    /// creation time is read from the retained launch handle. Creation time is
-    /// fixed for the process object, so recording after resume is harmless: it
-    /// reads the same value as recording before resume, and the record names the
-    /// object the child retains, not the moment of the call.
+    /// creation time is read from the retained launch handle. A record names only
+    /// a child whose primary thread was never resumed, so the record's one
+    /// [`Self::resume`], which requires the child's attempt-Job membership, is the
+    /// only way it runs.
     ///
     /// # Errors
     ///
-    /// Returns an error, and terminates the child as it drops, when Windows
-    /// cannot read the creation time.
+    /// Returns an error, and terminates the child as it drops, when the child was
+    /// already resumed or Windows cannot read the creation time.
     pub fn record(child: WindowsSuspendedChild) -> Result<Self, WindowsHostJobError> {
+        if child.is_resumed() {
+            return Err(WindowsHostJobError::contract(
+                "launch identity record",
+                "the child was already resumed, so its Job membership can no longer precede its first instruction",
+            ));
+        }
         let creation_time = process_creation_time(
             child.process_handle().as_raw_handle().cast(),
             "launch identity record",
@@ -1119,12 +1125,28 @@ impl WindowsLaunchedProcess {
     }
 
     /// Resumes the retained child's primary thread exactly once, through
-    /// [`WindowsSuspendedChild::resume`].
+    /// [`WindowsSuspendedChild::resume`], after its attempt-Job assignment.
+    ///
+    /// `membership` is the proof that [`WindowsProcessJob::assign_child`] returned
+    /// for this exact process, by process ID and creation time. Because a record
+    /// names only a never-resumed child, the child is a Job member before its
+    /// first instruction.
     ///
     /// # Errors
     ///
-    /// Fails if the child was already resumed or the kernel rejects resume.
-    pub fn resume(&mut self) -> Result<(), WindowsLpacError> {
+    /// Fails before any resume if `membership` names another process. Otherwise
+    /// fails if the child was already resumed, the kernel rejects resume, or the
+    /// primary thread's previous suspend count was not 1; in that last case the
+    /// resume is spent and the caller must terminate the child.
+    pub fn resume(&mut self, membership: &WindowsJobMembership) -> Result<(), WindowsLpacError> {
+        if membership.process_id != self.child.id()
+            || membership.creation_time != self.creation_time
+        {
+            return Err(self.child.refusal(
+                "child resume",
+                "the attempt-Job membership proof names another process",
+            ));
+        }
         self.child.resume()
     }
 
@@ -1310,8 +1332,10 @@ fn bind_observed_claimant(
 /// Reports whether a process handle is signaled, with a zero-time wait that
 /// consumes nothing. The caller retains the handle through the call.
 fn process_signaled(process: HANDLE) -> io::Result<bool> {
-    // SAFETY: the caller retains the process handle through this zero-time,
-    // read-only signal query; an unusable value makes it fail.
+    // SAFETY: WaitForSingleObject reads no caller memory and resolves `process`
+    // only through this process's handle table. Soundness rests on the caller's
+    // precondition that it retains this handle through the call: a closed value
+    // that was reused would name another object and would not fail.
     match unsafe { WaitForSingleObject(process, 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
@@ -1409,6 +1433,18 @@ impl WindowsJobProcess<'_> {
     }
 }
 
+/// Proof that [`WindowsProcessJob::assign_child`] assigned one process to an
+/// attempt Job and read its membership back.
+///
+/// Only that call constructs it. It names the process by process ID and creation
+/// time, and [`WindowsLaunchedProcess::resume`] requires it for the same
+/// process, so a recorded launch cannot run before it is a Job member.
+#[derive(Debug)]
+pub struct WindowsJobMembership {
+    process_id: u32,
+    creation_time: u64,
+}
+
 impl WindowsProcessJob {
     /// Creates an unnamed, non-inheritable Job with kill-on-last-handle-close.
     ///
@@ -1424,22 +1460,25 @@ impl WindowsProcessJob {
         })
     }
 
-    /// Assigns one live process to this exact Job.
+    /// Assigns one live process to this exact Job and returns the proof of its
+    /// read-back membership.
     ///
     /// The owner must assign the host before its application resources can start.
     /// A [`WindowsSuspendedChild`], such as the `PerUserDirect` candidate, is
-    /// assigned before its one resume, so it is a member before its first
-    /// instruction. Windows may reject assignment when the process's existing Job
-    /// hierarchy is incompatible; callers must fail closed in that case.
+    /// assigned before its one resume, which [`WindowsLaunchedProcess::resume`]
+    /// enforces by requiring the returned proof, so it is a member before its
+    /// first instruction. Windows may reject assignment when the process's
+    /// existing Job hierarchy is incompatible; callers must fail closed in that
+    /// case.
     ///
     /// # Errors
     ///
-    /// Returns an error if the process cannot be assigned or exact membership cannot
-    /// be verified.
+    /// Returns an error if the process cannot be assigned, exact membership cannot
+    /// be verified, or its creation time cannot be read for the proof.
     pub fn assign_child<'a>(
         &mut self,
         process: impl Into<WindowsJobProcess<'a>>,
-    ) -> Result<(), WindowsHostJobError> {
+    ) -> Result<WindowsJobMembership, WindowsHostJobError> {
         let process = process.into();
         if self.host_assigned {
             return Err(WindowsHostJobError::contract(
@@ -1493,7 +1532,10 @@ impl WindowsProcessJob {
         self.host_assigned = true;
         self.host_process_id = Some(process.process_id);
         self.host_process = Some(retained_process);
-        Ok(())
+        Ok(WindowsJobMembership {
+            process_id: process.process_id,
+            creation_time: process_creation_time(raw_process, "attempt Job membership proof")?,
+        })
     }
 
     /// Duplicates a least-rights inheritable handle for the surviving stage-cleanup
@@ -4693,7 +4735,14 @@ mod tests {
             .bind_claimant(&claimant)
             .expect("the exact suspended launch binds");
 
-        launch.launched.resume().expect("resume the launch once");
+        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
+        let membership = job
+            .assign_child(launch.launched.child())
+            .expect("assign the launch before its resume");
+        launch
+            .launched
+            .resume(&membership)
+            .expect("resume the launch once");
         assert!(
             !claimant
                 .has_exited()
