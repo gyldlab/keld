@@ -34,8 +34,10 @@ Non-goals:
   KEL-75's `WindowClosing(w)` tombstone is linearized.
 - Quit sequencing (PANEL-D23 #443, F01-T3 #451). §4.e states the registry-side half
   of the #419 quit rules, which F01-T3 consumes.
-- Close while the role is parked, and recoverable role loss with window adoption
-  (F02-T11 #529, KEL-143).
+- Close while the role is parked (F02-T11 #529). Recoverable role loss with window
+  adoption (F02-T11 #529, KEL-143) is a non-goal **only under D6 option A**; under
+  option B this slice takes the adoption work (ownership transfer, replay and the
+  recovery gap, §4.e) from F02-T11, which then keeps only the parked-close part.
 - The modified-document dialog (`showMessageBoxSync`, F06-T7) and renderer
   `beforeunload` (no corpus demand, no owner).
 - `show:false`/`ready-to-show` (F02-T9), chrome (F02-T5), the full option table
@@ -297,6 +299,12 @@ fail. "Owner" is the implementing ticket.
       gets C7's stale-window `ERR` (038), `RequestClose` gets C4's `AlreadyClosing`,
       and `Destroy` gets C8's deferred `REPLY Destroyed`. The exact-code assertion fails
       for each.
+    - **30A-amend (option A).** The KEL-139 AC5 amendment (§5) lands in the same
+      change as the option A decision: `docs/specs/kel139-macos-product-spine.md` AC5
+      states that, for facade boots, a retired primary generation's windows are
+      destroyed and the successor creates new ones, until KEL-143 window retention
+      lands. *NC:* a text check over AC5 finds no facade-boot sentence, and spec review
+      fails, because option A would otherwise contradict an approved contract.
     - **30B (option B).** A stays `Open` with its pair unchanged (KEL-139 AC5). When the
       recovered successor of the same declared role subscribes, the host transfers
       ownership explicitly (`owner_role_generation` := the successor's generation) and
@@ -307,6 +315,23 @@ fail. "Owner" is the implementing ticket.
       successor's mirror empty, so `getAllWindows()` returns `[]` and fails. *NC 3:*
       transferring ownership to a role of a different declaration (an `app-bound`
       role) fails, because that role's call must get `KELD-CORE-043`.
+    - **30B-gap (option B).** The recovery gap runs from `Role loss` until the
+      successor's admitted `Subscribe`. (i) Given the gap, when a native close or a
+      `Bounds`, `Focus`, `Maximized` or `FullScreen` fact occurs, then zero frames are
+      written to the retired link, and the registry's host snapshot holds the latest
+      value of each fact (coalesced, not a stream). (ii) Given a native close during
+      the gap, then A enters `ClosePending(n)` with no `CloseRequested` written and the
+      veto held; after the successor subscribes, the replayed `Created` carries
+      `pending_close: Some(n)`, the successor's facade emits `'close'` once, and its
+      `CloseReply(n, _)` takes Q5 or Q6. (iii) Given the gap, when the role's recovery
+      fails (KEL-75 provisions no successor) or the session ends, then A takes the
+      `Session end` row (Q12: `n` is `Abandoned`, A closes on the quit path), with no
+      timer. *NC 1:* a host that writes the `CloseRequested(n)` or any fact to the
+      retired link fails (i). *NC 2:* a replay without `pending_close` leaves `n`
+      unanswered and A stays `ClosePending(n)` forever, which fails (ii). *NC 3:*
+      replaying the gap's facts as separate `EVENT`s instead of one coalesced `Created`
+      per window fails (i)'s count. *NC 4:* resolving the gap close by an injected clock
+      advance fails (iii).
     Owner: F02-T3.
 31. **Exit on session terminal end.** Given `ClosePending(s)`, when the host accepts
     `Quit`, then the window reaches `Destroyed` with no `CloseRequested` written and no
@@ -541,6 +566,8 @@ pub struct WindowState { pub bounds: Rect, pub focused: bool, pub maximized: boo
 /// Host → app EVENTs on the window channel.
 pub enum WindowEvent {
     Created { window: WindowRef, state: WindowState },   // 0: first record for a window
+    // Option B only (D6): Created gains `pending_close: Option<u64>`, the close_seq of a
+    // close entered during the recovery gap; None on every ordinary create.
     Bounds { window: WindowRef, bounds: Rect },           // 1: move or resize, on change
     Focus { window: WindowRef, focused: bool },            // 2
     Maximized { window: WindowRef, maximized: bool },      // 3
@@ -757,10 +784,10 @@ test enumerates every pair and asserts its row.
 | O9 | `Opening` | `Released` | `Opening` | one host diagnostic (invariant violation); ignored |
 | O10 | `Opening` | `Role loss` | `Closing` | the build result is awaited as a late input (C1, C2); no frame (T9; same under options A and B, because no pair was ever delivered) |
 | O11 | `Opening` | `Session end` | `Closing` | as the `Role loss` row; the blocked `Create` caller gets gh527's `KELD-IPC-024` from the host drain (T10) |
-| O12 | `Opening` | `Bounds fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
-| O13 | `Opening` | `Focus fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
-| O14 | `Opening` | `Maximized fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
-| O15 | `Opening` | `FullScreen fact` | `Opening` | buffered (one slot per fact kind, latest wins; no allocation) and overlaid on the `WindowBuilt` snapshot at O1, so `Created.state` carries it; no separate `EVENT` |
+| O12 | `Opening` | `Bounds fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
+| O13 | `Opening` | `Focus fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
+| O14 | `Opening` | `Maximized fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
+| O15 | `Opening` | `FullScreen fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
 | P1 | `Open` | `BuildOk` | `Open` | one host diagnostic (invariant violation); ignored |
 | P2 | `Open` | `BuildFail` | `Open` | one host diagnostic (invariant violation); ignored |
 | P3 | `Open` | `Native close` | `ClosePending(n)` | `n` = last `close_seq` + 1 by checked `u64` add; `CloseRequested(n)` (T3). On overflow: stays `Open`, one diagnostic, no write (T3x) |
@@ -834,12 +861,30 @@ remains and the step is outside a session end; then every deferred `REPLY Destro
 *Live* means `Open`, `ClosePending` or `Closing`; an `Opening` window is not live until
 it reaches `Open`.
 
-**State facts.** keld-wv writes `WindowBuilt` before any fact for that view on the one
-FIFO UI → core channel, so the `Opening` fact rows guard against reordering rather
-than a normal path: a fact for a view that no `WindowBuilt` has mapped yet is held in
-that build's four slots and overlaid at O1. Drops in `Closing` and `Destroyed` are
-counted, never logged per fact, so a resize storm during teardown cannot flood the log. The facade runs no last-window policy for that `LastWindowClosed`
-until the `Destroy` caller has emitted `'closed'` (§4.e facade rules).
+The facade runs no last-window policy for that `LastWindowClosed` until the `Destroy`
+caller has emitted `'closed'` (§4.e facade rules).
+
+**State facts.** A fact names a keld-wv `view`, and the registry maps a view to a
+window only at O1, from `WindowBuilt`. keld-wv writes `WindowBuilt` before any fact for
+that view on the one FIFO UI → core channel, and its snapshot is the window's initial
+state, so an `Opening` window can never receive a fact (O12-O15 are impossible rows,
+enumerated like O5). A fact whose view is unmapped (only a keld-wv ordering bug can
+produce one) matches no window: it is dropped with one host diagnostic, and a unit
+test feeds one to prove it. Drops in `Closing` and `Destroyed` are counted, never
+logged per fact, so a resize storm during teardown cannot flood the log.
+
+**Recovery gap (option B only).** From `Role loss` until the recovered successor's
+admitted `Subscribe`, `owner_role_generation` names a retired generation. Every row
+that would write to the owner link (P3 and P12-P15, and their `ClosePending`
+counterparts) writes nothing; its effect stays in the registry's host snapshot, which
+holds the latest value of each fact (coalesced, never a stream). App calls during the
+gap fail admission with `KELD-CORE-043`, because no live link owns the window, so P4,
+P7 and P8 cannot occur in the gap. A native close enters `ClosePending(n)` (P3) with
+the veto held: nothing closes the window, and `n` is delivered as
+`Created.pending_close` in the replay, so the successor answers it. The gap ends only
+with the successor's `Subscribe` (transfer and replay, criterion 30B) or with `Session
+end`, including a failed recovery in which KEL-75 provisions no successor; P11 or Q12
+then applies on the quit path. No timer ends it.
 
 The T-numbers used elsewhere in this spec name these rows: T1 = O1, T2 = O2, T3 =
 P3/P4, T3x = their overflow branch, T4 = Q3/Q4, T5 = Q5, T6 = Q6, T7 = O6/P6/Q7/C6, T8 =
@@ -1031,14 +1076,16 @@ reversible, and each names the observation that reopens it.
     retired, and successors are refused the predecessor's pairs (`KELD-CORE-043`).
     *Consequences:* simplest state machine, and no replay path in this slice; facade
     boots deviate from KEL-139 AC5 until KEL-143 window retention lands, and a crash
-    of the primary role loses the user's open windows.
+    of the primary role loses the user's open windows. AC5 is amended in the same
+    change (§5, criterion 30A-amend).
   - **(B) Follow AC5.** On crash recovery the window persists, and ownership transfers
     explicitly to the recovered successor of the same declared role. Old-generation
     handles are refused (`KELD-CORE-043`), and the successor gets a host replay of
     window state (`Created` per live window) to rebuild its mirror. *Consequences:*
     consistent with the macOS spine in every boot mode; more work in this slice (the
-    transfer, the replay and their tests), and it overlaps KEL-143 and F02-T11's
-    adoption work, which this spec lists as a non-goal, so that boundary must move.
+    transfer, the replay, the recovery gap and their tests, criterion 30B-gap), and
+    it pulls F02-T11's adoption work into this slice; the §1 non-goal is
+    option-dependent for that reason.
   - **Recommendation: (B).** It keeps one invariant across renderer-declared and
     facade boots (renderer boots already keep the window), and root `AGENTS.md`
     forbids silently deviating from an approved contract: choosing (A) would need
@@ -1246,6 +1293,14 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 - Must not touch: the `WebEngine` trait; frame layout, `PROTOCOL_VERSION`, `HELLO`;
   `keld-guard` evaluation; keld-runtime's `RoleRegistry`; the Windows and Linux
   backends beyond exhaustive-match arms; the workspace `Cargo.toml` (no dependency).
+- Option-dependent spec amendment (D6). **Option A:** this PR also amends
+  `docs/specs/kel139-macos-product-spine.md` AC5 with one sentence: for facade boots, a
+  retired primary generation's windows are destroyed and the successor creates new
+  ones, until KEL-143 window retention lands; renderer-declared boots keep AC5
+  unchanged (criterion 30A-amend). **Option B:** no amendment; AC5 holds for every boot
+  mode, and the adoption work (the transfer and replay in the keld-core registry, the
+  `Created.pending_close` field and its vector, and the facade's replay handling in
+  `@keld/electron`) moves into this slice's T2.
 - Architecture sentences changed in this PR
   (`docs/architecture/05-webview-and-native.md` §3, after the module table): one new
   paragraph, "**Window ownership.**", stating that (1) no keld-native broker owns the
