@@ -1666,6 +1666,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "keld-updater-helper"
+version = "0.0.1"
+dependencies = [
+ "keld-guard",
+ "keld-ipc",
+ "keld-runtime",
+ "keld-update",
+ "tempfile",
+]
+
+[[package]]
 name = "keld-wv"
 version = "0.0.1"
 dependencies = [

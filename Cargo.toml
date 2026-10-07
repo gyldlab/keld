@@ -12,6 +12,7 @@ members = [
     "crates/keld-compat",
     "crates/keld-host",
     "crates/keld-cli",
+    "crates/keld-updater-helper",
 ]
 
 [workspace.package]

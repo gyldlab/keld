@@ -1,4 +1,6 @@
-//! AC2: the writer's output from the real unsigned release host is loadable (§7 row 2).
+//! AC2: the writer's output from the real unsigned release host is loadable (§7 row 2),
+//! and so is its output from the real unsigned release updater helper (§1 helper
+//! amendment).
 
 use super::{
     TRUST_E_NOSIGNATURE, WIN_VERIFY_TRUST_REJECTED, env_path, fixture_payload, sha256_hex,
@@ -207,4 +209,75 @@ fn ac2_embedded_release_host_launches_to_the_identity_refusal() {
             .ends_with("[startup-resource-attempts listener=0 child=0 window=0]"),
         "{stderr}"
     );
+}
+
+/// Started with its `--recovery-role` argument outside any installation, the embedded
+/// release updater helper exits with its own typed self-anchor refusal: the KEL-135
+/// verification of its unsigned image (`KELD-HELPER-002`), not the host's `KELD-WV-009`.
+/// A loader rejection fails the row (container spec §1 helper amendment, KEL-270 T4d
+/// S9c).
+#[test]
+#[ignore = "needs KELD_PACK_REAL_HELPER (release keld-updater-helper.exe) and a new KELD_PACK_EMBEDDED_HELPER path"]
+fn ac2_embedded_release_helper_launches_to_its_self_anchor_refusal() {
+    let input_path = env_path("KELD_PACK_REAL_HELPER");
+    let embedded_path = env_path("KELD_PACK_EMBEDDED_HELPER");
+    let helper = std::fs::read(&input_path).expect("read the release updater helper");
+    let embedded = embed_host_identity(&helper, &fixture_payload())
+        .expect("the release updater helper is admissible");
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&embedded_path)
+            .expect("KELD_PACK_EMBEDDED_HELPER must be a new file in an existing directory");
+        file.write_all(&embedded)
+            .expect("write the embedded updater helper");
+        file.sync_all().expect("flush the embedded updater helper");
+    } // The writer handle is closed before launch, so nothing else holds the image.
+
+    let child = Command::new(&embedded_path)
+        .arg("--recovery-role")
+        .current_dir(
+            embedded_path
+                .parent()
+                .expect("the embedded updater helper has a parent"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("CreateProcess must accept the embedded image; a loader rejection fails AC2");
+    let output = match exit_within(child, HOST_EXIT_DEADLINE) {
+        Ok(exited) => exited,
+        Err(hung) => panic!(
+            "AC2: the embedded updater helper did not exit within {} s: {hung}",
+            HOST_EXIT_DEADLINE.as_secs()
+        ),
+    };
+    let stderr = String::from_utf8(output.stderr).expect("helper stderr is UTF-8");
+    let stdout = String::from_utf8(output.stdout).expect("helper stdout is UTF-8");
+    println!(
+        "KELD_PACK_AC2_HELPER input_sha256={} input_bytes={} embedded_sha256={} \
+         embedded_bytes={} exit={:?}",
+        sha256_hex(&helper),
+        helper.len(),
+        sha256_hex(&embedded),
+        embedded.len(),
+        output.status.code()
+    );
+    println!("KELD_PACK_AC2_HELPER stdout={stdout:?}");
+    println!("KELD_PACK_AC2_HELPER stderr={stderr:?}");
+
+    // Exit status 1 is the helper's typed refusal; a loader failure exits with an
+    // NTSTATUS such as 0xC0000139 instead.
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.starts_with(&format!(
+            "KELD-HELPER-002: keld-updater-helper.exe could not verify its own image \
+             ({WIN_VERIFY_TRUST_REJECTED}{TRUST_E_NOSIGNATURE:08x})."
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-WV-009"), "{stderr}");
 }

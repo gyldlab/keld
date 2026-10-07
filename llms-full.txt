@@ -1126,6 +1126,7 @@ view and links each claim to tracked evidence.
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
 | `keld-host` | Shipping host executable that assembles the core and platform backends | core |
+| `keld-updater-helper` | Elevated Machine-UAC updater helper binary (KEL-53 T4d); nothing depends on it | update, ipc, runtime, guard (Windows only) |
 
 npm packages (TypeScript, in `packages/`):
 
@@ -4091,6 +4092,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
 | `crate.keld-cli` | All | **Partial** — create emits the checked-in Rust-derived echo payload declarations; dev, doctor, MCP, hello, and IPC diagnostics exist, while build, migrate, gen, and ext remain reserved. | [code](../../crates/keld-cli/src/template.rs), [test](../../crates/keld-cli/src/create.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-29, KEL-42, KEL-96, KEL-98 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
+| `crate.keld-updater-helper` | Windows | **Specified only** — The elevated updater helper keld-updater-helper.exe is specified by KEL-53 §4 "Helper launch and self-anchor". KEL-270 T4d S9c adds its binary crate: a per-binary static C runtime with System32-only import resolution, the one-argument check, the self-anchor through one KEL-135 verification and keld-update, and the interim refusals of both roles. This row records its current status at the landed commit, because ledger evidence must name a commit on main. | — | [Specified](../../docs/specs/kel53-full-package-activation.md) | KEL-53, KEL-270 | `9d26d488b68dcebe7864e08391d6ceb086bef15d` |
 
 ## Packages
 
@@ -5084,7 +5086,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
   `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
-  `keld-pack` `src`, `keld-cli` templates, or workspace
+  `keld-pack` / `keld-updater-helper` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -6119,6 +6121,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-pack
 - message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
+
+## KELD-HELPER-001
+
+- crate: keld-updater-helper
+- message: keld-updater-helper.exe was not started on Windows with exactly one accepted argument
+- fix: It runs only on Windows and takes exactly one argument: keld-host.exe passes the activation rendezvous `\\.\pipe\keld-attempt-<64 lowercase hex>`, and keld-host.exe or an administrator passes `--recovery-role`. The argument conveys no authority, and the helper refuses before any open or write.
+
+## KELD-HELPER-002
+
+- crate: keld-updater-helper
+- message: The updater helper could not verify its own image through the KEL-135 Authenticode verifier, so it could not anchor itself
+- fix: Run only the signed keld-updater-helper.exe from its installation's protected version tree; repair or reinstall through the trusted installer if it is damaged.
+
+## KELD-HELPER-003
+
+- crate: keld-updater-helper
+- message: The updater helper's activation role is not available in this release; it refused after anchoring itself, before the writer lease and any write
+- fix: Nothing changed; keep running the current version. Activation through the updater helper ships with a later release.
+
+## KELD-HELPER-004
+
+- crate: keld-updater-helper
+- message: The updater helper's recovery-only role is disabled in this release (RecoveryDisabled); it refused after anchoring itself, before the writer lease and any write
+- fix: No supported resolution exists other than administrator action; any activation journal, the pointers and the versions are preserved, and no ordinary process repairs them.
 
 ---
 

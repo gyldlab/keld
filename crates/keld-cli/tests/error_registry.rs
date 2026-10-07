@@ -36,6 +36,8 @@ const SCAN_REL: &[&str] = &[
     // emits it too and IS scanned -- the coverage was accidental. A code added
     // to keld-host and nowhere else would have shipped unregistered.
     "crates/keld-host/src",
+    // The elevated updater helper binary (KEL-270 T4d S9c) emits KELD-HELPER-*.
+    "crates/keld-updater-helper/src",
     "tools",
 ];
 
