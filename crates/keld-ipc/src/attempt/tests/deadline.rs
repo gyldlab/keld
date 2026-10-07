@@ -10,7 +10,8 @@
 //! the closed name, probed independently.
 
 use std::io;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
@@ -18,12 +19,14 @@ use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use super::oracle::probe_exists;
 use super::peer::{
     TestPin, admit_own, claim, connect_back_endpoint, expect_end_of_file, fresh_ids, is_deadline,
-    join, kill_switch, pipe_token, raw_claim, raw_client, refused_claimant, spawn_owner, write,
+    is_end_of_file, join, kill_switch, pipe_token, raw_claim, raw_client, refused_claimant,
+    spawn_owner, write,
 };
 use crate::APP_LINK_IO_DEADLINE;
 use crate::attempt::WindowsAttemptExchangeError;
 use crate::attempt::claim::ClaimRefusal;
 use crate::attempt::records::AttemptRecord;
+use crate::bootstrap::WindowsLifecyclePeerPin;
 use crate::token::SessionToken;
 
 /// Claimant-binding row: a connector that sends nothing is dropped at its
@@ -117,6 +120,80 @@ fn refusals_never_extend_the_claim_deadline() -> io::Result<()> {
     assert_eq!(
         absent.raw_os_error(),
         Some(ERROR_FILE_NOT_FOUND.cast_signed())
+    );
+    Ok(())
+}
+
+/// A claimant pin whose second liveness query (the one after `KELD-AA1`
+/// matched, just before the one-shot is consumed) returns only once the claim
+/// deadline has passed, as a slow caller's pin can.
+#[derive(Debug, Clone)]
+struct SlowPin {
+    inner: TestPin,
+    calls: Arc<AtomicUsize>,
+    deadline: Instant,
+}
+
+impl WindowsLifecyclePeerPin for SlowPin {
+    fn process_id(&self) -> u32 {
+        self.inner.process_id
+    }
+
+    fn session_id(&self) -> u32 {
+        self.inner.session_id
+    }
+
+    fn has_exited(&self) -> io::Result<bool> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 1 {
+            while Instant::now() < self.deadline {
+                std::thread::yield_now();
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// The claim deadline that passes after `KELD-AA1` matched, while the
+/// caller's pin is still being asked, is re-checked before the one-shot is
+/// consumed: the owner returns `ClaimDeadline` and sends no `KELD-AR1`, so
+/// the claimant reads end of file. Without the re-check the one-shot is
+/// consumed and the `KELD-AR1` write fails on the expired absolute deadline.
+#[test]
+fn a_deadline_that_passes_after_aa1_is_not_accepted() -> io::Result<()> {
+    let ids = fresh_ids()?;
+    let endpoint = connect_back_endpoint(ids)?;
+    let name = endpoint.endpoint().to_owned();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let pin = SlowPin {
+        inner: TestPin::own()?,
+        calls: Arc::new(AtomicUsize::new(0)),
+        deadline,
+    };
+    let calls = Arc::clone(&pin.calls);
+    let owner = std::thread::spawn(move || {
+        endpoint
+            .accept_claim(
+                deadline,
+                move |_: u32, _: u32, _: &crate::WindowsPeerTokenFacts| Some(pin.clone()),
+            )
+            .map(drop)
+    });
+    let candidate = claim(&name, &ids.installation)?;
+    let outcome = owner
+        .join()
+        .map_err(|_| io::Error::other("owner thread panicked"))?;
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        2,
+        "both liveness queries ran"
+    );
+    assert!(
+        matches!(&candidate, Err(error) if is_end_of_file(error)),
+        "{candidate:?}"
+    );
+    assert!(
+        matches!(outcome, Err(WindowsAttemptExchangeError::ClaimDeadline)),
+        "{outcome:?}"
     );
     Ok(())
 }

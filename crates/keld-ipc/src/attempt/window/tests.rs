@@ -96,7 +96,11 @@ fn a_silent_read_checks_the_launch_only_at_or_after_the_end() {
             WindowStep::CheckLaunch
         );
     }
-    assert_eq!(window.begin(t), WindowStep::CheckLaunch);
+    assert_eq!(
+        window.begin(t),
+        WindowStep::Refuse(AttemptHealthWindowFailure::NotObserved),
+        "a window entered at its end observed nothing"
+    );
 }
 
 /// "its launch handle is unsignaled": only an unsignaled handle at the end
@@ -141,7 +145,10 @@ fn a_zero_margin_window_ends_thirty_seconds_after_ay1() {
     let t = ready + Duration::from_secs(30);
     let window = HealthWindow::after_ready(ready, Duration::ZERO).expect("fits the clock");
     assert_eq!(window.begin(just_before(t)), WindowStep::Read { until: t });
-    assert_eq!(window.begin(t), WindowStep::CheckLaunch);
+    assert_eq!(
+        window.begin(t),
+        WindowStep::Refuse(AttemptHealthWindowFailure::NotObserved)
+    );
 }
 
 #[test]

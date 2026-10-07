@@ -143,7 +143,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-IPC-020
 
 - crate: keld-ipc
-- message: keld-attempt health not proven (the candidate reported KELD-AF1, or the owner's health window saw a byte, end of file, or an exited or unreadable launched process)
+- message: keld-attempt health not proven (the candidate reported KELD-AF1, or the owner's health window saw a byte, end of file, an exited or unreadable launched process, or a window already over when first awaited)
 - fix: The owner cannot commit health: roll the attempt back, writing KELD-AK1 rolled back once while the connection is still open, then end the candidate family.
 
 ## KELD-IPC-021

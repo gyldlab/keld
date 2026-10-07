@@ -32,6 +32,9 @@ pub enum AttemptHealthWindowFailure {
     /// At the end of the window the launch handle's state could not be read,
     /// so nothing proves the launched process was still running.
     LaunchUnverifiable,
+    /// The owner first waited on the window when it had already ended, so it
+    /// observed neither a byte nor the connection's close.
+    NotObserved,
     /// The window's end does not fit the monotonic clock (an unbounded margin).
     Unrepresentable,
 }
@@ -103,13 +106,15 @@ impl HealthWindow {
             .ok_or(AttemptHealthWindowFailure::Unrepresentable)
     }
 
-    /// The first step at `now`: read until the end, or, if the window has
-    /// already ended, check the launch handle.
+    /// The first step at `now`: read until the end. A window that has already
+    /// ended when the owner first waits on it observed nothing of the
+    /// connection, so health fails closed rather than passing on the launch
+    /// handle alone.
     pub(super) fn begin(self, now: Instant) -> WindowStep {
         if now < self.ends {
             WindowStep::Read { until: self.ends }
         } else {
-            WindowStep::CheckLaunch
+            WindowStep::Refuse(AttemptHealthWindowFailure::NotObserved)
         }
     }
 
@@ -121,7 +126,13 @@ impl HealthWindow {
         match read {
             WindowRead::Byte => WindowStep::Refuse(AttemptHealthWindowFailure::ByteReceived),
             WindowRead::EndOfFile => WindowStep::Refuse(AttemptHealthWindowFailure::EndOfFile),
-            WindowRead::DeadlineElapsed => self.begin(now),
+            WindowRead::DeadlineElapsed => {
+                if now < self.ends {
+                    WindowStep::Read { until: self.ends }
+                } else {
+                    WindowStep::CheckLaunch
+                }
+            }
         }
     }
 

@@ -455,7 +455,8 @@ impl WindowsAttemptClient {
     /// # Errors
     ///
     /// Returns [`WindowsAttemptEndpointError::Os`] if Windows cannot report it.
-    pub fn server_session_id(&self) -> Result<u32, WindowsAttemptEndpointError> {
+    #[cfg(test)]
+    pub(crate) fn server_session_id(&self) -> Result<u32, WindowsAttemptEndpointError> {
         self.stream
             .peer_session_id()
             .map_err(|source| WindowsAttemptEndpointError::Os {

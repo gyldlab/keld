@@ -294,3 +294,36 @@ fn after_a_failure_only_the_rollback_remains() -> io::Result<()> {
     ));
     Ok(())
 }
+
+/// A byte after `KELD-AY1` that is already buffered when the owner first
+/// awaits an already-ended window (a zero-length one, standing for an owner
+/// that is late) is not seen by a read, so the window fails closed instead of
+/// passing on the launch handle alone.
+#[test]
+fn a_byte_before_a_late_window_entry_fails_closed() -> io::Result<()> {
+    let (mut owner, mut candidate, _) = ready_pair(&DIGEST)?;
+    candidate.stream_mut().write_all(&[0x00])?;
+    let failure = window_failure(owner.await_window_of(Duration::ZERO));
+    assert_eq!(failure, AttemptHealthWindowFailure::NotObserved);
+    Ok(())
+}
+
+/// The candidate's end of file before a late window entry fails closed the
+/// same way, and the rollback then writes `KELD-AK1` rolled back or nothing,
+/// never accepted.
+#[test]
+fn end_of_file_before_a_late_window_entry_fails_closed() -> io::Result<()> {
+    let (mut owner, candidate, _) = ready_pair(&DIGEST)?;
+    drop(candidate);
+    let failure = window_failure(owner.await_window_of(Duration::ZERO));
+    assert_eq!(failure, AttemptHealthWindowFailure::NotObserved);
+    let out_of_sequence = owner.accept(kill_switch());
+    assert!(
+        matches!(
+            out_of_sequence,
+            Err(WindowsAttemptExchangeError::OutOfSequence { .. })
+        ),
+        "{out_of_sequence:?}"
+    );
+    Ok(())
+}

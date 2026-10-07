@@ -728,6 +728,9 @@ impl fmt::Display for WindowsAttemptExchangeError {
                     AttemptHealthWindowFailure::LaunchUnverifiable => {
                         "the launched process's state could not be read at the window's end"
                     }
+                    AttemptHealthWindowFailure::NotObserved => {
+                        "the window had already ended when the owner first waited on it, so the                          connection was never observed"
+                    }
                     AttemptHealthWindowFailure::Unrepresentable => {
                         "the window's end does not fit the monotonic clock"
                     }

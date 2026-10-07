@@ -420,13 +420,15 @@ impl AttemptTranscript {
 
     /// The candidate's nonce.
     #[must_use]
-    pub const fn client_nonce(&self) -> &SessionToken {
+    #[cfg(test)]
+    pub(crate) const fn client_nonce(&self) -> &SessionToken {
         &self.client_nonce
     }
 
     /// The owner's nonce.
     #[must_use]
-    pub const fn server_nonce(&self) -> &SessionToken {
+    #[cfg(test)]
+    pub(crate) const fn server_nonce(&self) -> &SessionToken {
         &self.server_nonce
     }
 
