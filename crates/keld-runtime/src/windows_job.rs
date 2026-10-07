@@ -1169,6 +1169,27 @@ impl WindowsLaunchedProcess {
             ProcessObservation::of_launch(self),
         )
     }
+
+    /// Reports whether the retained launch handle is signaled: the launched
+    /// process has exited (KEL-53 §4 "Candidate connect-back", *Health
+    /// sequence*: the owner's launch handle must be unsignaled).
+    ///
+    /// It waits for nothing and consumes nothing: it neither reaps nor
+    /// terminates the child and leaves the retained handle open, so it may be
+    /// asked any number of times. It reads the same fact as the second check of
+    /// [`Self::bind_claimant`], through the same query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Windows cannot query the retained launch handle.
+    pub fn has_exited(&self) -> Result<bool, WindowsHostJobError> {
+        process_signaled(self.child.process_handle().as_raw_handle().cast()).map_err(|source| {
+            WindowsHostJobError {
+                phase: "launch handle state query",
+                source,
+            }
+        })
+    }
 }
 
 /// Why an attempt owner refused a connect-back claimant.
@@ -1268,15 +1289,15 @@ fn bind_observed_claimant(
             });
         }
     }
-    // SAFETY: the launch observation borrows its owner, which retains the launch
-    // handle through this zero-time, read-only signal query.
-    match unsafe { WaitForSingleObject(launch.handle, 0) } {
-        WAIT_TIMEOUT => {}
-        WAIT_OBJECT_0 => return Err(WindowsClaimantRefusal::LaunchExited),
-        _ => {
+    // The launch observation borrows its owner, which retains the launch handle
+    // through this query.
+    match process_signaled(launch.handle) {
+        Ok(false) => {}
+        Ok(true) => return Err(WindowsClaimantRefusal::LaunchExited),
+        Err(source) => {
             return Err(WindowsClaimantRefusal::Unverifiable {
                 phase: "launch handle state query",
-                source: io::Error::last_os_error(),
+                source,
             });
         }
     }
@@ -1284,6 +1305,18 @@ fn bind_observed_claimant(
         return Err(WindowsClaimantRefusal::LaunchIdentityMismatch);
     }
     Ok(())
+}
+
+/// Reports whether a process handle is signaled, with a zero-time wait that
+/// consumes nothing. The caller retains the handle through the call.
+fn process_signaled(process: HANDLE) -> io::Result<bool> {
+    // SAFETY: the caller retains the process handle through this zero-time,
+    // read-only signal query; an unusable value makes it fail.
+    match unsafe { WaitForSingleObject(process, 0) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(io::Error::last_os_error()),
+    }
 }
 
 /// Reports whether two handles name one kernel object.
@@ -1338,6 +1371,44 @@ fn process_creation_time(process: HANDLE, phase: &'static str) -> Result<u64, Wi
     Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+/// One live process that an attempt Job admits as its direct host, borrowed
+/// from the owner that retains it.
+///
+/// Two owners lend one: a [`Child`] that a launcher spawned, and a
+/// [`WindowsSuspendedChild`] that a suspended launch created, such as the
+/// `PerUserDirect` candidate, which is assigned before its one resume (KEL-53
+/// §5). Only those two conversions construct it, so no other handle reaches a
+/// Job call.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowsJobProcess<'a> {
+    process: std::os::windows::io::BorrowedHandle<'a>,
+    process_id: u32,
+}
+
+impl<'a> From<&'a Child> for WindowsJobProcess<'a> {
+    fn from(child: &'a Child) -> Self {
+        Self {
+            process: std::os::windows::io::AsHandle::as_handle(child),
+            process_id: child.id(),
+        }
+    }
+}
+
+impl<'a> From<&'a WindowsSuspendedChild> for WindowsJobProcess<'a> {
+    fn from(child: &'a WindowsSuspendedChild) -> Self {
+        Self {
+            process: child.process_handle(),
+            process_id: child.id(),
+        }
+    }
+}
+
+impl WindowsJobProcess<'_> {
+    fn raw(self) -> HANDLE {
+        self.process.as_raw_handle().cast()
+    }
+}
+
 impl WindowsProcessJob {
     /// Creates an unnamed, non-inheritable Job with kill-on-last-handle-close.
     ///
@@ -1356,14 +1427,20 @@ impl WindowsProcessJob {
     /// Assigns one live process to this exact Job.
     ///
     /// The owner must assign the host before its application resources can start.
-    /// Windows may reject assignment when the process's existing Job hierarchy is
-    /// incompatible; callers must fail closed in that case.
+    /// A [`WindowsSuspendedChild`], such as the `PerUserDirect` candidate, is
+    /// assigned before its one resume, so it is a member before its first
+    /// instruction. Windows may reject assignment when the process's existing Job
+    /// hierarchy is incompatible; callers must fail closed in that case.
     ///
     /// # Errors
     ///
     /// Returns an error if the process cannot be assigned or exact membership cannot
     /// be verified.
-    pub fn assign_child(&mut self, process: &Child) -> Result<(), WindowsHostJobError> {
+    pub fn assign_child<'a>(
+        &mut self,
+        process: impl Into<WindowsJobProcess<'a>>,
+    ) -> Result<(), WindowsHostJobError> {
+        let process = process.into();
         if self.host_assigned {
             return Err(WindowsHostJobError::contract(
                 "attempt Job process assignment",
@@ -1371,13 +1448,15 @@ impl WindowsProcessJob {
             ));
         }
         let raw_job = self.handle.as_raw_handle().cast();
-        let raw_process = process.as_raw_handle().cast();
-        // SAFETY: `Child` retains its process handle through this synchronous call.
+        let raw_process = process.raw();
+        // SAFETY: the borrowed process's owner retains its handle through this
+        // synchronous call.
         if unsafe { AssignProcessToJobObject(raw_job, raw_process) } == 0 {
             return Err(WindowsHostJobError::new("attempt Job process assignment"));
         }
         let mut in_job = 0;
-        // SAFETY: `Child` and this owner retain both handles, and `in_job` is writable BOOL storage.
+        // SAFETY: the process's owner and this owner retain both handles, and
+        // `in_job` is writable BOOL storage.
         if unsafe { IsProcessInJob(raw_process, raw_job, &raw mut in_job) } == 0 {
             return Err(WindowsHostJobError::new("attempt Job membership read-back"));
         }
@@ -1388,9 +1467,10 @@ impl WindowsProcessJob {
             ));
         }
         let mut retained_process = std::ptr::null_mut();
-        // SAFETY: both process handles refer to the current process and live
-        // Child; `retained_process` is writable HANDLE storage. The duplicate is
-        // non-inheritable and has the same synchronization/query rights.
+        // SAFETY: both process handles refer to the current process and the live
+        // borrowed process; `retained_process` is writable HANDLE storage. The
+        // duplicate is non-inheritable and has the same synchronization/query
+        // rights.
         if unsafe {
             DuplicateHandle(
                 GetCurrentProcess(),
@@ -1411,7 +1491,7 @@ impl WindowsProcessJob {
         // process handle, converted exactly once into the retained owner.
         let retained_process = unsafe { OwnedHandle::from_raw_handle(retained_process.cast()) };
         self.host_assigned = true;
-        self.host_process_id = Some(process.id());
+        self.host_process_id = Some(process.process_id);
         self.host_process = Some(retained_process);
         Ok(())
     }
@@ -2031,12 +2111,17 @@ impl WindowsProcessJob {
     /// # Errors
     ///
     /// Returns an error if the OS cannot observe membership.
-    pub fn contains_child(&self, process: &Child) -> Result<bool, WindowsHostJobError> {
+    pub fn contains_child<'a>(
+        &self,
+        process: impl Into<WindowsJobProcess<'a>>,
+    ) -> Result<bool, WindowsHostJobError> {
+        let process = process.into();
         let mut in_job = 0;
-        // SAFETY: `Child` and this owner retain both handles, and `in_job` is writable BOOL storage.
+        // SAFETY: the process's owner and this owner retain both handles, and
+        // `in_job` is writable BOOL storage.
         if unsafe {
             IsProcessInJob(
-                process.as_raw_handle().cast(),
+                process.raw(),
                 self.handle.as_raw_handle().cast(),
                 &raw mut in_job,
             )
@@ -2076,18 +2161,19 @@ impl WindowsProcessJob {
     ///
     /// Returns an error if termination is denied, either wait times out, a wait fails,
     /// or Job accounting remains nonzero.
-    pub fn terminate_and_wait(
+    pub fn terminate_and_wait<'a>(
         self,
-        direct_host: &Child,
+        direct_host: impl Into<WindowsJobProcess<'a>>,
         timeout: Duration,
     ) -> Result<(), WindowsHostJobError> {
+        let direct_host = direct_host.into();
         if !self.host_assigned {
             return Err(WindowsHostJobError::contract(
                 "attempt Job termination",
                 "no host was admitted to this attempt Job",
             ));
         }
-        if self.host_process_id != Some(direct_host.id()) || self.host_process.is_none() {
+        if self.host_process_id != Some(direct_host.process_id) || self.host_process.is_none() {
             return Err(WindowsHostJobError::contract(
                 "attempt Job termination",
                 "the supplied direct host is not the exact process admitted to this Job",

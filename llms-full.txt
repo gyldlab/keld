@@ -5768,6 +5768,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: An elevated `runas` launch of the Windows updater helper was refused or failed, and no helper process handle is retained
 - fix: Follow the variant's guidance. For a path or argument refusal, derive the helper path again from the selected tree's admitted provenance and pass the host's own bootstrap endpoint name unchanged; never search for or substitute a helper. If the user declined the UAC prompt, nothing was launched and no protected state changed; offer the elevated action again only on a new user request. For a COM or shell failure, report the detail. When the shell returned no process handle, or the handle could not report its process ID, an elevated helper may already be running unbound: close the bootstrap endpoint so that the helper's server check refuses and it exits without a protected write, then report the detail.
 
+## KELD-RUNTIME-020
+
+- crate: keld-runtime
+- message: The PerUserDirect candidate's same-token suspended launch, or an operation on its suspended child, failed
+- fix: Start no candidate in its place: end the attempt Job and roll the attempt back, and never resume a child whose creation, Job membership or launch record was not proved. Correct the reported program path, working directory, environment or creation failure before the next attempt.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
