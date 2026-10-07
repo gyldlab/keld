@@ -592,7 +592,7 @@ impl AttemptRecord {
         reader
             .read_exact(&mut record[MAGIC_LEN..len])
             .map_err(AttemptRecordError::io)?;
-        parse(position, kind, &record[..len])
+        parse(position, kind, &record)
     }
 
     /// Decodes `bytes` as exactly one record admitted at `position`, by the
@@ -628,7 +628,9 @@ impl AttemptRecord {
                 actual: bytes.len(),
             });
         }
-        parse(position, kind, bytes)
+        let mut record = [0_u8; MAX_RECORD_LEN];
+        record[..expected].copy_from_slice(bytes);
+        parse(position, kind, &record)
     }
 
     /// Writes this record's exact bytes with one `write_all`.
@@ -693,37 +695,38 @@ fn admitted_kind(
 }
 
 /// Decodes the fields of one whole record whose magic `position` admitted.
+/// Both readers pass the record in a buffer as long as the longest record,
+/// after their own length rule, so no field read can fall short.
 fn parse(
     position: AttemptReadPosition,
     kind: AttemptRecordKind,
-    record: &[u8],
+    record: &[u8; MAX_RECORD_LEN],
 ) -> Result<AttemptRecord, AttemptRecordError> {
     let mut fields = FieldReader {
-        rest: record.get(MAGIC_LEN..).unwrap_or_default(),
-        expected: kind.record_len(),
-        actual: record.len(),
+        record,
+        at: MAGIC_LEN,
     };
-    Ok(match kind {
+    let parsed = match kind {
         AttemptRecordKind::Claim => AttemptRecord::Claim(AttemptClaim {
-            installation_id: fields.take()?,
-            client_nonce: SessionToken::from_bytes(fields.take()?),
-            client_pid: u32::from_le_bytes(fields.take()?),
+            installation_id: fields.take(),
+            client_nonce: SessionToken::from_bytes(fields.take()),
+            client_pid: u32::from_le_bytes(fields.take()),
         }),
         AttemptRecordKind::Challenge => AttemptRecord::Challenge(AttemptChallenge {
-            attempt_id: fields.take()?,
-            health_channel_id: fields.take()?,
-            server_nonce: SessionToken::from_bytes(fields.take()?),
-            server_pid: u32::from_le_bytes(fields.take()?),
+            attempt_id: fields.take(),
+            health_channel_id: fields.take(),
+            server_nonce: SessionToken::from_bytes(fields.take()),
+            server_pid: u32::from_le_bytes(fields.take()),
         }),
         AttemptRecordKind::Acknowledgement | AttemptRecordKind::Receipt => {
             let transcript = AttemptTranscript {
-                installation_id: fields.take()?,
-                attempt_id: fields.take()?,
-                health_channel_id: fields.take()?,
-                client_nonce: SessionToken::from_bytes(fields.take()?),
-                server_nonce: SessionToken::from_bytes(fields.take()?),
-                client_pid: u32::from_le_bytes(fields.take()?),
-                server_pid: u32::from_le_bytes(fields.take()?),
+                installation_id: fields.take(),
+                attempt_id: fields.take(),
+                health_channel_id: fields.take(),
+                client_nonce: SessionToken::from_bytes(fields.take()),
+                server_nonce: SessionToken::from_bytes(fields.take()),
+                client_pid: u32::from_le_bytes(fields.take()),
+                server_pid: u32::from_le_bytes(fields.take()),
             };
             if kind == AttemptRecordKind::Acknowledgement {
                 AttemptRecord::Acknowledgement(transcript)
@@ -733,14 +736,14 @@ fn parse(
         }
         AttemptRecordKind::BootAcknowledgement => {
             AttemptRecord::BootAcknowledgement(AttemptBootAcknowledgement {
-                attempt_id: fields.take()?,
-                health_channel_id: fields.take()?,
-                health_receipt_digest: fields.take()?,
+                attempt_id: fields.take(),
+                health_channel_id: fields.take(),
+                health_receipt_digest: fields.take(),
             })
         }
         AttemptRecordKind::Ready => AttemptRecord::Ready,
         AttemptRecordKind::Failure => {
-            let [value] = fields.take()?;
+            let [value] = fields.take();
             let class = AttemptFailureClass::from_byte(value)
                 .ok_or(AttemptRecordError::ValueOutOfSet { kind, value })?;
             if !position.admits_failure(class) {
@@ -749,34 +752,30 @@ fn parse(
             AttemptRecord::Failure(class)
         }
         AttemptRecordKind::HealthResult => {
-            let [value] = fields.take()?;
+            let [value] = fields.take();
             AttemptRecord::HealthResult(
                 AttemptHealthResult::from_byte(value)
                     .ok_or(AttemptRecordError::ValueOutOfSet { kind, value })?,
             )
         }
-    })
+    };
+    debug_assert_eq!(fields.at, kind.record_len());
+    Ok(parsed)
 }
 
-/// Fixed-width field reads over one whole record. Both callers pass exactly
-/// the admitted record's length, so a short field is only reachable if that
-/// invariant breaks; it is still a typed refusal, never a panic.
+/// Sequential fixed-width field reads from a buffer that holds the longest
+/// record, the mirror of [`RecordWriter`].
 struct FieldReader<'a> {
-    rest: &'a [u8],
-    expected: usize,
-    actual: usize,
+    record: &'a [u8; MAX_RECORD_LEN],
+    at: usize,
 }
 
 impl FieldReader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], AttemptRecordError> {
-        let Some((field, rest)) = self.rest.split_first_chunk::<N>() else {
-            return Err(AttemptRecordError::Truncated {
-                expected: self.expected,
-                actual: self.actual,
-            });
-        };
-        self.rest = rest;
-        Ok(*field)
+    fn take<const N: usize>(&mut self) -> [u8; N] {
+        let mut field = [0; N];
+        field.copy_from_slice(&self.record[self.at..self.at + N]);
+        self.at += N;
+        field
     }
 }
 
