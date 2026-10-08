@@ -55,7 +55,12 @@ pub enum ReceiveClass {
 }
 
 /// What authorizes a call on a channel.
+///
+/// Non-exhaustive: a consumer such as the F04 control channel may add a variant
+/// through the `keld-guard` owner (spec §4.5), so matches outside this crate
+/// need a fail-closed wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Authority {
     /// Session control on the host-minted link; never evaluated by `keld-guard`.
     HostInternal,

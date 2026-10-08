@@ -269,6 +269,15 @@ pub struct Exclusions {
     /// Every file an ungated `mod <name>;` may resolve to. A file that some
     /// production declaration reaches is never excluded.
     pub declared: BTreeSet<PathBuf>,
+    /// An ungated `mod <name>;` this scanner cannot resolve (an unreadable
+    /// `#[path`, or nesting inside a `#[path]` inline module). Then no
+    /// out-of-line file anywhere is excluded, since any could be its target.
+    pub unresolved: bool,
+    /// Files that an `include!("...")` outside every test-only item pulls into
+    /// production code, resolved relative to the including file.
+    pub includes: BTreeSet<PathBuf>,
+    /// 0-based lines of production `include!` calls this scanner cannot read.
+    pub unreadable_includes: BTreeSet<usize>,
 }
 
 /// Whether a single-line attribute is test-only: `#[cfg(test)]` or
@@ -429,26 +438,159 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// Files a `mod <name>;` in `declaring` resolves to under Rust's module rules:
-/// a `#[path]` value relative to the declaring file's directory, else
-/// `<name>.rs` or `<name>/mod.rs` beside `lib.rs`/`main.rs`/`mod.rs`, else
-/// under `<parent>/` for any other `<parent>.rs`.
-pub fn resolve_module_file(declaring: &Path, name: &str, path: Option<&str>) -> Vec<PathBuf> {
+/// Files a `mod <name>;` in `declaring`, nested in the inline modules `scope`,
+/// resolves to under Rust's module rules (the Reference, "Modules"). The module
+/// directory is the declaring file's directory for a mod-rs file (`lib.rs`,
+/// `main.rs`, `mod.rs`) and `<dir>/<stem>` otherwise; each enclosing inline
+/// module adds its name. Without `#[path]` the file is `<name>.rs` or
+/// `<name>/mod.rs` there. A `#[path]` outside inline modules is relative to the
+/// declaring file's directory; inside them, to that nested module directory.
+pub fn resolve_module_file(
+    declaring: &Path,
+    name: &str,
+    path: Option<&str>,
+    scope: &[String],
+) -> Vec<PathBuf> {
     let directory = declaring.parent().unwrap_or_else(|| Path::new(""));
-    if let Some(path) = path {
-        return vec![normalize(&directory.join(path))];
-    }
     let file_name = declaring.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let base = if matches!(file_name, "lib.rs" | "main.rs" | "mod.rs") {
+    let module_directory = if matches!(file_name, "lib.rs" | "main.rs" | "mod.rs") {
         directory.to_path_buf()
     } else {
         let stem = declaring.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         directory.join(stem)
     };
+    let nested = scope
+        .iter()
+        .fold(module_directory, |dir, inline| dir.join(inline));
+    if let Some(path) = path {
+        let base = if scope.is_empty() {
+            directory.to_path_buf()
+        } else {
+            nested
+        };
+        return vec![normalize(&base.join(path))];
+    }
     vec![
-        normalize(&base.join(format!("{name}.rs"))),
-        normalize(&base.join(name).join("mod.rs")),
+        normalize(&nested.join(format!("{name}.rs"))),
+        normalize(&nested.join(name).join("mod.rs")),
     ]
+}
+
+/// The inline modules enclosing one line, and whether any carries `#[path]`.
+#[derive(Debug, Default, Clone)]
+struct Scope {
+    names: Vec<String>,
+    pathed: bool,
+}
+
+fn preceded_by_path_attribute(lines: &[&str], code: &[String], index: usize) -> bool {
+    let mut at = index;
+    while at > 0 {
+        at -= 1;
+        if let Some(attribute) = single_line_attribute(lines[at], &code[at]) {
+            if path_attribute(attribute).is_some() {
+                return true;
+            }
+            continue;
+        }
+        let trimmed = lines[at].trim();
+        if !(trimmed.is_empty() || trimmed.starts_with("//")) {
+            return false;
+        }
+    }
+    false
+}
+
+/// Per line, the inline `mod <name> {` blocks enclosing it (brace-matched on
+/// the code view, so braces in strings and comments never count).
+fn inline_scopes(lines: &[&str], code: &[String]) -> Vec<Scope> {
+    let mut scopes = Vec::with_capacity(code.len());
+    let mut stack: Vec<(String, bool, i64)> = Vec::new();
+    let mut depth = 0_i64;
+    for (index, line) in code.iter().enumerate() {
+        scopes.push(Scope {
+            names: stack.iter().map(|(name, _, _)| name.clone()).collect(),
+            pathed: stack.iter().any(|(_, pathed, _)| *pathed),
+        });
+        let mut opening = module_declaration(line.trim())
+            .filter(|(_, rest)| rest.starts_with('{'))
+            .map(|(name, _)| {
+                (
+                    name.to_owned(),
+                    preceded_by_path_attribute(lines, code, index),
+                )
+            });
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    if let Some((name, pathed)) = opening.take() {
+                        stack.push((name, pathed, depth));
+                    }
+                    depth += 1;
+                }
+                '}' => {
+                    depth -= 1;
+                    while stack.last().is_some_and(|(_, _, open)| *open >= depth) {
+                        stack.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    scopes
+}
+
+/// Records an ungated `mod <name>;` as production reach.
+fn declare(
+    found: &mut Exclusions,
+    declaring: &Path,
+    name: &str,
+    path: Option<&PathAttribute>,
+    scope: &Scope,
+) {
+    match path {
+        Some(PathAttribute::Unreadable) => found.unresolved = true,
+        _ if scope.pathed => found.unresolved = true,
+        Some(PathAttribute::Plain(value)) => found.declared.extend(resolve_module_file(
+            declaring,
+            name,
+            Some(value),
+            &scope.names,
+        )),
+        None => found
+            .declared
+            .extend(resolve_module_file(declaring, name, None, &scope.names)),
+    }
+}
+
+/// `include!("...")` calls on production lines: the resolved files, and the
+/// lines whose argument is not one plain string literal.
+fn production_includes(declaring: &Path, lines: &[&str], code: &[String], found: &mut Exclusions) {
+    let directory = declaring.parent().unwrap_or_else(|| Path::new(""));
+    for (index, line) in lines.iter().enumerate() {
+        if found.lines.contains(&index) || !code[index].contains("include!") {
+            continue;
+        }
+        for (offset, _) in line.match_indices("include!") {
+            let rest = line[offset + "include!".len()..].trim_start();
+            let literal = rest
+                .strip_prefix('(')
+                .map(str::trim_start)
+                .and_then(|rest| rest.strip_prefix('"'))
+                .and_then(|rest| rest.split_once('"'))
+                .filter(|(value, tail)| !value.contains('\\') && tail.trim_start().starts_with(')'))
+                .map(|(value, _)| value);
+            match literal {
+                Some(value) => {
+                    found.includes.insert(normalize(&directory.join(value)));
+                }
+                None => {
+                    found.unreadable_includes.insert(index);
+                }
+            }
+        }
+    }
 }
 
 /// Computes the criterion-6 test-only exclusions of one file.
@@ -458,14 +600,13 @@ pub fn resolve_module_file(declaring: &Path, name: &str, path: Option<&str>) -> 
 /// the file a `mod <name>;` resolves to. Every other form stays scanned.
 pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
     let lines: Vec<&str> = text.split('\n').collect();
+    let scopes = inline_scopes(&lines, &lexed.code);
     let mut found = Exclusions::default();
     let mut index = 0;
     while index < lines.len() {
         if single_line_attribute(lines[index], &lexed.code[index]).is_none() {
             if let Some((name, ";")) = module_declaration(lexed.code[index].trim()) {
-                found
-                    .declared
-                    .extend(resolve_module_file(declaring, name, None));
+                declare(&mut found, declaring, name, None, &scopes[index]);
             }
             index += 1;
             continue;
@@ -494,16 +635,13 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
         let code = lexed.code[item].trim();
         if !test_only {
             if let Some((name, ";")) = module_declaration(code) {
-                // Over-approximate production reach: both the plain and the
-                // `#[path]` resolution count as declared.
-                found
-                    .declared
-                    .extend(resolve_module_file(declaring, name, None));
-                if let Some(PathAttribute::Plain(value)) = &path_value {
-                    found
-                        .declared
-                        .extend(resolve_module_file(declaring, name, Some(value)));
-                }
+                declare(
+                    &mut found,
+                    declaring,
+                    name,
+                    path_value.as_ref(),
+                    &scopes[item],
+                );
             }
             index = item;
             continue;
@@ -516,18 +654,18 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
                     continue;
                 }
             } else if rest == ";" {
-                // A declaration nested in an inline module, or with a `#[path`
-                // this scanner cannot read, resolves elsewhere: stay scanned.
-                let top_level = !lines[item].starts_with(char::is_whitespace);
+                // A `#[path` this scanner cannot read, or nesting inside a
+                // `#[path]` inline module, resolves elsewhere: stay scanned.
+                let scope = &scopes[item];
                 let readable = !matches!(path_value, Some(PathAttribute::Unreadable));
-                if top_level && readable {
+                if readable && !scope.pathed {
                     let path = match &path_value {
                         Some(PathAttribute::Plain(value)) => Some(value.as_str()),
                         _ => None,
                     };
                     found
                         .files
-                        .extend(resolve_module_file(declaring, name, path));
+                        .extend(resolve_module_file(declaring, name, path, &scope.names));
                     found.lines.extend(group_start..=item);
                     index = item + 1;
                     continue;
@@ -540,6 +678,7 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
         }
         index = item;
     }
+    production_includes(declaring, &lines, &lexed.code, &mut found);
     found
 }
 
@@ -561,7 +700,24 @@ pub fn load_scan_inputs(root: &Path) -> Sources {
     let fuzz = root.join("crates/keld-ipc/fuzz/fuzz_targets");
     assert!(fuzz.is_dir(), "scan input {} is missing", fuzz.display());
     walk(root, &fuzz, &mut sources);
-    sources
+    // A file that production code `include!`s is production, wherever it lives
+    // (even under `tests/`); load it until no new include appears.
+    loop {
+        let (_, production) = production_view(&sources);
+        let missing: Vec<PathBuf> = production
+            .included
+            .into_iter()
+            .filter(|path| !sources.contains_key(path) && root.join(path).is_file())
+            .collect();
+        if missing.is_empty() {
+            return sources;
+        }
+        for path in missing {
+            let text = fs::read_to_string(root.join(&path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            sources.insert(path, text);
+        }
+    }
 }
 
 fn walk(root: &Path, directory: &Path, sources: &mut Sources) {
@@ -591,7 +747,24 @@ fn walk(root: &Path, directory: &Path, sources: &mut Sources) {
 
 /// The remaining (non-test) view of every scanned file, after applying every
 /// file's exclusions. Files resolved from a test-gated `mod <name>;` vanish.
-pub fn remaining(sources: &Sources) -> BTreeMap<PathBuf, (String, Lexed, BTreeSet<usize>)> {
+/// Which inputs are production after every file's exclusions.
+struct Production {
+    /// Excluded whole files.
+    excluded: BTreeSet<PathBuf>,
+    /// Files a production `include!` pulls in.
+    included: BTreeSet<PathBuf>,
+}
+
+fn in_tests_directory(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "tests")
+}
+
+/// Lexes every input and decides which files are production. A file stays
+/// excluded only when a test-gated `mod` reaches it (or it sits under `tests/`)
+/// and no production declaration or production `include!` reaches it. Includes
+/// count only from production files, so this iterates to a fixpoint.
+fn production_view(sources: &Sources) -> (BTreeMap<PathBuf, (Lexed, Exclusions)>, Production) {
     let mut lexed: BTreeMap<PathBuf, (Lexed, Exclusions)> = BTreeMap::new();
     for (path, text) in sources {
         let view = lex(text);
@@ -602,11 +775,40 @@ pub fn remaining(sources: &Sources) -> BTreeMap<PathBuf, (String, Lexed, BTreeSe
         .values()
         .flat_map(|(_, found)| found.declared.iter().cloned())
         .collect();
-    let excluded_files: BTreeSet<PathBuf> = lexed
-        .values()
-        .flat_map(|(_, found)| found.files.iter().cloned())
-        .filter(|file| !declared.contains(file))
-        .collect();
+    let unresolved = lexed.values().any(|(_, found)| found.unresolved);
+    let gated: BTreeSet<PathBuf> = if unresolved {
+        BTreeSet::new()
+    } else {
+        lexed
+            .values()
+            .flat_map(|(_, found)| found.files.iter().cloned())
+            .filter(|file| !declared.contains(file))
+            .collect()
+    };
+    let mut included = BTreeSet::new();
+    loop {
+        let excluded: BTreeSet<PathBuf> = lexed
+            .keys()
+            .filter(|path| {
+                (gated.contains(*path) || in_tests_directory(path)) && !included.contains(*path)
+            })
+            .cloned()
+            .collect();
+        let next: BTreeSet<PathBuf> = lexed
+            .iter()
+            .filter(|(path, _)| !excluded.contains(*path))
+            .flat_map(|(_, (_, found))| found.includes.iter().cloned())
+            .collect();
+        if next == included {
+            return (lexed, Production { excluded, included });
+        }
+        included = next;
+    }
+}
+
+pub fn remaining(sources: &Sources) -> BTreeMap<PathBuf, (String, Lexed, BTreeSet<usize>)> {
+    let (lexed, production) = production_view(sources);
+    let excluded_files = production.excluded;
     let mut out = BTreeMap::new();
     for (path, (view, found)) in lexed {
         if excluded_files.contains(&path) {
@@ -711,7 +913,26 @@ pub fn channel_literal_hits(sources: &Sources, skip: &Path) -> Vec<Hit> {
             });
         }
     }
+    hits.extend(unreadable_include_hits(sources));
+    hits.sort();
+    hits.dedup();
     hits
+}
+
+/// Production `include!` sites whose argument this scanner cannot resolve:
+/// reported as hits, because the included code cannot be scanned.
+pub fn unreadable_include_hits(sources: &Sources) -> Vec<Hit> {
+    let (lexed, production) = production_view(sources);
+    lexed
+        .iter()
+        .filter(|(path, _)| !production.excluded.contains(*path))
+        .flat_map(|(path, (_, found))| {
+            found.unreadable_includes.iter().map(|line| Hit {
+                file: display(path),
+                line: line + 1,
+            })
+        })
+        .collect()
 }
 
 /// Criterion 15: string literals equal to a `names` entry in the remaining
@@ -859,4 +1080,9 @@ pub fn entry_constructor_is_private(table: &str) -> bool {
         .filter(|line| line.contains("fn new("))
         .collect();
     declarations.len() == 1 && declarations[0].starts_with("const fn new(")
+}
+
+/// Files a production `include!` pulls in (they are scanned even under `tests/`).
+pub fn included_files(sources: &Sources) -> BTreeSet<PathBuf> {
+    production_view(sources).1.included
 }

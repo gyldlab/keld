@@ -804,15 +804,24 @@ seven production hits listed there. Where the implementation differs from §4 an
   `HANDSHAKE_CHANNEL`. Not detected: `case 1:`, numeric object keys, and a constant whose
   name lacks `channel`. `packages/*/src` is read as every package directory under
   `packages/`, scoped or not.
-- **Fail-closed hardening beyond the text.** The Rust scan never excludes a file that an
-  ungated `mod` declaration may reach, a gated `mod x;` nested in an inline module, or a
-  `#[path` form it cannot read; `\s` is Unicode whitespace. The generator admits one
+- **Fail-closed hardening beyond the text.** The Rust scan resolves every `mod x;`,
+  including those nested in inline modules and their `#[path]`, by Rust's module rules;
+  it never excludes a file an ungated declaration or a production `include!` reaches
+  (an `include!` target is production even under `tests/`); it excludes nothing out of
+  line when a production declaration is unresolvable (an unreadable `#[path`, a
+  `#[path]` inline module), and reports an unreadable production `include!` as a hit;
+  `\s` is Unicode whitespace. The generator admits one
   `#[cfg(test)] mod tests {` as the file's last item, no other `cfg` gate and no block
   comment, so no entry can sit outside what it parses. Two checks run in CI beside the
   criterion 6 scan: no `ChannelEntry::new(` outside the table and a constructor without
   visibility (criterion 1), and no digit literal as the admitted id passed to
   `RendererBridgeEndpoint::new`, `BridgeState::new` or `render_bridge_script` (criteria
   11 and 12).
+- **Scans are defence in depth.** The criterion 6 and 7 scans cannot see every spelling
+  of an id (a const alias, `ChannelId { 0: 1 }`, extra parentheses, a renamed import, a
+  macro, `header.channel.0 == 2`); the guarantee belongs to the type-level follow-up
+  issue that makes `ChannelId` unforgeable outside `keld-ipc`, so production code can
+  obtain an id only from a table entry.
 - **Executed evidence.** CI runs `cargo nextest`, which does not run doctests, so the
   criterion 1 and 10 compile-fail doctests (each paired with a compiling positive
   control) are local evidence (`cargo test -p keld-ipc --doc`). Stable rustdoc does not
@@ -821,12 +830,16 @@ seven production hits listed there. Where the implementation differs from §4 an
   fields stay public (KEL-133), so a caller can still edit a policy it already holds.
 - **Hygiene rule wiring.** `ci-hygiene check` runs the append-only rule after the
   workflow semantic check; the resolved base is `KELD_CI_BASE_REF` or `origin/main`, and
-  the comparison point is its merge base with `HEAD`. Its CLI self-test now copies the
-  checkout into a git repository compared with its own `HEAD`.
+  the comparison point is its merge base with `HEAD`; an empty or all-zero base fails
+  closed. The router selects the hosted hygiene check for `channel_allocations.txt` and
+  `channel_table.rs`, and its "Check this checkout" step binds `KELD_CI_BASE_REF` to the
+  PR base or, on push, the previous tip, pinned by a `ci-hygiene` contract and router
+  cases with a negative control. Its CLI self-test copies the checkout into a git
+  repository compared with its own `HEAD`.
 - **Smaller choices.** The receive-policy constructors keep naming `ECHO_CHANNEL` and
   `LIFECYCLE_CHANNEL`, which are now the entries' ids. `TableDefect` has a hand-written
   `Display` with fix guidance but no `KELD-*` code, like `HeaderError`: the real table is
   checked at compile time, so it never surfaces at runtime. The test-only
   `AllocationDefect` also has `Malformed { line }` for a malformed baseline line.
   `keld-core` passes `ECHO_CHANNEL.0` to the bridge, the same constant its second check
-  uses.
+  uses. `Authority` is `#[non_exhaustive]` (spec §4.5 expects a new variant).

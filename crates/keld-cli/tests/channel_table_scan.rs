@@ -107,8 +107,9 @@ fn scan_input_is_crate_sources_and_fuzz_targets_never_tests_directories() {
             path.display()
         );
         assert!(
-            !path.components().any(|c| c.as_os_str() == "tests"),
-            "{} is inside a tests/ directory",
+            !path.components().any(|c| c.as_os_str() == "tests")
+                || scan::included_files(&sources).contains(path),
+            "{} is inside a tests/ directory and no production `include!` reaches it",
             path.display()
         );
     }
@@ -538,4 +539,152 @@ fn bridge_admitted_id_is_never_a_positional_literal() {
         );
         assert_eq!(hits_in(&hits, file).len(), 1, "{to}");
     }
+}
+
+fn hit_files(sources: &Sources) -> BTreeSet<String> {
+    channel_hits(sources)
+        .into_iter()
+        .map(|hit| hit.file)
+        .collect()
+}
+
+fn set(files: &[&str]) -> BTreeSet<String> {
+    files.iter().map(|file| (*file).to_owned()).collect()
+}
+
+/// Nested `mod x;` declarations resolve by Rust's module rules (the Reference,
+/// "Modules"): through enclosing inline modules, under `<stem>/` for a
+/// non-mod-rs file, and with `#[path]` inside an inline block relative to that
+/// nested directory. A gated alias can never hide a production file.
+#[test]
+fn nested_module_declarations_resolve_by_rust_module_rules() {
+    let literal = "const X: ChannelId = ChannelId(1);\n";
+    let aliased = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "pub mod a {\n    pub mod util;\n}\n#[cfg(test)]\n#[path = \"a/util.rs\"]\nmod util_alias;\n",
+        ),
+        ("crates/x/src/a/util.rs", literal),
+    ]);
+    assert_eq!(hit_files(&aliased), set(&["crates/x/src/a/util.rs"]));
+
+    let gated_nested = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "pub mod a {\n    #[cfg(test)]\n    mod t;\n}\nmod foo;\n",
+        ),
+        ("crates/x/src/a/t.rs", literal),
+        ("crates/x/src/t.rs", literal),
+        (
+            "crates/x/src/foo.rs",
+            "mod inner {\n    #[cfg(test)]\n    mod t;\n}\n",
+        ),
+        ("crates/x/src/foo/inner/t.rs", literal),
+        ("crates/x/src/foo/t.rs", literal),
+    ]);
+    assert_eq!(
+        hit_files(&gated_nested),
+        set(&["crates/x/src/foo/t.rs", "crates/x/src/t.rs"])
+    );
+
+    let nested_path = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "mod a {\n    #[cfg(test)]\n    #[path = \"x_tests.rs\"]\n    mod x;\n}\n",
+        ),
+        ("crates/x/src/a/x_tests.rs", literal),
+        ("crates/x/src/x_tests.rs", literal),
+    ]);
+    assert_eq!(hit_files(&nested_path), set(&["crates/x/src/x_tests.rs"]));
+
+    // A `#[path]` inline module, or a production declaration the scanner cannot
+    // resolve, fails closed: nothing out of line is excluded.
+    let pathed_inline = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "#[path = \"other\"]\nmod a {\n    #[cfg(test)]\n    mod t;\n}\n",
+        ),
+        ("crates/x/src/a/t.rs", literal),
+        ("crates/x/src/other/t.rs", literal),
+    ]);
+    assert_eq!(
+        hit_files(&pathed_inline),
+        set(&["crates/x/src/a/t.rs", "crates/x/src/other/t.rs"])
+    );
+    let unresolved = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "#[path = r\"weird.rs\"]\nmod w;\n#[cfg(test)]\nmod t;\n",
+        ),
+        ("crates/x/src/t.rs", literal),
+    ]);
+    assert_eq!(hit_files(&unresolved), set(&["crates/x/src/t.rs"]));
+}
+
+/// A file that production code `include!`s is production, even under `tests/`;
+/// a test-gated `include!` site is not. An `include!` the scanner cannot read
+/// fails closed at its call site.
+#[test]
+fn production_include_targets_are_scanned() {
+    let literal = "const X: ChannelId = ChannelId(1);\n";
+    let target = ("crates/x/tests/support/gen.rs", literal);
+    let production = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "mod generated {\n    include!(\"../tests/support/gen.rs\");\n}\n",
+        ),
+        target,
+    ]);
+    assert_eq!(
+        hit_files(&production),
+        set(&["crates/x/tests/support/gen.rs"])
+    );
+    for gated in [
+        "#[cfg(test)]\nmod t {\n    include!(\"../tests/support/gen.rs\");\n}\n",
+        "#[cfg(test)]\ninclude!(\"../tests/support/gen.rs\");\n",
+        "// include!(\"../tests/support/gen.rs\");\n",
+    ] {
+        let sources = synthetic(&[("crates/x/src/lib.rs", gated), target]);
+        assert!(hit_files(&sources).is_empty(), "{gated}");
+    }
+    let aliased = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "#[cfg(test)]\nmod t;\nmod p {\n    include!(\"t.rs\");\n}\n",
+        ),
+        ("crates/x/src/t.rs", literal),
+    ]);
+    assert_eq!(hit_files(&aliased), set(&["crates/x/src/t.rs"]));
+    let unreadable = synthetic(&[(
+        "crates/x/src/lib.rs",
+        "include!(concat!(env!(\"OUT_DIR\"), \"/x.rs\"));\n",
+    )]);
+    assert_eq!(
+        channel_hits(&unreadable),
+        vec![Hit {
+            file: "crates/x/src/lib.rs".to_owned(),
+            line: 1
+        }]
+    );
+
+    // The loader reads a production include target from disk, wherever it is.
+    let root = tempfile::tempdir().expect("fixture root");
+    for (path, text) in [
+        (
+            "crates/x/src/lib.rs",
+            "mod generated {\n    include!(\"../tests/gen.rs\");\n}\n",
+        ),
+        ("crates/x/tests/gen.rs", literal),
+        ("crates/x/tests/unrelated.rs", literal),
+    ] {
+        let file = root.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("fixture dir");
+        std::fs::write(file, text).expect("fixture file");
+    }
+    std::fs::create_dir_all(root.path().join("crates/keld-ipc/fuzz/fuzz_targets"))
+        .expect("fuzz dir");
+    let loaded = scan::load_scan_inputs(root.path());
+    assert!(loaded.contains_key(Path::new("crates/x/tests/gen.rs")));
+    assert!(!loaded.contains_key(Path::new("crates/x/tests/unrelated.rs")));
+    assert_eq!(hit_files(&loaded), set(&["crates/x/tests/gen.rs"]));
 }
