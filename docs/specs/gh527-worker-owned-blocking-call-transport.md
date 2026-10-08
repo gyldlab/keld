@@ -117,7 +117,11 @@ negative control: the one mutation that MUST make the test fail.
 7. **Quit.** (a) Given a parked blocking `Quit`, when the host accepts it, then the
    call returns the host's real `LifecycleResponse::Quit` bytes and the link closes
    afterwards. (b) Given another blocking call still pending when the host's Quit
-   drain ends, then that call throws `KELD-IPC-024`. *Negative control:* a host that
+   drain ends, then that call throws `KELD-IPC-024`. With the unbounded FS drain
+   (§4.9), "still pending" means a CALL the host received behind the accepted `Quit`
+   (#528 T2). Because whether an in-flight frame arrives inside the drain window is a
+   race, the deterministic proof is the keld-core router test, whose client buffers
+   the CALL before the `Quit` completes. *Negative control:* a host that
    closes without writing the Quit REPLY makes (a) throw `KELD-IPC-022`, so a
    client-synthesized Quit success fails (a).
 8. **Worker death or wedge wakes immediately.** Given a parked call with a 30 s
@@ -937,6 +941,23 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   `ERR`. A pending echo call gets no `ERR`, keeps KEL-133's REPLY-only rule, and
   observes `KELD-IPC-022` at the close (criterion 6). A handler that finishes during the drain sends its
   real REPLY. A real reply that comes before the close always wins.
+  T2 (#528) makes the pending sets concrete in the keld-core router:
+  - *Retire* (a revocation of generation g). The pending calls are g's admitted FS
+    call and a `Quit` still waiting in its FS drain (the generation records that
+    `Quit` until its REPLY). The `ERR` writes and the FS handler's own terminal write
+    are ordered by the generation lock. Delivery is best effort: a link that cannot
+    carry the `ERR` is already lost, and the role sees `KELD-IPC-022`.
+    Failed-write retirements send nothing.
+  - *Quit* (macOS and Linux). The FS drain stays unbounded, so every admitted
+    handler finishes and sends its real reply (KEL-130 durability). After the real
+    `Quit` REPLY and that drain, the reader keeps reading for one
+    `APP_LINK_READER_POLL` window (`QUIT_DRAIN_WINDOW`) or until the peer closes.
+    Each CALL received on an `ERR`-declaring channel gets `KELD-IPC-024` and is never
+    executed; an echo CALL gets no frame. The host still closes the link, so KEL-139
+    AC6's `reply -> quiesce/drain -> close` order holds. A frame still in flight
+    after the window is not pending at the host, and its call sees `KELD-IPC-022`.
+    Windows keeps its existing post-`Quit` peer-close check, which treats bytes after
+    the REPLY as an error, until T5 qualifies the same rule there.
 
 ### 4.10 Platform notes and runtime seam
 
