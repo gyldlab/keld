@@ -553,9 +553,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   the host has reaped its roles and a census shows only itself and the candidate
   family; rollback releases nothing, and a release refused at its deadline costs only
   availability. KEL-53 T4d S6c specifies the profile handover and S6b4 the launch-record
-  detach: the old host ends its application session and releases the persistent
-  WebView2 profile before it launches the candidate, the writer lease refuses every
-  other launch meanwhile, a rolled-back attempt restores a fresh session in process,
+  detach: the old host closes its window, gives the application a bounded time to quit
+  on its own before ending it, and releases the persistent WebView2 profile before it
+  launches the candidate; the writer lease refuses every other launch until the
+  candidate's or the restored session's profile is held; a rolled-back attempt restores
+  a fresh session in process, acquiring the profile before the journal is rolled back;
   and after both Job clears the host detaches its launch record instead of terminating
   the candidate on drop. Live feed orchestration, that
   composition (host candidate launch, the profile handover, the private health channel
@@ -580,9 +582,10 @@ The default Windows direct install is per-user under the installing user's
 user without UAC; strict Keld role restrictions deny Bun/webview writes to the install
 and updater state. This does not claim protection from the owning user or arbitrary
 native malware already running as that user. Before it launches a candidate, the old
-host ends its own application session and releases the persistent WebView2 profile, so
-the candidate's session owns that profile and at most one application instance runs
-on the user's data (KEL-53 §4 "Profile handover"). After a committed `PerUserDirect`
+host closes its window, gives the application a bounded time to quit on its own, ends
+its session and releases the persistent WebView2 profile, so the candidate's session
+owns that profile and at most one application instance runs on the user's data
+(KEL-53 §4 "Profile handover"). After a committed `PerUserDirect`
 update the old host releases the healthy candidate from its own two Jobs before it
 exits, so the candidate outlives it (KEL-53 §4 "Candidate release after commit").
 
