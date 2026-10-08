@@ -3,11 +3,11 @@
 Status: approved
 Linear: GH-566 (#517) · Owner: @0monish · Updated: 2026-10-08
 
-Amended by gh445 (#445): A5, the shared doc-snapshot store (§2, §3 C11, §4.2 D5, §4.4, §7,
+Amended by #659: A5, the shared doc-snapshot store (§2, §3 C11, §4.2 D5, §4.4, §7,
 §10). Every v1 corpus reads its cited pages from one store, so a page that two corpora
 cite at one pin is committed once. Each changed passage says "A5". A5 is a delegated
 owner decision, recorded with its rejected alternatives and falsifiers in D5. It awaits
-the owner's exact-content approval in the #445 PR review, and it is not yet part of what
+the owner's exact-content approval in the #659 PR review, and it is not yet part of what
 the approval above approved.
 
 ## 1. Goal & non-goals
@@ -24,7 +24,7 @@ This spec decides how X01-T4 builds that owner and how it migrates the lifecycle
 onto it without changing a committed byte. It also decides how #445 and #448 add v1
 corpora. Each adds data, one registry entry and its own conformance tests. It adds no
 new parser, digest helper, validator or validator test target. A5 (the shared snapshot
-store and its census) is an owner amendment that #445 carries; it is not a consumer
+store and its census) is an owner amendment that #659 carries; it is not a consumer
 addition.
 
 Observable outcome: gh532 AC1–AC12, AC16 and AC17 (as amended by A1), plus this spec's
@@ -76,10 +76,9 @@ Non-goals:
     rule 8 cell shape (D13, C10).
   - **A3 — the §4.5 migration unit.** Three including targets instead of two (D8, §4.5).
   - **A4 — the §5 X01-T4 boundary.** One added test target (§5).
-- A later amendment, made by #445 rather than by this spec's PR: **A5 — the D5 snapshot
+- A later amendment, made by #659 rather than by this spec's PR: **A5 — the D5 snapshot
   store.** It changes the gh532 rule 2 location sentence in place, and adds C11, its
-  census and a §7 row. gh532's header and the changed passage say "amended by gh445
-  (#445)".
+  census and a §7 row. gh532's header and the changed passage say "amended by #659".
 - [`kel74-compat-evidence-schema.md`](kel74-compat-evidence-schema.md) §4.1–§4.3: the
   record, the denominator and `score()`. This spec consumes them only through the public
   `parse_evidence`, `parse_denominator` and `score`.
@@ -541,7 +540,7 @@ inside the 44.3.0 corpus.
   That is one store, `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/`, which every v1 corpus reads. A
   page that two corpora cite at one pin is committed once, and no corpus directory holds
   its own `doc-snapshots/` copy: `snapshot_store_census` rejects one with
-  `CorpusLocalSnapshot`, naming every offending directory (amended by gh445 (#445), A5).
+  `CorpusLocalSnapshot`, naming every offending directory (amended by #659, A5).
 - Its bytes are the raw upstream bytes from
   `https://raw.githubusercontent.com/electron/electron/<commit>/<page path>`, verified by
   the reviewer command in gh532 rule 2.
@@ -603,9 +602,9 @@ Rejected alternatives:
 - Verifying anchors, which would re-implement GitHub's heading slugs. The quote already
   binds the sentence to the page.
 - A copy of the whole docs tree.
-- A snapshot copy in each corpus directory, which was this rule before A5. #445 cites
-  `docs/api/app.md` at 694f4585, and #448's open PR #654 commits its own copy of the same
-  page, so it would be committed twice, and a re-pin would have to edit each copy. A
+- A snapshot copy in each corpus directory, which was this rule before A5. #654 (#448,
+  merged) committed its own copy of `docs/api/app.md` at 694f4585, and #656 (#445) cites
+  the same page, so it would be committed twice, and a re-pin would have to edit each copy. A
   registration field that points one corpus at another corpus's directory is also
   rejected, because it couples two corpora (A5).
 
@@ -1182,8 +1181,8 @@ pub enum CorpusError {
 
 ### 4.4 Consumer interface (#445, #448, and later X02-T4)
 
-To add a v1 corpus, a consumer changes only data and one registry line. (#445 also
-carries the owner amendment A5; that is an owner change, not part of this interface.)
+To add a v1 corpus, a consumer changes only data and one registry line. (The owner
+amendment A5, #659, is an owner change, not part of this interface.)
 
 1. **The fixture directory.** Add `crates/keld-compat/fixtures/<dir>/` containing:
    - `corpus.json`, in gh532's §4.2 example shape plus each cell's `platforms` (A2).
@@ -1193,7 +1192,7 @@ carries the owner amendment A5; that is an owner change, not part of this interf
    - optionally `evidence/*.json`, harness records only, until X02-T5 (C6).
 
    Each cited page goes in the shared store, not in the fixture directory (amended by
-   gh445 (#445), A5): `crates/keld-compat/fixtures/doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/<page path>`.
+   #659, A5): `crates/keld-compat/fixtures/doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/<page path>`.
    It holds the raw upstream bytes, its digest goes in `doc_snapshots`, and the gh532
    rule 2 reviewer command checks it. A page that another corpus already committed at
    the pin is reused, not copied.
@@ -1355,7 +1354,7 @@ the `corpus_registry` target.
 | gh532 AC16 | `rules::snapshot_*` over an in-memory read seam, plus `rules::snapshot_would_be_normalised_rejects_crlf` (D5) over one temporary file | rules | T3 | integration |
 | C9 | `rules::report_census_rejects_reports_that_count_fails_themselves`: synthetic report sources that use `board.failed()` or a label are rejected, and a `FailSplit` source is accepted | rules | T3 | integration |
 | C10 | `rules::platforms_*`: empty, repeated, unknown and unregistered entries; `check_admission` with synthetic outputs for a declared host whose case is missing (`cfg`) or `(skip)`; the `unknown` list on an undeclared host; and a `pass` record for an undeclared platform | rules | T3 | integration |
-| C11 (A5) | `registry::doc_snapshots_live_in_one_store`: the census over committed corpus directories, `CorpusLocalSnapshot` naming one and every offender, and the filesystem probe on a throwaway tree | registry | #445 | integration |
+| C11 (A5) | `registry::doc_snapshots_live_in_one_store`: the census over committed corpus directories, `CorpusLocalSnapshot` naming one and every offender, and the filesystem probe on a throwaway tree | registry | #659 | integration |
 | gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, built from `PENDING_LABEL` and `DIVERGENCE_LABEL` so the C9 census passes on the test itself; then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
 | C4, C5 (v1 controls), C6 | `rules::duplicate_keys_*`, `rules::records_*_v1` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
@@ -1416,7 +1415,7 @@ instead of claiming a number.
 None. Every design point above is an owner-delegated decision, recorded with its
 rejected alternatives and its falsifier. The four gh532 amendments A1–A4 (§2) are part
 of what this spec's approval approves. A5 is not covered by that approval: it awaits the
-owner's exact-content approval in the #445 PR review (see the header). Two gh532 draft decisions stay with gh532, not
+owner's exact-content approval in the #659 PR review (see the header). Two gh532 draft decisions stay with gh532, not
 here: §10 Q1 (citation kinds) and Q2 (the harness label). This spec implements each of
 them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant, which
 leaves the frozen v0 label unchanged.

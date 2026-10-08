@@ -60,7 +60,7 @@ impl Pin {
     }
 
     /// Directory of this pin's doc snapshots, relative to [`SNAPSHOT_ROOT`] (gh532
-    /// rule 2; one store for every corpus, gh566 D5 as amended by gh445).
+    /// rule 2; one store for every corpus, gh566 D5 A5).
     pub fn snapshot_dir(self) -> String {
         format!("{SNAPSHOT_DIR}/{}/", self.commit)
     }

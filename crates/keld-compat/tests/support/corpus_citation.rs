@@ -25,7 +25,7 @@ pub struct DocCitation {
 }
 
 /// Snapshot store keyed by `doc-snapshots/<commit>/<page>`, the path relative to the
-/// one store every corpus reads (gh566 D5 as amended by gh445).
+/// one store every corpus reads (gh566 D5 A5).
 pub type SnapshotReader<'a> = &'a dyn Fn(&str) -> io::Result<Vec<u8>>;
 
 /// The page path a citation URL names: everything after the pinned blob prefix, up to

@@ -354,7 +354,7 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "54444f9c808fde83a130b8eee9ea285a3342b283d4ff221683d7676dda92c85f"
+      "sha256": "858c6301476bc568198cabc95828c717957e8d2933ff2bdbce8bcf9c58d33dab"
     },
     "bun-readers": {
       "patterns": [
