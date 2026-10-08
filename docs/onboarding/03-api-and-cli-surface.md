@@ -656,11 +656,13 @@ if (import.meta.main) {
 
   const session = await AppLinkSession.connect(link);
   try {
+    // Listen before the first call, so an early host EVENT is not missed.
+    const windowsClosed = lastWindowClosed(session);
     const response = await session.echo({ message: "keld", count: 1 });
     console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
     console.log("{{name}}: main process ready (IPC echo ok)");
-    await quitAfterLastWindowClosed(session);
-    session.close();
+    await windowsClosed;
+    assertStockQuitReply(session.quit());
     process.exit(0);
   } finally {
     session.close();

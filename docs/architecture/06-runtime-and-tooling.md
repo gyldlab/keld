@@ -413,13 +413,23 @@ KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
 The Bun side speaks kipc directly — `packages/@keld/kipc/src/transport.ts` is the
 one TypeScript framing/HELLO/deadline/write owner (KEL-136). `keld create` embeds
 that file as `src/kipc-transport.ts`; the hello echo adapter and `@keld/electron`
-lifecycle adapter import it. `DirectedReader` on that transport parks lifecycle
-Events while waiting for Echo Reply so stock echo survives a preceding `Ready`.
+lifecycle adapter import it, and both open the role's link through its GH-527
+transport Worker (#528 T3). That Worker's entry is the transport file itself
+(`new Worker(new URL(import.meta.url))`), so the transport MUST stay its own staged
+file and MUST NOT be bundled into `src/main.ts`; `WorkerLink.open` refuses to run from
+any other file name. A release build of the transport (the future `keld build`,
+KEL-19) MUST build it as that separate file with `KELD_KIPC_RELEASE` defined as `true`
+and syntax minification, which removes every test-hook code path
+(`packages/@keld/kipc/src/release-build.test.ts`); the dev scaffold keeps the hooks,
+reachable only from the in-repo `src/test-hooks.ts` under `KELD_KIPC_TEST_HOOKS=1`.
 The non-release boot compiler copies that sidecar
 into the owner-private stage when present so `keld dev` Bun can resolve it.
 Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,
 binds `src/kipc-transport.ts` to `/code/kipc-transport.ts` as a second file
-mount (directory-wide `/code` mounts stay forbidden). KEL-98's bounded cold generator
+mount (directory-wide `/code` mounts stay forbidden). The transport Worker loads from
+that second mount; no third file is bound
+(`crates/keld-runtime/tests/linux_strict_boundary.rs`
+`worker_link_self_entry_runs_from_the_two_staged_files`). KEL-98's bounded cold generator
 derives the checked-in `src/echo.generated.ts` payload declarations from the Rust echo
 structs for `keld create`; type-only use keeps that source-time file out of the runtime
 stage. General `keld gen` / `@keld/schema` codegen (KEL-13) is not built, so this shared
