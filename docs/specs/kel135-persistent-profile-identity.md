@@ -427,9 +427,11 @@ webview/controller after registering `BrowserProcessExited` on
 releases it. That wait is liveness-gated: the host opens a `SYNCHRONIZE` handle to the
 probe's browser process before `Close` and keeps waiting without a wall-clock bound
 while that handle is unsignaled; once it is signaled, a 5 s post-exit grace bounds the
-event, because WebView2 raises it only after the collection has released the UDF. A
-mismatched or abnormal exit, a dropped observer, or that grace expiry proves failure;
-a separate launch-only deadline bounds environment and controller creation. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
+event, because WebView2 raises it only after the collection has released the UDF. An
+abnormal exit of the expected process, a dropped observer, or that grace expiry proves
+failure; an exit event for any other process is ignored and cannot prove release, so a
+mismatched exit fails only through that grace once the expected process is gone. A
+separate launch-only deadline bounds environment and controller creation. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
 `starting → running` startup. A crash before durable `idle` leaves quarantine intact; a
 crash after `idle` has no live recovery collection. No suffix/new/default store is
 created, and normal store lookup/navigation cannot precede durable `idle`.
