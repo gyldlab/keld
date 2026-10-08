@@ -1413,7 +1413,7 @@ fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
     let os_lines = workflow_job_matrix_os_lines(text, "check");
     if os_lines != [CHECK_OS_MATRIX] {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `check` must take its OS matrix from the router as exactly `{CHECK_OS_MATRIX}`; got `{}`. The router decides when documentation-only reads run on Ubuntu alone.",
+            "CI-HYGIENE: `{WORKFLOW}` `check` must take its OS matrix from the router as exactly `{CHECK_OS_MATRIX}`; got `{}`. The router decides when documentation-only reads run on Windows alone.",
             os_lines.join("`, `")
         ));
     }

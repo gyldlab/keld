@@ -160,6 +160,9 @@ docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=fa
 hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 docs_hygiene=$'rust=false\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 docs_rust=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
+# A Rust selection reached only through documentation reads runs on Windows
+# alone, so no Ubuntu leg installs WebKitGTK (#624).
+docs_reader_rust=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 hygiene_rust=$'rust=true\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
 docs_hygiene_rust=$'rust=true\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
 host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
@@ -179,7 +182,7 @@ codeql_all=$'codeql_rust=true\ncodeql_javascript_typescript=true\ncodeql_actions
 codeql_rust_only=$'codeql_rust=true\ncodeql_javascript_typescript=false\ncodeql_actions=false'
 codeql_js_only=$'codeql_rust=false\ncodeql_javascript_typescript=true\ncodeql_actions=false'
 check_os_all='["ubuntu-latest","macos-latest","windows-latest"]'
-check_os_documentation='["ubuntu-latest"]'
+check_os_documentation='["windows-latest"]'
 
 # A developer checkout can contain unknown inputs. Prove the live fallback,
 # then run clean-path exclusion controls in a separate tracked-byte snapshot.
@@ -215,7 +218,7 @@ expect_package_token "runtime-only change clippy's host-owned session consumer" 
 expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli without GTK" keld-cli "$runtime_classification"
 
 docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
-expect_flags "docs corpus change includes its Rust embed consumers" "$docs_rust" "$docs_classification"
+expect_flags "docs corpus change includes its Rust embed consumers" "$docs_reader_rust" "$docs_classification"
 expect_mermaid_flag "path-only Markdown classification fails safe without old/new content" true "$docs_classification"
 expect_package_token "docs corpus selects the CLI consumer" keld-cli "$docs_classification"
 
@@ -232,13 +235,13 @@ expect_no_package_selection "docs-only PR selects no package/suite" "$docs_only_
 docs_rust_source="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md docs/specs/example.rs)"
 expect_codeql "a *.rs path anywhere selects CodeQL rust only" "$codeql_rust_only" "$docs_rust_source"
 
-# Reader-doc PR (the #610 diff): only the declared documentation reader runs.
-# keld-cli's own normal closure (keld-core -> keld-wv) still links WebKitGTK on
-# Ubuntu, so webkitgtk follows that package rather than the dropped keld-host.
+# Reader-doc PR (the #610 diff): only the declared documentation reader runs,
+# on Windows alone, so no Ubuntu leg installs WebKitGTK (keld-cli's own closure,
+# keld-core -> keld-wv, links it on Linux).
 reader_doc_pr="$(result_for_paths README.md docs/architecture/02-ipc.md docs/specs/gh527-worker-owned-blocking-call-transport.md llms-full.txt)"
-expect_flags "reader-doc PR runs docs plus its Rust reader" "$docs_rust" "$reader_doc_pr"
+expect_flags "reader-doc PR runs docs plus its Rust reader without Ubuntu GTK apt" "$docs_reader_rust" "$reader_doc_pr"
 expect_exact_output "reader-doc PR selects keld-cli only" packages keld-cli "$reader_doc_pr"
-expect_exact_output "reader-doc PR runs the same reader on Ubuntu" ubuntu_packages keld-cli "$reader_doc_pr"
+expect_empty_output "reader-doc PR has no Ubuntu leg package set" ubuntu_packages "$reader_doc_pr"
 expect_package_absent "reader-doc PR does not add keld-cli's reverse dependent" keld-host "$reader_doc_pr"
 expect_codeql "reader-doc PR selects no CodeQL language" "$codeql_none" "$reader_doc_pr"
 # Negative control: a real keld-cli source change in the same diff keeps
@@ -261,6 +264,7 @@ expect_package_token "package documentation plus reader source still expands to 
 cli_source="$(result_for_paths crates/keld-cli/src/lib.rs)"
 expect_package_token "CLI source change still expands to keld-host" keld-host "$cli_source"
 expect_exact_output "CLI source change keeps the Ubuntu GTK selection" webkitgtk true "$cli_source"
+expect_exact_output "CLI source change runs keld-cli and keld-host on Ubuntu" ubuntu_packages "keld-cli keld-host" "$cli_source"
 expect_codeql "CLI source change selects CodeQL rust only" "$codeql_rust_only" "$cli_source"
 # (Negative control: reader_doc_pr above omits keld-host for the same reader.)
 
@@ -323,9 +327,12 @@ expect_exact_output "workflow edit selects the workspace contracts job" workspac
 expect_exact_output "CLI source change does not select workspace contracts" workspace false "$cli_source"
 expect_exact_output "docs-only PR does not select workspace contracts" workspace false "$docs_only_pr"
 
-# Check OS list: Ubuntu alone only when documentation reads alone selected Rust.
-expect_exact_output "reader-doc PR runs its reader on Ubuntu only" check_os "$check_os_documentation" "$reader_doc_pr"
-expect_exact_output "package documentation read runs on Ubuntu only" check_os "$check_os_documentation" "$package_doc_pr"
+# Check OS list: Windows alone only when documentation reads alone selected
+# Rust. The exact match also fails if Ubuntu or macOS is chosen instead.
+expect_exact_output "reader-doc PR runs its reader on Windows only" check_os "$check_os_documentation" "$reader_doc_pr"
+expect_exact_output "package documentation read runs on Windows only" check_os "$check_os_documentation" "$package_doc_pr"
+expect_exact_output "package documentation read installs no Ubuntu GTK" webkitgtk false "$package_doc_pr"
+expect_empty_output "package documentation read has no Ubuntu leg package set" ubuntu_packages "$package_doc_pr"
 # Negative controls: any changed package, tools input, workflow or unknown path
 # keeps all three OSes.
 expect_exact_output "CLI source change runs on every OS" check_os "$check_os_all" "$cli_source"

@@ -30,7 +30,7 @@ workspace="$FALSE"
 # The check job's OS matrix, as JSON for fromJSON. Every Rust selection uses all
 # three OSes except one reached only through documentation reads (#624).
 readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
-readonly DOCUMENTATION_CHECK_OS='["ubuntu-latest"]'
+readonly DOCUMENTATION_CHECK_OS='["windows-latest"]'
 check_os="$ALL_CHECK_OS"
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
@@ -558,13 +558,38 @@ finalize_rust_packages() {
     done
     nongtk_packages="$(printf '%s' "$nongtk" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
 
+    # Documentation bytes reach these packages' unchanged tests only as text,
+    # and .gitattributes checks text out as LF on every OS, so one OS proves
+    # them: no reader of a declared document is skipped or handles it under
+    # cfg(windows) or cfg(target_os). Windows is that OS because it links no
+    # WebKitGTK, so the leg has no network apt step (keld-cli and keld-update
+    # reach keld-wv; on Ubuntu that step took 30-642 s and once hung 44 min).
+    # Any changed package keeps all three OSes (#624).
+    local ubuntu_leg="$TRUE"
+    if [[ "$all_workspace_packages" != "$TRUE" && ${#changed_package_roots[@]} -eq 0 && \
+        ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        check_os="$DOCUMENTATION_CHECK_OS"
+        ubuntu_leg="$FALSE"
+    fi
+
     # An attributable selected `--all-targets` closure that reaches keld-wv
     # installs GTK and runs its original package set on Ubuntu. The workflow
     # consumes this derived selection directly instead of recomputing policy.
     # The all-workspace workflow/router fallback keeps its documented GTK-free
     # subset because GUI smoke is the sole live apt owner for that input class.
-    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" ]]; then
+    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" && \
+        "$ubuntu_leg" == "$TRUE" ]]; then
         webkitgtk="$TRUE"
+    fi
+    if [[ "$ubuntu_leg" != "$TRUE" ]]; then
+        # No Ubuntu leg runs, so it has no package set; the Windows leg runs
+        # the full selection, which must still be non-empty.
+        ubuntu_packages=""
+        if [[ -z "$packages" ]]; then
+            echo "ci router: documentation-only Rust checks selected no package; refusing to emit a skipped-green success" >&2
+            exit 1
+        fi
+        return
     fi
     if [[ "$webkitgtk" == "$TRUE" ]]; then
         ubuntu_packages="$packages"
@@ -575,16 +600,6 @@ finalize_rust_packages() {
     if [[ -z "$ubuntu_packages" ]]; then
         echo "ci router: Rust checks selected no Ubuntu packages; refusing to emit a skipped-green success" >&2
         exit 1
-    fi
-
-    # Documentation bytes reach these packages' unchanged tests only as text,
-    # and .gitattributes checks text out as LF on every OS, so one OS proves
-    # them. No reader of a declared document handles it under cfg(windows) or
-    # cfg(target_os). Ubuntu is the fastest leg (last 100 runs: p50 318 s vs
-    # macOS 514 s, Windows 654 s). Any changed package keeps all three OSes.
-    if [[ "$all_workspace_packages" != "$TRUE" && ${#changed_package_roots[@]} -eq 0 && \
-        ${#documentation_reader_roots[@]} -gt 0 ]]; then
-        check_os="$DOCUMENTATION_CHECK_OS"
     fi
 }
 

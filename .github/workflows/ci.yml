@@ -107,8 +107,8 @@ jobs:
     needs: changes
     # Job-level `if` cannot use `matrix` (GitHub evaluates it before expansion).
     # Ubuntu apt and GTK package selection stay on steps, which do have `matrix`.
-    # The router owns the OS list: all three, or Ubuntu alone when only
-    # documentation reads selected the Rust packages (#624).
+    # The router owns the OS list: all three, or Windows alone (no network apt)
+    # when only documentation reads selected the Rust packages (#624).
     if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
