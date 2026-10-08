@@ -106,9 +106,14 @@ negative control: the one mutation that MUST make the test fail.
    `KELD-IPC-022` at the close; a host-written `ERR` on the echo channel closes the
    link with `KELD-IPC-005`, so that call also throws `KELD-IPC-022`. *Negative
    control:* a host that closes without the `ERR` on the lifecycle call makes the test
-   observe `KELD-IPC-022`; a Worker that selects `reply_waiter` for an echo call admits
-   the echo `ERR` and returns `KELD-IPC-023`, so the echo case fails. A client that maps
-   every EOF to `KELD-IPC-023` fails criterion 5.
+   observe `KELD-IPC-022`; a Worker whose echo reply policy admits `ERR` (for example
+   the host-side `primary_echo_reply_waiter` shape, REPLY and `ERR`, selected for an
+   echo call) admits the echo `ERR` and returns `KELD-IPC-023`, so the echo case fails.
+   Selecting `reply_waiter` for an echo call is no longer this control: since #528 T1
+   it refuses the echo channel with `KELD-IPC-005` (§4.7), so that selection fails
+   closed and the call throws `KELD-IPC-022`, which the echo case cannot tell apart from
+   the correct behaviour. A client that maps every EOF to `KELD-IPC-023` fails
+   criterion 5.
 7. **Quit.** (a) Given a parked blocking `Quit`, when the host accepts it, then the
    call returns the host's real `LifecycleResponse::Quit` bytes and the link closes
    afterwards. (b) Given another blocking call still pending when the host's Quit
@@ -1057,14 +1062,14 @@ not.
 | 15 | Rust `receiver_corpus.rs` and Bun `corpus.test.ts` on the one TSV |
 | 16 | `cargo nextest run -p keld-cli -- error_registry` |
 | 17 | T4 version-2 and version-3 mixed `HELLO` and credit runs |
-| 18 | the criterion-1 harness with a small ring, a full-size reply and a claim-stall hook; the credit case in T4 |
+| 18 | the criterion-1 harness with a small ring, a full-size reply and a claim-stall hook; the credit case in T4. A claim-first hook holds main's deadline compare-and-exchange until the Worker sets a `CLAIMED` test word, so the stall arm does not depend on the host round trip beating its 200 ms deadline; a variant with a 2 s host reply delay proves it |
 | 19 | the same harness with a listener hook that holds the dispatch task until `W_RECS` advances; an idle-transition assertion hook |
 | 20 | the same harness with a hook that holds Worker message handling until `BLOCKING` is nonzero, recording the host's read order and the ring counters |
 | 21 | the same harness with a host that writes each listed frame; a Bun table test of the §4.7 selection |
 | 22 | the same harness with a host that never replies, `MAX_ABANDONED_CALLS + 1` expiries, then late replies |
 | 23, 24 | T4 Rust host tests with a scripted Worker peer for over-window and pre-`HELLO` `GRANT`s |
 | 25 | a Bun `open` case for a 3 MiB ring; the 4 MiB open and a counter-start hook at `2^32 - 64` with a blocking reply after the wrap in the criterion-1 harness, because an open needs a host and a realm opens once |
-| 26 | claim-then-skip-publish and claim-step-throw hooks with a heartbeat-counting watchdog thread |
+| 26 | claim-then-skip-publish and claim-step-throw hooks with a heartbeat-counting watchdog thread; the same claim-first hook as criterion 18 for skip-publish, counters (post-claim, deadline and liveness branches) for the throw arm, and a 2 s host-delay variant of each |
 | 27 | the criterion-1 harness with a host that answers two `call()`s out of order and writes an echo CALL during a park, recording a step log and the host's read frames |
 | 28 | T4 harness with credit enabled, a small ring and a host that fills the uncredited share with lifecycle EVENTs |
 | 29 | T4 Bun `open` cases with credit enabled and two credited channels, `ringRecords` 3 and 8 |
@@ -1078,7 +1083,7 @@ path is marked in T5.
 ## 8. Review gates triggered
 
 unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
-`WorkerReceiveTable`, `WorkerCallReceiver`, `WorkerCallReply`, `setCallHandler`, `replyWaiter(channel, corr)`,
+`WorkerLinkOptions`, `WorkerReceiveTable`, `WorkerCallReceiver`, `WorkerCallReply`, `setCallHandler`, `replyWaiter(channel, corr)`,
 `eventReceiver(channel)`, the `replyBytes` option, the constants; from #528 T1 also
 `selectInboundPolicy` with `InboundTable`, `PendingCallEntry` and `InboundAction`,
 `WORKER_LINK_CONTROL`, `FrameReader.end`, and the test-only `openWorkerLinkForTest`,
