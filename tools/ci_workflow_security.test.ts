@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
+import { aptStepTimeoutMaxMinutes, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
 type FixtureJob = {
@@ -91,6 +91,45 @@ for (const language of codeqlLanguages) {
     }
   });
 }
+
+const aptSteps = [
+  ["check", "Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)"],
+  ["linux-gui-smoke", "Install WebKitGTK build deps + X11 control tools (KEL-28)"],
+] as const;
+
+for (const [job, name] of aptSteps) {
+  test(`${name} keeps a bounded step timeout`, () => {
+    expect(Number(step(fixture(), job, name)["timeout-minutes"])).toBeLessThanOrEqual(aptStepTimeoutMaxMinutes);
+    for (const value of [undefined, 0, aptStepTimeoutMaxMinutes + 1, "${{ inputs.minutes }}", "10m"]) {
+      const f = fixture();
+      const selected = step(f, job, name);
+      if (value === undefined) delete selected["timeout-minutes"];
+      else selected["timeout-minutes"] = value;
+      expect(() => check(f)).toThrow("runs apt without a step timeout-minutes");
+    }
+  });
+}
+
+test("apt timeout reads the parsed run script, not names or layout", () => {
+  for (const run of ["sudo apt update\n", "sudo apt install -y jq\n", "set -e; sudo apt-get install -y jq\n"]) {
+    const f = fixture();
+    f.jobs.fmt!.steps.push({ name: "Install a tool", run });
+    expect(() => check(f)).toThrow("runs apt without a step timeout-minutes");
+  }
+  // Negative controls: a name that mentions apt-get, a flow-mapped step with a
+  // timeout, a quoted timeout and an unrelated word do not fail.
+  const named = fixture();
+  named.jobs.fmt!.steps.push({ name: "Diagnose apt-get mirror", run: "echo ok\n" });
+  expect(() => check(named)).not.toThrow();
+  expect(() => checkWorkflowSecurity(source.replace("      - run: cargo fmt --all --check\n",
+    "      - run: cargo fmt --all --check\n      - { run: 'sudo apt-get install -y jq', timeout-minutes: 10 }\n"))).not.toThrow();
+  const quoted = fixture();
+  quoted.jobs.fmt!.steps.push({ run: "sudo apt-get install -y jq\n", "timeout-minutes": "10" });
+  expect(() => check(quoted)).not.toThrow();
+  const unrelated = fixture();
+  unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
+  expect(() => check(unrelated)).not.toThrow();
+});
 
 test("no job outside the per-language owners may run CodeQL", () => {
   const f = fixture();

@@ -661,14 +661,16 @@ jobs:
   # One job per CodeQL language: job-level `if` cannot use `matrix`, and each
   # language routes on its own inputs (#624). The router selects every language
   # on push and for unknown, all, workflow or router inputs; pull requests skip a
-  # language whose analysed sources did not change. `CI required` rejects a
-  # selected language that skipped and an unselected one that ran.
+  # language whose analysed sources did not change. If the router itself fails
+  # on a push, every language still runs so main keeps its baseline (`CI
+  # required` fails on the router either way). `CI required` rejects a selected
+  # language that skipped and an unselected one that ran.
   codeql-rust:
     name: CodeQL (rust)
     runs-on: macos-latest
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.codeql_rust == 'true'
+    if: ${{ !cancelled() && (needs.changes.outputs.codeql_rust == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write
@@ -700,7 +702,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.codeql_javascript_typescript == 'true'
+    if: ${{ !cancelled() && (needs.changes.outputs.codeql_javascript_typescript == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write
@@ -726,7 +728,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.codeql_actions == 'true'
+    if: ${{ !cancelled() && (needs.changes.outputs.codeql_actions == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write

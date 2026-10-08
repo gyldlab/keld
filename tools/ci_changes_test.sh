@@ -262,6 +262,18 @@ expect_exact_output "CLI source change keeps the Ubuntu GTK selection" webkitgtk
 expect_codeql "CLI source change selects CodeQL rust only" "$codeql_rust_only" "$cli_source"
 # (Negative control: reader_doc_pr above omits keld-host for the same reader.)
 
+# The JavaScript extractor's other file types, and an extensionless shebang
+# script, select its analysis wherever they live.
+for input in docs/diagrams/flow.dot crates/keld-cli/templates/hello/view.erb crates/keld-cli/src/x.xsjs .githooks/post-merge; do
+    expect_exact_output "$input selects CodeQL javascript-typescript" codeql_javascript_typescript true "$(result_for_paths "$input")"
+done
+# A deleted or unreadable extensionless path may have been a script.
+expect_exact_output "missing extensionless path selects CodeQL javascript-typescript" \
+    codeql_javascript_typescript true "$(result_for_paths crates/keld-ipc/fuzz/corpus/raw_receive/removed-entry)"
+# Negative control: an existing extensionless binary fixture without a shebang.
+expect_codeql "extensionless binary fixture selects no CodeQL language" "$codeql_none" \
+    "$(result_for_paths crates/keld-ipc/fuzz/corpus/raw_receive/ping-echo-session)"
+
 # TypeScript source selects only its own analysis, even though the Rust lane
 # runs for the crate that spawns those fixtures.
 ts_codeql="$(result_for_paths packages/@keld/electron/src/link.ts)"
