@@ -44,6 +44,20 @@ gitleaks runs on every event. Its configuration (`.gitleaks.toml`) and fingerpri
 ignores (`.gitleaksignore`) have no other reader, so a change to either selects no
 other CI lane.
 
+The Ubuntu WebKitGTK `.deb` set comes from a first-party `actions/cache` entry. Its key is
+the runner image (`ImageOS`, `ImageVersion`) plus the SHA256 of the job's exact package list
+(`tools/ci_webkitgtk_apt.sh key`). The cache is not trusted. apt accepts a file already in
+its archive directory when only the size matches (`pkgAcqArchive::QueueNext` in
+`apt-pkg/acquire-item.cc`, apt 2.7.14 on Ubuntu 24.04), so the script:
+
+1. still runs `apt-get update`, which verifies the signed InRelease metadata;
+2. lists the exact files with `apt-get install --print-uris -o Acquire::ForceHash=SHA256`;
+3. stages a cached file only when its SHA256 and size match that fresh index entry.
+
+Every other package downloads and is hash-checked by apt. Index lists are never cached, and
+the workflow-security check refuses any other `actions/cache` step. On a miss the step runs
+the plain update and install behind the 15-minute step timeout, then saves the cache.
+
 Dependency review first checks every API response page for GitHub's incomplete
 snapshot warning. Unavailable APIs, malformed refs or incomplete snapshots fail the
 job; restore the dependency graph's base/head metadata and rerun the same head.

@@ -108,6 +108,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     needs: changes
+    env:
+      # The one source for this leg's Ubuntu WebKitGTK packages: the cache key
+      # and the install both read it (#645).
+      KELD_WEBKITGTK_PACKAGES: libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev pkg-config build-essential xvfb xauth
     # Job-level `if` cannot use `matrix` (GitHub evaluates it before expansion).
     # Ubuntu apt and GTK package selection stay on steps, which do have `matrix`.
     # The router owns the OS list: all three, or Windows alone (no network apt)
@@ -151,18 +155,35 @@ jobs:
           mkdir -p target/product-status
           rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
           target/product-status/product-status-test
-      # A hung Ubuntu mirror must fail this step, not consume the 45-minute job
-      # (#624). Over the last 100 CI runs this step took p50 30 s and p90 95 s;
-      # slow mirror downloads still succeeded in 524 s and 642 s, while two hangs
-      # ran until the job was cancelled at about 2630 s.
+      # The .deb set comes from a first-party cache keyed by the exact package
+      # list and runner image (#645). tools/ci_webkitgtk_apt.sh still runs
+      # apt-get update and stages a cached file only after its SHA256 matches
+      # the freshly signed index; everything else downloads as before. A miss
+      # takes the old path and then saves the cache.
+      # A hung Ubuntu mirror must fail the install, not consume the 45-minute
+      # job (#624): over the last 100 CI runs it took p50 30 s and p90 95 s, slow
+      # downloads still succeeded in 524 s and 642 s, and two hangs ran ~2630 s.
+      - name: Resolve WebKitGTK apt cache key
+        id: webkitgtk-apt-key
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
+        run: tools/ci_webkitgtk_apt.sh key >> "$GITHUB_OUTPUT"
+      - name: Restore WebKitGTK .deb cache
+        id: webkitgtk-apt-cache
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/keld-webkitgtk-debs
+          key: ${{ steps.webkitgtk-apt-key.outputs.key }}
       - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
         timeout-minutes: 15
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev pkg-config build-essential xvfb xauth
+        run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
+      - name: Save WebKitGTK .deb cache
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true' && steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/keld-webkitgtk-debs
+          key: ${{ steps.webkitgtk-apt-key.outputs.key }}
       # Ubuntu 24.04's AppArmor sysctl can admit the user namespace but deny
       # Bubblewrap's network-namespace loopback setup. Upstream Bubblewrap uses
       # this exact CI prerequisite for its own Ubuntu 24.04 smoke tests (#728).
@@ -500,6 +521,9 @@ jobs:
     timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.gui == 'true'
+    env:
+      # The one source for this job's WebKitGTK and X11 packages (#645).
+      KELD_WEBKITGTK_PACKAGES: libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev pkg-config build-essential fluxbox wmctrl x11-utils xvfb xdotool
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -510,16 +534,31 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
+      # The .deb set comes from a first-party cache keyed by the exact package
+      # list and runner image (#645). tools/ci_webkitgtk_apt.sh still runs
+      # apt-get update and stages a cached file only after its SHA256 matches
+      # the freshly signed index; everything else downloads as before. A miss
+      # takes the old path and then saves the cache.
       # Same evidence-based bound as the clippy leg (#624): above the slowest
       # observed successful apt step (642 s), far below the 44-minute hangs.
-      # A 10-minute bound failed a slow but progressing download.
+      - name: Resolve WebKitGTK apt cache key
+        id: webkitgtk-apt-key
+        run: tools/ci_webkitgtk_apt.sh key >> "$GITHUB_OUTPUT"
+      - name: Restore WebKitGTK .deb cache
+        id: webkitgtk-apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/keld-webkitgtk-debs
+          key: ${{ steps.webkitgtk-apt-key.outputs.key }}
       - name: Install WebKitGTK build deps + X11 control tools (KEL-28)
         timeout-minutes: 15
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev pkg-config build-essential fluxbox wmctrl x11-utils xvfb xdotool
+        run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
+      - name: Save WebKitGTK .deb cache
+        if: steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/keld-webkitgtk-debs
+          key: ${{ steps.webkitgtk-apt-key.outputs.key }}
       - name: Build release keld-host with warnings denied
         env:
           RUSTFLAGS: -D warnings

@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { aptStepTimeoutMinutes, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
+import { aptStepTimeoutMinutes, webkitgtkAptJobs, webkitgtkDebCachePath, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
 type FixtureJob = {
   steps: Step[];
+  env?: Record<string, unknown>;
   permissions?: Record<string, unknown>;
   strategy?: { matrix: Record<string, unknown> };
   needs?: unknown;
@@ -137,6 +138,33 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   const unrelated = fixture();
   unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
   expect(() => check(unrelated)).not.toThrow();
+});
+
+for (const job of webkitgtkAptJobs) {
+  test(`${job} WebKitGTK .deb cache keeps its key, verified install and miss-only save`, () => {
+    const mutations: [string, (f: Fixture) => void, string][] = [
+      ["key without the image and package binding", f => { step(f, job, "Resolve WebKitGTK apt cache key").run = 'echo "key=webkitgtk" >> "$GITHUB_OUTPUT"\n'; }, "resolve the cache key"],
+      ["restore under another key", f => { (step(f, job, "Restore WebKitGTK .deb cache").with as Step).key = "webkitgtk-${{ runner.os }}"; }, "Restore WebKitGTK .deb cache"],
+      ["cache the apt index lists", f => { (step(f, job, "Restore WebKitGTK .deb cache").with as Step).path = "/var/lib/apt/lists"; }, "Restore WebKitGTK .deb cache"],
+      ["save on a hit", f => { step(f, job, "Save WebKitGTK .deb cache").if = String(step(f, job, "Restore WebKitGTK .deb cache").if ?? "always()"); }, "only on a miss"],
+      ["save under another key", f => { (step(f, job, "Save WebKitGTK .deb cache").with as Step).key = "other"; }, "Save WebKitGTK .deb cache"],
+      ["install bypassing verification", f => { const s = f.jobs[job]!.steps.find(c => typeof c.run === "string" && c.run.includes("ci_webkitgtk_apt.sh install"))!; s.run = `sudo cp ${webkitgtkDebCachePath}/*.deb /var/cache/apt/archives/ && sudo apt-get update && sudo apt-get install -y $KELD_WEBKITGTK_PACKAGES\n`; }, "install with exactly"],
+      ["missing package list", f => { delete (f.jobs[job]!.env as Step).KELD_WEBKITGTK_PACKAGES; }, "KELD_WEBKITGTK_PACKAGES"],
+      ["save before install", f => { const steps = f.jobs[job]!.steps; const save = steps.findIndex(c => c.name === "Save WebKitGTK .deb cache"); const [s] = steps.splice(save, 1); steps.splice(save - 1, 0, s!); }, "key, restore, install, save"],
+      ["floating cache action", f => { step(f, job, "Restore WebKitGTK .deb cache").uses = "actions/cache/restore@v6"; }, "immutable"],
+    ];
+    for (const [label, mutate, message] of mutations) {
+      const f = fixture();
+      mutate(f);
+      expect(() => check(f), label).toThrow(message);
+    }
+  });
+}
+
+test("no other step may use actions/cache, so apt index lists are never cached", () => {
+  const f = fixture();
+  f.jobs.fmt!.steps.push({ name: "Cache apt lists", uses: "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", with: { path: "/var/lib/apt/lists", key: "lists" } });
+  expect(() => check(f)).toThrow("outside the WebKitGTK .deb cache steps");
 });
 
 test("no job outside the per-language owners may run CodeQL", () => {

@@ -99,7 +99,7 @@ function requiredAction(steps: Mapping[], name: string, action: string, expected
  * slow but progressing mirror download into a failure.
  */
 export const aptStepTimeoutMinutes = 15;
-const aptInvocation = /\bapt(-get)?\b/;
+const aptInvocation = /\bapt(-get)?\b|tools\/ci_webkitgtk_apt\.sh install\b/;
 
 /**
  * A step whose `run` script mentions `apt` or `apt-get` must bound itself with
@@ -116,6 +116,71 @@ function checkAptStepTimeout(step: Mapping, job: Mapping, label: string): void {
   const jobMinutes = scalar(job["timeout-minutes"]);
   if (jobMinutes !== undefined && !(/^[1-9][0-9]*$/.test(jobMinutes) && Number(jobMinutes) > aptStepTimeoutMinutes)) {
     fail(`${label} runs apt in a job whose timeout-minutes (${jobMinutes}) does not exceed the ${aptStepTimeoutMinutes}-minute apt step bound; raise the job timeout so the step bound is the one that applies.`);
+  }
+}
+
+/** Jobs that install WebKitGTK on Ubuntu through the verified .deb cache (#645). */
+export const webkitgtkAptJobs = ["check", "linux-gui-smoke"] as const;
+export const webkitgtkDebCachePath = "~/.cache/keld-webkitgtk-debs";
+const webkitgtkKeyOutput = "${{ steps.webkitgtk-apt-key.outputs.key }}";
+const webkitgtkCacheHitGuard = "steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'";
+
+/**
+ * The WebKitGTK .deb cache (#645): key, restore, install and save, in that
+ * order, under one condition. The key comes from tools/ci_webkitgtk_apt.sh,
+ * which binds the runner image and the job's exact package list; the install
+ * goes through the same script, which refreshes apt's signed indexes and stages
+ * a cached .deb only when its SHA256 matches them; the save runs only on a miss.
+ * No other step may use actions/cache, so apt index lists are never cached.
+ */
+function checkWebkitgtkAptCache(jobs: Mapping, stepsByJob: Map<string, Mapping[]>): void {
+  const owners = new Set<string>(webkitgtkAptJobs);
+  for (const [jobName, steps] of stepsByJob) {
+    for (const step of steps) {
+      const uses = typeof step.uses === "string" ? actionName(step.uses) : "";
+      if (uses.startsWith("actions/cache") && !(owners.has(jobName) && ["Restore WebKitGTK .deb cache", "Save WebKitGTK .deb cache"].includes(String(step.name)))) {
+        fail(`jobs.${jobName} uses actions/cache outside the WebKitGTK .deb cache steps; apt index lists and other paths must not be cached.`);
+      }
+    }
+  }
+  for (const jobName of webkitgtkAptJobs) {
+    const steps = stepsByJob.get(jobName);
+    if (!steps) fail(`jobs.${jobName} must exist with the WebKitGTK .deb cache steps.`);
+    const job = mapping(jobs[jobName], `jobs.${jobName}`);
+    const env = mapping(job.env, `jobs.${jobName}.env`);
+    const packages = scalar(env.KELD_WEBKITGTK_PACKAGES);
+    if (!packages || !/^[a-z0-9][a-z0-9.+-]*( [a-z0-9][a-z0-9.+-]*)*$/.test(packages)) {
+      fail(`jobs.${jobName}.env.KELD_WEBKITGTK_PACKAGES must list the exact WebKitGTK packages, the one source for the cache key and the install.`);
+    }
+    const key = namedStep(steps, "Resolve WebKitGTK apt cache key");
+    const restore = namedStep(steps, "Restore WebKitGTK .deb cache");
+    const install = steps.find(step => typeof step.run === "string" && aptInvocation.test(step.run));
+    const save = namedStep(steps, "Save WebKitGTK .deb cache");
+    if (!install) fail(`jobs.${jobName} must install WebKitGTK through tools/ci_webkitgtk_apt.sh install.`);
+    const condition = key.if;
+    for (const [step, keys] of [[key, ["name", "id", "run"]], [restore, ["name", "id", "uses", "with"]], [install, ["name", "timeout-minutes", "run"]]] as const) {
+      exactKeys(step, condition === undefined ? [...keys] : [...keys, "if"], `jobs.${jobName} ${String(step.name)}`);
+      if (step.if !== condition) fail(`jobs.${jobName} ${String(step.name)} must share the key step's condition, so the cache and the install apply to the same legs.`);
+    }
+    if (key.id !== "webkitgtk-apt-key" || String(key.run).trim() !== 'tools/ci_webkitgtk_apt.sh key >> "$GITHUB_OUTPUT"') {
+      fail(`jobs.${jobName} must resolve the cache key with exactly \`tools/ci_webkitgtk_apt.sh key >> "$GITHUB_OUTPUT"\` (id webkitgtk-apt-key): the runner image plus the exact package list.`);
+    }
+    if (String(install.run).trim() !== `tools/ci_webkitgtk_apt.sh install ${webkitgtkDebCachePath}`) {
+      fail(`jobs.${jobName} must install with exactly \`tools/ci_webkitgtk_apt.sh install ${webkitgtkDebCachePath}\`, which still runs apt-get update and verifies every cached .deb against the signed indexes.`);
+    }
+    for (const [step, action, id] of [[restore, "actions/cache/restore", "webkitgtk-apt-cache"], [save, "actions/cache/save", undefined]] as const) {
+      if (actionName(actionRef(step.uses, String(step.name))) !== action || (id !== undefined && step.id !== id)) {
+        fail(`jobs.${jobName} ${String(step.name)} must use ${action}${id ? ` with id ${id}` : ""}.`);
+      }
+      inputsMatch(mapping(step.with, `${String(step.name)}.with`), { path: webkitgtkDebCachePath, key: webkitgtkKeyOutput }, `jobs.${jobName} ${String(step.name)}`);
+    }
+    exactKeys(save, ["name", "if", "uses", "with"], `jobs.${jobName} Save WebKitGTK .deb cache`);
+    const saveIf = condition === undefined ? webkitgtkCacheHitGuard : `${String(condition)} && ${webkitgtkCacheHitGuard}`;
+    if (save.if !== saveIf) fail(`jobs.${jobName} Save WebKitGTK .deb cache must run only on a miss: \`if: ${saveIf}\`.`);
+    const order = [key, restore, install, save].map(step => steps.indexOf(step));
+    if (order.some((index, i) => i > 0 && index <= order[i - 1]!)) {
+      fail(`jobs.${jobName} must order the WebKitGTK cache steps key, restore, install, save.`);
+    }
   }
 }
 
@@ -211,6 +276,7 @@ export function checkWorkflowSecurity(source: string): void {
   }
   if (checkouts === 0) fail("workflow must contain its audited checkout steps.");
   checkCodeqlJobs(jobs, stepsByJob);
+  checkWebkitgtkAptCache(jobs, stepsByJob);
   const dependencies = stepsByJob.get("dependency-review");
   if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const review = requiredAction(dependencies, "Review dependency vulnerabilities", "actions/dependency-review-action", {
