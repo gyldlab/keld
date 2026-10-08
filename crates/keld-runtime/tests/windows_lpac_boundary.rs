@@ -5,6 +5,9 @@
 #![allow(clippy::expect_used, clippy::panic)] // process fixture invariants must abort loudly
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[path = "support/windows_standard_handles.rs"]
+mod windows_standard_handles;
+
 use std::env;
 use std::ffi::{OsStr, OsString, c_void};
 use std::fs::{File, OpenOptions};
@@ -12,12 +15,16 @@ use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keld_runtime::windows_lpac::{WindowsLpacPathAccess, WindowsLpacProfile, WindowsLpacStdio};
 use sha2::{Digest as _, Sha256};
 use tempfile::tempdir;
+use windows_standard_handles::{
+    CANDIDATE_STDOUT_MARKER, KILL_SWITCH, NO_STANDARD_HANDLE_REPORT, drain,
+    exits_within_kill_switch, standard_handle_report,
+};
 use windows_sys::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle,
     GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
@@ -47,6 +54,10 @@ use windows_sys::Win32::System::Threading::{
 
 const HELPER_ENV: &str = "KELD_WINDOWS_LPAC_HELPER";
 const HELPER_TEST: &str = "windows_lpac_process_helper";
+const LAUNCHER_TEST: &str = "windows_lpac_launcher_fixture";
+/// The role-private file the LPAC child writes its standard-handle report to; an LPAC
+/// child has no network, so the report never crosses a socket.
+const REPORT_PATH_ENV: &str = "KELD_LPAC_STANDARD_HANDLE_REPORT";
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 
@@ -409,11 +420,157 @@ fn print_bun_evidence(
     );
 }
 
+/// KEL-270 F51 on the LPAC launch: a launcher whose three standard handles are pipes
+/// creates an LPAC child without admitted standard handles. The child's own
+/// `GetStdHandle` reports NULL three times and its standard-output write fails, and no
+/// child byte reaches the launcher's pipes. Without `STARTF_USESTDHANDLES` process
+/// creation duplicates the launcher's pipes into the child, outside the handle list and
+/// with inheritance off.
+#[test]
+fn an_lpac_child_without_admitted_standard_handles_holds_none_of_the_launchers() {
+    let mut launcher = Command::new(env::current_exe().expect("current test executable"))
+        .args(["--exact", LAUNCHER_TEST, "--ignored", "--nocapture"])
+        .env(HELPER_ENV, "launcher")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the LPAC launcher fixture");
+    // Held to the end, so the launcher's standard input is a live pipe throughout.
+    let stdin_writer = launcher.stdin.take().expect("launcher stdin");
+    let stdout = drain(launcher.stdout.take().expect("launcher stdout"));
+    let stderr = drain(launcher.stderr.take().expect("launcher stderr"));
+
+    assert!(
+        exits_within_kill_switch(&launcher),
+        "the LPAC launcher did not exit"
+    );
+    let status = launcher.wait().expect("reap the LPAC launcher");
+    let stdout = stdout
+        .recv_timeout(KILL_SWITCH)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .expect("the launcher's standard output reached no EOF after its exit");
+    let stderr = stderr
+        .recv_timeout(KILL_SWITCH)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .expect("the launcher's standard error reached no EOF after its exit");
+    assert!(
+        status.success(),
+        "LPAC launcher failed: {status}; stdout {stdout:?} stderr {stderr:?}"
+    );
+    let report = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("LPAC_CHILD "))
+        .unwrap_or_else(|| panic!("the LPAC child's report is missing: {stdout:?}"));
+
+    let marker = String::from_utf8_lossy(CANDIDATE_STDOUT_MARKER);
+    let mut defects = Vec::new();
+    if report != format!("exit=0 {NO_STANDARD_HANDLE_REPORT}") {
+        defects.push(format!(
+            "the LPAC child holds standard handles: {report} (expected exit=0 \
+             {NO_STANDARD_HANDLE_REPORT})"
+        ));
+    }
+    for (name, text) in [("output", &stdout), ("error", &stderr)] {
+        if text.contains(&*marker) {
+            defects.push(format!(
+                "LPAC child bytes reached the launcher's standard {name}: {text:?}"
+            ));
+        }
+    }
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    drop(stdin_writer);
+}
+
+/// The launcher stand-in of the LPAC standard-handle regression: under its own
+/// reviewed ACL root it creates this binary as an LPAC child with no admitted standard
+/// handle, runs it to exit and reports the child's role-private standard-handle record
+/// on its own standard output.
+#[test]
+#[ignore = "private LPAC subprocess entry point"]
+fn windows_lpac_launcher_fixture() {
+    assert_eq!(
+        env::var(HELPER_ENV).as_deref(),
+        Ok("launcher"),
+        "unexpected private LPAC launcher entry"
+    );
+    let temporary = tempdir().expect("create isolated LPAC fixture root");
+    let root = temporary.path();
+    let runtime_dir = root.join("runtime");
+    let role_dir = root.join("role-private");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime directory");
+    std::fs::create_dir_all(&role_dir).expect("create role-private directory");
+    let fixture = runtime_dir.join("lpac-standard-handles.exe");
+    std::fs::copy(
+        env::current_exe().expect("current test executable"),
+        &fixture,
+    )
+    .expect("copy the test artifact into the runtime ACL");
+    let profile =
+        WindowsLpacProfile::create(&unique_profile_name()).expect("create zero-capability profile");
+    profile
+        .grant_path(root, WindowsLpacPathAccess::Traverse)
+        .expect("grant root traversal only");
+    profile
+        .grant_path(&runtime_dir, WindowsLpacPathAccess::ReadExecute)
+        .expect("grant runtime read/execute");
+    profile
+        .grant_path(&role_dir, WindowsLpacPathAccess::RolePrivate)
+        .expect("grant role-private read/write");
+
+    let report_path = role_dir.join("standard-handles.txt");
+    let system_root = env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
+    let mut environment = vec![
+        (
+            OsString::from(HELPER_ENV),
+            OsString::from("standard-handles"),
+        ),
+        (
+            OsString::from(REPORT_PATH_ENV),
+            report_path.clone().into_os_string(),
+        ),
+        (OsString::from("SystemRoot"), system_root),
+        (OsString::from("TEMP"), role_dir.clone().into_os_string()),
+        (OsString::from("TMP"), role_dir.clone().into_os_string()),
+    ];
+    for key in ["LOCALAPPDATA", "USERPROFILE", "WINDIR"] {
+        if let Some(value) = env::var_os(key) {
+            environment.push((OsString::from(key), value));
+        }
+    }
+    let arguments: Vec<OsString> = ["--exact", HELPER_TEST, "--ignored", "--nocapture"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    let mut child = profile
+        .spawn_suspended(
+            &fixture,
+            &arguments,
+            &environment,
+            Some(&role_dir),
+            None,
+            &[],
+        )
+        .expect("create the LPAC child without admitted standard handles");
+    child.resume().expect("resume the LPAC child");
+    let exit = child.wait(10_000).expect("wait for the LPAC child");
+    let report = std::fs::read_to_string(&report_path).expect("the LPAC child's report");
+    println!("LPAC_CHILD exit={exit} {}", report.trim());
+    std::io::stdout()
+        .flush()
+        .expect("flush the LPAC child's report");
+}
+
 #[test]
 #[ignore = "private LPAC subprocess entry point"]
 fn windows_lpac_process_helper() {
     if env::var(HELPER_ENV).as_deref() == Ok("descendant") {
         run_lpac_descendant_probe();
+        return;
+    }
+    if env::var(HELPER_ENV).as_deref() == Ok("standard-handles") {
+        let report = PathBuf::from(env::var_os(REPORT_PATH_ENV).expect("report path"));
+        std::fs::write(report, standard_handle_report()).expect("write the standard-handle report");
         return;
     }
     assert_eq!(env::var(HELPER_ENV).as_deref(), Ok("probe"));
