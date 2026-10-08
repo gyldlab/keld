@@ -26,6 +26,11 @@ const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
+/// GH-508 committed kipc channel allocation baseline (append-only).
+const CHANNEL_ALLOCATIONS: &str = "crates/keld-ipc/channel_allocations.txt";
+/// Comparison base, resolved the way `tools/ci_changes.sh local` resolves it.
+const CHANNEL_ALLOCATIONS_BASE_ENV: &str = "KELD_CI_BASE_REF";
+const CHANNEL_ALLOCATIONS_DEFAULT_BASE: &str = "origin/main";
 const MERMAID_IMAGE_DIGEST: &str =
     "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf";
 
@@ -2887,6 +2892,122 @@ fn check(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// GH-508 spec criterion 3a: the baseline at the merge base must be an exact
+/// line prefix of the current baseline. `None` means the file is absent there.
+fn check_allocations_prefix(
+    base: Option<&str>,
+    current: Option<&str>,
+    merge_base: &str,
+) -> Result<(), String> {
+    let Some(base) = base else {
+        return Ok(());
+    };
+    let Some(current) = current else {
+        return Err(format!(
+            "CI-HYGIENE: {CHANNEL_ALLOCATIONS} was removed, but it exists at merge base \
+             {merge_base}. Restore it: kipc channel ids are append-only \
+             (docs/specs/gh508-kipc-channel-table.md §4.4)."
+        ));
+    };
+    let mut current_lines = current.lines();
+    for (index, expected) in base.lines().enumerate() {
+        if current_lines.next() != Some(expected) {
+            return Err(format!(
+                "CI-HYGIENE: {CHANNEL_ALLOCATIONS} line {} `{expected}` at merge base \
+                 {merge_base} was changed, reordered or removed. Restore every existing \
+                 line and append new allocations at the end; ids are never renumbered or \
+                 reused (docs/specs/gh508-kipc-channel-table.md §4.4).",
+                index + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| {
+            format!("CI-HYGIENE: cannot run git for {CHANNEL_ALLOCATIONS}: {error}. Install git and rerun just hygiene.")
+        })
+}
+
+/// Resolves the merge base of `base_ref` and `HEAD`, failing closed when the
+/// base is unavailable instead of passing without a comparison.
+fn allocations_merge_base(root: &Path, base_ref: &str) -> Result<String, String> {
+    let unresolved = |detail: &str| {
+        format!(
+            "CI-HYGIENE: cannot resolve the {CHANNEL_ALLOCATIONS} comparison base `{base_ref}` \
+             ({detail}). Run `git fetch origin main`, or set {CHANNEL_ALLOCATIONS_BASE_ENV} to an \
+             available commit, then rerun just hygiene; the append-only check never passes \
+             without a base."
+        )
+    };
+    let verify = git_output(
+        root,
+        &["rev-parse", "--verify", "--quiet", &format!("{base_ref}^{{commit}}")],
+    )?;
+    if !verify.status.success() {
+        return Err(unresolved("not a commit in this repository"));
+    }
+    let merge_base = git_output(root, &["merge-base", base_ref, "HEAD"])?;
+    if !merge_base.status.success() {
+        return Err(unresolved("no merge base with HEAD"));
+    }
+    let sha = String::from_utf8_lossy(&merge_base.stdout).trim().to_owned();
+    if sha.is_empty() {
+        return Err(unresolved("empty merge base"));
+    }
+    Ok(sha)
+}
+
+/// The baseline file at `merge_base`, or `None` when that commit lacks it.
+fn allocations_at(root: &Path, merge_base: &str) -> Result<Option<String>, String> {
+    let listed = git_output(
+        root,
+        &["ls-tree", "--name-only", merge_base, "--", CHANNEL_ALLOCATIONS],
+    )?;
+    if !listed.status.success() {
+        return Err(format!(
+            "CI-HYGIENE: cannot list {CHANNEL_ALLOCATIONS} at merge base {merge_base}: {}",
+            String::from_utf8_lossy(&listed.stderr).trim()
+        ));
+    }
+    if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
+        return Ok(None);
+    }
+    let shown = git_output(root, &["show", &format!("{merge_base}:{CHANNEL_ALLOCATIONS}")])?;
+    if !shown.status.success() {
+        return Err(format!(
+            "CI-HYGIENE: cannot read {CHANNEL_ALLOCATIONS} at merge base {merge_base}: {}",
+            String::from_utf8_lossy(&shown.stderr).trim()
+        ));
+    }
+    String::from_utf8(shown.stdout).map(Some).map_err(|_| {
+        format!("CI-HYGIENE: {CHANNEL_ALLOCATIONS} at merge base {merge_base} is not UTF-8.")
+    })
+}
+
+/// GH-508 criterion 3a: the committed channel allocation baseline only grows.
+fn check_channel_allocations_append_only(root: &Path, base_ref: &str) -> Result<(), String> {
+    let merge_base = allocations_merge_base(root, base_ref)?;
+    let base = allocations_at(root, &merge_base)?;
+    let current = match fs::read_to_string(root.join(CHANNEL_ALLOCATIONS)) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "CI-HYGIENE: cannot read {CHANNEL_ALLOCATIONS}: {error}."
+            ));
+        }
+    };
+    check_allocations_prefix(base.as_deref(), current.as_deref(), &merge_base)
+}
+
 fn run_cli() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or_else(|| {
@@ -2916,7 +3037,9 @@ fn run_cli() -> Result<(), String> {
                     "CI-HYGIENE: workflow semantic check failed ({status}); restore the reported security contract before rerunning."
                 ));
             }
-            Ok(())
+            let base_ref = env::var(CHANNEL_ALLOCATIONS_BASE_ENV)
+                .unwrap_or_else(|_| CHANNEL_ALLOCATIONS_DEFAULT_BASE.to_owned());
+            check_channel_allocations_append_only(&root, &base_ref)
         }
         _ => Err(format!(
             "CI-HYGIENE: unknown command `{command}`. Use `check` to verify KEL-39 files."
@@ -6118,6 +6241,90 @@ foreach ($item in $items) {
         fs::remove_file(bug).expect("remove bug template");
         let error = check(temp.path()).expect_err("config-only issue templates must fail");
         assert!(error.contains("ISSUE_TEMPLATE"), "{error}");
+    }
+
+    #[test]
+    fn channel_allocations_prefix_rule_admits_only_appends() {
+        let base = "echo 1\nfs 2\nlifecycle 3\n";
+        check_allocations_prefix(Some(base), Some(base), "b").expect("unchanged passes");
+        check_allocations_prefix(Some(base), Some("echo 1\nfs 2\nlifecycle 3\nprobe 4\n"), "b")
+            .expect("an append passes");
+        check_allocations_prefix(None, Some(base), "b").expect("introducing the file passes");
+        check_allocations_prefix(None, None, "b").expect("no file anywhere passes");
+        // Negative controls (spec criterion 3a): a both-sides renumber the
+        // in-crate table check cannot see, a deleted line, a reorder, removal.
+        for (current, line) in [
+            ("echo 1\nfs 4\nlifecycle 3\n", 2),
+            ("echo 1\nlifecycle 3\n", 2),
+            ("fs 2\necho 1\nlifecycle 3\n", 1),
+            ("echo 1\nfs 2\n", 3),
+        ] {
+            let error = check_allocations_prefix(Some(base), Some(current), "b")
+                .expect_err("only appends are admitted");
+            assert!(error.contains(&format!("line {line} ")), "{error}");
+            assert!(error.contains("append-only") || error.contains("append new"), "{error}");
+        }
+        let removed = check_allocations_prefix(Some(base), None, "b").expect_err("removal fails");
+        assert!(removed.contains("was removed"), "{removed}");
+    }
+
+    fn git_fixture(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid"])
+            .args(["-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("run git fixture command");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn channel_allocations_rule_reads_the_merge_base_and_fails_closed() {
+        let temp = TempDir::new();
+        let root = temp.path();
+        git_fixture(root, &["init", "--quiet"]);
+        temp.write("README.md", "fixture\n");
+        git_fixture(root, &["add", "README.md"]);
+        git_fixture(root, &["commit", "--quiet", "-m", "before the baseline"]);
+        git_fixture(root, &["branch", "before"]);
+        // The PR that introduces the file passes against a base without it.
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nfs 2\nlifecycle 3\n");
+        check_channel_allocations_append_only(root, "before").expect("introduction passes");
+
+        git_fixture(root, &["add", CHANNEL_ALLOCATIONS]);
+        git_fixture(root, &["commit", "--quiet", "-m", "baseline"]);
+        git_fixture(root, &["branch", "base"]);
+        git_fixture(root, &["checkout", "--quiet", "-b", "feature"]);
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nfs 2\nlifecycle 3\nprobe 4\n");
+        check_channel_allocations_append_only(root, "base").expect("an append passes");
+
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nfs 4\nlifecycle 3\n");
+        let renumbered = check_channel_allocations_append_only(root, "base")
+            .expect_err("a renumber in the baseline fails against the merge base");
+        assert!(renumbered.contains("line 2 `fs 2`"), "{renumbered}");
+
+        // A base that moved on after the fork still compares at the fork point.
+        git_fixture(root, &["checkout", "--quiet", "base"]);
+        temp.write("README.md", "main moved\n");
+        git_fixture(root, &["commit", "--quiet", "-am", "main moved"]);
+        git_fixture(root, &["checkout", "--quiet", "feature"]);
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nlifecycle 3\n");
+        let deleted = check_channel_allocations_append_only(root, "base")
+            .expect_err("a deleted line fails");
+        assert!(deleted.contains("line 2 `fs 2`"), "{deleted}");
+
+        let unresolved = check_channel_allocations_append_only(root, "no-such-base")
+            .expect_err("an unresolvable base fails closed");
+        assert!(unresolved.contains("cannot resolve"), "{unresolved}");
+        assert!(unresolved.contains("never passes"), "{unresolved}");
     }
 
     #[test]
