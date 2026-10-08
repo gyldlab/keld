@@ -102,8 +102,20 @@ Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
 is process-lifetime and not thenable. Keld's `app.quit()` returns
 `Promise<void>` so callers can observe `KELD-IPC-*` when the Quit Call fails
 on the transport. Restoring `void` would paper over kipc; the Promise is
-the public contract for this slice. Recorded on
+the public contract for this slice. Like Electron's, it returns at once and
+never parks the caller (PANEL-P2, #419; GH-528 T3). The role's link closes
+when the host's `LifecycleResponse::Quit` REPLY settles. Recorded on
 [`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
+Divergence (scoreboard ▲, GH-528 T3): the role's link runs in the GH-527
+transport Worker, and a realm opens one link. So `app.whenReady()` rejects with
+the typed error that failed or ended that link, and keeps rejecting with the
+same error. A failed connect is never retried, because a retry could only
+surface `KELD-IPC-005`. The error keeps the real cause:
+- a connect failure keeps its own code (`KELD-IPC-001`, `-005`, `-006`, `-007`);
+- a link that was up ends with the failure that ended it (`KELD-IPC-003`,
+  `-005`, `-006`);
+- a plain close is `KELD-IPC-022`.
 
 Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
 from `bunfig.toml` `[alias]` (it still loads the npm `electron` package

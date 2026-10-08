@@ -156,6 +156,7 @@
         "crates/keld-cli/src/mcp/docs_search.rs",
         "crates/keld-cli/tests/doctor_mcp.rs",
         "crates/keld-cli/src/template.rs",
+        "crates/keld-cli/tests/bun_echo.rs",
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
@@ -325,6 +326,7 @@
         "crates/keld-cli/src/mcp/docs_search.rs",
         "crates/keld-cli/tests/doctor_mcp.rs",
         "crates/keld-cli/src/template.rs",
+        "crates/keld-cli/tests/bun_echo.rs",
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
@@ -357,7 +359,7 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "9d1f22bd244f05e02da5c3f8c7c69e0ffe44439ec4e23a2239bc92b94ede9c3e"
+      "sha256": "dc299d03e106e49906d90e03a45b428217349c30f0e477a78cc08748d866d165"
     },
     "policy-readers": {
       "patterns": [

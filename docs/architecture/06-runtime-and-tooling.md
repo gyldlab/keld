@@ -420,8 +420,16 @@ file and MUST NOT be bundled into `src/main.ts`; `WorkerLink.open` refuses to ru
 any other file name. A release build of the transport (the future `keld build`,
 KEL-19) MUST build it as that separate file with `KELD_KIPC_RELEASE` defined as `true`
 and syntax minification, which removes every test-hook code path
-(`packages/@keld/kipc/src/release-build.test.ts`); the dev scaffold keeps the hooks,
-reachable only from the in-repo `src/test-hooks.ts` under `KELD_KIPC_TEST_HOOKS=1`.
+(`packages/@keld/kipc/src/release-build.test.ts`). `keld create` already writes every
+app's `src/kipc-transport.ts` with that constant defined
+(`crates/keld-cli/src/template.rs` `KIPC_RELEASE_DEFINITION`), so no created app can
+reach the hooks (`crates/keld-cli/tests/bun_echo.rs`
+`created_transport_registers_no_test_hook_seam`). Only the in-repo canonical file keeps
+them, reachable from `src/test-hooks.ts` under `KELD_KIPC_TEST_HOOKS=1`. The
+build path MUST keep the staged basename rule: the transport ships as its own file
+named `kipc-transport.ts` or `.js`. `WorkerLink.open` refuses a hashed chunk name, a
+transport that is the process entry (`bun build --compile` output included), and a
+call from inside a transport Worker.
 The non-release boot compiler copies that sidecar
 into the owner-private stage when present so `keld dev` Bun can resolve it.
 Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,
