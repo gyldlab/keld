@@ -5,8 +5,8 @@ use std::fs;
 
 use crate::corpus_admission::{admit_bun, admit_libtest};
 use crate::corpus_census::{
-    Sources, committed_corpus_dirs, fixture_census, load_test_sources, owner_census,
-    sha2_dependency_kinds,
+    Sources, committed_corpus_dirs, fixture_census, has_local_snapshots, load_test_sources,
+    owner_census, sha2_dependency_kinds, snapshot_store_census,
 };
 use crate::corpus_manifest::{
     Corpus, CorpusError, LIFECYCLE_V0, OWNER_PATH, REGISTRY, Registration, Runner, committed_runs,
@@ -77,6 +77,39 @@ fn every_committed_corpus_is_registered() {
         census_detail(&found, &same_dir)
             .contains("fixture dir fixtures/lifecycle-corpus is registered twice")
     );
+}
+
+/// gh566 D5 A5: a page cited by several corpora at one pin is committed once, in the
+/// shared store that `Corpus::load` reads; a corpus directory holding its own
+/// `doc-snapshots/` is rejected, and every offender is named.
+#[test]
+fn doc_snapshots_live_in_one_store() {
+    let found = committed_corpus_dirs().unwrap_or_else(|error| panic!("{error}"));
+    snapshot_store_census(&found, &|dir| has_local_snapshots(&crate_root(), dir))
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let lifecycle = LIFECYCLE_V0.fixture_dir;
+    match snapshot_store_census(&found, &|dir| dir == lifecycle) {
+        Err(CorpusError::CorpusLocalSnapshot { dirs }) => assert_eq!(dirs, [lifecycle]),
+        other => panic!("a corpus-local snapshot must be rejected: {other:?}"),
+    }
+    match snapshot_store_census(&found, &|_| true) {
+        Err(CorpusError::CorpusLocalSnapshot { dirs }) => assert_eq!(dirs, found),
+        other => panic!("every corpus-local snapshot must be named: {other:?}"),
+    }
+
+    // The filesystem probe itself, on a throwaway tree: a corpus directory with its own
+    // `doc-snapshots/` is found, one without it is not.
+    let root = std::env::temp_dir().join(format!("keld-compat-store-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("fixtures/with-copy/doc-snapshots/c/docs/api"))
+        .expect("create probe tree");
+    fs::create_dir_all(root.join("fixtures/without-copy")).expect("create probe tree");
+    let with_copy = has_local_snapshots(&root, "fixtures/with-copy");
+    let without_copy = has_local_snapshots(&root, "fixtures/without-copy");
+    let _ = fs::remove_dir_all(&root);
+    assert!(with_copy, "a corpus-local doc-snapshots/ must be found");
+    assert!(!without_copy, "a corpus without doc-snapshots/ must pass");
 }
 
 /// Every registered corpus passes the static rules, and its committed records pass the
