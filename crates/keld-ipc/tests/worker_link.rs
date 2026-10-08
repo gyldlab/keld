@@ -251,11 +251,19 @@ fn write_arm_b_load(
     reply: &[u8],
 ) -> WriteOutcome {
     let mut frames_written = 0;
+    let mut paced_from = None;
     for seq in 0..ARM_B_BURST + ARM_B_PACED {
         if seq >= ARM_B_BURST {
             // Load generation only (spec §7): the paced tail keeps the role
-            // parked for about ten seconds. No assertion depends on it.
-            thread::sleep(ARM_B_PACE);
+            // parked for about ten seconds. No assertion depends on it. Each
+            // EVENT is due on an absolute 100/s schedule, so a sleep that
+            // overshoots (hosted macOS runners coalesce timers) shortens the
+            // next one instead of stretching the park.
+            let start = *paced_from.get_or_insert_with(Instant::now);
+            let due = start + ARM_B_PACE * (seq - ARM_B_BURST);
+            if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                thread::sleep(wait);
+            }
         }
         if let Err(error) = write_frame(
             stream,

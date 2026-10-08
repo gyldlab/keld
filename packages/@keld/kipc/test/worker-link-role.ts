@@ -172,7 +172,8 @@ async function armB(): Promise<void> {
   link.onEvent(LIFECYCLE_CHANNEL, events.listener);
   let result: unknown;
   try {
-    result = link.callBlocking(ECHO_CHANNEL, text("arm-b"), 30_000);
+    // About 10 s of load; the deadline leaves room for a slow hosted runner.
+    result = link.callBlocking(ECHO_CHANNEL, text("arm-b"), 60_000);
   } catch (err) {
     report("call-code", codeOf(err));
     return;

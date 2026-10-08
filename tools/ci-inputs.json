@@ -329,14 +329,14 @@
         "crates/keld-updater-helper/tests/lint_config.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "f93c191beedb4497ad74da3ad7458faab75051d6e75a1ac10560d6cb8da59f41"
+      "sha256": "8b6cfd4391bdb434ddbe4b0d0c4343491fb6f19bd083b5eae27b4f0a24ae0d68"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "018a98fd9e27c57565b87b20c9fb566227db1a9cb7666f9e4f5a3c366d323066"
+      "sha256": "e7918f5bc5e94a6d72de791d29e4c58a365e571c3ac80465bef1f20c6bca8725"
     },
     "policy-readers": {
       "patterns": [
