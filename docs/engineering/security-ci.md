@@ -16,8 +16,9 @@ vulnerabilities.
 
 `ci-hygiene check` runs the parsed workflow security check through Bun, the same
 runtime already required by `just ci`. `tools/ci_workflow_security.ts` owns checkout
-and scanner semantics, and the step timeout on every `run` script that invokes
-`apt`/`apt-get`; the Rust checker retains the other hygiene contracts.
+and scanner semantics, and the 15-minute step timeout (inside a longer job timeout)
+on every `run` script that invokes `apt`/`apt-get`; the Rust checker retains the
+other hygiene contracts.
 Each CodeQL language has its own job (`codeql-rust`, `codeql-javascript-typescript`,
 `codeql-actions`), because a job-level condition cannot read `matrix`. Each job must
 need the router, run only on its own router output, keep its `/language:<language>`
