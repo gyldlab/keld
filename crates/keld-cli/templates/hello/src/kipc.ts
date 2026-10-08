@@ -1,10 +1,14 @@
 /**
  * Hello echo adapter over the canonical kipc transport (KEL-136 / KEL-30).
  *
- * Framing, HELLO, deadlines, buffering, and serialized writes live in
- * `kipc-transport.ts`. This file owns echo postcard codecs and `AppLinkSession`;
- * `echo.generated.ts` owns only the Rust-derived compile-time payload declarations.
- * `keld create` concatenates this file with `main-body.ts` into `src/main.ts`.
+ * The app-link is the GH-527 `WorkerLink`: its transport Worker, whose entry is
+ * `kipc-transport.ts` itself, owns the socket, HELLO, framing, deadlines and
+ * writes, and answers host Pings. This file owns the echo postcard codecs, the
+ * lifecycle EVENT decoding and `AppLinkSession`; `echo.generated.ts` owns only
+ * the Rust-derived compile-time payload declarations. `keld create`
+ * concatenates this file with `main-body.ts` into `src/main.ts` and stages the
+ * transport beside it, never bundled into it (the Worker would otherwise load
+ * the whole app).
  */
 export * from "./kipc-transport.ts";
 export type { EchoRequest, EchoResponse } from "./echo.generated.ts";
@@ -12,28 +16,17 @@ export type { EchoRequest, EchoResponse } from "./echo.generated.ts";
 import type { EchoRequest, EchoResponse } from "./echo.generated.ts";
 
 import {
-  CLIENT_AWAIT_HELLO,
-  DirectedReader,
-  DrainSignal,
+  APP_LINK_IO_DEADLINE_MS,
   ECHO_CHANNEL,
-  FrameKind,
-  FrameReader,
-  HANDSHAKE_CHANNEL,
-  RECEIVE_POLICIES,
-  WriteQueue,
-  connectKipcSocket,
+  LIFECYCLE_CHANNEL,
+  WorkerLink,
   decodePostcardStringAt,
   decodeVarint,
   encodePostcardString,
   encodeVarint,
-  echoReplyWaiter,
   kipcError,
-  parseAppLink,
-  timingSafeEqual,
-  withIoDeadline,
-  type DecodedFrame,
-  type FrameKindValue,
-  type ReceivePolicy,
+  quitAndCloseLink,
+  type KeldCallError,
 } from "./kipc-transport.ts";
 
 /** Postcard encoding of `EchoRequest`: struct-as-tuple, field order = declaration order. */
@@ -56,171 +49,89 @@ export function decodeEchoResponse(bytes: Uint8Array): EchoResponse {
   return { message, count };
 }
 
+/** A host lifecycle EVENT (`keld_ipc::LifecycleEvent`). */
+export type LifecycleEventName = "ready" | "last-window-closed";
+
+/** Postcard decoding of `LifecycleEvent`: one unit-enum byte. */
+export function decodeLifecycleEvent(payload: Uint8Array): LifecycleEventName {
+  if (payload.length !== 1) {
+    throw kipcError("KELD-IPC-003", "lifecycle event must be one postcard enum byte");
+  }
+  if (payload[0] === 0) return "ready";
+  if (payload[0] === 1) return "last-window-closed";
+  throw kipcError("KELD-IPC-003", `unknown LifecycleEvent discriminant ${payload[0]}`);
+}
+
 /**
- * One `HELLO` plus N sequential `CALL`/`REPLY` pairs on a single app-link
- * socket. Mirrors `keld_ipc::{handshake_client, echo_invoke}`: a second
- * `HELLO` on this stream is `KELD-IPC-005`.
+ * The role's one HELLO'd app-link (GH-527 `WorkerLink`). Echo CALLs share it
+ * without another handshake; lifecycle EVENTs reach `onLifecycleEvent`
+ * listeners; `quit()` is the link's last call. Mirrors
+ * `keld_ipc::{handshake_client, echo_invoke}`.
  *
  * `echoRoundtrip` is the one-shot wrapper (connect, one CALL, close).
  */
 export class AppLinkSession {
-  #socket: { end(): void };
-  #reader: FrameReader;
-  #drain: DrainSignal;
-  #directed: DirectedReader;
-  #writes: WriteQueue;
-  #nextCorr = 1;
-  #closed = false;
+  readonly #link: WorkerLink;
 
-  private constructor(
-    socket: { end(): void },
-    reader: FrameReader,
-    drain: DrainSignal,
-    directed: DirectedReader,
-    writes: WriteQueue,
-  ) {
-    this.#socket = socket;
-    this.#reader = reader;
-    this.#drain = drain;
-    this.#directed = directed;
-    this.#writes = writes;
+  private constructor(link: WorkerLink) {
+    this.#link = link;
   }
 
   /**
-   * Connects and completes the v2 `HELLO` handshake.
+   * Connects and completes the v2 `HELLO` handshake. A realm opens one
+   * app-link (GH-527 §4.2).
    *
    * @throws on I/O, protocol, or auth failure — messages carry `KELD-IPC-*`.
    */
   static async connect(link: string): Promise<AppLinkSession> {
-    const { endpoint, token } = parseAppLink(link);
-    const reader = new FrameReader();
-    const drain = new DrainSignal();
-    const socket = await connectKipcSocket(endpoint, reader, drain);
-    const writes = new WriteQueue(socket, drain);
-    const directed = new DirectedReader(reader);
-    const session = new AppLinkSession(socket, reader, drain, directed, writes);
-    try {
-      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token));
-      const helloReply = await withIoDeadline(directed.receive(CLIENT_AWAIT_HELLO));
-      if (!timingSafeEqual(helloReply.payload, token)) {
-        throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
-      }
-      return session;
-    } catch (err) {
-      session.close();
-      throw err;
-    }
-  }
-
-  #allocCorr(): number {
-    const corr = this.#nextCorr;
-    let next = (corr + 1) >>> 0;
-    if (next === 0) next = 1;
-    this.#nextCorr = next;
-    return corr;
-  }
-
-  /** Next CALL correlation id; `0` is reserved for `HELLO`. */
-  allocCorr(): number {
-    return this.#allocCorr();
-  }
-
-  /** Frames parked while waiting for another policy (typically lifecycle Events). */
-  parkedCount(): number {
-    return this.#directed.parkedCount();
-  }
-
-  /**
-   * One validated frame on this HELLO'd link. Pass
-   * `RECEIVE_POLICIES.lifecycleEventReceiver` as `park` so a `Ready` Event
-   * cannot fail an Echo Reply wait. Does not decode lifecycle payloads or send Quit.
-   */
-  async receive(want: ReceivePolicy, park?: ReceivePolicy): Promise<DecodedFrame> {
-    if (this.#closed) {
-      throw kipcError("KELD-IPC-001", "session is closed");
-    }
-    try {
-      return await withIoDeadline(this.#directed.receive(want, park));
-    } catch (err) {
-      this.close();
-      throw err;
-    }
-  }
-
-  /**
-   * Waits without a request deadline for an unsolicited host Event.
-   *
-   * A healthy window may stay open indefinitely, so LastWindowClosed cannot
-   * use the bounded Echo/Quit response wait. Reader close, socket failure, and
-   * validation errors still fail this same directed read and close the session.
-   */
-  async receiveWhileIdle(want: ReceivePolicy, park?: ReceivePolicy): Promise<DecodedFrame> {
-    if (this.#closed) {
-      throw kipcError("KELD-IPC-001", "session is closed");
-    }
-    try {
-      return await this.#directed.receive(want, park);
-    } catch (err) {
-      this.close();
-      throw err;
-    }
-  }
-
-  /**
-   * One serialized frame write on this HELLO'd link. Callers own channel,
-   * correlation, and payload codecs (KEL-185 sends Quit here; this method does not).
-   */
-  async writeFrame(
-    kind: FrameKindValue,
-    channel: number,
-    corr: number,
-    payload: Uint8Array,
-    flags = 0,
-  ): Promise<void> {
-    if (this.#closed) {
-      throw kipcError("KELD-IPC-001", "session is closed");
-    }
-    try {
-      await withIoDeadline(this.#writes.writeFrame(kind, flags, channel, corr, payload));
-    } catch (err) {
-      this.close();
-      throw err;
-    }
+    const workerLink = await WorkerLink.open({
+      link,
+      receive: { eventChannels: [LIFECYCLE_CHANNEL], callReceivers: [] },
+    });
+    // An EVENT this app cannot decode ends the link before any listener runs.
+    workerLink.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
+      decodeLifecycleEvent(payload);
+    });
+    return new AppLinkSession(workerLink);
   }
 
   /**
    * One echo `Call`/`Reply` on this connection. Does not handshake again.
-   * Lifecycle Events that arrive before the Reply are parked, not treated as
-   * a protocol violation.
    *
-   * @throws on I/O, protocol, or codec error — messages carry `KELD-IPC-*`.
+   * @throws on I/O, protocol, deadline, or codec error — `KELD-IPC-*`.
    */
   async echo(request: EchoRequest): Promise<EchoResponse> {
-    if (this.#closed) {
-      throw kipcError("KELD-IPC-001", "session is closed");
-    }
-    const corr = this.#allocCorr();
-    const payload = encodeEchoRequest(request);
-    await this.writeFrame(FrameKind.Call, ECHO_CHANNEL, corr, payload);
-    const reply = await this.receive(
-      echoReplyWaiter(corr),
-      RECEIVE_POLICIES.lifecycleEventReceiver,
+    const reply = await this.#link.call(
+      ECHO_CHANNEL,
+      encodeEchoRequest(request),
+      APP_LINK_IO_DEADLINE_MS,
     );
-    return decodeEchoResponse(reply.payload);
+    return decodeEchoResponse(reply);
+  }
+
+  /** Runs `listener` for each host lifecycle EVENT. Returns its removal. */
+  onLifecycleEvent(listener: (event: LifecycleEventName) => void): () => void {
+    return this.#link.onEvent(LIFECYCLE_CHANNEL, (payload) => {
+      listener(decodeLifecycleEvent(payload));
+    });
+  }
+
+  /** Runs `listener` once when the link ends, with its `KELD-IPC-*` error. */
+  onEnd(listener: (error: KeldCallError) => void): () => void {
+    return this.#link.onEnd(listener);
   }
 
   /**
-   * Ends the socket and wakes leftover I/O. `withIoDeadline` does not cancel
-   * the inner promise; fail/fire here so a timed-out read cannot leave
-   * `FrameReader.#pending` set and a timed-out write cannot stay in
-   * `DrainSignal.wait()`. Safe to call more than once.
+   * Sends `Quit`, the link's last call, and closes the link on its REPLY
+   * (GH-527 §4.9). Returns the host's `LifecycleResponse::Quit` bytes.
    */
+  quit(): Uint8Array {
+    return quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
+  }
+
+  /** Ends the link. Safe to call more than once. */
   close(): void {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#reader.fail(kipcError("KELD-IPC-001", "session is closed"));
-    this.#drain.fire();
-    this.#socket.end();
+    this.#link.close();
   }
 }
 
