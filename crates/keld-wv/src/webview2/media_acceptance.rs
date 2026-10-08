@@ -143,10 +143,7 @@ pub(super) fn swallow_browser_exit(site: super::ReleaseSite) -> bool {
     let Some(selected) = std::env::var_os(SWALLOW_BROWSER_EXIT_ENV) else {
         return false;
     };
-    let site = match site {
-        super::ReleaseSite::Host => "host",
-        super::ReleaseSite::Probe => "probe",
-    };
+    let site = site.name();
     if selected != site {
         return false;
     }
@@ -163,12 +160,37 @@ static GRACE_ARMED_AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new()
 /// Records the first arming instant so a fault child can bound the failure
 /// from the grace's own start, not from the swallow instant: the swallowed
 /// event and the arming poll are ordered only by the OS, so a swallow-relative
-/// lower bound held by timer overshoot alone.
-pub(super) fn observe_grace_armed(armed_at: Instant, grace: Duration) {
-    let _ = GRACE_ARMED_AT.set(armed_at);
+/// lower bound held by timer overshoot alone. `shutdown` is the healthy
+/// shutdown this barrier observed, from `Close` to the signaled handle: the
+/// measurement behind `BROWSER_SHUTDOWN_HANG_GUARD`.
+pub(super) fn observe_grace_armed(
+    grace_armed_at: Instant,
+    site: super::ReleaseSite,
+    shutdown: Duration,
+    grace: Duration,
+) {
+    let _ = GRACE_ARMED_AT.set(grace_armed_at);
     println!(
-        "KELD_PROFILE_GRACE armed=post-exit grace_ms={}",
+        "KELD_PROFILE_GRACE armed=post-exit site={} shutdown_ms={} grace_ms={}",
+        site.name(),
+        shutdown.as_millis(),
         grace.as_millis()
+    );
+}
+
+/// Evidence line for a barrier proven by its event after it was armed.
+///
+/// `since_arming` runs from `Close` to the event, which `WebView2` raises
+/// after the browser process has terminated, so it bounds the healthy
+/// shutdown from above. The host path usually drains the event in the same
+/// poll that first sees the handle signaled, so this line, not the grace
+/// line, is the host-own shutdown measurement behind
+/// `BROWSER_SHUTDOWN_HANG_GUARD`.
+pub(super) fn observe_barrier_released(site: super::ReleaseSite, since_arming: Duration) {
+    println!(
+        "KELD_PROFILE_RELEASE observed=event site={} since_arming_ms={}",
+        site.name(),
+        since_arming.as_millis()
     );
 }
 
@@ -1875,7 +1897,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             "swallowed-host-exit",
             &[
                 "KELD_PROFILE_FAULT swallowed-browser-exit site=host",
-                "KELD_PROFILE_GRACE armed=post-exit grace_ms=5000",
+                "KELD_PROFILE_GRACE armed=post-exit site=host shutdown_ms=",
                 "KELD_PROFILE_RELEASE_FAULT since_arming_ms=",
             ],
         )

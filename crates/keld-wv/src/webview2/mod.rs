@@ -208,6 +208,56 @@ const PROFILE_LAUNCH_DEADLINE: Duration = Duration::from_secs(15);
 /// wall-clock bound while the browser was still shutting down normally.
 const BROWSER_EXIT_GRACE: Duration = Duration::from_secs(5);
 
+/// Kill switch on a browser that never exits after `Close`: the shutdown hang
+/// guard.
+///
+/// This is a hang guard, not a performance budget (the pattern of
+/// [`crate::INITIAL_NAVIGATION_DEADLINE`]): a browser process that is still
+/// alive this long after `Close` becomes a typed `KELD-WV-009` instead of a
+/// host, recovery, purge or scavenge that waits forever. It runs from the
+/// barrier's arming only while the expected browser process handle is
+/// unsignaled; once the handle is signaled only [`BROWSER_EXIT_GRACE`]
+/// applies. Expiry never passes the barrier: the probe reports
+/// `Unproven` (the scavenger retains the leaf; recovery and purge fail typed,
+/// as before KEL-132), and the host's own release fails typed, the host exits,
+/// the host-death Job reaps the browser and the next launch recovers through
+/// quarantine and the exclusive-UDF probe.
+///
+/// Value: 4x the largest observed healthy shutdown (`Close()` returning to the
+/// handle signaled), rounded up to a multiple of 15 s. Observed:
+/// - KEL-132 diagnosis, Windows 11 10.0.26300, `WebView2` runtime 154.x,
+///   instrumented `origin/main`: modes 0.17 s / ~3.1 s / ~6.9 s (60 runs);
+/// - hosted `windows-latest` (runtime 153.0.4234.48): occurrence #1 (run
+///   36765077550) exceeded the former 15 s bound inside a 16.58 s test wall
+///   and #3 (run 37746982794) took about 14.2 s; the hosted harness prints no
+///   durations, so 16.58 s is the hosted upper-bound observation;
+/// - fresh samples 2026-10-08, runtime 154.0.4258.62, the media-acceptance
+///   evidence lines (`evidence/kel135-fix3/samples-pass{1,2}`, 132 fixture
+///   runs): idle, host-own n=33 max 7.0 s and probe n=67 max 7.0 s; under
+///   full-core load (16 busy-loop burners on 16 logical cores), host-own n=57
+///   max 59.1 s and probe n=46 max 43.9 s, every one healthy (its event came).
+/// 4 x 59.07 s = 236.3 s -> 240 s. The idle and hosted basis alone would give
+/// 4 x 16.58 s = 66.3 s -> 75 s; the saturated-load basis rules, because a
+/// false trip quarantines a healthy store while a late true-hang detection
+/// only costs time in a session that is already broken.
+///
+/// Chromium's own shutdown watchdog is no substitute (chromium/src at commit
+/// `4b621fc2a154f0869ad7b3b584bb4de05da38caf`, retrieved 2026-10-08):
+/// `kShutdownHangDelay` is 300 s (`chrome/browser/chrome_browser_main.cc:2248`,
+/// `ChromeBrowserMainParts::PostMainMessageLoopRun`), but
+/// `ShutdownWatcherHelper::Arm` multiplies it by 20 on the stable channel, 10
+/// on beta, 4 on dev and 2 otherwise
+/// (`chrome/browser/metrics/shutdown_watcher_helper.cc:20-42`, with the
+/// upstream comment that stable "effectively [is] not looking for shutdown
+/// hangs"), and `Alarm` only reports (`metrics::ShutdownHang` ->
+/// `base::debug::DumpWithoutCrashing`,
+/// `chrome/browser/metrics/thread_watcher_report_hang.cc:19-38`); it never
+/// terminates the browser. Whether the Edge `WebView2` runtime keeps any of
+/// it is unverified. So this guard is the only kill switch, and its expiry
+/// leaves the store exactly as a browser crash or kill would, which the
+/// profile contract tolerates (quarantine plus exclusive-UDF probe).
+const BROWSER_SHUTDOWN_HANG_GUARD: Duration = Duration::from_secs(240);
+
 const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";
 const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
@@ -1291,12 +1341,26 @@ enum ReleaseSite {
     Probe,
 }
 
+impl ReleaseSite {
+    /// Evidence-line name of the site.
+    #[cfg(all(feature = "media-acceptance", test))]
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Probe => "probe",
+        }
+    }
+}
+
 /// Why a `BrowserProcessExited` barrier failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProfileReleaseFault {
     /// The expected browser process is gone and no matching event arrived
     /// within [`BROWSER_EXIT_GRACE`].
     GraceExpired,
+    /// The expected browser process was still alive when
+    /// [`BROWSER_SHUTDOWN_HANG_GUARD`] expired after `Close`.
+    HangGuardExpired,
     /// The event named the expected process with an abnormal exit kind.
     AbnormalExit,
     /// The observer was dropped before the event was delivered.
@@ -1312,6 +1376,12 @@ impl ProfileReleaseFault {
             }
             (Self::GraceExpired, ReleaseSite::Probe) => {
                 "the exclusive-UDF probe browser process exited without raising BrowserProcessExited within the post-exit grace"
+            }
+            (Self::HangGuardExpired, ReleaseSite::Host) => {
+                "the host browser process was still alive when the shutdown hang guard expired"
+            }
+            (Self::HangGuardExpired, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe browser process was still alive when the shutdown hang guard expired"
             }
             (Self::AbnormalExit, ReleaseSite::Host) => {
                 "BrowserProcessExited reported an abnormal host browser exit"
@@ -1730,8 +1800,8 @@ fn probe_exclusive_udf_with_observer(
             PROBE_CLOSE_FAILED,
         ));
     }
-    let release = ProfileReleaseWait::new(Some(receiver), process);
-    match wait_for_browser_exit(&release, ReleaseSite::Probe) {
+    let release = ProfileReleaseWait::new(Some(receiver), process, ReleaseSite::Probe);
+    match wait_for_browser_exit(&release) {
         Ok(()) => ExclusiveUdfRelease::Released,
         Err(error) => ExclusiveUdfRelease::Unproven(error),
     }
@@ -2400,37 +2470,56 @@ impl BrowserProcess {
 ///
 /// The barrier observable is the event delivered through `receiver`. Whether
 /// that event can still arrive is proven by `process`: while the handle is
-/// unsignaled the browser is alive and shutting down, and no wall-clock bound
-/// applies (KEL-132: hosted shutdowns exceeded the former 15 s bound). Once it
-/// is signaled only `grace` bounds the event, because `WebView2` raises it
-/// after the collection has released its resources. A queued event always
-/// wins over the grace, and the barrier starts at [`Self::arm`], after the
+/// unsignaled the browser is alive and shutting down, and no correctness
+/// bound applies (KEL-132: hosted shutdowns exceeded the former 15 s bound);
+/// only the shutdown `hang_guard` kill switch bounds that state. Once the
+/// handle is signaled only `grace` bounds the event, because `WebView2`
+/// raises it after the collection has released its resources. A queued event
+/// always wins over both, and the barrier starts at [`Self::arm`], after the
 /// controllers were closed.
 struct ProfileReleaseWait {
     receiver: Option<Receiver<Result<(), WvError>>>,
     process: Option<BrowserProcess>,
+    site: ReleaseSite,
     grace: Duration,
-    armed: Cell<bool>,
+    hang_guard: Duration,
+    /// The instant the barrier started: `Close` returned and the handle was
+    /// still unsignaled. The hang guard runs from here.
+    armed_at: Cell<Option<Instant>>,
     observed: Cell<bool>,
     fault: Cell<Option<ProfileReleaseFault>>,
     post_exit_deadline: Cell<Option<Instant>>,
 }
 
 impl ProfileReleaseWait {
-    fn new(receiver: Option<Receiver<Result<(), WvError>>>, process: Option<OwnedHandle>) -> Self {
-        Self::with_grace(receiver, process, BROWSER_EXIT_GRACE)
-    }
-
-    fn with_grace(
+    fn new(
         receiver: Option<Receiver<Result<(), WvError>>>,
         process: Option<OwnedHandle>,
+        site: ReleaseSite,
+    ) -> Self {
+        Self::with_bounds(
+            receiver,
+            process,
+            site,
+            BROWSER_EXIT_GRACE,
+            BROWSER_SHUTDOWN_HANG_GUARD,
+        )
+    }
+
+    fn with_bounds(
+        receiver: Option<Receiver<Result<(), WvError>>>,
+        process: Option<OwnedHandle>,
+        site: ReleaseSite,
         grace: Duration,
+        hang_guard: Duration,
     ) -> Self {
         Self {
             receiver,
             process: process.map(BrowserProcess::Polled),
+            site,
             grace,
-            armed: Cell::new(false),
+            hang_guard,
+            armed_at: Cell::new(None),
             observed: Cell::new(false),
             fault: Cell::new(None),
             post_exit_deadline: Cell::new(None),
@@ -2451,9 +2540,12 @@ impl ProfileReleaseWait {
         Ok(self)
     }
 
-    /// Starts the barrier after the controllers were closed. Idempotent.
+    /// Starts the barrier after the controllers were closed. Idempotent: the
+    /// first arming instant is kept, so later calls cannot renew the guard.
     fn arm(&self) {
-        self.armed.set(true);
+        if self.armed_at.get().is_none() {
+            self.armed_at.set(Some(Instant::now()));
+        }
         self.poll();
     }
 
@@ -2481,6 +2573,10 @@ impl ProfileReleaseWait {
         match receiver.try_recv() {
             Ok(Ok(())) => {
                 self.observed.set(true);
+                #[cfg(all(feature = "media-acceptance", test))]
+                if let Some(armed_at) = self.armed_at.get() {
+                    media_acceptance::observe_barrier_released(self.site, armed_at.elapsed());
+                }
                 return;
             }
             Ok(Err(_)) => {
@@ -2493,14 +2589,25 @@ impl ProfileReleaseWait {
             }
             Err(TryRecvError::Empty) => {}
         }
-        if !self.armed.get() {
+        let Some(armed_at) = self.armed_at.get() else {
             return;
-        }
-        if self.post_exit_deadline.get().is_none() && self.browser_exited() {
-            let armed_at = Instant::now();
-            self.post_exit_deadline.set(Some(armed_at + self.grace));
-            #[cfg(all(feature = "media-acceptance", test))]
-            media_acceptance::observe_grace_armed(armed_at, self.grace);
+        };
+        if self.post_exit_deadline.get().is_none() {
+            if self.browser_exited() {
+                let exited_at = Instant::now();
+                self.post_exit_deadline.set(Some(exited_at + self.grace));
+                #[cfg(all(feature = "media-acceptance", test))]
+                media_acceptance::observe_grace_armed(
+                    exited_at,
+                    self.site,
+                    exited_at.saturating_duration_since(armed_at),
+                    self.grace,
+                );
+            } else if Instant::now() >= armed_at + self.hang_guard {
+                // Alive past the kill switch: a liveness fact, not a release.
+                self.fault.set(Some(ProfileReleaseFault::HangGuardExpired));
+                return;
+            }
         }
         if self
             .post_exit_deadline
@@ -2509,6 +2616,16 @@ impl ProfileReleaseWait {
         {
             self.fault.set(Some(ProfileReleaseFault::GraceExpired));
         }
+    }
+
+    /// The next instant the barrier must be re-judged: the post-exit grace
+    /// once the handle is signaled, otherwise the shutdown hang guard.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.post_exit_deadline.get().or_else(|| {
+            self.armed_at
+                .get()
+                .map(|armed_at| armed_at + self.hang_guard)
+        })
     }
 
     fn fault(&self) -> Option<ProfileReleaseFault> {
@@ -2521,14 +2638,14 @@ impl ProfileReleaseWait {
             || self.fault.get().is_some()
     }
 
-    /// Schedules the loop's next wake: only the post-exit grace is a timer.
-    /// Before the process exits the loop waits for the exit event or the
-    /// registered process wake, never for a wall-clock deadline.
+    /// Schedules the loop's next wake: the post-exit grace once the handle is
+    /// signaled, otherwise the shutdown hang guard. Before the process exits
+    /// the exit event or the registered process wake end the wait earlier.
     fn schedule(&self, control_flow: &mut ControlFlow) {
         if self.observed.get() || self.fault.get().is_some() {
             return;
         }
-        let Some(deadline) = self.post_exit_deadline.get() else {
+        let Some(deadline) = self.next_deadline() else {
             return;
         };
         if !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline) {
@@ -2539,11 +2656,11 @@ impl ProfileReleaseWait {
 
 /// Pumps this thread until `release` observes the barrier or faults.
 ///
-/// While the browser process is alive the wait wakes on a queued message or
-/// on its handle, with no other bound. Once the handle is signaled and the
-/// post-exit grace is armed, only messages or the remaining grace end a wait:
-/// a signaled handle in the wait set would return at once and spin.
-fn wait_for_browser_exit(release: &ProfileReleaseWait, site: ReleaseSite) -> Result<(), WvError> {
+/// While the browser process is alive the wait wakes on a queued message, on
+/// its handle, or at the shutdown hang guard. Once the handle is signaled and
+/// the post-exit grace is armed, only messages or the remaining grace end a
+/// wait: a signaled handle in the wait set would return at once and spin.
+fn wait_for_browser_exit(release: &ProfileReleaseWait) -> Result<(), WvError> {
     release.arm();
     loop {
         release.poll();
@@ -2553,17 +2670,20 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait, site: ReleaseSite) -> Res
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
-                fault.context(site),
+                fault.context(release.site),
             ));
         }
-        let (process, milliseconds) = match release.post_exit_deadline.get() {
-            None => (
-                release.process.as_ref().map(|process| [process.raw()]),
-                INFINITE,
-            ),
-            Some(deadline) => (None, milliseconds_until(deadline)?),
+        let Some(deadline) = release.next_deadline() else {
+            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
         };
-        pump_message_or_handle(process.as_ref().map(<[HANDLE; 1]>::as_slice), milliseconds)?;
+        let process = match release.post_exit_deadline.get() {
+            None => release.process.as_ref().map(|process| [process.raw()]),
+            Some(_) => None,
+        };
+        pump_message_or_handle(
+            process.as_ref().map(<[HANDLE; 1]>::as_slice),
+            milliseconds_until(deadline)?,
+        )?;
     }
 }
 
@@ -2789,7 +2909,7 @@ impl WebView2Engine {
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
         let stop_in_loop = stop_transition.clone();
         let release = Rc::new(
-            ProfileReleaseWait::new(self.browser_exit.take(), browser)
+            ProfileReleaseWait::new(self.browser_exit.take(), browser, ReleaseSite::Host)
                 .with_loop_wake(event_loop.create_proxy())?,
         );
         let release_in_loop = Rc::clone(&release);
@@ -2848,7 +2968,7 @@ impl WebView2Engine {
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
-                fault.context(ReleaseSite::Host),
+                fault.context(release.site),
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
@@ -2981,7 +3101,7 @@ impl WebView2Engine {
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
         let stop_in_loop = stop_transition.clone();
         let release = Rc::new(
-            ProfileReleaseWait::new(self.browser_exit.take(), browser)
+            ProfileReleaseWait::new(self.browser_exit.take(), browser, ReleaseSite::Host)
                 .with_loop_wake(event_loop.create_proxy())?,
         );
         let release_in_loop = Rc::clone(&release);
@@ -3076,7 +3196,7 @@ impl WebView2Engine {
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
-                fault.context(ReleaseSite::Host),
+                fault.context(release.site),
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
@@ -3666,23 +3786,28 @@ mod tests {
         handle
     }
 
-    /// KEL-132 regression: while the expected browser process is alive the
-    /// release wait has no wall-clock bound at all. A zero grace is the
-    /// smallest bound any absolute deadline could express; it must not fire.
+    /// KEL-132 regression: while the expected browser process is alive no
+    /// correctness bound applies. A zero grace is the smallest bound any
+    /// absolute deadline could express; it must not fire. Only the shutdown
+    /// hang guard is scheduled, and below it nothing fails: this is the
+    /// negative control for a too-short guard.
     #[test]
-    fn live_browser_process_keeps_the_release_wait_open_without_a_wall_clock_bound() {
+    fn live_browser_process_keeps_the_release_wait_open_below_the_hang_guard() {
+        let hang_guard = std::time::Duration::from_hours(1);
         let (_sender, receiver) = release_channel();
-        let release = ProfileReleaseWait::with_grace(
+        let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(alive_process_handle()),
+            ReleaseSite::Host,
             std::time::Duration::ZERO,
+            hang_guard,
         );
         release.arm();
         release.poll();
         assert_eq!(
             release.fault(),
             None,
-            "a live browser must not be failed by a wall-clock bound"
+            "a live browser below the hang guard must not be failed by any bound"
         );
         assert!(!release.observed.get());
         assert_eq!(
@@ -3690,15 +3815,108 @@ mod tests {
             None,
             "no grace may be armed while the browser is alive"
         );
+        let armed_at = release
+            .armed_at
+            .get()
+            .expect("the barrier is armed at Close");
         let mut control_flow = super::ControlFlow::Wait;
         release.schedule(&mut control_flow);
         assert_eq!(
             control_flow,
-            super::ControlFlow::Wait,
-            "the loop waits for the exit event or the process wake, not a timer"
+            super::ControlFlow::WaitUntil(armed_at + hang_guard),
+            "the loop waits for the exit event, the process wake or the hang guard, never a correctness deadline"
         );
         let expected = std::sync::atomic::AtomicU32::new(7);
         assert!(!release.exit_ready(&expected));
+    }
+
+    /// The shutdown hang guard is the only bound while the browser is alive:
+    /// it runs from the arming instant, fails with its own context after the
+    /// guard and never before it, never arms the grace and never counts as a
+    /// release. A zero guard expires at the arming poll (probe site); a short
+    /// guard is driven through the pump (host site) and its lower bound is
+    /// measured from the arming instant.
+    #[test]
+    fn live_browser_process_fails_only_after_the_hang_guard() {
+        let (_sender, receiver) = release_channel();
+        let immediate = ProfileReleaseWait::with_bounds(
+            Some(receiver),
+            Some(alive_process_handle()),
+            ReleaseSite::Probe,
+            std::time::Duration::from_hours(1),
+            std::time::Duration::ZERO,
+        );
+        immediate.arm();
+        assert_eq!(
+            immediate.fault(),
+            Some(ProfileReleaseFault::HangGuardExpired)
+        );
+        assert!(
+            !immediate.observed.get(),
+            "a hang-guard expiry is never a release"
+        );
+        assert_eq!(
+            immediate.post_exit_deadline.get(),
+            None,
+            "a hang-guard expiry never arms the grace"
+        );
+        let expected = std::sync::atomic::AtomicU32::new(7);
+        assert!(immediate.exit_ready(&expected));
+        let mut control_flow = super::ControlFlow::Wait;
+        immediate.schedule(&mut control_flow);
+        assert_eq!(
+            control_flow,
+            super::ControlFlow::Wait,
+            "a fault schedules nothing"
+        );
+        let error = wait_for_browser_exit(&immediate)
+            .expect_err("an expired hang guard is a typed failure");
+        assert!(
+            error.to_string().contains(
+                "the exclusive-UDF probe browser process was still alive when the shutdown hang guard expired"
+            ),
+            "{error}"
+        );
+
+        let hang_guard = std::time::Duration::from_millis(300);
+        let (_sender, receiver) = release_channel();
+        let release = ProfileReleaseWait::with_bounds(
+            Some(receiver),
+            Some(alive_process_handle()),
+            ReleaseSite::Host,
+            std::time::Duration::from_hours(1),
+            hang_guard,
+        );
+        release.arm();
+        let armed_at = release
+            .armed_at
+            .get()
+            .expect("the barrier is armed at Close");
+        assert_eq!(release.fault(), None, "nothing fails before the guard");
+        let error =
+            wait_for_browser_exit(&release).expect_err("a browser alive past the hang guard fails");
+        let since_arming = armed_at.elapsed();
+        println!(
+            "KELD_WV_HANG_GUARD since_arming_ms={}",
+            since_arming.as_millis()
+        );
+        assert!(
+            error.to_string().contains(
+                "the host browser process was still alive when the shutdown hang guard expired"
+            ),
+            "{error}"
+        );
+        assert!(
+            since_arming >= hang_guard,
+            "the guard must elapse from the arming instant: {since_arming:?}"
+        );
+        assert!(
+            since_arming <= hang_guard + std::time::Duration::from_secs(5),
+            "the failure is bounded by the guard, not a later wake: {since_arming:?}"
+        );
+        assert_eq!(release.fault(), Some(ProfileReleaseFault::HangGuardExpired));
+        assert_eq!(release.post_exit_deadline.get(), None);
+        assert!(!release.observed.get());
     }
 
     /// Once the process handle is signaled, only the post-exit grace bounds
@@ -3706,11 +3924,15 @@ mod tests {
     /// loop's only timer, and expires into exactly one fault.
     #[test]
     fn exited_browser_process_without_an_event_fails_only_after_the_grace() {
+        // A zero hang guard on an exited handle: once the handle is signaled
+        // only the grace applies, so the guard must never fire here.
         let (_sender, receiver) = release_channel();
-        let release = ProfileReleaseWait::with_grace(
+        let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(exited_process_handle()),
+            ReleaseSite::Host,
             std::time::Duration::from_hours(1),
+            std::time::Duration::ZERO,
         );
         release.poll();
         assert_eq!(
@@ -3736,9 +3958,11 @@ mod tests {
         assert_eq!(control_flow, super::ControlFlow::WaitUntil(deadline));
 
         let (_sender, receiver) = release_channel();
-        let expired = ProfileReleaseWait::with_grace(
+        let expired = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(exited_process_handle()),
+            ReleaseSite::Host,
+            std::time::Duration::ZERO,
             std::time::Duration::ZERO,
         );
         expired.arm();
@@ -3761,9 +3985,11 @@ mod tests {
     fn queued_exit_event_is_drained_before_the_grace_is_judged() {
         let (sender, receiver) = release_channel();
         sender.send(Ok(())).expect("queue the release event");
-        let release = ProfileReleaseWait::with_grace(
+        let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(exited_process_handle()),
+            ReleaseSite::Host,
+            std::time::Duration::ZERO,
             std::time::Duration::ZERO,
         );
         release.arm();
@@ -3777,9 +4003,11 @@ mod tests {
         sender
             .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
             .expect("queue the abnormal exit");
-        let abnormal = ProfileReleaseWait::with_grace(
+        let abnormal = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(alive_process_handle()),
+            ReleaseSite::Host,
+            std::time::Duration::from_hours(1),
             std::time::Duration::from_hours(1),
         );
         abnormal.arm();
@@ -3788,9 +4016,11 @@ mod tests {
 
         let (sender, receiver) = release_channel();
         drop(sender);
-        let dropped = ProfileReleaseWait::with_grace(
+        let dropped = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(alive_process_handle()),
+            ReleaseSite::Host,
+            std::time::Duration::from_hours(1),
             std::time::Duration::from_hours(1),
         );
         dropped.arm();
@@ -3804,8 +4034,13 @@ mod tests {
     #[test]
     fn absent_process_handle_fails_closed_after_the_grace() {
         let (_sender, receiver) = release_channel();
-        let release =
-            ProfileReleaseWait::with_grace(Some(receiver), None, std::time::Duration::ZERO);
+        let release = ProfileReleaseWait::with_bounds(
+            Some(receiver),
+            None,
+            ReleaseSite::Host,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        );
         release.poll();
         assert_eq!(release.fault(), None, "the barrier starts at Close");
         release.arm();
@@ -3820,6 +4055,7 @@ mod tests {
     fn release_fault_contexts_name_barrier_and_site() {
         let faults = [
             ProfileReleaseFault::GraceExpired,
+            ProfileReleaseFault::HangGuardExpired,
             ProfileReleaseFault::AbnormalExit,
             ProfileReleaseFault::ObserverDropped,
         ];
@@ -3866,12 +4102,14 @@ mod tests {
     #[test]
     fn exit_wait_pump_fails_promptly_for_a_signaled_process_without_an_event() {
         let (_sender, receiver) = release_channel();
-        let release = ProfileReleaseWait::with_grace(
+        let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(exited_process_handle()),
+            ReleaseSite::Probe,
+            std::time::Duration::ZERO,
             std::time::Duration::ZERO,
         );
-        let error = wait_for_browser_exit(&release, ReleaseSite::Probe)
+        let error = wait_for_browser_exit(&release)
             .expect_err("a gone probe browser without its event must fail");
         assert!(
             error
@@ -3919,11 +4157,18 @@ mod tests {
     fn exit_wait_pump_idles_through_the_grace_after_the_process_exited() {
         let grace = std::time::Duration::from_millis(400);
         let (_sender, receiver) = release_channel();
-        let release =
-            ProfileReleaseWait::with_grace(Some(receiver), Some(exited_process_handle()), grace);
+        // A zero hang guard: the exited handle must be judged by the grace
+        // alone, so the fault below must be the grace, never the guard.
+        let release = ProfileReleaseWait::with_bounds(
+            Some(receiver),
+            Some(exited_process_handle()),
+            ReleaseSite::Host,
+            grace,
+            std::time::Duration::ZERO,
+        );
         let cpu_before = thread_cpu_time();
         let started = std::time::Instant::now();
-        let error = wait_for_browser_exit(&release, ReleaseSite::Host)
+        let error = wait_for_browser_exit(&release)
             .expect_err("a gone browser without its event fails after the grace");
         let wall = started.elapsed();
         let cpu = thread_cpu_time().saturating_sub(cpu_before);
@@ -3966,10 +4211,12 @@ mod tests {
         // SAFETY: a current-thread id query has no preconditions.
         let thread_id = unsafe { GetCurrentThreadId() };
         let (sender, receiver) = release_channel();
-        let release = ProfileReleaseWait::with_grace(
+        let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
             Some(alive_process_handle()),
+            ReleaseSite::Host,
             std::time::Duration::ZERO,
+            std::time::Duration::from_hours(1),
         );
         let worker = std::thread::spawn(move || {
             // SAFETY: both posts target this test's own live queue with
@@ -3983,8 +4230,7 @@ mod tests {
             unsafe { PostThreadMessageW(thread_id, WM_NULL, WPARAM(0), LPARAM(0)) }
                 .expect("queue the wake");
         });
-        wait_for_browser_exit(&release, ReleaseSite::Host)
-            .expect("a live browser's event must be observed");
+        wait_for_browser_exit(&release).expect("a live browser's event must be observed");
         worker.join().expect("worker thread");
         assert!(release.observed.get());
         assert_eq!(

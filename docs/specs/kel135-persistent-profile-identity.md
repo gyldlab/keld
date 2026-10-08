@@ -5,7 +5,8 @@ Approval: Linear comment `75d75f6e-76e9-4fd1-a130-9d57548d0372` · decision SHA-
 
 Windows release-barrier clarification, 2026-10-08 (KEL-132 hosted-CI diagnosis; §4
 Platform policy): the `BrowserProcessExited` waits are liveness-gated on the browser
-process handle with a 5 s post-exit grace, and an unproven scavenge probe retains the
+process handle with a 5 s post-exit grace and a measured 240 s shutdown hang guard that
+fails closed while the browser stays alive, and an unproven scavenge probe retains the
 leaf without failing the current host. No boundary change: it names the barrier the
 approved contract already required and claims no new approval; the fix PR carries the
 owner's review.
@@ -425,13 +426,18 @@ released the UDF; the host verifies the environment-reported path, closes the re
 webview/controller after registering `BrowserProcessExited` on
 `ICoreWebView2Environment5`, retains that environment object until the event, then
 releases it. That wait is liveness-gated: the host opens a `SYNCHRONIZE` handle to the
-probe's browser process before `Close` and keeps waiting without a wall-clock bound
-while that handle is unsignaled; once it is signaled, a 5 s post-exit grace bounds the
-event, because WebView2 raises it only after the collection has released the UDF. An
-abnormal exit of the expected process, a dropped observer, or that grace expiry proves
-failure; an exit event for any other process is ignored and cannot prove release, so a
-mismatched exit fails only through that grace once the expected process is gone. A
-separate launch-only deadline bounds environment and controller creation. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
+probe's browser process before `Close`; while that handle is unsignaled no correctness
+bound applies, and only a measured shutdown hang guard (240 s: four times the largest
+observed healthy shutdown, a kill switch in the pattern of the navigation deadline)
+bounds the wait; once the handle is signaled, a 5 s post-exit grace bounds the event,
+because WebView2 raises it only after the collection has released the UDF. An abnormal
+exit of the expected process, a dropped observer, that grace expiry, or the hang guard
+expiring while the browser is still alive proves failure: the hang guard never passes
+the barrier, so recovery and purge fail typed and the store stays quarantined, exactly
+as after a browser crash. An exit event for any other process is ignored and cannot
+prove release, so a mismatched exit fails only through that grace once the expected
+process is gone. A separate launch-only deadline bounds environment and controller
+creation. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
 `starting → running` startup. A crash before durable `idle` leaves quarantine intact; a
 crash after `idle` has no live recovery collection. No suffix/new/default store is
 created, and normal store lookup/navigation cannot precede durable `idle`.
@@ -445,11 +451,14 @@ Windows dev-ephemeral UDFs live at a unique owner-private
 `FOLDERID_LocalAppData/Keld/ephemeral/v1/<launch-nonce>` leaf with a durable schema
 marker and exclusive lease; they are never selected by a later app session. Graceful
 exit waits for `BrowserProcessExited` under the same liveness-gated barrier (browser
-process handle opened before `Close`, 5 s post-exit grace) before guarded deletion.
-After host crash, the next host performs bounded marker-validated scavenging; a
-still-busy leaf, or one whose exclusive-UDF probe could not prove release, remains
-quarantined for a later pass, never fails the current host's own release, and is never
-reused. Here `ephemeral` means nonpersistent session
+process handle opened before `Close`; the 240 s shutdown hang guard while it stays alive;
+the 5 s post-exit grace once it is signaled) before guarded deletion. A hang-guard
+expiry fails the host's own release typed: the host exits, its host-death Job reaps the
+browser, and the next launch treats the leaf as a predecessor. After host crash, the
+next host performs bounded marker-validated scavenging; a still-busy leaf, or one whose
+exclusive-UDF probe could not prove release (including a probe browser that outlives
+the hang guard), remains quarantined for a later pass, never fails the current host's
+own release, and is never reused. Here `ephemeral` means nonpersistent session
 selection, not a false guarantee that a crashed WebView2 process leaves zero disk bytes
 immediately.
 
