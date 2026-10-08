@@ -1,5 +1,6 @@
-//! GH-528 T2 end-to-end cases (spec gh527 criteria 6, 7(a) and the host half
-//! of 8): a Bun role running the GH-527 `WorkerLink` fixture
+//! GH-528 T2 and T3 end-to-end cases (spec gh527 criteria 6, 7(a) and the
+//! host half of 8; the T3 Quit-then-close rule): a Bun role running the
+//! GH-527 `WorkerLink` fixture
 //! (`packages/@keld/kipc/test/worker-link-role.ts`) against the guarded
 //! primary router on a real authenticated app link. macOS only, like the T1
 //! harness; T5 qualifies Linux and Windows.
@@ -260,4 +261,58 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
     );
     t.release.send(()).expect("release FS worker");
     t.router.shutdown().expect("router shutdown");
+}
+
+/// GH-528 T3 (#636 gate review, coordinator decision): a Bun role whose Quit
+/// is its last call (`quitAndCloseLink`) closes the link on the real
+/// `LifecycleResponse::Quit` REPLY. The host's post-Quit drain ends at that
+/// EOF, not at its idle backstop, before the Quit tail asks the guardian to
+/// shut down, and the tail proceeds to the UI Quit. The role's `onEnd`
+/// reports the close as `KELD-IPC-022`. *Negative control:* a Quit that does
+/// not close the link ends the drain at `IdleBackstop`.
+#[test]
+fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
+    let (role, t) = WorkerLinkRole::start("t3-quit-close", LIFECYCLE_CHANNEL, &[]);
+    let (end_tx, drain_end) = mpsc::sync_channel(1);
+    t.router.handle().observe_next_quit_drain_end(end_tx);
+    let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+        .guardian
+        .recv_timeout(Duration::from_secs(20))
+        .expect("Quit attribution")
+    else {
+        panic!("Quit skipped shutdown attribution");
+    };
+    prepare.send(Ok(())).expect("acknowledge attribution");
+    assert_eq!(
+        drain_end
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the post-Quit drain ended"),
+        QuitDrainEnd::PeerClosed,
+        "the drain ends at the role's EOF"
+    );
+    let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+        .guardian
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the Quit tail reaches the guardian after the drain")
+    else {
+        panic!("unexpected guardian command after the Quit drain");
+    };
+    shutdown
+        .send(Ok(()))
+        .expect("acknowledge guardian shutdown");
+    assert_eq!(
+        t.window
+            .recv_timeout(Duration::from_secs(5))
+            .expect("UI Quit"),
+        AppWindowCommand::Quit
+    );
+    let report = role.finish();
+    let expected = hex_of(&encode(&LifecycleResponse::Quit).expect("encode Quit response"));
+    assert_eq!(
+        report_value(&report, "quit-hex"),
+        Some(expected.as_str()),
+        "{report:?}"
+    );
+    assert_eq!(report_value(&report, "end-code"), Some("KELD-IPC-022"));
+    t.router.shutdown().expect("router shutdown after Quit");
 }

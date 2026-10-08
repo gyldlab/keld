@@ -4529,12 +4529,36 @@ struct PrimaryRouterHandle {
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
     #[cfg(all(test, target_os = "macos"))]
-    quit_drain_stall: Arc<Mutex<Option<QuitDrainStall>>>,
+    quit_drain_hooks: Arc<Mutex<QuitDrainTestHooks>>,
 }
 
-/// Test hook state for [`PrimaryRouterHandle::stall_next_quit_drain`].
+/// Test hooks for the post-Quit drain: [`PrimaryRouterHandle::stall_next_quit_drain`]
+/// and [`PrimaryRouterHandle::observe_next_quit_drain_end`].
 #[cfg(all(test, target_os = "macos"))]
-type QuitDrainStall = (SyncSender<()>, Receiver<()>);
+#[derive(Default)]
+struct QuitDrainTestHooks {
+    stall: Option<(SyncSender<()>, Receiver<()>)>,
+    end: Option<SyncSender<QuitDrainEnd>>,
+}
+
+/// How a post-Quit drain ended (GH-527 §4.9). Every end leads to the same
+/// host-initiated close; tests observe which one it was.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuitDrainEnd {
+    /// The role ended the link: its EOF, or a reset (the normal end).
+    PeerClosed,
+    /// No byte for `HOST_ANSWER_BUDGET` (the idle backstop).
+    IdleBackstop,
+    /// The drain's `APP_LINK_IO_DEADLINE`, or a frame that stalled.
+    Deadline,
+    /// A frame the session does not admit.
+    NotAdmitted,
+    /// A `KELD-IPC-024` answer could not be written: the link is lost.
+    AnswerLost,
+    /// The generation is gone or its lock is poisoned.
+    GenerationGone,
+}
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
@@ -4916,14 +4940,41 @@ impl PrimaryRouterHandle {
         let idle_deadline = self
             .stall_quit_drain_for_test(started)
             .unwrap_or(idle_deadline);
+        let end = self.drain_calls_after_quit(attempt, reader, idle_deadline, hard_deadline);
+        #[cfg(all(test, target_os = "macos"))]
+        self.report_quit_drain_end(end);
+        #[cfg(not(all(test, target_os = "macos")))]
+        let _ = end;
+    }
+
+    /// The drain loop of [`Self::answer_calls_after_quit`]. Every way it ends
+    /// leads to the same host-initiated close, so none is a fault of the
+    /// accepted shutdown: a role that closes right after its Quit REPLY ends
+    /// it at that EOF, and an answer it can no longer receive (`EPIPE`, a
+    /// reset, `NotConnected`) ends it quietly as a lost link.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn drain_calls_after_quit(
+        &self,
+        attempt: u32,
+        reader: &mut BootstrapStream,
+        idle_deadline: Instant,
+        hard_deadline: Instant,
+    ) -> QuitDrainEnd {
         let error = CallError::quit_drained();
         let privileged_call = self.fs.is_some().then_some(&keld_ipc::channel_table::FS);
-        // The peer's EOF, a backstop deadline, and a frame the session does not
-        // admit all end the drain in that same close, so none of them is a
-        // fault of this accepted shutdown.
-        while let Ok(Some((header, _payload))) =
-            read_quit_drain_frame(reader, privileged_call, idle_deadline, hard_deadline)
-        {
+        loop {
+            let header = match read_quit_drain_frame(
+                reader,
+                privileged_call,
+                idle_deadline,
+                hard_deadline,
+            ) {
+                Ok(Some((header, _payload))) => header,
+                Ok(None) => return QuitDrainEnd::IdleBackstop,
+                Err(IpcError::Io(_)) => return QuitDrainEnd::PeerClosed,
+                Err(IpcError::Timeout) => return QuitDrainEnd::Deadline,
+                Err(_) => return QuitDrainEnd::NotAdmitted,
+            };
             let declares_err = header.channel() == LIFECYCLE_CHANNEL
                 || (privileged_call.is_some() && header.channel() == FS_CHANNEL);
             if header.kind() != FrameKind::Call || !declares_err {
@@ -4932,18 +4983,40 @@ impl PrimaryRouterHandle {
             // A poisoned lock ends the drain; the caller's next acquisition
             // for the link close reports it.
             let Ok(mut current) = self.current.lock() else {
-                return;
+                return QuitDrainEnd::GenerationGone;
             };
             let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
-                return;
+                return QuitDrainEnd::GenerationGone;
             };
             if !write_best_effort_answers(
                 &mut active.writer,
                 [(header.channel(), header.corr())],
                 &error,
             ) {
-                return;
+                return QuitDrainEnd::AnswerLost;
             }
+        }
+    }
+
+    /// Test hook: reports how the next post-Quit drain ended.
+    #[cfg(all(test, target_os = "macos"))]
+    fn observe_next_quit_drain_end(&self, end: SyncSender<QuitDrainEnd>) {
+        self.quit_drain_hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .end = Some(end);
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    fn report_quit_drain_end(&self, end: QuitDrainEnd) {
+        let observer = self
+            .quit_drain_hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .end
+            .take();
+        if let Some(observer) = observer {
+            let _ = observer.send(end);
         }
     }
 
@@ -4952,10 +5025,10 @@ impl PrimaryRouterHandle {
     /// passed, as a host stall longer than its idle backstop would.
     #[cfg(all(test, target_os = "macos"))]
     fn stall_next_quit_drain(&self, stalled: SyncSender<()>, resume: Receiver<()>) {
-        *self
-            .quit_drain_stall
+        self.quit_drain_hooks
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((stalled, resume));
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stall = Some((stalled, resume));
     }
 
     /// Returns the injected idle deadline (`started`, already passed) when
@@ -4963,9 +5036,10 @@ impl PrimaryRouterHandle {
     #[cfg(all(test, target_os = "macos"))]
     fn stall_quit_drain_for_test(&self, started: Instant) -> Option<Instant> {
         let (stalled, resume) = self
-            .quit_drain_stall
+            .quit_drain_hooks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stall
             .take()?;
         let _ = stalled.send(());
         let _ = resume.recv_timeout(Duration::from_secs(5));
@@ -5587,7 +5661,7 @@ impl PrimaryRouter {
             guardian,
             window_commands,
             #[cfg(all(test, target_os = "macos"))]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
             handle,
@@ -5628,7 +5702,7 @@ impl PrimaryRouter {
             guardian,
             window_commands,
             #[cfg(all(test, target_os = "macos"))]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
             handle,
@@ -7330,7 +7404,7 @@ mod tests {
             },
             window_commands: window_tx,
             #[cfg(target_os = "macos")]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
 
         let pending = PendingFsCall {
@@ -7454,7 +7528,7 @@ mod tests {
             },
             window_commands: window_tx,
             #[cfg(target_os = "macos")]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
         let router = PrimaryRouter {
             handle: handle.clone(),
@@ -8024,6 +8098,75 @@ mod tests {
         t.router.shutdown().expect("router shutdown after Quit");
     }
 
+    /// GH-528 T3 (#636 gate review): a role that fully closes right after its
+    /// Quit REPLY can leave a CALL it wrote behind the Quit in the host's
+    /// buffer. The drain still reads it, its `KELD-IPC-024` finds the role gone
+    /// (`EPIPE`), and the drain ends quietly as a lost link: the Quit tail goes
+    /// on to the guardian's shutdown and the UI Quit, with no link-failure
+    /// report and no `Fatal`. The drain is held before its first read until
+    /// the role has closed, so the answer's failure is certain. *Negative
+    /// control:* a failed answer that propagates as a session error sends the
+    /// UI `Fatal` instead of `Quit`.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
+        let (t, mut client) = guarded_test_router();
+        let (stalled_tx, stalled) = mpsc::sync_channel(1);
+        let (resume, resume_rx) = mpsc::channel();
+        let (end_tx, drain_end) = mpsc::sync_channel(1);
+        let handle = t.router.handle();
+        handle.stall_next_quit_drain(stalled_tx, resume_rx);
+        handle.observe_next_quit_drain_end(end_tx);
+        let target = t.allowed.join("behind.txt");
+        write_quit_call(&mut client, 90);
+        write_fs_call(&mut client, 91, &target);
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
+        assert_eq!(
+            (quit.kind, quit.channel, quit.corr),
+            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(90))
+        );
+        stalled
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the drain stalled before its first read");
+        drop(client);
+        resume.send(()).expect("resume the drain");
+
+        assert_eq!(
+            drain_end
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the post-Quit drain ended"),
+            QuitDrainEnd::AnswerLost
+        );
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the Quit tail reaches the guardian, not a link failure")
+        else {
+            panic!("a lost post-Quit answer must not report a link failure");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
+        t.router
+            .shutdown()
+            .expect("the accepted Quit stays a clean shutdown");
+    }
+
     /// GH-528 T2 (gate review of #636, L2): a peer that stops reading cannot
     /// hold a retirement, and its generation lock, for the writer's deadline.
     /// The host-to-role direction is full before retirement and nothing reads
@@ -8478,7 +8621,7 @@ mod tests {
             },
             window_commands: window_tx,
             #[cfg(target_os = "macos")]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
         let router =
             PrimaryRouter::finish_start(handle, None).expect("successor drain router worker");
@@ -10083,7 +10226,7 @@ mod tests {
             guardian: PlatformPrimaryOwnerHandle { command_tx },
             window_commands: window_tx,
             #[cfg(target_os = "macos")]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
         (handle, client, command_rx)
     }
@@ -10490,7 +10633,7 @@ mod tests {
             },
             window_commands: window_tx,
             #[cfg(target_os = "macos")]
-            quit_drain_stall: Arc::new(Mutex::new(None)),
+            quit_drain_hooks: Arc::default(),
         };
         let error = handle
             .signal_ready()

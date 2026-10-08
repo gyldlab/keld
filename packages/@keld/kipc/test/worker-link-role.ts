@@ -898,11 +898,23 @@ async function quitClose(): Promise<void> {
   report("order", log.join(","));
 }
 
+// GH-528 T3 end to end against the keld-core router: the role's Quit is its
+// last call and closes the link on its REPLY (quitAndCloseLink).
+async function t3QuitClose(): Promise<void> {
+  const { link } = await open();
+  const ended = new Promise<string>((resolve) => {
+    link.onEnd((err) => resolve(codeOf(err)));
+  });
+  report("quit-hex", hexOf(quitAndCloseLink(link, 30_000)));
+  report("end-code", await ended);
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
   "t2-blocking-call": t2BlockingCall,
   "t2-worker-dies": t2WorkerDies,
   "on-end": onEndReport,
   "quit-close": quitClose,
+  "t3-quit-close": t3QuitClose,
   "expiry-after-close": expiryAfterClose,
   "expiry-during-park": expiryDuringPark,
   "claim-first-worker-dies": claimFirstWorkerDies,
