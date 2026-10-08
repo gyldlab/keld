@@ -6,7 +6,9 @@
 //! its token and raw handle table can be audited before untrusted code runs.
 //! The `PerUserDirect` candidate's same-token launch uses the same creation call
 //! and the same suspended-child type, without the LPAC attributes and without
-//! any inherited handle (KEL-53 §5).
+//! any inherited handle (KEL-53 §5). Every launch names the child's standard
+//! handles explicitly, the admitted copies or null, because process creation
+//! otherwise hands the child this process's own standard handles.
 
 #![allow(unsafe_code)] // isolated Win32 security/process ABI; every call has a local proof
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -335,8 +337,11 @@ impl WindowsLpacProfile {
     /// inherited-handle list.
     ///
     /// `standard_handles`, when present, are added to the allowlist and wired
-    /// as stdin/stdout/stderr. `extra_handles` is reserved for authenticated
-    /// app-link transport. No other handle is admitted.
+    /// as stdin/stdout/stderr. Without them the child's three standard handles
+    /// are null, so its `GetStdHandle` reports a process without associated
+    /// standard handles; it never receives this process's own standard handles.
+    /// `extra_handles` is reserved for authenticated app-link transport. No
+    /// other handle is admitted.
     ///
     /// # Errors
     ///
@@ -412,8 +417,11 @@ impl WindowsLpacProfile {
                 WindowsLpacError::contract("STARTUPINFOEXW size", "structure exceeds u32")
             })?;
         startup.lpAttributeList = attributes.pointer;
+        // The child's standard handles are exactly these three fields: the
+        // admitted private copies, or the null default. The flag is set for
+        // every launch; `create_suspended_process` owns that rule.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         if let Some(stdio) = standard_handles {
-            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
             startup.StartupInfo.hStdInput =
                 inherited.copy_of(stdio.stdin.as_raw_handle().cast())?;
             startup.StartupInfo.hStdOutput =
@@ -461,6 +469,17 @@ enum SuspendedStartup<'a> {
 }
 
 /// The one `CreateProcessW` call of every Keld suspended launch.
+///
+/// Every launch sets `STARTF_USESTDHANDLES`, so the child's standard handles
+/// are exactly the startup structure's `hStdInput`, `hStdOutput` and
+/// `hStdError`: the LPAC launch's admitted private copies, or null, which the
+/// child's `GetStdHandle` reports as a process without associated standard
+/// handles. Without the flag, process creation gives the child this process's
+/// own standard handles, and when they are not console handles, such as the
+/// pipes of `keld dev` or a test runner, it duplicates them into the child even
+/// with handle inheritance off, outside any handle-list attribute and whether
+/// or not the handle is inheritable. A startup structure without the flag is
+/// refused before any process exists.
 fn create_suspended_process(
     application: &[u16],
     command_line: &mut [u16],
@@ -468,9 +487,12 @@ fn create_suspended_process(
     current_dir: Option<&[u16]>,
     startup: SuspendedStartup<'_>,
 ) -> Result<WindowsSuspendedChild, WindowsLpacError> {
-    let (launch, startup_info, inherit_handles, extended, phase): (
+    // The pointer is derived from the whole startup object of each arm: the
+    // LPAC call reads the STARTUPINFOEXW beyond its leading STARTUPINFOW.
+    let (launch, startup_info, flags, inherit_handles, extended, phase): (
         _,
         *const STARTUPINFOW,
+        _,
         _,
         _,
         _,
@@ -480,7 +502,8 @@ fn create_suspended_process(
             inherit_handles,
         } => (
             SuspendedLaunch::Lpac,
-            (&raw const startup.StartupInfo).cast(),
+            std::ptr::from_ref(startup).cast::<STARTUPINFOW>(),
+            startup.StartupInfo.dwFlags,
             inherit_handles,
             EXTENDED_STARTUPINFO_PRESENT,
             "CreateProcessW LPAC launch",
@@ -488,21 +511,35 @@ fn create_suspended_process(
         SuspendedStartup::SameToken(startup) => (
             SuspendedLaunch::SameToken,
             std::ptr::from_ref(startup),
+            startup.dwFlags,
             false,
             0,
             "CreateProcessW same-token launch",
         ),
     };
+    if flags & STARTF_USESTDHANDLES == 0 {
+        return Err(WindowsLpacError::contract(
+            phase,
+            "the startup structure does not name the child's standard handles: without \
+             STARTF_USESTDHANDLES the child would receive this process's own",
+        )
+        .in_launch(launch));
+    }
     let mut process = PROCESS_INFORMATION::default();
     let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | extended;
     // SAFETY: every pointer refers to live storage through this synchronous
-    // call; command line is mutable as required; `startup_info` points at a
-    // borrowed STARTUPINFOW, which for the LPAC launch heads a STARTUPINFOEXW
-    // whose attribute list retains its backing values, and
-    // EXTENDED_STARTUPINFO_PRESENT is set only then; process/thread outputs are
-    // writable. TRUE inheritance is used only by the LPAC launch, together with
-    // its explicit handle-list attribute; the same-token launch passes FALSE and
-    // no token, so the child runs under a copy of this process's primary token.
+    // call; command line is mutable as required; `startup_info` points at the
+    // borrowed startup object of its arm: a STARTUPINFOW for the same-token
+    // launch, and for the LPAC launch a STARTUPINFOEXW whose attribute list
+    // retains its backing values, where the pointer is derived from the whole
+    // STARTUPINFOEXW, so the extended read of `lpAttributeList` that
+    // EXTENDED_STARTUPINFO_PRESENT (set only then) requests is within its
+    // provenance; its standard-handle fields are null or the LPAC launch's
+    // retained private copies, and the flag that makes them the child's is
+    // checked above; process/thread outputs are writable. TRUE inheritance is
+    // used only by the LPAC launch, together with its explicit handle-list
+    // attribute; the same-token launch passes FALSE and no token, so the child
+    // runs under a copy of this process's primary token.
     let created = unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -583,9 +620,14 @@ impl WindowsSuspendedChild {
     /// token (KEL-53 §5, §6 S6b).
     ///
     /// The one suspended creation call runs with `CREATE_SUSPENDED`, without the
-    /// LPAC attribute list and with handle inheritance off, so the child inherits
-    /// no handle of the caller: no attempt endpoint, no start-gate pipe and no
-    /// standard handle. It runs under a copy of the caller's primary token.
+    /// LPAC attribute list, with handle inheritance off and with the child's
+    /// three standard handles named null, so the child holds no handle of the
+    /// caller: no attempt endpoint, no start-gate pipe and no standard handle.
+    /// Its `GetStdHandle` reports NULL for all three, as for a process without
+    /// associated standard handles; inheritance off alone would not do this,
+    /// because process creation duplicates a caller's non-console standard
+    /// handles into a child whose startup structure does not name its own. It
+    /// runs under a copy of the caller's primary token.
     /// `environment` is its complete environment block, as for the LPAC launch,
     /// and `current_dir` its working directory. `program` and `current_dir` must
     /// be absolute: `program` names the image exactly, and Windows neither
@@ -633,6 +675,13 @@ impl WindowsSuspendedChild {
                     "structure exceeds u32",
                 ))
             })?,
+            // The child's standard handles are exactly these three, null: the
+            // flag is required by `create_suspended_process`, which owns the
+            // rule.
+            dwFlags: STARTF_USESTDHANDLES,
+            hStdInput: std::ptr::null_mut(),
+            hStdOutput: std::ptr::null_mut(),
+            hStdError: std::ptr::null_mut(),
             ..STARTUPINFOW::default()
         };
         create_suspended_process(
@@ -1195,6 +1244,47 @@ mod tests {
         );
         assert!(child.resume_held().is_err(), "the refused resume is spent");
         child.terminate(1).expect("terminate the refused child");
+    }
+
+    #[test]
+    fn a_startup_structure_that_does_not_name_the_childs_standard_handles_is_refused() {
+        // The one creation call owns the rule that every launch names the child's
+        // standard handles; a structure without STARTF_USESTDHANDLES refuses before
+        // any process exists. Removing the check creates a suspended cmd.exe instead.
+        let program =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+                .join(r"System32\cmd.exe");
+        let application =
+            super::wide_nul(program.as_os_str(), "application path").expect("encode the path");
+        let mut command_line =
+            super::encode_command_line(program.as_os_str(), &[std::ffi::OsString::from("/d")])
+                .expect("encode the command line");
+        let environment = super::encode_environment(&[]).expect("encode the environment");
+        let startup = windows_sys::Win32::System::Threading::STARTUPINFOW {
+            cb: u32::try_from(std::mem::size_of::<
+                windows_sys::Win32::System::Threading::STARTUPINFOW,
+            >())
+            .expect("STARTUPINFOW size fits u32"),
+            ..Default::default()
+        };
+        let refusal = super::create_suspended_process(
+            &application,
+            &mut command_line,
+            &environment,
+            None,
+            super::SuspendedStartup::SameToken(&startup),
+        )
+        .expect_err("a startup structure without STARTF_USESTDHANDLES refuses");
+        let text = refusal.to_string();
+        assert!(
+            text.starts_with("KELD-RUNTIME-020: ")
+                && text.contains(
+                    "CreateProcessW same-token launch: the startup structure does not name the \
+                     child's standard handles: without STARTF_USESTDHANDLES the child would \
+                     receive this process's own"
+                ),
+            "{text}"
+        );
     }
 
     #[test]

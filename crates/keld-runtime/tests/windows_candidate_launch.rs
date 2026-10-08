@@ -12,9 +12,15 @@
 #![allow(clippy::expect_used, clippy::panic)] // process fixture invariants must abort loudly
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[path = "support/windows_standard_handles.rs"]
+mod windows_standard_handles;
+
 use std::ffi::OsString;
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::net::{TcpListener, TcpStream};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use keld_runtime::windows_job::{
@@ -22,6 +28,10 @@ use keld_runtime::windows_job::{
     WindowsProcessPeer,
 };
 use keld_runtime::windows_lpac::{WindowsLpacTokenObservation, WindowsSuspendedChild};
+use windows_standard_handles::{
+    CANDIDATE_STDOUT_MARKER, KILL_SWITCH, NO_STANDARD_HANDLE_REPORT, drain,
+    exits_within_kill_switch, standard_handle_report,
+};
 use windows_sys::Win32::Foundation::{
     CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HANDLE_FLAG_INHERIT,
     SetHandleInformation,
@@ -38,6 +48,12 @@ const COMMAND_EXIT: u32 = 7;
 /// `TerminateJobObject`'s exit code in `WindowsProcessJob::terminate_and_wait`.
 const JOB_TERMINATION_EXIT: u32 = 1;
 const WAIT_MS: u32 = 10_000;
+/// Selects a private subprocess entry point of this binary.
+const HELPER_ENV: &str = "KELD_WINDOWS_CANDIDATE_LAUNCH_HELPER";
+/// The test's report listener port, handed to the launcher and on to the candidate.
+const REPORT_PORT_ENV: &str = "KELD_WINDOWS_CANDIDATE_LAUNCH_REPORT_PORT";
+/// The test's go-ahead byte that ends the candidate's hold.
+const GO: u8 = b'G';
 
 fn system32() -> PathBuf {
     PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set")).join("System32")
@@ -49,6 +65,15 @@ fn environment() -> Vec<(OsString, OsString)> {
         .into_iter()
         .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
         .collect()
+}
+
+fn fixture_args(fixture: &str) -> [OsString; 4] {
+    [
+        OsString::from("--exact"),
+        OsString::from(fixture),
+        OsString::from("--ignored"),
+        OsString::from("--nocapture"),
+    ]
 }
 
 /// Creates a same-token suspended `cmd.exe /d /c exit 7`.
@@ -346,6 +371,211 @@ fn a_candidate_launch_refusal_is_typed_runtime_020_before_any_process_exists() {
             .contains("during current directory: path is not absolute"),
         "{relative_directory}"
     );
+}
+
+/// KEL-270 F51: the launcher's three standard handles are pipes, as a host's are under
+/// `keld dev` or a test runner, and it starts the candidate through the same-token
+/// launch. The candidate holds none of them: its own `GetStdHandle` reports NULL three
+/// times and its standard-output write fails; no candidate byte reaches the launcher's
+/// pipes; and those pipes reach EOF once the launcher exits while the released
+/// candidate still runs. Without `STARTF_USESTDHANDLES` process creation duplicates a
+/// parent's non-console standard handles into the child even with inheritance off, and
+/// the released candidate then holds the launcher's log pipe until its own exit.
+#[test]
+fn the_candidate_holds_no_standard_handle_of_the_launcher() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the report listener");
+    let port = listener.local_addr().expect("listener address").port();
+    let mut launcher = Command::new(std::env::current_exe().expect("current test executable"))
+        .args(fixture_args("launcher_fixture"))
+        .env(HELPER_ENV, "launcher")
+        .env(REPORT_PORT_ENV, port.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the launcher fixture");
+    // Held to the end, so the launcher's standard input is a live pipe throughout.
+    let stdin_writer = launcher.stdin.take().expect("launcher stdin");
+    let stdout = drain(launcher.stdout.take().expect("launcher stdout"));
+    let stderr = drain(launcher.stderr.take().expect("launcher stderr"));
+
+    let mut report = Report::accept(&listener);
+    let candidate = claimant_by_pid(
+        report
+            .line("CANDIDATE ")
+            .parse()
+            .expect("the candidate's process ID"),
+    );
+    let handles = report.line("STDHANDLES ");
+
+    assert!(
+        exits_within_kill_switch(&launcher),
+        "the launcher did not exit after releasing the candidate"
+    );
+    let status = launcher.wait().expect("reap the launcher");
+    assert!(status.success(), "launcher failed: {status}");
+    assert!(
+        !candidate.has_exited().expect("query the candidate"),
+        "the released candidate outlives the launcher"
+    );
+
+    // Every contract fact is collected before the first failure, so one run of the
+    // unfixed code shows the candidate's handles and what they did to the pipes.
+    let mut defects = Vec::new();
+    if handles != NO_STANDARD_HANDLE_REPORT {
+        defects.push(format!(
+            "the candidate holds standard handles: {handles} (expected {NO_STANDARD_HANDLE_REPORT})"
+        ));
+    }
+    let marker = String::from_utf8_lossy(CANDIDATE_STDOUT_MARKER);
+    for (name, pipe) in [("output", stdout), ("error", stderr)] {
+        match pipe.recv_timeout(KILL_SWITCH) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                if name == "output" && !text.contains("LAUNCHER_RELEASED ") {
+                    defects.push(format!(
+                        "the launcher's release record is missing: {text:?}"
+                    ));
+                }
+                if text.contains(&*marker) {
+                    defects.push(format!(
+                        "candidate bytes reached the launcher's standard {name}: {text:?}"
+                    ));
+                }
+            }
+            Err(_) => defects.push(format!(
+                "the launcher's standard {name} reached no EOF within {KILL_SWITCH:?} of the \
+                 launcher's exit: the released candidate holds the launcher's pipe"
+            )),
+        }
+    }
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+
+    report.go();
+    assert!(
+        candidate
+            .wait_until_exited(KILL_SWITCH)
+            .expect("wait for the candidate"),
+        "the candidate did not exit after the go-ahead"
+    );
+    drop(stdin_writer);
+}
+
+/// The launcher stand-in: creates the candidate through the same-token launch as the
+/// `PerUserDirect` host does, assigned to its attempt Job before its first instruction,
+/// then releases the Job and exits. It exits through `process::exit`: the retained
+/// launch record would otherwise terminate the released candidate.
+#[test]
+#[ignore = "private subprocess entry point"]
+fn launcher_fixture() {
+    assert_eq!(
+        std::env::var(HELPER_ENV).as_deref(),
+        Ok("launcher"),
+        "unexpected private launcher fixture entry"
+    );
+    let port = std::env::var(REPORT_PORT_ENV).expect("report port");
+    let exe = std::env::current_exe().expect("current test executable");
+    let mut environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR", "PATH"]
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+        .collect();
+    environment.push((OsString::from(HELPER_ENV), OsString::from("candidate")));
+    environment.push((OsString::from(REPORT_PORT_ENV), OsString::from(port)));
+    let child = WindowsSuspendedChild::spawn_same_token(
+        &exe,
+        &fixture_args("candidate_fixture"),
+        &environment,
+        exe.parent().expect("test executable directory"),
+    )
+    .expect("create the candidate suspended");
+    let mut job = WindowsProcessJob::create().expect("create the attempt Job");
+    let mut launched = WindowsLaunchedProcess::record(child).expect("record the launch");
+    let membership = job
+        .assign_child(launched.child())
+        .expect("assign the candidate before its first instruction");
+    launched.resume(&membership).expect("resume the candidate");
+    let _released = job.release_family().expect("release the attempt Job");
+    println!("LAUNCHER_RELEASED {}", launched.child().id());
+    std::io::stdout()
+        .flush()
+        .expect("flush the launcher record");
+    std::process::exit(0);
+}
+
+/// The candidate stand-in: reports its process ID and its three standard handles over
+/// the test's listener, never through a standard handle, then holds whatever it was
+/// given until the test's go-ahead or the report's close.
+#[test]
+#[ignore = "private subprocess entry point"]
+fn candidate_fixture() {
+    assert_eq!(
+        std::env::var(HELPER_ENV).as_deref(),
+        Ok("candidate"),
+        "unexpected private candidate fixture entry"
+    );
+    let port: u16 = std::env::var(REPORT_PORT_ENV)
+        .expect("report port")
+        .parse()
+        .expect("numeric report port");
+    let mut report = TcpStream::connect(("127.0.0.1", port)).expect("connect the report");
+    writeln!(report, "CANDIDATE {}", std::process::id()).expect("report the process ID");
+    writeln!(report, "STDHANDLES {}", standard_handle_report())
+        .expect("report the standard handles");
+    report.flush().expect("flush the report");
+    let mut go = [0_u8; 1];
+    let _ = std::io::Read::read(&mut report, &mut go);
+    let _ = report.shutdown(std::net::Shutdown::Both);
+    std::process::exit(0);
+}
+
+/// The test side of the candidate's report: one line-oriented connection. Dropping it
+/// closes the candidate's hold.
+struct Report {
+    reader: BufReader<TcpStream>,
+    stream: TcpStream,
+}
+
+impl Report {
+    /// Accepts the candidate's connection within the kill switch.
+    fn accept(listener: &TcpListener) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let listener = listener.try_clone().expect("clone the report listener");
+        std::thread::spawn(move || {
+            let _ = sender.send(listener.accept());
+        });
+        let (stream, _) = receiver
+            .recv_timeout(KILL_SWITCH)
+            .expect("the candidate must connect its report within the kill switch")
+            .expect("accept the candidate report");
+        stream
+            .set_read_timeout(Some(KILL_SWITCH))
+            .expect("bound report reads");
+        let reader = BufReader::new(stream.try_clone().expect("clone the report stream"));
+        Self { reader, stream }
+    }
+
+    /// The rest of the next report line that starts with `prefix`.
+    fn line(&mut self, prefix: &str) -> String {
+        loop {
+            let mut line = String::new();
+            let read = self
+                .reader
+                .read_line(&mut line)
+                .expect("read the candidate report");
+            assert_ne!(
+                read, 0,
+                "the report closed before a line starting with {prefix:?}"
+            );
+            if let Some(rest) = line.trim_end().strip_prefix(prefix) {
+                return rest.to_owned();
+            }
+        }
+    }
+
+    /// Ends the candidate's hold.
+    fn go(&mut self) {
+        self.stream.write_all(&[GO]).expect("send the go-ahead");
+    }
 }
 
 /// Opens a claimant exactly as the owner does: from the process ID and session that
