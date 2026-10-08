@@ -1531,6 +1531,18 @@ function requireOutboundFrame(channel: number, payload: Uint8Array): void {
   }
 }
 
+/**
+ * Build-time constant for release bundles (#528 T3). A release build of this
+ * file defines `KELD_KIPC_RELEASE` as `true` (`Bun.build`'s `define`, with
+ * syntax minification); the source and dev builds leave it undefined, so the
+ * hooks stay, behind `KELD_KIPC_TEST_HOOKS=1`. Every test-hook site tests
+ * `typeof KELD_KIPC_RELEASE === "undefined"` itself, because the bundler folds
+ * that expression at each site and removes the branch, while it does not
+ * inline a module constant that holds it in this file (measured, Bun 1.4.2;
+ * `src/release-build.test.ts` pins the result).
+ */
+declare const KELD_KIPC_RELEASE: boolean | undefined;
+
 /** Test-only words shared by main, the Worker and a test thread (criteria 8, 18, 26). */
 export const WORKER_LINK_TEST_WORDS = Object.freeze({
   /** Main's liveness branch ran (count). */
@@ -1559,7 +1571,11 @@ export interface WorkerBlockingFault {
   readonly stallMs?: number;
 }
 
-/** Test-only hooks; accepted only by `openWorkerLinkForTest` under `KELD_KIPC_TEST_HOOKS=1`. */
+/**
+ * Test-only hooks; accepted only by `openWorkerLinkForTest`
+ * (`src/test-hooks.ts`) under `KELD_KIPC_TEST_HOOKS=1`, and absent from a
+ * release build.
+ */
 export interface WorkerLinkTestHooks {
   /** `WORKER_LINK_TEST_WORDS.LENGTH` words on a SharedArrayBuffer. */
   readonly words: Int32Array;
@@ -1691,12 +1707,6 @@ function ringCopy(ring: Uint8Array, mask: number, pos: number, len: number): Uin
 
 let workerLinkOpened = false;
 
-/** Bound by `WorkerLink`'s static block; the only path to its private constructor with hooks. */
-let openWorkerLinkWithHooks: (
-  options: WorkerLinkOptions,
-  hooks: WorkerLinkTestHooks,
-) => Promise<{ link: WorkerLink; control: Int32Array }>;
-
 interface PendingAsyncCall {
   resolve: (bytes: Uint8Array) => void;
   reject: (err: Error) => void;
@@ -1740,11 +1750,35 @@ export class WorkerLink {
     | { resolve: (link: WorkerLink) => void; reject: (err: Error) => void }
     | undefined;
 
+  // The only path to the private open with hooks: a seam that `src/test-hooks.ts`
+  // reads. A release build has neither the seam nor any hook branch.
   static {
-    openWorkerLinkWithHooks = async (options, hooks) => {
-      const link = await WorkerLink.#open(options, hooks);
-      return { link, control: link.#ctrl };
-    };
+    if (typeof KELD_KIPC_RELEASE === "undefined") {
+      const seam = (
+        options: WorkerLinkOptions,
+        hooks: WorkerLinkTestHooks,
+      ): Promise<{ link: WorkerLink; control: Int32Array }> => {
+        if (process.env.KELD_KIPC_TEST_HOOKS !== "1") {
+          return Promise.reject(
+            linkError(
+              "KELD-IPC-005",
+              "openWorkerLinkForTest runs only under KELD_KIPC_TEST_HOOKS=1; roles open their link with WorkerLink.open",
+            ),
+          );
+        }
+        if (
+          !(hooks?.words instanceof Int32Array) ||
+          !(hooks.words.buffer instanceof SharedArrayBuffer) ||
+          hooks.words.length < WORKER_LINK_TEST_WORDS.LENGTH
+        ) {
+          return Promise.reject(
+            linkError("KELD-IPC-005", "test hooks need WORKER_LINK_TEST_WORDS.LENGTH Int32 words on a SharedArrayBuffer"),
+          );
+        }
+        return WorkerLink.#open(options, hooks).then((link) => ({ link, control: link.#ctrl }));
+      };
+      (globalThis as unknown as Record<symbol, unknown>)[Symbol.for("keld.kipc.worker-link-test-seam/v1")] = seam;
+    }
   }
 
   private constructor(
@@ -1761,7 +1795,7 @@ export class WorkerLink {
     this.#worker = worker;
     this.#causePort = causePort;
     this.#table = config.table;
-    this.#hooks = hooks;
+    this.#hooks = typeof KELD_KIPC_RELEASE === "undefined" ? hooks : undefined;
     worker.on("message", (message: FromWorker) => this.#onWorkerMessage(message));
     worker.on("error", (err: Error) => this.#onWorkerGone(`transport Worker error: ${errorText(err)}`));
     worker.on("exit", (code: number) => this.#onWorkerGone(`transport Worker exited with code ${code}`));
@@ -1786,7 +1820,7 @@ export class WorkerLink {
     }
     workerLinkOpened = true;
     const sab = new SharedArrayBuffer(CONTROL_BYTES + config.replyBytes + config.ringBytes);
-    if (hooks?.counterStart !== undefined) {
+    if (typeof KELD_KIPC_RELEASE === "undefined" && hooks?.counterStart !== undefined) {
       const ctrl = new Int32Array(sab, 0, CONTROL_WORDS);
       for (const word of [W_BYTES, A_BYTES, R_BYTES]) Atomics.store(ctrl, word, hooks.counterStart | 0);
     }
@@ -1802,7 +1836,7 @@ export class WorkerLink {
       callReceivers: config.callReceivers,
       causePort: port2,
       hooks:
-        hooks === undefined
+        typeof KELD_KIPC_RELEASE !== "undefined" || hooks === undefined
           ? undefined
           : {
               words: hooks.words.buffer as SharedArrayBuffer,
@@ -2012,7 +2046,7 @@ export class WorkerLink {
   /** Main's wait loop (§4.5 step 3). */
   #park(corr: number, deadlineMs: number): Uint8Array {
     const ctrl = this.#ctrl;
-    const words = this.#hooks?.words;
+    const words = typeof KELD_KIPC_RELEASE === "undefined" ? this.#hooks?.words : undefined;
     const started = performance.now();
     const deadlineAt = started + deadlineMs;
     let heartbeat = Atomics.load(ctrl, HEARTBEAT);
@@ -2021,7 +2055,7 @@ export class WorkerLink {
     for (;;) {
       const seen = Atomics.load(ctrl, SEQ);
       if (Atomics.load(ctrl, REPLY_READY) === 1) return this.#takeReply();
-      this.#hooks?.beforeStateCheck?.();
+      if (typeof KELD_KIPC_RELEASE === "undefined") this.#hooks?.beforeStateCheck?.();
       if (Atomics.load(ctrl, STATE) !== 0) return this.#endPark(corr);
       const now = performance.now();
       const beat = Atomics.load(ctrl, HEARTBEAT);
@@ -2029,7 +2063,9 @@ export class WorkerLink {
         heartbeat = beat;
         heartbeatAt = now;
       } else if (now - heartbeatAt >= WORKER_LIVENESS_WINDOW_MS) {
-        if (words !== undefined) Atomics.add(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH, 1);
+        if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
+          Atomics.add(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH, 1);
+        }
         this.#recordMain(
           STATE_WORKER_LOST,
           `the transport Worker heartbeat did not move for ${WORKER_LIVENESS_WINDOW_MS} ms while a call was parked`,
@@ -2039,20 +2075,22 @@ export class WorkerLink {
         return this.#endPark(corr);
       }
       if (claimedAt === undefined && now >= deadlineAt) {
-        if (this.#hooks?.beforeDeadlineCas?.() === false) continue;
+        if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.beforeDeadlineCas?.() === false) continue;
         if (Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
           this.#post({ t: "abandon", corr });
           throw linkError("KELD-IPC-006", `blocking call deadline of ${deadlineMs} ms expired with no host reply`);
         }
         // The Worker already claimed the reply: wait for its publish, bounded.
         claimedAt = performance.now();
-        if (words !== undefined) {
+        if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
           Atomics.store(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 1);
           Atomics.notify(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED);
         }
       }
       if (claimedAt !== undefined && now - claimedAt >= WORKER_LIVENESS_WINDOW_MS) {
-        if (words !== undefined) Atomics.add(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH, 1);
+        if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
+          Atomics.add(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH, 1);
+        }
         this.#recordMain(
           STATE_WORKER_LOST,
           `the transport Worker claimed the reply but did not publish it within ${WORKER_LIVENESS_WINDOW_MS} ms`,
@@ -2086,7 +2124,7 @@ export class WorkerLink {
     const at = Atomics.load(ctrl, REPLY_AT) >>> 0;
     let bytes: Uint8Array;
     try {
-      this.#hooks?.beforeWakeDrain?.();
+      if (typeof KELD_KIPC_RELEASE === "undefined") this.#hooks?.beforeWakeDrain?.();
       this.#applyUpTo(at);
       bytes = new Uint8Array(len);
       bytes.set(this.#slot.subarray(0, len));
@@ -2149,7 +2187,7 @@ export class WorkerLink {
   }
 
   #runDispatchTask(): void {
-    const defer = this.#hooks?.deferDispatch;
+    const defer = typeof KELD_KIPC_RELEASE === "undefined" ? this.#hooks?.deferDispatch : undefined;
     if (defer === undefined) this.#dispatch();
     else defer(() => this.#dispatch());
   }
@@ -2165,7 +2203,9 @@ export class WorkerLink {
     if ((Atomics.load(ctrl, W_BYTES) >>> 0) !== r) {
       this.#requestDispatch();
     } else {
-      this.#hooks?.onDispatchIdle?.(Atomics.load(ctrl, R_RECS) >>> 0, Atomics.load(ctrl, W_RECS) >>> 0);
+      if (typeof KELD_KIPC_RELEASE === "undefined") {
+        this.#hooks?.onDispatchIdle?.(Atomics.load(ctrl, R_RECS) >>> 0, Atomics.load(ctrl, W_RECS) >>> 0);
+      }
       if (state !== 0) this.#finalize(state);
     }
   }
@@ -2371,36 +2411,6 @@ export function quitAndCloseLink(link: WorkerLink, deadlineMs: number): Uint8Arr
 }
 
 /**
- * Test-only `WorkerLink.open` with the GH-528 hooks (spec §7), returning the
- * link's control words for assertions. Refuses to run unless the environment
- * sets `KELD_KIPC_TEST_HOOKS=1`; production roles never set it, so the hooks
- * stay inert there.
- */
-export function openWorkerLinkForTest(
-  options: WorkerLinkOptions,
-  hooks: WorkerLinkTestHooks,
-): Promise<{ link: WorkerLink; control: Int32Array }> {
-  if (process.env.KELD_KIPC_TEST_HOOKS !== "1") {
-    return Promise.reject(
-      linkError(
-        "KELD-IPC-005",
-        "openWorkerLinkForTest runs only under KELD_KIPC_TEST_HOOKS=1; roles open their link with WorkerLink.open",
-      ),
-    );
-  }
-  if (
-    !(hooks?.words instanceof Int32Array) ||
-    !(hooks.words.buffer instanceof SharedArrayBuffer) ||
-    hooks.words.length < WORKER_LINK_TEST_WORDS.LENGTH
-  ) {
-    return Promise.reject(
-      linkError("KELD-IPC-005", "test hooks need WORKER_LINK_TEST_WORDS.LENGTH Int32 words on a SharedArrayBuffer"),
-    );
-  }
-  return openWorkerLinkWithHooks(options, hooks);
-}
-
-/**
  * The transport Worker (GH-527 §4.2): owns the socket from connect to close,
  * validates every inbound frame under its §4.7 policy, appends to the ring or
  * fills the reply slot, and writes every outbound frame through one
@@ -2443,8 +2453,9 @@ class TransportWorker {
     this.#ringRecords = boot.ringRecords;
     this.#replyBytes = boot.replyBytes;
     this.#table = inboundTable(boot.eventChannels, boot.callReceivers);
-    this.#hooks = boot.hooks;
-    this.#words = boot.hooks === undefined ? undefined : new Int32Array(boot.hooks.words);
+    this.#hooks = typeof KELD_KIPC_RELEASE === "undefined" ? boot.hooks : undefined;
+    this.#words =
+      typeof KELD_KIPC_RELEASE === "undefined" && boot.hooks !== undefined ? new Int32Array(boot.hooks.words) : undefined;
     this.#heartbeat = setInterval(() => {
       Atomics.add(this.#ctrl, HEARTBEAT, 1);
     }, WORKER_HEARTBEAT_INTERVAL_MS);
@@ -2455,7 +2466,9 @@ class TransportWorker {
     // The Worker's exit handler (§4.5 "orderly exit"): an uncaught error
     // records 25, or keeps the code recorded first.
     const onFault = (err: unknown): void => {
-      if (this.#words !== undefined) Atomics.add(this.#words, WORKER_LINK_TEST_WORDS.EXIT_HANDLER, 1);
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#words !== undefined) {
+        Atomics.add(this.#words, WORKER_LINK_TEST_WORDS.EXIT_HANDLER, 1);
+      }
       this.#end(STATE_WORKER_LOST, `transport Worker fault: ${errorText(err)}`);
     };
     process.on("uncaughtException", onFault);
@@ -2541,7 +2554,7 @@ class TransportWorker {
     // A failed claim means main abandoned the call at its deadline: a late
     // reply, discarded whatever its size.
     if (Atomics.compareExchange(ctrl, BLOCKING, corr, 0) !== corr) return;
-    if (this.#words !== undefined) {
+    if (typeof KELD_KIPC_RELEASE === "undefined" && this.#words !== undefined) {
       Atomics.store(this.#words, WORKER_LINK_TEST_WORDS.CLAIMED, 1);
       Atomics.notify(this.#words, WORKER_LINK_TEST_WORDS.CLAIMED);
     }
@@ -2553,13 +2566,19 @@ class TransportWorker {
       return;
     }
     try {
-      if (this.#hooks?.claimFault === "throw") throw new Error("test-only claim-step fault");
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.claimFault === "throw") {
+        throw new Error("test-only claim-step fault");
+      }
       Atomics.store(ctrl, REPLY_AT, Atomics.load(ctrl, W_BYTES));
       this.#slot.set(frame.payload, 0);
       Atomics.store(ctrl, REPLY_KIND, frame.header.kind);
       Atomics.store(ctrl, REPLY_LEN, frame.payload.byteLength);
-      if (this.#hooks?.claimFault === "skip-publish") return;
-      if (this.#hooks?.claimFault === "stall-until-deadline-cas" && this.#words !== undefined) {
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.claimFault === "skip-publish") return;
+      if (
+        typeof KELD_KIPC_RELEASE === "undefined" &&
+        this.#hooks?.claimFault === "stall-until-deadline-cas" &&
+        this.#words !== undefined
+      ) {
         Atomics.wait(this.#words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 0, 60_000);
       }
       Atomics.store(ctrl, REPLY_READY, 1);
@@ -2628,7 +2647,7 @@ class TransportWorker {
   }
 
   #onMessage(message: ToWorker): void {
-    if (this.#hooks?.holdMessagesUntilBlocking === true && !this.#released) {
+    if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.holdMessagesUntilBlocking === true && !this.#released) {
       // Test hook (criterion 20): every frame main posts is queued before any is handled.
       while (Atomics.load(this.#ctrl, BLOCKING) === 0) {
         Atomics.wait(this.#ctrl, BLOCKING, 0, 5);
@@ -2653,7 +2672,7 @@ class TransportWorker {
           abandoned: false,
         });
         this.#write(FrameKind.Call, message.channel, message.corr, message.payload);
-        if (message.blocking) this.#armBlockingFault();
+        if (typeof KELD_KIPC_RELEASE === "undefined" && message.blocking) this.#armBlockingFault();
         return;
       }
       case "event":
@@ -2680,6 +2699,7 @@ class TransportWorker {
 
   /** Test hook (criteria 8 and 14): a fault after the Worker has written a blocking CALL. */
   #armBlockingFault(): void {
+    if (typeof KELD_KIPC_RELEASE !== "undefined") return;
     const fault = this.#hooks?.onBlockingCall;
     const words = this.#words;
     if (fault === undefined || words === undefined) return;

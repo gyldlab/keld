@@ -20,13 +20,12 @@ import {
   WORKER_LIVENESS_WINDOW_MS,
   WorkerLink,
   isCallError,
-  openWorkerLinkForTest,
   parseAppLink,
   quitAndCloseLink,
   type WorkerLinkOptions,
-  type WorkerLinkTestHooks,
   type WorkerReceiveTable,
 } from "../src/transport.ts";
+import { openWorkerLinkForTest, type WorkerLinkTestHooks } from "../src/test-hooks.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

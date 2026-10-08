@@ -32,7 +32,6 @@ import {
   WorkerLink,
   echoReplyWaiter,
   isCallError,
-  openWorkerLinkForTest,
   privilegedCallReceiver,
   replyWaiter,
   selectInboundPolicy,
@@ -42,6 +41,7 @@ import {
   type PendingCallEntry,
   type WorkerLinkOptions,
 } from "./transport.ts";
+import { openWorkerLinkForTest } from "./test-hooks.ts";
 
 const TOKEN_HEX = "ab".repeat(32);
 
