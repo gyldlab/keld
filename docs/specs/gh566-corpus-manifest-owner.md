@@ -40,12 +40,13 @@ Non-goals:
 ## 2. Spec refs
 
 - gh532, which this spec consumes unchanged:
-  - §3 AC1–AC12, AC16 and AC17.
+  - §3 AC1–AC12, AC16 and AC17. AC17's renderer is narrowed in D11.
   - §4.1, its facts and atoms.
   - §4.2 rules 1–8, the v1 example manifest and the owner sketch.
-  - §4.5, the migration unit.
-  - §5, the X01-T4 boundary.
   - §6 T3, §7 (test plan), and the §10 Q1 and Q2 draft decisions.
+- gh532, which this spec deliberately widens, saying where:
+  - §4.5, the migration unit: three including targets instead of two (D8, §4.5).
+  - §5, the X01-T4 boundary: one added test target (§5).
 - [`kel74-compat-evidence-schema.md`](kel74-compat-evidence-schema.md) §4.1–§4.3: the
   record, the denominator and `score()`. This spec consumes them only through the public
   `parse_evidence`, `parse_denominator` and `score`.
@@ -64,7 +65,7 @@ Non-goals:
 ### 3.1 Adopted from gh532
 
 gh532 AC1–AC12, AC16 and AC17 are criteria of this spec as written there, with their
-negative controls. §6 assigns each one to a task, and §7 assigns each one to a test. The
+negative controls. The one narrowing is AC17's renderer (D11). §6 assigns each one to a task, and §7 assigns each one to a test. The
 issue's own criteria and controls map onto them as follows:
 
 | Issue criterion or negative control | Proved by |
@@ -123,10 +124,14 @@ issue's own criteria and controls map onto them as follows:
      `unknown` for an uncited v1 cell;
    - `waived` is rejected.
 
-   *Negative control:* each of these is rejected: a `pass` record for a red cell, a
-   `fail` record for a `pass` cell, and a second record for one cell. *Positive
-   control:* two cells that share an `operation_id` but have different oracle ids each
-   take their own record.
+   *Negative control:* each of these is rejected.
+   - On the committed v0 records (T2): a `pass` record for the divergence cell, a `fail`
+     record for a `pass` cell, a second record for one cell, and a `waived` record.
+   - On in-test v1 corpora (T3): a `pass` record for a red cell, and a `pass` record for
+     an uncited cell.
+
+   *Positive control (T3):* two cells that share an `operation_id` but have different
+   oracle ids each take their own record.
 6. **C6 — Product records fail closed (D7).** Given a registered product-panel corpus
    with files under `evidence/`, when the registry test runs, then it fails with
    `ProductRecordsNeedReceipt`. This holds until X02-T5's receipt reader supplies a
@@ -183,17 +188,20 @@ are additional to gh532 §4.1:
   change to a keld-host test does not re-run keld-compat's validator.
 - **F6.** `.gitattributes` is `* text=auto eol=lf`. An LF blob is checked out unchanged on
   all three OS, and the live digest test passes on the Windows lane (receipt
-  `windows-x86_64`). A file with CR line endings is normalised when it is committed.
+  `windows-x86_64`). CRLF line endings are normalised to LF when a file is committed. A
+  lone CR makes git treat the file as binary, so it is kept as-is.
 - **F7.** Fetched 2026-10-08 at the pin `694f4585`: `docs/api/app.md` (78,086 bytes,
   digest `sha256:49238ddf…`, which is gh532's example value) and
   `docs/api/browser-window.md` (63,122 bytes, `sha256:49061d5e…`). Neither contains a CR
   byte or a `mermaid` fence. `tools/mermaid_docs.rs` scans every tracked `*.md`, a
   snapshot included.
-- **F8.** PR #638 (#637, gh532 T2; open at `3cbf300d`) adds `AuthorityProfile::Unverified`,
+- **F8.** PR #638 (#637, gh532 T2; open at `86304945`) adds `AuthorityProfile::Unverified`,
   `const fn AuthorityProfile::as_str` and
   `Scoreboard::authority_profile() -> Option<AuthorityProfile>`.
-- **F9.** KEL-74's `parse_platform`, `parse_verdict`, `parse_panel`, `parse_kind` and
-  `parse_evidence_uri` are private. The report test already mirrors three of these maps
+- **F9.** KEL-74's `parse_platform`, `parse_arch`, `parse_verdict`, `parse_panel`,
+  `parse_kind` and `parse_evidence_uri` are private, and so are `Panel::as_str` and
+  `OperationKind::as_str`. `parse_denominator` exposes only the typed `Panel` and
+  `OperationKind`. The report test already mirrors three of these maps
   (`platform_token`, `arch_token` and `verdict_token`).
 - **F10.** Open PR #609 edits four `assert_receipt` lines in
   `lifecycle_evidence_report.rs`. The overlap is textual only.
@@ -302,8 +310,8 @@ Rejected alternatives:
 - The KEL-77 length-framed set digest. It exists for sets of several files. v1 binds each
   snapshot through its `doc_snapshots` digest inside the manifest bytes (gh532 rule 2),
   so the framing pitfall in the 2026-08-19 [runtime] learning does not apply.
-- A `-text` attribute now. F6 shows that LF blobs already round-trip, and a CR-bearing
-  page fails closed instead (D5).
+- A `-text` attribute now. F6 shows that LF blobs already round-trip, and a CRLF page
+  fails closed instead (D5).
 
 *Falsifier:* on some CI OS, the digest of the bytes read differs from
 `git show origin/main:<path> | shasum -a 256` for an unchanged file. Add a path-scoped
@@ -326,9 +334,13 @@ shape. A manifest cannot choose its own.
 - Both shapes lower into one `Corpus`. Digest, denominator, pin, registry and admission
   are therefore written once. The facts v0 lacks (the engine token and the digest
   meaning) come from `V0_FROZEN` constants, never from the bytes.
-- The manifest's `panel` and `kind` strings must equal the corresponding strings in the
-  denominator bytes. The KEL-74 parser validates them, and the typed `Panel` comes from
-  `parse_denominator`. That way no second panel or kind map exists (F9).
+- The manifest's `panel` and `kind` strings must equal `panel_token` and `kind_token`
+  of the typed `Panel` and `OperationKind` that `parse_denominator` returns. These two
+  owner-local maps follow the `platform_token` precedent (F9). Each is an exhaustive
+  `match`, so a new KEL-74 variant breaks compilation instead of passing silently. The
+  denominator bytes are parsed only by `parse_denominator`. All five owner maps are
+  removable once KEL-74 makes its own `as_str` public, which is a public-API change
+  outside X01-T4.
 - The denominator must agree with the manifest (C8), keeping both live lifecycle checks.
   Its `corpus_id` equals the manifest's. Its cell set equals the manifest's cell set
   exactly, where a cell is the KEL-74 `CellKey` (`operation_id`, `oracle_id`). Manifest
@@ -458,8 +470,8 @@ Rejected alternatives:
 
 Two outcomes are known and fail closed:
 
-- A cited page whose raw bytes contain CR is normalised when it is committed (F6), so its
-  digest check fails. The fix is a `-text` attribute scoped to that path, in that
+- A cited page whose raw bytes contain CRLF is normalised when it is committed (F6), so
+  its digest check fails. The fix is a `-text` attribute scoped to that path, in that
   consumer's PR.
 - A cited page with a `mermaid` fence would be held to Keld's diagram policy (F7). The
   consumer then scopes `tools/mermaid_docs.rs`, which is a CI-tool change with its own
@@ -516,9 +528,12 @@ Each refuses the other panel. Both apply the same record checks:
 
 Labels then follow the panel:
 
-- **Harness runs** need exactly `AuthorityProfile::LegacySandboxOff`. This is gh532
-  rule 6 and the §10 Q2 draft decision, held in one constant, `HARNESS_PROFILE`, so a
-  later owner reading of Q2 changes one line.
+- **Harness runs** need exactly `AuthorityProfile::LegacySandboxOff` (gh532 rule 6 and
+  the §10 Q2 draft decision). Two constants hold it. `V0_FROZEN.harness_profile` is fixed
+  for the frozen lifecycle records. `HARNESS_PROFILE` governs v1 harness corpora. If the
+  owner reads Q2 the other way, the Q2 falsifier relabels new harness corpora
+  `unverified` while `electron-lifecycle-v0` stays frozen. That changes only
+  `HARNESS_PROFILE`, and the frozen records stay admitted.
 - **Product runs** follow gh532 rule 6. `ProductReceipt { state: ProfileState, cells }`
   is the owner's minimal view of a run receipt. `cells` holds the KEL-74 `CellKey`s the
   run covered.
@@ -623,8 +638,12 @@ this rule.
    there (F4). Following `.agents/test-layout.md`, it also preserves every
    `lifecycle_corpus` name at the crate root, keeps the target names and keeps the live
    negative-control input tables byte-identical.
-5. **Mutation runs in the T2 PR.** The PR records the four issue controls and the C1
-   rename as temporary mutations. Each one fails its named test and is then restored.
+5. **Mutation runs.** The T2 PR records three of the issue's controls as temporary
+   mutations: the one-byte manifest flip, the 44.4.5 commit inside the 44.3.0 corpus,
+   and a mapped Bun test changed to `test.skip`. It also records the C1 rename. Each one
+   fails its named test and is then restored. The fourth issue control, deleting
+   `implementing_ticket` from a red fixture cell, needs the v1 parser, so the T3 PR runs
+   it.
    The PR also lists `cargo test -p keld-compat -- --list` before and after, as an
    inventory diff: additions only, no omissions or renames.
 
@@ -666,8 +685,10 @@ From `lifecycle_evidence_report.rs`:
 - **Kept:** the receipt structs and `assert_receipt`, because
   `keld.lifecycle.ci-receipt/v1` is a lifecycle receipt, not a manifest. Also kept are
   `PUBLISHED`, the report prose, `operation_meaning`, the score assertions, and the
-  lifecycle-only record checks: the keld, Bun and engine revision equals the tested
-  commit, and `evidence_uri` equals the receipt digest.
+  lifecycle-only record checks. The keld revision equals the tested commit, the Bun
+  revision equals `1.4.2+744846f84`, the engine revision equals
+  `headless-lifecycle-conformance@<tested commit>`, and `evidence_uri` equals the
+  receipt digest.
 
 Two items stay where they are:
 
@@ -678,7 +699,10 @@ Two items stay where they are:
   recorded on #566.
 
 *Falsifier:* the gh532 AC10 census finds `fn sha256_uri`, `Sha256`, `corpus.json"` or
-`denominator.json"` in any keld-compat test source other than the owner.
+`denominator.json"` in any keld-compat test source other than the owner. The census
+patterns, the fixture file names and the C2 fixture walk all live in the owner, which
+the census skips. Test files only call owner functions, and they build their synthetic
+negative inputs with `concat!`, so no scanned file carries a pattern.
 
 **D11 — Pending versus divergence (gh532 AC17).**
 
@@ -697,15 +721,18 @@ Pending implementation: 1 (GH-445)
 Intentional divergence: 1
 ```
 
-The v0 report's "Intentional divergence" column then renders
-`split.divergence().len()` instead of `board.failed()`, with its header taken from
-`DIVERGENCE_LABEL`. The render refuses when the pending set is non-empty (v0 carries no
-pending key) or when `pending + divergence != board.failed()`. Its bytes are unchanged:
-the column still reads `1`.
+This narrows gh532 AC17, whose wording names "the lifecycle evidence report". The
+frozen v0 report cannot carry a pending cell, because the v0 shape has no
+`implementing_ticket` field and denies unknown fields. A split there would always equal
+`board.failed()`, so no control on it could fail. AC17 therefore binds `FailSplit` and
+its `Display`, and every v1 report renders its pending and divergence counts through
+them. The v0 report keeps `board.failed()` in its "Intentional divergence" column, and
+its bytes are unchanged.
 
 Rejected alternatives:
 
-- Counting from `board.failed()`. That is exactly the live lump AC17 targets.
+- Counting from `board.failed()` in a v1 report. That is exactly the live lump AC17
+  targets. Only the v0 report keeps it, because v0 has no pending key.
 - A new verdict, or a new record field (gh532 §4.3).
 - Deriving the split from records alone, which cannot tell the two cases apart.
 
@@ -728,8 +755,10 @@ proceeds in parallel.
 Before each first edit, run this check:
 
 ```sh
-git merge-base --is-ancestor <#638 merge commit> HEAD && grep -n -E 'Unverified|const fn as_str|fn authority_profile' crates/keld-compat/src/evidence.rs
+git merge-base --is-ancestor <#638 merge commit> HEAD && grep -n -E 'Unverified|-> Option<AuthorityProfile>' crates/keld-compat/src/evidence.rs
 ```
+
+On an `origin/main` without #638, the `grep` finds nothing and exits 1.
 
 The work splits into two PRs:
 
@@ -770,6 +799,7 @@ pub const V0_FROZEN: FrozenV0 = FrozenV0 {
     corpus_id: "electron-lifecycle-v0",
     pin: Pin { version: "44.3.0", commit: "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2" },
     engine_token: "headless-lifecycle-conformance",
+    harness_profile: AuthorityProfile::LegacySandboxOff, // fixed; v1 uses HARNESS_PROFILE
     files: &[("corpus.json", V0_CORPUS_SHA256) /* 14 more, pinned at the T2 base */],
 };
 
@@ -910,15 +940,20 @@ Two consumer-specific notes:
       that contains #638 (D12).
   - Scope: the owner with v0 parsing, digest, pin, registry, admission, harness runs and
     the census; the `corpus_registry` target; and the D10 removals.
-  - Criteria: gh532 AC10 and AC11, AC2 and AC7 over v0 cells and records, the gh532 AC8
-    clause that rejects `strict_bun` on a conformance-harness record, and C1, C2, C3, C7
-    and C8.
+  - Criteria: gh532 AC10 and AC11; AC2, AC7 and AC9 over v0 cells and records (AC9
+    through the `V0_FROZEN` engine token); the gh532 AC8 clause that rejects `strict_bun`
+    on a conformance-harness record; C1, C2, C3, C7 and C8; and C5's v0 controls. T2
+    moves the live per-record result check into `validate_harness_run`, so its
+    replacement is tested in the same PR.
   - The PR carries the D9 diff, inventory and mutation evidence.
 - [ ] **T3** v1 manifest and rules, also branched from a main that contains #638.
   - Scope: `ManifestV1` with `UniqueMap`, citations and snapshots, verdict keys, the
-    `engine` map, product runs, and `FailSplit`, including its use in the v0 report.
-  - Criteria: gh532 AC1, AC2 for v1, AC3–AC6, AC7's `artifact_digest` clause, AC8's
-    product clauses, AC9, AC12, AC16 and AC17, plus C4, C5 and C6.
+    `engine` map, product runs, and `FailSplit`.
+  - Criteria: gh532 AC1; AC2 for v1; AC3–AC6; AC7's `artifact_digest` clause; AC8's
+    product clauses; AC9's manifest `engine` map; AC12, AC16 and AC17; C4 and C6; and
+    C5's v1 controls.
+  - The T3 PR runs the fourth issue control as a mutation: deleting
+    `implementing_ticket` from a red fixture cell.
 
 Two tracker actions, which are not PRs:
 
@@ -934,10 +969,12 @@ the `corpus_registry` target.
 
 | Criterion | Test | Target | Task | Kind |
 |---|---|---|---|---|
-| gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`. It runs `cargo metadata` to read the `sha2` dependency kind, and its synthetic negative inputs are built with `concat!`, so the census never sees its own tokens. | registry | T2 | integration |
+| gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`. It runs `cargo metadata` to read the `sha2` dependency kind. The patterns live in the owner, and the synthetic negative inputs are built with `concat!`, so no scanned file carries a pattern (D10). | registry | T2 | integration |
 | gh532 AC11 | `lifecycle_corpus_fixture_bytes_match_origin_main`; `rules::v0_shape_rejects_new_ids_and_foreign_pins` | lifecycle_corpus, rules | T2 | integration |
 | C8 | `rules::denominator_must_match_manifest_cells_and_id`, which mutates the committed lifecycle denominator in memory | rules | T2 | integration |
-| gh532 AC2 and AC7 (v0), AC8 harness clause | `rules::harness_run_rejects_digest_revision_and_label_mutations`, which mutates one committed record in memory | rules | T2 | integration |
+| gh532 AC2, AC7 and AC9 (v0), AC8 harness clause | `rules::harness_run_rejects_digest_revision_engine_and_label_mutations`, which mutates one committed record in memory | rules | T2 | integration |
+| C5 (v0 controls) | `rules::records_must_match_their_v0_cell`, covering result against expected, duplicate, `waived`, kind and membership | rules | T2 | integration |
+| Committed corpora | `registered_corpora_validate_with_their_records`: static rules plus `evidence/*.json` grouped into runs, on `electron-lifecycle-v0` | registry | T2 | integration |
 | Live admission controls | `rust_case_results_reject_…` and `bun_case_results_reject_…`, both moved unchanged; `registered_corpora_{libtest,bun}_oracles_execute` | lifecycle_corpus, registry | T2 | integration |
 | C1 | `published_receipt_cases_remain_live_tests`, plus `rust_case_listed` rows | lifecycle_evidence_report | T2 | integration |
 | C2 | `every_committed_corpus_is_registered`, with synthetic negative controls | registry | T2 | integration |
@@ -946,8 +983,8 @@ the `corpus_registry` target.
 | gh532 AC1–AC7 and AC9 (v1) | `rules::pin_*`, `citation_*`, `red_cell_*`, `uncited_*`, `digest_*` and `engine_*`: one accept case plus each named mutation, on in-test v1 manifests | rules | T3 | integration |
 | gh532 AC8 and AC12 | `rules::product_run_*`: every state × label pair, and a receipt with no record | rules | T3 | integration |
 | gh532 AC16 | `rules::snapshot_*` over an in-memory read seam | rules | T3 | integration |
-| gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`; the v0 report stays byte-identical | rules, lifecycle_evidence_report | T3 | integration |
-| C4, C5, C6 | `rules::duplicate_keys_*`, `rules::records_*` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
+| gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
+| C4, C5 (v1 controls), C6 | `rules::duplicate_keys_*`, `rules::records_*_v1` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
 Anti-flake: gh532 §7 applies. There is no clock and no network, and there are no ports
 beyond the live `electron_lifecycle` ones. Rule cases use in-memory bytes and snapshots,
@@ -982,4 +1019,5 @@ instead of claiming a number.
 None. Every design point above is an owner-delegated decision, recorded with its
 rejected alternatives and its falsifier. Two gh532 draft decisions stay with gh532, not
 here: §10 Q1 (citation kinds) and Q2 (the harness label). This spec implements each of
-them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant.
+them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant, which
+leaves the frozen v0 label unchanged.
