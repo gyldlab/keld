@@ -162,7 +162,7 @@ criteria and controls map onto them as follows:
    `ProductRecordsNeedReceipt`. This holds until X02-T5's receipt reader supplies a
    `ProductReceipt`. *Negative control:* a synthetic product corpus with one record is
    rejected, and it is never scored as a harness run. Given an in-test `ProductReceipt`
-   over cells {A} and passing records for cells {A, B}, `validate_product_run` fails
+   over cell A and passing records for cells A and B, `validate_product_run` fails
    with `UncoveredProductRecord` before scoring. *Negative control:* without the
    set-equality check, B scores as a pass (D7).
 7. **C7 — The report's authority line is derived (D10).** Given the migrated report,
