@@ -144,7 +144,7 @@ Closed fields only (`deny_unknown_fields`):
 | `artifact.platform` | `macos` \| `windows` \| `linux` |
 | `artifact.arch` | `aarch64` \| `x86_64` |
 | `revisions.keld` / `bun` / `engine` | non-empty, not `latest` |
-| `authority_profile` | `strict_bun` \| `sandboxed_addon_worker` \| `legacy_sandbox_off` \| `user_approved_tool_child` \| `unverified`. `unverified` is a run without verified containment (KEL-78 `unverified` state) and is never strict or legacy evidence; it is added by `docs/specs/gh532-first-proof-evidence-rules.md` task T2 within v1, and the parser rejects it until T2 lands |
+| `authority_profile` | `strict_bun` \| `sandboxed_addon_worker` \| `legacy_sandbox_off` \| `user_approved_tool_child` \| `unverified`. `unverified` is a run without verified containment (KEL-78 `unverified` state) and is never strict or legacy evidence; it was added within v1 by `docs/specs/gh532-first-proof-evidence-rules.md` task T2 (#637) |
 | `operation.id` | `[a-z0-9._-]+` |
 | `operation.kind` | `install` \| `activation` \| `primary_workflow` \| `full_feature` |
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
