@@ -487,27 +487,37 @@ fn create_suspended_process(
     current_dir: Option<&[u16]>,
     startup: SuspendedStartup<'_>,
 ) -> Result<WindowsSuspendedChild, WindowsLpacError> {
-    let (launch, startup_info, inherit_handles, extended, phase): (_, &STARTUPINFOW, _, _, _) =
-        match startup {
-            SuspendedStartup::Lpac {
-                startup,
-                inherit_handles,
-            } => (
-                SuspendedLaunch::Lpac,
-                &startup.StartupInfo,
-                inherit_handles,
-                EXTENDED_STARTUPINFO_PRESENT,
-                "CreateProcessW LPAC launch",
-            ),
-            SuspendedStartup::SameToken(startup) => (
-                SuspendedLaunch::SameToken,
-                startup,
-                false,
-                0,
-                "CreateProcessW same-token launch",
-            ),
-        };
-    if startup_info.dwFlags & STARTF_USESTDHANDLES == 0 {
+    // The pointer is derived from the whole startup object of each arm: the
+    // LPAC call reads the STARTUPINFOEXW beyond its leading STARTUPINFOW.
+    let (launch, startup_info, flags, inherit_handles, extended, phase): (
+        _,
+        *const STARTUPINFOW,
+        _,
+        _,
+        _,
+        _,
+    ) = match startup {
+        SuspendedStartup::Lpac {
+            startup,
+            inherit_handles,
+        } => (
+            SuspendedLaunch::Lpac,
+            std::ptr::from_ref(startup).cast::<STARTUPINFOW>(),
+            startup.StartupInfo.dwFlags,
+            inherit_handles,
+            EXTENDED_STARTUPINFO_PRESENT,
+            "CreateProcessW LPAC launch",
+        ),
+        SuspendedStartup::SameToken(startup) => (
+            SuspendedLaunch::SameToken,
+            std::ptr::from_ref(startup),
+            startup.dwFlags,
+            false,
+            0,
+            "CreateProcessW same-token launch",
+        ),
+    };
+    if flags & STARTF_USESTDHANDLES == 0 {
         return Err(WindowsLpacError::contract(
             phase,
             "the startup structure does not name the child's standard handles: without \
@@ -518,15 +528,18 @@ fn create_suspended_process(
     let mut process = PROCESS_INFORMATION::default();
     let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | extended;
     // SAFETY: every pointer refers to live storage through this synchronous
-    // call; command line is mutable as required; `startup_info` borrows a
-    // STARTUPINFOW, which for the LPAC launch heads a STARTUPINFOEXW whose
-    // attribute list retains its backing values, and
-    // EXTENDED_STARTUPINFO_PRESENT is set only then; its standard-handle fields
-    // are null or the LPAC launch's retained private copies, and the flag that
-    // makes them the child's is checked above; process/thread outputs are
-    // writable. TRUE inheritance is used only by the LPAC launch, together with
-    // its explicit handle-list attribute; the same-token launch passes FALSE and
-    // no token, so the child runs under a copy of this process's primary token.
+    // call; command line is mutable as required; `startup_info` points at the
+    // borrowed startup object of its arm: a STARTUPINFOW for the same-token
+    // launch, and for the LPAC launch a STARTUPINFOEXW whose attribute list
+    // retains its backing values, where the pointer is derived from the whole
+    // STARTUPINFOEXW, so the extended read of `lpAttributeList` that
+    // EXTENDED_STARTUPINFO_PRESENT (set only then) requests is within its
+    // provenance; its standard-handle fields are null or the LPAC launch's
+    // retained private copies, and the flag that makes them the child's is
+    // checked above; process/thread outputs are writable. TRUE inheritance is
+    // used only by the LPAC launch, together with its explicit handle-list
+    // attribute; the same-token launch passes FALSE and no token, so the child
+    // runs under a copy of this process's primary token.
     let created = unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -537,7 +550,7 @@ fn create_suspended_process(
             creation_flags,
             environment.as_ptr().cast(),
             current_dir.map_or(std::ptr::null(), <[u16]>::as_ptr),
-            std::ptr::from_ref(startup_info),
+            startup_info,
             &raw mut process,
         )
     };

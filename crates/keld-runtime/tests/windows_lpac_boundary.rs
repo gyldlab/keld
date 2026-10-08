@@ -42,14 +42,15 @@ use windows_sys::Win32::Security::{
     CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetTokenInformation, TOKEN_GROUPS, TOKEN_QUERY,
     TokenCapabilities, TokenIsAppContainer, WinBuiltinAnyPackageSid,
 };
-use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, GetFileType};
 use windows_sys::Win32::System::LibraryLoader::LoadLibraryW;
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW,
 };
+use windows_sys::Win32::System::SystemServices::PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY;
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetProcessHandleCount, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetProcessHandleCount, GetProcessMitigationPolicy, OpenProcess,
+    OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION, ProcessStrictHandleCheckPolicy,
 };
 
 const HELPER_ENV: &str = "KELD_WINDOWS_LPAC_HELPER";
@@ -58,6 +59,10 @@ const LAUNCHER_TEST: &str = "windows_lpac_launcher_fixture";
 /// The role-private file the LPAC child writes its standard-handle report to; an LPAC
 /// child has no network, so the report never crosses a socket.
 const REPORT_PATH_ENV: &str = "KELD_LPAC_STANDARD_HANDLE_REPORT";
+/// The role-private file that names, in hexadecimal, the listed extra handle's
+/// value in the child: the launch inherits a private copy, whose value the test
+/// learns from the suspended child's handle table and writes before the resume.
+const LISTED_FILE_ENV: &str = "KELD_LPAC_LISTED_HANDLE_FILE";
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 
@@ -296,7 +301,159 @@ fn zero_capability_lpac_denies_host_authority_and_inherits_only_allowlisted_hand
         &system_root,
         marker.as_raw_handle().cast(),
     );
+    prove_handle_list_child_holds_only_the_listed_handle(
+        &profile,
+        &fixture,
+        &role_dir,
+        &system_root,
+        marker.as_raw_handle().cast(),
+    );
     set_inheritable(marker.as_raw_handle().cast(), false);
+}
+
+/// KEL-270 F51, the `None` + `extra_handles` combination: handle inheritance on
+/// with the explicit handle-list attribute, `STARTF_USESTDHANDLES` and null
+/// standard handles. Before resume, the child's handle table holds the listed
+/// object (a private inheritable copy, at its own value) and not the inheritable
+/// unlisted marker, and nothing else inheritable of this process crossed; that
+/// census is the oracle for every unlisted object. After resume, the child itself
+/// reports NULL for all three standard handles, a failed standard-output write,
+/// and the listed copy valid at the value the census found. Without the flag, the
+/// child's standard handles are this process's own instead, duplicated outside
+/// the handle list. The child never touches an unlisted value: an LPAC child
+/// runs with the strict handle-check mitigation, under which an invalid handle
+/// reference ends the process with `STATUS_INVALID_HANDLE`; the report records
+/// that policy.
+fn prove_handle_list_child_holds_only_the_listed_handle(
+    profile: &WindowsLpacProfile,
+    fixture: &Path,
+    role_dir: &Path,
+    system_root: &OsStr,
+    unlisted_marker: HANDLE,
+) {
+    let listed = File::open("NUL").expect("open the listed handle");
+    let listed_raw: HANDLE = listed.as_raw_handle().cast();
+    let report_path = role_dir.join("handle-list.txt");
+    let listed_value_path = role_dir.join("listed-handle.txt");
+    let mut environment = vec![
+        (OsString::from(HELPER_ENV), OsString::from("handle-list")),
+        (
+            OsString::from(REPORT_PATH_ENV),
+            report_path.clone().into_os_string(),
+        ),
+        (
+            OsString::from(LISTED_FILE_ENV),
+            listed_value_path.clone().into_os_string(),
+        ),
+        (OsString::from("SystemRoot"), system_root.to_os_string()),
+        (OsString::from("TEMP"), role_dir.as_os_str().to_os_string()),
+        (OsString::from("TMP"), role_dir.as_os_str().to_os_string()),
+    ];
+    for key in ["LOCALAPPDATA", "USERPROFILE", "WINDIR"] {
+        if let Some(value) = env::var_os(key) {
+            environment.push((OsString::from(key), value));
+        }
+    }
+    let arguments: Vec<OsString> = ["--exact", HELPER_TEST, "--ignored", "--nocapture"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    let mut child = profile
+        .spawn_suspended(
+            fixture,
+            &arguments,
+            &environment,
+            Some(role_dir),
+            None,
+            &[listed.as_handle()],
+        )
+        .expect("create the LPAC child with one listed handle and no standard handle");
+    let census = raw_process_handle_census(child.id());
+    let listed_in_child = child_value_of_object(&child, &census, listed_raw)
+        .expect("the listed object is missing from the child's handle table");
+    assert!(
+        !child_contains_object(&child, &census, unlisted_marker),
+        "the inheritable unlisted marker crossed into the handle-list child"
+    );
+    assert_no_other_inheritable_parent_object(&child, &census, &[listed_raw]);
+    assert!(
+        !handle_inheritable(listed_raw),
+        "the listed handle's inherit flag was changed"
+    );
+    std::fs::write(&listed_value_path, format!("{listed_in_child:x}"))
+        .expect("hand the child its listed handle value");
+
+    child.resume().expect("resume the handle-list child");
+    let exit = child.wait(10_000).expect("wait for the handle-list child");
+    let report = std::fs::read_to_string(&report_path).unwrap_or_else(|error| {
+        panic!("the handle-list child (exit {exit} / 0x{exit:08x}) left no report: {error}")
+    });
+    let report = report.trim();
+    println!("KELD_WINDOWS_F51_HANDLE_LIST exit={exit} {report}");
+    assert_eq!(exit, 0, "handle-list child failed: {report}");
+    // NUL is a character device (file type 2). The strict-handle-check policy is
+    // recorded, not asserted: it is the OS's default for this child.
+    assert!(
+        report.starts_with(&format!(
+            "{NO_STANDARD_HANDLE_REPORT} listed=0x{listed_in_child:x}:valid:type=2 \
+             strict_handle_checks="
+        )),
+        "the handle-list child observed: {report} (expected {NO_STANDARD_HANDLE_REPORT} \
+         listed=0x{listed_in_child:x}:valid:type=2 strict_handle_checks=...)"
+    );
+}
+
+/// The child's own view of one handle value: valid, with its file type, or the
+/// error `GetHandleInformation` reports for a value that names no handle.
+fn describe_handle_value(value: usize) -> String {
+    let handle = value as HANDLE;
+    let mut flags = 0_u32;
+    // SAFETY: a value is only queried; a value that names no handle fails the
+    // query instead of being used.
+    if unsafe { GetHandleInformation(handle, &raw mut flags) } != 0 {
+        // SAFETY: the value names a live handle of this process; GetFileType
+        // only classifies it.
+        let file_type = unsafe { GetFileType(handle) };
+        format!("0x{value:x}:valid:type={file_type}")
+    } else {
+        format!(
+            "0x{value:x}:invalid(err={})",
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or_default()
+        )
+    }
+}
+
+fn hex_handle_value(text: &str) -> usize {
+    usize::from_str_radix(text.trim(), 16).expect("hexadecimal handle value")
+}
+
+/// This process's strict handle-check mitigation flags, as
+/// `GetProcessMitigationPolicy` reports them: bit 0 raises on an invalid handle
+/// reference, bit 1 keeps that permanently enabled.
+fn strict_handle_check_policy() -> String {
+    let mut policy = PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY::default();
+    // SAFETY: the current-process pseudo-handle is valid; `policy` is writable
+    // storage of exactly the length passed.
+    let queried = unsafe {
+        GetProcessMitigationPolicy(
+            GetCurrentProcess(),
+            ProcessStrictHandleCheckPolicy,
+            (&raw mut policy).cast(),
+            std::mem::size_of_val(&policy),
+        )
+    };
+    if queried == 0 {
+        return format!(
+            "unknown(err={})",
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or_default()
+        );
+    }
+    // SAFETY: `Flags` aliases the whole bitfield word of the union.
+    format!("0x{:x}", unsafe { policy.Anonymous.Flags })
 }
 
 fn prove_bun_artifact_starts_under_lpac(
@@ -571,6 +728,22 @@ fn windows_lpac_process_helper() {
     if env::var(HELPER_ENV).as_deref() == Ok("standard-handles") {
         let report = PathBuf::from(env::var_os(REPORT_PATH_ENV).expect("report path"));
         std::fs::write(report, standard_handle_report()).expect("write the standard-handle report");
+        return;
+    }
+    if env::var(HELPER_ENV).as_deref() == Ok("handle-list") {
+        let report = PathBuf::from(env::var_os(REPORT_PATH_ENV).expect("report path"));
+        let listed = std::fs::read_to_string(env::var_os(LISTED_FILE_ENV).expect("listed file"))
+            .expect("read the listed handle value");
+        std::fs::write(
+            report,
+            format!(
+                "{} listed={} strict_handle_checks={}",
+                standard_handle_report(),
+                describe_handle_value(hex_handle_value(&listed)),
+                strict_handle_check_policy()
+            ),
+        )
+        .expect("write the handle-list report");
         return;
     }
     assert_eq!(env::var(HELPER_ENV).as_deref(), Ok("probe"));
@@ -951,7 +1124,17 @@ fn child_contains_object(
     census: &[SystemHandleEntry],
     parent_object: HANDLE,
 ) -> bool {
-    census.iter().any(|entry| {
+    child_value_of_object(child, census, parent_object).is_some()
+}
+
+/// The value at which `child`'s handle table holds the object that
+/// `parent_object` names in this process, if it holds it at all.
+fn child_value_of_object(
+    child: &keld_runtime::windows_lpac::WindowsSuspendedChild,
+    census: &[SystemHandleEntry],
+    parent_object: HANDLE,
+) -> Option<usize> {
+    let entry = census.iter().find(|entry| {
         let mut duplicate = std::ptr::null_mut();
         // SAFETY: child process handle is live; entry came from that exact PID
         // in the raw table; current-process pseudo-handle is valid; duplicate
@@ -975,7 +1158,8 @@ fn child_contains_object(
         let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) };
         // SAFETY: both compared handles are live for this call.
         (unsafe { CompareObjectHandles(parent_object, duplicate.as_raw_handle().cast()) }) != 0
-    })
+    });
+    entry.map(|entry| entry.handle_value)
 }
 
 fn assert_no_other_inheritable_parent_object(
@@ -989,9 +1173,12 @@ fn assert_no_other_inheritable_parent_object(
         if allowed.contains(&handle) || !handle_inheritable(handle) {
             continue;
         }
+        // SAFETY: the census supplied a live inheritable handle of this process;
+        // GetFileType only classifies it.
+        let file_type = unsafe { GetFileType(handle) };
         assert!(
             !child_contains_object(child, child_census, handle),
-            "inheritable parent handle 0x{:x} crossed outside HANDLE_LIST",
+            "inheritable parent handle 0x{:x} (file type {file_type}) crossed outside HANDLE_LIST",
             entry.handle_value
         );
     }
