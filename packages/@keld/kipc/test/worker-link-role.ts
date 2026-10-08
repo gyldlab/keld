@@ -22,6 +22,7 @@ import {
   isCallError,
   openWorkerLinkForTest,
   parseAppLink,
+  quitAndCloseLink,
   type WorkerLinkOptions,
   type WorkerLinkTestHooks,
   type WorkerReceiveTable,
@@ -832,9 +833,76 @@ async function t2WorkerDies(): Promise<void> {
   expectThrow("call", () => link.callBlocking(channel, payload, 30_000));
 }
 
+// GH-528 T3: `onEnd` reports the link's end once, after every retained
+// record reached its listener; a listener added later still runs, a removed
+// one never does, and a throwing one does not stop the others.
+async function onEndReport(): Promise<void> {
+  const { link } = await open();
+  const log: string[] = [];
+  const events = collector(2);
+  link.onEvent(LIFECYCLE_CHANNEL, (payload) => {
+    events.listener(payload);
+    log.push(`event:${seqOf(payload)}`);
+  });
+  let resolveFirst: () => void = () => undefined;
+  const first = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  link.onEnd(() => {
+    throw new Error("test-only throwing end listener");
+  });
+  link.onEnd((err) => {
+    log.push(`end:${codeOf(err)}`);
+    resolveFirst();
+  });
+  const removed = link.onEnd(() => log.push("removed-ran"));
+  removed();
+  let uncaught = 0;
+  process.on("uncaughtException", () => {
+    uncaught += 1;
+  });
+  link.sendEvent(LIFECYCLE_CHANNEL, text("ready-for-events"));
+  await first;
+  await new Promise<void>((resolve) => {
+    link.onEnd((err) => {
+      log.push(`late:${codeOf(err)}`);
+      resolve();
+    });
+  });
+  await nextTask();
+  report("order", log.join(","));
+  report("uncaught", uncaught);
+}
+
+// GH-528 T3 (#636 gate review): the role's Quit is its last call. The link
+// closes the moment the REPLY returns, so a call still pending then rejects
+// with KELD-IPC-022 (which callers treat as the host drain's 024) and the host
+// reads EOF at once.
+async function quitClose(): Promise<void> {
+  const { link } = await open();
+  const log: string[] = [];
+  const pending = link.call(LIFECYCLE_CHANNEL, text("pending"), 30_000).then(
+    () => log.push("pending:returned"),
+    (err) => log.push(`pending:${codeOf(err)}`),
+  );
+  const ended = new Promise<void>((resolve) => {
+    link.onEnd((err) => {
+      log.push(`end:${codeOf(err)}`);
+      resolve();
+    });
+  });
+  report("quit", decoder.decode(quitAndCloseLink(link, 30_000)));
+  log.push("quit:returned");
+  await pending;
+  await ended;
+  report("order", log.join(","));
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
   "t2-blocking-call": t2BlockingCall,
   "t2-worker-dies": t2WorkerDies,
+  "on-end": onEndReport,
+  "quit-close": quitClose,
   "expiry-after-close": expiryAfterClose,
   "expiry-during-park": expiryDuringPark,
   "claim-first-worker-dies": claimFirstWorkerDies,
