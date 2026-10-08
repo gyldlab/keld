@@ -144,19 +144,26 @@ impl AppLinkDeadlines for std::os::unix::net::UnixStream {
     /// (apple-oss-distributions/xnu `f6217f89`, `bsd/kern/uipc_socket.c`;
     /// GH-528).
     fn shutdown_app_link(&self) -> io::Result<()> {
-        shutdown_half(self, Shutdown::Write)?;
-        shutdown_half(self, Shutdown::Read)
+        shutdown_write_then_read(|how| self.shutdown(how))
     }
 }
 
-/// One half of [`AppLinkDeadlines::shutdown_app_link`] on a Unix stream:
-/// `NotConnected` means that half, or the whole connection, is already shut.
+/// The Unix [`AppLinkDeadlines::shutdown_app_link`] order: the write half,
+/// then the read half. Both halves are always attempted, so a failed write
+/// half cannot leave a local reader blocked. `NotConnected` means that half,
+/// or the whole connection, is already shut, and is success; the first other
+/// error is returned.
 #[cfg(unix)]
-fn shutdown_half(stream: &std::os::unix::net::UnixStream, how: Shutdown) -> io::Result<()> {
-    match stream.shutdown(how) {
+fn shutdown_write_then_read(
+    mut shutdown: impl FnMut(Shutdown) -> io::Result<()>,
+) -> io::Result<()> {
+    let already_shut_is_success = |result: io::Result<()>| match result {
         Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
         result => result,
-    }
+    };
+    let write = already_shut_is_success(shutdown(Shutdown::Write));
+    let read = already_shut_is_success(shutdown(Shutdown::Read));
+    write.and(read)
 }
 
 impl AppLinkDeadlines for std::net::TcpStream {
@@ -1501,6 +1508,50 @@ mod tests {
         shutdown.expect("an already-shut read half is success");
         host.shutdown_app_link()
             .expect("a second shutdown is idempotent");
+    }
+
+    /// #641 review: a write half that fails with an error other than
+    /// `NotConnected` must not skip the read half, or a local reader stays
+    /// blocked. The shim records each attempt. *Negative control:* returning
+    /// early on the write error (`?`) records only `Write`.
+    #[test]
+    #[cfg(unix)]
+    fn shutdown_attempts_the_read_half_after_a_failed_write_half() {
+        let mut attempts = Vec::new();
+        let result = shutdown_write_then_read(|how| {
+            attempts.push(how);
+            match how {
+                Shutdown::Write => Err(io::Error::from(ErrorKind::PermissionDenied)),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(attempts, [Shutdown::Write, Shutdown::Read]);
+        assert_eq!(
+            result.expect_err("the write error is returned").kind(),
+            ErrorKind::PermissionDenied
+        );
+
+        let mut attempts = Vec::new();
+        let result = shutdown_write_then_read(|how| {
+            attempts.push(how);
+            match how {
+                Shutdown::Write => Err(io::Error::from(ErrorKind::NotConnected)),
+                _ => Err(io::Error::from(ErrorKind::BrokenPipe)),
+            }
+        });
+        assert_eq!(attempts, [Shutdown::Write, Shutdown::Read]);
+        assert_eq!(
+            result
+                .expect_err("the first error other than NotConnected is returned")
+                .kind(),
+            ErrorKind::BrokenPipe
+        );
+
+        let result = shutdown_write_then_read(|_| Err(io::Error::from(ErrorKind::NotConnected)));
+        assert!(
+            result.is_ok(),
+            "already-shut halves are success: {result:?}"
+        );
     }
 
     /// The write-then-read order keeps the read half: a silent peer still
