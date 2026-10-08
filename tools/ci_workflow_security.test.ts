@@ -295,11 +295,27 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
       mkdirSync(dirname(destination), { recursive: true });
       cpSync(join(repository, relative), destination, { dereference: false });
     }
+    // `ci-hygiene check` compares the GH-508 channel allocation baseline with a
+    // merge base, so the copied checkout is a git repository compared to its HEAD.
+    const git = (...args: string[]) =>
+      Bun.spawnSync([
+        "git", "-C", checkoutRoot,
+        "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main",
+        ...args,
+      ]);
+    expect(git("init", "--quiet").exitCode).toBe(0);
+    expect(git("add", "-A").exitCode).toBe(0);
+    expect(git("commit", "--quiet", "--no-verify", "-m", "fixture").exitCode).toBe(0);
     const binary = join(temporary, process.platform === "win32" ? "ci-hygiene.exe" : "ci-hygiene");
     const compilation = Bun.spawnSync(["rustc", "--edition=2024", "-D", "warnings", join(repository, "tools/ci_hygiene.rs"), "-o", binary]);
     expect(compilation.exitCode).toBe(0);
     // The CLI must use the same verified Bun executable as this test process.
-    const runtimeEnv = { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` };
+    const runtimeEnv = {
+      ...process.env,
+      KELD_CI_BASE_REF: "HEAD",
+      PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+    };
     const run = (yaml: string, env = runtimeEnv) => {
       writeFileSync(join(checkoutRoot, ".github/workflows/ci.yml"), yaml);
       return Bun.spawnSync([binary, "check", checkoutRoot], { cwd: repository, env });

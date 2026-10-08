@@ -10,9 +10,10 @@
 
 use std::io::Cursor;
 
+use keld_ipc::channel_table;
 use keld_ipc::link::read_validated_frame;
 use keld_ipc::receive::{ReceivePolicy, validate_received_header};
-use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind, HEADER_LEN};
+use keld_ipc::{CorrelationId, FrameHeader, FrameKind, HEADER_LEN};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let policies = [
@@ -24,7 +25,8 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         ReceivePolicy::lifecycle_receiver(),
         ReceivePolicy::lifecycle_event_receiver(),
         ReceivePolicy::lifecycle_reply_waiter(CorrelationId(7)),
-        ReceivePolicy::privileged_call_receiver(ChannelId(2)),
+        ReceivePolicy::privileged_call_receiver(&channel_table::FS)
+            .expect("the fs entry is a guarded CALL channel"),
     ];
     for policy in &policies {
         let mut cursor = Cursor::new(data);

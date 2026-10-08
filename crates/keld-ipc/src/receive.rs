@@ -24,6 +24,7 @@
 use std::time::{Duration, Instant};
 
 use crate::IpcError;
+use crate::channel_table::{ChannelEntry, HANDSHAKE_CHANNEL, ReceiveClass};
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 
 /// Which peer this receiver expects frames from.
@@ -166,7 +167,7 @@ impl ReceivePolicy {
         Self {
             direction,
             phase: SessionPhase::PreAuth,
-            channel: ChannelId(0),
+            channel: HANDSHAKE_CHANNEL,
             payload: PayloadMode::ExactLen(SESSION_TOKEN_WIRE_LEN),
             expected_corr: ExpectedCorrelation::Zero,
             kinds: AllowedKinds::only(FrameKind::Hello),
@@ -270,26 +271,27 @@ impl ReceivePolicy {
         Self::event_receiver_on(crate::lifecycle::LIFECYCLE_CHANNEL)
     }
 
-    /// App-side EVENT receiver for one host-declared EVENT channel (GH-527
-    /// spec §4.7 and §4.9 row `event-receiver:<channel>`): uncorrelated
-    /// `EVENT`s on `channel`, plus the live `PING` probe.
+    /// App-side EVENT receiver for one channel table entry (GH-527 spec §4.7
+    /// and §4.9 row `event-receiver:<channel>`): uncorrelated `EVENT`s on the
+    /// entry's id, plus the live `PING` probe.
     ///
     /// The transport Worker selects this policy per frame from the role's
-    /// declared `eventChannels`; wire bytes never select it. Lifecycle is the
-    /// only channel that carries host `EVENT`s today, so every other channel
-    /// is refused until the channel table (#613) declares one.
+    /// declared `eventChannels`; wire bytes never select it. Only an entry
+    /// whose receive class carries host `EVENT`s
+    /// ([`ReceiveClass::carries_host_events`]) admits it, and only table
+    /// entries exist, so no event policy exists for an unallocated id.
     ///
     /// # Errors
     ///
-    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) for a channel that
-    /// carries no host `EVENT`s.
-    pub fn event_receiver(channel: ChannelId) -> Result<Self, IpcError> {
-        if channel != crate::lifecycle::LIFECYCLE_CHANNEL {
+    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) for an entry whose
+    /// class carries no host `EVENT`s.
+    pub const fn event_receiver(entry: &'static ChannelEntry) -> Result<Self, IpcError> {
+        if !entry.class().carries_host_events() {
             return Err(IpcError::Protocol {
                 detail: "channel carries no host EVENTs",
             });
         }
-        Ok(Self::event_receiver_on(channel))
+        Ok(Self::event_receiver_on(entry.id()))
     }
 
     const fn event_receiver_on(channel: ChannelId) -> Self {
@@ -313,50 +315,60 @@ impl ReceivePolicy {
         Self::reply_waiter_on(crate::lifecycle::LIFECYCLE_CHANNEL, corr)
     }
 
-    /// App-side reply waiter for one outstanding `CALL` on `channel` (GH-527
-    /// spec §4.7 and §4.9 row `reply-waiter:<channel>:<corr>`; the KEL-133
-    /// row 7 shape on any reply-carrying channel).
+    /// App-side reply waiter for one outstanding `CALL` on a channel table
+    /// entry (GH-527 spec §4.7 and §4.9 row `reply-waiter:<channel>:<corr>`;
+    /// the KEL-133 row 7 shape on any reply-carrying channel).
     ///
     /// Admits `REPLY` or the declared [`crate::CallError`]-carrying `ERR`
-    /// on `channel` with correlation exactly `corr`; no `PING`. The transport
-    /// Worker selects it per frame from its trusted pending-CALL map entry,
-    /// which supplies `channel`; wire bytes never select it.
+    /// on the entry's id with correlation exactly `corr`; no `PING`. The
+    /// transport Worker selects it per frame from its trusted pending-CALL map
+    /// entry; wire bytes never select it. Only table entries exist, so no
+    /// waiter exists for an unallocated id or for `HELLO`'s channel 0.
     ///
     /// # Errors
     ///
-    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) for channel 0, which
-    /// carries only `HELLO`, and for the echo channel, whose caller waiter
-    /// stays KEL-133 row 4's `REPLY`-only [`Self::echo_reply_waiter`].
-    pub fn reply_waiter(channel: ChannelId, corr: CorrelationId) -> Result<Self, IpcError> {
-        if channel == ChannelId(0) {
-            return Err(IpcError::Protocol {
-                detail: "channel 0 carries only HELLO",
-            });
-        }
-        if channel == crate::echo::ECHO_CHANNEL {
+    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) for the echo entry,
+    /// whose caller waiter stays KEL-133 row 4's `REPLY`-only
+    /// [`Self::echo_reply_waiter`].
+    pub const fn reply_waiter(
+        entry: &'static ChannelEntry,
+        corr: CorrelationId,
+    ) -> Result<Self, IpcError> {
+        if entry.id().0 == crate::channel_table::ECHO.id().0 {
             return Err(IpcError::Protocol {
                 detail: "echo replies use the REPLY-only echo reply waiter",
             });
         }
-        Ok(Self::reply_waiter_on(channel, corr))
+        Ok(Self::reply_waiter_on(entry.id(), corr))
     }
 
-    /// Future privileged receiver: authenticated `CALL`s on a host-declared
-    /// channel (spec table row 8). The KEL-102/T3 consumer selects the
-    /// channel; this policy cannot mint authority — the guard still runs
-    /// after payload decode.
-    #[must_use]
-    pub const fn privileged_call_receiver(channel: ChannelId) -> Self {
-        Self {
+    /// Privileged receiver: authenticated `CALL`s on one host-selected channel
+    /// table entry (spec table row 8). This policy cannot mint authority — the
+    /// guard still runs after payload decode. Only a
+    /// [`ReceiveClass::GuardedCall`] entry admits it, so this constructor builds
+    /// no policy for an unallocated id or a host-internal channel (GH-508 spec
+    /// criterion 10). The class check runs at policy construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) when `entry` is not a
+    /// [`ReceiveClass::GuardedCall`] channel.
+    pub const fn privileged_call_receiver(entry: &'static ChannelEntry) -> Result<Self, IpcError> {
+        if !matches!(entry.class(), ReceiveClass::GuardedCall) {
+            return Err(IpcError::Protocol {
+                detail: "channel class does not admit this policy",
+            });
+        }
+        Ok(Self {
             direction: Direction::FromClient,
             phase: SessionPhase::Authenticated,
-            channel,
+            channel: entry.id(),
             payload: PayloadMode::Codec,
             expected_corr: ExpectedCorrelation::NonZero,
             kinds: AllowedKinds::only(FrameKind::Call),
             allow_ping: false,
             also_channel: None,
-        }
+        })
     }
 
     const fn reply_waiter_on(channel: ChannelId, corr: CorrelationId) -> Self {
@@ -394,11 +406,11 @@ pub fn validate_primary_app_header(
 
 pub(crate) fn validate_primary_app_header_with_privileged_call(
     pending_echo_reply: Option<CorrelationId>,
-    privileged_call_channel: Option<ChannelId>,
+    privileged_call: Option<&'static ChannelEntry>,
     header: FrameHeader,
 ) -> Result<ValidatedFrameHeader, IpcError> {
-    match header.kind {
-        FrameKind::Reply | FrameKind::Err => {
+    match (header.kind, privileged_call) {
+        (FrameKind::Reply | FrameKind::Err, _) => {
             let Some(corr) = pending_echo_reply else {
                 return Err(IpcError::Protocol {
                     detail: "frame kind is not declared by the session policy",
@@ -406,13 +418,8 @@ pub(crate) fn validate_primary_app_header_with_privileged_call(
             };
             validate_received_header(&ReceivePolicy::primary_echo_reply_waiter(corr), header)
         }
-        FrameKind::Call
-            if privileged_call_channel.is_some_and(|channel| header.channel == channel) =>
-        {
-            let Some(channel) = privileged_call_channel else {
-                unreachable!("guard above proves the trusted channel is present");
-            };
-            validate_received_header(&ReceivePolicy::privileged_call_receiver(channel), header)
+        (FrameKind::Call, Some(entry)) if header.channel == entry.id() => {
+            validate_received_header(&ReceivePolicy::privileged_call_receiver(entry)?, header)
         }
         _ => validate_received_header(&ReceivePolicy::primary_app_receiver(), header),
     }
@@ -656,6 +663,11 @@ mod tests {
         }
     }
 
+    fn fs_receiver() -> ReceivePolicy {
+        ReceivePolicy::privileged_call_receiver(&crate::channel_table::FS)
+            .expect("the fs entry is a guarded CALL channel")
+    }
+
     /// Spec §3 criterion 2 and §4 table: every reserved combination on the
     /// echo receiver fails `KELD-IPC-005` with a distinct, stable detail.
     #[test]
@@ -731,7 +743,7 @@ mod tests {
             ReceivePolicy::lifecycle_receiver(),
             ReceivePolicy::lifecycle_event_receiver(),
             ReceivePolicy::lifecycle_reply_waiter(CorrelationId(5)),
-            ReceivePolicy::privileged_call_receiver(ChannelId(2)),
+            fs_receiver(),
         ];
         for policy in &policies {
             for kind_byte in 0..=10u8 {
@@ -839,11 +851,12 @@ mod tests {
     }
 
     /// GH-527 §4.7/§4.9: the public reply waiter is the lifecycle row-7 shape
-    /// on any reply-carrying channel, and the lifecycle constructor is its
-    /// channel-3 call. Channel 0 and the REPLY-only echo channel are refused.
+    /// on any reply-carrying table entry, and the lifecycle constructor is its
+    /// lifecycle-entry call. The REPLY-only echo entry is refused; `HELLO`'s
+    /// channel 0 has no entry, so it cannot be named at all.
     #[test]
     fn reply_waiter_is_row_seven_on_its_channel_and_refuses_hello_and_echo() {
-        let fs = ReceivePolicy::reply_waiter(ChannelId(2), CorrelationId(7))
+        let fs = ReceivePolicy::reply_waiter(&crate::channel_table::FS, CorrelationId(7))
             .expect("a CALL channel has a reply waiter");
         for kind in [FrameKind::Reply, FrameKind::Err] {
             validate_received_header(&fs, header(kind, 0, 2, 7, 4))
@@ -872,14 +885,16 @@ mod tests {
             assert_eq!(detail_of(err), expected, "{frame:?}");
         }
         assert_eq!(
-            ReceivePolicy::reply_waiter(LIFECYCLE_CHANNEL, CorrelationId(9))
+            ReceivePolicy::reply_waiter(&crate::channel_table::LIFECYCLE, CorrelationId(9))
                 .expect("lifecycle reply waiter"),
             ReceivePolicy::lifecycle_reply_waiter(CorrelationId(9))
         );
-        let hello = ReceivePolicy::reply_waiter(ChannelId(0), CorrelationId(7))
-            .expect_err("channel 0 carries only HELLO");
-        assert_eq!(detail_of(hello), "channel 0 carries only HELLO");
-        let echo = ReceivePolicy::reply_waiter(ECHO_CHANNEL, CorrelationId(7))
+        assert_eq!(
+            crate::channel_table::entry(crate::channel_table::HANDSHAKE_CHANNEL),
+            None,
+            "HELLO's channel has no entry, so no reply waiter can name it"
+        );
+        let echo = ReceivePolicy::reply_waiter(&crate::channel_table::ECHO, CorrelationId(7))
             .expect_err("echo keeps its REPLY-only waiter");
         assert_eq!(
             detail_of(echo),
@@ -888,25 +903,21 @@ mod tests {
     }
 
     /// GH-527 §4.7: the per-channel EVENT receiver equals the lifecycle one
-    /// on channel 3 and refuses every channel without host EVENTs (fallback:
-    /// lifecycle is the only such channel until #613).
+    /// on the lifecycle entry and refuses every entry whose receive class
+    /// carries no host EVENTs (decided by the table, not a channel compare).
     #[test]
     fn event_receiver_is_the_lifecycle_policy_and_refuses_other_channels() {
         assert_eq!(
-            ReceivePolicy::event_receiver(LIFECYCLE_CHANNEL).expect("lifecycle carries EVENTs"),
+            ReceivePolicy::event_receiver(&crate::channel_table::LIFECYCLE)
+                .expect("lifecycle carries EVENTs"),
             ReceivePolicy::lifecycle_event_receiver()
         );
-        for channel in [
-            ChannelId(0),
-            ECHO_CHANNEL,
-            ChannelId(2),
-            ChannelId(u16::MAX),
-        ] {
-            let err = ReceivePolicy::event_receiver(channel).expect_err("no host EVENTs");
+        for entry in [&crate::channel_table::ECHO, &crate::channel_table::FS] {
+            let err = ReceivePolicy::event_receiver(entry).expect_err("no host EVENTs");
             assert_eq!(
                 detail_of(err),
                 "channel carries no host EVENTs",
-                "{channel:?}"
+                "{entry:?}"
             );
         }
     }
@@ -936,7 +947,7 @@ mod tests {
         for policy in [
             ReceivePolicy::server_pre_auth_hello(),
             ReceivePolicy::client_await_hello(),
-            ReceivePolicy::privileged_call_receiver(ChannelId(2)),
+            fs_receiver(),
             ReceivePolicy::echo_reply_waiter(CorrelationId(1)),
         ] {
             let err = validate_received_header(&policy, header(FrameKind::Ping, 0, 0, 0, 0))
@@ -962,7 +973,7 @@ mod tests {
             .expect_err("echo channel is wrong for lifecycle");
         assert_eq!(detail_of(err), "wrong channel for the session policy");
 
-        let fs = ReceivePolicy::privileged_call_receiver(ChannelId(2));
+        let fs = fs_receiver();
         validate_received_header(&fs, header(FrameKind::Call, 0, 2, 3, 8))
             .expect("valid privileged CALL");
         let err = validate_received_header(&fs, header(FrameKind::Call, 0, 2, 0, 8))
@@ -1048,15 +1059,23 @@ mod tests {
             .expect_err("legacy primary policy must still reject channel 2");
         assert_eq!(detail_of(legacy), "wrong channel for the session policy");
 
-        validate_primary_app_header_with_privileged_call(None, Some(ChannelId(2)), call)
-            .expect("trusted privileged channel selection admits the exact structured CALL");
+        validate_primary_app_header_with_privileged_call(
+            None,
+            Some(&crate::channel_table::FS),
+            call,
+        )
+        .expect("trusted privileged channel selection admits the exact structured CALL");
         for bad in [
             header(FrameKind::Call, 0, 2, 0, 4),
             header(FrameKind::Call, FLAG_RAW, 2, 7, 4),
             header(FrameKind::Event, 0, 2, 0, 4),
         ] {
-            validate_primary_app_header_with_privileged_call(None, Some(ChannelId(2)), bad)
-                .expect_err("privileged channel keeps canonical KEL-133 semantics");
+            validate_primary_app_header_with_privileged_call(
+                None,
+                Some(&crate::channel_table::FS),
+                bad,
+            )
+            .expect_err("privileged channel keeps canonical KEL-133 semantics");
         }
         validate_primary_app_header_with_privileged_call(None, None, call)
             .expect_err("absence of a trusted selection cannot promote channel 2");

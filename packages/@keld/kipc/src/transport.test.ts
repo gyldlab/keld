@@ -19,13 +19,16 @@ import { join, relative } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
+  ALLOCATED_CHANNELS,
   APP_LINK_IO_DEADLINE_MS,
   DirectedReader,
   DrainSignal,
   ECHO_CHANNEL,
   FLAG_RAW,
+  FS_CHANNEL,
   FrameKind,
   FrameReader,
+  HANDSHAKE_CHANNEL,
   HEADER_LEN,
   LIFECYCLE_CHANNEL,
   MAX_FRAME_LEN,
@@ -41,11 +44,13 @@ import {
   echoReplyWaiter,
   encodeHeader,
   eventReceiver,
+  isAllocatedChannel,
   kipcError,
   lifecycleReplyWaiter,
   replyWaiter,
   validateReceivedHeader,
   withIoDeadline,
+  type AllocatedChannel,
 } from "./transport.ts";
 
 const REPO_ROOT = join(import.meta.dir, "../../../..");
@@ -88,25 +93,25 @@ function walkFiles(root: string, suffix: string, into: string[]): void {
 }
 
 describe("wire constants match keld-ipc", () => {
+  // Channel ids are generated from keld_ipc::channel_table; the drift check in
+  // scripts/channel-table.test.ts replaces the old source-text parity (GH-508).
   test("Rust source pins the same numbers this module exports", () => {
     const lib = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/lib.rs"), "utf8");
     const frame = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/frame.rs"), "utf8");
-    const echo = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/echo.rs"), "utf8");
-    const lifecycle = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/lifecycle.rs"), "utf8");
     expect(lib).toContain("pub const PROTOCOL_VERSION: u8 = 2;");
     expect(lib).toContain("pub const HEADER_LEN: usize = 16;");
     expect(lib).toContain("pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;");
     expect(lib).toContain("Duration::from_secs(5)");
     expect(frame).toContain("pub const FLAG_RAW: u16 = 1 << 0;");
     expect(frame).toContain("Ping = 10");
-    expect(echo).toContain("ChannelId(1)");
-    expect(lifecycle).toContain("ChannelId(3)");
     expect(PROTOCOL_VERSION).toBe(2);
     expect(HEADER_LEN).toBe(16);
     expect(MAX_FRAME_LEN).toBe(16 * 1024 * 1024);
     expect(APP_LINK_IO_DEADLINE_MS).toBe(5_000);
     expect(FLAG_RAW).toBe(1);
+    expect(HANDSHAKE_CHANNEL).toBe(0);
     expect(ECHO_CHANNEL).toBe(1);
+    expect(FS_CHANNEL).toBe(2);
     expect(LIFECYCLE_CHANNEL).toBe(3);
     expect(FrameKind.Ping).toBe(10);
   });
@@ -219,10 +224,33 @@ describe("GH-527 receive policy mirrors", () => {
   });
 
   test("replyWaiter refuses the HELLO channel and the REPLY-only echo channel", () => {
-    expect(() => replyWaiter(0, 7)).toThrow("KELD-IPC-005: channel 0 carries only HELLO");
+    expect(() => replyWaiter(HANDSHAKE_CHANNEL as number as AllocatedChannel, 7)).toThrow(
+      "KELD-IPC-005: channel 0 carries only HELLO",
+    );
     expect(() => replyWaiter(ECHO_CHANNEL, 7)).toThrow(
       "KELD-IPC-005: echo replies use the REPLY-only echo reply waiter",
     );
+  });
+
+  test("replyWaiter accepts only channel table ids, by type and at runtime (GH-597)", () => {
+    expect(ALLOCATED_CHANNELS).toEqual([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]);
+    for (const channel of [ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]) {
+      expect(isAllocatedChannel(channel)).toBe(true);
+    }
+    for (const unallocated of [HANDSHAKE_CHANNEL, 4, 9, 0xffff, 2.5, -1]) {
+      expect(isAllocatedChannel(unallocated)).toBe(false);
+    }
+    // Type-level negative control: if `replyWaiter` widened its parameter to
+    // `number`, this directive would be unused and `bun run typecheck` fails.
+    // @ts-expect-error 4 is not an allocated channel
+    expect(() => replyWaiter(4, 7)).toThrow(
+      "KELD-IPC-005: channel is not allocated by the channel table",
+    );
+    for (const unallocated of [9, 0xffff]) {
+      expect(() => replyWaiter(unallocated as AllocatedChannel, 7)).toThrow(
+        "KELD-IPC-005: channel is not allocated by the channel table",
+      );
+    }
   });
 
   test("eventReceiver equals the lifecycle event policy and refuses other channels", () => {

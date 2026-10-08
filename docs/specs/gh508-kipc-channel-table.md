@@ -702,14 +702,14 @@ policy); a keld-wv-local constant with a parity test (the mirror this spec remov
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 (X05-T4, #597, Rust half): `channel_table.rs` with the three entries,
+- [x] T1 (X05-T4, #597, Rust half): `channel_table.rs` with the three entries,
   `HANDSHAKE_CHANNEL`, `validate_table` with its const assertion and fixtures, the
   `keld-guard` constants, derived constants in `keld-ipc` / `keld-native`, the
   entry-typed `privileged_call_receiver`, macOS bridge construction from the host, and
   the Rust no-literal and permission-literal scans, `check_allocations`, the committed
   baseline file and the `tools/ci_hygiene.rs` append-only rule. Criteria 1–6 (with 3a), 10–13 and 15.
   Criterion 16 belongs to F02-T2 (#449).
-- [ ] T2 (X05-T4, #597, TypeScript half): the generator target, the generated region,
+- [x] T2 (X05-T4, #597, TypeScript half): the generator target, the generated region,
   `HANDSHAKE_CHANNEL` in `RECEIVE_POLICIES`, the TypeScript and injected-script
   no-literal scan, and deletion of the parity test. Criteria 7–9 and 14. X05-T4 MAY land
   T1 and T2 as one PR. T2 depends on T1's file.
@@ -743,7 +743,9 @@ fixture. None depends on timing, ports or platform. The macOS bridge test is a
   `Authority`, `TableDefect`, `validate_table`, `entry`, `HANDSHAKE_CHANNEL`,
   `CHANNEL_TABLE` and the entry constants); `privileged_call_receiver` parameter and
   return type; `RendererBridgeEndpoint::new` gains a parameter; TypeScript gains
-  `FS_CHANNEL` and `HANDSHAKE_CHANNEL`. `check_allocations` and `AllocationDefect` are
+  `FS_CHANNEL` and `HANDSHAKE_CHANNEL`. X05-T4 also changed
+  `link::read_primary_app_frame_interruptible_with_privileged_call` to take
+  `&'static ChannelEntry` (§11) and added `keld_guard::capability::{FS_READ, FS_WRITE}`. `check_allocations` and `AllocationDefect` are
   `#[cfg(test)]` and not public. F02-T2 later adds `LifecycleRequest::Subscribe`,
   `LifecycleResponse::{Subscribed, SubscribeRefused}` and `SubscribeRefusal`.
 - **permission model:** yes (listed by #508's body). The `Authority` declaration
@@ -767,3 +769,92 @@ None. The five earlier questions were decided under the owner's delegation, reco
    step 6 and criterion 16;
 4. the architecture 02 §2 amendment: §2;
 5. emitting every entry: §4.3.
+
+## 11. Implementation record (X05-T4, #597)
+
+T1 and T2 landed as one PR, rebased after GH-528 T1 (#628). Wire bytes and
+`PROTOCOL_VERSION` 2 are unchanged, and this PR leaves `receiver-semantics-v0.tsv`
+untouched: its digest is `375f50c4...` at the spec's base and `0cebb6e0...` after #628
+added its `reply-waiter` and `event-receiver` rows. Before the change the criterion 6
+rule reported exactly the seven production hits listed there (eight after #628, whose
+`reply_waiter` compared with `ChannelId(0)`). Where the implementation differs from §4 and §5:
+
+- **Public privileged reader.** `keld_ipc::link::read_primary_app_frame_interruptible_with_privileged_call`
+  takes `&'static ChannelEntry` instead of `ChannelId`, beyond the `write_hello` edit §5
+  names. It is the only caller of the entry-typed crate-private helper (§4.2) and
+  `keld-core`'s only privileged selection point; keeping `ChannelId` would need a runtime
+  lookup and would let a raw id select the privileged policy again. On that link the
+  class check runs inside the helper for each privileged `CALL` header: a constant
+  comparison on host-selected state that no frame can influence. *Falsifier:* a caller
+  that has to choose a privileged channel by a runtime id.
+- **Criterion 15 reach.** `keld-ipc`'s `guard_dispatch.rs` compared `operation` with the
+  `"fs.read"` / `"fs.write"` literals in production; it now uses the `keld-guard`
+  constants, because the criterion 15 scan rejects it otherwise.
+- **Scan locations.** The Rust criterion 6 and 15 scan is
+  `crates/keld-cli/tests/channel_table_scan.rs`, not `crates/keld-ipc/tests/`. CI selects
+  packages by Cargo reverse dependency plus `tools/ci-inputs.json` edges; the existing
+  workspace external-reads edge selects `keld-cli` for any `crates/*` change, while a
+  `keld-ipc` test would not run on a change confined to, say, `keld-wv`. The TypeScript
+  scan and drift tests are `packages/@keld/kipc/scripts/channel-table.test.ts`, beside
+  the generator test, in the same `bun test` lane. *Falsifier:* a router edge that runs
+  `keld-ipc` tests for every crate change without pulling in its reverse-dependency
+  closure.
+- **TypeScript literal grammar.** Criterion 7 rejects a `*channel*` binding assigned a
+  number (any type annotation), a `channel:` property set to a number, an equality
+  comparison between a `*channel*` operand and a number (optionally parenthesised), and a
+  number as the channel argument of the transport's positional `writeFrame` /
+  `encodeHeader`; the two `HELLO` writers that passed `0` there now pass
+  `HANDSHAKE_CHANNEL`. Not detected: `case 1:`, numeric object keys, and a constant whose
+  name lacks `channel`. `packages/*/src` is read as every package directory under
+  `packages/`, scoped or not.
+- **Fail-closed hardening beyond the text.** The Rust scan resolves `mod x;` through
+  enclosing inline modules and `#[path]` by Rust's module rules. Where mod-rs status is
+  not decidable from a file's name (a `#[path]`-loaded file, a non-`lib.rs`/`main.rs`
+  crate root, an `include!`d file), production reach is recorded under both readings.
+  A file a production declaration or production `include!` reaches is never excluded,
+  even under `tests/`, and the loader reads such files from disk. An unresolvable
+  production declaration (an unreadable `#[path`, a `#[path]` inline module, a path above
+  the root) and an unreadable or missing `include!` target are reported as hits; `\s` is
+  Unicode whitespace. The generator admits one
+  `#[cfg(test)] mod tests {` as the file's last item, no other `cfg` gate and no block
+  comment, so no entry can sit outside what it parses. Two checks run in CI beside the
+  criterion 6 scan: no `ChannelEntry::new(` outside the table and a constructor without
+  visibility (criterion 1), and no digit literal as the admitted id passed to
+  `RendererBridgeEndpoint::new`, `BridgeState::new` or `render_bridge_script` (criteria
+  11 and 12).
+- **Scans are defence in depth.** The criterion 6 and 7 scans cannot see every spelling
+  of an id (a const alias, `ChannelId { 0: 1 }`, extra parentheses, a renamed import, a
+  macro, `header.channel.0 == 2`); the guarantee belongs to the type-level follow-up
+  issue #634, which makes `ChannelId` unforgeable outside `keld-ipc`, so production code
+  can obtain an id only from a table entry.
+- **Executed evidence.** CI runs `cargo nextest`, which does not run doctests, so the
+  criterion 1 and 10 compile-fail doctests (each paired with a compiling positive
+  control) are local evidence (`cargo test -p keld-ipc --doc`). Stable rustdoc does not
+  check a `compile_fail` error code, so none is given. Criterion 10's guarantee is that
+  `privileged_call_receiver` builds no policy for a non-guarded entry; `ReceivePolicy`'s
+  fields stay public (KEL-133), so a caller can still edit a policy it already holds.
+- **Hygiene rule wiring.** `ci-hygiene check` runs the append-only rule after the
+  workflow semantic check; the resolved base is `KELD_CI_BASE_REF` or `origin/main`, and
+  the comparison point is its merge base with `HEAD`; an empty or all-zero base fails
+  closed. The router selects the hosted hygiene check for `channel_allocations.txt` and
+  `channel_table.rs`, and its "Check this checkout" step binds `KELD_CI_BASE_REF` to the
+  PR base or, on push, the previous tip, pinned by a `ci-hygiene` contract and router
+  cases with a negative control. Its CLI self-test copies the checkout into a git
+  repository compared with its own `HEAD`.
+- **GH-528 constructors.** #628's public `ReceivePolicy::reply_waiter` and
+  `event_receiver` take `&'static ChannelEntry` (gh527 §4.7; its `ChannelId` fallback is
+  retired). `event_receiver` admits an entry whose class carries host `EVENT`s
+  (`ReceiveClass::carries_host_events`), not a lifecycle-id compare; `reply_waiter`
+  keeps the echo entry's REPLY-only refusal, and channel 0 has no entry. The generated
+  TypeScript region adds `HOST_EVENT_CHANNELS`, read from `carries_host_events`, which
+  `eventReceiver` uses, and `AllocatedChannel` / `ALLOCATED_CHANNELS`: TypeScript
+  `replyWaiter` takes an `AllocatedChannel` and rejects any other id at runtime with
+  `KELD-IPC-005`, matching the entry-only Rust waiter. #628's `channel === 0` checks use
+  `HANDSHAKE_CHANNEL`.
+- **Smaller choices.** The receive-policy constructors keep naming `ECHO_CHANNEL` and
+  `LIFECYCLE_CHANNEL`, which are now the entries' ids. `TableDefect` has a hand-written
+  `Display` with fix guidance but no `KELD-*` code, like `HeaderError`: the real table is
+  checked at compile time, so it never surfaces at runtime. The test-only
+  `AllocationDefect` also has `Malformed { line }` for a malformed baseline line.
+  `keld-core` passes `ECHO_CHANNEL.0` to the bridge, the same constant its second check
+  uses. `Authority` is `#[non_exhaustive]` (spec §4.5 expects a new variant).

@@ -1,7 +1,8 @@
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
- * Wire constants match `keld_ipc::{frame,lib,echo,lifecycle}` — not reverse-engineered.
+ * Wire constants match `keld_ipc::{frame,lib}` — not reverse-engineered — and the channel ids
+ * are generated from `keld_ipc::channel_table` into the region below (GH-508).
  * `keld create` embeds this file as `src/kipc-transport.ts`. `@keld/electron` imports
  * it. Do not add a second reader/writer/constant owner.
  *
@@ -28,10 +29,23 @@ export const PROTOCOL_VERSION = 2;
 export const HEADER_LEN = 16;
 /** Control-plane frame payload cap — mirrors `keld_ipc::MAX_FRAME_LEN` (16 MiB). */
 export const MAX_FRAME_LEN = 16 * 1024 * 1024;
-/** Mirrors `keld_ipc::echo::ECHO_CHANNEL`. */
+// @generated-begin channel-table: packages/@keld/kipc/scripts/echo-codegen.ts from
+// crates/keld-ipc/src/channel_table.rs. Do not edit by hand; run bun run echo:generate.
+/** Reserved `HELLO` channel (`keld_ipc::channel_table::HANDSHAKE_CHANNEL`). */
+export const HANDSHAKE_CHANNEL = 0;
+/** Channel `echo` (`keld_ipc::channel_table::ECHO`). */
 export const ECHO_CHANNEL = 1;
-/** Mirrors `keld_ipc::LIFECYCLE_CHANNEL`. */
+/** Channel `fs` (`keld_ipc::channel_table::FS`). */
+export const FS_CHANNEL = 2;
+/** Channel `lifecycle` (`keld_ipc::channel_table::LIFECYCLE`). */
 export const LIFECYCLE_CHANNEL = 3;
+/** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
+export type AllocatedChannel = typeof ECHO_CHANNEL | typeof FS_CHANNEL | typeof LIFECYCLE_CHANNEL;
+/** Every allocated channel id, in table order. */
+export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]);
+/** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
+export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([LIFECYCLE_CHANNEL]);
+// @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
 export const APP_LINK_IO_DEADLINE_MS = 5_000;
 /** Header flag mirroring `keld_ipc::frame::FLAG_RAW`. */
@@ -105,13 +119,13 @@ export interface ReceivePolicy {
 
 export const RECEIVE_POLICIES = {
   serverPreAuthHello: {
-    channel: 0,
+    channel: HANDSHAKE_CHANNEL,
     kinds: [FrameKind.Hello],
     corr: { rule: "zero" },
     exactLen: 32,
   } as ReceivePolicy,
   clientAwaitHello: {
-    channel: 0,
+    channel: HANDSHAKE_CHANNEL,
     kinds: [FrameKind.Hello],
     corr: { rule: "zero" },
     exactLen: 32,
@@ -145,13 +159,20 @@ export function lifecycleReplyWaiter(corr: number): ReceivePolicy {
 /**
  * Mirror of `keld_ipc::receive::ReceivePolicy::reply_waiter` (GH-527 §4.7,
  * corpus `reply-waiter:<channel>:<corr>`): `REPLY` or the CallError-carrying
- * `ERR` on `channel` with exactly `corr`, no `PING`. Channel 0 carries only
- * `HELLO`, and echo replies keep KEL-133 row 4's REPLY-only
- * `echoReplyWaiter`, so both are `KELD-IPC-005`.
+ * `ERR` on `channel` with exactly `corr`, no `PING`. Like the Rust waiter,
+ * which takes a table entry, `channel` must be an allocated table id (the
+ * generated `AllocatedChannel`, checked again at runtime); channel 0 carries
+ * only `HELLO`, and echo replies keep KEL-133 row 4's REPLY-only
+ * `echoReplyWaiter`, so each is `KELD-IPC-005`.
  */
-export function replyWaiter(channel: number, corr: number): ReceivePolicy {
-  if (channel === 0) {
+export function replyWaiter(channel: AllocatedChannel, corr: number): ReceivePolicy {
+  // The type admits only table ids; a caller's cast cannot widen the runtime rule.
+  const id: number = channel;
+  if (id === HANDSHAKE_CHANNEL) {
     throw kipcError("KELD-IPC-005", "channel 0 carries only HELLO");
+  }
+  if (!isAllocatedChannel(id)) {
+    throw kipcError("KELD-IPC-005", "channel is not allocated by the channel table");
   }
   if (channel === ECHO_CHANNEL) {
     throw kipcError("KELD-IPC-005", "echo replies use the REPLY-only echo reply waiter");
@@ -166,12 +187,20 @@ function eventReceiverOn(channel: number): ReceivePolicy {
 /**
  * Mirror of `keld_ipc::receive::ReceivePolicy::event_receiver` (GH-527 §4.7,
  * corpus `event-receiver:<channel>`): uncorrelated `EVENT`s on `channel` plus
- * the live `PING` probe. Lifecycle is the only channel with host EVENTs until
- * the channel table (#613) declares another, so any other channel is
+ * the live `PING` probe. Only a channel whose table class carries host EVENTs
+ * (the generated `HOST_EVENT_CHANNELS`) is admitted; any other channel is
  * `KELD-IPC-005`.
  */
+/**
+ * Whether `channel` is an allocated table id (the generated `ALLOCATED_CHANNELS`;
+ * Rust's `keld_ipc::channel_table::entry`).
+ */
+export function isAllocatedChannel(channel: number): channel is AllocatedChannel {
+  return (ALLOCATED_CHANNELS as readonly number[]).includes(channel);
+}
+
 export function eventReceiver(channel: number): ReceivePolicy {
-  if (channel !== LIFECYCLE_CHANNEL) {
+  if (!(HOST_EVENT_CHANNELS as readonly number[]).includes(channel)) {
     throw kipcError("KELD-IPC-005", "channel carries no host EVENTs");
   }
   return eventReceiverOn(channel);
@@ -1362,7 +1391,7 @@ export interface PendingCallEntry {
 export type InboundAction = "ping" | "append" | "claim" | "discard";
 
 /** A policy that admits no kind: validating under it is the §4.7 "no match" `KELD-IPC-005`. */
-const NO_FRAME_POLICY: ReceivePolicy = { channel: 0, kinds: [], corr: { rule: "zero" } };
+const NO_FRAME_POLICY: ReceivePolicy = { channel: HANDSHAKE_CHANNEL, kinds: [], corr: { rule: "zero" } };
 
 /**
  * The GH-527 §4.7 per-frame selection: trusted state (the frame's kind and
@@ -1384,10 +1413,13 @@ export function selectInboundPolicy(
     case FrameKind.Err: {
       const entry = pending.get(header.corr);
       if (entry === undefined) return { policy: NO_FRAME_POLICY, action: "append" };
+      // An unallocated pending channel has no waiter: its reply is "no match".
       const policy =
         entry.channel === ECHO_CHANNEL
           ? echoReplyWaiter(header.corr)
-          : replyWaiter(entry.channel, header.corr);
+          : isAllocatedChannel(entry.channel)
+            ? replyWaiter(entry.channel, header.corr)
+            : NO_FRAME_POLICY;
       if (entry.abandoned) return { policy, action: "discard" };
       return { policy, action: entry.blocking ? "claim" : "append" };
     }
@@ -1486,10 +1518,10 @@ function validateWorkerLinkOptions(options: WorkerLinkOptions): WorkerLinkConfig
   const seen = new Set<number>();
   const claim = (channel: number | undefined): void => {
     if (channel === undefined) return;
-    if (channel === 0 || seen.has(channel)) {
+    if (channel === HANDSHAKE_CHANNEL || seen.has(channel)) {
       throw linkError(
         "KELD-IPC-005",
-        `receive table names channel ${channel} ${channel === 0 ? "(reserved for HELLO)" : "twice"}`,
+        `receive table names channel ${channel} ${channel === HANDSHAKE_CHANNEL ? "(reserved for HELLO)" : "twice"}`,
       );
     }
     seen.add(channel);
@@ -1564,7 +1596,7 @@ function requireOutboundFrame(channel: number, payload: Uint8Array): void {
   if (typeof channel !== "number" || !Number.isInteger(channel) || channel < 0 || channel > 0xffff) {
     throw linkError("KELD-IPC-003", "frame channel must be an unsigned integer no greater than 65535");
   }
-  if (channel === 0) {
+  if (channel === HANDSHAKE_CHANNEL) {
     throw linkError("KELD-IPC-005", "channel 0 carries only HELLO");
   }
   if (!(payload instanceof Uint8Array)) {
@@ -2433,7 +2465,7 @@ class TransportWorker {
       const { endpoint, token } = parseAppLink(link);
       this.#socket = await connectKipcSocket(endpoint, this.#reader, this.#drain);
       this.#writes = new WriteQueue(this.#socket, this.#drain);
-      await withIoDeadline(this.#writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
+      await withIoDeadline(this.#writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token));
       const hello = await withIoDeadline(this.#reader.readFrame());
       validateReceivedHeader(RECEIVE_POLICIES.clientAwaitHello, hello.header);
       if (!timingSafeEqual(hello.payload, token)) {

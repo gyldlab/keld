@@ -29,6 +29,12 @@ fn fixture_token() -> SessionToken {
     SessionToken::from_bytes(fixture_token_bytes())
 }
 
+/// The table entry a corpus row's decimal wire id names.
+fn table_entry(id: &str) -> &'static keld_ipc::channel_table::ChannelEntry {
+    let id = ChannelId(id.parse().expect("channel id"));
+    keld_ipc::channel_table::entry(id).expect("corpus rows name an allocated channel id")
+}
+
 fn policy_by_name(name: &str) -> ReceivePolicy {
     let (base, arg) = match name.split_once(':') {
         Some((base, arg)) => (base, Some(arg)),
@@ -43,24 +49,27 @@ fn policy_by_name(name: &str) -> ReceivePolicy {
         "lifecycle-receiver" => ReceivePolicy::lifecycle_receiver(),
         "lifecycle-event-receiver" => ReceivePolicy::lifecycle_event_receiver(),
         "lifecycle-reply-waiter" => ReceivePolicy::lifecycle_reply_waiter(corr()),
-        "privileged-fs-receiver" => ReceivePolicy::privileged_call_receiver(ChannelId(
-            arg.expect("policy arg").parse().expect("channel id"),
-        )),
+        // The row names a wire id; only an allocated guarded entry builds the
+        // policy (GH-508 criterion 10), so an unallocated id fails the row.
+        "privileged-fs-receiver" => {
+            ReceivePolicy::privileged_call_receiver(table_entry(arg.expect("policy arg")))
+                .expect("guarded CALL channel")
+        }
         "primary-app-receiver" => ReceivePolicy::primary_app_receiver(),
+        // Rows name wire ids; only an allocated table entry builds these
+        // policies (GH-508 criterion 10), so an unallocated id fails the row.
         "reply-waiter" => {
             let (channel, corr) = arg
                 .and_then(|arg| arg.split_once(':'))
                 .expect("reply-waiter:<channel>:<corr>");
             ReceivePolicy::reply_waiter(
-                ChannelId(channel.parse().expect("channel id")),
+                table_entry(channel),
                 CorrelationId(corr.parse().expect("corr id")),
             )
             .expect("corpus reply-waiter rows name a reply-carrying channel")
         }
-        "event-receiver" => ReceivePolicy::event_receiver(ChannelId(
-            arg.expect("policy arg").parse().expect("channel id"),
-        ))
-        .expect("corpus event-receiver rows name an EVENT channel"),
+        "event-receiver" => ReceivePolicy::event_receiver(table_entry(arg.expect("policy arg")))
+            .expect("corpus event-receiver rows name an EVENT channel"),
         other => panic!("unknown corpus policy: {other}"),
     }
 }

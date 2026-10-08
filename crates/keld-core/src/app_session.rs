@@ -1864,7 +1864,10 @@ fn run_app(
         ..WebviewSpec::default()
     };
     WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let renderer_endpoint = RendererBridgeEndpoint::new(renderer_requests_tx, renderer_outcomes_rx);
+    // The bridge admits exactly the host's echo entry (GH-508 §4.6); the
+    // request loop below re-checks the same id before dispatch.
+    let renderer_endpoint =
+        RendererBridgeEndpoint::new(renderer_requests_tx, renderer_outcomes_rx, ECHO_CHANNEL.0);
     if let Err(source) =
         engine.create_app_with_renderer_bridge(&spec, window_events_tx.clone(), renderer_endpoint)
     {
@@ -5613,14 +5616,15 @@ fn read_primary_frames(
             return Ok(());
         }
         // KEL-133 owns every pre-payload semantic check. A guarded session
-        // selects the existing privileged CALL policy for FS channel 2; an
-        // unguarded session keeps the legacy echo/lifecycle/PING policy.
+        // selects the existing privileged CALL policy for the `fs` channel
+        // table entry; an unguarded session keeps the legacy
+        // echo/lifecycle/PING policy.
         let frame = if handle.fs.is_some() {
             read_primary_app_frame_interruptible_with_privileged_call(
                 reader,
                 reader_stop,
                 || handle.pending_echo_corr_for(attempt),
-                FS_CHANNEL,
+                &keld_ipc::channel_table::FS,
                 || handle.has_outstanding_fs_call(attempt),
             )
         } else {
@@ -7840,7 +7844,7 @@ mod tests {
             &mut cursor,
             &stop,
             || None,
-            FS_CHANNEL,
+            &keld_ipc::channel_table::FS,
             || snapshot.fs.has_outstanding_call_for(2),
         )
         .expect_err("G2 must be rejected while G1 native work is still outstanding");
