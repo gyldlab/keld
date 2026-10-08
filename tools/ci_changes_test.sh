@@ -14,6 +14,7 @@ trap cleanup EXIT
 
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
+"$repo_root/tools/ci_webkitgtk_apt.sh" test
 
 result_for_paths() {
     printf '%s\0' "$@" | "$router" classify
