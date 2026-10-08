@@ -2009,8 +2009,17 @@ starts, its own host-death Job and, by construction, its console host. Every oth
 member is outside the family: the host's Bun primary and any descendant it left, since
 Bun receives no inner Job and is reaped only by H (`crates/keld-runtime/src/lib.rs:1221`,
 `lib.rs:1446-1450`); a WebView2 process past the barrier; and the host's own console
-host, when it has one. The census terminates each of them through the handle it opened,
-with the exit code `1` that the attempt Job's termination uses (`windows_job.rs:2193`),
+host, when it has one. Terminating a WebView2 process past the barrier assumes that no
+host WebView2 process serves the candidate: WebView2 ties every process of a user data
+folder to that folder's one browser process, shared across the processes that open it
+([Process model for WebView2 apps](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/process-model),
+`ms.date` 2022-04-01), and the KEL-135 profile lease (`profile.lock`,
+`crates/keld-wv/src/webview2/mod.rs:188`) is opened with no sharing and refuses a
+second opener with `ProfileInUse` rather than sharing (`mod.rs:521-538`), so the
+assumption holds exactly when the candidate mode never opens the user data folder that
+the old host holds; S6c owns that rule for its candidate mode (§6). The census
+terminates each member outside the family through the handle it opened, with the exit
+code `1` that the attempt Job's termination uses (`windows_job.rs:2193`),
 treating a member whose handle is already signaled as terminated, then waits for their
 handles under the deadline and takes a new snapshot; it repeats until a snapshot shows
 only the host and family, or until the deadline. This is exactly what closing H at exit
@@ -2841,7 +2850,10 @@ Must not touch in Slice A:
       with the census deadline that S6c measures from the reaping latencies its PR
       records and fixes beside G; then exit. It keeps `install_host_death_job` first on
       the rendezvous-argument path, so the candidate's own host-death Job nests under
-      the attempt Job. Its evidence adds the S6c cells of the "8, 9 (candidate
+      the attempt Job. Its candidate mode never opens the WebView2 user data folder
+      that the old host holds, the assumption under which the census may terminate a
+      host WebView2 process past the barrier (§4 *Census and policy*). Its evidence
+      adds the S6c cells of the "8, 9 (candidate
       release)" row: survival through the real host coordinator, the ten in-session
       updates and the measured deadline.
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
