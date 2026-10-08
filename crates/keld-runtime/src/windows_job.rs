@@ -3532,7 +3532,8 @@ impl WindowsHostDeathJob {
 
     /// [`Self::release_for_exit`] with the member opener as a parameter. Production
     /// passes [`open_census_member`]; the straggler cell of the §7 row injects a
-    /// member whose termination is denied.
+    /// member whose termination is denied, and the census error-mapping cells
+    /// inject the two open failures.
     fn release_for_exit_with(
         self,
         released: &WindowsReleasedAttempt,
@@ -3580,12 +3581,16 @@ const CENSUS_DENIED_MEMBER_WAIT: Duration = Duration::from_millis(25);
 /// exactly the census rights. This is the census's only lookup of that reusable
 /// ID: it classifies, waits and terminates through the handle returned here.
 ///
-/// An ID that names no live process fails with `ERROR_INVALID_PARAMETER`, the
-/// status the census reads as "exited after the snapshot".
+/// An ID that names no process object fails with `ERROR_INVALID_PARAMETER`, the
+/// status the census reads as "exited after the snapshot". An exited member
+/// whose object another open handle still keeps alive opens like a live one;
+/// its handle is signaled, and the census classifies it as any other member.
+/// Which of the two an exited ID shows depends on handles other processes
+/// hold, so the census relies on both.
 fn open_census_member(process_id: u32) -> io::Result<OwnedHandle> {
     // SAFETY: OpenProcess reads no caller memory; a numeric ID that names no
-    // live process makes it fail. A non-null result is one fresh owning handle,
-    // converted exactly once below.
+    // process object makes it fail. A non-null result is one fresh owning
+    // handle, converted exactly once below.
     let raw = unsafe { OpenProcess(CENSUS_MEMBER_RIGHTS, 0, process_id) };
     if raw.is_null() {
         return Err(io::Error::last_os_error());
@@ -4442,7 +4447,7 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE};
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows_sys::Win32::System::Threading::PROCESS_CREATE_PROCESS;
@@ -5482,6 +5487,58 @@ mod tests {
                 writeln!(report, "REFUSED {refusal}").expect("report the refusal");
                 writeln!(report, "{}", flags("FLAGS")).expect("report flags");
             }
+            "exited-member" => {
+                // §4 *Census and policy*, "exited after the snapshot": the seam
+                // fails the candidate's first open with ERROR_INVALID_PARAMETER,
+                // the status of an ID whose process object is gone, and opens it
+                // as production does from the next snapshot on.
+                let released = attempt.release_family().expect("release the attempt Job");
+                let candidate_pid = launched.child().id();
+                let mut exited_once = false;
+                let census = host_job
+                    .release_for_exit_with(&released, Instant::now() + RELEASE_WAIT, |process_id| {
+                        if process_id == candidate_pid && !exited_once {
+                            exited_once = true;
+                            Err(io::Error::from_raw_os_error(
+                                ERROR_INVALID_PARAMETER.cast_signed(),
+                            ))
+                        } else {
+                            open_census_member(process_id)
+                        }
+                    })
+                    .expect("a member that exited after the snapshot must not refuse the release");
+                writeln!(
+                    report,
+                    "CENSUS family={} terminated={} snapshots={}",
+                    census.family, census.terminated, census.snapshots
+                )
+                .expect("report the census");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
+            "open-denied" => {
+                // §4 *Census and policy*, "any other open failure refuses": the
+                // seam fails the candidate's open with ERROR_ACCESS_DENIED, as the
+                // OS does for a protected process whose ID a snapshot listed.
+                let released = attempt.release_family().expect("release the attempt Job");
+                let candidate_pid = launched.child().id();
+                let refusal = host_job
+                    .release_for_exit_with(
+                        &released,
+                        Instant::now() + STRAGGLER_DEADLINE,
+                        |process_id| {
+                            if process_id == candidate_pid {
+                                Err(io::Error::from_raw_os_error(
+                                    ERROR_ACCESS_DENIED.cast_signed(),
+                                ))
+                            } else {
+                                open_census_member(process_id)
+                            }
+                        },
+                    )
+                    .expect_err("a member open denied for another reason must refuse the release");
+                writeln!(report, "REFUSED {refusal}").expect("report the refusal");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
             _ => {
                 let released = attempt.release_family().expect("release the attempt Job");
                 writeln!(report, "{}", flags("RELEASED_ATTEMPT")).expect("report flags");
@@ -5728,6 +5785,63 @@ mod tests {
     }
 
     #[test]
+    fn a_member_that_exited_after_the_snapshot_costs_a_snapshot_and_not_the_release() {
+        // §4 *Census and policy*, the open status the census reads as "exited
+        // after the snapshot", pinned through the opener seam so it does not
+        // depend on which handles other processes hold: the one injected
+        // ERROR_INVALID_PARAMETER for the candidate is another snapshot, not a
+        // refusal and not a termination; the release completes, both Jobs read
+        // back 0, and the candidate outlives the host.
+        let (mut host, candidate, mut candidate_report) = start_release_cell("exited-member");
+        let census = host.report.next("CENSUS ");
+        assert!(report_count(&census, "family") >= 1, "{census}");
+        assert_eq!(report_count(&census, "terminated"), 0, "{census}");
+        assert!(report_count(&census, "snapshots") >= 2, "{census}");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the candidate must survive a census that retook a snapshot"
+        );
+        assert!(
+            !candidate.exited_now(),
+            "the released candidate's handle is signaled"
+        );
+    }
+
+    #[test]
+    fn a_member_open_denied_for_another_reason_refuses_the_release_and_keeps_kill_on_close() {
+        // §4 *Census and policy*, "any other open failure refuses", pinned
+        // through the opener seam: the typed refusal names the member-open phase
+        // and carries the OS error unchanged, the host-death Job stays
+        // kill-on-close, nothing is terminated by the refusal, and the candidate
+        // ends with the host.
+        let (mut host, candidate, _report) = start_release_cell("open-denied");
+        let refusal = host.report.next("REFUSED ");
+        assert!(
+            refusal.contains("KELD-RUNTIME-014")
+                && refusal.contains("during host-death census member open: ")
+                && refusal.contains("(os error 5)"),
+            "{refusal}"
+        );
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(
+            report_flags(&flags, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        assert!(
+            !candidate.exited_now(),
+            "a refused open must not terminate the candidate"
+        );
+        host.wait();
+        candidate.assert_exited_within(RELEASE_WAIT, "candidate after a refused member open");
+    }
+
+    #[test]
     fn the_census_terminates_a_parked_descendant_outside_the_family_before_the_clear() {
         // §7 r6: a descendant the exited Bun primary left in the host-death Job
         // and not in the attempt Job is terminated through its own handle, which
@@ -5929,14 +6043,19 @@ mod tests {
     }
 
     #[test]
-    fn opening_an_exited_process_id_fails_with_invalid_parameter() {
-        // The status the census reads as "exited after the snapshot" (KEL-53 §4
-        // "Candidate release after commit", *Census and policy*). The ID of an
-        // exited process can be reused, and its object can linger while another
-        // handle is open, so the pin needs one observation of the status across a
-        // bounded number of fresh processes; a reused ID is proven by a different
-        // creation time, a lingering object by a signaled handle.
-        let mut observed = false;
+    fn an_exited_process_id_opens_as_invalid_parameter_reused_or_signaled() {
+        // The open outcomes the census relies on for an ID that exited after the
+        // snapshot (KEL-53 §4 "Candidate release after commit", *Census and
+        // policy*). Which one an exited ID shows is not this process's choice: a
+        // process object outlives its process while any other handle to it is
+        // open, which a debugger, a runner monitor or a security product holds at
+        // will, and a released ID can be reused at once. So the pin is the whole
+        // contract, checked for every fresh process: `open_census_member` fails
+        // with exactly ERROR_INVALID_PARAMETER, or opens a reused ID, proven by a
+        // different creation time, or opens the lingering object, proven by the
+        // original creation time, and that handle is signaled. The fourth
+        // combination, the original creation time unsignaled, is a live process
+        // where `wait` reported an exit: the one the census must never see.
         for _ in 0..8 {
             let mut child = Command::new("cmd.exe")
                 .args(["/d", "/c", "exit 0"])
@@ -5951,30 +6070,24 @@ mod tests {
             child.wait().expect("wait for the process");
             drop(child);
             match open_census_member(pid) {
-                Err(error) => {
-                    assert_eq!(
-                        error.raw_os_error(),
-                        Some(ERROR_INVALID_PARAMETER.cast_signed()),
-                        "{error}"
-                    );
-                    observed = true;
-                    break;
-                }
+                Err(error) => assert_eq!(
+                    error.raw_os_error(),
+                    Some(ERROR_INVALID_PARAMETER.cast_signed()),
+                    "PID {pid} failed to open with another status: {error}"
+                ),
                 Ok(handle) => {
                     let raw = handle.as_raw_handle().cast();
-                    let reused =
-                        process_creation_time(raw, "test").expect("creation time") != creation;
+                    let original =
+                        process_creation_time(raw, "test").expect("creation time") == creation;
+                    let signaled = process_signaled(raw).expect("state");
                     assert!(
-                        reused || process_signaled(raw).expect("state"),
-                        "an exited process opened with its own creation time must be signaled"
+                        !original || signaled,
+                        "PID {pid} opened with its original creation time and unsignaled: a live \
+                         process where `wait` reported an exit"
                     );
                 }
             }
         }
-        assert!(
-            observed,
-            "no fresh process ID failed to open with ERROR_INVALID_PARAMETER"
-        );
     }
 
     // KEL-270 T4d S5: the connect-back claimant binding (KEL-53 §4 "Candidate
