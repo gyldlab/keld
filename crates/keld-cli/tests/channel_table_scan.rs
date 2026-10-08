@@ -1,0 +1,419 @@
+//! GH-508 channel table: no hand-written channel id (criterion 6) and no
+//! capability-name literal outside `keld-guard` (criterion 15) in production Rust.
+//!
+//! Spec: `docs/specs/gh508-kipc-channel-table.md` §3. The oracle is the spec's
+//! literal rule set (scan input, test-only exclusions, two patterns), applied to
+//! the real tree; each named negative control mutates one real source in memory.
+//!
+//! It lives in `keld-cli` beside the `KELD-*` registry scan because both read
+//! every crate's sources: `tools/ci-inputs.json` routes any `crates/*` change to
+//! this package (the workspace external-reads edge), so a literal reintroduced in
+//! any crate is scanned on the PR that adds it.
+
+#![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+#[path = "support/rust_source_scan.rs"]
+mod scan;
+
+use scan::{Hit, Sources};
+
+const TABLE: &str = "crates/keld-ipc/src/channel_table.rs";
+const GUARD_SRC: &str = "crates/keld-guard/src";
+
+fn repo_root() -> PathBuf {
+    scan::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+fn real_sources() -> Sources {
+    scan::load_scan_inputs(&repo_root())
+}
+
+fn channel_hits(sources: &Sources) -> Vec<Hit> {
+    scan::channel_literal_hits(sources, Path::new(TABLE))
+}
+
+fn hits_in<'a>(hits: &'a [Hit], file: &str) -> Vec<&'a Hit> {
+    hits.iter().filter(|hit| hit.file == file).collect()
+}
+
+fn source<'a>(sources: &'a Sources, file: &str) -> &'a str {
+    sources
+        .get(Path::new(file))
+        .unwrap_or_else(|| panic!("scan input {file} is missing"))
+}
+
+fn replace_once(text: &str, from: &str, to: &str) -> String {
+    assert_eq!(
+        text.matches(from).count(),
+        1,
+        "fixture anchor `{from}` must occur exactly once"
+    );
+    text.replacen(from, to, 1)
+}
+
+fn with_file(mut sources: Sources, file: &str, text: String) -> Sources {
+    sources.insert(PathBuf::from(file), text);
+    sources
+}
+
+fn synthetic(files: &[(&str, &str)]) -> Sources {
+    files
+        .iter()
+        .map(|(path, text)| (PathBuf::from(path), (*text).to_owned()))
+        .collect()
+}
+
+#[test]
+fn production_rust_has_no_hand_written_channel_id_outside_the_table() {
+    let hits = channel_hits(&real_sources());
+    assert!(
+        hits.is_empty(),
+        "hand-written kipc channel ids outside {TABLE} (spec gh508 criterion 6); \
+         derive them from keld_ipc::channel_table instead: {hits:#?}"
+    );
+}
+
+/// Prerequisite: the scan input is the spec's file set, not an empty or
+/// mis-rooted walk that would make the zero-hit oracle vacuous.
+#[test]
+fn scan_input_is_crate_sources_and_fuzz_targets_never_tests_directories() {
+    let sources = real_sources();
+    for required in [
+        "crates/keld-ipc/src/echo.rs",
+        "crates/keld-ipc/src/lifecycle.rs",
+        "crates/keld-ipc/src/receive.rs",
+        "crates/keld-ipc/src/link.rs",
+        "crates/keld-native/src/fs.rs",
+        "crates/keld-wv/src/wkwebview/macos_bridge.rs",
+        "crates/keld-ipc/fuzz/fuzz_targets/raw_receive.rs",
+        TABLE,
+    ] {
+        assert!(
+            sources.contains_key(Path::new(required)),
+            "{required} must be scanned"
+        );
+    }
+    for path in sources.keys() {
+        assert!(
+            path.starts_with("crates/keld-ipc/fuzz/fuzz_targets")
+                || path
+                    .components()
+                    .nth(2)
+                    .is_some_and(|c| c.as_os_str() == "src"),
+            "{} is outside crates/*/src and the fuzz targets",
+            path.display()
+        );
+        assert!(
+            !path.components().any(|c| c.as_os_str() == "tests"),
+            "{} is inside a tests/ directory",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn only_directly_test_gated_items_are_excluded() {
+    let excluded = [
+        "#[cfg(test)]\nmod tests {\n    const X: ChannelId = ChannelId(9);\n}\n",
+        "#[cfg(all(test, windows))]\nmod named_pipe_tests {\n    const X: ChannelId = ChannelId(9);\n}\n",
+        "#[cfg(all(windows, test))]\n#[allow(unsafe_code)]\n// why\nmod t {\n    fn f() { let _ = ChannelId(9); }\n}\n",
+        "#[cfg(test)]\nuse crate::frame::ChannelId as _Unused; // ChannelId(9)\n",
+        "#[cfg(test)]\nmod tests {\n    const BRACE: &str = \"}\";\n    const C: char = '}';\n    /* } */\n    const X: ChannelId = ChannelId(9);\n}\n",
+    ];
+    for text in excluded {
+        let hits = channel_hits(&synthetic(&[("crates/x/src/lib.rs", text)]));
+        assert!(
+            hits.is_empty(),
+            "test-gated item must be excluded:\n{text}\n{hits:#?}"
+        );
+    }
+    let scanned = [
+        (
+            "#[cfg(any(test, windows))]\nmod t {\n    const X: ChannelId = ChannelId(9);\n}\n",
+            3,
+        ),
+        (
+            "#[cfg(all(any(test, unix), windows))]\nmod t {\n    const X: ChannelId = ChannelId(9);\n}\n",
+            3,
+        ),
+        (
+            "#[cfg(not(test))]\nmod t {\n    const X: ChannelId = ChannelId(9);\n}\n",
+            3,
+        ),
+        (
+            "#[cfg(windows)]\nmod t {\n    const X: ChannelId = ChannelId(9);\n}\n",
+            3,
+        ),
+        ("#![cfg(test)]\nconst X: ChannelId = ChannelId(9);\n", 2),
+        // A multi-line non-module item is not one of the excluded forms.
+        (
+            "#[cfg(test)]\nstd::thread_local! {\n    static X: ChannelId = ChannelId(2);\n}\n",
+            3,
+        ),
+        // The exclusion is the gated line only, never the rest of the file.
+        (
+            "#[cfg(test)]\nuse std::cell::RefCell;\n\nfn write_hello() {\n    write(ChannelId(0));\n}\n",
+            5,
+        ),
+        // A brace inside a string must not close the test module early.
+        (
+            "#[cfg(test)]\nmod t {\n    const S: &str = \"{\";\n}\nconst X: ChannelId = ChannelId(4);\n",
+            5,
+        ),
+        // Comments are part of the remaining text.
+        ("// ChannelId(3) in prose\n", 1),
+        ("const X: ChannelId = ChannelId(\n    2,\n);\n", 1),
+        ("pub const RENDERER_CHANNEL: u16 = 1;\n", 1),
+        ("const ECHO_CHANNEL : u16\n    = 1;\n", 1),
+    ];
+    for (text, line) in scanned {
+        let hits = channel_hits(&synthetic(&[("crates/x/src/lib.rs", text)]));
+        assert_eq!(
+            hits,
+            vec![Hit {
+                file: "crates/x/src/lib.rs".to_owned(),
+                line
+            }],
+            "must be scanned and hit:\n{text}"
+        );
+    }
+    for text in [
+        "const X: ChannelId = ChannelId(id);\n",
+        "const ECHO_CHANNEL: u16 = ECHO.id().0;\n",
+        "const ECHO_CHANNEL: ChannelId = ECHO.id();\n",
+        "const echo_channel: u16 = 1;\n",
+        "let channel = header.channel.0 == 1;\n",
+    ] {
+        assert!(
+            channel_hits(&synthetic(&[("crates/x/src/lib.rs", text)])).is_empty(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn out_of_line_test_modules_resolve_by_rust_module_rules() {
+    let literal = "const X: ChannelId = ChannelId(1);\n";
+    let sources = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "#[cfg(test)]\nmod a;\n#[cfg(test)]\n#[path = \"support/b_tests.rs\"]\nmod b;\nmod bootstrap;\n",
+        ),
+        ("crates/x/src/a.rs", literal),
+        ("crates/x/src/support/b_tests.rs", literal),
+        (
+            "crates/x/src/bootstrap.rs",
+            "#[cfg(test)]\nmod deadline_tests;\nmod shape;\n",
+        ),
+        ("crates/x/src/bootstrap/deadline_tests.rs", literal),
+        ("crates/x/src/bootstrap/shape.rs", literal),
+        ("crates/x/src/deadline_tests.rs", literal),
+        ("crates/x/src/inner/mod.rs", "#[cfg(test)]\nmod t;\n"),
+        ("crates/x/src/inner/t/mod.rs", literal),
+    ]);
+    let files: BTreeSet<String> = channel_hits(&sources)
+        .into_iter()
+        .map(|hit| hit.file)
+        .collect();
+    assert_eq!(
+        files,
+        BTreeSet::from([
+            // Not gated: `mod shape;` carries no test attribute.
+            "crates/x/src/bootstrap/shape.rs".to_owned(),
+            // `bootstrap.rs` resolves `deadline_tests` under `bootstrap/`, not beside it.
+            "crates/x/src/deadline_tests.rs".to_owned(),
+        ])
+    );
+}
+
+#[test]
+fn named_criterion_six_controls_fail_on_real_sources() {
+    let sources = real_sources();
+
+    let bridge = "crates/keld-wv/src/wkwebview/macos_bridge.rs";
+    let mutated = format!(
+        "{}\nconst ECHO_CHANNEL: u16 = 1;\n",
+        source(&sources, bridge)
+    );
+    assert_eq!(
+        hits_in(
+            &channel_hits(&with_file(sources.clone(), bridge, mutated)),
+            bridge
+        )
+        .len(),
+        1
+    );
+
+    let link = "crates/keld-ipc/src/link.rs";
+    let link_text = source(&sources, link);
+    assert!(
+        link_text.starts_with("//! Framed read/write")
+            && link_text.contains("\n#[cfg(test)]\nuse std::cell::RefCell;\n"),
+        "prerequisite: link.rs still gates a single `use` line with #[cfg(test)]"
+    );
+    let write_hello = link_text
+        .find("fn write_hello")
+        .expect("write_hello exists");
+    let hello_tail = &link_text[write_hello..];
+    let anchor = hello_tail
+        .find("HANDSHAKE_CHANNEL")
+        .expect("write_hello names HANDSHAKE_CHANNEL");
+    let mutated = format!(
+        "{}ChannelId(0){}",
+        &link_text[..write_hello + anchor],
+        &hello_tail[anchor + "HANDSHAKE_CHANNEL".len()..]
+    );
+    assert_eq!(
+        hits_in(
+            &channel_hits(&with_file(sources.clone(), link, mutated)),
+            link
+        )
+        .len(),
+        1
+    );
+
+    let fs = "crates/keld-native/src/fs.rs";
+    let fs_text = source(&sources, fs);
+    let gate = fs_text
+        .find("#[cfg(test)]\nstd::thread_local! {\n")
+        .expect("fs.rs test-only thread_local");
+    let close = gate + fs_text[gate..].find("\n}\n").expect("thread_local closes") + "\n}\n".len();
+    let mutated = format!(
+        "{}const PROBE: ChannelId = ChannelId(2);\n{}",
+        &fs_text[..close],
+        &fs_text[close..]
+    );
+    assert_eq!(
+        hits_in(&channel_hits(&with_file(sources.clone(), fs, mutated)), fs).len(),
+        1
+    );
+
+    let echo = "crates/keld-ipc/src/echo.rs";
+    let gated = format!(
+        "{}\n#[cfg(test)]\nmod probe {{\n    const P: crate::ChannelId = crate::ChannelId(9);\n}}\n",
+        source(&sources, echo)
+    );
+    assert!(
+        hits_in(
+            &channel_hits(&with_file(sources.clone(), echo, gated.clone())),
+            echo
+        )
+        .is_empty()
+    );
+    let any = replace_once(
+        &gated,
+        "#[cfg(test)]\nmod probe",
+        "#[cfg(any(test, windows))]\nmod probe",
+    );
+    assert_eq!(
+        hits_in(&channel_hits(&with_file(sources.clone(), echo, any)), echo).len(),
+        1
+    );
+}
+
+/// The live test-only literals the spec names stay excluded, and they are real
+/// pattern matches (so the exclusion, not their absence, is what passes).
+#[test]
+fn live_test_only_literals_are_real_matches_and_stay_excluded() {
+    let sources = real_sources();
+    let hits = channel_hits(&sources);
+    for file in [
+        "crates/keld-ipc/src/bootstrap.rs",
+        "crates/keld-ipc/src/bootstrap/admission_deadline_tests.rs",
+    ] {
+        assert!(
+            !scan::channel_literal_lines(source(&sources, file)).is_empty(),
+            "prerequisite: {file} carries a test-only channel literal"
+        );
+        assert!(hits_in(&hits, file).is_empty(), "{file}: {hits:#?}");
+    }
+    let bootstrap = source(&sources, "crates/keld-ipc/src/bootstrap.rs");
+    assert!(bootstrap.contains("#[cfg(all(test, windows))]\nmod named_pipe_tests {"));
+    assert!(bootstrap.contains("#[cfg(test)]\nmod admission_deadline_tests;"));
+}
+
+fn exported_capability_names() -> BTreeSet<String> {
+    let lib = std::fs::read_to_string(repo_root().join(GUARD_SRC).join("lib.rs"))
+        .expect("read keld-guard lib.rs");
+    scan::exported_capability_names(&lib)
+}
+
+fn capability_hits(sources: &Sources) -> Vec<Hit> {
+    scan::capability_literal_hits(sources, Path::new(GUARD_SRC), &exported_capability_names())
+}
+
+/// Prerequisite: the scanned name set is read from `keld_guard::capability`
+/// and contains the real exported constants (so it cannot silently be empty).
+#[test]
+fn scanned_capability_names_are_read_from_keld_guard_exports() {
+    let names = exported_capability_names();
+    for exported in [
+        keld_guard::capability::FS_READ,
+        keld_guard::capability::FS_WRITE,
+    ] {
+        assert!(
+            names.contains(exported),
+            "{exported} missing from {names:?}"
+        );
+    }
+}
+
+#[test]
+fn production_rust_has_no_capability_literal_outside_keld_guard() {
+    let hits = capability_hits(&real_sources());
+    assert!(
+        hits.is_empty(),
+        "capability-name string literals outside {GUARD_SRC} (spec gh508 criterion 15); \
+         reference keld_guard::capability constants instead: {hits:#?}"
+    );
+}
+
+#[test]
+fn criterion_fifteen_controls_fail_on_real_sources() {
+    let sources = real_sources();
+
+    let table = source(&sources, TABLE);
+    let mutated = replace_once(
+        table,
+        "Authority::Guarded(&[FS_READ, FS_WRITE])",
+        "Authority::Guarded(&[\"fs.read\"])",
+    );
+    assert_eq!(
+        hits_in(
+            &capability_hits(&with_file(sources.clone(), TABLE, mutated)),
+            TABLE
+        )
+        .len(),
+        1
+    );
+
+    let dispatch = "crates/keld-ipc/src/guard_dispatch.rs";
+    let mutated = format!(
+        "{}\nconst PROBE: &str = \"fs.write\";\n",
+        source(&sources, dispatch)
+    );
+    assert_eq!(
+        hits_in(
+            &capability_hits(&with_file(sources.clone(), dispatch, mutated)),
+            dispatch
+        )
+        .len(),
+        1
+    );
+
+    // Prose and test-gated literals are not production string literals.
+    let mutated = format!(
+        "{}\n/// Evaluates `\"fs.read\"`.\n#[cfg(test)]\nmod probe {{\n    const P: &str = \"fs.read\";\n}}\n",
+        source(&sources, dispatch)
+    );
+    assert!(
+        hits_in(
+            &capability_hits(&with_file(sources, dispatch, mutated)),
+            dispatch
+        )
+        .is_empty()
+    );
+}

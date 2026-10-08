@@ -25,7 +25,13 @@ use crate::error::WvError;
 use crate::wv_link::{WvLinkEnvelope, WvLinkRejectReason, decode_wv_link};
 
 const HANDLER_NAME: &str = "__keld_wv_link_v1";
-const ECHO_CHANNEL: u16 = 1;
+/// Placeholder in both injected scripts for the host-admitted channel id.
+///
+/// `keld-wv` has no `keld-ipc` dependency (architecture 01 §3): the host passes
+/// the admitted id to [`RendererBridgeEndpoint::new`] and
+/// [`render_bridge_script`] writes it into each script at construction
+/// (GH-508 spec §4.6).
+const ADMITTED_CHANNEL_PLACEHOLDER: &str = "__KELD_ADMITTED_CHANNEL__";
 
 const PAGE_FACADE_SCRIPT: &str = r#"
 (() => {
@@ -66,7 +72,7 @@ const PAGE_FACADE_SCRIPT: &str = r#"
     if (!Number.isInteger(channel) || channel <= 0 || channel > 0xffff) {
       return fail("channel must be a nonzero u16");
     }
-    if (channel !== 1) return fail("renderer channel is not declared by this build");
+    if (channel !== __KELD_ADMITTED_CHANNEL__) return fail("renderer channel is not declared by this build");
     if (!(payload instanceof U8)) return fail("payload must be a Uint8Array");
     if (payload.byteLength > 4096) return fail("payload exceeds the 4096-byte renderer bound");
     if (pending !== null) return fail("another renderer invoke is already pending");
@@ -147,7 +153,7 @@ const ISOLATED_BRIDGE_SCRIPT: &str = r#"
     if (!call || call.__keldRelay !== "invoke-v1") return;
     if (!Number.isInteger(call.request) || call.request <= 0 || call.request > 0xffffffff) return;
     if (!Number.isInteger(call.channel) || call.channel <= 0 || call.channel > 0xffff) return;
-    if (call.channel !== 1 || !Array.isArray(call.payload) || call.payload.length > 4096) return;
+    if (call.channel !== __KELD_ADMITTED_CHANNEL__ || !Array.isArray(call.payload) || call.payload.length > 4096) return;
     if (!call.payload.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return;
     if (queued !== null || inflight) {
       post({
@@ -171,6 +177,11 @@ const ISOLATED_BRIDGE_SCRIPT: &str = r#"
   handler.postMessage(JSON.stringify({ v: 1, kind: "bind" }));
 })();
 "#;
+
+/// Renders one injected script template with the host-admitted channel id.
+fn render_bridge_script(template: &str, admitted_channel: u16) -> String {
+    template.replace(ADMITTED_CHANNEL_PLACEHOLDER, &admitted_channel.to_string())
+}
 
 /// One renderer request that already passed `WebKit` world/frame/document admission.
 #[derive(Debug)]
@@ -275,16 +286,26 @@ impl RendererBridgeOutcome {
 pub struct RendererBridgeEndpoint {
     requests: SyncSender<RendererBridgeRequest>,
     outcomes: Receiver<RendererBridgeOutcome>,
+    admitted_channel: u16,
 }
 
 impl RendererBridgeEndpoint {
     /// Creates the one-view host/renderer channel pair used by this slice.
+    ///
+    /// `admitted_channel` is the one kipc channel id the renderer may invoke;
+    /// the host passes it from its channel table (GH-508 spec §4.6). Both the
+    /// injected scripts and native admission reject every other id.
     #[must_use]
     pub fn new(
         requests: SyncSender<RendererBridgeRequest>,
         outcomes: Receiver<RendererBridgeOutcome>,
+        admitted_channel: u16,
     ) -> Self {
-        Self { requests, outcomes }
+        Self {
+            requests,
+            outcomes,
+            admitted_channel,
+        }
     }
 }
 
@@ -297,6 +318,7 @@ struct PendingRequest {
 #[derive(Debug)]
 struct BridgeState {
     webview: WebviewId,
+    admitted_channel: u16,
     expected_webview: Option<usize>,
     navigation_generation: u64,
     document_nonce: Option<String>,
@@ -305,9 +327,10 @@ struct BridgeState {
 }
 
 impl BridgeState {
-    fn new(webview: WebviewId) -> Self {
+    fn new(webview: WebviewId, admitted_channel: u16) -> Self {
         Self {
             webview,
+            admitted_channel,
             expected_webview: None,
             navigation_generation: 0,
             document_nonce: None,
@@ -380,7 +403,7 @@ impl BridgeState {
         if self.document_nonce.as_deref() != Some(document) {
             return Err("renderer document is stale or forged");
         }
-        if channel != ECHO_CHANNEL {
+        if channel != self.admitted_channel {
             return Err("renderer channel is not declared by this build");
         }
         if self.pending.is_some() {
@@ -503,7 +526,8 @@ impl MacRendererBridge {
         let mtm = MainThreadMarker::new().ok_or_else(|| {
             bridge_error("renderer bridge must be installed on the AppKit main thread")
         })?;
-        let state = Arc::new(Mutex::new(BridgeState::new(webview)));
+        let admitted_channel = endpoint.admitted_channel;
+        let state = Arc::new(Mutex::new(BridgeState::new(webview, admitted_channel)));
         // SAFETY: created on the AppKit main thread before WKWebView exists.
         let controller = unsafe { WKUserContentController::new(mtm) };
         // SAFETY: macOS 11+ was checked and this is the UI thread.
@@ -518,8 +542,12 @@ impl MacRendererBridge {
             mtm,
         );
         let handler_name = NSString::from_str(HANDLER_NAME);
-        let isolated_source = NSString::from_str(ISOLATED_BRIDGE_SCRIPT);
-        let page_source = NSString::from_str(PAGE_FACADE_SCRIPT);
+        let isolated_source = NSString::from_str(&render_bridge_script(
+            ISOLATED_BRIDGE_SCRIPT,
+            admitted_channel,
+        ));
+        let page_source =
+            NSString::from_str(&render_bridge_script(PAGE_FACADE_SCRIPT, admitted_channel));
         // SAFETY: initializer is macOS-11+ and runs on the main thread.
         let isolated_script = unsafe {
             WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
@@ -871,26 +899,29 @@ fn report_admission(call: &RendererBridgeRequest) {
 mod tests {
     use super::*;
 
+    /// The echo id `keld-core` passes today; any host-chosen id works the same.
+    const ADMITTED: u16 = 1;
+
     #[test]
     fn navigation_invalidates_document_and_pending_renderer_call() {
-        let mut state = BridgeState::new(WebviewId(7));
+        let mut state = BridgeState::new(WebviewId(7), ADMITTED);
         state.bind_webview(0x7000).expect("bind WebView");
         let nonce = state.bind().expect("bind");
         state
-            .admit_invoke(&nonce, 11, ECHO_CHANNEL, vec![1, 2])
+            .admit_invoke(&nonce, 11, ADMITTED, vec![1, 2])
             .expect("admit");
         state.navigation_started();
         assert!(state.document_nonce.is_none());
         assert!(state.pending.is_none());
         assert!(matches!(
-            state.admit_invoke(&nonce, 12, ECHO_CHANNEL, vec![]),
+            state.admit_invoke(&nonce, 12, ADMITTED, vec![]),
             Err("renderer document is stale or forged")
         ));
     }
 
     #[test]
     fn one_pending_call_and_declared_channel_are_independent_guards() {
-        let mut state = BridgeState::new(WebviewId(3));
+        let mut state = BridgeState::new(WebviewId(3), ADMITTED);
         state.bind_webview(0x3000).expect("bind WebView");
         let nonce = state.bind().expect("bind");
         assert!(matches!(
@@ -898,10 +929,10 @@ mod tests {
             Err("renderer channel is not declared by this build")
         ));
         state
-            .admit_invoke(&nonce, 2, ECHO_CHANNEL, vec![9])
+            .admit_invoke(&nonce, 2, ADMITTED, vec![9])
             .expect("first call");
         assert!(matches!(
-            state.admit_invoke(&nonce, 3, ECHO_CHANNEL, vec![]),
+            state.admit_invoke(&nonce, 3, ADMITTED, vec![]),
             Err("another renderer invoke is already pending")
         ));
         let navigation = state.navigation_generation;
@@ -914,7 +945,7 @@ mod tests {
 
     #[test]
     fn wrong_webview_forged_nonce_and_destroyed_bridge_fail_closed() {
-        let mut state = BridgeState::new(WebviewId(9));
+        let mut state = BridgeState::new(WebviewId(9), ADMITTED);
         state.bind_webview(0x9000).expect("bind expected WebView");
         assert!(!state.accepts_webview(0x9001));
         assert!(matches!(
@@ -924,12 +955,12 @@ mod tests {
 
         let nonce = state.bind().expect("bind document");
         assert!(matches!(
-            state.admit_invoke("forged-document", 1, ECHO_CHANNEL, vec![]),
+            state.admit_invoke("forged-document", 1, ADMITTED, vec![]),
             Err("renderer document is stale or forged")
         ));
         state.destroy();
         assert!(matches!(
-            state.admit_invoke(&nonce, 2, ECHO_CHANNEL, vec![]),
+            state.admit_invoke(&nonce, 2, ADMITTED, vec![]),
             Err("renderer bridge was destroyed")
         ));
         assert!(matches!(state.bind(), Err("renderer bridge was destroyed")));
@@ -937,17 +968,17 @@ mod tests {
 
     #[test]
     fn old_navigation_result_cannot_settle_reused_request_id() {
-        let mut state = BridgeState::new(WebviewId(5));
+        let mut state = BridgeState::new(WebviewId(5), ADMITTED);
         state.bind_webview(0x5000).expect("bind WebView");
         let old_nonce = state.bind().expect("old bind");
         let old = state
-            .admit_invoke(&old_nonce, 1, ECHO_CHANNEL, vec![1])
+            .admit_invoke(&old_nonce, 1, ADMITTED, vec![1])
             .expect("old call");
         state.navigation_started();
 
         let new_nonce = state.bind().expect("new bind");
         let new = state
-            .admit_invoke(&new_nonce, 1, ECHO_CHANNEL, vec![2])
+            .admit_invoke(&new_nonce, 1, ADMITTED, vec![2])
             .expect("new call reuses local request id");
         assert_ne!(old.navigation(), new.navigation());
         assert!(
@@ -984,5 +1015,38 @@ mod tests {
         );
         assert!(ISOLATED_BRIDGE_SCRIPT.contains("document: documentNonce"));
         assert!(ISOLATED_BRIDGE_SCRIPT.contains("__keld_wv_link_v1"));
+    }
+
+    /// GH-508 criterion 12: the admitted id is the one the host passes at
+    /// construction. A bridge built with id 7 refuses the echo id 1 natively
+    /// and in both rendered scripts, and admits 7, so no id is hard-coded.
+    #[test]
+    fn admitted_channel_is_the_host_supplied_id() {
+        let mut state = BridgeState::new(WebviewId(4), 7);
+        state.bind_webview(0x4000).expect("bind WebView");
+        let nonce = state.bind().expect("bind");
+        assert!(matches!(
+            state.admit_invoke(&nonce, 1, 1, vec![]),
+            Err("renderer channel is not declared by this build")
+        ));
+        let call = state
+            .admit_invoke(&nonce, 2, 7, vec![5])
+            .expect("the host-admitted id is admitted");
+        assert_eq!(call.channel(), 7);
+
+        for template in [PAGE_FACADE_SCRIPT, ISOLATED_BRIDGE_SCRIPT] {
+            assert_eq!(template.matches(ADMITTED_CHANNEL_PLACEHOLDER).count(), 1);
+            let rendered = render_bridge_script(template, 7);
+            assert!(!rendered.contains(ADMITTED_CHANNEL_PLACEHOLDER));
+            assert!(!rendered.contains("channel !== 1"));
+        }
+        assert!(render_bridge_script(PAGE_FACADE_SCRIPT, 7).contains(
+            "if (channel !== 7) return fail(\"renderer channel is not declared by this build\");"
+        ));
+        assert!(
+            render_bridge_script(ISOLATED_BRIDGE_SCRIPT, 7)
+                .contains("if (call.channel !== 7 || !Array.isArray(call.payload)")
+        );
+        assert!(PAGE_FACADE_SCRIPT.contains("new Error(\"KELD-WV-011: \" + detail)"));
     }
 }

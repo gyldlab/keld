@@ -36,6 +36,20 @@ mod windows_machine;
 #[cfg(windows)]
 mod windows_owner_private;
 
+/// Manifest capability names that other crates reference by constant.
+///
+/// `keld-guard` owns the capability vocabulary (architecture 03 §2). Crates that
+/// name a capability, such as the `keld-ipc` channel table and the `keld-native`
+/// filesystem broker, reference these constants instead of repeating the string
+/// (GH-508 spec criterion 15). Only names another crate references are exported;
+/// this is not a capability registry.
+pub mod capability {
+    /// Scoped filesystem read (`app.fs.read` grants).
+    pub const FS_READ: &str = "fs.read";
+    /// Scoped filesystem write (`app.fs.write` grants).
+    pub const FS_WRITE: &str = "fs.write";
+}
+
 #[cfg(windows)]
 pub use windows_authenticode::{
     VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeIdentity,
@@ -1026,7 +1040,7 @@ fn validate_portable_component(component: &str) -> Result<(), String> {
 }
 
 fn is_filesystem_capability(operation: &str) -> bool {
-    matches!(operation, "fs.read" | "fs.write")
+    matches!(operation, capability::FS_READ | capability::FS_WRITE)
 }
 
 fn is_fs_root(path: &str) -> bool {

@@ -43,9 +43,13 @@ fn policy_by_name(name: &str) -> ReceivePolicy {
         "lifecycle-receiver" => ReceivePolicy::lifecycle_receiver(),
         "lifecycle-event-receiver" => ReceivePolicy::lifecycle_event_receiver(),
         "lifecycle-reply-waiter" => ReceivePolicy::lifecycle_reply_waiter(corr()),
-        "privileged-fs-receiver" => ReceivePolicy::privileged_call_receiver(ChannelId(
-            arg.expect("policy arg").parse().expect("channel id"),
-        )),
+        // The row names a wire id; only an allocated guarded entry builds the
+        // policy (GH-508 criterion 10), so an unallocated id fails the row.
+        "privileged-fs-receiver" => {
+            let id = ChannelId(arg.expect("policy arg").parse().expect("channel id"));
+            let entry = keld_ipc::channel_table::entry(id).expect("allocated channel id");
+            ReceivePolicy::privileged_call_receiver(entry).expect("guarded CALL channel")
+        }
         "primary-app-receiver" => ReceivePolicy::primary_app_receiver(),
         "reply-waiter" => {
             let (channel, corr) = arg

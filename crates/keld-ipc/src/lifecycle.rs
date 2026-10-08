@@ -2,8 +2,8 @@
 //!
 //! Generic host session control — not Electron-named (`keld-compat` /
 //! `@keld/electron` map these onto `app.whenReady` / `app.quit` /
-//! `window-all-closed`). Channel `3` is a v0 hardcoded handle, same as
-//! echo (`1`) and fs (`2`); handshake channel-table exchange is later work.
+//! `window-all-closed`). Its id comes from the [`crate::channel_table`] entry
+//! `lifecycle`, like echo and fs; handshake channel-table exchange is later work.
 //!
 //! This channel is **not** routed through [`crate::guard_dispatch`]: ready /
 //! last-window-closed / quit are session control on the app-link the host
@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::frame::ChannelId;
 
-/// Channel handle for host lifecycle `Event` / `Call` frames.
-pub const LIFECYCLE_CHANNEL: ChannelId = ChannelId(3);
+/// Channel handle for host lifecycle `Event` / `Call` frames: the
+/// [`crate::channel_table::LIFECYCLE`] entry.
+pub const LIFECYCLE_CHANNEL: ChannelId = crate::channel_table::LIFECYCLE.id();
 
 /// Host → app-process notifications on [`LIFECYCLE_CHANNEL`].
 ///
