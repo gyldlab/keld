@@ -569,21 +569,17 @@ console.log(`KELD_LINUX_WORKER quit=${Array.from(quit).join(",")}`);
 process.exit(0);
 "#;
 
-struct IgnoreRejections;
-
-impl keld_ipc::BootstrapRejectionObserver for IgnoreRejections {
-    fn rejected(&self, _rejection: keld_ipc::BootstrapRejection) {}
-}
-
-/// Spawns the strict Bun role with `/code/main.ts` and, when `with_transport`,
-/// `/code/kipc-transport.ts`, exactly the files production binds (arch 06),
-/// and the listener's app-link socket.
-fn spawn_worker_link_role(
+/// Starts the strict Bun role through the production role supervisor, which
+/// mints the app link and binds its socket (as the host does), with
+/// `/code/main.ts` and, when `with_transport`, `/code/kipc-transport.ts`:
+/// exactly the files production binds (arch 06).
+fn start_worker_link_role(
     role: &tempfile::TempDir,
     staged: &tempfile::TempDir,
-    listener: &keld_ipc::BootstrapListener,
     with_transport: bool,
-) -> std::process::Child {
+) -> keld_runtime::primary::PrimaryRoleSupervisor {
+    use keld_runtime::primary::{PrimaryRoleConfig, PrimaryRoleSupervisor};
+
     let bun = find_bun();
     fs::write(staged.path().join("main.ts"), WORKER_LINK_ENTRY).expect("stage the role entry");
     fs::copy(
@@ -591,8 +587,6 @@ fn spawn_worker_link_role(
         staged.path().join("kipc-transport.ts"),
     )
     .expect("stage the canonical transport");
-    let app_link = listener.app_link();
-    let endpoint = PathBuf::from(app_link.split_once('#').expect("app-link endpoint").0);
     let mut profile = strict_profile_for_program(role.path(), &bun)
         .readonly_runtime(&staged.path().join("main.ts"), Path::new("/code/main.ts"))
         .expect("strict entry mount");
@@ -604,22 +598,20 @@ fn spawn_worker_link_role(
             )
             .expect("strict transport mount");
     }
-    profile
-        .debug_readonly_socket(&endpoint)
-        .expect("strict app-link socket")
-        .command(
-            &bun,
-            &[OsString::from("run"), OsString::from("/code/main.ts")],
-            &[
-                (OsString::from("HOME"), OsString::from("/app")),
-                (OsString::from("TMPDIR"), OsString::from("/tmp")),
-                (OsString::from("KELD_APP_LINK"), OsString::from(app_link)),
-            ],
-        )
-        .expect("strict role command")
-        .spawn()
-        .expect("strict role spawn")
-        .into_child()
+    PrimaryRoleSupervisor::start_with_bound_generations(
+        PrimaryRoleConfig::new(&bun)
+            .arg("run")
+            .arg("/code/main.ts")
+            .env("HOME", "/app")
+            .env("TMPDIR", "/tmp")
+            .restart_policy(keld_runtime::RestartPolicy {
+                max_crashes: 1,
+                window_secs: 30,
+            })
+            .admission_timeout(Duration::from_secs(20))
+            .linux_strict(profile),
+    )
+    .expect("start the strict role supervisor")
 }
 
 /// GH-528 T3, spec gh527 §4.10 and edge A4 (Linux strict self-entry mount
@@ -633,23 +625,20 @@ fn spawn_worker_link_role(
 #[test]
 fn worker_link_self_entry_runs_from_the_two_staged_files() {
     use keld_ipc::link::{read_frame, write_frame};
-    use keld_ipc::{AppLinkDeadlines as _, BootstrapAdmission, FrameKind};
+    use keld_ipc::{AppLinkDeadlines as _, FrameKind};
 
     let role = owner_private_tempdir();
     let staged = owner_private_tempdir();
-    let listener = keld_ipc::BootstrapListener::bind().expect("bind the app-link");
-    let mut child = spawn_worker_link_role(&role, &staged, &listener, true);
-    let admission = listener
-        .accept_authenticated_until(Instant::now() + Duration::from_secs(30), &IgnoreRejections)
-        .expect("accept the strict role");
-    let BootstrapAdmission::Authenticated(mut stream) = admission else {
-        let _ = child.kill();
-        let output = child.wait_with_output().expect("reap the strict role");
+    let supervisor = start_worker_link_role(&role, &staged, true);
+    let Some(bound) = supervisor.recv_bound_generation(Duration::from_secs(30)) else {
+        supervisor.shutdown();
+        let output = supervisor.output();
         panic!(
-            "the strict role did not authenticate: {admission:?}\n{}",
-            String::from_utf8_lossy(&output.stderr)
+            "the strict role did not authenticate\nstdout:\n{}\nstderr:\n{}",
+            output.stdout, output.stderr
         );
     };
+    let mut stream = bound.into_stream();
     stream
         .set_app_link_deadlines(Some(keld_ipc::APP_LINK_IO_DEADLINE))
         .expect("host app-link deadlines");
@@ -680,6 +669,7 @@ fn worker_link_self_entry_runs_from_the_two_staged_files() {
             [0_u8].as_slice()
         )
     );
+    supervisor.accept_shutdown();
     write_frame(
         &mut stream,
         FrameKind::Reply,
@@ -693,22 +683,29 @@ fn worker_link_self_entry_runs_from_the_two_staged_files() {
         read_frame(&mut stream).is_err(),
         "the role closes the link on its Quit REPLY"
     );
-    let output = child.wait_with_output().expect("strict role output");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let outcome = supervisor.wait_for_outcome();
+    let output = supervisor.output();
     assert!(
-        output.status.success(),
-        "strict WorkerLink role failed: {}\n{stdout}",
-        String::from_utf8_lossy(&output.stderr)
+        matches!(outcome, keld_runtime::SupervisorOutcome::Stopped),
+        "strict WorkerLink role: {outcome:?}\nstderr:\n{}",
+        output.stderr
     );
     assert!(
-        stdout.contains("KELD_LINUX_WORKER entry=") && stdout.contains("/code/kipc-transport.ts"),
-        "{stdout}"
+        output.stdout.contains("KELD_LINUX_WORKER entry=")
+            && output.stdout.contains("/code/kipc-transport.ts"),
+        "{}",
+        output.stdout
     );
     assert!(
-        stdout.contains("KELD_LINUX_WORKER echo=strict-ok"),
-        "{stdout}"
+        output.stdout.contains("KELD_LINUX_WORKER echo=strict-ok"),
+        "{}",
+        output.stdout
     );
-    assert!(stdout.contains("KELD_LINUX_WORKER quit=0"), "{stdout}");
+    assert!(
+        output.stdout.contains("KELD_LINUX_WORKER quit=0"),
+        "{}",
+        output.stdout
+    );
     eprintln!(
         "KELD_LINUX_T3_WORKER_SELF_ENTRY mounts=/code/main.ts,/code/kipc-transport.ts status=passed"
     );
@@ -716,30 +713,23 @@ fn worker_link_self_entry_runs_from_the_two_staged_files() {
 
 /// Negative control for the self-entry proof: with only `/code/main.ts`
 /// bound, the entry cannot load the transport, so the role exits without
-/// ever connecting. The strict mounts, not some other path, are what the
+/// ever authenticating. The strict mounts, not some other path, are what the
 /// passing case used.
 #[test]
 fn worker_link_role_without_the_transport_mount_never_connects() {
-    use keld_ipc::BootstrapAdmission;
-
     let role = owner_private_tempdir();
     let staged = owner_private_tempdir();
-    let listener = keld_ipc::BootstrapListener::bind().expect("bind the app-link");
-    let child = spawn_worker_link_role(&role, &staged, &listener, false);
-    let output = child.wait_with_output().expect("strict role output");
+    let supervisor = start_worker_link_role(&role, &staged, false);
+    let outcome = supervisor.wait_for_outcome();
+    let output = supervisor.output();
     assert!(
-        !output.status.success(),
-        "the role must fail without its transport mount"
+        supervisor.try_recv_bound_generation().is_none(),
+        "a role without its transport must never authenticate: {outcome:?}"
     );
-    let admission = listener
-        .accept_authenticated_until(
-            Instant::now() + Duration::from_millis(200),
-            &IgnoreRejections,
-        )
-        .expect("poll the listener after the role exited");
     assert!(
-        !matches!(admission, BootstrapAdmission::Authenticated(_)),
-        "a role without its transport must never connect"
+        output.stderr.contains("kipc-transport.ts"),
+        "the role fails on its missing transport: {}",
+        output.stderr
     );
 }
 
