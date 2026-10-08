@@ -1310,6 +1310,19 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
+**Destination Bun-side link owner (GH-527, approved
+[spec](../specs/gh527-worker-owned-blocking-call-transport.md)):** inside a role
+process, one transport Worker owns the client end of the role generation's one
+authenticated link, from `HELLO` to close. The role's main thread opens no socket.
+Every frame it sends or receives, blocking or asynchronous, passes through that Worker.
+Frames it sends reach the Worker by `postMessage` in send order, and the Worker writes
+them to the link. Frames it receives arrive through one bounded, ordered shared-memory
+ring that only the Worker writes; the blocking call's reply uses a separate reply slot
+that keeps its place in that order. The main thread can therefore park in a blocking
+host `CALL` while the link keeps draining. A second link for the same
+generation is refused, and the Worker's death is that role's link loss. v0 Bun
+consumers still own the socket on the main thread (§2).
+
 **v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
 (`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
 `keld-ipc::BootstrapListener`: a domain socket inside an owner-only (`0o700`)
@@ -1541,7 +1554,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
   never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
-  u16 handles resolved at handshake from schema names (string names never travel per-call).
+  u16 handles whose ids come from the static `keld-ipc` channel table (§4; live with
+  X05-T4, #597), so string names never travel per-call. Resolving ids from schema
+  names at handshake is destination work (§4).
 - **Receiver semantics (KEL-133, live):** one `keld-ipc` validator owns which
   kind/flags/channel/correlation/declared-length combination each session state
   admits. The host selects a static `ReceivePolicy` (no frame chooses its
@@ -1563,7 +1578,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
-  readiness-driven reader remains destination work (see §7).
+  readiness-driven reader remains destination work (see §7). GH-527 (approved spec) gives
+  `GRANT` its first payload: optional credit that the role's transport Worker sends to
+  the host, which bounds the host's `EVENT`s to that role by the Worker's free ring
+  space. It ships only behind a protocol-version bump.
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
@@ -1601,6 +1619,15 @@ consumes them through type-only imports. The hand-written TypeScript payload mir
 gone; the independently implemented postcard codec and shared golden-vector validation
 remain the runtime wire oracle. This echo-only bootstrap does not make Rust the general
 schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
+
+**Channel table: live slice and destination
+([GH-508 spec](../specs/gh508-kipc-channel-table.md), approved).** The live slice is one
+static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
+guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
+reused. TypeScript constants are generated from it by the KEL-98 generator. It goes
+live with X05-T4 (#597); until then echo = 1, fs = 2 and lifecycle = 3 stay hand-held
+and the wire is unchanged. Handshake-time name resolution and full `keld gen` emission
+remain destination work that needs a `HELLO` change, a protocol bump and wire review.
 
 The destination authoring shape remains:
 
@@ -1665,6 +1692,10 @@ compromised keeps the host's threat model uniform).
   (credit hits zero), emits a role-qualified `runtime-crashed` event and restarts per
   policy. Its in-flight calls reject with a registered role-qualified `KELD-*` error;
   other principals continue. KEL-70 currently proves generic child restart only.
+  Under GH-527 (approved spec), the death of a role's transport Worker is that role's link
+  loss and follows this path. A parked caller wakes with `KELD-IPC-025`, not at its
+  call deadline; if the link had already ended with another code, the first recorded
+  code stands.
 - Window close: the destination host revokes that window generation and virtual-port
   routes, then drains only roles declared `window-bound` to it. App-bound roles remain
   live until the host application session stops.
@@ -1915,7 +1946,10 @@ manifest decoder.
   fs.read('~/Library/…'): add `$APPDATA/**` or change the call"). v0 `keld doctor`
   rejects unknown flags (`KELD-CLI-044`, exit 2); `--permissions` is not live.
 - `keld migrate` seeds the manifest from static analysis of Electron API usage
-  (dialog → fs read of chosen paths, autoUpdater → net to feed URL, etc.).
+  (dialog → fs read of chosen paths, etc.). It never seeds a network grant for updater
+  feeds: `autoUpdater` use maps to the host-owned updater (§5), because application
+  permissions cannot grant update authority and application roles cannot write updater
+  metadata (architecture 06). F09-T5 (#581) owns any future trigger capability.
 - CI mode (`keld build --frozen-permissions`) fails on any manifest drift — the
   lockfile discipline, applied to authority.
 
@@ -2513,6 +2547,15 @@ through that spec's ordered tasks.
 | `autostart` | login items / registry / .desktop | `app.setLoginItemSettings` |
 | `dock/taskbar` | badge, progress, bounce, jump lists, thumbbar | `app.dock`, `setProgressBar` |
 | `capture` (Tier 3) | window/screen capture via ScreenCaptureKit / Graphics.Capture / PipeWire | `desktopCapturer` |
+
+**Window ownership.** No keld-native broker owns the `window` row. keld-native depends
+only on ipc and guard, and native windows and webviews are UI-thread handles that
+keld-wv owns. The keld-core window registry owns window identity (the host-minted
+`WindowId` and `WindowGeneration`), the window-state events and the two-phase close
+state machine. It drives keld-wv's native handles through the UI-loop command and event
+queue. The app-link `window` channel carries these to the app process, and webview
+principals cannot reach it until KEL-102's per-window grants exist. The contract is
+`docs/specs/gh531-window-registry-close-state-machine.md` (GH-531, approved).
 
 Implementation notes: objc2/objc2-app-kit on macOS (no deprecated cocoa crate);
 windows-rs on Windows; gtk4 + ashpd (XDG portals — file dialogs, notifications,
