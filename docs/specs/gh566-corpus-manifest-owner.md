@@ -1,6 +1,6 @@
 # Spec: shared corpus-manifest owner (X01-T4)
 
-Status: draft
+Status: approved
 Linear: GH-566 (#517) · Owner: @0monish · Updated: 2026-10-08
 
 ## 1. Goal & non-goals
