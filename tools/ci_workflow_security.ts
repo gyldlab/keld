@@ -93,24 +93,29 @@ function requiredAction(steps: Mapping[], name: string, action: string, expected
 }
 
 /**
- * Largest admitted `timeout-minutes` for a step whose `run` script invokes apt
- * (#624). Slow but successful mirror downloads took up to 642 s; hangs ran to
- * the 45-minute job timeout.
+ * The `timeout-minutes` every step whose `run` script invokes apt must set
+ * (#624): above the slowest observed successful apt step (642 s), far below
+ * the hangs that ran to the 45-minute job timeout. A shorter bound turned a
+ * slow but progressing mirror download into a failure.
  */
-export const aptStepTimeoutMaxMinutes = 15;
+export const aptStepTimeoutMinutes = 15;
 const aptInvocation = /\bapt(-get)?\b/;
 
 /**
- * A step whose `run` script mentions `apt` or `apt-get` must bound itself, so a
- * hung Ubuntu mirror fails that step instead of the whole job. Only the parsed
- * `run` string counts (never the step name); local actions and scripts the
- * step calls are outside this check.
+ * A step whose `run` script mentions `apt` or `apt-get` must bound itself with
+ * exactly `aptStepTimeoutMinutes`, and its job must allow longer, so that the
+ * step bound (not the job timeout) is what ends a hung Ubuntu mirror. Only the
+ * parsed `run` string counts (never the step name); local actions and scripts
+ * the step calls are outside this check.
  */
-function checkAptStepTimeout(step: Mapping, label: string): void {
+function checkAptStepTimeout(step: Mapping, job: Mapping, label: string): void {
   if (typeof step.run !== "string" || !aptInvocation.test(step.run)) return;
-  const minutes = scalar(step["timeout-minutes"]);
-  if (minutes === undefined || !/^[1-9][0-9]*$/.test(minutes) || Number(minutes) > aptStepTimeoutMaxMinutes) {
-    fail(`${label} runs apt without a step timeout-minutes between 1 and ${aptStepTimeoutMaxMinutes}; a hung Ubuntu mirror must fail the step, not consume the job timeout. Do not retry or continue on error.`);
+  if (scalar(step["timeout-minutes"]) !== String(aptStepTimeoutMinutes)) {
+    fail(`${label} runs apt without step timeout-minutes: ${aptStepTimeoutMinutes}; a hung Ubuntu mirror must fail the step, and a shorter bound fails slow but healthy downloads. Do not retry or continue on error.`);
+  }
+  const jobMinutes = scalar(job["timeout-minutes"]);
+  if (jobMinutes !== undefined && !(/^[1-9][0-9]*$/.test(jobMinutes) && Number(jobMinutes) > aptStepTimeoutMinutes)) {
+    fail(`${label} runs apt in a job whose timeout-minutes (${jobMinutes}) does not exceed the ${aptStepTimeoutMinutes}-minute apt step bound; raise the job timeout so the step bound is the one that applies.`);
   }
 }
 
@@ -190,7 +195,7 @@ export function checkWorkflowSecurity(source: string): void {
       if (uses === Object.hasOwn(step, "run")) fail(`${label} must contain exactly one action or executable run string.`);
       if (!uses) {
         if (typeof step.run !== "string" || !step.run.trim()) fail(`${label}.run must be a nonempty string.`);
-        checkAptStepTimeout(step, `${label} (${typeof step.name === "string" ? step.name : "unnamed"})`);
+        checkAptStepTimeout(step, job, `${label} (${typeof step.name === "string" ? step.name : "unnamed"})`);
         continue;
       }
       const action = actionRef(step.uses, label);

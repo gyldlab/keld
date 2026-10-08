@@ -423,7 +423,9 @@ jobs:
   linux-gui-smoke:
     name: Linux GUI smoke test (Xvfb)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Above the 15-minute apt step bound, so a slow but healthy mirror can
+    # finish and the build and smoke (p90 about 2 minutes) still run (#624).
+    timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.gui == 'true'
     steps:
@@ -436,9 +438,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
-      # Bounded below the 15-minute job (#624); the last 100 runs peaked at 69 s.
+      # Same evidence-based bound as the clippy leg (#624): above the slowest
+      # observed successful apt step (642 s), far below the 44-minute hangs.
+      # A 10-minute bound failed a slow but progressing download.
       - name: Install WebKitGTK build deps + X11 control tools (KEL-28)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \

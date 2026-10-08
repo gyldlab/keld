@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { aptStepTimeoutMaxMinutes, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
+import { aptStepTimeoutMinutes, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
 type FixtureJob = {
@@ -11,6 +11,7 @@ type FixtureJob = {
   strategy?: { matrix: Record<string, unknown> };
   needs?: unknown;
   if?: unknown;
+  "timeout-minutes"?: unknown;
 };
 type Fixture = { jobs: Record<string, FixtureJob> };
 const source = readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8");
@@ -98,14 +99,21 @@ const aptSteps = [
 ] as const;
 
 for (const [job, name] of aptSteps) {
-  test(`${name} keeps a bounded step timeout`, () => {
-    expect(Number(step(fixture(), job, name)["timeout-minutes"])).toBeLessThanOrEqual(aptStepTimeoutMaxMinutes);
-    for (const value of [undefined, 0, aptStepTimeoutMaxMinutes + 1, "${{ inputs.minutes }}", "10m"]) {
+  test(`${name} keeps the evidence-based step timeout under a longer job timeout`, () => {
+    expect(step(fixture(), job, name)["timeout-minutes"]).toBe(aptStepTimeoutMinutes);
+    // Negative controls: the 10-minute bound that failed a slow but healthy
+    // download, and every other value or shape.
+    for (const value of [undefined, 10, 0, aptStepTimeoutMinutes - 1, aptStepTimeoutMinutes + 1, "${{ inputs.minutes }}", "15m"]) {
       const f = fixture();
       const selected = step(f, job, name);
       if (value === undefined) delete selected["timeout-minutes"];
       else selected["timeout-minutes"] = value;
-      expect(() => check(f)).toThrow("runs apt without a step timeout-minutes");
+      expect(() => check(f)).toThrow(`runs apt without step timeout-minutes: ${aptStepTimeoutMinutes}`);
+    }
+    for (const value of [aptStepTimeoutMinutes, 10, "${{ inputs.minutes }}"]) {
+      const f = fixture();
+      f.jobs[job]!["timeout-minutes"] = value;
+      expect(() => check(f)).toThrow("does not exceed the 15-minute apt step bound");
     }
   });
 }
@@ -113,18 +121,18 @@ for (const [job, name] of aptSteps) {
 test("apt timeout reads the parsed run script, not names or layout", () => {
   for (const run of ["sudo apt update\n", "sudo apt install -y jq\n", "set -e; sudo apt-get install -y jq\n"]) {
     const f = fixture();
-    f.jobs.fmt!.steps.push({ name: "Install a tool", run });
-    expect(() => check(f)).toThrow("runs apt without a step timeout-minutes");
+    f.jobs.check!.steps.push({ name: "Install a tool", run });
+    expect(() => check(f)).toThrow("runs apt without step timeout-minutes");
   }
   // Negative controls: a name that mentions apt-get, a flow-mapped step with a
   // timeout, a quoted timeout and an unrelated word do not fail.
   const named = fixture();
   named.jobs.fmt!.steps.push({ name: "Diagnose apt-get mirror", run: "echo ok\n" });
   expect(() => check(named)).not.toThrow();
-  expect(() => checkWorkflowSecurity(source.replace("      - run: cargo fmt --all --check\n",
-    "      - run: cargo fmt --all --check\n      - { run: 'sudo apt-get install -y jq', timeout-minutes: 10 }\n"))).not.toThrow();
+  expect(() => checkWorkflowSecurity(source.replace("      - name: clippy (warnings deny)\n",
+    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n      - name: clippy (warnings deny)\n"))).not.toThrow();
   const quoted = fixture();
-  quoted.jobs.fmt!.steps.push({ run: "sudo apt-get install -y jq\n", "timeout-minutes": "10" });
+  quoted.jobs.check!.steps.push({ run: "sudo apt-get install -y jq\n", "timeout-minutes": "15" });
   expect(() => check(quoted)).not.toThrow();
   const unrelated = fixture();
   unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
