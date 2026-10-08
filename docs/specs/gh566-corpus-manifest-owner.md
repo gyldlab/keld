@@ -18,7 +18,7 @@ onto it without changing a committed byte. It also decides how #445 and #448 add
 corpora. Each adds data, one registry entry and its own conformance tests. It adds no
 new parser, digest helper, validator or validator test target.
 
-Observable outcome: gh532 AC1–AC12, AC16 and AC17, plus this spec's C1–C7, pass as tests
+Observable outcome: gh532 AC1–AC12, AC16 and AC17, plus this spec's C1–C8, pass as tests
 in `crates/keld-compat/tests/`, each with its named negative control. And
 `git diff origin/main -- crates/keld-compat/fixtures/` is empty.
 
@@ -115,7 +115,8 @@ issue's own criteria and controls map onto them as follows:
    if the duplicate-rejecting map is replaced by a plain `BTreeMap`, which keeps the last
    value (F3).
 5. **C5 — Records agree with their cell (D6).** Given a run, when it is validated, then:
-   - each record names a manifest cell by `operation.id` and `operation.oracle.id`;
+   - each record names a manifest cell by its full `CellKey`: `operation.id` together
+     with `operation.oracle.id`;
    - each cell has at most one record in the run;
    - each record has the manifest `kind`;
    - each record's `result` is the cell's `expected_verdict` or `unknown`, and only
@@ -123,7 +124,9 @@ issue's own criteria and controls map onto them as follows:
    - `waived` is rejected.
 
    *Negative control:* each of these is rejected: a `pass` record for a red cell, a
-   `fail` record for a `pass` cell, and a second record for one cell.
+   `fail` record for a `pass` cell, and a second record for one cell. *Positive
+   control:* two cells that share an `operation_id` but have different oracle ids each
+   take their own record.
 6. **C6 — Product records fail closed (D7).** Given a registered product-panel corpus
    with files under `evidence/`, when the registry test runs, then it fails with
    `ProductRecordsNeedReceipt`. This holds until X02-T5's receipt reader supplies a
@@ -137,6 +140,17 @@ issue's own criteria and controls map onto them as follows:
    control:* a board scored from two records with different profiles makes the line
    helper refuse, and an all-`unverified` board renders `unverified`, not the committed
    bytes.
+8. **C8 — The denominator agrees with the manifest (D3).** Given a corpus, when it is
+   parsed, then:
+   - the denominator's `corpus_id` equals the manifest's;
+   - its cell set equals the manifest's cell set exactly, where a cell is a KEL-74
+     `CellKey` (`operation_id`, `oracle_id`);
+   - manifest cells are unique by `CellKey`.
+
+   *Negative control:* each of these is rejected with `DenominatorMismatch`: a
+   denominator missing one manifest cell (for example the only `fail` cell), one with an
+   extra cell, one with a different `corpus_id`, and a manifest that repeats a
+   `CellKey`.
 
 ## 4. Design
 
@@ -190,7 +204,7 @@ Decision atoms. Each is falsified by its own observable:
 |---|---|---|---|---|
 | Owner shape | `tests/support/corpus_manifest.rs` | sources → one parser and one digest helper | a second copy drifts | gh532 AC10 |
 | Digest | `sha256_uri` | bytes read → `sha256:` + hex | normalised or re-serialised bytes | gh532 AC7 and AC11 |
-| Shape and parse | `Registration::shape` and `V0_FROZEN` | registration + bytes → v0 or v1 | a manifest chooses its own rules; a duplicate key | gh532 AC11 and C4 |
+| Shape and parse | `Registration::shape` and `V0_FROZEN` | registration + bytes → v0 or v1, with a denominator that agrees | a manifest chooses its own rules; a duplicate key; a cell missing from the denominator | gh532 AC11, C4 and C8 |
 | Pin | `V1_ADMITTED_PINS` and `V0_FROZEN.pin` | upstream, `oracle_id` and record revision → consistent | mixed pins in one corpus | gh532 AC1, AC2 and AC11 |
 | Citation and snapshot | `doc_citation` and `doc_snapshots` via one read seam | cell + pinned page → quote found | a fabricated quote with a matching digest | gh532 AC3 and AC16 |
 | Verdict keys | the v1 cell rules | cell → `pass`, `fail` + one key, or `unknown` | pending work read as ▲; an uncited `pass` | gh532 AC4–AC6 |
@@ -305,15 +319,22 @@ shape. A manifest cannot choose its own.
   `"schema": "keld.compat.corpus/v1"`: a missing field is a parse error, and any other
   value fails with `UnknownSchema`.
 - The manifest's `corpus_id` must equal the registration's.
-- Both shapes use `deny_unknown_fields`, so a repeated struct field fails (F3). The
-  `engine` and `doc_snapshots` objects deserialize through a `UniqueMap`, which rejects a
-  repeated key with `DuplicateKey` (C4).
+- Both shapes are derived structs with `deny_unknown_fields`. Serde rejects both an
+  unknown field and a repeated struct field (F3). The `engine` and `doc_snapshots`
+  objects deserialize through a `UniqueMap`, which rejects a repeated key with
+  `DuplicateKey` (C4).
 - Both shapes lower into one `Corpus`. Digest, denominator, pin, registry and admission
   are therefore written once. The facts v0 lacks (the engine token and the digest
   meaning) come from `V0_FROZEN` constants, never from the bytes.
 - The manifest's `panel` and `kind` strings must equal the corresponding strings in the
   denominator bytes. The KEL-74 parser validates them, and the typed `Panel` comes from
   `parse_denominator`. That way no second panel or kind map exists (F9).
+- The denominator must agree with the manifest (C8), keeping both live lifecycle checks.
+  Its `corpus_id` equals the manifest's. Its cell set equals the manifest's cell set
+  exactly, where a cell is the KEL-74 `CellKey` (`operation_id`, `oracle_id`). Manifest
+  cells are unique by `CellKey`. A cell dropped from the denominator would make
+  `score()` ignore its records, so a missing cell, an extra cell and a different id
+  each fail with `DenominatorMismatch`.
 
 Rejected alternatives:
 
@@ -386,7 +407,8 @@ fixture directory.
 The page path is taken from `url`:
 
 1. The URL must start with `doc_blob_prefix()` followed by `docs/`.
-2. The page path is the rest of the URL, up to an optional `#anchor`. Any `?` is
+2. The page path is everything after `doc_blob_prefix()`, so it begins with `docs/`
+   (for example `docs/api/app.md`). It runs up to an optional `#anchor`, and any `?` is
    rejected.
 3. Every segment is non-empty, is not `.` or `..`, and uses only `[A-Za-z0-9._-]`. The
    page path ends in `.md`.
@@ -497,8 +519,9 @@ Labels then follow the panel:
 - **Harness runs** need exactly `AuthorityProfile::LegacySandboxOff`. This is gh532
   rule 6 and the §10 Q2 draft decision, held in one constant, `HARNESS_PROFILE`, so a
   later owner reading of Q2 changes one line.
-- **Product runs** follow gh532 rule 6. `ProductReceipt { state: ProfileState,
-  operation_ids }` is the owner's minimal view of a run receipt:
+- **Product runs** follow gh532 rule 6. `ProductReceipt { state: ProfileState, cells }`
+  is the owner's minimal view of a run receipt. `cells` holds the KEL-74 `CellKey`s the
+  run covered.
 
   | `ProfileState` | Required label |
   |---|---|
@@ -506,8 +529,8 @@ Labels then follow the panel:
   | `Legacy` | `LegacySandboxOff` |
   | `Strict` | `StrictBun` |
 
-  Each receipt operation id needs exactly one record (`MissingProductRecord`, so the run
-  is not dropped). A wrong label fails with `LabelMismatch`, which names both the receipt
+  Each receipt cell needs exactly one record (`MissingProductRecord`, so the run is not
+  dropped). A wrong label fails with `LabelMismatch`, which names both the receipt
   state and the record label (gh532 AC12). X02-T5's receipt parser builds the view. It
   owns the receipt schema and the legacy-declaration and strict-archive evidence that
   decides the state.
@@ -521,8 +544,8 @@ Rejected alternatives:
 - Inferring a product label from the panel, which drops the receipt state.
 - Accepting `unverified` on harness records, which contradicts gh532 §10 Q2 as drafted.
 
-*Falsifier:* X02-T5's receipt cannot be reduced to one KEL-78 state plus the operation
-ids it ran. In that case the view is amended; no second validator is added.
+*Falsifier:* X02-T5's receipt cannot be reduced to one KEL-78 state plus the cells it
+ran. In that case the view is amended; no second validator is added.
 
 **D8 — Registry, targets, coverage and census.** The registry is
 `pub const REGISTRY: &[Registration]` in the owner. X01-T4 ships it as
@@ -660,9 +683,10 @@ Two items stay where they are:
 **D11 — Pending versus divergence (gh532 AC17).**
 
 `Run::fail_split()` returns
-`FailSplit { pending: BTreeMap<operation_id, ticket>, divergence: BTreeSet<operation_id> }`.
-It classifies each `fail` record by its cell's manifest key (gh532 rule 3). `unknown`
-records count in neither set.
+`FailSplit { pending: BTreeMap<CellKey, ticket>, divergence: BTreeSet<CellKey> }`. Both
+are keyed by the full KEL-74 `CellKey`, never by `operation_id` alone, so two cells that
+share an operation are counted apart. It classifies each `fail` record by its cell's
+manifest key (gh532 rule 3). `unknown` records count in neither set.
 
 `Display` always renders both lines, with labels from the owner constants
 `PENDING_LABEL` and `DIVERGENCE_LABEL`. Ticket keys are sorted and deduplicated, and a
@@ -784,7 +808,7 @@ impl Corpus {
         -> Result<Run<'a>, CorpusError>;
 }
 pub enum ProfileState { Unverified, Legacy, Strict }
-pub struct ProductReceipt<'a> { pub state: ProfileState, pub operation_ids: &'a [&'a str] }
+pub struct ProductReceipt<'a> { pub state: ProfileState, pub cells: &'a [CellKey] } // KEL-74 CellKey
 impl Run<'_> { pub fn fail_split(&self) -> FailSplit; }
 
 pub fn rust_case_passed(stdout: &str, name: &str) -> bool; // moved unchanged
@@ -887,8 +911,8 @@ Two consumer-specific notes:
   - Scope: the owner with v0 parsing, digest, pin, registry, admission, harness runs and
     the census; the `corpus_registry` target; and the D10 removals.
   - Criteria: gh532 AC10 and AC11, AC2 and AC7 over v0 cells and records, the gh532 AC8
-    clause that rejects `strict_bun` on a conformance-harness record, and C1, C2, C3 and
-    C7.
+    clause that rejects `strict_bun` on a conformance-harness record, and C1, C2, C3, C7
+    and C8.
   - The PR carries the D9 diff, inventory and mutation evidence.
 - [ ] **T3** v1 manifest and rules, also branched from a main that contains #638.
   - Scope: `ManifestV1` with `UniqueMap`, citations and snapshots, verdict keys, the
@@ -912,6 +936,7 @@ the `corpus_registry` target.
 |---|---|---|---|---|
 | gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`. It runs `cargo metadata` to read the `sha2` dependency kind, and its synthetic negative inputs are built with `concat!`, so the census never sees its own tokens. | registry | T2 | integration |
 | gh532 AC11 | `lifecycle_corpus_fixture_bytes_match_origin_main`; `rules::v0_shape_rejects_new_ids_and_foreign_pins` | lifecycle_corpus, rules | T2 | integration |
+| C8 | `rules::denominator_must_match_manifest_cells_and_id`, which mutates the committed lifecycle denominator in memory | rules | T2 | integration |
 | gh532 AC2 and AC7 (v0), AC8 harness clause | `rules::harness_run_rejects_digest_revision_and_label_mutations`, which mutates one committed record in memory | rules | T2 | integration |
 | Live admission controls | `rust_case_results_reject_…` and `bun_case_results_reject_…`, both moved unchanged; `registered_corpora_{libtest,bun}_oracles_execute` | lifecycle_corpus, registry | T2 | integration |
 | C1 | `published_receipt_cases_remain_live_tests`, plus `rust_case_listed` rows | lifecycle_evidence_report | T2 | integration |
@@ -922,7 +947,7 @@ the `corpus_registry` target.
 | gh532 AC8 and AC12 | `rules::product_run_*`: every state × label pair, and a receipt with no record | rules | T3 | integration |
 | gh532 AC16 | `rules::snapshot_*` over an in-memory read seam | rules | T3 | integration |
 | gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`; the v0 report stays byte-identical | rules, lifecycle_evidence_report | T3 | integration |
-| C4, C5, C6 | `rules::duplicate_keys_*`, `rules::records_*`, `rules::product_records_need_receipt` | rules | T3 | integration |
+| C4, C5, C6 | `rules::duplicate_keys_*`, `rules::records_*` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
 Anti-flake: gh532 §7 applies. There is no clock and no network, and there are no ports
 beyond the live `electron_lifecycle` ones. Rule cases use in-memory bytes and snapshots,
