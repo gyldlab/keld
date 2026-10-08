@@ -238,6 +238,9 @@ const BROWSER_EXIT_GRACE: Duration = Duration::from_secs(5);
 ///   16 logical cores), host-own n=57 max 59.1 s and probe n=46 max 43.9 s,
 ///   every one healthy (its event came).
 ///
+/// The load sample is right-censored: 19 of 70 load runs were cut by the
+/// fixture's own 60 s watchdog, so 59.1 s is a lower bound on that load's
+/// maximum, not its maximum; KEL-270 finding F55 re-samples it uncensored.
 /// 4 x 59.07 s = 236.3 s -> 240 s. The idle and hosted basis alone would give
 /// 4 x 16.58 s = 66.3 s -> 75 s; the saturated-load basis rules, because a
 /// false trip quarantines a healthy store while a late true-hang detection
@@ -264,8 +267,7 @@ const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";
 const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
 const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
-const BROWSER_EXIT_WAKE_UNREGISTERED: &str =
-    "the browser-exit wake could not be registered, so the release barrier would be unbounded";
+const BROWSER_EXIT_WAKE_UNREGISTERED: &str = "the browser-exit wake could not be registered, so the release barrier could not observe the browser's exit";
 const PROBE_BROWSER_ID_MISSING: &str =
     "the exclusive-UDF probe controller reported no browser process id";
 const PROBE_CLOSE_FAILED: &str = "the exclusive-UDF probe controller could not be closed";
@@ -486,8 +488,9 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
 /// Pumps this thread until `receiver` yields or the launch `deadline` expires.
 ///
 /// This bounds `WebView2` launches only ([`PROFILE_LAUNCH_DEADLINE`]). Browser
-/// shutdown goes through [`wait_for_browser_exit`], which has no wall-clock
-/// bound while the browser process is alive.
+/// shutdown goes through [`wait_for_browser_exit`], which has no correctness
+/// bound while the browser process is alive, only the
+/// [`BROWSER_SHUTDOWN_HANG_GUARD`] kill switch.
 fn wait_for_launch_with_message_pump_until<T>(
     receiver: &Receiver<T>,
     deadline: Instant,
@@ -3912,13 +3915,41 @@ mod tests {
             since_arming >= hang_guard,
             "the guard must elapse from the arming instant: {since_arming:?}"
         );
+        // A kill-switch-sized ceiling, not a latency claim: it separates the
+        // guard's own wake from a much later unrelated wake without assuming
+        // how promptly a loaded runner reschedules this thread.
         assert!(
-            since_arming <= hang_guard + std::time::Duration::from_secs(5),
+            since_arming <= hang_guard + std::time::Duration::from_secs(30),
             "the failure is bounded by the guard, not a later wake: {since_arming:?}"
         );
         assert_eq!(release.fault(), Some(ProfileReleaseFault::HangGuardExpired));
         assert_eq!(release.post_exit_deadline.get(), None);
         assert!(!release.observed.get());
+    }
+
+    /// Re-arming never renews the hang guard: the guard runs from the first
+    /// arming instant only, so a host or probe that polls again cannot extend
+    /// how long a never-exiting browser is tolerated.
+    #[test]
+    fn rearming_the_barrier_never_renews_the_hang_guard() {
+        let (_sender, receiver) = release_channel();
+        let release = ProfileReleaseWait::with_bounds(
+            Some(receiver),
+            Some(alive_process_handle()),
+            ReleaseSite::Host,
+            std::time::Duration::from_hours(1),
+            std::time::Duration::from_hours(1),
+        );
+        release.arm();
+        let first = release.armed_at.get().expect("armed at Close");
+        release.arm();
+        release.arm();
+        assert_eq!(
+            release.armed_at.get(),
+            Some(first),
+            "a later arm() must not move the guard's start"
+        );
+        assert_eq!(release.fault(), None);
     }
 
     /// Once the process handle is signaled, only the post-exit grace bounds

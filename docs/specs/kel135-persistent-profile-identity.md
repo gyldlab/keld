@@ -428,8 +428,9 @@ webview/controller after registering `BrowserProcessExited` on
 releases it. That wait is liveness-gated: the host opens a `SYNCHRONIZE` handle to the
 probe's browser process before `Close`; while that handle is unsignaled no correctness
 bound applies, and only a measured shutdown hang guard (240 s: four times the largest
-observed healthy shutdown, a kill switch in the pattern of the navigation deadline)
-bounds the wait; once the handle is signaled, a 5 s post-exit grace bounds the event,
+observed healthy shutdown, a kill switch in the pattern of the navigation deadline;
+the load sample behind it is right-censored by its fixture's 60 s watchdog and is
+re-sampled uncensored under KEL-270 finding F55) bounds the wait; once the handle is signaled, a 5 s post-exit grace bounds the event,
 because WebView2 raises it only after the collection has released the UDF. An abnormal
 exit of the expected process, a dropped observer, that grace expiry, or the hang guard
 expiring while the browser is still alive proves failure: the hang guard never passes
