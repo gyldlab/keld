@@ -39,13 +39,16 @@ ci-full-inventory: ci-policy-full typescript fmt-check clippy test doc deny
 ci-route:
     tools/ci_changes.sh local
 
-# Hosted CI runs every ci-policy gate (#650) except the four test_ci_local.py
-# ExecutorTests inside ci-router-test, which drive real recipes through the
-# `just` executable (tools/ci_local.py inventory/execute); hosted runners do not
-# install `just`, and adding it (for example via taiki-e/install-action) would be
-# a dependency-gate decision. Everything else in test_ci_local.py runs hosted
-# through tools/ci_changes_test.sh. agent-context's workspace.py check also runs
-# hosted, but only a developer checkout has task records for it to validate.
+# Hosted CI runs every ci-policy gate (#650) except two that need the real
+# `just` executable, which hosted runners do not install; hosting either needs a
+# pinned `just` in CI (dependency-gate decision, not taken):
+# - hooks-test: the hooks under test execute `just` (its negative control runs
+#   the incoming branch's recipe through it); it fails, never skips, without just.
+# - the four test_ci_local.py ExecutorTests in ci-router-test, which drive real
+#   recipes (tools/ci_local.py inventory/execute). SelectionTests and the rest
+#   of test_ci_local.py run hosted through tools/ci_changes_test.sh.
+# agent-context's workspace.py check also runs hosted, but only a developer
+# checkout has task records for it to validate.
 [parallel]
 ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
