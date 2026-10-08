@@ -4443,6 +4443,7 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::io::{BufRead as _, BufReader};
     use std::net::{TcpListener, TcpStream};
+    use std::os::windows::process::CommandExt as _;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -4450,7 +4451,7 @@ mod tests {
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE};
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-    use windows_sys::Win32::System::Threading::PROCESS_CREATE_PROCESS;
+    use windows_sys::Win32::System::Threading::{DETACHED_PROCESS, PROCESS_CREATE_PROCESS};
 
     const HELPER_ENV: &str = "KELD_WINDOWS_JOB_ASSIGNMENT_HELPER";
     const QF1_HELPER_ENDPOINT_ENV: &str = "KELD_TEST_QF1_ENDPOINT";
@@ -4994,6 +4995,13 @@ mod tests {
         command.spawn().expect("spawn assignment-gate child")
     }
 
+    /// Spawns one parked occupant of this binary with no console. A console
+    /// child that inherits no console allocates one, and its console host
+    /// (`conhost.exe`) is a process Windows creates during the child's start,
+    /// after creation returns to the parent, that joins every Job the child is
+    /// in and outlives the child's own exit for a moment. `DETACHED_PROCESS`
+    /// inherits none and allocates none, so a Job a test assigns the occupant
+    /// to holds exactly what the test put there, on every runner.
     fn spawn_blocking_descendant() -> Child {
         let mut command = Command::new(std::env::current_exe().expect("current test executable"));
         command
@@ -5004,6 +5012,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(HELPER_ENV, "occupant")
+            .creation_flags(DETACHED_PROCESS)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -5204,11 +5213,20 @@ mod tests {
             matches!(self.stream.read(&mut answer), Ok(1) if answer == [ACK])
         }
 
-        /// Releases a host fixture that waits after its `CANDIDATE` record, once
-        /// every handle this test observes is open.
+        /// Releases a host fixture blocked on the test's go-ahead: after its
+        /// `CANDIDATE` record, once every handle this test observes is open, and
+        /// in the refusal modes after its `FLAGS` record, once the test has
+        /// observed what holds only while that host is alive.
         fn go(&mut self) {
             self.stream.write_all(&[GO]).expect("send the go-ahead");
         }
+    }
+
+    /// Blocks a host fixture until the test's go-ahead byte.
+    fn await_go(report: &mut TcpStream) {
+        let mut go = [0_u8; 1];
+        report.read_exact(&mut go).expect("the test's go-ahead");
+        assert_eq!(go, [GO], "unexpected go-ahead byte");
     }
 
     fn report_flags(line: &str, field: &str) -> u32 {
@@ -5438,9 +5456,7 @@ mod tests {
         writeln!(report, "CANDIDATE {}", launched.child().id()).expect("report the candidate");
         // The test opens its handles on the records above, then releases this
         // host, so every observation below the release is ordered after them.
-        let mut go = [0_u8; 1];
-        report.read_exact(&mut go).expect("the test's go-ahead");
-        assert_eq!(go, [GO], "unexpected go-ahead byte");
+        await_go(&mut report);
         let flags = |label: &str| {
             format!(
                 "{label} attempt=0x{:08x} host=0x{:08x}",
@@ -5468,6 +5484,16 @@ mod tests {
                 attempt
                     .terminate_and_wait(launched.child(), RELEASE_WAIT)
                     .expect("roll the attempt back");
+                // The test reads the candidate's process object, and the Job
+                // accounting that `terminate_and_wait` proved zero is not that
+                // object's signal. Wait for the signal here, while this host is
+                // alive, so `ROLLED_BACK` reports a candidate already gone.
+                wait_handle_until(
+                    launched.child().process_handle().as_raw_handle().cast(),
+                    Instant::now() + RELEASE_WAIT,
+                    "test rollback candidate exit",
+                )
+                .expect("the rolled-back candidate's handle signals");
                 writeln!(report, "{}", flags("FLAGS")).expect("report flags");
                 writeln!(report, "ROLLED_BACK").expect("report the rollback");
             }
@@ -5486,6 +5512,10 @@ mod tests {
                     .expect_err("a straggler past the deadline must refuse the release");
                 writeln!(report, "REFUSED {refusal}").expect("report the refusal");
                 writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+                // The test observes the straggler alive after the refusal. The
+                // host-death Job still kills on close, so that holds only while
+                // this host is alive: wait for the go-ahead before the exit.
+                await_go(&mut report);
             }
             "exited-member" => {
                 // §4 *Census and policy*, "exited after the snapshot": the seam
@@ -5538,6 +5568,9 @@ mod tests {
                     .expect_err("a member open denied for another reason must refuse the release");
                 writeln!(report, "REFUSED {refusal}").expect("report the refusal");
                 writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+                // The test observes the candidate alive after the refusal, which
+                // holds only while this host is alive: wait for the go-ahead.
+                await_go(&mut report);
             }
             _ => {
                 let released = attempt.release_family().expect("release the attempt Job");
@@ -5744,11 +5777,14 @@ mod tests {
             "{flags}"
         );
         assert_eq!(host.report.next("ROLLED_BACK"), "ROLLED_BACK");
-        host.wait();
+        // The host reported only after it waited for the candidate's exit
+        // signal, so the candidate is gone while the host is alive, not merely
+        // by the time the host's own exit is observed.
         assert!(
             candidate.exited_now(),
-            "the rolled-back candidate must be gone when the host's handle is signaled"
+            "the rolled-back candidate must be gone before the host exits"
         );
+        host.wait();
     }
 
     #[test]
@@ -5775,10 +5811,13 @@ mod tests {
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             "{flags}"
         );
+        // Observed while the host waits for the go-ahead below: its Job still
+        // kills on close, so the straggler ends at the exit the go-ahead releases.
         assert!(
             !straggler.exited_now(),
             "the straggler must outlive the refusal"
         );
+        host.report.go();
         host.wait();
         candidate.assert_exited_within(RELEASE_WAIT, "candidate after a refused release");
         straggler.assert_exited_within(RELEASE_WAIT, "straggler after the host exit");
@@ -5833,10 +5872,13 @@ mod tests {
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             "{flags}"
         );
+        // Observed while the host waits for the go-ahead below: its Job still
+        // kills on close, so the candidate ends at the exit the go-ahead releases.
         assert!(
             !candidate.exited_now(),
             "a refused open must not terminate the candidate"
         );
+        host.report.go();
         host.wait();
         candidate.assert_exited_within(RELEASE_WAIT, "candidate after a refused member open");
     }
@@ -6011,8 +6053,19 @@ mod tests {
 
     #[test]
     fn the_process_id_lister_grows_from_a_short_buffer_to_the_full_list() {
-        let job = create_process_job().expect("create a kill-on-close Job");
-        let raw = job.as_raw_handle().cast();
+        // The Job's members are exactly the occupants: `spawn_blocking_descendant`
+        // creates them with no console, so no console host joins the Job behind
+        // the test's back. Its end is the kernel's own notice: the completion
+        // port is associated while the Job is empty, so the active-process-zero
+        // message cannot be lost, and the empty list is asserted only after Job
+        // accounting read zero, through the crate's `wait_for_active_zero`, with
+        // the deadline as a kill switch. When an exited member leaves the list
+        // relative to its handle's signal is the kernel's ordering, not this
+        // test's, so a list taken straight after `wait` proves nothing.
+        let job = WindowsProcessJob::create().expect("create a kill-on-close Job");
+        let raw = job.handle.as_raw_handle().cast();
+        let completion_port = create_job_completion_port(raw)
+            .expect("associate a completion port with the empty Job");
         let mut occupants: Vec<Child> = (0..3).map(|_| spawn_blocking_descendant()).collect();
         for occupant in &occupants {
             // SAFETY: both handles are live; the occupant is a test-owned fixture
@@ -6036,9 +6089,12 @@ mod tests {
             occupant.kill().expect("end an occupant");
             occupant.wait().expect("reap an occupant");
         }
+        job.wait_for_active_zero(&completion_port, Instant::now() + RELEASE_WAIT)
+            .expect("the Job reaches zero active processes once its occupants exited");
         assert_eq!(
             list_job_process_ids(raw, "test list").expect("list the empty Job"),
-            Vec::<u32>::new()
+            Vec::<u32>::new(),
+            "a Job at zero active processes lists no process"
         );
     }
 
