@@ -2440,8 +2440,10 @@ impl ProfileReleaseWait {
 
 /// Pumps this thread until `release` observes the barrier or faults.
 ///
-/// Wakes on a queued message, on the browser process handle, or at the
-/// post-exit grace; there is no other bound while the process is alive.
+/// While the browser process is alive the wait wakes on a queued message or
+/// on its handle, with no other bound. Once the handle is signaled and the
+/// post-exit grace is armed, only messages or the remaining grace end a wait:
+/// a signaled handle in the wait set would return at once and spin.
 fn wait_for_browser_exit(release: &ProfileReleaseWait, site: ReleaseSite) -> Result<(), WvError> {
     release.arm();
     loop {
@@ -2455,14 +2457,16 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait, site: ReleaseSite) -> Res
                 fault.context(site),
             ));
         }
-        let milliseconds = match release.post_exit_deadline.get() {
-            Some(deadline) => milliseconds_until(deadline)?,
-            None => INFINITE,
+        let (process, milliseconds) = match release.post_exit_deadline.get() {
+            None => (
+                release
+                    .process
+                    .as_ref()
+                    .map(|process| [HANDLE(process.as_raw_handle())]),
+                INFINITE,
+            ),
+            Some(deadline) => (None, milliseconds_until(deadline)?),
         };
-        let process = release
-            .process
-            .as_ref()
-            .map(|process| [HANDLE(process.as_raw_handle())]);
         pump_message_or_handle(process.as_ref().map(<[HANDLE; 1]>::as_slice), milliseconds)?;
     }
 }
@@ -3776,6 +3780,73 @@ mod tests {
                 .to_string()
                 .contains("the exclusive-UDF probe browser process exited without raising"),
             "{error}"
+        );
+    }
+
+    /// This thread's kernel plus user CPU time from the scheduler's own
+    /// accounting, so the oracle is independent of how the pump is written.
+    fn thread_cpu_time() -> std::time::Duration {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: `GetCurrentThread` returns the caller's non-owning pseudo
+        // handle; all four FILETIME outputs live for the synchronous query.
+        // Contract:
+        // https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes
+        unsafe {
+            GetThreadTimes(
+                GetCurrentThread(),
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        }
+        .expect("query this thread's times");
+        let ticks =
+            |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+        std::time::Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+    }
+
+    /// Once the grace is armed on an exited process, the pump must block on
+    /// messages or the remaining grace alone. A signaled handle in the wait
+    /// set returns at once, which spun one core for the whole grace (KEL-135
+    /// review). Oracle: the scheduler's CPU accounting for this thread
+    /// against the wall time the wait took.
+    #[test]
+    fn exit_wait_pump_idles_through_the_grace_after_the_process_exited() {
+        let grace = std::time::Duration::from_millis(400);
+        let (_sender, receiver) = release_channel();
+        let release =
+            ProfileReleaseWait::with_grace(Some(receiver), Some(exited_process_handle()), grace);
+        let cpu_before = thread_cpu_time();
+        let started = std::time::Instant::now();
+        let error = wait_for_browser_exit(&release, ReleaseSite::Host)
+            .expect_err("a gone browser without its event fails after the grace");
+        let wall = started.elapsed();
+        let cpu = thread_cpu_time().saturating_sub(cpu_before);
+        println!(
+            "KELD_WV_GRACE_WAIT cpu_ms={} wall_ms={}",
+            cpu.as_millis(),
+            wall.as_millis()
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("the host browser process exited without raising"),
+            "{error}"
+        );
+        assert!(
+            wall >= grace,
+            "the grace must elapse before the fault: wall={wall:?}"
+        );
+        assert!(
+            cpu * 4 < wall,
+            "the grace wait must idle, not spin: cpu={cpu:?} wall={wall:?}"
         );
     }
 
