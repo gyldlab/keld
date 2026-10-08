@@ -23,7 +23,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages)=)' <<<"$actual")"
+    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os)=)' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -178,6 +178,8 @@ codeql_none=$'codeql_rust=false\ncodeql_javascript_typescript=false\ncodeql_acti
 codeql_all=$'codeql_rust=true\ncodeql_javascript_typescript=true\ncodeql_actions=true'
 codeql_rust_only=$'codeql_rust=true\ncodeql_javascript_typescript=false\ncodeql_actions=false'
 codeql_js_only=$'codeql_rust=false\ncodeql_javascript_typescript=true\ncodeql_actions=false'
+check_os_all='["ubuntu-latest","macos-latest","windows-latest"]'
+check_os_documentation='["ubuntu-latest"]'
 
 # A developer checkout can contain unknown inputs. Prove the live fallback,
 # then run clean-path exclusion controls in a separate tracked-byte snapshot.
@@ -295,6 +297,44 @@ expect_codeql "unknown path selects every CodeQL language" "$codeql_all" "$unkno
 for input in tools/ci_changes.sh tools/ci_required.sh tools/ci_inputs.py tools/ci-inputs.json; do
     expect_codeql "router owner $input selects every CodeQL language" "$codeql_all" "$(result_for_paths "$input")"
 done
+
+# gitleaks configuration: the unconditional gitleaks job is its only reader.
+for input in .gitleaks.toml .gitleaksignore; do
+    gitleaks_config="$(result_for_paths "$input")"
+    expect_flags "$input selects no conditional lane" "$all_false" "$gitleaks_config"
+    expect_codeql "$input selects no CodeQL language" "$codeql_none" "$gitleaks_config"
+    expect_exact_output "$input selects no workspace contracts" workspace false "$gitleaks_config"
+    expect_no_package_selection "$input selects no package/suite" "$gitleaks_config"
+done
+# Negative control: an undeclared sibling name is still an unknown input.
+gitleaks_sibling="$(result_for_paths .gitleaks.toml.orig)"
+expect_flags "undeclared gitleaks sibling still fails safe" "$all_true" "$gitleaks_sibling"
+
+# Workspace contracts: selected by their inputs and by every fallback, not by
+# an ordinary Rust change.
+for input in tools/workspace.py tools/test_workspace.py tools/session_closeout.py; do
+    workspace_input="$(result_for_paths "$input")"
+    expect_exact_output "$input selects the workspace contracts job" workspace true "$workspace_input"
+    expect_flags "$input keeps the unknown fallback" "$all_true" "$workspace_input"
+done
+expect_exact_output "unknown path selects the workspace contracts job" workspace true "$unknown_codeql"
+expect_exact_output "workflow edit selects the workspace contracts job" workspace true "$workflow_codeql"
+# Negative controls: a Rust source change and a docs-only PR do not.
+expect_exact_output "CLI source change does not select workspace contracts" workspace false "$cli_source"
+expect_exact_output "docs-only PR does not select workspace contracts" workspace false "$docs_only_pr"
+
+# Check OS list: Ubuntu alone only when documentation reads alone selected Rust.
+expect_exact_output "reader-doc PR runs its reader on Ubuntu only" check_os "$check_os_documentation" "$reader_doc_pr"
+expect_exact_output "package documentation read runs on Ubuntu only" check_os "$check_os_documentation" "$package_doc_pr"
+# Negative controls: any changed package, tools input, workflow or unknown path
+# keeps all three OSes.
+expect_exact_output "CLI source change runs on every OS" check_os "$check_os_all" "$cli_source"
+expect_exact_output "reader doc plus CLI source runs on every OS" check_os "$check_os_all" "$reader_doc_with_source"
+expect_exact_output "registry doc plus tools source runs on every OS" check_os "$check_os_all" "$reader_doc_with_tool"
+expect_exact_output "package doc plus reader source runs on every OS" check_os "$check_os_all" "$package_doc_with_source"
+expect_exact_output "TypeScript consumer change runs on every OS" check_os "$check_os_all" "$ts_codeql"
+expect_exact_output "workflow edit runs on every OS" check_os "$check_os_all" "$workflow_codeql"
+expect_exact_output "unknown path runs on every OS" check_os "$check_os_all" "$unknown_codeql"
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
 expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"

@@ -26,7 +26,9 @@
     ".config/*",
     ".cargo/*",
     ".githooks/*",
-    ".gitignore"
+    ".gitignore",
+    ".gitleaks.toml",
+    ".gitleaksignore"
   ],
   "consumers": [
     {
@@ -342,7 +344,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "0e86f00ef58be44bd388285ec7d4b730e056eddde19c96c86f214c81577379b8"
+      "sha256": "b9276c622fa89f8aa9f80f7198479f601c13f3a07d079c024adef6ed1cca2f25"
     },
     "audit-readers": {
       "patterns": [

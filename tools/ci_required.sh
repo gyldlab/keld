@@ -34,12 +34,13 @@ require_routed_result() {
     esac
 }
 
-# Argument layout (25): 1 change router; 2-10 core job results; 11-18 lane
+# Argument layout (27): 1 change router; 2-10 core job results; 11-18 lane
 # router outputs; 19-21 CodeQL rust, javascript-typescript and actions job
-# results; 22-24 their router outputs; 25 dependency review.
+# results; 22-24 their router outputs; 25 dependency review; 26 workspace
+# contracts job result; 27 its router output.
 check_results() {
-    if [[ "$#" -ne 25 ]]; then
-        fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, and 1 dependency review result, got $#; restore the required job's complete needs and applicability handoff."
+    if [[ "$#" -ne 27 ]]; then
+        fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, and the workspace contracts result and router output, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
 
@@ -70,6 +71,7 @@ check_results() {
     require_routed_result "CodeQL javascript-typescript analysis and upload" "${20}" "${23}" || return 1
     require_routed_result "CodeQL actions analysis and upload" "${21}" "${24}" || return 1
     require_success "dependency review" "${25}" || return 1
+    require_routed_result "workspace path and process contracts" "${26}" "${27}" || return 1
 }
 
 # Older self-test rows predate Mermaid (18 arguments) and per-language CodeQL
@@ -82,6 +84,10 @@ normalize_self_test_args() {
     fi
     if [[ "${#args[@]}" -eq 20 ]]; then
         args=("${args[@]:0:18}" "${args[18]}" "${args[18]}" "${args[18]}" true true true "${args[19]}")
+    fi
+    # Rows before the workspace contracts job had no such job: it is skipped.
+    if [[ "${#args[@]}" -eq 25 ]]; then
+        args=("${args[@]}" skipped false)
     fi
     normalized_args=("${args[@]}")
 }
@@ -148,16 +154,34 @@ codeql_self_test() {
                 "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success
         done
     done
-    if check_results "${docs_only_prefix[@]}" skipped skipped skipped false false false >/dev/null 2>&1; then
+    if check_results "${docs_only_prefix[@]}" skipped skipped skipped false false false skipped false >/dev/null 2>&1; then
         fail "missing dependency review handoff was accepted"
     fi
-    if check_results "${docs_only_prefix[@]}" skipped skipped skipped false false success >/dev/null 2>&1; then
+    if check_results "${docs_only_prefix[@]}" skipped skipped skipped false false success skipped false >/dev/null 2>&1; then
         fail "missing CodeQL route handoff was accepted"
     fi
     if check_results "${docs_only_prefix[@]}" success success >/dev/null 2>&1; then
         fail "the pre-#624 single CodeQL handoff was accepted"
     fi
     echo "ok: CodeQL applicability is checked per language"
+}
+
+workspace_self_test() {
+    local -a prefix=("${docs_only_prefix[@]}" skipped skipped skipped false false false success)
+    expect_pass "unselected workspace contracts skip" "${prefix[@]}" skipped false
+    expect_pass "selected workspace contracts succeed" "${prefix[@]}" success true
+    # Negative controls for the two rows above.
+    expect_fail "selected workspace contracts cannot be skipped" "${prefix[@]}" skipped true
+    expect_fail "unselected workspace contracts must not run" "${prefix[@]}" success false
+    local result
+    for result in failure cancelled missing ''; do
+        expect_fail "selected workspace contracts '$result' is not evidence" "${prefix[@]}" "$result" true
+    done
+    expect_fail "invalid workspace applicability is not evidence" "${prefix[@]}" skipped missing
+    if check_results "${prefix[@]}" skipped >/dev/null 2>&1; then
+        fail "missing workspace route handoff was accepted"
+    fi
+    echo "ok: workspace contracts applicability is checked"
 }
 
 self_test() {
@@ -207,7 +231,7 @@ self_test() {
         false false false false false false success success
     if check_results success skipped skipped skipped skipped skipped skipped success skipped \
         false false false false false false false false success \
-        success success success true true true success >/dev/null 2>&1; then
+        success success success true true true success skipped false >/dev/null 2>&1; then
         fail "missing Mermaid result handoff was accepted"
     fi
     echo "ok: missing Mermaid result handoff is rejected"
@@ -225,6 +249,7 @@ self_test() {
         success skipped skipped skipped skipped skipped skipped success skipped \
         false false false false false false false
     codeql_self_test
+    workspace_self_test
 
     echo "ci-required contract tests ok"
 }
@@ -243,7 +268,7 @@ case "${1:-}" in
         self_test
         ;;
     *)
-        fail "unknown or missing command '${1:-}'. Use 'check' with 10 core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, and 1 dependency review result, or 'test'."
+        fail "unknown or missing command '${1:-}'. Use 'check' with 10 core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, and the workspace contracts result and router output, or 'test'."
         exit 1
         ;;
 esac

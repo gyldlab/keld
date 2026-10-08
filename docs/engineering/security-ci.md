@@ -40,6 +40,10 @@ The selected parser controls run in CI against pinned Bun 1.4.2. See
 | cargo-deny | Cargo advisory, license and dependency policy in `deny.toml` | Cargo policy does not cover npm dependencies. |
 | gitleaks | Pull request: that pull request's own commits (event `base.sha..head.sha`, both resolved). Push to `main`: `main`'s full history. Unmerged branches and tags are not scanned by CI; GitHub secret scanning (provider patterns, all branches) is their only coverage | Secret detection does not establish revocation of an exposed credential. Merge-commit conflict resolutions are not diffed. |
 
+gitleaks runs on every event. Its configuration (`.gitleaks.toml`) and fingerprint
+ignores (`.gitleaksignore`) have no other reader, so a change to either selects no
+other CI lane.
+
 Dependency review first checks every API response page for GitHub's incomplete
 snapshot warning. Unavailable APIs, malformed refs or incomplete snapshots fail the
 job; restore the dependency graph's base/head metadata and rerun the same head.

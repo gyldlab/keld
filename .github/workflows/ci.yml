@@ -53,6 +53,8 @@ jobs:
       codeql_rust: ${{ steps.classify.outputs.codeql_rust }}
       codeql_javascript_typescript: ${{ steps.classify.outputs.codeql_javascript_typescript }}
       codeql_actions: ${{ steps.classify.outputs.codeql_actions }}
+      workspace: ${{ steps.classify.outputs.workspace }}
+      check_os: ${{ steps.classify.outputs.check_os }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -105,11 +107,13 @@ jobs:
     needs: changes
     # Job-level `if` cannot use `matrix` (GitHub evaluates it before expansion).
     # Ubuntu apt and GTK package selection stay on steps, which do have `matrix`.
+    # The router owns the OS list: all three, or Ubuntu alone when only
+    # documentation reads selected the Rust packages (#624).
     if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.changes.outputs.check_os) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -137,14 +141,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
         run: |
           cargo check --manifest-path crates/keld-update/fuzz/Cargo.toml
-      - name: Local workspace path and process contracts
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = windows-latest ]; then
-            python -B tools/test_workspace.py
-          else
-            python3 -B tools/test_workspace.py
-          fi
       - name: Product status Windows path contracts
         if: matrix.os == 'windows-latest'
         shell: bash
@@ -379,6 +375,33 @@ jobs:
           for package in $KELD_CI_UBUNTU_PACKAGES; do
             cargo doc -p "$package" --no-deps
           done
+
+  # The local workspace tool's path and process contracts differ per OS, so this
+  # stays a three-OS job. Its inputs are tools/workspace.py, its test and the
+  # session_closeout.py it imports; the router selects it for those and for
+  # every unknown or all-lane input, not for each Rust change (#624).
+  workspace-contracts:
+    name: workspace contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.workspace == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Local workspace path and process contracts
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            python -B tools/test_workspace.py
+          else
+            python3 -B tools/test_workspace.py
+          fi
 
   bun-test:
     name: bun test (TypeScript)
@@ -804,6 +827,7 @@ jobs:
       - codeql-javascript-typescript
       - codeql-actions
       - dependency-review
+      - workspace-contracts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -837,6 +861,8 @@ jobs:
           KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}
           KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}
           KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}
+          KELD_RESULT_WORKSPACE: ${{ needs['workspace-contracts'].result }}
+          KELD_ROUTE_WORKSPACE: ${{ needs.changes.outputs.workspace }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -864,4 +890,6 @@ jobs:
             "$KELD_ROUTE_CODEQL_RUST" \
             "$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT" \
             "$KELD_ROUTE_CODEQL_ACTIONS" \
-            "$KELD_RESULT_DEPENDENCY_REVIEW"
+            "$KELD_RESULT_DEPENDENCY_REVIEW" \
+            "$KELD_RESULT_WORKSPACE" \
+            "$KELD_ROUTE_WORKSPACE"

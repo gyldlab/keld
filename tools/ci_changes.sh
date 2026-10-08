@@ -26,6 +26,12 @@ ts_packages=""
 codeql_rust="$FALSE"
 codeql_javascript_typescript="$FALSE"
 codeql_actions="$FALSE"
+workspace="$FALSE"
+# The check job's OS matrix, as JSON for fromJSON. Every Rust selection uses all
+# three OSes except one reached only through documentation reads (#624).
+readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
+readonly DOCUMENTATION_CHECK_OS='["ubuntu-latest"]'
+check_os="$ALL_CHECK_OS"
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
@@ -57,6 +63,7 @@ mark_all() {
     deny="$TRUE"
     ts="$TRUE"
     all_workspace_packages="$TRUE"
+    workspace="$TRUE"
     select_every_codeql_language
 }
 
@@ -139,6 +146,8 @@ emit() {
     printf 'codeql_rust=%s\n' "$codeql_rust"
     printf 'codeql_javascript_typescript=%s\n' "$codeql_javascript_typescript"
     printf 'codeql_actions=%s\n' "$codeql_actions"
+    printf 'workspace=%s\n' "$workspace"
+    printf 'check_os=%s\n' "$check_os"
     if [[ -n "$consumer_contract" ]]; then
         if [[ "$local_force_all" == "$TRUE" ]]; then
             printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
@@ -567,6 +576,16 @@ finalize_rust_packages() {
         echo "ci router: Rust checks selected no Ubuntu packages; refusing to emit a skipped-green success" >&2
         exit 1
     fi
+
+    # Documentation bytes reach these packages' unchanged tests only as text,
+    # and .gitattributes checks text out as LF on every OS, so one OS proves
+    # them. No reader of a declared document handles it under cfg(windows) or
+    # cfg(target_os). Ubuntu is the fastest leg (last 100 runs: p50 318 s vs
+    # macOS 514 s, Windows 654 s). Any changed package keeps all three OSes.
+    if [[ "$all_workspace_packages" != "$TRUE" && ${#changed_package_roots[@]} -eq 0 && \
+        ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        check_os="$DOCUMENTATION_CHECK_OS"
+    fi
 }
 
 finalize_ts_packages() {
@@ -685,6 +704,21 @@ classify_path() {
         .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh | \
         tools/ci_inputs.py | tools/ci_local.py | tools/test_ci_local.py | tools/ci-inputs.json)
             mark_all
+            ;;
+
+        # gitleaks loads its configuration and fingerprint ignores from the
+        # repository root, and the gitleaks job runs on every event. No other
+        # lane reads these files, so they select nothing else (#624).
+        .gitleaks.toml | .gitleaksignore)
+            ;;
+
+        # The workspace contract job's whole input: test_workspace.py imports
+        # workspace.py, which imports session_closeout.py. These also drive the
+        # hygiene lane and local agent tooling, so they keep the unknown
+        # fallback; naming the job here keeps it selected if that is narrowed.
+        tools/workspace.py | tools/test_workspace.py | tools/session_closeout.py)
+            mark_unknown
+            workspace="$TRUE"
             ;;
 
         # Workspace and toolchain inputs can alter every Rust build, keld-host's
