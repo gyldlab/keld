@@ -224,9 +224,10 @@ fn start(scenario: &str) -> (UnixStream, Role) {
             panic!("role did not authenticate: {}", output.diagnostics());
         }
     };
-    stream
-        .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
-        .expect("host app-link deadlines");
+    peer_fact(
+        stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE)),
+        "host app-link deadlines",
+    );
     (stream, role)
 }
 
@@ -356,9 +357,22 @@ fn host_event(stream: &mut UnixStream, seq: u32, len: usize) {
 /// Lets the host wait for the role across quiet phases; writes keep
 /// `APP_LINK_IO_DEADLINE`, so criterion 1's writer contract is unchanged.
 fn long_reads(stream: &UnixStream) {
-    stream
-        .set_app_link_read_deadline(Some(Duration::from_mins(1)))
-        .expect("host read deadline");
+    peer_fact(
+        stream.set_app_link_read_deadline(Some(Duration::from_mins(1))),
+        "host read deadline",
+    );
+}
+
+/// Applies a socket-deadline result. macOS returns `EINVAL` on an accepted
+/// socket whose peer has already closed (`keld_ipc::link::AppLinkDeadlines`):
+/// a fact about that peer, which the next read observes as link loss. A role
+/// may close that fast (the `local-close` scenario), so only that case passes.
+fn peer_fact(result: std::io::Result<()>, what: &str) {
+    match result {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+        Err(error) => panic!("{what}: {error}"),
+    }
 }
 
 /// Reads until the link is lost; returns the frames read first. Link loss is
