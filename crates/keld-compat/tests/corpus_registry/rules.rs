@@ -3,6 +3,11 @@
 //! manifest mutation aimed at another rule rehashes the denominator, and every control
 //! asserts the exact `CorpusError` variant (gh566 §7, "Negative-control routing").
 
+mod v1_fixture;
+mod v1_manifest;
+mod v1_runs;
+mod v1_snapshots;
+
 use keld_compat::evidence::{EvidenceError, EvidenceRecord, Platform, parse_evidence};
 
 use crate::corpus_admission::{RunnerKind, RunnerOutput, check_admission, check_cells};
@@ -432,6 +437,7 @@ fn admission_rejects_missing_skipped_and_ignored_cases() {
     let rust = |text: &str| {
         check_admission(
             &corpora,
+            Platform::Macos,
             RunnerKind::Libtest,
             &[RunnerOutput {
                 path: ELECTRON_LIFECYCLE.path.to_owned(),
@@ -459,6 +465,7 @@ fn admission_rejects_missing_skipped_and_ignored_cases() {
     let bun = |lines: &[String]| {
         check_admission(
             &corpora,
+            Platform::Macos,
             RunnerKind::Bun,
             &[RunnerOutput {
                 path: APP_TEST.path.to_owned(),
@@ -480,6 +487,7 @@ fn admission_rejects_missing_skipped_and_ignored_cases() {
                 corpus.id(),
                 &[stray.clone()],
                 corpus.registration(),
+                Platform::Macos,
                 kind,
                 &[]
             ),

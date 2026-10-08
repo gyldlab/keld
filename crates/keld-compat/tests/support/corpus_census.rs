@@ -1,4 +1,4 @@
-//! The owner and fixture censuses (gh532 AC10, gh566 C2 and D10 rules 1–5). They are
+//! The owner and fixture censuses (gh532 AC10, gh566 C2 and D10 rules 1–6). They are
 //! split from the owner under the gh566 D1 review condition (the owner passed 1,500
 //! lines). The census has its own invariant: exactly one corpus owner exists among
 //! keld-compat's test sources, and every committed corpus is registered. Every pattern
@@ -124,6 +124,10 @@ pub fn sha2_dependency_kinds() -> Result<Vec<Option<String>>, CorpusError> {
     Ok(kinds)
 }
 
+/// The frozen v0 report, the one file outside the owner that may count fails itself
+/// (gh566 C9). The exemption ends when KEL-237 re-records the lifecycle corpus.
+const FROZEN_REPORT: &str = "tests/lifecycle_evidence_report.rs";
+
 /// Field names that mark a manifest parser (census rule 2).
 const MANIFEST_FIELDS: &[&str] = &[
     "corpus_id",
@@ -134,7 +138,7 @@ const MANIFEST_FIELDS: &[&str] = &[
     "test_path",
 ];
 
-/// The owner census (gh532 AC10, gh566 D10 rules 1–5). Patterns are assembled with
+/// The owner census (gh532 AC10, gh566 D10 rules 1–6). Patterns are assembled with
 /// `concat!` so this file's own text matches only its real definitions.
 pub fn owner_census(
     sources: &Sources,
@@ -156,6 +160,12 @@ pub fn owner_census(
         concat!("denominator", ".json\""),
     ];
     let test_attribute = concat!("#[", "test]");
+    // Rule 6 (gh566 C9): fail counts and their labels render only through FailSplit.
+    let report_tokens = [
+        concat!("Pending ", "implementation"),
+        concat!("Intentional ", "divergence"),
+        concat!(".fail", "ed()"),
+    ];
     let mut owner_seen = false;
     for (path, text) in sources {
         if path.starts_with("tests/support/") && text.contains(test_attribute) {
@@ -184,6 +194,20 @@ pub fn owner_census(
                 line,
                 format!("a Deserialize struct declares manifest field `{field}`"),
             );
+        }
+        if path != FROZEN_REPORT
+            && let Some((index, token)) = text.lines().enumerate().find_map(|(index, line)| {
+                report_tokens
+                    .iter()
+                    .find(|token| line.contains(**token))
+                    .map(|token| (index, *token))
+            })
+        {
+            return Err(CorpusError::ReportBypassesFailSplit {
+                file: path.clone(),
+                line: index + 1,
+                detail: format!("`{token}` outside FailSplit"),
+            });
         }
     }
     if !owner_seen {
@@ -220,6 +244,11 @@ fn census_owner(path: &str, text: &str) -> Result<(), CorpusError> {
         (concat!("Sha", "256::digest("), 1, false),
         (
             concat!("serde_json::from_slice::<", "ManifestV0>"),
+            1,
+            false,
+        ),
+        (
+            concat!("serde_json::from_slice::<", "ManifestV1>"),
             1,
             false,
         ),

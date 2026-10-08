@@ -9,9 +9,10 @@ use crate::corpus_census::{
     sha2_dependency_kinds,
 };
 use crate::corpus_manifest::{
-    Corpus, CorpusError, LIFECYCLE_V0, OWNER_PATH, REGISTRY, Registration, committed_runs,
-    crate_root,
+    Corpus, CorpusError, LIFECYCLE_V0, OWNER_PATH, REGISTRY, Registration, Runner, committed_runs,
+    crate_root, host_platform, validate_committed_runs,
 };
+use keld_compat::evidence::CellKey;
 
 /// Loads every registered corpus.
 fn registered() -> Vec<Corpus> {
@@ -84,13 +85,11 @@ fn every_committed_corpus_is_registered() {
 fn registered_corpora_validate_with_their_records() {
     let mut lifecycle_runs = 0;
     for (reg, corpus) in REGISTRY.iter().zip(registered()) {
-        for run in committed_runs(reg).unwrap_or_else(|error| panic!("{error}")) {
-            corpus
-                .validate_harness_run(&run, corpus.records_as_of())
-                .unwrap_or_else(|error| panic!("{}: {error}", reg.corpus_id));
-            if reg.corpus_id == LIFECYCLE_V0.corpus_id {
-                lifecycle_runs += 1;
-            }
+        let runs = committed_runs(reg).unwrap_or_else(|error| panic!("{error}"));
+        let validated = validate_committed_runs(&corpus, &runs)
+            .unwrap_or_else(|error| panic!("{}: {error}", reg.corpus_id));
+        if reg.corpus_id == LIFECYCLE_V0.corpus_id {
+            lifecycle_runs += validated;
         }
     }
     // Non-vacuity is pinned to the frozen corpus only, so a new registration needs no
@@ -106,7 +105,8 @@ fn registered_corpora_validate_with_their_records() {
 fn registered_corpora_libtest_oracles_execute() {
     let corpora = registered();
     let refs: Vec<&Corpus> = corpora.iter().collect();
-    admit_libtest(&refs).unwrap_or_else(|error| panic!("{error}"));
+    let report = admit_libtest(&refs).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(report.unknown, undeclared_on_host(&corpora, true));
 }
 
 /// Runs each distinct registered Bun file once and admits every mapped cell.
@@ -114,7 +114,28 @@ fn registered_corpora_libtest_oracles_execute() {
 fn registered_corpora_bun_oracles_execute() {
     let corpora = registered();
     let refs: Vec<&Corpus> = corpora.iter().collect();
-    admit_bun(&refs).unwrap_or_else(|error| panic!("{error}"));
+    let report = admit_bun(&refs).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(report.unknown, undeclared_on_host(&corpora, false));
+}
+
+/// The cells of one runner kind (libtest when `rust`) whose platforms exclude this host:
+/// the admission report must list exactly these as `unknown` (gh566 D13).
+fn undeclared_on_host(corpora: &[Corpus], rust: bool) -> Vec<(String, CellKey)> {
+    corpora
+        .iter()
+        .flat_map(|corpus| {
+            corpus.cells().iter().filter_map(move |cell| {
+                let target = corpus
+                    .registration()
+                    .targets
+                    .iter()
+                    .find(|target| target.path == cell.test_path)?;
+                let is_rust = matches!(target.runner, Runner::Libtest { .. });
+                (is_rust == rust && !cell.platforms.contains(&host_platform()))
+                    .then(|| (corpus.id().to_owned(), cell.key.clone()))
+            })
+        })
+        .collect()
 }
 
 fn lib_rs() -> String {
@@ -242,6 +263,10 @@ fn owner_census_rejects_second_definitions_exports_and_dependency_kinds() {
             "fn third() { let _ = serde_json::from_slice::<",
             "ManifestV0>(b\"\"); }"
         ),
+        concat!(
+            "fn fourth() { let _ = serde_json::from_slice::<",
+            "ManifestV1>(b\"\"); }"
+        ),
         concat!("#[", "test]\nfn t() {}"),
     ] {
         assert_rule(owner_census(&owner_with(extra), &lib, &kinds), 3);
@@ -267,4 +292,38 @@ fn owner_census_rejects_second_definitions_exports_and_dependency_kinds() {
         owner_census(&sources, &lib, &[Some("dev".to_owned()), None]),
         5,
     );
+}
+
+/// gh566 C9 (census rule 6): outside the owner and the frozen v0 report, no source
+/// counts fails or writes a fail label itself; a report renders through `FailSplit`.
+#[test]
+fn report_census_rejects_reports_that_count_fails_themselves() {
+    let sources = load_test_sources().unwrap_or_else(|error| panic!("{error}"));
+    let lib = lib_rs();
+    let kinds = sha2_dependency_kinds().unwrap_or_else(|error| panic!("{error}"));
+    owner_census(&sources, &lib, &kinds).unwrap_or_else(|error| panic!("{error}"));
+    for report in [
+        concat!("fn r(b: &Board) -> usize { b.fail", "ed() }\n"),
+        concat!("const P: &str = \"Pending ", "implementation\";\n"),
+        concat!("const D: &str = \"Intentional ", "divergence\";\n"),
+    ] {
+        assert!(
+            matches!(
+                owner_census(
+                    &with_file(&sources, "tests/v1_report.rs", report),
+                    &lib,
+                    &kinds
+                ),
+                Err(CorpusError::ReportBypassesFailSplit { .. })
+            ),
+            "{report}"
+        );
+    }
+    let through_split = "fn r(run: &Run) -> String { run.fail_split().to_string() }\n";
+    owner_census(
+        &with_file(&sources, "tests/v1_report.rs", through_split),
+        &lib,
+        &kinds,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

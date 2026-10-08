@@ -6,9 +6,12 @@
 //! `electron-lifecycle-v0`), the admitted-pin table, denominator agreement, cell rules,
 //! the code registry of admitted test targets, harness record runs and the frozen-file
 //! table. Two sibling support modules, split out under the gh566 D1 review condition,
-//! hold the rest: `corpus_admission.rs` (execution admission) and `corpus_census.rs`
-//! (the owner and fixture censuses). Every check returns a typed [`CorpusError`], so a
-//! negative control asserts the exact rejection.
+//! hold execution admission (`corpus_admission.rs`) and the censuses
+//! (`corpus_census.rs`). Three child modules, which this module declares itself, hold
+//! the `CorpusError` vocabulary (`corpus_error.rs`), citations and snapshots
+//! (`corpus_citation.rs`), and record runs with `FailSplit` (`corpus_runs.rs`). Every
+//! check returns a typed [`CorpusError`], so a negative control asserts the exact
+//! rejection.
 // Each including target uses a different subset of this module (keld-ipc precedent).
 #![allow(dead_code)]
 // Cold test-time checks: typed rejections carry their evidence fields so a negative
@@ -20,8 +23,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use keld_compat::evidence::{
-    Arch, AuthorityProfile, CellKey, CivilDate, Denominator, EvidenceError, EvidenceRecord,
-    OperationKind, Panel, Platform, Scoreboard, Verdict, parse_denominator, parse_evidence, score,
+    Arch, AuthorityProfile, CellKey, CivilDate, Denominator, EvidenceRecord, OperationKind, Panel,
+    Platform, Verdict, parse_denominator, parse_evidence,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -55,6 +58,11 @@ impl Pin {
     pub fn doc_blob_prefix(self) -> String {
         format!("https://github.com/electron/electron/blob/{}/", self.commit)
     }
+
+    /// Directory of this pin's doc snapshots, relative to a fixture directory (gh532 rule 2).
+    pub fn snapshot_dir(self) -> String {
+        format!("doc-snapshots/{}/", self.commit)
+    }
 }
 
 /// Which manifests an admitted pin may serve (D4).
@@ -62,6 +70,8 @@ impl Pin {
 pub enum PinScope {
     /// The frozen v0 shape, for one corpus id only.
     FrozenV0 { corpus_id: &'static str },
+    /// Every v1 manifest.
+    V1,
 }
 
 /// One row of the admitted-pin table.
@@ -77,15 +87,44 @@ pub struct AdmittedPin {
 pub const V0_FROZEN_CORPUS_ID: &str = "electron-lifecycle-v0";
 
 /// The one admitted-pin table (D4). A new pin needs a reviewed spec amendment.
-pub const ADMITTED_PINS: &[AdmittedPin] = &[AdmittedPin {
-    pin: Pin {
-        version: "44.3.0",
-        commit: "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2",
+pub const ADMITTED_PINS: &[AdmittedPin] = &[
+    AdmittedPin {
+        pin: Pin {
+            version: "44.3.0",
+            commit: "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2",
+        },
+        scope: PinScope::FrozenV0 {
+            corpus_id: V0_FROZEN_CORPUS_ID,
+        },
     },
-    scope: PinScope::FrozenV0 {
-        corpus_id: V0_FROZEN_CORPUS_ID,
+    AdmittedPin {
+        pin: Pin {
+            version: "44.4.5",
+            commit: "694f45852a0f1726cd23bfd379854de489cccb65",
+        },
+        scope: PinScope::V1,
     },
-}];
+];
+
+/// Label every v1 conformance-harness record carries (gh532 rule 6, §10 Q2; gh566 D7).
+/// The frozen v0 label is `V0_FROZEN.harness_profile` and does not follow this one.
+pub const HARNESS_PROFILE: AuthorityProfile = AuthorityProfile::LegacySandboxOff;
+
+/// Date committed v1 records are scored as of. v1 records carry no waiver (gh566 D6),
+/// so the date changes no result (gh566 D7).
+pub const V1_RECORDS_AS_OF: CivilDate = CivilDate {
+    year: 2026,
+    month: 10,
+    day: 8,
+};
+
+/// The one v1 `schema` id (gh566 D3).
+pub const V1_SCHEMA: &str = "keld.compat.corpus/v1";
+
+/// Report label of red-until-implemented `fail` cells (gh532 AC17, gh566 C9).
+pub const PENDING_LABEL: &str = "Pending implementation";
+/// Report label of permanent-divergence `fail` cells (gh532 AC17, gh566 C9).
+pub const DIVERGENCE_LABEL: &str = "Intentional divergence";
 
 /// Digest of the frozen `electron-lifecycle-v0` manifest bytes (gh532 AC11).
 pub const V0_CORPUS_SHA256: &str =
@@ -180,6 +219,8 @@ pub const V0_FROZEN: FrozenV0 = FrozenV0 {
 pub enum Shape {
     /// The frozen KEL-237 shape, admitted for [`V0_FROZEN_CORPUS_ID`] only.
     FrozenV0,
+    /// The `keld.compat.corpus/v1` shape (gh532 §4.2).
+    V1,
 }
 
 /// How a registered target runs.
@@ -209,6 +250,8 @@ pub struct Registration {
     pub fixture_dir: &'static str,
     /// Admitted manifest shape.
     pub shape: Shape,
+    /// Platforms its cells may declare; v0 cells take all of them (gh566 D13).
+    pub platforms: &'static [Platform],
     /// Admitted test targets.
     pub targets: &'static [TestTarget],
 }
@@ -218,6 +261,7 @@ pub const LIFECYCLE_V0: Registration = Registration {
     corpus_id: V0_FROZEN_CORPUS_ID,
     fixture_dir: "fixtures/lifecycle-corpus",
     shape: Shape::FrozenV0,
+    platforms: &[Platform::Macos, Platform::Linux, Platform::Windows],
     targets: &[
         TestTarget {
             path: "crates/keld-compat/tests/electron_lifecycle.rs",
@@ -244,245 +288,18 @@ pub const OWNER_PATH: &str = "tests/support/corpus_manifest.rs";
 /// Text a target must not contain to be an oracle: including it would recurse (C3).
 const OWNER_INCLUDE: &str = "support/corpus_manifest.rs";
 
-/// Typed rejection. Each `Display` names the corpus, the cell, the rule and the fix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CorpusError {
-    /// A file could not be read or listed.
-    Io { path: String, error: String },
-    /// KEL-74 rejected a denominator, record or score (for example `DuplicateCell`).
-    Evidence(EvidenceError),
-    /// The manifest JSON did not parse (unknown or repeated field, wrong type).
-    Parse { corpus_id: String, message: String },
-    /// The denominator's `corpus_sha256` is not the digest of the manifest bytes.
-    DigestMismatch {
-        corpus_id: String,
-        declared: String,
-        computed: String,
-    },
-    /// The one-byte mutation control did not change the digest.
-    DigestMutationUndetected { corpus_id: String },
-    /// The frozen v0 shape was registered for another corpus id.
-    V0ShapeNotAdmitted { corpus_id: String },
-    /// The manifest's `corpus_id` differs from its registration.
-    CorpusIdMismatch {
-        registered: String,
-        manifest: String,
-    },
-    /// No admitted-pin row matches the upstream pair for this registration.
-    UnadmittedPin {
-        corpus_id: String,
-        version: String,
-        commit: String,
-    },
-    /// An `oracle_id`, `app_docs` URL or record revision is not at the corpus pin.
-    PinMismatch {
-        corpus_id: String,
-        cell: String,
-        found: String,
-        expected: String,
-    },
-    /// The denominator does not agree with the manifest (C8).
-    DenominatorMismatch { corpus_id: String, detail: String },
-    /// A cell breaks the verdict and key rules (gh532 rule 3; KEL-237 v0 rules).
-    VerdictRule {
-        corpus_id: String,
-        cell: String,
-        detail: String,
-    },
-    /// A registered target has the wrong path form, is missing or would recurse (C3).
-    InvalidTarget {
-        corpus_id: String,
-        path: String,
-        reason: String,
-    },
-    /// A cell names a target that is not registered for its corpus (C3).
-    UnregisteredTarget {
-        corpus_id: String,
-        cell: String,
-        test_path: String,
-    },
-    /// A harness run was requested for a non-showcase corpus.
-    NotHarnessPanel { corpus_id: String },
-    /// A run has no records.
-    EmptyRun { corpus_id: String },
-    /// A run mixes records of two `(platform, arch)` pairs.
-    MixedRun { corpus_id: String },
-    /// A record disagrees with the corpus or its cell (C5, gh532 AC7, AC9).
-    RecordMismatch {
-        corpus_id: String,
-        cell: String,
-        platform: &'static str,
-        field: &'static str,
-        found: String,
-        expected: String,
-    },
-    /// A record's authority label does not match its run (gh532 AC8, AC12).
-    LabelMismatch {
-        corpus_id: String,
-        cell: String,
-        receipt_state: &'static str,
-        label: &'static str,
-    },
-    /// A runner could not start or exited unsuccessfully.
-    RunnerFailed { target: String, detail: String },
-    /// A mapped cell lacks exactly one passing case in its target's output.
-    CaseNotAdmitted {
-        corpus_id: String,
-        cell: String,
-        target: String,
-        test_name: String,
-    },
-    /// The owner census found a second owner or a missing invariant (gh532 AC10).
-    CensusViolation {
-        rule: u8,
-        file: String,
-        line: usize,
-        detail: String,
-    },
-    /// Committed fixtures and the registry disagree, or frozen bytes drifted.
-    FixtureCensus { detail: String },
-}
-
-impl fmt::Display for CorpusError {
-    // One arm per typed rejection, each with its fix guidance; splitting would scatter it.
-    #[allow(clippy::too_many_lines)]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { path, error } => write!(
-                f,
-                "cannot read `{path}`: {error}. Restore the file or fix the registered path."
-            ),
-            Self::Evidence(error) => write!(f, "KEL-74 rejected corpus input: {error}"),
-            Self::Parse { corpus_id, message } => write!(
-                f,
-                "{corpus_id}: manifest does not parse ({message}). Remove unknown or repeated fields; the shape is closed."
-            ),
-            Self::DigestMismatch {
-                corpus_id,
-                declared,
-                computed,
-            } => write!(
-                f,
-                "{corpus_id}: denominator corpus_sha256 {declared} is not the digest {computed} of the exact manifest bytes (gh532 rule 5). Regenerate the denominator and every record from the committed bytes."
-            ),
-            Self::DigestMutationUndetected { corpus_id } => write!(
-                f,
-                "{corpus_id}: a one-byte manifest mutation kept the committed digest. The digest helper is not hashing the bytes."
-            ),
-            Self::V0ShapeNotAdmitted { corpus_id } => write!(
-                f,
-                "{corpus_id}: the frozen v0 shape is admitted only for {V0_FROZEN_CORPUS_ID} (gh532 AC11). Write a v1 manifest."
-            ),
-            Self::CorpusIdMismatch {
-                registered,
-                manifest,
-            } => write!(
-                f,
-                "registration {registered} points at a manifest whose corpus_id is {manifest}. Make them equal."
-            ),
-            Self::UnadmittedPin {
-                corpus_id,
-                version,
-                commit,
-            } => write!(
-                f,
-                "{corpus_id}: upstream {version} @ {commit} is not an admitted pin for this registration (gh532 rule 1). A new pin needs a reviewed spec amendment."
-            ),
-            Self::PinMismatch {
-                corpus_id,
-                cell,
-                found,
-                expected,
-            } => write!(
-                f,
-                "{corpus_id}: {cell} has {found}, not the corpus pin {expected} (gh532 rule 1). Re-pin the whole corpus in one change."
-            ),
-            Self::DenominatorMismatch { corpus_id, detail } => write!(
-                f,
-                "{corpus_id}: denominator does not agree with the manifest: {detail} (gh566 C8). Regenerate the denominator from the manifest."
-            ),
-            Self::VerdictRule {
-                corpus_id,
-                cell,
-                detail,
-            } => write!(f, "{corpus_id}: cell {cell}: {detail}."),
-            Self::InvalidTarget {
-                corpus_id,
-                path,
-                reason,
-            } => write!(
-                f,
-                "{corpus_id}: registered target {path} is not admissible: {reason} (gh566 C3)."
-            ),
-            Self::UnregisteredTarget {
-                corpus_id,
-                cell,
-                test_path,
-            } => write!(
-                f,
-                "{corpus_id}: cell {cell} names {test_path}, which is not registered for this corpus. Register the target in REGISTRY (gh532 rule 8)."
-            ),
-            Self::NotHarnessPanel { corpus_id } => write!(
-                f,
-                "{corpus_id}: harness runs exist only for showcase corpora. Validate product runs with a receipt."
-            ),
-            Self::EmptyRun { corpus_id } => {
-                write!(f, "{corpus_id}: a run needs at least one record.")
-            }
-            Self::MixedRun { corpus_id } => write!(
-                f,
-                "{corpus_id}: a run mixes platforms or architectures. Validate one (platform, arch) at a time."
-            ),
-            Self::RecordMismatch {
-                corpus_id,
-                cell,
-                platform,
-                field,
-                found,
-                expected,
-            } => write!(
-                f,
-                "{corpus_id}: {platform} record for {cell} has {field} {found}, expected {expected}. Regenerate the record from the run that produced it."
-            ),
-            Self::LabelMismatch {
-                corpus_id,
-                cell,
-                receipt_state,
-                label,
-            } => write!(
-                f,
-                "{corpus_id}: record for {cell} is labelled {label}, which a {receipt_state} run cannot carry (gh532 rule 6)."
-            ),
-            Self::RunnerFailed { target, detail } => {
-                write!(f, "runner for {target} failed: {detail}")
-            }
-            Self::CaseNotAdmitted {
-                corpus_id,
-                cell,
-                target,
-                test_name,
-            } => write!(
-                f,
-                "{corpus_id}: cell {cell} needs exactly one executed, passing case `{test_name}` in {target}. A removed, skipped, ignored or source-only test is not evidence."
-            ),
-            Self::CensusViolation {
-                rule,
-                file,
-                line,
-                detail,
-            } => write!(
-                f,
-                "owner census rule {rule}: {file}:{line}: {detail} (gh532 AC10). Use the one owner in {OWNER_PATH}."
-            ),
-            Self::FixtureCensus { detail } => write!(
-                f,
-                "fixture census: {detail}. Register every committed corpus once in REGISTRY (gh566 C2)."
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CorpusError {}
+#[path = "corpus_error.rs"]
+mod error;
+pub use error::CorpusError;
+#[path = "corpus_citation.rs"]
+mod citation;
+// The child modules' public items; each including target uses a different subset.
+#[allow(unused_imports)]
+pub use citation::{DocCitation, SnapshotReader, check_normalisation};
+#[path = "corpus_runs.rs"]
+mod runs;
+#[allow(unused_imports)]
+pub use runs::{FailSplit, ProductReceipt, ProfileState, Run, validate_committed_runs};
 
 /// The frozen v0 manifest shape, moved unchanged from `lifecycle_corpus.rs`.
 #[derive(Debug, Deserialize)]
@@ -517,6 +334,125 @@ struct CellV0 {
     intentional_divergence: Option<String>,
 }
 
+/// The `keld.compat.corpus/v1` shape (gh532 §4.2, gh566 D3).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestV1 {
+    schema: String,
+    corpus_id: String,
+    scope: String,
+    panel: String,
+    kind: String,
+    artifact_digest: String,
+    engine: UniqueMap,
+    doc_snapshots: UniqueMap,
+    upstream: UpstreamV1,
+    cells: Vec<CellV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpstreamV1 {
+    electron_version: String,
+    electron_commit: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CellV1 {
+    operation_id: String,
+    oracle_id: String,
+    #[serde(default)]
+    doc_citation: Option<DocCitation>,
+    expected_verdict: String,
+    #[serde(default)]
+    intentional_divergence: Option<String>,
+    #[serde(default)]
+    implementing_ticket: Option<String>,
+    platforms: Vec<String>,
+    test_path: String,
+    test_name: String,
+    negative_control: String,
+}
+
+/// A JSON object's string entries in order, repeats included, so the owner rejects a
+/// repeated key (C4) instead of letting serde keep the last value (F3).
+#[derive(Debug, Default)]
+struct UniqueMap(Vec<(String, String)>);
+
+impl<'de> Deserialize<'de> for UniqueMap {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> serde::de::Visitor<'de> for Entries {
+            type Value = UniqueMap;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object of string values")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<UniqueMap, A::Error> {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry::<String, String>()? {
+                    entries.push(entry);
+                }
+                Ok(UniqueMap(entries))
+            }
+        }
+        deserializer.deserialize_map(Entries)
+    }
+}
+
+impl UniqueMap {
+    /// The entries, or `DuplicateKey` for the first repeated key (C4).
+    fn into_unique(
+        self,
+        corpus_id: &str,
+        field: &'static str,
+    ) -> Result<Vec<(String, String)>, CorpusError> {
+        for (index, (key, _)) in self.0.iter().enumerate() {
+            if self.0[..index].iter().any(|(earlier, _)| earlier == key) {
+                return Err(CorpusError::DuplicateKey {
+                    corpus_id: corpus_id.to_owned(),
+                    field,
+                    key: key.clone(),
+                });
+            }
+        }
+        Ok(self.0)
+    }
+}
+
+/// One manifest cell before the shared rules run; v0 cells leave the v1 fields empty.
+struct RawCell {
+    operation_id: String,
+    oracle_id: String,
+    expected_verdict: String,
+    test_path: String,
+    test_name: String,
+    negative_control: String,
+    intentional_divergence: Option<String>,
+    implementing_ticket: Option<String>,
+    doc_citation: Option<DocCitation>,
+    platforms: Option<Vec<String>>,
+}
+
+/// Both shapes lowered to one view, so the shared rules are written once (D3).
+struct Lowered {
+    id: String,
+    scope: String,
+    panel: String,
+    kind: String,
+    version: String,
+    commit: String,
+    app_docs: Option<String>,
+    engine: Option<Vec<(String, String)>>,
+    doc_snapshots: Vec<(String, String)>,
+    cells: Vec<RawCell>,
+}
+
 /// One validated corpus cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
@@ -526,6 +462,12 @@ pub struct Cell {
     pub expected: Verdict,
     /// The permanent divergence a `fail` cell records, when it has one.
     pub divergence: Option<String>,
+    /// The ticket whose change flips a red-until-implemented cell (gh532 rule 3).
+    pub implementing_ticket: Option<String>,
+    /// The pinned doc citation, when the cell has one (gh532 rule 2).
+    pub citation: Option<DocCitation>,
+    /// Lanes the mapped test runs on; elsewhere the cell is `unknown` (gh566 D13).
+    pub platforms: Vec<Platform>,
     /// Registered target path the cell maps.
     pub test_path: String,
     /// Exact case name in that target.
@@ -543,30 +485,12 @@ pub struct Corpus {
     kind: OperationKind,
     pin: Pin,
     digest: String,
-    engine_token: &'static str,
+    engine: Vec<(Platform, String)>,
     harness_profile: AuthorityProfile,
     records_as_of: CivilDate,
     cells: Vec<Cell>,
     registration: Registration,
     denominator: Denominator,
-}
-
-/// A validated harness run: one `(platform, arch)` scored once by KEL-74.
-#[derive(Debug, Clone)]
-pub struct Run {
-    board: Scoreboard,
-}
-
-impl Run {
-    /// The KEL-74 scoreboard of this run.
-    pub fn board(&self) -> &Scoreboard {
-        &self.board
-    }
-
-    /// Takes the scoreboard.
-    pub fn into_board(self) -> Scoreboard {
-        self.board
-    }
 }
 
 /// Absolute path of `crates/keld-compat`.
@@ -698,50 +622,85 @@ impl Corpus {
         ))
     }
 
-    /// Loads and validates a committed corpus.
+    /// Loads and validates a committed corpus. Snapshots are read from the fixture
+    /// directory, and each must be stored by Git byte-for-byte (D5).
     pub fn load(reg: &Registration) -> Result<Self, CorpusError> {
         let (manifest, denominator) = Self::fixture_bytes(reg)?;
-        Self::parse(reg, &manifest, &denominator)
+        let dir = join_rel(&crate_root(), reg.fixture_dir);
+        let reader = |rel: &str| fs::read(join_rel(&dir, rel));
+        let corpus = Self::parse_with_snapshots(reg, &manifest, &denominator, &reader)?;
+        let mut pages: Vec<String> = Vec::new();
+        for cell in &corpus.cells {
+            if let Some(citation) = &cell.citation {
+                let page = citation::page_path(&corpus.id, cell, corpus.pin, &citation.url)?;
+                if !pages.contains(&page) {
+                    pages.push(page);
+                }
+            }
+        }
+        for page in pages {
+            let rel = format!("{}{page}", corpus.pin.snapshot_dir());
+            let repo_rel = format!("crates/keld-compat/{}/{rel}", reg.fixture_dir);
+            citation::check_normalisation(&repo_rel, &join_rel(&dir, &rel))?;
+        }
+        Ok(corpus)
     }
 
-    /// Validates manifest and denominator bytes in the D2 order: digest, parse and
-    /// shape, pin, denominator agreement, cell rules, then registry and targets.
+    /// Validates bytes with no snapshot store: cited v1 cells fail closed.
     pub fn parse(
         reg: &Registration,
         manifest: &[u8],
         denominator: &[u8],
     ) -> Result<Self, CorpusError> {
+        let none = |_: &str| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        Self::parse_with_snapshots(reg, manifest, denominator, &none)
+    }
+
+    /// Validates manifest and denominator bytes in the D2 order: digest, parse and
+    /// shape, pin, denominator agreement, cell rules and platforms, citations and
+    /// snapshots, then registry and targets. `read_snapshot` is keyed by the path
+    /// relative to the fixture directory (D5).
+    pub fn parse_with_snapshots(
+        reg: &Registration,
+        manifest: &[u8],
+        denominator: &[u8],
+        read_snapshot: SnapshotReader<'_>,
+    ) -> Result<Self, CorpusError> {
         let denominator = parse_denominator(denominator).map_err(CorpusError::Evidence)?;
         check_manifest_digest(reg.corpus_id, manifest, denominator.corpus_sha256())?;
         let digest = sha256_uri(manifest);
 
-        let Shape::FrozenV0 = reg.shape;
-        if reg.corpus_id != V0_FROZEN_CORPUS_ID {
-            return Err(CorpusError::V0ShapeNotAdmitted {
-                corpus_id: reg.corpus_id.to_owned(),
-            });
-        }
-        let parsed =
-            serde_json::from_slice::<ManifestV0>(manifest).map_err(|error| CorpusError::Parse {
-                corpus_id: reg.corpus_id.to_owned(),
-                message: error.to_string(),
-            })?;
-        if parsed.corpus_id != reg.corpus_id {
+        let lowered = match reg.shape {
+            Shape::FrozenV0 => lower_v0(reg, manifest)?,
+            Shape::V1 => lower_v1(reg, manifest)?,
+        };
+        if lowered.id != reg.corpus_id {
             return Err(CorpusError::CorpusIdMismatch {
                 registered: reg.corpus_id.to_owned(),
-                manifest: parsed.corpus_id,
+                manifest: lowered.id,
             });
         }
-        let id = parsed.corpus_id.clone();
+        let id = lowered.id.clone();
+        let engine = match &lowered.engine {
+            Some(entries) => engine_map(&id, entries)?,
+            None => reg
+                .platforms
+                .iter()
+                .map(|platform| (*platform, V0_FROZEN.engine_token.to_owned()))
+                .collect(),
+        };
 
-        let pin = admitted_pin(reg, &parsed.upstream)?;
-        check_v0_pin_use(&id, pin, &parsed)?;
-        check_denominator(&id, &parsed, &denominator)?;
-        let cells = parsed
+        let pin = admitted_pin(reg, &lowered.version, &lowered.commit)?;
+        check_pin_use(&id, pin, &lowered)?;
+        check_denominator(&id, &lowered, &denominator)?;
+        let cells = lowered
             .cells
             .iter()
-            .map(|cell| v0_cell(&id, cell))
+            .map(|raw| lower_cell(&id, reg, raw))
             .collect::<Result<Vec<_>, _>>()?;
+        if reg.shape == Shape::V1 {
+            citation::verify(&id, pin, &cells, &lowered.doc_snapshots, read_snapshot)?;
+        }
         check_targets(reg)?;
         for cell in &cells {
             if !reg
@@ -757,16 +716,20 @@ impl Corpus {
             }
         }
 
+        let (harness_profile, records_as_of) = match reg.shape {
+            Shape::FrozenV0 => (V0_FROZEN.harness_profile, V0_FROZEN.records_as_of),
+            Shape::V1 => (HARNESS_PROFILE, V1_RECORDS_AS_OF),
+        };
         Ok(Self {
             id,
-            scope: parsed.scope,
+            scope: lowered.scope,
             panel: denominator.panel(),
             kind: denominator.kind(),
             pin,
             digest,
-            engine_token: V0_FROZEN.engine_token,
-            harness_profile: V0_FROZEN.harness_profile,
-            records_as_of: V0_FROZEN.records_as_of,
+            engine,
+            harness_profile,
+            records_as_of,
             cells,
             registration: *reg,
             denominator,
@@ -823,159 +786,175 @@ impl Corpus {
         self.records_as_of
     }
 
-    /// Validates one harness run and scores it once with KEL-74 (D7). `score()`'s
-    /// `DuplicateCell` is the uniqueness check (C5).
-    pub fn validate_harness_run(
-        &self,
-        records: &[EvidenceRecord],
-        as_of: CivilDate,
-    ) -> Result<Run, CorpusError> {
-        if self.panel != Panel::Showcase {
-            return Err(CorpusError::NotHarnessPanel {
-                corpus_id: self.id.clone(),
-            });
-        }
-        let first = records.first().ok_or_else(|| CorpusError::EmptyRun {
-            corpus_id: self.id.clone(),
-        })?;
-        let (platform, arch) = (first.artifact().platform, first.artifact().arch);
-        if records
+    /// The engine identity token of `platform`, if the corpus declares one (rule 7).
+    pub fn engine_token(&self, platform: Platform) -> Option<&str> {
+        self.engine
             .iter()
-            .any(|record| record.artifact().platform != platform || record.artifact().arch != arch)
-        {
-            return Err(CorpusError::MixedRun {
-                corpus_id: self.id.clone(),
-            });
-        }
-        for record in records {
-            self.check_record(record)?;
-        }
-        let board = score(&self.denominator, records, as_of).map_err(CorpusError::Evidence)?;
-        Ok(Run { board })
-    }
-
-    fn check_record(&self, record: &EvidenceRecord) -> Result<(), CorpusError> {
-        let operation = record.operation();
-        let platform = platform_token(record.artifact().platform);
-        let cell_label = format!("{}/{}", operation.id, operation.oracle.id);
-        let mismatch =
-            |field: &'static str, found: String, expected: String| CorpusError::RecordMismatch {
-                corpus_id: self.id.clone(),
-                cell: cell_label.clone(),
-                platform,
-                field,
-                found,
-                expected,
-            };
-        let cell = self
-            .cells
-            .iter()
-            .find(|cell| {
-                cell.key.operation_id == operation.id && cell.key.oracle_id == operation.oracle.id
-            })
-            .ok_or_else(|| {
-                mismatch(
-                    "cell",
-                    cell_label.clone(),
-                    "a manifest cell (operation_id, oracle_id)".to_owned(),
-                )
-            })?;
-        if operation.kind != self.kind {
-            return Err(mismatch(
-                "operation.kind",
-                kind_token(operation.kind).to_owned(),
-                kind_token(self.kind).to_owned(),
-            ));
-        }
-        if record.artifact().sha256 != self.digest {
-            return Err(mismatch(
-                "artifact.sha256",
-                record.artifact().sha256.clone(),
-                self.digest.clone(),
-            ));
-        }
-        let revision = self.pin.oracle_revision();
-        if operation.oracle.revision != revision {
-            return Err(CorpusError::PinMismatch {
-                corpus_id: self.id.clone(),
-                cell: format!("record {cell_label} on {platform}"),
-                found: operation.oracle.revision.clone(),
-                expected: revision,
-            });
-        }
-        let result = record.result();
-        if result != cell.expected && result != Verdict::Unknown {
-            return Err(mismatch(
-                "result",
-                verdict_token(result).to_owned(),
-                format!("{} or unknown", verdict_token(cell.expected)),
-            ));
-        }
-        if record.waiver().is_some() {
-            return Err(mismatch(
-                "waiver",
-                "a waiver".to_owned(),
-                "no waiver".to_owned(),
-            ));
-        }
-        let engine = &record.revisions().engine;
-        let engine_ok = engine.split_once('@').is_some_and(|(token, rev)| {
-            token == self.engine_token
-                && !rev.is_empty()
-                && !rev.contains('@')
-                && !rev.chars().any(char::is_whitespace)
-        });
-        if !engine_ok {
-            return Err(mismatch(
-                "revisions.engine",
-                engine.clone(),
-                format!("{}@<pinned revision>", self.engine_token),
-            ));
-        }
-        if record.authority_profile() != self.harness_profile {
-            return Err(CorpusError::LabelMismatch {
-                corpus_id: self.id.clone(),
-                cell: cell_label,
-                receipt_state: "conformance-harness",
-                label: record.authority_profile().as_str(),
-            });
-        }
-        Ok(())
+            .find(|(declared, _)| *declared == platform)
+            .map(|(_, token)| token.as_str())
     }
 }
 
-fn admitted_pin(reg: &Registration, upstream: &UpstreamV0) -> Result<Pin, CorpusError> {
+fn parse_error(corpus_id: &str, error: &serde_json::Error) -> CorpusError {
+    CorpusError::Parse {
+        corpus_id: corpus_id.to_owned(),
+        message: error.to_string(),
+    }
+}
+
+fn lower_v0(reg: &Registration, manifest: &[u8]) -> Result<Lowered, CorpusError> {
+    if reg.corpus_id != V0_FROZEN_CORPUS_ID {
+        return Err(CorpusError::V0ShapeNotAdmitted {
+            corpus_id: reg.corpus_id.to_owned(),
+        });
+    }
+    let parsed = serde_json::from_slice::<ManifestV0>(manifest)
+        .map_err(|error| parse_error(reg.corpus_id, &error))?;
+    Ok(Lowered {
+        id: parsed.corpus_id,
+        scope: parsed.scope,
+        panel: parsed.panel,
+        kind: parsed.kind,
+        version: parsed.upstream.electron_version,
+        commit: parsed.upstream.electron_commit,
+        app_docs: Some(parsed.upstream.app_docs),
+        engine: None,
+        doc_snapshots: Vec::new(),
+        cells: parsed
+            .cells
+            .into_iter()
+            .map(|cell| RawCell {
+                operation_id: cell.operation_id,
+                oracle_id: cell.oracle_id,
+                expected_verdict: cell.expected_verdict,
+                test_path: cell.test_path,
+                test_name: cell.test_name,
+                negative_control: cell.negative_control,
+                intentional_divergence: cell.intentional_divergence,
+                implementing_ticket: None,
+                doc_citation: None,
+                platforms: None,
+            })
+            .collect(),
+    })
+}
+
+fn lower_v1(reg: &Registration, manifest: &[u8]) -> Result<Lowered, CorpusError> {
+    let parsed = serde_json::from_slice::<ManifestV1>(manifest)
+        .map_err(|error| parse_error(reg.corpus_id, &error))?;
+    if parsed.schema != V1_SCHEMA {
+        return Err(CorpusError::UnknownSchema {
+            corpus_id: reg.corpus_id.to_owned(),
+            schema: parsed.schema,
+        });
+    }
+    if parsed.artifact_digest != "manifest_bytes" {
+        return Err(CorpusError::UnsupportedArtifactDigest {
+            corpus_id: reg.corpus_id.to_owned(),
+            value: parsed.artifact_digest,
+        });
+    }
+    Ok(Lowered {
+        engine: Some(parsed.engine.into_unique(reg.corpus_id, "engine")?),
+        doc_snapshots: parsed
+            .doc_snapshots
+            .into_unique(reg.corpus_id, "doc_snapshots")?,
+        id: parsed.corpus_id,
+        scope: parsed.scope,
+        panel: parsed.panel,
+        kind: parsed.kind,
+        version: parsed.upstream.electron_version,
+        commit: parsed.upstream.electron_commit,
+        app_docs: None,
+        cells: parsed
+            .cells
+            .into_iter()
+            .map(|cell| RawCell {
+                operation_id: cell.operation_id,
+                oracle_id: cell.oracle_id,
+                expected_verdict: cell.expected_verdict,
+                test_path: cell.test_path,
+                test_name: cell.test_name,
+                negative_control: cell.negative_control,
+                intentional_divergence: cell.intentional_divergence,
+                implementing_ticket: cell.implementing_ticket,
+                doc_citation: cell.doc_citation,
+                platforms: Some(cell.platforms),
+            })
+            .collect(),
+    })
+}
+
+/// The platform whose record token is `token`, if any.
+fn platform_of(token: &str) -> Option<Platform> {
+    [Platform::Macos, Platform::Linux, Platform::Windows]
+        .into_iter()
+        .find(|platform| platform_token(*platform) == token)
+}
+
+/// Validates the v1 `engine` map (gh532 rule 7): platform-token keys, one identity
+/// token each, with no `@` and no whitespace.
+fn engine_map(
+    id: &str,
+    entries: &[(String, String)],
+) -> Result<Vec<(Platform, String)>, CorpusError> {
+    let invalid = |detail: String| CorpusError::InvalidEngine {
+        corpus_id: id.to_owned(),
+        detail,
+    };
+    if entries.is_empty() {
+        return Err(invalid("is empty".to_owned()));
+    }
+    entries
+        .iter()
+        .map(|(key, token)| {
+            let platform =
+                platform_of(key).ok_or_else(|| invalid(format!("key {key} is not a platform")))?;
+            if token.is_empty() || token.contains('@') || token.chars().any(char::is_whitespace) {
+                return Err(invalid(format!(
+                    "token {token:?} for {key} is not one identity"
+                )));
+            }
+            Ok((platform, token.clone()))
+        })
+        .collect()
+}
+
+fn admitted_pin(reg: &Registration, version: &str, commit: &str) -> Result<Pin, CorpusError> {
     ADMITTED_PINS
         .iter()
         .find(|row| {
-            row.pin.version == upstream.electron_version
-                && row.pin.commit == upstream.electron_commit
+            row.pin.version == version
+                && row.pin.commit == commit
                 && match row.scope {
                     PinScope::FrozenV0 { corpus_id } => {
                         reg.shape == Shape::FrozenV0 && reg.corpus_id == corpus_id
                     }
+                    PinScope::V1 => reg.shape == Shape::V1,
                 }
         })
         .map(|row| row.pin)
         .ok_or_else(|| CorpusError::UnadmittedPin {
             corpus_id: reg.corpus_id.to_owned(),
-            version: upstream.electron_version.clone(),
-            commit: upstream.electron_commit.clone(),
+            version: version.to_owned(),
+            commit: commit.to_owned(),
         })
 }
 
-fn check_v0_pin_use(id: &str, pin: Pin, parsed: &ManifestV0) -> Result<(), CorpusError> {
+fn check_pin_use(id: &str, pin: Pin, lowered: &Lowered) -> Result<(), CorpusError> {
     let docs = pin.doc_blob_prefix();
-    if !parsed.upstream.app_docs.starts_with(&docs) {
+    if let Some(app_docs) = &lowered.app_docs
+        && !app_docs.starts_with(&docs)
+    {
         return Err(CorpusError::PinMismatch {
             corpus_id: id.to_owned(),
             cell: "upstream.app_docs".to_owned(),
-            found: parsed.upstream.app_docs.clone(),
+            found: app_docs.clone(),
             expected: docs,
         });
     }
     let prefix = pin.oracle_prefix();
-    for cell in &parsed.cells {
+    for cell in &lowered.cells {
         let suffix_ok = cell
             .oracle_id
             .strip_prefix(&prefix)
@@ -994,7 +973,7 @@ fn check_v0_pin_use(id: &str, pin: Pin, parsed: &ManifestV0) -> Result<(), Corpu
 
 fn check_denominator(
     id: &str,
-    parsed: &ManifestV0,
+    lowered: &Lowered,
     denominator: &Denominator,
 ) -> Result<(), CorpusError> {
     let mismatch = |detail: String| CorpusError::DenominatorMismatch {
@@ -1007,22 +986,22 @@ fn check_denominator(
             denominator.corpus_id()
         )));
     }
-    if panel_token(denominator.panel()) != parsed.panel {
+    if panel_token(denominator.panel()) != lowered.panel {
         return Err(mismatch(format!(
             "panel {} differs from the manifest's {}",
             panel_token(denominator.panel()),
-            parsed.panel
+            lowered.panel
         )));
     }
-    if kind_token(denominator.kind()) != parsed.kind {
+    if kind_token(denominator.kind()) != lowered.kind {
         return Err(mismatch(format!(
             "kind {} differs from the manifest's {}",
             kind_token(denominator.kind()),
-            parsed.kind
+            lowered.kind
         )));
     }
-    let mut manifest_cells = Vec::with_capacity(parsed.cells.len());
-    for cell in &parsed.cells {
+    let mut manifest_cells = Vec::with_capacity(lowered.cells.len());
+    for cell in &lowered.cells {
         let key = CellKey {
             operation_id: cell.operation_id.clone(),
             oracle_id: cell.oracle_id.clone(),
@@ -1057,44 +1036,148 @@ fn cell_list(cells: &[CellKey]) -> String {
         .join(", ")
 }
 
-fn v0_cell(id: &str, cell: &CellV0) -> Result<Cell, CorpusError> {
+/// `GH-` or `KEL-` plus decimal digits without a leading zero (gh566 D6).
+fn ticket_is_canonical(ticket: &str) -> bool {
+    let digits = ticket
+        .strip_prefix("GH-")
+        .or_else(|| ticket.strip_prefix("KEL-"))
+        .unwrap_or("");
+    !digits.is_empty()
+        && !digits.starts_with('0')
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Applies the cell rules of the registration's shape (gh532 rules 3–4, gh566 D6, D13).
+fn lower_cell(id: &str, reg: &Registration, raw: &RawCell) -> Result<Cell, CorpusError> {
     let rule = |detail: &str| CorpusError::VerdictRule {
         corpus_id: id.to_owned(),
-        cell: cell.operation_id.clone(),
+        cell: raw.operation_id.clone(),
         detail: detail.to_owned(),
     };
-    if cell.negative_control.trim().is_empty() {
+    if raw.negative_control.trim().is_empty() {
         return Err(rule("must name a falsifier in negative_control"));
     }
-    if cell.test_name.trim().is_empty() || cell.test_name.contains(['\r', '\n']) {
+    if raw.test_name.trim().is_empty() || raw.test_name.contains(['\r', '\n']) {
         return Err(rule("must name one non-empty test case on one line"));
     }
-    let divergence = cell
+    let divergence = raw
         .intentional_divergence
         .as_deref()
         .filter(|reason| !reason.trim().is_empty());
-    let expected = match (cell.expected_verdict.as_str(), divergence) {
-        ("pass", None) if cell.intentional_divergence.is_none() => Verdict::Pass,
-        ("pass", _) => return Err(rule("a passing cell must not hide a divergence")),
-        ("fail", Some(_)) => Verdict::Fail,
-        ("fail", None) => return Err(rule("a failing cell must name the intentional divergence")),
-        (other, _) => {
-            return Err(rule(&format!(
-                "uses unsupported bounded-corpus verdict {other}"
-            )));
-        }
+    let expected = match reg.shape {
+        Shape::FrozenV0 => match (raw.expected_verdict.as_str(), divergence) {
+            ("pass", None) if raw.intentional_divergence.is_none() => Verdict::Pass,
+            ("pass", _) => return Err(rule("a passing cell must not hide a divergence")),
+            ("fail", Some(_)) => Verdict::Fail,
+            ("fail", None) => {
+                return Err(rule("a failing cell must name the intentional divergence"));
+            }
+            (other, _) => {
+                return Err(rule(&format!(
+                    "uses unsupported bounded-corpus verdict {other}"
+                )));
+            }
+        },
+        Shape::V1 => v1_verdict(raw, divergence).map_err(|detail| rule(&detail))?,
+    };
+    let platforms = match &raw.platforms {
+        None => reg.platforms.to_vec(),
+        Some(tokens) => cell_platforms(id, reg, &raw.operation_id, tokens)?,
     };
     Ok(Cell {
         key: CellKey {
-            operation_id: cell.operation_id.clone(),
-            oracle_id: cell.oracle_id.clone(),
+            operation_id: raw.operation_id.clone(),
+            oracle_id: raw.oracle_id.clone(),
         },
         expected,
         divergence: divergence.map(str::to_owned),
-        test_path: cell.test_path.clone(),
-        test_name: cell.test_name.clone(),
-        negative_control: cell.negative_control.clone(),
+        implementing_ticket: raw.implementing_ticket.clone(),
+        citation: raw.doc_citation.clone(),
+        platforms,
+        test_path: raw.test_path.clone(),
+        test_name: raw.test_name.clone(),
+        negative_control: raw.negative_control.clone(),
     })
+}
+
+/// The v1 verdict and key rules (gh532 rules 3–4 and AC3–AC6, gh566 D6).
+fn v1_verdict(raw: &RawCell, divergence: Option<&str>) -> Result<Verdict, String> {
+    if raw.intentional_divergence.is_some() && divergence.is_none() {
+        return Err("intentional_divergence must not be empty".to_owned());
+    }
+    if let Some(ticket) = &raw.implementing_ticket
+        && !ticket_is_canonical(ticket)
+    {
+        return Err(format!(
+            "implementing_ticket {ticket} must be GH- or KEL- plus digits without a leading zero"
+        ));
+    }
+    let expected = [Verdict::Pass, Verdict::Fail, Verdict::Unknown]
+        .into_iter()
+        .find(|verdict| verdict_token(*verdict) == raw.expected_verdict)
+        .ok_or_else(|| {
+            format!(
+                "expected_verdict {} is not pass, fail or unknown",
+                raw.expected_verdict
+            )
+        })?;
+    let cited = raw.doc_citation.is_some();
+    let ticket = raw.implementing_ticket.is_some();
+    match expected {
+        Verdict::Pass if !cited => {
+            Err("a pass cell needs a doc_citation (gh532 rule 4)".to_owned())
+        }
+        Verdict::Pass if divergence.is_some() || ticket => Err(
+            "a pass cell carries neither intentional_divergence nor implementing_ticket".to_owned(),
+        ),
+        Verdict::Fail if !cited => {
+            Err("a fail cell needs a doc_citation (gh532 rule 4)".to_owned())
+        }
+        Verdict::Fail if divergence.is_some() == ticket => Err(
+            "a fail cell carries exactly one of intentional_divergence and implementing_ticket"
+                .to_owned(),
+        ),
+        Verdict::Unknown if divergence.is_some() || ticket => Err(
+            "an unknown cell carries neither intentional_divergence nor implementing_ticket"
+                .to_owned(),
+        ),
+        _ => Ok(expected),
+    }
+}
+
+/// A v1 cell's `platforms`: non-empty, distinct, known and registered (gh566 C10).
+fn cell_platforms(
+    id: &str,
+    reg: &Registration,
+    cell: &str,
+    tokens: &[String],
+) -> Result<Vec<Platform>, CorpusError> {
+    if tokens.is_empty() {
+        return Err(CorpusError::EmptyPlatforms {
+            corpus_id: id.to_owned(),
+            cell: cell.to_owned(),
+        });
+    }
+    let invalid = |detail: String| CorpusError::InvalidPlatforms {
+        corpus_id: id.to_owned(),
+        cell: cell.to_owned(),
+        detail,
+    };
+    let mut platforms = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let platform =
+            platform_of(token).ok_or_else(|| invalid(format!("{token} is not a platform")))?;
+        if platforms.contains(&platform) {
+            return Err(invalid(format!("{token} is listed twice")));
+        }
+        if !reg.platforms.contains(&platform) {
+            return Err(invalid(format!(
+                "{token} is not registered for this corpus"
+            )));
+        }
+        platforms.push(platform);
+    }
+    Ok(platforms)
 }
 
 /// Validates every registered target of `reg` (C3): a libtest target is a keld-compat
