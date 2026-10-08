@@ -9,10 +9,14 @@ use super::*;
 /// One Bun role running the GH-527 `WorkerLink` fixture
 /// (`packages/@keld/kipc/test/worker-link-role.ts`) on a real
 /// authenticated app link, and the guarded router serving that link.
+///
+/// The role owns its child and output readers from spawn on: [`Drop`] kills
+/// and reaps a child that a failed wait or assertion left running, so no
+/// test exit leaves a Bun process behind.
 struct WorkerLinkRole {
-    child: std::process::Child,
-    stdout: std::thread::JoinHandle<String>,
-    stderr: std::thread::JoinHandle<String>,
+    child: Option<std::process::Child>,
+    stdout: Option<std::thread::JoinHandle<String>>,
+    stderr: Option<std::thread::JoinHandle<String>>,
 }
 
 impl WorkerLinkRole {
@@ -29,14 +33,13 @@ impl WorkerLinkRole {
         let listener = keld_ipc::BootstrapListener::bind().expect("bind role listener");
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../packages/@keld/kipc/test/worker-link-role.ts");
-        let payload_hex = hex_of(payload);
         let mut child = Command::new("bun")
             .arg(script)
             .arg(scenario)
             .env("KELD_APP_LINK", listener.app_link())
             .env("KELD_KIPC_TEST_HOOKS", "1")
             .env("KELD_T2_CHANNEL", channel.0.to_string())
-            .env("KELD_T2_PAYLOAD_HEX", payload_hex)
+            .env("KELD_T2_PAYLOAD_HEX", hex_of(payload))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -44,53 +47,46 @@ impl WorkerLinkRole {
             .expect("bun must be on PATH (same contract as keld-cli bun_echo)");
         let mut out = child.stdout.take().expect("role stdout");
         let mut err = child.stderr.take().expect("role stderr");
-        let stdout = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = out.read_to_string(&mut text);
-            text
-        });
-        let stderr = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = err.read_to_string(&mut text);
-            text
-        });
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let keld_ipc::BootstrapAdmission::Authenticated(stream) = listener
-            .accept_authenticated_until(deadline, &NoRejections)
-            .expect("accept role")
-        else {
-            let _ = child.kill();
-            panic!(
-                "role did not authenticate: {}",
-                stderr.join().unwrap_or_default()
-            );
+        let role = Self {
+            child: Some(child),
+            stdout: Some(std::thread::spawn(move || {
+                let mut text = String::new();
+                let _ = out.read_to_string(&mut text);
+                text
+            })),
+            stderr: Some(std::thread::spawn(move || {
+                let mut text = String::new();
+                let _ = err.read_to_string(&mut text);
+                text
+            })),
         };
-        (
-            Self {
-                child,
-                stdout,
-                stderr,
-            },
-            guarded_router(stream),
-        )
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let admission = listener
+            .accept_authenticated_until(deadline, &NoRejections)
+            .expect("accept role");
+        let keld_ipc::BootstrapAdmission::Authenticated(stream) = admission else {
+            // Dropping `role` kills and reaps the child.
+            panic!("role did not authenticate: {admission:?}");
+        };
+        (role, guarded_router(stream))
     }
 
     /// Waits for the role to exit (kill switch only) and returns its
     /// `KELD_WL key=value` report.
     fn finish(mut self) -> std::collections::BTreeMap<String, String> {
+        let mut child = self.child.take().expect("role child present");
         let started = Instant::now();
         let status = loop {
-            if let Some(status) = self.child.try_wait().expect("poll role") {
+            if let Some(status) = child.try_wait().expect("poll role") {
                 break status;
             }
             if started.elapsed() > Duration::from_mins(1) {
-                let _ = self.child.kill();
-                break self.child.wait().expect("reap role after kill switch");
+                let _ = child.kill();
+                break child.wait().expect("reap role after kill switch");
             }
             std::thread::park_timeout(Duration::from_millis(10));
         };
-        let stdout = self.stdout.join().expect("role stdout reader");
-        let stderr = self.stderr.join().expect("role stderr reader");
+        let (stdout, stderr) = self.join_output();
         assert!(
             status.success(),
             "role failed: {status:?}\n{stdout}\n{stderr}"
@@ -101,6 +97,32 @@ impl WorkerLinkRole {
             .filter_map(|rest| rest.split_once('='))
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .collect()
+    }
+
+    /// Joins whichever output readers remain; each runs to its pipe's EOF.
+    fn join_output(&mut self) -> (String, String) {
+        let stdout = self
+            .stdout
+            .take()
+            .map(|reader| reader.join().unwrap_or_default())
+            .unwrap_or_default();
+        let stderr = self
+            .stderr
+            .take()
+            .map(|reader| reader.join().unwrap_or_default())
+            .unwrap_or_default();
+        (stdout, stderr)
+    }
+}
+
+impl Drop for WorkerLinkRole {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        // The child's pipes are closed now, so both readers reach EOF.
+        let _ = self.join_output();
     }
 }
 

@@ -4865,6 +4865,7 @@ impl PrimaryRouterHandle {
         reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
         let window_closed = AtomicBool::new(false);
+        let window_ends = Instant::now() + QUIT_DRAIN_WINDOW;
         let (done_tx, done_rx) = mpsc::channel::<()>();
         thread::scope(|scope| {
             let window = &window_closed;
@@ -4879,7 +4880,7 @@ impl PrimaryRouterHandle {
                     }
                 })
                 .map_err(|source| app_io("lifecycle Quit drain window", &source))?;
-            let result = self.answer_received_calls(attempt, reader, &window_closed);
+            let result = self.answer_received_calls(attempt, reader, &window_closed, window_ends);
             drop(done_tx);
             result
         })
@@ -4891,6 +4892,7 @@ impl PrimaryRouterHandle {
         attempt: u32,
         reader: &mut BootstrapStream,
         window_closed: &AtomicBool,
+        window_ends: Instant,
     ) -> Result<(), HostAppError> {
         let error = CallError::quit_drained();
         loop {
@@ -4924,6 +4926,19 @@ impl PrimaryRouterHandle {
             let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
                 return Ok(());
             };
+            // Bound each answer by what is left of the window, not the writer's
+            // five-second deadline: a peer that stops reading must not hold an
+            // accepted Quit open. The link closes right after, so the writer's
+            // deadline is not restored.
+            let remaining = window_ends.saturating_duration_since(Instant::now());
+            if remaining < Duration::from_millis(1)
+                || active
+                    .writer
+                    .set_app_link_write_deadline(Some(remaining))
+                    .is_err()
+            {
+                return Ok(());
+            }
             if keld_ipc::write_call_error(
                 &mut active.writer,
                 header.channel(),
@@ -7657,6 +7672,73 @@ mod tests {
             t.guardian.try_recv(),
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected)
         ));
+    }
+
+    /// GH-528 T2: a peer that stops reading cannot hold an accepted Quit open.
+    /// The client floods CALLs behind its Quit and never reads, so the host's
+    /// `KELD-IPC-024` answers fill both socket buffers. Each answer is bounded
+    /// by what is left of `QUIT_DRAIN_WINDOW`, so the Quit tail reaches its
+    /// guardian shutdown well before one writer deadline. The bound under test
+    /// is itself a time limit; the margin is one window plus a poll (under
+    /// 0.5 s) against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write
+    /// would wait.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
+        let (t, client) = guarded_test_router();
+        let mut writer = client.try_clone().expect("flooding writer");
+        let target = t.allowed.join("never.txt");
+        let flood = std::thread::spawn(move || {
+            write_quit_call(&mut writer, 30);
+            for corr in 31..1_031 {
+                let frame = write_frame(
+                    &mut writer,
+                    FrameKind::Call,
+                    0,
+                    FS_CHANNEL,
+                    CorrelationId(corr),
+                    &encode(&FsRequest::Write {
+                        path: target.display().to_string().replace('\\', "/"),
+                        bytes: b"t2".to_vec(),
+                    })
+                    .expect("encode flooding FS write"),
+                );
+                // Writes stop once the host closes the link.
+                if frame.is_err() {
+                    break;
+                }
+            }
+        });
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let bound = APP_LINK_IO_DEADLINE
+            .checked_sub(Duration::from_secs(1))
+            .expect("writer deadline exceeds one second");
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(bound)
+            .expect("the Quit tail reached its shutdown before one writer deadline")
+        else {
+            panic!("unexpected guardian command after the Quit REPLY");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        drop(client);
+        flood.join().expect("flooding writer joins");
+        t.router.shutdown().expect("router shutdown after Quit");
     }
 
     /// GH-528 T2, spec gh527 criterion 7: after an accepted Quit's real REPLY
