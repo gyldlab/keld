@@ -166,6 +166,7 @@
         "crates/keld-compat/tests/support/corpus_citation.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/linux_strict_boundary.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
         "crates/keld-runtime/tests/windows_primary_generation.rs",
         "crates/keld-host/tests/no_flag/linux/support/project.rs",
@@ -334,6 +335,7 @@
         "crates/keld-compat/tests/support/corpus_citation.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/linux_strict_boundary.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
         "crates/keld-runtime/tests/windows_primary_generation.rs",
         "crates/keld-host/tests/no_flag/linux/support/project.rs",
@@ -355,7 +357,7 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "8a87cb0f3840e1ffb8b172140cc563d83a5450e76f67c3c9c38a98f9ed37498a"
+      "sha256": "9d1f22bd244f05e02da5c3f8c7c69e0ffe44439ec4e23a2239bc92b94ede9c3e"
     },
     "policy-readers": {
       "patterns": [
@@ -426,6 +428,8 @@
     ],
     "keld-compat": [
       "packages/@keld/electron/*",
+      "packages/@keld/api/*",
+      "packages/@keld/kipc/src/transport.ts",
       "crates/keld-compat/fixtures/lifecycle-corpus/*"
     ],
     "keld-update": [
