@@ -1,9 +1,10 @@
 /**
  * Host-lifecycle channel adapter over the canonical kipc transport (KEL-72 / KEL-136).
  *
- * Framing, HELLO, deadlines, buffering, and serialized writes live in `@keld/kipc`.
- * This file owns lifecycle postcard enums, Quit dispatch, and Electron-facing
- * listener isolation. It does not import Electron at runtime.
+ * The link is the GH-527 `WorkerLink`: its transport Worker owns the socket,
+ * framing, HELLO, deadlines and writes. This file owns lifecycle postcard
+ * enums, the Quit, and Electron-facing listener isolation. It does not import
+ * Electron at runtime.
  */
 export {
   APP_LINK_IO_DEADLINE_MS,
@@ -32,30 +33,17 @@ export {
   type ReceivePolicy,
 } from "../../kipc/src/transport.ts";
 
-import { handleEchoCall } from "./echo-call.ts";
+import { resolveEchoCall } from "./echo-call.ts";
 
-// Same-module bindings for this adapter and for concatenated KEL-96 host
-// fixtures that append `t1b_harness.ts` to this file as `src/main.ts`.
 import {
-  DrainSignal,
-  FrameKind,
-  FrameReader,
-  HANDSHAKE_CHANNEL,
+  APP_LINK_IO_DEADLINE_MS,
+  ECHO_CHANNEL,
   LIFECYCLE_CHANNEL,
-  RECEIVE_POLICIES,
-  WriteQueue,
-  connectKipcSocket,
-  errorFromErrFrame,
-  isWin32PipeEndpoint,
+  WorkerLink,
   kipcError,
-  lifecycleReplyWaiter,
-  parseAppLink,
-  parseWin32DiagnosticPort,
-  timingSafeEqual,
-  validateReceivedHeader,
-  withIoDeadline,
-  type DecodedFrame,
-  type KipcSocket,
+  quitAndCloseLink,
+  type KeldCallError,
+  type WorkerReceiveTable,
 } from "../../kipc/src/transport.ts";
 
 export type LifecycleEventName = "ready" | "last-window-closed";
@@ -79,171 +67,79 @@ export type LifecycleHandler = {
   onLastWindowClosed: () => void;
   onApplicationCall?: (channel: number, payload: Uint8Array) => Promise<Uint8Array>;
   /**
-   * Read loop died after HELLO. `app.whenReady()` waiters must reject here;
-   * a throw must not skip `#quitWaiter` drain.
+   * The link ended after HELLO without a local `close()` or `quit()`.
+   * `app.whenReady()` waiters must reject here.
    */
   onLinkDead: (err: Error) => void;
 };
 
+/** What the host may send this role besides replies to its own calls (GH-527 §4.7). */
+const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
+  eventChannels: [LIFECYCLE_CHANNEL],
+  callReceivers: [{ policy: "echoReceiver" }],
+};
+
 /**
- * One HELLO'd app-link that demuxes lifecycle Events vs the Quit Reply.
+ * The role's one app-link, owned by the GH-527 transport Worker: lifecycle
+ * EVENTs, host Echo CALLs, and the role's Quit. Pings are answered by the
+ * Worker.
  */
 export class LifecycleLink {
-  #socket: KipcSocket;
-  #reader: FrameReader;
-  #writes: WriteQueue;
-  #nextCorr = 1;
+  readonly #link: WorkerLink;
   #closed = false;
-  #loopFailed = false;
-  #quitWaiter: { corr: number; resolve: () => void; reject: (e: Error) => void } | null = null;
   #quitPromise: Promise<void> | undefined;
-  #loopStarted = false;
 
-  private constructor(socket: KipcSocket, reader: FrameReader, writes: WriteQueue) {
-    this.#socket = socket;
-    this.#reader = reader;
-    this.#writes = writes;
+  private constructor(link: WorkerLink) {
+    this.#link = link;
   }
 
   static async connect(link: string, handlers: LifecycleHandler): Promise<LifecycleLink> {
-    const { endpoint, token } = parseAppLink(link);
-    const reader = new FrameReader();
-    const drain = new DrainSignal();
-    const socket = await connectKipcSocket(endpoint, reader, drain);
-    const writes = new WriteQueue(socket, drain);
-    const session = new LifecycleLink(socket, reader, writes);
-    try {
-      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token));
-      const helloReply = await withIoDeadline(reader.readFrame());
-      validateReceivedHeader(RECEIVE_POLICIES.clientAwaitHello, helloReply.header);
-      if (!timingSafeEqual(helloReply.payload, token)) {
-        throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
-      }
-      session.#startLoop(handlers);
-      return session;
-    } catch (err) {
-      session.close();
-      throw err;
-    }
-  }
-
-  async #replyToApplicationCall(frame: DecodedFrame, handlers: LifecycleHandler): Promise<void> {
-    await handleEchoCall(frame, handlers.onApplicationCall, this.#writes);
-  }
-
-  #failLoop(err: Error, handlers: LifecycleHandler): void {
-    if (this.#loopFailed) return;
-    this.#loopFailed = true;
-    const localClose = this.#closed;
-    try {
-      this.close();
-      if (!localClose) {
-        try {
-          handlers.onLinkDead(err);
-        } catch {
-          // Isolate: a throwing listener must not skip quit-waiter drain.
-        }
-      }
-    } finally {
-      const waiter = this.#quitWaiter;
-      this.#quitWaiter = null;
-      waiter?.reject(err);
-    }
-  }
-
-  #startLoop(handlers: LifecycleHandler): void {
-    if (this.#loopStarted) return;
-    this.#loopStarted = true;
-    const run = async (): Promise<void> => {
-      for (;;) {
-        const frame = await this.#reader.readFrame();
-        if (frame.header.kind === FrameKind.Ping) {
-          validateReceivedHeader(RECEIVE_POLICIES.lifecycleEventReceiver, frame.header);
-          await withIoDeadline(
-            this.#writes.writeFrame(
-              FrameKind.Ping,
-              0,
-              frame.header.channel,
-              frame.header.corr,
-              new Uint8Array(),
-            ),
-          );
-          continue;
-        }
-        if (frame.header.kind === FrameKind.Call) {
-          validateReceivedHeader(RECEIVE_POLICIES.echoReceiver, frame.header);
-          void this.#replyToApplicationCall(frame, handlers).catch((err: Error) => {
-            this.#failLoop(err, handlers);
-          });
-          continue;
-        }
-        if (frame.header.kind === FrameKind.Event) {
-          validateReceivedHeader(RECEIVE_POLICIES.lifecycleEventReceiver, frame.header);
-          const event = decodeEvent(frame.payload);
-          if (event === "ready") handlers.onReady();
-          else handlers.onLastWindowClosed();
-          continue;
-        }
-        if (
-          (frame.header.kind === FrameKind.Reply || frame.header.kind === FrameKind.Err) &&
-          this.#quitWaiter !== null
-        ) {
-          const waiter = this.#quitWaiter;
-          validateReceivedHeader(lifecycleReplyWaiter(waiter.corr), frame.header);
-          this.#quitWaiter = null;
-          if (frame.header.kind === FrameKind.Reply) {
-            waiter.resolve();
-          } else {
-            waiter.reject(errorFromErrFrame(frame.payload));
-          }
-          continue;
-        }
-        validateReceivedHeader(RECEIVE_POLICIES.lifecycleEventReceiver, frame.header);
-        throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
-      }
-    };
-    void run().catch((err: Error) => {
-      this.#failLoop(err, handlers);
+    const workerLink = await WorkerLink.open({ link, receive: LIFECYCLE_RECEIVE });
+    const session = new LifecycleLink(workerLink);
+    // A lifecycle EVENT this role cannot decode ends the link (a throwing
+    // applier, §4.6) before any listener runs; the listener then dispatches it.
+    workerLink.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
+      decodeEvent(payload);
     });
+    workerLink.onEvent(LIFECYCLE_CHANNEL, (payload) => {
+      if (decodeEvent(payload) === "ready") handlers.onReady();
+      else handlers.onLastWindowClosed();
+    });
+    workerLink.setCallHandler(ECHO_CHANNEL, (payload) =>
+      resolveEchoCall(ECHO_CHANNEL, payload, handlers.onApplicationCall),
+    );
+    workerLink.onEnd((err: KeldCallError) => {
+      if (session.#closed) return;
+      session.#closed = true;
+      try {
+        handlers.onLinkDead(err);
+      } catch {
+        // Isolate: a throwing listener must not escape the transport's task.
+      }
+    });
+    return session;
   }
 
-  async quit(): Promise<void> {
+  /**
+   * Sends the role's Quit and closes the link on its REPLY (GH-527 §4.9). A
+   * host ERR rejects with that error. Concurrent calls share one Quit.
+   */
+  quit(): Promise<void> {
     if (this.#quitPromise) return this.#quitPromise;
     if (this.#closed) {
-      throw kipcError("KELD-IPC-001", "session is closed");
+      return Promise.reject(kipcError("KELD-IPC-001", "session is closed"));
     }
-    this.#quitPromise = this.#quitOnce();
+    this.#closed = true;
+    this.#quitPromise = new Promise<void>((resolve) => {
+      quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
+      resolve();
+    });
     return this.#quitPromise;
-  }
-
-  async #quitOnce(): Promise<void> {
-    const corr = this.#nextCorr;
-    let next = (corr + 1) >>> 0;
-    if (next === 0) next = 1;
-    this.#nextCorr = next;
-    try {
-      await withIoDeadline(
-        new Promise<void>((resolve, reject) => {
-          this.#quitWaiter = { corr, resolve, reject };
-          void this.#writes
-            .writeFrame(FrameKind.Call, 0, LIFECYCLE_CHANNEL, corr, new Uint8Array([0x00]))
-            .catch((err: Error) => {
-              this.#quitWaiter = null;
-              reject(err);
-            });
-        }),
-      );
-    } catch (err) {
-      this.#quitWaiter = null;
-      throw err;
-    } finally {
-      this.close();
-    }
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#socket.end();
+    this.#link.close();
   }
 }
