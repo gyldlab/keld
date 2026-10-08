@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-window-v1",
-  "corpus_sha256": "sha256:8eecac5ea831d203347f3b3d1219c9c9ce803f638f129ed3b46e2c05ac059da6",
+  "corpus_sha256": "sha256:8a636bf8a288cbf8017fcc7a21c3658471e9c8cc2865d900c640416bc611da2d",
   "kind": "primary_workflow",
   "cells": [
     {

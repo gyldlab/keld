@@ -32,7 +32,7 @@
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
       "test_name": "window.constructor.host-id today: @keld/electron exports no BrowserWindow constructor, so no window id exists",
-      "negative_control": "Today: exporting a BrowserWindow constructor from @keld/electron fails the mapped case. After GH-449 inverts it: minting the id in the facade instead of taking the host-delivered WindowId fails it."
+      "negative_control": "Today: exporting a BrowserWindow constructor from @keld/electron fails the mapped case. After GH-449 inverts it: two windows that share one id, or a non-integer id, fail it."
     },
     {
       "operation_id": "app.browser-window-created.once-per-window",

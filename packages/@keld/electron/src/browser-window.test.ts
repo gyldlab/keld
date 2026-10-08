@@ -47,10 +47,29 @@ function presentStatics(names: readonly string[]): string[] {
   return names.filter((name) => typeof member(binding, name) === "function");
 }
 
-/** The named instance methods that every `BrowserWindow` instance would inherit. */
+/**
+ * A window built from the draw.io options, or `undefined` while construction throws.
+ * Construction throwing is today's state; the creation and triage cases assert it.
+ */
+function constructedWindow(): unknown {
+  try {
+    return construct(DRAWIO_OPTIONS);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The named methods any `BrowserWindow` instance has: inherited from the prototype, or
+ * own members (class fields) of a window that construction returns.
+ */
 function presentInstanceMethods(names: readonly string[]): string[] {
   const prototype = member(exportedBrowserWindow(), "prototype");
-  return names.filter((name) => typeof member(prototype, name) === "function");
+  const instance = constructedWindow();
+  return names.filter(
+    (name) =>
+      typeof member(prototype, name) === "function" || typeof member(instance, name) === "function",
+  );
 }
 
 /** Runs `new BrowserWindow(options)` against the exported binding, as an app would. */
@@ -128,8 +147,9 @@ function appEventCallsDuringConstruction(event: string): number {
 
 describe("GH-449 window registry cells, red until implemented", () => {
   // browser-window.md:523 "Each ID is unique among all `BrowserWindow` instances ..."
-  // Ordered observable: new BrowserWindow(options) returns; win.id equals the WindowId
-  // in the host's Created event.
+  // Ordered observable: two constructions return windows whose ids are distinct
+  // integers. That the id is the host-delivered WindowId is gh531 criterion 1, which
+  // GH-449 proves in its own tests; the Electron sentence cannot falsify provenance.
   test("window.constructor.host-id today: @keld/electron exports no BrowserWindow constructor, so no window id exists", () => {
     expect(typeof exportedBrowserWindow()).toBe("undefined");
     expectNoConstructor(DRAWIO_OPTIONS);
