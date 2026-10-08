@@ -764,10 +764,12 @@ This spec consumes F01-T2's rule (#446) and adds no adoption shim.
   the registry, no window-channel frame is written, and its `CloseRequested` keeps
   today's teardown and `LastWindowClosed` behaviour (criterion 15).
 - The close path is selected per boot kind, not per window: in one session every
-  window takes one path. Temporary adapter: the legacy teardown arm. Its owner is
-  F01-T2. Removal condition: F01-T2 decision (b) ("whether renderer-declared boots keep
-  `CreateInitialWindow` before Ready"). If those boots move onto the registry, the
-  legacy arm is deleted in that change.
+  window takes one path. The legacy teardown arm is the schema-1 close path, not a
+  temporary adapter. F01-T2 decision (b) keeps `CreateInitialWindow` before Ready for
+  renderer-declared boots (gh446 D2), so the arm stays. Owner: KEL-96, whose §4.5
+  defines schema-1 close and `LastWindowClosed`. Removal condition: an approved spec
+  that registers the schema-1 initial window in this registry or retires schema 1; the
+  arm is deleted in that change. (amended by #657)
 - Ready meaning per RoleInstance generation is F01-T2's. Successor roles (D6, §4.i):
   a retired generation's windows stay alive, and ownership transfers explicitly to the
   recovered successor of the same declared role, which receives a state replay
@@ -1509,8 +1511,8 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   variants. The primary router writes window frames.
 - Generated contracts: the X05-T4 constant for the channel id.
 - Persisted state: none.
-- Temporary adapter: the legacy teardown arm for renderer-declared boots (owner
-  F01-T2; removal condition in §4.c).
+- Temporary adapter: none. The legacy teardown arm is the permanent schema-1 close
+  path (owner KEL-96; removal condition in §4.c; amended by #657).
 - Permanent compat facade: `@keld/electron` `BrowserWindow`.
 
 ## 5. Boundaries
