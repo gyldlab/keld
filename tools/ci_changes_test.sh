@@ -23,12 +23,57 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(local_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages)=)' <<<"$actual")"
+    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os|rust_documentation_only)=)' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
         printf '%s\n' "$expected" >&2
         echo "actual:" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
+# CodeQL applicability is its own per-language dimension (#624): a Rust lane
+# selected through a documentation read analyses no changed source.
+expect_codeql() {
+    local label="$1"
+    local expected="$2"
+    local actual="$3"
+    actual="$(grep -E '^codeql_' <<<"$actual" || true)"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "FAIL: $label" >&2
+        echo "expected:" >&2
+        printf '%s\n' "$expected" >&2
+        echo "actual:" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
+expect_exact_output() {
+    local label="$1"
+    local output_name="$2"
+    local expected="$3"
+    local actual="$4"
+    if ! grep -Fxq "${output_name}=${expected}" <<<"$actual"; then
+        echo "FAIL: $label: expected ${output_name}=${expected}" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
+expect_package_absent() {
+    local label="$1"
+    local token="$2"
+    local actual="$3"
+    local package_line
+    package_line="$(grep '^packages=' <<<"$actual")"
+    if grep -Eq "(^| )${token}( |$)" <<<"${package_line#packages=}"; then
+        echo "FAIL: $label: packages unexpectedly contains $token" >&2
         printf '%s\n' "$actual" >&2
         exit 1
     fi
@@ -115,6 +160,9 @@ docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=fa
 hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 docs_hygiene=$'rust=false\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 docs_rust=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
+# A Rust selection reached only through documentation reads runs on Windows
+# alone, so no Ubuntu leg installs WebKitGTK (#624).
+docs_reader_rust=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 hygiene_rust=$'rust=true\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
 docs_hygiene_rust=$'rust=true\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
 host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
@@ -129,6 +177,12 @@ wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
 workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=false'
 all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
+codeql_none=$'codeql_rust=false\ncodeql_javascript_typescript=false\ncodeql_actions=false'
+codeql_all=$'codeql_rust=true\ncodeql_javascript_typescript=true\ncodeql_actions=true'
+codeql_rust_only=$'codeql_rust=true\ncodeql_javascript_typescript=false\ncodeql_actions=false'
+codeql_js_only=$'codeql_rust=false\ncodeql_javascript_typescript=true\ncodeql_actions=false'
+check_os_all='["ubuntu-latest","macos-latest","windows-latest"]'
+check_os_documentation='["windows-latest"]'
 
 # A developer checkout can contain unknown inputs. Prove the live fallback,
 # then run clean-path exclusion controls in a separate tracked-byte snapshot.
@@ -164,9 +218,138 @@ expect_package_token "runtime-only change clippy's host-owned session consumer" 
 expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli without GTK" keld-cli "$runtime_classification"
 
 docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
-expect_flags "docs corpus change includes its Rust embed consumers" "$docs_rust" "$docs_classification"
+expect_flags "docs corpus change includes its Rust embed consumers" "$docs_reader_rust" "$docs_classification"
 expect_mermaid_flag "path-only Markdown classification fails safe without old/new content" true "$docs_classification"
 expect_package_token "docs corpus selects the CLI consumer" keld-cli "$docs_classification"
+
+# #624 contract cases. Each positive case has a paired negative control that
+# differs in the one input the assertion depends on.
+#
+# Docs-only PR (the #612 diff): no Rust lane, no CodeQL language.
+docs_only_pr="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md docs/specs/kel74-compat-evidence-schema.md)"
+expect_flags "docs-only PR runs only the docs lane" "$docs_only" "$docs_only_pr"
+expect_codeql "docs-only PR selects no CodeQL language" "$codeql_none" "$docs_only_pr"
+expect_no_package_selection "docs-only PR selects no package/suite" "$docs_only_pr"
+# Negative control: the same directory with a Rust source extension selects
+# the Rust analysis, so the docs-only result is not a constant.
+docs_rust_source="$(result_for_paths docs/specs/gh532-first-proof-evidence-rules.md docs/specs/example.rs)"
+expect_codeql "a *.rs path anywhere selects CodeQL rust only" "$codeql_rust_only" "$docs_rust_source"
+
+# Reader-doc PR (the #610 diff): only the declared documentation reader runs,
+# on Windows alone, so no Ubuntu leg installs WebKitGTK (keld-cli's own closure,
+# keld-core -> keld-wv, links it on Linux).
+reader_doc_pr="$(result_for_paths README.md docs/architecture/02-ipc.md docs/specs/gh527-worker-owned-blocking-call-transport.md llms-full.txt)"
+expect_flags "reader-doc PR runs docs plus its Rust reader without Ubuntu GTK apt" "$docs_reader_rust" "$reader_doc_pr"
+expect_exact_output "reader-doc PR selects keld-cli only" packages keld-cli "$reader_doc_pr"
+expect_empty_output "reader-doc PR has no Ubuntu leg package set" ubuntu_packages "$reader_doc_pr"
+expect_package_absent "reader-doc PR does not add keld-cli's reverse dependent" keld-host "$reader_doc_pr"
+expect_codeql "reader-doc PR selects no CodeQL language" "$codeql_none" "$reader_doc_pr"
+# Negative control: a real keld-cli source change in the same diff keeps
+# today's reverse-dependent expansion.
+reader_doc_with_source="$(result_for_paths README.md docs/architecture/02-ipc.md llms-full.txt crates/keld-cli/src/lib.rs)"
+expect_package_token "reader doc plus CLI source still expands to keld-host" keld-host "$reader_doc_with_source"
+expect_codeql "reader doc plus CLI source selects CodeQL rust" "$codeql_rust_only" "$reader_doc_with_source"
+# A non-documentation input of the same registry edge (the recursive tools
+# scan) is not a documentation read and keeps the expansion.
+reader_doc_with_tool="$(result_for_paths llms-full.txt tools/atomic_protocol.rs)"
+expect_package_token "registry edge with a tools source still expands to keld-host" keld-host "$reader_doc_with_tool"
+# The package-scoped documentation edge narrows the same way.
+package_doc_pr="$(result_for_paths docs/specs/kel53-full-package-activation.md)"
+expect_exact_output "package documentation read selects its reader only" packages keld-update "$package_doc_pr"
+expect_codeql "package documentation read selects no CodeQL language" "$codeql_none" "$package_doc_pr"
+package_doc_with_source="$(result_for_paths docs/specs/kel53-full-package-activation.md crates/keld-update/src/lib.rs)"
+expect_package_token "package documentation plus reader source still expands to keld-core" keld-core "$package_doc_with_source"
+
+# crates/keld-cli/src change: reverse-dependent expansion exactly as before.
+cli_source="$(result_for_paths crates/keld-cli/src/lib.rs)"
+expect_package_token "CLI source change still expands to keld-host" keld-host "$cli_source"
+expect_exact_output "CLI source change keeps the Ubuntu GTK selection" webkitgtk true "$cli_source"
+expect_exact_output "CLI source change runs keld-cli and keld-host on Ubuntu" ubuntu_packages "keld-cli keld-host" "$cli_source"
+expect_codeql "CLI source change selects CodeQL rust only" "$codeql_rust_only" "$cli_source"
+# (Negative control: reader_doc_pr above omits keld-host for the same reader.)
+
+# The JavaScript extractor's other file types, and an extensionless shebang
+# script, select its analysis wherever they live.
+for input in docs/diagrams/flow.dot crates/keld-cli/templates/hello/view.erb crates/keld-cli/src/x.xsjs .githooks/post-merge; do
+    expect_exact_output "$input selects CodeQL javascript-typescript" codeql_javascript_typescript true "$(result_for_paths "$input")"
+done
+# A deleted or unreadable extensionless path may have been a script.
+expect_exact_output "missing extensionless path selects CodeQL javascript-typescript" \
+    codeql_javascript_typescript true "$(result_for_paths crates/keld-ipc/fuzz/corpus/raw_receive/removed-entry)"
+# Negative control: an existing extensionless binary fixture without a shebang.
+expect_codeql "extensionless binary fixture selects no CodeQL language" "$codeql_none" \
+    "$(result_for_paths crates/keld-ipc/fuzz/corpus/raw_receive/ping-echo-session)"
+
+# TypeScript source selects only its own analysis, even though the Rust lane
+# runs for the crate that spawns those fixtures.
+ts_codeql="$(result_for_paths packages/@keld/electron/src/link.ts)"
+expect_codeql "TypeScript source selects CodeQL javascript-typescript only" "$codeql_js_only" "$ts_codeql"
+expect_exact_output "TypeScript source still runs its Rust consumer lane" rust true "$ts_codeql"
+
+# Workflow change: every CodeQL language.
+workflow_codeql="$(result_for_paths .github/workflows/ci.yml)"
+expect_codeql "workflow change selects every CodeQL language" "$codeql_all" "$workflow_codeql"
+# Negative control: a non-workflow .github hygiene input selects none.
+codeowners_codeql="$(result_for_paths .github/CODEOWNERS)"
+expect_codeql "CODEOWNERS change selects no CodeQL language" "$codeql_none" "$codeowners_codeql"
+
+# Unknown path: every lane, CodeQL included.
+unknown_codeql="$(result_for_paths some-future-dir/thing.bin)"
+expect_flags "unknown path selects every lane" "$all_true" "$unknown_codeql"
+expect_codeql "unknown path selects every CodeQL language" "$codeql_all" "$unknown_codeql"
+# (Negative control: docs_only_pr above is a known path that selects none.)
+for input in tools/ci_changes.sh tools/ci_required.sh tools/ci_inputs.py tools/ci-inputs.json; do
+    expect_codeql "router owner $input selects every CodeQL language" "$codeql_all" "$(result_for_paths "$input")"
+done
+
+# gitleaks configuration: the unconditional gitleaks job is its only reader.
+for input in .gitleaks.toml .gitleaksignore; do
+    gitleaks_config="$(result_for_paths "$input")"
+    expect_flags "$input selects no conditional lane" "$all_false" "$gitleaks_config"
+    expect_codeql "$input selects no CodeQL language" "$codeql_none" "$gitleaks_config"
+    expect_exact_output "$input selects no workspace contracts" workspace false "$gitleaks_config"
+    expect_no_package_selection "$input selects no package/suite" "$gitleaks_config"
+done
+# Negative control: an undeclared sibling name is still an unknown input.
+gitleaks_sibling="$(result_for_paths .gitleaks.toml.orig)"
+expect_flags "undeclared gitleaks sibling still fails safe" "$all_true" "$gitleaks_sibling"
+
+# Workspace contracts: selected by their inputs and by every fallback, not by
+# an ordinary Rust change.
+for input in tools/workspace.py tools/test_workspace.py tools/session_closeout.py; do
+    workspace_input="$(result_for_paths "$input")"
+    expect_exact_output "$input selects the workspace contracts job" workspace true "$workspace_input"
+    expect_flags "$input keeps the unknown fallback" "$all_true" "$workspace_input"
+done
+expect_exact_output "unknown path selects the workspace contracts job" workspace true "$unknown_codeql"
+expect_exact_output "workflow edit selects the workspace contracts job" workspace true "$workflow_codeql"
+# Negative controls: a Rust source change and a docs-only PR do not.
+expect_exact_output "CLI source change does not select workspace contracts" workspace false "$cli_source"
+expect_exact_output "docs-only PR does not select workspace contracts" workspace false "$docs_only_pr"
+
+# Check OS list: Windows alone only when documentation reads alone selected
+# Rust. The exact match also fails if Ubuntu or macOS is chosen instead.
+expect_exact_output "reader-doc PR runs its reader on Windows only" check_os "$check_os_documentation" "$reader_doc_pr"
+expect_exact_output "package documentation read runs on Windows only" check_os "$check_os_documentation" "$package_doc_pr"
+expect_exact_output "package documentation read installs no Ubuntu GTK" webkitgtk false "$package_doc_pr"
+expect_exact_output "reader-doc PR reports a documentation-only Rust selection" rust_documentation_only true "$reader_doc_pr"
+expect_exact_output "package documentation read reports a documentation-only Rust selection" rust_documentation_only true "$package_doc_pr"
+# Negative controls: code, mixed, docs-only (no Rust) and fallback selections.
+for selection in "$cli_source" "$reader_doc_with_source" "$reader_doc_with_tool" "$package_doc_with_source" \
+    "$docs_only_pr" "$workflow_codeql" "$unknown_codeql"; do
+    expect_exact_output "non-documentation selection reports rust_documentation_only=false" \
+        rust_documentation_only false "$selection"
+done
+expect_empty_output "package documentation read has no Ubuntu leg package set" ubuntu_packages "$package_doc_pr"
+# Negative controls: any changed package, tools input, workflow or unknown path
+# keeps all three OSes.
+expect_exact_output "CLI source change runs on every OS" check_os "$check_os_all" "$cli_source"
+expect_exact_output "reader doc plus CLI source runs on every OS" check_os "$check_os_all" "$reader_doc_with_source"
+expect_exact_output "registry doc plus tools source runs on every OS" check_os "$check_os_all" "$reader_doc_with_tool"
+expect_exact_output "package doc plus reader source runs on every OS" check_os "$check_os_all" "$package_doc_with_source"
+expect_exact_output "TypeScript consumer change runs on every OS" check_os "$check_os_all" "$ts_codeql"
+expect_exact_output "workflow edit runs on every OS" check_os "$check_os_all" "$workflow_codeql"
+expect_exact_output "unknown path runs on every OS" check_os "$check_os_all" "$unknown_codeql"
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
 expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
@@ -404,6 +587,11 @@ docs_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$runtime_sha" GITHUB_SHA="$docs_sha" "$router" github)"
 expect_flags "push before/head classifies the actual diff" "$docs_only" "$push_result"
 expect_mermaid_flag "prose-only docs outside diagrams skip Mermaid" false "$push_result"
+expect_codeql "docs-only push still analyses every CodeQL language" "$codeql_all" "$push_result"
+# Negative control: the identical docs-only diff as a pull request skips CodeQL.
+docs_pr_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$runtime_sha" KELD_CI_HEAD_SHA="$docs_sha" "$router" github)"
+expect_flags "docs-only pull request classifies the same diff" "$docs_only" "$docs_pr_result"
+expect_codeql "docs-only pull request selects no CodeQL language" "$codeql_none" "$docs_pr_result"
 
 cat >"$temp_dir/diagram.md" <<'MERMAID'
 # Diagram
@@ -583,6 +771,7 @@ expect_output_package_token "push TypeScript-only diff selects the changed Bun s
 empty_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$ts_sha" GITHUB_SHA="$ts_sha" "$router" github)"
 expect_flags "same push base/head is an empty diff" "$all_false" "$empty_result"
 expect_mermaid_flag "same push base/head skips Mermaid" false "$empty_result"
+expect_codeql "an empty push still analyses every CodeQL language" "$codeql_all" "$empty_result"
 
 git -C "$temp_dir" update-ref refs/remotes/origin/main "$ts_sha"
 local_plain_markdown="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF="$ts_sha" "$router" local)"
@@ -625,6 +814,7 @@ fake_all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=tr
 expect_flags "missing comparison base fails safe" "$fake_all_true" "$unknown_base_result"
 expect_mermaid_flag "missing comparison base runs the full Mermaid lane" true "$unknown_base_result"
 expect_output_package_token "missing comparison base still exercises the Bun lane" ts_packages 'packages/@fake/pkg' "$unknown_base_result"
+expect_codeql "missing comparison base selects every CodeQL language" "$codeql_all" "$unknown_base_result"
 
 mkdir -p "$temp_dir/empty-bin"
 printf '%s\n' \

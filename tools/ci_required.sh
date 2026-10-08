@@ -34,9 +34,14 @@ require_routed_result() {
     esac
 }
 
+# Argument layout (30): 1 change router; 2-10 core job results; 11-18 lane
+# router outputs; 19-21 CodeQL rust, javascript-typescript and actions job
+# results; 22-24 their router outputs; 25 dependency review; 26 workspace
+# contracts job result; 27 its router output; 28 the triggering event name;
+# 29 the router's rust_documentation_only output; 30 its check_os output.
 check_results() {
-    if [[ "$#" -ne 20 ]]; then
-        fail "expected 10 routed/core job results, 8 router outputs, and 2 security job results, got $#; restore the required job's complete needs and applicability handoff."
+    if [[ "$#" -ne 30 ]]; then
+        fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, the workspace contracts result and router output, the event name, and the rust_documentation_only and check_os router outputs, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
 
@@ -61,18 +66,98 @@ check_results() {
             ;;
     esac
     require_routed_result "Mermaid diagram validation/render" "${10}" "${18}" || return 1
-    require_success "CodeQL analysis and upload" "${19}" || return 1
-    require_success "dependency review" "${20}" || return 1
+    # Pull requests route each language on its own inputs; push and every
+    # unknown/all input select all three, which the router owns (#624).
+    require_routed_result "CodeQL rust analysis and upload" "${19}" "${22}" || return 1
+    require_routed_result "CodeQL javascript-typescript analysis and upload" "${20}" "${23}" || return 1
+    require_routed_result "CodeQL actions analysis and upload" "${21}" "${24}" || return 1
+    require_success "dependency review" "${25}" || return 1
+    require_routed_result "workspace path and process contracts" "${26}" "${27}" || return 1
+    require_push_codeql "${28}" "${22}" "${23}" "${24}" || return 1
+    require_check_os "${11}" "${29}" "${30}" || return 1
+}
+
+# A push to main must analyse every CodeQL language; this does not trust the
+# router to have said so (#624). Only the workflow's own triggers are admitted.
+require_push_codeql() {
+    local event="$1"
+    shift
+    case "$event" in
+        push)
+            local route
+            for route in "$@"; do
+                if [[ "$route" != true ]]; then
+                    fail "a push must select every CodeQL language, got routes '$*'. Restore the router's push selection; main needs a complete baseline."
+                    return 1
+                fi
+            done
+            ;;
+        pull_request) ;;
+        *)
+            fail "unsupported event '$event' for the required result. The workflow runs on push and pull_request only; review this evaluator before adding a trigger."
+            return 1
+            ;;
+    esac
+}
+
+# The check job's OS list must be one of the router's two canonical values
+# and agree with why Rust was selected: Windows alone for a selection reached
+# only through documentation reads, all three OSes otherwise (#624).
+readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
+readonly DOCUMENTATION_CHECK_OS='["windows-latest"]'
+require_check_os() {
+    local rust="$1"
+    local documentation_only="$2"
+    local check_os="$3"
+    case "$rust:$documentation_only" in
+        true:true)
+            if [[ "$check_os" != "$DOCUMENTATION_CHECK_OS" ]]; then
+                fail "a documentation-only Rust selection must run check on exactly $DOCUMENTATION_CHECK_OS, got '$check_os'."
+                return 1
+            fi
+            ;;
+        true:false | false:false)
+            if [[ "$check_os" != "$ALL_CHECK_OS" ]]; then
+                fail "a code or build Rust selection must run check on exactly $ALL_CHECK_OS, got '$check_os'."
+                return 1
+            fi
+            ;;
+        *)
+            fail "invalid rust/rust_documentation_only applicability '$rust:$documentation_only'. A documentation-only selection must also select Rust, and both outputs must be exactly 'true' or 'false'."
+            return 1
+            ;;
+    esac
+}
+
+# Older self-test rows predate Mermaid (18 arguments) and per-language CodeQL
+# routing (20 arguments, one always-selected CodeQL result). Widen them with
+# the meaning they had then; check_results itself accepts only 25.
+normalize_self_test_args() {
+    local -a args=("$@")
+    if [[ "${#args[@]}" -eq 18 ]]; then
+        args=("${args[@]:0:9}" skipped "${args[@]:9:7}" false "${args[@]:16:2}")
+    fi
+    if [[ "${#args[@]}" -eq 20 ]]; then
+        args=("${args[@]:0:18}" "${args[18]}" "${args[18]}" "${args[18]}" true true true "${args[19]}")
+    fi
+    # Rows before the workspace contracts job had no such job: it is skipped.
+    if [[ "${#args[@]}" -eq 25 ]]; then
+        args=("${args[@]}" skipped false)
+    fi
+    # Rows before the event and check OS handoff were pull requests whose Rust
+    # selection, if any, ran on every OS.
+    if [[ "${#args[@]}" -eq 27 ]]; then
+        args=("${args[@]}" pull_request false "$ALL_CHECK_OS")
+    fi
+    normalized_args=("${args[@]}")
 }
 
 expect_pass() {
     local label="$1"
     shift
-    if [[ "$#" -eq 18 ]]; then
-        local -a legacy=("$@")
-        set -- "${legacy[@]:0:9}" skipped "${legacy[@]:9:7}" false "${legacy[@]:16:2}"
-    fi
-    if ! check_results "$@" >/dev/null 2>&1; then
+    local -a normalized_args=()
+    normalize_self_test_args "$@"
+    if ! check_results "${normalized_args[@]}" >/dev/null 2>&1; then
         fail "self-test '$label' unexpectedly failed"
     fi
 }
@@ -80,13 +165,136 @@ expect_pass() {
 expect_fail() {
     local label="$1"
     shift
-    if [[ "$#" -eq 18 ]]; then
-        local -a legacy=("$@")
-        set -- "${legacy[@]:0:9}" skipped "${legacy[@]:9:7}" false "${legacy[@]:16:2}"
-    fi
-    if check_results "$@" >/dev/null 2>&1; then
+    local -a normalized_args=()
+    normalize_self_test_args "$@"
+    if check_results "${normalized_args[@]}" >/dev/null 2>&1; then
         fail "self-test '$label' unexpectedly passed"
     fi
+}
+
+# Docs-only pull request: every lane and every CodeQL language is inapplicable.
+docs_only_prefix=(success skipped skipped skipped skipped skipped skipped success skipped skipped
+    false false false false false false false false)
+
+codeql_self_test() {
+    expect_pass "docs-only pull request skips every CodeQL language" \
+        "${docs_only_prefix[@]}" skipped skipped skipped false false false success
+    expect_pass "every selected CodeQL language succeeds" \
+        "${docs_only_prefix[@]}" success success success true true true success
+    local index result
+    local -a results routes
+    for index in 0 1 2; do
+        results=(skipped skipped skipped)
+        routes=(false false false)
+        results[index]=success
+        routes[index]=true
+        expect_pass "only selected CodeQL language $index runs" \
+            "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success
+        # Negative control for the row above: the same selection, skipped.
+        results[index]=skipped
+        expect_fail "selected CodeQL language $index cannot be skipped" \
+            "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success
+        for result in failure cancelled missing ''; do
+            results[index]="$result"
+            expect_fail "selected CodeQL language $index '$result' is not analysis evidence" \
+                "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success
+        done
+        results=(skipped skipped skipped)
+        routes=(false false false)
+        for result in success failure cancelled; do
+            results[index]="$result"
+            expect_fail "unselected CodeQL language $index '$result' must be skipped" \
+                "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success
+        done
+        results=(skipped skipped skipped)
+        for result in missing '' TRUE; do
+            routes=(false false false)
+            routes[index]="$result"
+            expect_fail "invalid CodeQL applicability '$result' for language $index is not evidence" \
+                "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success
+        done
+    done
+    if check_results "${docs_only_prefix[@]}" skipped skipped skipped false false false skipped false \
+        pull_request false "$ALL_CHECK_OS" >/dev/null 2>&1; then
+        fail "missing dependency review handoff was accepted"
+    fi
+    if check_results "${docs_only_prefix[@]}" skipped skipped skipped false false success skipped false \
+        pull_request false "$ALL_CHECK_OS" >/dev/null 2>&1; then
+        fail "missing CodeQL route handoff was accepted"
+    fi
+    if check_results "${docs_only_prefix[@]}" success success >/dev/null 2>&1; then
+        fail "the pre-#624 single CodeQL handoff was accepted"
+    fi
+    echo "ok: CodeQL applicability is checked per language"
+}
+
+workspace_self_test() {
+    local -a prefix=("${docs_only_prefix[@]}" skipped skipped skipped false false false success)
+    expect_pass "unselected workspace contracts skip" "${prefix[@]}" skipped false
+    expect_pass "selected workspace contracts succeed" "${prefix[@]}" success true
+    # Negative controls for the two rows above.
+    expect_fail "selected workspace contracts cannot be skipped" "${prefix[@]}" skipped true
+    expect_fail "unselected workspace contracts must not run" "${prefix[@]}" success false
+    local result
+    for result in failure cancelled missing ''; do
+        expect_fail "selected workspace contracts '$result' is not evidence" "${prefix[@]}" "$result" true
+    done
+    expect_fail "invalid workspace applicability is not evidence" "${prefix[@]}" skipped missing
+    if check_results "${prefix[@]}" skipped pull_request false "$ALL_CHECK_OS" >/dev/null 2>&1; then
+        fail "missing workspace route handoff was accepted"
+    fi
+    echo "ok: workspace contracts applicability is checked"
+}
+
+push_and_check_os_self_test() {
+    local -a codeql_all=(success success success true true true success skipped false)
+    expect_pass "push with every CodeQL language selected" \
+        "${docs_only_prefix[@]}" "${codeql_all[@]}" push false "$ALL_CHECK_OS"
+    local index
+    local -a results routes
+    for index in 0 1 2; do
+        results=(success success success)
+        routes=(true true true)
+        results[index]=skipped
+        routes[index]=false
+        # The same row passes as a pull request, so only the push rule rejects it.
+        expect_pass "pull request may skip CodeQL language $index" \
+            "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success skipped false \
+            pull_request false "$ALL_CHECK_OS"
+        expect_fail "push cannot skip CodeQL language $index" \
+            "${docs_only_prefix[@]}" "${results[@]}" "${routes[@]}" success skipped false \
+            push false "$ALL_CHECK_OS"
+    done
+    local event
+    for event in workflow_dispatch '' PUSH; do
+        expect_fail "event '$event' is not an admitted trigger" \
+            "${docs_only_prefix[@]}" "${codeql_all[@]}" "$event" false "$ALL_CHECK_OS"
+    done
+
+    # Rust selected (fmt and check succeed); vary only the check OS handoff.
+    local -a rust_prefix=(success success success skipped skipped skipped skipped success skipped skipped
+        true false false false false false false false
+        skipped skipped skipped false false false success skipped false pull_request)
+    expect_pass "documentation-only Rust runs on Windows alone" "${rust_prefix[@]}" true "$DOCUMENTATION_CHECK_OS"
+    expect_pass "code Rust selection runs on every OS" "${rust_prefix[@]}" false "$ALL_CHECK_OS"
+    # Negative controls: the two valid values swapped, and every other shape.
+    expect_fail "documentation-only Rust cannot run on every OS" "${rust_prefix[@]}" true "$ALL_CHECK_OS"
+    expect_fail "code Rust selection cannot run on Windows alone" "${rust_prefix[@]}" false "$DOCUMENTATION_CHECK_OS"
+    local check_os
+    for check_os in '' '[]' '["ubuntu-latest"]' '["macos-latest"]' \
+        '["windows-latest","macos-latest","ubuntu-latest"]' '["ubuntu-latest","macos-latest"]' \
+        '[ "windows-latest" ]' '["windows-latest","linux"]' 'windows-latest'; do
+        expect_fail "check_os '$check_os' is not a router value for documentation-only Rust" \
+            "${rust_prefix[@]}" true "$check_os"
+        expect_fail "check_os '$check_os' is not a router value for code Rust" \
+            "${rust_prefix[@]}" false "$check_os"
+    done
+    expect_fail "documentation-only without a Rust selection is not evidence" \
+        "${docs_only_prefix[@]}" skipped skipped skipped false false false success skipped false \
+        pull_request true "$DOCUMENTATION_CHECK_OS"
+    expect_fail "invalid documentation-only applicability is not evidence" \
+        "${rust_prefix[@]}" missing "$ALL_CHECK_OS"
+    echo "ok: push CodeQL selection and check OS list are checked"
 }
 
 self_test() {
@@ -135,7 +343,9 @@ self_test() {
         success skipped skipped skipped skipped skipped skipped success skipped \
         false false false false false false success success
     if check_results success skipped skipped skipped skipped skipped skipped success skipped \
-        false false false false false false false false success >/dev/null 2>&1; then
+        false false false false false false false false success \
+        success success success true true true success skipped false \
+        pull_request false "$ALL_CHECK_OS" >/dev/null 2>&1; then
         fail "missing Mermaid result handoff was accepted"
     fi
     echo "ok: missing Mermaid result handoff is rejected"
@@ -152,6 +362,9 @@ self_test() {
     expect_fail "old handoff cannot omit both security jobs" \
         success skipped skipped skipped skipped skipped skipped success skipped \
         false false false false false false false
+    codeql_self_test
+    workspace_self_test
+    push_and_check_os_self_test
 
     echo "ci-required contract tests ok"
 }
@@ -170,7 +383,7 @@ case "${1:-}" in
         self_test
         ;;
     *)
-        fail "unknown or missing command '${1:-}'. Use 'check' with 10 core job results, 8 router outputs, and 2 security job results, or 'test'."
+        fail "unknown or missing command '${1:-}'. Use 'check' with the 30 arguments documented above check_results, or 'test'."
         exit 1
         ;;
 esac

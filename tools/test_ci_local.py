@@ -175,6 +175,98 @@ class InputContractTests(unittest.TestCase):
         (self.root / "readers/check.py").unlink()
         self.assertTrue(self.route()["local_probe"])
 
+    def documentation_contract(self):
+        self.write("src/reader.rs", "include_str!(\"../docs/input.md\");\n")
+        self.git("add", "src/reader.rs")
+        self.git("commit", "-qm", "reader source")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.contract["known_inputs"].append("src/*")
+        self.contract["consumers"].append({
+            "owner": "fixture registry reader",
+            "outputs": ["input_registry"],
+            "inputs": ["src/*"],
+            "documentation_inputs": ["docs/input.md"],
+            "reader_set": "fixture",
+        })
+        self.contract["rust_package_inputs"] = {"keld-reader": ["src/*"]}
+        self.contract["rust_package_documentation_inputs"] = {"keld-reader": ["docs/input.md"]}
+        self.save_contract()
+        self.git("add", "tools/ci-inputs.json")
+        self.git("commit", "-qm", "documentation edges")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def assert_narrowing(self, result, expected):
+        for key in ("documentation_only_registry", "documentation_only_package_keld-reader"):
+            self.assertIs(result[key], expected, key)
+
+    def test_documentation_only_edge_narrows_and_any_other_input_keeps_expansion(self):
+        self.documentation_contract()
+        self.write("docs/input.md", "documentation edit\n")
+        result = self.route()
+        self.assertTrue(result["input_registry"])
+        self.assertTrue(result["input_package_keld-reader"])
+        self.assert_narrowing(result, True)
+        # Negative control: one non-documentation input of the same edges in
+        # the same diff keeps reverse-dependent expansion for both edges.
+        self.write("src/reader.rs", "include_str!(\"../docs/input.md\"); // reader edit\n")
+        result = self.route()
+        self.assertTrue(result["input_registry"])
+        self.assertTrue(result["input_package_keld-reader"])
+        self.assert_narrowing(result, False)
+
+    def test_unrelated_and_fallback_selections_never_narrow(self):
+        self.documentation_contract()
+        self.write("README.md", "unrelated edit\n")
+        result = self.route()
+        self.assertFalse(result["input_registry"])
+        self.assert_narrowing(result, False)
+        self.write("docs/input.md", "documentation edit\n")
+        self.assert_narrowing(self.route(comparison_unknown=True), False)
+        self.write("docs/untracked.md", "no established contract\n")
+        self.assert_narrowing(self.route(), False)
+        (self.root / "docs/untracked.md").unlink()
+        self.contract["consumers"][1]["contract"] = "reviewed scope update"
+        self.save_contract()
+        result = self.route()
+        self.assertTrue(result["input_router"])
+        self.assert_narrowing(result, False)
+
+    def test_reader_drift_never_narrows(self):
+        self.documentation_contract()
+        self.write("readers/check.py", "from pathlib import Path\nPath('docs/other.md').read_text()\n")
+        self.git("add", "readers/check.py")
+        self.git("commit", "-qm", "reader drift")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.write("docs/input.md", "documentation edit\n")
+        result = self.route()
+        # The fixture edge has no input_rust output, so only the drift guard
+        # (not the input_all fallback) can refuse this narrowing.
+        self.assertFalse(result["input_all"])
+        self.assertTrue(result["input_registry"])
+        self.assertFalse(result["documentation_only_registry"])
+        # The package edge has no reader set of its own; its documentation
+        # read still narrows.
+        self.assertTrue(result["documentation_only_package_keld-reader"])
+
+    def test_malformed_documentation_inputs_fail_before_selection(self):
+        self.documentation_contract()
+        for field, invalid in (("consumer", "docs/input.md"), ("consumer", [""]), ("consumer", [None]),
+                               ("package", {"keld-reader": "docs/input.md"}), ("package", {"keld-reader": []}),
+                               ("package", {"keld-reader": [""]}), ("package", ["docs/input.md"])):
+            with self.subTest(field=field, invalid=invalid):
+                self.documentation_contract_reset()
+                if field == "consumer":
+                    self.contract["consumers"][1]["documentation_inputs"] = invalid
+                else:
+                    self.contract["rust_package_documentation_inputs"] = invalid
+                self.save_contract()
+                with self.assertRaises(ValueError):
+                    ci_inputs.classify(self.root, ["docs/input.md"], paths_only=True)
+
+    def documentation_contract_reset(self):
+        self.contract["consumers"][1]["documentation_inputs"] = ["docs/input.md"]
+        self.contract["rust_package_documentation_inputs"] = {"keld-reader": ["docs/input.md"]}
+
     def test_missing_or_malformed_contract_fails_before_selection(self):
         for text in ("invalid", '{}', '[]', 'null', '42', '{"schema":"wrong","consumers":[]}'):
             self.write("tools/ci-inputs.json", text)
@@ -499,7 +591,11 @@ class ProductionConsumerTests(unittest.TestCase):
             subprocess.run(["git", "add", added], cwd=root, check=True, capture_output=True)
             unknown = ci_inputs.classify(root, [added])
             self.assertTrue(unknown["input_all"])
-            self.assertTrue(all(unknown.values()), "new unbound membership must never omit a consumer")
+            narrowing = {key: value for key, value in unknown.items() if key.startswith("documentation_only_")}
+            self.assertTrue(narrowing, "the production contract declares documentation-only edges")
+            self.assertTrue(all(value for key, value in unknown.items() if key not in narrowing),
+                            "new unbound membership must never omit a consumer")
+            self.assertFalse(any(narrowing.values()), "a fallback must never narrow a reverse-dependent closure")
 
     def test_committed_digests_match_live_bytes_and_stale_is_caught(self):
         # Unbound snapshot: the digests are exactly what is committed, so this can fail.
@@ -579,6 +675,20 @@ class ProductionConsumerTests(unittest.TestCase):
             self.assertFalse(result["input_all"], f"{path}: positive example must not hide behind fallback")
             for output in outputs:
                 self.assertTrue(result[output], f"{path} must select {output}")
+        # #624: documentation-only reads narrow; a non-documentation input of
+        # the same edge (the recursive tools scan) never does.
+        narrowing = {
+            "llms-full.txt": ("documentation_only_registry", True),
+            "docs/architecture/02-ipc.md": ("documentation_only_registry", True),
+            "docs/engineering/keld-error-codes.md": ("documentation_only_registry", True),
+            "tools/atomic_protocol.rs": ("documentation_only_registry", False),
+            "crates/keld-cli/src/lib.rs": ("documentation_only_registry", False),
+            "docs/specs/kel53-full-package-activation.md": ("documentation_only_package_keld-update", True),
+            "crates/keld-pack/tests/fixtures/windows-v0-content.tar": ("documentation_only_package_keld-update", False),
+        }
+        for path, (key, expected) in narrowing.items():
+            self.assertTrue((root / path).is_file(), path)
+            self.assertIs(ci_inputs.classify(root, [path], paths_only=True)[key], expected, (path, key))
         source_inventory = (root / "tools/llms_docs.rs").read_text(encoding="utf-8")
         source_inventory = source_inventory.split("const SOURCES: &[Source] = &[", 1)[1].split("\n];", 1)[0]
         corpus_sources = re.findall(r'path: "([^"]+)"', source_inventory)

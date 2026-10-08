@@ -1391,6 +1391,78 @@ fn check_check_job_if_avoids_matrix(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The router owns the `check` OS list (#624): every Rust selection gets all
+/// three OSes except one reached only through documentation reads. A literal
+/// list here would silently ignore that decision in either direction.
+const CHECK_OS_MATRIX: &str = "os: ${{ fromJSON(needs.changes.outputs.check_os) }}";
+
+/// A job's `strategy.matrix.os` lines (indent 8, before `steps:`); never text
+/// elsewhere in the job, such as an `env` value or a `run` script.
+fn workflow_job_matrix_os_lines(text: &str, job: &str) -> Vec<String> {
+    let block = workflow_job_block(text, job).unwrap_or_default();
+    block
+        .lines()
+        .filter_map(yaml_content)
+        .take_while(|(_, content)| *content != "steps:")
+        .filter(|(indent, content)| *indent == 8 && content.starts_with("os:"))
+        .map(|(_, content)| content.to_owned())
+        .collect()
+}
+
+fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
+    let os_lines = workflow_job_matrix_os_lines(text, "check");
+    if os_lines != [CHECK_OS_MATRIX] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must take its OS matrix from the router as exactly `{CHECK_OS_MATRIX}`; got `{}`. The router decides when documentation-only reads run on Windows alone.",
+            os_lines.join("`, `")
+        ));
+    }
+    Ok(())
+}
+
+const WORKSPACE_JOB: &str = "workspace-contracts";
+const WORKSPACE_STEP: &str = "Local workspace path and process contracts";
+
+/// The workspace tool's OS-specific path and process contracts run in their own
+/// three-OS job, selected only by its router output (#624).
+fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, WORKSPACE_JOB) else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `{WORKSPACE_JOB}` job. Restore the three-OS workspace path and process contracts."
+        ));
+    };
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
+        ));
+    }
+    if workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
+        ));
+    }
+    if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != ["os: [ubuntu-latest, macos-latest, windows-latest]"] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run on `os: [ubuntu-latest, macos-latest, windows-latest]`; its path and process contracts differ per OS."
+        ));
+    }
+    if workflow_named_step_direct_keys(&block, WORKSPACE_STEP).unwrap_or_default() != ["shell", "run"]
+        || workflow_named_step_shell_commands(&block, WORKSPACE_STEP).unwrap_or_default()
+            != [
+                "if [ \"${{ matrix.os }}\" = windows-latest ]; then",
+                "python -B tools/test_workspace.py",
+                "else",
+                "python3 -B tools/test_workspace.py",
+                "fi",
+            ]
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run `{WORKSPACE_STEP}` unconditionally with only `shell` and `run`, executing tools/test_workspace.py on every OS."
+        ));
+    }
+    Ok(())
+}
+
 fn check_fuzz_workspace_step(text: &str) -> Result<(), String> {
     let Some(check_job) = workflow_job_block(text, "check") else {
         return Err(format!(
@@ -1701,8 +1773,11 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "secrets",
         "hygiene",
         "mermaid",
-        "codeql",
+        "codeql-rust",
+        "codeql-javascript-typescript",
+        "codeql-actions",
         "dependency-review",
+        "workspace-contracts",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1733,11 +1808,45 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
         ("KELD_ROUTE_MERMAID", "${{ needs.changes.outputs.mermaid }}"),
-        ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+        (
+            "KELD_RESULT_CODEQL_RUST",
+            "${{ needs['codeql-rust'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs['codeql-javascript-typescript'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_ACTIONS",
+            "${{ needs['codeql-actions'].result }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_RUST",
+            "${{ needs.changes.outputs.codeql_rust }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_ACTIONS",
+            "${{ needs.changes.outputs.codeql_actions }}",
+        ),
         (
             "KELD_RESULT_DEPENDENCY_REVIEW",
             "${{ needs['dependency-review'].result }}",
         ),
+        (
+            "KELD_RESULT_WORKSPACE",
+            "${{ needs['workspace-contracts'].result }}",
+        ),
+        ("KELD_ROUTE_WORKSPACE", "${{ needs.changes.outputs.workspace }}"),
+        ("KELD_EVENT_NAME", "${{ github.event_name }}"),
+        (
+            "KELD_ROUTE_RUST_DOCUMENTATION_ONLY",
+            "${{ needs.changes.outputs.rust_documentation_only }}",
+        ),
+        ("KELD_ROUTE_CHECK_OS", "${{ needs.changes.outputs.check_os }}"),
     ] {
         if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
             |entries| {
@@ -1760,7 +1869,13 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
         "\"$KELD_ROUTE_DOCS\" \"$KELD_ROUTE_MERMAID\" ",
-        "\"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
+        "\"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_RESULT_CODEQL_ACTIONS\" ",
+        "\"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_ROUTE_CODEQL_ACTIONS\" ",
+        "\"$KELD_RESULT_DEPENDENCY_REVIEW\" ",
+        "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" ",
+        "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1770,7 +1885,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 20-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 30-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -2606,6 +2721,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_mermaid_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
+    check_check_job_os_matrix(&text)?;
+    check_workspace_contracts_job(&text)?;
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
@@ -2882,6 +2999,9 @@ mod tests {
             "          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
             "          target/product-status/product-status check .",
             "  check:",
+            "    strategy:",
+            "      matrix:",
+            "        os: ${{ fromJSON(needs.changes.outputs.check_os) }}",
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
             "        with:",
@@ -2996,6 +3116,21 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
+            "  workspace-contracts:",
+            "    runs-on: ${{ matrix.os }}",
+            "    if: needs.changes.outputs.workspace == 'true'",
+            "    strategy:",
+            "      matrix:",
+            "        os: [ubuntu-latest, macos-latest, windows-latest]",
+            "    steps:",
+            "      - name: Local workspace path and process contracts",
+            "        shell: bash",
+            "        run: |",
+            "          if [ \"${{ matrix.os }}\" = windows-latest ]; then",
+            "            python -B tools/test_workspace.py",
+            "          else",
+            "            python3 -B tools/test_workspace.py",
+            "          fi",
             "  mermaid:",
             "    needs:",
             "      - changes",
@@ -3024,8 +3159,11 @@ mod tests {
             "      - secrets",
             "      - hygiene",
             "      - mermaid",
-            "      - codeql",
+            "      - codeql-rust",
+            "      - codeql-javascript-typescript",
+            "      - codeql-actions",
             "      - dependency-review",
+            "      - workspace-contracts",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -3050,8 +3188,18 @@ mod tests {
             "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
             "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
             "          KELD_ROUTE_MERMAID: ${{ needs.changes.outputs.mermaid }}",
-            "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
+            "          KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}",
+            "          KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}",
+            "          KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}",
+            "          KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}",
+            "          KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}",
+            "          KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}",
             "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
+            "          KELD_RESULT_WORKSPACE: ${{ needs['workspace-contracts'].result }}",
+            "          KELD_ROUTE_WORKSPACE: ${{ needs.changes.outputs.workspace }}",
+            "          KELD_EVENT_NAME: ${{ github.event_name }}",
+            "          KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}",
+            "          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -3063,7 +3211,13 @@ mod tests {
             "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
             "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
             "            \"$KELD_ROUTE_MERMAID\" \\",
-            "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
+            "            \"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
+            "            \"$KELD_RESULT_CODEQL_ACTIONS\" \\",
+            "            \"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
+            "            \"$KELD_ROUTE_CODEQL_ACTIONS\" \\",
+            "            \"$KELD_RESULT_DEPENDENCY_REVIEW\" \\",
+            "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" \\",
+            "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\"",
             "",
         ]
         .join("\n")
@@ -3683,12 +3837,18 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("20-argument"), "{error}");
+        assert!(error.contains("30-argument"), "{error}");
     }
 
     #[test]
     fn required_result_must_observe_security_jobs() {
-        for job in ["codeql", "dependency-review"] {
+        for job in [
+            "codeql-rust",
+            "codeql-javascript-typescript",
+            "codeql-actions",
+            "dependency-review",
+            "workspace-contracts",
+        ] {
             let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
             let error = check_required_job(&workflow).expect_err("missing security job must fail");
             assert!(error.contains(job), "{error}");
@@ -3698,7 +3858,30 @@ mod tests {
     #[test]
     fn required_result_must_receive_security_results_without_spoofing() {
         for (key, expression) in [
-            ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+            (
+                "KELD_RESULT_CODEQL_RUST",
+                "${{ needs['codeql-rust'].result }}",
+            ),
+            (
+                "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+                "${{ needs['codeql-javascript-typescript'].result }}",
+            ),
+            (
+                "KELD_RESULT_CODEQL_ACTIONS",
+                "${{ needs['codeql-actions'].result }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_RUST",
+                "${{ needs.changes.outputs.codeql_rust }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+                "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_ACTIONS",
+                "${{ needs.changes.outputs.codeql_actions }}",
+            ),
             (
                 "KELD_RESULT_DEPENDENCY_REVIEW",
                 "${{ needs['dependency-review'].result }}",
@@ -3711,7 +3894,79 @@ mod tests {
             let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
             let error =
                 check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("20-argument"), "{error}");
+            assert!(error.contains("30-argument"), "{error}");
+        }
+    }
+
+    #[test]
+    fn check_job_os_matrix_comes_only_from_the_router() {
+        let router = "        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n";
+        assert!(valid_workflow().contains(router));
+        check_check_job_os_matrix(&valid_workflow()).expect("router-owned OS matrix passes");
+        for (replacement, label) in [
+            ("        os: [ubuntu-latest, macos-latest, windows-latest]\n", "literal list"),
+            ("        os: [ubuntu-latest]\n", "literal single OS"),
+            ("        os: ${{ fromJSON(needs.changes.outputs.packages) }}\n", "other output"),
+            ("", "missing matrix"),
+            (
+                "        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n        os: [windows-latest]\n",
+                "duplicate key",
+            ),
+        ] {
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(router, replacement, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("check_os"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn workspace_contracts_job_is_routed_cross_os_and_executed() {
+        check_workspace_contracts_job(&valid_workflow()).expect("fixture workspace job passes");
+        for (old, new, label) in [
+            (
+                "    if: needs.changes.outputs.workspace == 'true'\n",
+                "    if: needs.changes.outputs.rust == 'true'\n",
+                "gated on another output",
+            ),
+            ("    if: needs.changes.outputs.workspace == 'true'\n", "", "ungated"),
+            (
+                "        os: [ubuntu-latest, macos-latest, windows-latest]\n    steps:\n      - name: Local workspace",
+                "        os: [ubuntu-latest]\n    steps:\n      - name: Local workspace",
+                "single OS",
+            ),
+            (
+                "      - name: Local workspace path and process contracts\n        shell: bash\n",
+                "      - name: Local workspace path and process contracts\n        if: false\n        shell: bash\n",
+                "skipped step",
+            ),
+            (
+                "            python3 -B tools/test_workspace.py\n",
+                "            echo python3 -B tools/test_workspace.py\n",
+                "echoed command",
+            ),
+            ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
+            (
+                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ubuntu-latest\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "fixed runner",
+            ),
+            (
+                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    if: needs.changes.outputs.workspace == 'true'\n",
+                "missing runner",
+            ),
+            (
+                "    if: needs.changes.outputs.workspace == 'true'\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n",
+                "    if: needs.changes.outputs.workspace == 'true'\n    env:\n      NOTE: 'os: [ubuntu-latest, macos-latest, windows-latest]'\n    strategy:\n      matrix:\n        os: [ubuntu-latest]\n",
+                "single-OS matrix with the three-OS text elsewhere",
+            ),
+        ] {
+            assert!(valid_workflow().contains(old), "{label}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("workspace-contracts"), "{label}: {error}");
         }
     }
 
@@ -4151,8 +4406,8 @@ mod tests {
         temp.write(
             WORKFLOW,
             &valid_workflow().replacen(
-                "  check:\n    steps:",
-                "  check:\n    if: needs.changes.outputs.rust == 'true' && matrix.os != 'ubuntu-latest'\n    steps:",
+                "  check:\n    strategy:",
+                "  check:\n    if: needs.changes.outputs.rust == 'true' && matrix.os != 'ubuntu-latest'\n    strategy:",
                 1,
             ),
         );
@@ -4287,7 +4542,7 @@ mod tests {
     #[test]
     fn bun_step_pins_accept_named_actions_and_ignore_job_strategy() {
         let workflow = valid_workflow()
-            .replace("  check:\n    steps:", "  check:\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n    steps:")
+            .replace("    strategy:\n      matrix:\n        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n", "    strategy:\n      fail-fast: false\n      matrix:\n        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n")
             .replace("      - uses: oven-sh/setup-bun@", "      - name: install Bun\n        uses: oven-sh/setup-bun@");
         let temp = complete_fixture();
         temp.write(WORKFLOW, &workflow);

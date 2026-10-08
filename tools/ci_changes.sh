@@ -23,12 +23,25 @@ packages=""
 nongtk_packages=""
 ubuntu_packages=""
 ts_packages=""
+codeql_rust="$FALSE"
+codeql_javascript_typescript="$FALSE"
+codeql_actions="$FALSE"
+workspace="$FALSE"
+# The check job's OS matrix, as JSON for fromJSON. Every Rust selection uses all
+# three OSes except one reached only through documentation reads (#624).
+readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
+readonly DOCUMENTATION_CHECK_OS='["windows-latest"]'
+check_os="$ALL_CHECK_OS"
+rust_documentation_only="$FALSE"
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
 consumer_contract=""
 local_force_all="$FALSE"
 declare -a changed_package_roots=()
+# Packages selected only because a reviewed documentation read changed. They
+# are tested themselves, without Cargo reverse-dependent expansion (#624).
+declare -a documentation_reader_roots=()
 declare -a changed_ts_package_dirs=()
 
 usage() {
@@ -51,6 +64,61 @@ mark_all() {
     deny="$TRUE"
     ts="$TRUE"
     all_workspace_packages="$TRUE"
+    workspace="$TRUE"
+    select_every_codeql_language
+}
+
+# A push to main always analyses every language: skipping one there leaves the
+# default branch without the baseline that pull-request alerts compare against.
+# Unknown, all and workflow/router inputs use the same complete selection.
+select_every_codeql_language() {
+    codeql_rust="$TRUE"
+    codeql_javascript_typescript="$TRUE"
+    codeql_actions="$TRUE"
+}
+
+# An extensionless file can be a JavaScript entry point through its shebang.
+# Only a readable regular file without a `#!` first line is proven not to be
+# one; a deleted or unreadable path stays a possible input.
+codeql_extensionless_may_be_javascript() {
+    local root first=""
+    root="$(git rev-parse --show-toplevel)"
+    if [[ ! -f "$root/$1" || -L "$root/$1" || ! -r "$root/$1" ]]; then
+        return 0
+    fi
+    IFS= read -r -n 2 first <"$root/$1" || true
+    [[ "$first" == "#!" ]]
+}
+
+# CodeQL analyses source by language, independent of Cargo package ownership:
+# a documentation read that selects a Rust test package changes no analysed
+# source. The patterns follow the extractors' file types in CodeQL's supported
+# languages list and the JavaScript extractor's HTML/JS types; Rust also takes
+# its build inputs. Every other path selects no analysis unless it falls back
+# to all lanes; push always selects every language.
+classify_codeql_path() {
+    case "$1" in
+        *.rs | Cargo.toml | */Cargo.toml | Cargo.lock | */Cargo.lock | rust-toolchain.toml | .cargo/*)
+            codeql_rust="$TRUE"
+            ;;
+    esac
+    case "$1" in
+        packages/* | *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.es | *.es6 | \
+            *.xsjs | *.xsjslib | *.htm | *.html | *.xhtm | *.xhtml | *.vue | *.hbs | *.ejs | *.njk | \
+            *.erb | *.jsp | *.dot | *.json | *.yaml | *.yml | *.raml | *.xml)
+            codeql_javascript_typescript="$TRUE"
+            ;;
+        *)
+            if [[ "${1##*/}" != *.* ]] && codeql_extensionless_may_be_javascript "$1"; then
+                codeql_javascript_typescript="$TRUE"
+            fi
+            ;;
+    esac
+    case "$1" in
+        .github/workflows/* | .github/actions/* | action.yml | action.yaml | */action.yml | */action.yaml)
+            codeql_actions="$TRUE"
+            ;;
+    esac
 }
 
 # Unknown/shared inputs must not skip Linux GTK clippy. Workflow/router edits
@@ -76,6 +144,12 @@ emit() {
     printf 'nongtk_packages=%s\n' "$nongtk_packages"
     printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
     printf 'ts_packages=%s\n' "$ts_packages"
+    printf 'codeql_rust=%s\n' "$codeql_rust"
+    printf 'codeql_javascript_typescript=%s\n' "$codeql_javascript_typescript"
+    printf 'codeql_actions=%s\n' "$codeql_actions"
+    printf 'workspace=%s\n' "$workspace"
+    printf 'check_os=%s\n' "$check_os"
+    printf 'rust_documentation_only=%s\n' "$rust_documentation_only"
     if [[ -n "$consumer_contract" ]]; then
         if [[ "$local_force_all" == "$TRUE" ]]; then
             printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
@@ -256,6 +330,22 @@ package_requires_webkitgtk() {
 add_changed_package_root() {
     local package_name="$1"
     changed_package_roots+=("$package_name")
+}
+
+# An external consumer edge (the CLI registry reader or a declared
+# input_package_* reader) adds its package. When tools/ci_inputs.py reports
+# that every changed path behind that edge is a reviewed documentation read,
+# the package is tested without its Cargo reverse dependents: documentation
+# bytes change no reverse dependent's compiled API or test input. Any other
+# matching path keeps today's reverse-dependent expansion.
+add_consumer_package_root() {
+    local package_name="$1"
+    local edge="$2"
+    if grep -Fxq "documentation_only_${edge}=true" <<<"$consumer_contract"; then
+        documentation_reader_roots+=("$package_name")
+    else
+        add_changed_package_root "$package_name"
+    fi
 }
 
 add_changed_ts_package_dir() {
@@ -440,10 +530,17 @@ finalize_rust_packages() {
     local expanded=""
     if [[ "$all_workspace_packages" == "$TRUE" ]]; then
         expanded="$(all_workspace_package_names)"
-    elif [[ ${#changed_package_roots[@]} -gt 0 ]]; then
-        for package_name in "${changed_package_roots[@]}"; do
-            expanded+="$(reverse_dependency_closure "$package_name")"$'\n'
-        done
+    elif [[ ${#changed_package_roots[@]} -gt 0 || ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        if [[ ${#changed_package_roots[@]} -gt 0 ]]; then
+            for package_name in "${changed_package_roots[@]}"; do
+                expanded+="$(reverse_dependency_closure "$package_name")"$'\n'
+            done
+        fi
+        if [[ ${#documentation_reader_roots[@]} -gt 0 ]]; then
+            for package_name in "${documentation_reader_roots[@]}"; do
+                expanded+="$package_name"$'\n'
+            done
+        fi
     else
         # A Rust lane without an attributable workspace package must never
         # become an empty success. Use the complete workspace as the safe
@@ -463,13 +560,39 @@ finalize_rust_packages() {
     done
     nongtk_packages="$(printf '%s' "$nongtk" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
 
+    # Documentation bytes reach these packages' unchanged tests only as text,
+    # and .gitattributes checks text out as LF on every OS, so one OS proves
+    # them: no reader of a declared document is skipped or handles it under
+    # cfg(windows) or cfg(target_os). Windows is that OS because it links no
+    # WebKitGTK, so the leg has no network apt step (keld-cli and keld-update
+    # reach keld-wv; on Ubuntu that step took 30-642 s and once hung 44 min).
+    # Any changed package keeps all three OSes (#624).
+    local ubuntu_leg="$TRUE"
+    if [[ "$all_workspace_packages" != "$TRUE" && ${#changed_package_roots[@]} -eq 0 && \
+        ${#documentation_reader_roots[@]} -gt 0 ]]; then
+        check_os="$DOCUMENTATION_CHECK_OS"
+        rust_documentation_only="$TRUE"
+        ubuntu_leg="$FALSE"
+    fi
+
     # An attributable selected `--all-targets` closure that reaches keld-wv
     # installs GTK and runs its original package set on Ubuntu. The workflow
     # consumes this derived selection directly instead of recomputing policy.
     # The all-workspace workflow/router fallback keeps its documented GTK-free
     # subset because GUI smoke is the sole live apt owner for that input class.
-    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" ]]; then
+    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" && \
+        "$ubuntu_leg" == "$TRUE" ]]; then
         webkitgtk="$TRUE"
+    fi
+    if [[ "$ubuntu_leg" != "$TRUE" ]]; then
+        # No Ubuntu leg runs, so it has no package set; the Windows leg runs
+        # the full selection, which must still be non-empty.
+        ubuntu_packages=""
+        if [[ -z "$packages" ]]; then
+            echo "ci router: documentation-only Rust checks selected no package; refusing to emit a skipped-green success" >&2
+            exit 1
+        fi
+        return
     fi
     if [[ "$webkitgtk" == "$TRUE" ]]; then
         ubuntu_packages="$packages"
@@ -506,7 +629,7 @@ finalize_selection() {
             all_workspace_packages="$TRUE"
         elif registry_owner="$(package_for_path crates/keld-cli/tests/error_registry.rs)"; then
             rust="$TRUE"
-            add_changed_package_root "$registry_owner"
+            add_consumer_package_root "$registry_owner" registry
         else
             mark_unknown
         fi
@@ -522,7 +645,7 @@ finalize_selection() {
                 break
             fi
             rust="$TRUE"
-            add_changed_package_root "$consumer_package"
+            add_consumer_package_root "$consumer_package" "package_${consumer_package}"
         fi
     done <<<"$consumer_contract"
     if grep -Fxq 'input_rust=true' <<<"$consumer_contract" && [[ "$rust" != "$TRUE" ]]; then
@@ -555,6 +678,8 @@ host_path_is_affected() {
 
 classify_path() {
     local changed_file="$1"
+
+    classify_codeql_path "$changed_file"
 
     # Crate-local reports/fixtures can be include_bytes!/include_str! inputs.
     # Documentation routing below is additive, never an exemption from its owner.
@@ -597,6 +722,21 @@ classify_path() {
         .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh | \
         tools/ci_inputs.py | tools/ci_local.py | tools/test_ci_local.py | tools/ci-inputs.json)
             mark_all
+            ;;
+
+        # gitleaks loads its configuration and fingerprint ignores from the
+        # repository root, and the gitleaks job runs on every event. No other
+        # lane reads these files, so they select nothing else (#624).
+        .gitleaks.toml | .gitleaksignore)
+            ;;
+
+        # The workspace contract job's whole input: test_workspace.py imports
+        # workspace.py, which imports session_closeout.py. These also drive the
+        # hygiene lane and local agent tooling, so they keep the unknown
+        # fallback; naming the job here keeps it selected if that is narrowed.
+        tools/workspace.py | tools/test_workspace.py | tools/session_closeout.py)
+            mark_unknown
+            workspace="$TRUE"
             ;;
 
         # Workspace and toolchain inputs can alter every Rust build, keld-host's
@@ -798,6 +938,8 @@ classify_github_event() {
         push)
             base_sha="${KELD_CI_BEFORE_SHA:-}"
             head_sha="${GITHUB_SHA:-}"
+            # Only pull requests skip unaffected CodeQL languages (#624).
+            select_every_codeql_language
             ;;
         *)
             mark_unknown

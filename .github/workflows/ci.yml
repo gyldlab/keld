@@ -50,6 +50,12 @@ jobs:
       nongtk_packages: ${{ steps.classify.outputs.nongtk_packages }}
       ubuntu_packages: ${{ steps.classify.outputs.ubuntu_packages }}
       ts_packages: ${{ steps.classify.outputs.ts_packages }}
+      codeql_rust: ${{ steps.classify.outputs.codeql_rust }}
+      codeql_javascript_typescript: ${{ steps.classify.outputs.codeql_javascript_typescript }}
+      codeql_actions: ${{ steps.classify.outputs.codeql_actions }}
+      workspace: ${{ steps.classify.outputs.workspace }}
+      check_os: ${{ steps.classify.outputs.check_os }}
+      rust_documentation_only: ${{ steps.classify.outputs.rust_documentation_only }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -102,11 +108,13 @@ jobs:
     needs: changes
     # Job-level `if` cannot use `matrix` (GitHub evaluates it before expansion).
     # Ubuntu apt and GTK package selection stay on steps, which do have `matrix`.
+    # The router owns the OS list: all three, or Windows alone (no network apt)
+    # when only documentation reads selected the Rust packages (#624).
     if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.changes.outputs.check_os) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -134,14 +142,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
         run: |
           cargo check --manifest-path crates/keld-update/fuzz/Cargo.toml
-      - name: Local workspace path and process contracts
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = windows-latest ]; then
-            python -B tools/test_workspace.py
-          else
-            python3 -B tools/test_workspace.py
-          fi
       - name: Product status Windows path contracts
         if: matrix.os == 'windows-latest'
         shell: bash
@@ -149,8 +149,13 @@ jobs:
           mkdir -p target/product-status
           rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
           target/product-status/product-status-test
+      # A hung Ubuntu mirror must fail this step, not consume the 45-minute job
+      # (#624). Over the last 100 CI runs this step took p50 30 s and p90 95 s;
+      # slow mirror downloads still succeeded in 524 s and 642 s, while two hangs
+      # ran until the job was cancelled at about 2630 s.
       - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
+        timeout-minutes: 15
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -372,6 +377,33 @@ jobs:
             cargo doc -p "$package" --no-deps
           done
 
+  # The local workspace tool's path and process contracts differ per OS, so this
+  # stays a three-OS job. Its inputs are tools/workspace.py, its test and the
+  # session_closeout.py it imports; the router selects it for those and for
+  # every unknown or all-lane input, not for each Rust change (#624).
+  workspace-contracts:
+    name: workspace contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.workspace == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Local workspace path and process contracts
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            python -B tools/test_workspace.py
+          else
+            python3 -B tools/test_workspace.py
+          fi
+
   bun-test:
     name: bun test (TypeScript)
     runs-on: ubuntu-latest
@@ -415,7 +447,9 @@ jobs:
   linux-gui-smoke:
     name: Linux GUI smoke test (Xvfb)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Above the 15-minute apt step bound, so a slow but healthy mirror can
+    # finish and the build and smoke (p90 about 2 minutes) still run (#624).
+    timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.gui == 'true'
     steps:
@@ -428,7 +462,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
+      # Same evidence-based bound as the clippy leg (#624): above the slowest
+      # observed successful apt step (642 s), far below the 44-minute hangs.
+      # A 10-minute bound failed a slow but progressing download.
       - name: Install WebKitGTK build deps + X11 control tools (KEL-28)
+        timeout-minutes: 15
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -648,29 +686,27 @@ jobs:
       - name: Render Mermaid docs in pinned isolated container
         run: tools/mermaid_render_check.sh
 
-  codeql:
-    name: CodeQL (${{ matrix.language }})
-    runs-on: ${{ matrix.os }}
+  # One job per CodeQL language: job-level `if` cannot use `matrix`, and each
+  # language routes on its own inputs (#624). The router selects every language
+  # on push and for unknown, all, workflow or router inputs; pull requests skip a
+  # language whose analysed sources did not change. If the router itself fails
+  # on a push, every language still runs so main keeps its baseline (`CI
+  # required` fails on the router either way). `CI required` rejects a selected
+  # language that skipped and an unselected one that ran.
+  codeql-rust:
+    name: CodeQL (rust)
+    runs-on: macos-latest
     timeout-minutes: 30
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.codeql_rust == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: rust
-            os: macos-latest
-          - language: javascript-typescript
-            os: ubuntu-latest
-          - language: actions
-            os: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-08-05
-        if: matrix.language == 'rust'
         with:
           toolchain: 1.97.1
       # Rust none mode still executes build.rs/proc macros. Keep this on hosted
@@ -679,12 +715,64 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2, bundle 2.27.1
         with:
-          languages: ${{ matrix.language }}
+          languages: rust
           build-mode: none
       - name: Analyze and upload CodeQL results
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2, bundle 2.27.1
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:rust
+          upload: always
+          skip-queries: false
+          wait-for-processing: true
+
+  codeql-javascript-typescript:
+    name: CodeQL (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.codeql_javascript_typescript == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2, bundle 2.27.1
+        with:
+          languages: javascript-typescript
+          build-mode: none
+      - name: Analyze and upload CodeQL results
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2, bundle 2.27.1
+        with:
+          category: /language:javascript-typescript
+          upload: always
+          skip-queries: false
+          wait-for-processing: true
+
+  codeql-actions:
+    name: CodeQL (actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.codeql_actions == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2, bundle 2.27.1
+        with:
+          languages: actions
+          build-mode: none
+      - name: Analyze and upload CodeQL results
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2, bundle 2.27.1
+        with:
+          category: /language:actions
           upload: always
           skip-queries: false
           wait-for-processing: true
@@ -736,8 +824,11 @@ jobs:
       - secrets
       - hygiene
       - mermaid
-      - codeql
+      - codeql-rust
+      - codeql-javascript-typescript
+      - codeql-actions
       - dependency-review
+      - workspace-contracts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -764,8 +855,18 @@ jobs:
           KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}
           KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}
           KELD_ROUTE_MERMAID: ${{ needs.changes.outputs.mermaid }}
-          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}
+          KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}
+          KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}
+          KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}
+          KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}
+          KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}
+          KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}
           KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}
+          KELD_RESULT_WORKSPACE: ${{ needs['workspace-contracts'].result }}
+          KELD_ROUTE_WORKSPACE: ${{ needs.changes.outputs.workspace }}
+          KELD_EVENT_NAME: ${{ github.event_name }}
+          KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}
+          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -787,5 +888,15 @@ jobs:
             "$KELD_ROUTE_HYGIENE" \
             "$KELD_ROUTE_DOCS" \
             "$KELD_ROUTE_MERMAID" \
-            "$KELD_RESULT_CODEQL" \
-            "$KELD_RESULT_DEPENDENCY_REVIEW"
+            "$KELD_RESULT_CODEQL_RUST" \
+            "$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT" \
+            "$KELD_RESULT_CODEQL_ACTIONS" \
+            "$KELD_ROUTE_CODEQL_RUST" \
+            "$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT" \
+            "$KELD_ROUTE_CODEQL_ACTIONS" \
+            "$KELD_RESULT_DEPENDENCY_REVIEW" \
+            "$KELD_RESULT_WORKSPACE" \
+            "$KELD_ROUTE_WORKSPACE" \
+            "$KELD_EVENT_NAME" \
+            "$KELD_ROUTE_RUST_DOCUMENTATION_ONLY" \
+            "$KELD_ROUTE_CHECK_OS"
