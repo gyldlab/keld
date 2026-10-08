@@ -1617,6 +1617,12 @@ export interface WorkerLinkTestHooks {
   readonly beforeWakeDrain?: () => void;
   /** Runs in the park between the `REPLY_READY` and `STATE` loads (reply-then-close order). */
   readonly beforeStateCheck?: () => void;
+  /**
+   * Receives every dispatch task instead of running it, and runs it when it
+   * chooses: withholding the task after wake lets an overdue `call()` timer run
+   * first, an event-loop order the runtime does not specify (§4.6).
+   */
+  readonly deferDispatch?: (run: () => void) => void;
   readonly onBlockingCall?: WorkerBlockingFault;
   /** Claim-step faults (criteria 18 and 26). */
   readonly claimFault?: "skip-publish" | "throw" | "stall-until-deadline-cas";
@@ -2119,8 +2125,14 @@ export class WorkerLink {
 
   #requestDispatch(): void {
     if (Atomics.compareExchange(this.#ctrl, KICK, 0, 1) === 0) {
-      setImmediate(() => this.#dispatch());
+      setImmediate(() => this.#runDispatchTask());
     }
+  }
+
+  #runDispatchTask(): void {
+    const defer = this.#hooks?.deferDispatch;
+    if (defer === undefined) this.#dispatch();
+    else defer(() => this.#dispatch());
   }
 
   /** One dispatch task (§4.6 steps 2 and 3); runs only while this side holds `KICK`. */
@@ -2276,7 +2288,7 @@ export class WorkerLink {
       }
       case "kick":
         // The Worker won KICK's 0 -> 1 exchange: this task owns the dispatcher.
-        this.#dispatch();
+        this.#runDispatchTask();
         return;
     }
   }
@@ -2290,7 +2302,7 @@ export class WorkerLink {
     this.#recordMain(STATE_WORKER_LOST, cause);
     // The Worker can no longer race on KICK, so main takes the dispatcher.
     Atomics.store(this.#ctrl, KICK, 1);
-    setImmediate(() => this.#dispatch());
+    setImmediate(() => this.#runDispatchTask());
   }
 }
 

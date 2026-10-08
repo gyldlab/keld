@@ -703,7 +703,20 @@ async function localClose(): Promise<void> {
   await new Promise<void>((resolve) => process.stdin.once("data", () => resolve()));
 }
 
+// §4.6 expiry rule: a reply retained in the ring before a call()'s deadline
+// decision is that call's answer. The hook withholds every dispatch task behind
+// a fresh timer, so after the park the overdue deadline timer runs first.
+async function expiryDuringPark(): Promise<void> {
+  const { link } = await open({}, { deferDispatch: (run) => setTimeout(run, 0) });
+  const started = performance.now();
+  const early = link.call(LIFECYCLE_CHANNEL, text("early"), 200);
+  link.callBlocking(ECHO_CHANNEL, text("long-park"), 30_000);
+  report("park-outlasted-deadline", performance.now() - started >= 200);
+  await expectReject("early", early);
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
+  "expiry-during-park": expiryDuringPark,
   "local-close": localClose,
   "reply-then-close": replyThenClose,
   "applier-blocking-in-dispatch": applierBlockingInDispatch,

@@ -1372,3 +1372,29 @@ fn local_close_rejects_pending_calls_with_022() {
         ],
     );
 }
+
+/// §4.6 expiry rule: a `call()` answered while main is parked keeps that reply
+/// even when its overdue deadline timer runs before the dispatch task (a hook
+/// withholds the dispatch). Failing first: today the timer reports 006.
+#[test]
+fn expiry_during_park_keeps_a_retained_reply() {
+    let (mut stream, role) = start("expiry-during-park");
+    long_reads(&stream);
+    let early = read_call_named(&mut stream, "early");
+    let park = read_call_named(&mut stream, "long-park");
+    host_reply(&mut stream, early, b"early-reply");
+    // Load shaping, not synchronization: keep the park longer than the async
+    // call's 200 ms deadline. The role asserts that precondition itself.
+    thread::sleep(Duration::from_millis(600));
+    host_reply(&mut stream, park, b"park-reply");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("park-outlasted-deadline", "true"),
+            // Failing-first status: the overdue timer wins over the retained reply.
+            ("early-code", "KELD-IPC-006"),
+            ("done", "true"),
+        ],
+    );
+}
