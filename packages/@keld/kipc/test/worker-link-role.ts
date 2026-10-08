@@ -639,7 +639,74 @@ async function hostCallNoHandler(): Promise<void> {
   expectThrow("later", () => link.callBlocking(LIFECYCLE_CHANNEL, text("later"), 1_000));
 }
 
+// Review finding: a reply published between main's REPLY_READY and STATE loads
+// (host writes the REPLY, then closes) is returned, never reported as 022.
+async function replyThenClose(): Promise<void> {
+  let control: Int32Array = new Int32Array(new SharedArrayBuffer(4));
+  let first = true;
+  const opened = await open(
+    {},
+    {
+      beforeStateCheck: () => {
+        if (!first) return;
+        first = false;
+        // Hold main between the two loads until the Worker has published the
+        // reply and then recorded the close.
+        awaitWord(control, WORKER_LINK_CONTROL.STATE, (value) => value !== 0);
+      },
+    },
+  );
+  control = opened.control;
+  expectThrow("call", () => opened.link.callBlocking(ECHO_CHANNEL, text("reply-then-close"), 30_000));
+  report("reply-ready-after", word(control, WORKER_LINK_CONTROL.REPLY_READY));
+}
+
+// Review finding: an applier may not start a blocking call during dispatch either.
+async function applierBlockingInDispatch(): Promise<void> {
+  const { link } = await open();
+  let inner = "not-called";
+  link.setStateApplier(LIFECYCLE_CHANNEL, () => {
+    inner = expectThrow("inner", () => link.callBlocking(ECHO_CHANNEL, text("inner"), 1_000));
+  });
+  const events = collector(1);
+  link.onEvent(LIFECYCLE_CHANNEL, events.listener);
+  await events.all;
+  report("inner-result", inner);
+  report("probe", decoder.decode(link.callBlocking(ECHO_CHANNEL, text("probe"), 30_000)));
+}
+
+// Review finding: a malformed ERR payload closes the link (022, cause 005).
+async function malformedErr(): Promise<void> {
+  const { link } = await open();
+  expectThrow("call", () => link.callBlocking(LIFECYCLE_CHANNEL, text("err"), 30_000));
+  expectThrow("later", () => link.callBlocking(LIFECYCLE_CHANNEL, text("later"), 1_000));
+}
+
+// WorkerLink.close(): pending calls reject with 022 once retained records are
+// delivered; every later call throws 022; the Worker ends the socket.
+async function localClose(): Promise<void> {
+  const { link, control } = await open();
+  const pending = link.call(LIFECYCLE_CHANNEL, text("pending"), 30_000);
+  link.close();
+  await expectReject("pending", pending);
+  report("state", word(control, WORKER_LINK_CONTROL.STATE));
+  expectThrow("later", () => link.callBlocking(ECHO_CHANNEL, text("later"), 1_000));
+  try {
+    link.sendEvent(LIFECYCLE_CHANNEL, text("after-close"));
+    report("send-after-close", "sent");
+  } catch (err) {
+    report("send-after-close", codeOf(err));
+  }
+  // Stay alive until the host has observed link loss, so the Worker's flush of
+  // the CALL posted before close() is what the host sees, not this exit.
+  await new Promise<void>((resolve) => process.stdin.once("data", () => resolve()));
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
+  "local-close": localClose,
+  "reply-then-close": replyThenClose,
+  "applier-blocking-in-dispatch": applierBlockingInDispatch,
+  "malformed-err": malformedErr,
   "arm-b": armB,
   "wake-rule": wakeRule,
   "close-wake": closeWake,

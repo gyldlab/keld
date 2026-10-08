@@ -17,7 +17,7 @@
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -99,7 +99,7 @@ impl Role {
             .arg(scenario)
             .env("KELD_APP_LINK", app_link)
             .env("KELD_KIPC_TEST_HOOKS", "1")
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -160,6 +160,15 @@ impl Role {
             thread::park_timeout(Duration::from_millis(10));
         };
         self.collect(status)
+    }
+
+    /// Writes one line to the role's stdin: the host's observable "go" for a
+    /// role that must outlive a host-side observation.
+    fn release(&mut self) {
+        let child = self.child.as_mut().expect("role child present");
+        let stdin = child.stdin.as_mut().expect("piped role stdin");
+        stdin.write_all(b"go\n").expect("release the role");
+        stdin.flush().expect("flush role stdin");
     }
 
     /// Kills the role and returns what it printed. Used once the host has
@@ -1250,6 +1259,107 @@ fn criterion27_host_call_without_a_handler_closes_the_link() {
             ("pending-code", "KELD-IPC-022"),
             ("pending-cause-005", "true"),
             ("later-code", "KELD-IPC-022"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Review regression (§4.1 edge A8 to A6): the host writes the REPLY and then
+/// closes; a test hook holds main between its `REPLY_READY` and `STATE` loads
+/// until the Worker has published and recorded the close. The real reply
+/// returns and the slot is emptied, never `KELD-IPC-022`.
+#[test]
+fn review_reply_published_before_the_close_wins() {
+    let (mut stream, role) = start("reply-then-close");
+    let call = read_call_named(&mut stream, "reply-then-close");
+    host_reply(&mut stream, call, b"real-reply");
+    stream
+        .shutdown(Shutdown::Both)
+        .expect("host closes the link");
+    drop(stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("call-returned", "true"),
+            ("call-value", "real-reply"),
+            ("reply-ready-after", "0"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Review regression (§4.6): a state applier running in a dispatch task, not
+/// only in the wake drain, is refused `callBlocking` with `KELD-IPC-005` before
+/// any write, so no fact is re-applied; the link stays up.
+#[test]
+fn review_applier_blocking_call_in_dispatch_is_refused() {
+    let (mut stream, role) = start("applier-blocking-in-dispatch");
+    long_reads(&stream);
+    host_event(&mut stream, 0, 8);
+    // The first CALL the host reads is the probe: the refused inner call wrote nothing.
+    let probe = read_call_named(&mut stream, "probe");
+    host_reply(&mut stream, probe, b"up");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("inner-code", "KELD-IPC-005"),
+            ("inner-result", "KELD-IPC-005"),
+            ("probe", "up"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Review regression (§4.4): an ERR whose payload is not a `CallError` closes
+/// the link as a session-contract violation; the call throws 022 naming 005.
+#[test]
+fn review_malformed_err_closes_the_link_with_022() {
+    let (mut stream, role) = start("malformed-err");
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "err");
+    host_write(&mut stream, FrameKind::Err, call.channel, call.corr, &[]);
+    read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("call-code", "KELD-IPC-022"),
+            ("call-cause-005", "true"),
+            ("call-returned", "false"),
+            ("later-code", "KELD-IPC-022"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// `WorkerLink.close()` records 22 on main: the pending call rejects with
+/// `KELD-IPC-022`, later calls and sends throw it, and the CALL posted before
+/// the close is still written, in post order, before the host observes link
+/// loss. The role stays alive until the host has observed that (stdin "go").
+#[test]
+fn local_close_rejects_pending_calls_with_022() {
+    let (mut stream, mut role) = start("local-close");
+    long_reads(&stream);
+    let frames = read_until_link_loss(&mut stream);
+    role.release();
+    assert_eq!(
+        frames.len(),
+        1,
+        "exactly the CALL posted before the close: {frames:?}"
+    );
+    assert_eq!(frames[0].0.kind, FrameKind::Call);
+    assert_eq!(frames[0].1, b"pending");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("pending-code", "KELD-IPC-022"),
+            ("pending-returned", "false"),
+            ("state", "22"),
+            ("later-code", "KELD-IPC-022"),
+            ("send-after-close", "KELD-IPC-022"),
             ("done", "true"),
         ],
     );

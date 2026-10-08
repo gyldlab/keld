@@ -1615,6 +1615,8 @@ export interface WorkerLinkTestHooks {
   readonly onDispatchIdle?: (rRecs: number, wRecs: number) => void;
   /** Runs on wake before the step-1 drain (criterion 25). */
   readonly beforeWakeDrain?: () => void;
+  /** Runs in the park between the `REPLY_READY` and `STATE` loads (reply-then-close order). */
+  readonly beforeStateCheck?: () => void;
   readonly onBlockingCall?: WorkerBlockingFault;
   /** Claim-step faults (criteria 18 and 26). */
   readonly claimFault?: "skip-publish" | "throw" | "stall-until-deadline-cas";
@@ -1736,6 +1738,7 @@ export class WorkerLink {
   readonly #callHandlers = new Map<number, (payload: Uint8Array) => Promise<WorkerCallReply>>();
   #nextCorr = 1;
   #blockingInFlight = false;
+  #applying = false;
   #blockingCorr = 0;
   #localCause: string | undefined;
   #workerCause: string | undefined;
@@ -1827,10 +1830,10 @@ export class WorkerLink {
   /** Parks the calling thread; returns the host REPLY bytes or throws a KeldCallError. */
   callBlocking(channel: number, payload: Uint8Array, deadlineMs: number): Uint8Array {
     requireDeadline(deadlineMs);
-    if (this.#blockingInFlight) {
+    if (this.#blockingInFlight || this.#applying) {
       throw linkError(
         "KELD-IPC-005",
-        "a blocking call is already in flight; a state applier must not call callBlocking",
+        "a blocking call is already in flight, or a state applier is running; an applier must not call callBlocking",
       );
     }
     requireOutboundFrame(channel, payload);
@@ -1994,11 +1997,8 @@ export class WorkerLink {
     for (;;) {
       const seen = Atomics.load(ctrl, SEQ);
       if (Atomics.load(ctrl, REPLY_READY) === 1) return this.#takeReply();
-      const state = Atomics.load(ctrl, STATE);
-      if (state !== 0) {
-        Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0);
-        throw this.#terminalError(state);
-      }
+      this.#hooks?.beforeStateCheck?.();
+      if (Atomics.load(ctrl, STATE) !== 0) return this.#endPark(corr);
       const now = performance.now();
       const beat = Atomics.load(ctrl, HEARTBEAT);
       if (beat !== heartbeat) {
@@ -2010,10 +2010,9 @@ export class WorkerLink {
           STATE_WORKER_LOST,
           `the transport Worker heartbeat did not move for ${WORKER_LIVENESS_WINDOW_MS} ms while a call was parked`,
         );
-        Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0);
         this.#terminateWorker();
         this.#requestDispatch();
-        throw this.#terminalError(Atomics.load(ctrl, STATE));
+        return this.#endPark(corr);
       }
       if (claimedAt === undefined && now >= deadlineAt) {
         if (Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
@@ -2035,12 +2034,23 @@ export class WorkerLink {
         );
         this.#terminateWorker();
         this.#requestDispatch();
-        throw this.#terminalError(Atomics.load(ctrl, STATE));
+        return this.#endPark(corr);
       }
       const nextCheck = claimedAt === undefined ? deadlineAt : claimedAt + WORKER_LIVENESS_WINDOW_MS;
       const slice = Math.max(1, Math.min(WORKER_HEARTBEAT_INTERVAL_MS, nextCheck - now));
       Atomics.wait(ctrl, SEQ, seen, slice);
     }
+  }
+
+  /**
+   * Leaves a park once `STATE` is not 0. The Worker publishes a claimed reply
+   * before it records any code, so a reply visible now arrived before the end
+   * and wins (§4.1 edge A8 to A6); otherwise the call throws the recorded code.
+   */
+  #endPark(corr: number): Uint8Array {
+    Atomics.compareExchange(this.#ctrl, BLOCKING, corr | 0, 0);
+    if (Atomics.load(this.#ctrl, REPLY_READY) === 1) return this.#takeReply();
+    throw this.#terminalError(Atomics.load(this.#ctrl, STATE));
   }
 
   /** Wake drain and copy-out (§4.5 step 3, §4.6 step 1). */
@@ -2059,8 +2069,19 @@ export class WorkerLink {
       Atomics.store(ctrl, REPLY_READY, 0);
       this.#requestDispatch();
     }
-    if (kind === FrameKind.Err) throw errorFromErrFrame(bytes);
+    if (kind === FrameKind.Err) throw this.#callErrorOrFail(bytes);
     return bytes;
+  }
+
+  /** The `CallError` an ERR carries; a malformed payload ends the link (§4.4). */
+  #callErrorOrFail(payload: Uint8Array): KeldCallError {
+    try {
+      decodeCallError(payload);
+    } catch (err) {
+      this.#failLink(`an ERR payload is not a CallError: ${errorText(err)}`);
+      return this.#terminalError(Atomics.load(this.#ctrl, STATE));
+    }
+    return errorFromErrFrame(payload) as KeldCallError;
   }
 
   /** Runs state appliers for EVENT records from `A_BYTES` up to `limit` (§4.6 step 1). */
@@ -2081,6 +2102,7 @@ export class WorkerLink {
     if (header.kind !== FrameKind.Event) return true;
     const applier = this.#appliers.get(header.channel);
     if (applier === undefined) return true;
+    this.#applying = true;
     try {
       applier(ringCopy(this.#ring, this.#mask, pos + HEADER_LEN, header.len));
       return true;
@@ -2090,6 +2112,8 @@ export class WorkerLink {
       this.#deliveryStopAt = pos;
       this.#failLink(`the state applier for channel ${header.channel} threw: ${errorText(err)}`);
       return false;
+    } finally {
+      this.#applying = false;
     }
   }
 
@@ -2111,7 +2135,9 @@ export class WorkerLink {
       const header = ringHeader(this.#ring, this.#mask, r);
       const envelope = HEADER_LEN + header.len;
       if (r === this.#deliveryStopAt) this.#deliveryStopped = true;
-      let deliver = !this.#deliveryStopped;
+      // After finalize only frames that arrived after a main-recorded end
+      // remain; the link is gone, so they are released, never delivered.
+      let deliver = !this.#deliveryStopped && !this.#finalized;
       if (deliver && (Atomics.load(ctrl, A_BYTES) >>> 0) === r) {
         deliver = this.#applyRecord(r, header);
         if (deliver) Atomics.store(ctrl, A_BYTES, (r + envelope) | 0);
@@ -2150,7 +2176,7 @@ export class WorkerLink {
           this.#pending.delete(header.corr);
           clearTimeout(waiter.timer);
           if (header.kind === FrameKind.Reply) waiter.resolve(payload);
-          else waiter.reject(errorFromErrFrame(payload));
+          else waiter.reject(this.#callErrorOrFail(payload));
           break;
         }
         case FrameKind.Call:
@@ -2404,6 +2430,9 @@ class TransportWorker {
   }
 
   #onFrame(frame: DecodedFrame): void {
+    // Main recorded an end (close, applier or handler failure, liveness): no
+    // inbound frame is retained after it. Its queued `close` ends the socket.
+    if (Atomics.load(this.#ctrl, STATE) !== 0) return;
     const header = frame.header;
     const { policy, action } = selectInboundPolicy(header, this.#table, this.#pending);
     validateReceivedHeader(policy, header);
@@ -2433,7 +2462,9 @@ class TransportWorker {
   #claim(frame: DecodedFrame): void {
     const ctrl = this.#ctrl;
     const corr = frame.header.corr | 0;
-    if (Atomics.load(ctrl, BLOCKING) !== corr) return; // abandoned at its deadline: a late reply
+    // A failed claim means main abandoned the call at its deadline: a late
+    // reply, discarded whatever its size.
+    if (Atomics.compareExchange(ctrl, BLOCKING, corr, 0) !== corr) return;
     if (frame.payload.byteLength > this.#replyBytes) {
       this.#end(
         STATE_OVERFLOW,
@@ -2441,7 +2472,6 @@ class TransportWorker {
       );
       return;
     }
-    if (Atomics.compareExchange(ctrl, BLOCKING, corr, 0) !== corr) return;
     try {
       if (this.#hooks?.claimFault === "throw") throw new Error("test-only claim-step fault");
       Atomics.store(ctrl, REPLY_AT, Atomics.load(ctrl, W_BYTES));
@@ -2525,12 +2555,9 @@ class TransportWorker {
       }
       this.#released = true;
     }
+    // Frames main posted before it recorded an end are still written in post
+    // order; main posts `close` after every end it records itself (§4.2).
     if (this.#ended) return;
-    if (Atomics.load(this.#ctrl, STATE) !== 0) {
-      // Main recorded the end (close, applier or handler failure).
-      this.#end(STATE_CLOSED, "main ended the link");
-      return;
-    }
     switch (message.t) {
       case "call": {
         if (this.#pending.has(message.corr)) {
