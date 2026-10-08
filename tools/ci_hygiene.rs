@@ -1439,9 +1439,16 @@ fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
 const DOCTEST_JOB: &str = "doctest";
 const DOCTEST_STEP: &str = "cargo test --doc";
 
-/// nextest does not run doctests, so this lane does (#632): on one OS, gated
-/// on its router output, over the router's library-package selection, with
-/// an empty selection refused rather than passing as a no-op loop.
+/// The doctest lane's OS matrix. rustdoc compiles doctests for the host target
+/// only: macOS proves the ungated doctests and Windows the `cfg(windows)` ones
+/// (keld-update's activation entry points, KEL-270 T4d S6b2). Neither links
+/// WebKitGTK, so the lane has no network apt step; Ubuntu would need one.
+const DOCTEST_OS_MATRIX: &str = "os: [macos-latest, windows-latest]";
+
+/// nextest does not run doctests, so this lane does (#632): on exactly the
+/// macOS and Windows hosts, gated on its router output, over the router's
+/// library-package selection, with an empty selection refused rather than
+/// passing as a no-op loop.
 fn check_doctest_job(text: &str) -> Result<(), String> {
     let Some(block) = workflow_job_block(text, DOCTEST_JOB) else {
         return Err(format!(
@@ -1455,11 +1462,14 @@ fn check_doctest_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.doctest == 'true'`; the router owns which packages have doctests to run, and without the dependency the job cannot read its outputs."
         ));
     }
-    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("macos-latest")
-        || block.lines().filter_map(yaml_content).any(|(_, content)| content.starts_with("strategy:"))
-    {
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}") {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run once on `runs-on: macos-latest` without a matrix; that OS links no WebKitGTK, so the lane has no network apt step."
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
+        ));
+    }
+    if workflow_job_matrix_os_lines(text, DOCTEST_JOB) != [DOCTEST_OS_MATRIX] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run on exactly `{DOCTEST_OS_MATRIX}`: rustdoc compiles doctests for the host target only, so Windows proves the cfg(windows) doctests and macOS the rest, and neither needs a network apt step."
         ));
     }
     let env_ok = workflow_named_step_mapping(&block, DOCTEST_STEP, "env").is_some_and(|entries| {
@@ -3380,9 +3390,12 @@ mod tests {
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
             "  doctest:",
-            "    runs-on: macos-latest",
+            "    runs-on: ${{ matrix.os }}",
             "    needs: changes",
             "    if: needs.changes.outputs.doctest == 'true'",
+            "    strategy:",
+            "      matrix:",
+            "        os: [macos-latest, windows-latest]",
             "    steps:",
             "      - name: cargo test --doc",
             "        shell: bash",
@@ -4207,7 +4220,7 @@ mod tests {
     }
 
     #[test]
-    fn doctest_job_is_routed_single_os_and_executed() {
+    fn doctest_job_is_routed_two_os_and_executed() {
         check_doctest_job(&valid_workflow()).expect("fixture doctest job passes");
         for (old, new, label) in [
             (
@@ -4216,11 +4229,40 @@ mod tests {
                 "gated on another output",
             ),
             ("    if: needs.changes.outputs.doctest == 'true'\n", "", "ungated"),
-            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: ubuntu-latest\n    needs: changes\n", "Ubuntu runner needs GTK apt"),
             (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "    runs-on: macos-latest\n    needs: changes\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "fixed runner runs every matrix row on macOS",
+            ),
+            (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "    needs: changes\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "missing runner",
+            ),
+            (
+                "        os: [macos-latest, windows-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "        os: [macos-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "macOS alone never compiles a cfg(windows) doctest",
+            ),
+            (
+                "        os: [macos-latest, windows-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "        os: [windows-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "Windows alone skips the ungated doctests' macOS proof",
+            ),
+            (
+                "        os: [macos-latest, windows-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "        os: [ubuntu-latest, macos-latest, windows-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "Ubuntu runner needs GTK apt",
+            ),
+            (
+                "    if: needs.changes.outputs.doctest == 'true'\n    strategy:\n      matrix:\n        os: [macos-latest, windows-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "    if: needs.changes.outputs.doctest == 'true'\n    env:\n      NOTE: 'os: [macos-latest, windows-latest]'\n    strategy:\n      matrix:\n        os: [macos-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "single-OS matrix with the two-OS text elsewhere",
+            ),
+            (
+                "    if: needs.changes.outputs.doctest == 'true'\n    strategy:\n      matrix:\n        os: [macos-latest, windows-latest]\n    steps:\n      - name: cargo test --doc\n",
                 "    if: needs.changes.outputs.doctest == 'true'\n    steps:\n      - name: cargo test --doc\n",
-                "    if: needs.changes.outputs.doctest == 'true'\n    strategy:\n      matrix:\n        os: [macos-latest]\n    steps:\n      - name: cargo test --doc\n",
-                "matrix",
+                "no matrix",
             ),
             (
                 "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.doctest_packages }}\n",
@@ -4243,8 +4285,16 @@ mod tests {
                 "skipped step",
             ),
             ("  doctest:\n", "  doctests:\n", "renamed job"),
-            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n", "missing router dependency"),
-            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n    needs: fmt\n", "wrong dependency"),
+            (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "missing router dependency",
+            ),
+            (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: fmt\n    if: needs.changes.outputs.doctest == 'true'\n",
+                "wrong dependency",
+            ),
         ] {
             assert!(valid_workflow().contains(old), "{label}");
             let temp = complete_fixture();
@@ -4280,15 +4330,21 @@ mod tests {
                 "echoed command",
             ),
             ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
-            ("    runs-on: ${{ matrix.os }}\n    needs: changes\n", "    runs-on: ${{ matrix.os }}\n", "missing router dependency"),
+            // The doctest job precedes this one in the fixture with the same runner and
+            // dependency lines, so each mutation names the workspace job's `if` too.
             (
-                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
-                "    runs-on: ubuntu-latest\n    needs: changes\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "missing router dependency",
+            ),
+            (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ubuntu-latest\n    needs: changes\n    if: needs.changes.outputs.workspace == 'true'\n",
                 "fixed runner",
             ),
             (
-                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
-                "    needs: changes\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    needs: changes\n    if: needs.changes.outputs.workspace == 'true'\n",
                 "missing runner",
             ),
             (

@@ -871,8 +871,12 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
         crate::tests::signing_key().verifying_key().to_bytes(),
     )
     .expect("trusted test verifier");
-    let (attempt_id, channel_id) =
-        seed_pending_activation_journal(&trust, ActivationPhase::PublishPending);
+    // The journal names the fixture owner's image, which the successor presents below.
+    let (attempt_id, channel_id) = seed_pending_activation_journal_with(
+        &trust,
+        ActivationPhase::PublishPending,
+        support::COORDINATOR_IMAGE_BLAKE3,
+    );
     let installation_id = trust
         .lifecycle_installation_id()
         .expect("canonical trusted install binding");
@@ -1071,7 +1075,8 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
         *retired_binding.attempt_id(),
         *retired_binding.lifecycle_channel_id(),
     );
-    let recovered = inspection.recover(&witnessed, [0x55; 32]);
+    let coordinator_image = support::coordinator_image(fixture.path());
+    let recovered = inspection.recover_with_image_file(&witnessed, &coordinator_image);
     writeln!(keeper.stdin.as_mut().expect("keeper stdin"), "EXIT")
         .expect("release keeper helper after QF1 evidence capture");
     drop(keeper.stdin.take());
@@ -1143,7 +1148,7 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
         *inspection.lifecycle_channel_id(),
     );
     let crate::WindowsRecoveryOutcome::Resolved(resolution) = inspection
-        .recover(&resumed, [0x55; 32])
+        .recover_with_image_file(&resumed, &coordinator_image)
         .expect("the resumed attempt's own binding authorizes its rollback")
     else {
         panic!("an awaiting-health attempt that lost its owner rolls back");

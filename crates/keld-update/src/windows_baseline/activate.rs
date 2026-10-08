@@ -493,13 +493,20 @@ impl WindowsActivationWriteSnapshot {
     /// Mints the identities of an attempt for one stage completed under this exact lease,
     /// writing nothing; [`WindowsMintedAttempt::journal`] journals and continues it.
     ///
+    /// `coordinator_image` is the attempt owner's executable image. Its journaled
+    /// `helper_image_blake3` is derived here from every byte of that handle by the one
+    /// image-digest owner ([`super::image_blake3`]); no caller supplies a digest. The
+    /// public entry point, [`crate::WindowsExtractionRoot::begin_activation`], passes the
+    /// file of a `keld_guard::VerifiedWindowsImage`; only crate-internal tests reach this
+    /// function with a plain file.
+    ///
     /// Nothing is renamed before the `PublishPending` journal is durable, so a refusal or
     /// crash before it leaves only the stage, which every census tolerates.
     pub(crate) fn begin_activation(
         self,
         stage: String,
         candidate: &ArtifactIdentity,
-        coordinator_image_blake3: [u8; 32],
+        coordinator_image: &std::fs::File,
     ) -> Result<WindowsMintedAttempt, UpdateError> {
         let Self {
             roots,
@@ -512,13 +519,6 @@ impl WindowsActivationWriteSnapshot {
             version_pins: pins,
         } = self;
         let preflight = (|| {
-            if coordinator_image_blake3 == [0; 32] {
-                return Err(UpdateError::activation(
-                    "coordinator identity",
-                    ActivationEffect::ProtectedStateUnchanged,
-                    "coordinator image digest is required",
-                ));
-            }
             let installation_id = roots.trust.lifecycle_installation_id()?;
             super::load::validate_artifact_scope_and_baseline(
                 &roots.trust.installation.baseline,
@@ -539,6 +539,7 @@ impl WindowsActivationWriteSnapshot {
                     "the completed stage records a different candidate",
                 ));
             }
+            let coordinator_image_blake3 = coordinator_image_digest(coordinator_image)?;
             let [attempt_id, health_channel_id, lifecycle_channel_id] = mint_identities()?;
             let journal = ActivationJournal {
                 attempt_id,
@@ -596,16 +597,59 @@ impl WindowsRecoveryInspection {
     /// also accepts [`Self::resume_unlaunched`], which needs no binding because nothing
     /// was launched; this method checks the binding for every phase.
     ///
+    /// `coordinator` is the recovering owner's own image from its one `keld-guard`
+    /// Authenticode verification. Its digest is derived from every byte of that image's
+    /// pinned handle and must equal the journaled `helper_image_blake3`; no caller
+    /// computes or supplies the digest (KEL-53 §4 "Candidate connect-back", *Order*).
+    /// The verified image is the only accepted argument:
+    ///
+    /// ```no_run
+    /// # use keld_update::{ProcessFamilyRetirement, WindowsRecoveryInspection};
+    /// fn recover(
+    ///     inspection: WindowsRecoveryInspection,
+    ///     retirement: &ProcessFamilyRetirement,
+    ///     coordinator: &keld_guard::VerifiedWindowsImage,
+    /// ) {
+    ///     let _ = inspection.recover(retirement, coordinator);
+    /// }
+    /// ```
+    ///
+    /// The same call with a bare file does not compile. Only the parameter type differs
+    /// from the example above, which pins every other part of the snippet; rustdoc
+    /// checks the error code on nightly builds only:
+    ///
+    /// ```compile_fail,E0308
+    /// # use keld_update::{ProcessFamilyRetirement, WindowsRecoveryInspection};
+    /// fn recover(
+    ///     inspection: WindowsRecoveryInspection,
+    ///     retirement: &ProcessFamilyRetirement,
+    ///     coordinator: &std::fs::File,
+    /// ) {
+    ///     let _ = inspection.recover(retirement, coordinator);
+    /// }
+    /// ```
+    ///
     /// # Errors
-    /// A retirement binding or coordinator digest that differs from the protected
-    /// journal refuses before any write. The journal stays authoritative after every
-    /// refusal ([`ActivationEffect::JournalBoundRecoveryRequired`]).
+    /// A retirement binding or coordinator image that differs from the protected
+    /// journal, or an image that cannot be read, refuses before any write. The journal
+    /// stays authoritative after every refusal
+    /// ([`ActivationEffect::JournalBoundRecoveryRequired`]).
     pub fn recover(
         self,
         retirement: &ProcessFamilyRetirement,
-        coordinator_image_blake3: [u8; 32],
+        coordinator: &keld_guard::VerifiedWindowsImage,
     ) -> Result<WindowsRecoveryOutcome, UpdateError> {
-        let (mut transaction, installation_id) = self.into_transaction(coordinator_image_blake3)?;
+        self.recover_with_image_file(retirement, coordinator.file())
+    }
+
+    /// [`Self::recover`] for the coordinator image's open file: the one crate-private
+    /// path behind that entry point, which crate-internal tests drive with plain files.
+    pub(crate) fn recover_with_image_file(
+        self,
+        retirement: &ProcessFamilyRetirement,
+        coordinator_image: &std::fs::File,
+    ) -> Result<WindowsRecoveryOutcome, UpdateError> {
+        let (mut transaction, installation_id) = self.into_transaction(coordinator_image)?;
         transaction.require_retirement_binding(retirement, &installation_id)?;
         if transaction.journal.phase == ActivationPhase::PublishPending {
             return transaction
@@ -637,16 +681,50 @@ impl WindowsRecoveryInspection {
     /// resumed owner's facts and continues. An attempt whose candidate is neither staged
     /// nor published then resolves as [`WindowsActivationOutcome::Abandoned`].
     ///
+    /// `coordinator` is the resuming owner's own verified image, bound exactly as
+    /// [`Self::recover`] documents. The verified image is the only accepted argument:
+    ///
+    /// ```no_run
+    /// # use keld_update::WindowsRecoveryInspection;
+    /// fn resume(
+    ///     inspection: WindowsRecoveryInspection,
+    ///     coordinator: &keld_guard::VerifiedWindowsImage,
+    /// ) {
+    ///     let _ = inspection.resume_unlaunched(coordinator);
+    /// }
+    /// ```
+    ///
+    /// The same call with a bare file does not compile. Only the parameter type differs
+    /// from the example above, which pins every other part of the snippet; rustdoc
+    /// checks the error code on nightly builds only:
+    ///
+    /// ```compile_fail,E0308
+    /// # use keld_update::WindowsRecoveryInspection;
+    /// fn resume(inspection: WindowsRecoveryInspection, coordinator: &std::fs::File) {
+    ///     let _ = inspection.resume_unlaunched(coordinator);
+    /// }
+    /// ```
+    ///
     /// # Errors
     /// Refuses every other phase: a launched attempt needs
     /// [`Self::recover`] with an exact process-family retirement binding. A coordinator
-    /// digest that differs from the journal also refuses. Every refusal writes nothing
-    /// and keeps the journal authoritative.
+    /// image whose digest differs from the journal, or that cannot be read, also
+    /// refuses. Every refusal writes nothing and keeps the journal authoritative.
     pub fn resume_unlaunched(
         self,
-        coordinator_image_blake3: [u8; 32],
+        coordinator: &keld_guard::VerifiedWindowsImage,
     ) -> Result<WindowsMintedAttempt, UpdateError> {
-        let (transaction, installation_id) = self.into_transaction(coordinator_image_blake3)?;
+        self.resume_unlaunched_with_image_file(coordinator.file())
+    }
+
+    /// [`Self::resume_unlaunched`] for the coordinator image's open file: the one
+    /// crate-private path behind that entry point, which crate-internal tests drive with
+    /// plain files.
+    pub(crate) fn resume_unlaunched_with_image_file(
+        self,
+        coordinator_image: &std::fs::File,
+    ) -> Result<WindowsMintedAttempt, UpdateError> {
+        let (transaction, installation_id) = self.into_transaction(coordinator_image)?;
         if transaction.journal.phase != ActivationPhase::PublishPending {
             return Err(transaction.fault(
                 "unlaunched resume",
@@ -656,9 +734,12 @@ impl WindowsRecoveryInspection {
         transaction.remint(installation_id)
     }
 
+    /// The inspected journal as a transaction, once the coordinator image's digest
+    /// equals the journaled one. The digest is derived here and compared before any
+    /// write; a refusal keeps the journal authoritative.
     fn into_transaction(
         self,
-        coordinator_image_blake3: [u8; 32],
+        coordinator_image: &std::fs::File,
     ) -> Result<(Transaction, [u8; 32]), UpdateError> {
         let Self {
             roots,
@@ -685,6 +766,8 @@ impl WindowsRecoveryInspection {
             stage: candidate_stage,
             journaled: true,
         };
+        let coordinator_image_blake3 = coordinator_image_digest(coordinator_image)
+            .map_err(|cause| transaction.refault(&cause))?;
         if coordinator_image_blake3 != transaction.journal.helper_image_blake3 {
             return Err(transaction.fault(
                 "coordinator identity",
@@ -693,6 +776,19 @@ impl WindowsRecoveryInspection {
         }
         Ok((transaction, lifecycle_installation_id))
     }
+}
+
+/// The attempt owner's journaled image identity: every byte of its open image, read
+/// through the handle by the one image-digest owner. A handle that cannot be read is a
+/// `coordinator identity` refusal with nothing written; the caller labels its effect.
+fn coordinator_image_digest(coordinator_image: &std::fs::File) -> Result<[u8; 32], UpdateError> {
+    super::image_blake3(coordinator_image).map_err(|cause| {
+        UpdateError::activation(
+            "coordinator identity",
+            ActivationEffect::ProtectedStateUnchanged,
+            format!("coordinator image digest: {cause}"),
+        )
+    })
 }
 
 /// Process-wide crash-cut hook for isolated subprocess tests: `(durable, label)`.

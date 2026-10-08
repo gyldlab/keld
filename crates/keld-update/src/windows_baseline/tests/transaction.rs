@@ -23,7 +23,6 @@ const OWNERSHIP: AttemptOwnership = AttemptOwnership {
     attempt_owner: ATTEMPT_OWNER,
 };
 
-const COORDINATOR: [u8; 32] = [0x5a; 32];
 const CRASH_HELPER: &str = "windows_baseline::tests::transaction::windows_activation_crash_helper";
 const CRASH_EXIT: i32 = 93;
 /// The cut between the two health steps: `accept_health` returned and `complete` has
@@ -50,21 +49,37 @@ pub(super) fn begin_with(
     version: &str,
     content: &[u8],
 ) -> WindowsActivationAttempt {
-    begin_by(trust, version, content, COORDINATOR)
+    begin_by(trust, version, content, &coordinator_image(trust))
 }
 
-/// [`begin_with`] by an attempt owner whose image digest is `coordinator`.
+/// [`begin_with`] by an attempt owner whose image is the open file `coordinator`, through
+/// the crate-private file-taking path behind `WindowsExtractionRoot::begin_activation`.
 pub(super) fn begin_by(
     trust: &WindowsBaselineTrust,
     version: &str,
     content: &[u8],
-    coordinator: [u8; 32],
+    coordinator: &std::fs::File,
 ) -> WindowsActivationAttempt {
     let (root, stage) = complete_with(trust, version, content);
     let minted = root
-        .begin_activation(stage, coordinator)
+        .begin_activation_with_image_file(stage, coordinator)
         .expect("mint the attempt identities without writing");
     awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON))
+}
+
+/// The fixture root beside `trust`'s installation, which the crash-cut children share.
+fn fixture_root(trust: &WindowsBaselineTrust) -> &std::path::Path {
+    trust
+        .installation
+        .install_root
+        .parent()
+        .expect("fixture root")
+}
+
+/// The fixture attempt owner's image for `trust`'s installation, whose digest is
+/// [`support::COORDINATOR_IMAGE_BLAKE3`].
+pub(super) fn coordinator_image(trust: &WindowsBaselineTrust) -> std::fs::File {
+    support::coordinator_image(fixture_root(trust))
 }
 
 /// The live attempt that journaling minted identities reached at its health decision.
@@ -80,7 +95,7 @@ fn awaiting_health(
 }
 
 /// Completes one stage under its `incomplete-*` name and keeps the writer lease in its root.
-fn complete(
+pub(super) fn complete(
     trust: &WindowsBaselineTrust,
     version: &str,
 ) -> (crate::WindowsExtractionRoot, crate::CompletedWindowsStage) {
@@ -389,7 +404,10 @@ fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versio
         &journal.lifecycle_channel_id,
         attempt.lifecycle_channel_id()
     );
-    assert_eq!(journal.helper_image_blake3, COORDINATOR);
+    assert_eq!(
+        journal.helper_image_blake3,
+        support::COORDINATOR_IMAGE_BLAKE3
+    );
     assert_eq!(journal.rollback_target.version, "1.0.0");
     assert_eq!(journal.prior_floor, "1.0.0");
     assert_eq!(
@@ -605,11 +623,12 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
         "live rollback writes nothing without exact proof"
     );
 
+    let image = coordinator_image(&trust);
     for wrong in &substituted {
         let inspection =
             load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
         assert_refusal(
-            inspection.recover(wrong, COORDINATOR),
+            inspection.recover_with_image_file(wrong, &image),
             "process-family retirement binding",
             ActivationEffect::JournalBoundRecoveryRequired,
         );
@@ -620,7 +639,10 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
     let inspection =
         load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
     assert_refusal(
-        inspection.recover(&exact, flip(COORDINATOR)),
+        inspection.recover_with_image_file(
+            &exact,
+            &support::other_coordinator_image(fixture_root(&trust)),
+        ),
         "coordinator identity",
         ActivationEffect::JournalBoundRecoveryRequired,
     );
@@ -628,7 +650,7 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
     let inspection =
         load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
     assert_refusal(
-        inspection.resume_unlaunched(COORDINATOR),
+        inspection.resume_unlaunched_with_image_file(&image),
         "unlaunched resume",
         ActivationEffect::JournalBoundRecoveryRequired,
     );
@@ -647,6 +669,143 @@ fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
 }
 
 #[test]
+fn begin_activation_journals_the_blake3_of_every_byte_of_the_owner_image() {
+    let fixture = tempfile::tempdir().expect("owner image digest fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    // The fixture image is the official BLAKE3 test-vector input, so its published
+    // digest is the oracle. The one-shot hash of the bytes read back checks the fixture
+    // against that vector, not the production digest, which reads through the handle.
+    drop(coordinator_image(&trust));
+    let bytes = std::fs::read(fixture.path().join("coordinator-image.bin"))
+        .expect("fixture owner image bytes");
+    assert_eq!(bytes.len(), support::COORDINATOR_IMAGE_LEN);
+    assert_eq!(
+        *blake3::hash(&bytes).as_bytes(),
+        support::COORDINATOR_IMAGE_BLAKE3,
+        "the fixture image is the published test-vector input"
+    );
+
+    let attempt = begin(&trust, "2.0.0");
+    let journal = observe(&trust)
+        .journal
+        .expect("the live attempt is journaled");
+    assert_eq!(
+        journal.helper_image_blake3,
+        support::COORDINATOR_IMAGE_BLAKE3,
+        "the journal names the BLAKE3 of every byte of the owner's image"
+    );
+    let health = receipt(&attempt);
+    attempt
+        .accept_health(&health)
+        .and_then(WindowsHealthAcceptedAttempt::complete)
+        .expect("commit the fixture owner's candidate");
+
+    // The final byte is part of the digest: an image that differs only there journals
+    // a different digest, the one-shot hash of its own bytes.
+    let other = support::other_coordinator_image(fixture.path());
+    let other_bytes = std::fs::read(fixture.path().join("other-coordinator-image.bin"))
+        .expect("other image bytes");
+    assert_eq!(other_bytes.len(), bytes.len());
+    let attempt = begin_by(&trust, "3.0.0", GOLDEN, &other);
+    let journal = observe(&trust)
+        .journal
+        .expect("the live attempt is journaled");
+    assert_ne!(
+        journal.helper_image_blake3,
+        support::COORDINATOR_IMAGE_BLAKE3
+    );
+    assert_eq!(
+        journal.helper_image_blake3,
+        *blake3::hash(&other_bytes).as_bytes()
+    );
+    let health = receipt(&attempt);
+    attempt
+        .accept_health(&health)
+        .and_then(WindowsHealthAcceptedAttempt::complete)
+        .expect("commit the other owner's candidate");
+
+    // An image whose digest cannot be derived refuses at the start with nothing written.
+    let (root, stage) = complete(&trust, "4.0.0");
+    let before = observe(&trust);
+    match root.begin_activation_with_image_file(
+        stage,
+        &support::unreadable_coordinator_image(fixture.path()),
+    ) {
+        Err(UpdateError::Activation {
+            step: "start",
+            effect: ActivationEffect::ProtectedStateUnchanged,
+            detail,
+        }) => assert!(
+            detail.contains("coordinator identity: coordinator image digest:"),
+            "{detail}"
+        ),
+        other => panic!("an unreadable owner image must refuse the start: {other:?}"),
+    }
+    assert_eq!(observe(&trust), before, "a refused start writes nothing");
+}
+
+#[test]
+fn recovery_refuses_an_image_whose_bytes_hash_differently_before_any_write() {
+    let fixture = tempfile::tempdir().expect("recovery image refusal fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    let journal_path = trust.installation.update_root.join("activation-journal");
+    let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
+    let before = observe(&trust);
+    assert_eq!(
+        before.journal.as_ref().map(|journal| &journal.phase),
+        Some(&ActivationPhase::PublishPending)
+    );
+    let inspection = || {
+        load_windows_recovery_inspection(&trust, &verifier(&trust))
+            .expect("inspect the unlaunched attempt")
+    };
+    let retirement = {
+        let inspection = inspection();
+        ProcessFamilyRetirement::from_exact_zero_observation(
+            *inspection.lifecycle_installation_id(),
+            *inspection.attempt_id(),
+            *inspection.lifecycle_channel_id(),
+        )
+    };
+    let other = support::other_coordinator_image(fixture.path());
+    let unreadable = support::unreadable_coordinator_image(fixture.path());
+    for (label, image) in [("different bytes", &other), ("unreadable", &unreadable)] {
+        assert_refusal(
+            inspection().resume_unlaunched_with_image_file(image),
+            "coordinator identity",
+            ActivationEffect::JournalBoundRecoveryRequired,
+        );
+        assert_refusal(
+            inspection().recover_with_image_file(&retirement, image),
+            "coordinator identity",
+            ActivationEffect::JournalBoundRecoveryRequired,
+        );
+        assert_eq!(
+            std::fs::read(&journal_path).expect("journal after the refusals"),
+            lost,
+            "{label}: the journal bytes are unchanged"
+        );
+        assert_eq!(observe(&trust), before, "{label}: nothing is written");
+    }
+    drop((other, unreadable));
+
+    // Positive control: the journaled image resumes the attempt, still writing nothing.
+    let minted = inspection()
+        .resume_unlaunched_with_image_file(&coordinator_image(&trust))
+        .expect("the journaled image resumes the unlaunched attempt");
+    assert_eq!(
+        std::fs::read(&journal_path).expect("journal after minting"),
+        lost
+    );
+    drop(minted);
+    assert_eq!(
+        recover_exact(&trust).expect("exact recovery finishes the attempt"),
+        WindowsActivationOutcome::Committed
+    );
+    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
+}
+
+#[test]
 fn a_refusal_before_the_journal_leaves_only_the_completed_stage() {
     let fixture = tempfile::tempdir().expect("pre-journal refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
@@ -658,8 +817,12 @@ fn a_refusal_before_the_journal_leaves_only_the_completed_stage() {
     std::fs::create_dir(&earlier_retired).expect("an earlier retired tree");
 
     let (root, stage) = complete(&trust, "3.0.0");
+    // An owner image whose digest cannot be derived refuses before any write.
     assert_refusal(
-        root.begin_activation(stage, [0; 32]),
+        root.begin_activation_with_image_file(
+            stage,
+            &support::unreadable_coordinator_image(fixture.path()),
+        ),
         "start",
         ActivationEffect::ProtectedStateUnchanged,
     );
@@ -683,7 +846,7 @@ fn a_refusal_before_the_journal_leaves_only_the_completed_stage() {
     let (root, stage) = complete(&trust, "3.0.0");
     std::fs::remove_dir_all(versions.join(stage.name())).expect("remove the completed stage");
     assert_refusal(
-        root.begin_activation(stage, COORDINATOR),
+        root.begin_activation_with_image_file(stage, &coordinator_image(&trust)),
         "start",
         ActivationEffect::ProtectedStateUnchanged,
     );
@@ -775,7 +938,7 @@ fn a_stage_recording_a_different_candidate_refuses_before_the_journal() {
             .join(stage.name()),
         &other,
     );
-    match root.begin_activation(stage, COORDINATOR) {
+    match root.begin_activation_with_image_file(stage, &coordinator_image(&trust)) {
         Err(UpdateError::Activation {
             step,
             effect,
@@ -967,7 +1130,7 @@ fn windows_versions_tamper_helper() {
         .expect("install the tamper hook once");
     let (stage_root, stage) = complete(&trust, "3.0.0");
     match stage_root
-        .begin_activation(stage, COORDINATOR)
+        .begin_activation_with_image_file(stage, &coordinator_image(&trust))
         .and_then(|minted| minted.journal(ATTEMPT_OWNER, INITIATING_LOGON))
     {
         Err(UpdateError::Activation { step, effect, .. }) => {
@@ -1147,7 +1310,7 @@ fn a_published_candidate_that_fails_verification_is_retired_and_abandoned() {
     bytes[last] ^= 1;
     std::fs::write(&archive, bytes).expect("corrupt the completed stage after completion");
     match root
-        .begin_activation(stage, COORDINATOR)
+        .begin_activation_with_image_file(stage, &coordinator_image(&trust))
         .and_then(|minted| minted.journal(ATTEMPT_OWNER, INITIATING_LOGON))
     {
         Err(UpdateError::Activation { step, effect, .. }) => {
@@ -1345,7 +1508,7 @@ fn an_unlaunched_attempt_resumes_under_the_lease_with_fresh_channels() {
     let inspection = load_windows_recovery_inspection(&trust, &verifier(&trust))
         .expect("inspect the unlaunched attempt");
     let minted = inspection
-        .resume_unlaunched(COORDINATOR)
+        .resume_unlaunched_with_image_file(&coordinator_image(&trust))
         .expect("a never-launched attempt resumes under the writer lease alone");
     assert_eq!(minted.attempt_id(), &lost.attempt_id);
     assert_ne!(minted.health_channel_id(), &lost.health_channel_id);
@@ -1424,7 +1587,7 @@ fn minting_writes_nothing_until_the_owner_journals_its_facts() {
     assert_eq!((before.journal.as_ref(), before.pending_records), (None, 1));
 
     let minted = root
-        .begin_activation(stage, COORDINATOR)
+        .begin_activation_with_image_file(stage, &coordinator_image(&trust))
         .expect("mint the attempt identities");
     assert_eq!(
         observe(&trust),
@@ -1496,7 +1659,7 @@ fn journal_bound_recovery_re_mints_an_unlaunched_attempt_without_writing() {
         *inspection.lifecycle_channel_id(),
     );
     let WindowsRecoveryOutcome::Reminted(minted) = inspection
-        .recover(&retirement, COORDINATOR)
+        .recover_with_image_file(&retirement, &coordinator_image(&trust))
         .expect("an exact binding admits journal-bound recovery")
     else {
         panic!("a publish-pending journal re-mints its channels");
@@ -1552,7 +1715,7 @@ fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
     let (root, stage) = complete(&trust, "2.0.0");
     let before = observe(&trust);
     let minted = root
-        .begin_activation(stage, COORDINATOR)
+        .begin_activation_with_image_file(stage, &coordinator_image(&trust))
         .expect("mint the attempt identities");
     // Seam-injected: the owner found its endpoint name already present.
     assert_refusal(
@@ -1573,7 +1736,7 @@ fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
     let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
     let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
         .expect("inspect the unlaunched attempt")
-        .resume_unlaunched(COORDINATOR)
+        .resume_unlaunched_with_image_file(&coordinator_image(&trust))
         .expect("re-mint the channels");
     assert_refusal(
         Err::<(), _>(minted.refuse("attempt endpoint", "the endpoint name already exists")),
@@ -1637,7 +1800,7 @@ fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
         let (root, stage) = complete(&trust, "2.0.0");
         let before = observe(&trust);
         let minted = root
-            .begin_activation(stage, COORDINATOR)
+            .begin_activation_with_image_file(stage, &coordinator_image(&trust))
             .expect("mint the attempt identities");
         assert_owner_fact_refusal(
             minted.journal(attempt_owner, initiating_logon),
@@ -1661,7 +1824,7 @@ fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
     ] {
         let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
             .expect("inspect the unlaunched attempt")
-            .resume_unlaunched(COORDINATOR)
+            .resume_unlaunched_with_image_file(&coordinator_image(&trust))
             .expect("re-mint the channels");
         assert_owner_fact_refusal(
             minted.journal(ATTEMPT_OWNER, initiating_logon),
@@ -1877,7 +2040,7 @@ fn recover_exact(trust: &WindowsBaselineTrust) -> Result<WindowsActivationOutcom
         *inspection.attempt_id(),
         lost_channel,
     );
-    let minted = match inspection.recover(&retirement, COORDINATOR)? {
+    let minted = match inspection.recover_with_image_file(&retirement, &coordinator_image(trust))? {
         WindowsRecoveryOutcome::Resolved(resolution) => {
             assert!(resolution.cleanup_error().is_none());
             return Ok(resolution.outcome());
