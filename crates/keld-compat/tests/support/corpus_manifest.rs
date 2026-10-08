@@ -1153,6 +1153,8 @@ pub fn fixture_files(reg: &Registration) -> Result<Vec<(String, Vec<u8>)>, Corpu
     Ok(files)
 }
 
+/// Recursively appends each file's bytes and `/`-separated path to `out`. Returned
+/// paths start with `prefix`; an empty prefix makes them relative to `dir`.
 pub fn collect_files(
     dir: &Path,
     prefix: &str,
