@@ -32,6 +32,7 @@ workspace="$FALSE"
 readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
 readonly DOCUMENTATION_CHECK_OS='["windows-latest"]'
 check_os="$ALL_CHECK_OS"
+rust_documentation_only="$FALSE"
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
@@ -148,6 +149,7 @@ emit() {
     printf 'codeql_actions=%s\n' "$codeql_actions"
     printf 'workspace=%s\n' "$workspace"
     printf 'check_os=%s\n' "$check_os"
+    printf 'rust_documentation_only=%s\n' "$rust_documentation_only"
     if [[ -n "$consumer_contract" ]]; then
         if [[ "$local_force_all" == "$TRUE" ]]; then
             printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
@@ -569,6 +571,7 @@ finalize_rust_packages() {
     if [[ "$all_workspace_packages" != "$TRUE" && ${#changed_package_roots[@]} -eq 0 && \
         ${#documentation_reader_roots[@]} -gt 0 ]]; then
         check_os="$DOCUMENTATION_CHECK_OS"
+        rust_documentation_only="$TRUE"
         ubuntu_leg="$FALSE"
     fi
 

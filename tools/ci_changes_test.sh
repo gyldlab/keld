@@ -23,7 +23,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os)=)' <<<"$actual")"
+    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os|rust_documentation_only)=)' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -332,6 +332,14 @@ expect_exact_output "docs-only PR does not select workspace contracts" workspace
 expect_exact_output "reader-doc PR runs its reader on Windows only" check_os "$check_os_documentation" "$reader_doc_pr"
 expect_exact_output "package documentation read runs on Windows only" check_os "$check_os_documentation" "$package_doc_pr"
 expect_exact_output "package documentation read installs no Ubuntu GTK" webkitgtk false "$package_doc_pr"
+expect_exact_output "reader-doc PR reports a documentation-only Rust selection" rust_documentation_only true "$reader_doc_pr"
+expect_exact_output "package documentation read reports a documentation-only Rust selection" rust_documentation_only true "$package_doc_pr"
+# Negative controls: code, mixed, docs-only (no Rust) and fallback selections.
+for selection in "$cli_source" "$reader_doc_with_source" "$reader_doc_with_tool" "$package_doc_with_source" \
+    "$docs_only_pr" "$workflow_codeql" "$unknown_codeql"; do
+    expect_exact_output "non-documentation selection reports rust_documentation_only=false" \
+        rust_documentation_only false "$selection"
+done
 expect_empty_output "package documentation read has no Ubuntu leg package set" ubuntu_packages "$package_doc_pr"
 # Negative controls: any changed package, tools input, workflow or unknown path
 # keeps all three OSes.

@@ -1431,6 +1431,11 @@ fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` has no `{WORKSPACE_JOB}` job. Restore the three-OS workspace path and process contracts."
         ));
     };
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
+        ));
+    }
     if workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'") {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
@@ -1836,6 +1841,12 @@ fn check_required_job(text: &str) -> Result<(), String> {
             "${{ needs['workspace-contracts'].result }}",
         ),
         ("KELD_ROUTE_WORKSPACE", "${{ needs.changes.outputs.workspace }}"),
+        ("KELD_EVENT_NAME", "${{ github.event_name }}"),
+        (
+            "KELD_ROUTE_RUST_DOCUMENTATION_ONLY",
+            "${{ needs.changes.outputs.rust_documentation_only }}",
+        ),
+        ("KELD_ROUTE_CHECK_OS", "${{ needs.changes.outputs.check_os }}"),
     ] {
         if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
             |entries| {
@@ -1863,7 +1874,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
         "\"$KELD_ROUTE_CODEQL_ACTIONS\" ",
         "\"$KELD_RESULT_DEPENDENCY_REVIEW\" ",
-        "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\""
+        "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" ",
+        "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1873,7 +1885,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 27-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 30-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -3105,6 +3117,7 @@ mod tests {
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
             "  workspace-contracts:",
+            "    runs-on: ${{ matrix.os }}",
             "    if: needs.changes.outputs.workspace == 'true'",
             "    strategy:",
             "      matrix:",
@@ -3184,6 +3197,9 @@ mod tests {
             "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
             "          KELD_RESULT_WORKSPACE: ${{ needs['workspace-contracts'].result }}",
             "          KELD_ROUTE_WORKSPACE: ${{ needs.changes.outputs.workspace }}",
+            "          KELD_EVENT_NAME: ${{ github.event_name }}",
+            "          KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}",
+            "          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -3200,7 +3216,8 @@ mod tests {
             "            \"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
             "            \"$KELD_ROUTE_CODEQL_ACTIONS\" \\",
             "            \"$KELD_RESULT_DEPENDENCY_REVIEW\" \\",
-            "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\"",
+            "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" \\",
+            "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\"",
             "",
         ]
         .join("\n")
@@ -3820,7 +3837,7 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("27-argument"), "{error}");
+        assert!(error.contains("30-argument"), "{error}");
     }
 
     #[test]
@@ -3877,7 +3894,7 @@ mod tests {
             let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
             let error =
                 check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("27-argument"), "{error}");
+            assert!(error.contains("30-argument"), "{error}");
         }
     }
 
@@ -3929,6 +3946,16 @@ mod tests {
                 "echoed command",
             ),
             ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
+            (
+                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ubuntu-latest\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "fixed runner",
+            ),
+            (
+                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    if: needs.changes.outputs.workspace == 'true'\n",
+                "missing runner",
+            ),
             (
                 "    if: needs.changes.outputs.workspace == 'true'\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n",
                 "    if: needs.changes.outputs.workspace == 'true'\n    env:\n      NOTE: 'os: [ubuntu-latest, macos-latest, windows-latest]'\n    strategy:\n      matrix:\n        os: [ubuntu-latest]\n",

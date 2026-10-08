@@ -55,6 +55,7 @@ jobs:
       codeql_actions: ${{ steps.classify.outputs.codeql_actions }}
       workspace: ${{ steps.classify.outputs.workspace }}
       check_os: ${{ steps.classify.outputs.check_os }}
+      rust_documentation_only: ${{ steps.classify.outputs.rust_documentation_only }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -863,6 +864,9 @@ jobs:
           KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}
           KELD_RESULT_WORKSPACE: ${{ needs['workspace-contracts'].result }}
           KELD_ROUTE_WORKSPACE: ${{ needs.changes.outputs.workspace }}
+          KELD_EVENT_NAME: ${{ github.event_name }}
+          KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}
+          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -892,4 +896,7 @@ jobs:
             "$KELD_ROUTE_CODEQL_ACTIONS" \
             "$KELD_RESULT_DEPENDENCY_REVIEW" \
             "$KELD_RESULT_WORKSPACE" \
-            "$KELD_ROUTE_WORKSPACE"
+            "$KELD_ROUTE_WORKSPACE" \
+            "$KELD_EVENT_NAME" \
+            "$KELD_ROUTE_RUST_DOCUMENTATION_ONLY" \
+            "$KELD_ROUTE_CHECK_OS"
