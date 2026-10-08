@@ -331,16 +331,11 @@ mod tests {
             "{main}"
         );
         assert!(
-            main.contains("await windowsClosed"),
-            "KEL-185: stock app must consume LastWindowClosed on its app-link: {main}"
-        );
-        assert!(
-            main.contains("assertStockQuitReply(session.quit())"),
-            "KEL-185: stock app must await the correlated Quit Reply: {main}"
-        );
-        assert!(
-            main.contains("quitAndCloseLink(this.#link"),
-            "GH-528 T3: the Quit closes the link on its Reply: {main}"
+            main.contains("await windowsClosed")
+                && main.contains("assertStockQuitReply(session.quit())")
+                && main.contains("quitAndCloseLink(this.#link"),
+            "KEL-185 / GH-528 T3: the stock app consumes LastWindowClosed, then its Quit \
+             awaits the correlated Reply and closes the link: {main}"
         );
         assert!(
             !main.contains("await new Promise(() => {})"),
