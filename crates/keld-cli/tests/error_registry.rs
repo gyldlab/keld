@@ -38,6 +38,10 @@ const SCAN_REL: &[&str] = &[
     "crates/keld-host/src",
     // The elevated updater helper binary (KEL-270 T4d S9c) emits KELD-HELPER-*.
     "crates/keld-updater-helper/src",
+    // The canonical TypeScript transport (GH-527 §4.4): the WorkerLink wake
+    // codes KELD-IPC-022/025/026/027 are emitted only here. Before this entry
+    // a TypeScript code was registered only when Rust emitted the same string.
+    "packages/@keld/kipc/src",
     "tools",
 ];
 

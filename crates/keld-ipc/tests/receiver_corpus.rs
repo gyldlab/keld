@@ -47,6 +47,20 @@ fn policy_by_name(name: &str) -> ReceivePolicy {
             arg.expect("policy arg").parse().expect("channel id"),
         )),
         "primary-app-receiver" => ReceivePolicy::primary_app_receiver(),
+        "reply-waiter" => {
+            let (channel, corr) = arg
+                .and_then(|arg| arg.split_once(':'))
+                .expect("reply-waiter:<channel>:<corr>");
+            ReceivePolicy::reply_waiter(
+                ChannelId(channel.parse().expect("channel id")),
+                CorrelationId(corr.parse().expect("corr id")),
+            )
+            .expect("corpus reply-waiter rows name a reply-carrying channel")
+        }
+        "event-receiver" => ReceivePolicy::event_receiver(ChannelId(
+            arg.expect("policy arg").parse().expect("channel id"),
+        ))
+        .expect("corpus event-receiver rows name an EVENT channel"),
         other => panic!("unknown corpus policy: {other}"),
     }
 }
@@ -91,15 +105,20 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
         ("lifecycle-reply-waiter", keld_ipc::FrameKind::Reply) => {
             keld_ipc::codec::decode::<LifecycleResponse>(payload).map(|_| ())
         }
-        ("lifecycle-reply-waiter", keld_ipc::FrameKind::Err) => {
+        ("lifecycle-reply-waiter" | "reply-waiter", keld_ipc::FrameKind::Err) => {
             keld_ipc::codec::decode::<CallError>(payload).map(|_| ())
+        }
+        ("event-receiver", keld_ipc::FrameKind::Event) => {
+            // GH-527 §4.9: the only EVENT channel today is lifecycle.
+            keld_ipc::codec::decode::<LifecycleEvent>(payload).map(|_| ())
         }
         // PING carries no payload; the future privileged channel declares its
         // codec under KEL-102/T3; the primary session's per-channel codecs are
-        // proven by their own policies' rows.
-        (_, keld_ipc::FrameKind::Ping) | ("privileged-fs-receiver" | "primary-app-receiver", _) => {
-            Ok(())
-        }
+        // proven by their own policies' rows; a generic reply waiter's REPLY
+        // codec belongs to the channel that issued the CALL (GH-527 §4.7).
+        (_, keld_ipc::FrameKind::Ping)
+        | ("privileged-fs-receiver" | "primary-app-receiver", _)
+        | ("reply-waiter", keld_ipc::FrameKind::Reply) => Ok(()),
         (base, kind) => panic!("corpus stage-two has no rule for {base}/{kind:?}"),
     }
 }

@@ -263,13 +263,40 @@ impl ReceivePolicy {
     }
 
     /// App-side lifecycle event receiver: uncorrelated `EVENT`s on the
-    /// lifecycle channel (spec table row 6).
+    /// lifecycle channel (spec table row 6). Same policy as
+    /// [`Self::event_receiver`] for the lifecycle channel.
     #[must_use]
     pub const fn lifecycle_event_receiver() -> Self {
+        Self::event_receiver_on(crate::lifecycle::LIFECYCLE_CHANNEL)
+    }
+
+    /// App-side EVENT receiver for one host-declared EVENT channel (GH-527
+    /// spec §4.7 and §4.9 row `event-receiver:<channel>`): uncorrelated
+    /// `EVENT`s on `channel`, plus the live `PING` probe.
+    ///
+    /// The transport Worker selects this policy per frame from the role's
+    /// declared `eventChannels`; wire bytes never select it. Lifecycle is the
+    /// only channel that carries host `EVENT`s today, so every other channel
+    /// is refused until the channel table (#613) declares one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) for a channel that
+    /// carries no host `EVENT`s.
+    pub fn event_receiver(channel: ChannelId) -> Result<Self, IpcError> {
+        if channel != crate::lifecycle::LIFECYCLE_CHANNEL {
+            return Err(IpcError::Protocol {
+                detail: "channel carries no host EVENTs",
+            });
+        }
+        Ok(Self::event_receiver_on(channel))
+    }
+
+    const fn event_receiver_on(channel: ChannelId) -> Self {
         Self {
             direction: Direction::FromServer,
             phase: SessionPhase::Authenticated,
-            channel: crate::lifecycle::LIFECYCLE_CHANNEL,
+            channel,
             payload: PayloadMode::Codec,
             expected_corr: ExpectedCorrelation::Zero,
             kinds: AllowedKinds::only(FrameKind::Event),
@@ -279,10 +306,39 @@ impl ReceivePolicy {
     }
 
     /// App-side lifecycle reply waiter (spec table row 7): `REPLY` or the
-    /// declared [`crate::CallError`]-carrying `ERR`.
+    /// declared [`crate::CallError`]-carrying `ERR`. Same policy as
+    /// [`Self::reply_waiter`] for the lifecycle channel.
     #[must_use]
     pub const fn lifecycle_reply_waiter(corr: CorrelationId) -> Self {
-        Self::reply_waiter(crate::lifecycle::LIFECYCLE_CHANNEL, corr)
+        Self::reply_waiter_on(crate::lifecycle::LIFECYCLE_CHANNEL, corr)
+    }
+
+    /// App-side reply waiter for one outstanding `CALL` on `channel` (GH-527
+    /// spec §4.7 and §4.9 row `reply-waiter:<channel>:<corr>`; the KEL-133
+    /// row 7 shape on any reply-carrying channel).
+    ///
+    /// Admits `REPLY` or the declared [`crate::CallError`]-carrying `ERR`
+    /// on `channel` with correlation exactly `corr`; no `PING`. The transport
+    /// Worker selects it per frame from its trusted pending-CALL map entry,
+    /// which supplies `channel`; wire bytes never select it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) for channel 0, which
+    /// carries only `HELLO`, and for the echo channel, whose caller waiter
+    /// stays KEL-133 row 4's `REPLY`-only [`Self::echo_reply_waiter`].
+    pub fn reply_waiter(channel: ChannelId, corr: CorrelationId) -> Result<Self, IpcError> {
+        if channel == ChannelId(0) {
+            return Err(IpcError::Protocol {
+                detail: "channel 0 carries only HELLO",
+            });
+        }
+        if channel == crate::echo::ECHO_CHANNEL {
+            return Err(IpcError::Protocol {
+                detail: "echo replies use the REPLY-only echo reply waiter",
+            });
+        }
+        Ok(Self::reply_waiter_on(channel, corr))
     }
 
     /// Future privileged receiver: authenticated `CALL`s on a host-declared
@@ -303,7 +359,7 @@ impl ReceivePolicy {
         }
     }
 
-    const fn reply_waiter(channel: ChannelId, corr: CorrelationId) -> Self {
+    const fn reply_waiter_on(channel: ChannelId, corr: CorrelationId) -> Self {
         Self {
             direction: Direction::FromServer,
             phase: SessionPhase::Authenticated,
@@ -780,6 +836,79 @@ mod tests {
         let err = validate_received_header(&events, header(FrameKind::Event, 0, 3, 4, 1))
             .expect_err("correlated EVENT is reserved");
         assert_eq!(detail_of(err), "correlation must be 0 for this frame");
+    }
+
+    /// GH-527 §4.7/§4.9: the public reply waiter is the lifecycle row-7 shape
+    /// on any reply-carrying channel, and the lifecycle constructor is its
+    /// channel-3 call. Channel 0 and the REPLY-only echo channel are refused.
+    #[test]
+    fn reply_waiter_is_row_seven_on_its_channel_and_refuses_hello_and_echo() {
+        let fs = ReceivePolicy::reply_waiter(ChannelId(2), CorrelationId(7))
+            .expect("a CALL channel has a reply waiter");
+        for kind in [FrameKind::Reply, FrameKind::Err] {
+            validate_received_header(&fs, header(kind, 0, 2, 7, 4))
+                .expect("awaited REPLY or ERR validates");
+        }
+        let cases: [(FrameHeader, &str); 4] = [
+            (
+                header(FrameKind::Reply, 0, 2, 8, 4),
+                "correlation does not match the awaited call",
+            ),
+            (
+                header(FrameKind::Reply, 0, 3, 7, 4),
+                "wrong channel for the session policy",
+            ),
+            (
+                header(FrameKind::Ping, 0, 2, 7, 0),
+                "frame kind is not declared by the session policy",
+            ),
+            (
+                header(FrameKind::Event, 0, 2, 0, 4),
+                "frame kind is not declared by the session policy",
+            ),
+        ];
+        for (frame, expected) in cases {
+            let err = validate_received_header(&fs, frame).expect_err("must fail closed");
+            assert_eq!(detail_of(err), expected, "{frame:?}");
+        }
+        assert_eq!(
+            ReceivePolicy::reply_waiter(LIFECYCLE_CHANNEL, CorrelationId(9))
+                .expect("lifecycle reply waiter"),
+            ReceivePolicy::lifecycle_reply_waiter(CorrelationId(9))
+        );
+        let hello = ReceivePolicy::reply_waiter(ChannelId(0), CorrelationId(7))
+            .expect_err("channel 0 carries only HELLO");
+        assert_eq!(detail_of(hello), "channel 0 carries only HELLO");
+        let echo = ReceivePolicy::reply_waiter(ECHO_CHANNEL, CorrelationId(7))
+            .expect_err("echo keeps its REPLY-only waiter");
+        assert_eq!(
+            detail_of(echo),
+            "echo replies use the REPLY-only echo reply waiter"
+        );
+    }
+
+    /// GH-527 §4.7: the per-channel EVENT receiver equals the lifecycle one
+    /// on channel 3 and refuses every channel without host EVENTs (fallback:
+    /// lifecycle is the only such channel until #613).
+    #[test]
+    fn event_receiver_is_the_lifecycle_policy_and_refuses_other_channels() {
+        assert_eq!(
+            ReceivePolicy::event_receiver(LIFECYCLE_CHANNEL).expect("lifecycle carries EVENTs"),
+            ReceivePolicy::lifecycle_event_receiver()
+        );
+        for channel in [
+            ChannelId(0),
+            ECHO_CHANNEL,
+            ChannelId(2),
+            ChannelId(u16::MAX),
+        ] {
+            let err = ReceivePolicy::event_receiver(channel).expect_err("no host EVENTs");
+            assert_eq!(
+                detail_of(err),
+                "channel carries no host EVENTs",
+                "{channel:?}"
+            );
+        }
     }
 
     /// The live v0 `PING` probe stays admissible where it is a positive

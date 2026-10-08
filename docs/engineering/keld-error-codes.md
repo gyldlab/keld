@@ -10,8 +10,9 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
   `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
-  `keld-pack` / `keld-updater-helper` `src`, `keld-cli` templates, or workspace
-  `tools/` that has no heading here fails the test.
+  `keld-pack` / `keld-updater-helper` `src`, `keld-cli` templates, the
+  `@keld/kipc` TypeScript transport `src`, or workspace `tools/` that has no
+  heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -151,6 +152,30 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-ipc
 - message: keld-attempt health rolled back by the owner (KELD-AK1 result 2)
 - fix: Never arm the recovery gate: end the host on any later application-generation exit.
+
+## KELD-IPC-022
+
+- crate: @keld/kipc
+- message: link closed before the host replied; no reply was received and the call's host effect is unknown
+- fix: Treat the call as not answered. The role's link is gone: check the host log for the close cause, and do not retry on this link, because it cannot reconnect.
+
+## KELD-IPC-025
+
+- crate: @keld/kipc
+- message: transport Worker dead or unresponsive; the role's link is lost
+- fix: The role has no link and cannot reconnect. Report the crash. The host restarts the role per its policy; check the role log for the Worker's last error.
+
+## KELD-IPC-026
+
+- crate: @keld/kipc
+- message: parked ring or reply slot full; the link was closed rather than drop a frame
+- fix: Raise ringBytes, ringRecords or replyBytes at WorkerLink.open, or reduce the host event rate toward this role. Retained events were delivered in order.
+
+## KELD-IPC-027
+
+- crate: @keld/kipc
+- message: too many unanswered calls; the link was closed rather than track another abandoned id
+- fix: The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect.
 
 ## KELD-WV-001
 

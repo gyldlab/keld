@@ -40,8 +40,10 @@ import {
   decodeVarint,
   echoReplyWaiter,
   encodeHeader,
+  eventReceiver,
   kipcError,
   lifecycleReplyWaiter,
+  replyWaiter,
   validateReceivedHeader,
   withIoDeadline,
 } from "./transport.ts";
@@ -51,7 +53,7 @@ const CORPUS_PATH = join(
   import.meta.dir,
   "../../../../crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
 );
-const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
+const CORPUS_SHA256 = "0cebb6e00c15a03028c6a29c725eb0e607ff66ee1cae04e227d18b9e49d0213e";
 const SKIP_DIR_NAMES = new Set([".git", "node_modules", "target"]);
 const SKIP_REPO_DIRS = new Set([
   join(REPO_ROOT, ".keld-work"),
@@ -192,6 +194,42 @@ describe("fail-closed header semantics", () => {
     expect(() => validateReceivedHeader(waiter, wrongChannelErr)).toThrow("wrong channel");
     const good = { kind: FrameKind.Err, flags: 0, channel: LIFECYCLE_CHANNEL, corr: 7, len: 4 };
     expect(validateReceivedHeader(waiter, good)).toEqual(good);
+  });
+});
+
+describe("GH-527 receive policy mirrors", () => {
+  function frame(kind: number, channel: number, corr: number) {
+    return { kind, flags: 0, channel, corr, len: 4 };
+  }
+
+  test("replyWaiter is the row-7 shape on its channel; lifecycle is its channel-3 call", () => {
+    const fs = replyWaiter(2, 7);
+    expect(validateReceivedHeader(fs, frame(FrameKind.Reply, 2, 7)).corr).toBe(7);
+    expect(validateReceivedHeader(fs, frame(FrameKind.Err, 2, 7)).kind).toBe(FrameKind.Err);
+    expect(() => validateReceivedHeader(fs, frame(FrameKind.Reply, 2, 8))).toThrow(
+      "KELD-IPC-005: correlation does not match the awaited call",
+    );
+    expect(() => validateReceivedHeader(fs, frame(FrameKind.Reply, 3, 7))).toThrow(
+      "KELD-IPC-005: wrong channel for the session policy",
+    );
+    expect(() => validateReceivedHeader(fs, { ...frame(FrameKind.Ping, 2, 7), len: 0 })).toThrow(
+      "KELD-IPC-005: frame kind is not declared by the session policy",
+    );
+    expect(lifecycleReplyWaiter(9)).toEqual(replyWaiter(LIFECYCLE_CHANNEL, 9));
+  });
+
+  test("replyWaiter refuses the HELLO channel and the REPLY-only echo channel", () => {
+    expect(() => replyWaiter(0, 7)).toThrow("KELD-IPC-005: channel 0 carries only HELLO");
+    expect(() => replyWaiter(ECHO_CHANNEL, 7)).toThrow(
+      "KELD-IPC-005: echo replies use the REPLY-only echo reply waiter",
+    );
+  });
+
+  test("eventReceiver equals the lifecycle event policy and refuses other channels", () => {
+    expect(eventReceiver(LIFECYCLE_CHANNEL)).toEqual(RECEIVE_POLICIES.lifecycleEventReceiver);
+    for (const channel of [0, ECHO_CHANNEL, 2, 0xffff]) {
+      expect(() => eventReceiver(channel)).toThrow("KELD-IPC-005: channel carries no host EVENTs");
+    }
   });
 });
 
@@ -754,6 +792,31 @@ describe("deadline leftover I/O", () => {
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-005");
     reader.fail(kipcError("KELD-IPC-001", "session is closed"));
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
+  });
+
+  test("end() still returns complete buffered frames in order, then the close error", async () => {
+    const reader = new FrameReader();
+    const first = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0]));
+    const second = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([1]));
+    const partial = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([2, 3])).subarray(0, 17);
+    const bytes = new Uint8Array(first.length + second.length + partial.length);
+    bytes.set(first, 0);
+    bytes.set(second, first.length);
+    bytes.set(partial, first.length + second.length);
+    reader.push(bytes);
+    reader.end(kipcError("KELD-IPC-001", "connection closed by peer"));
+    reader.push(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([9])));
+    expect((await reader.readFrame()).payload).toEqual(new Uint8Array([0]));
+    expect((await reader.readFrame()).payload).toEqual(new Uint8Array([1]));
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001: connection closed by peer");
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001: connection closed by peer");
+  });
+
+  test("end() with a parked read and nothing buffered rejects it at once", async () => {
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    reader.end(kipcError("KELD-IPC-001", "connection closed by peer"));
+    await expect(pending).rejects.toThrow("KELD-IPC-001");
   });
 
   test("fail() then drain.fire() rejects the parked read and wakes writers", async () => {
