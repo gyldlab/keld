@@ -1093,6 +1093,14 @@ reversible, and each names the observation that reopens it.
   from an approved contract. *Falsifier:* KEL-143 or F02-T11 shows that a successor
   cannot safely adopt a window it did not create (for example, renderer state that
   cannot be re-bound).
+  *Scope (2026-10-08).* D6 sets crash ownership of windows only, for every boot kind.
+  Binding a recovered facade main's constructors to replayed windows (adoption by
+  construction) is the compat facade's rule, owned by KEL-143. Until it lands, a
+  recovered facade generation may create windows beside adopted ones; the first proof
+  scores no generation-loss path. X06-D1(c)'s session-ending default was an unfiled
+  research proposal and is superseded; a boot-kind-scoped crash rule is rejected
+  (criterion 30 would have no consumer; two lifecycle policies keyed on the
+  descriptor). (amended by #657)
 - **D5. Channel id.** F02-T2 appends the window-state channel entry under #508's rule
   (draft PR #613). This spec fixes no number. *Falsifier:* #613's approved rule
   assigns ids by a mechanism other than an appended table entry.

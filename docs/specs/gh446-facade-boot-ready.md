@@ -32,7 +32,8 @@ Non-goals:
 
 - The window Create call and the `BrowserWindow` constructor (F02-T2 #449, gh531).
 - Two-phase quit (F01-T3).
-- Window adoption after recovery (KEL-143), and the compat main-role loss policy (§10 Q1).
+- Adoption by construction: binding a recovered facade main's constructors to the
+  windows gh531 D6 replays. KEL-143 owns it (gh531 D6 scope, amended by #657).
 - Windows and Linux emission points. Those hosts refuse the new boot kind (D9).
 - `keld migrate` writing the new config field, and `compat: { electron: true }` (architecture 04 §2 sketch).
 - The cold-start delta. It is measured under X05-T1's registered metric and is not
@@ -46,7 +47,7 @@ Governing:
 - `docs/specs/kel139-macos-product-spine.md`: AC3, AC5, and "Recovery".
 - `docs/specs/kel142-macos-renderer-bridge-api.md`: AC4 (`whenReady` waits for real host `Ready`).
 - `docs/specs/kel75-principalized-bun-child-roles.md`: role owners table, and "`LinkBound(g)` and `Ready(g)` are deliberately separate".
-- `docs/specs/gh531-window-registry-close-state-machine.md`: criteria 13–15, criterion 30, §4.c, and §4.i D6.
+- `docs/specs/gh531-window-registry-close-state-machine.md`: criteria 13–15, criterion 30, §4.c, and §4.i D6 with its 2026-10-08 scope paragraph (amended by #657).
 - `docs/specs/gh527-worker-owned-blocking-call-transport.md`: §4.6–§4.7.
 - `docs/specs/gh532-first-proof-evidence-rules.md`: rules 4–6.
 - `docs/specs/gh566-corpus-manifest-owner.md`: target admission.
@@ -58,7 +59,10 @@ Deviations, applied by the implementing change (T1) with the exact text in §4.1
 - KEL-96 gains decision row D12 and amended AC1, AC8 and AC11, plus amended §4.4 steps 2 and 7 and a §4.5 note.
 - KEL-139 "Recovery" and AC3 gain one scoping sentence each.
 - Architecture 02 and architecture 06 §1 change one sentence each.
-- This spec PR changes no other file.
+
+This spec PR also amends gh531 §4.i D6 in place. It appends the 2026-10-08 scope
+paragraph, marked "amended by #657", which was decided under the owner's delegation.
+Approving this PR approves that paragraph. The PR changes no other file.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -88,7 +92,7 @@ The names below are proposed.
    - the census stays 0 throughout, because the host creates no window in any generation.
 
    *NC:* removing the `window_ready` replay in successor install leaves the successor's `whenReady` pending past its echo fence.
-9. **Recovered generation, compat side.** A cell `app.ready.recovered-generation` is recorded `unknown`. It is uncited (gh532 rule 6), and its negative control names the compat main-role loss decision (§10 Q1).
+9. **Recovered generation, compat side (recorded, not a corpus cell).** A recovered facade generation re-runs its main. Until KEL-143 lands adoption by construction, it may create windows beside the ones gh531 D6 hands over. This is a recorded unknown, not a host fault, and the first proof scores no generation-loss path (gh531 D6 scope, amended by #657). *NC:* a first-proof cell or receipt that scores a generation-loss path before KEL-143 lands contradicts this record; the PANEL-P3 #420 trace is the check.
 10. **Renderer boots and the KEL-237 gate.** On the final diff, these pass unchanged:
     - `successor_reader_waits_for_retired_fs_drain_before_ready_and_call` (the "G2 Ready replay", `app_session.rs:8633`);
     - `recovered_generation_orders_window_events_once_across_installation` (9599);
@@ -100,7 +104,7 @@ The names below are proposed.
 
     *NCs (from the issue):* removing the schema-1 `Ready` replay fails the G2 replay test, and replacing `whenReady` with `Promise.resolve()` fails the KEL-237 cell.
 11. **Other platforms fail closed.** Given a schema-2 descriptor on Linux or Windows, when `keld-host` starts with no flag, then it fails with `KELD-CORE-035`. The detail says schema 2 runs on macOS only, and the fix is to remove `initialWindow` from `keld.config.ts`. This happens before any endpoint, child or window exists, with one attempt. *NC:* removing the platform check sends the boot into the renderer path, which has no renderer, and the test fails at its no-resource assertion.
-12. **Ready before any window, as a cell.** The host-level cell `app.ready.no-host-window` on macOS cites the v44.4.5 `browser-window.md` sentence "This module cannot be used until the `ready` event of the `app` module is emitted." It flips or lands as `pass` with AC4's observable (§10 Q2).
+12. **Existing cells pass unchanged (restates the issue's AC1).** `app.ready.emitted-once`, `app.when-ready.is-ready-agreement` and the KEL-237 cell `app.when-ready.host-ready-gate` pass unchanged on the final diff. "Ready before any app window" is a host fact proven by AC4's keld-host macOS no-flag test (`NativeWindowObserver` census 0 at `READY`); it is not a corpus cell. The first two cells are `electron-app-v1`'s (#656), and #656 records both as `pass`, so nothing flips.
 13. **Docs.** The §4.10 text lands in the same change as the emission point.
 
 ## 4. Design
@@ -120,7 +124,7 @@ falsified or proved before §4.1–§4.9 chose anything.
 | A4 | One `Ready` per generation, ordered after `HELLO` and after the app's first lifecycle call | primary router, `@keld/api` link | trigger → one frame → `onHostReady` | double `Ready`, or `Ready` lost before a listener | AC4–AC6, AC8 | FACT: `signal_ready` writes again once recovery is armed (`app_session.rs:4601`); the link is lazy (`ensureLink`, `packages/@keld/api/src/app.ts`); WorkerLink drops an EVENT with no listener (`transport.ts:2329`). INFERENCE: no loss, because `open` resolves in its message task and `LifecycleLink.connect` registers in that task's microtask checkpoint, while records dispatch in a later `kick` task. AC4 is the proof. |
 | A5 | Failure and timeout | KEL-96 §4.4 rules; keld-wv deadline | pre-`Ready` failure → typed startup failure; post-`Ready` → runtime rules | hung boot, or misclassified failure | AC5, AC7, AC11 | FACT: `INITIAL_NAVIGATION_DEADLINE` (15 s, `keld-wv/src/lib.rs:39`) exits a loop whose navigation never finishes |
 | A6 | Renderer boots unchanged | KEL-96, KEL-139 | schema 1 → today's path | a changed descriptor, trigger or replay | AC2, AC10 | FACT: named tests above; gh531 criterion 15 |
-| A7 | Recovered schema-2 generation | host: this spec; compat: the missing compat main-role loss decision | g1 loss → g2 `HELLO` → `Ready` replay | a host-made second window; a hidden decision | AC8, AC9 | FACT: replay comes from the `window_ready` flag at install (`app_session.rs:5462`); gh531 D6 Option B. CONFLICT with X06-D1(c), stated in §10 Q1 |
+| A7 | Recovered schema-2 generation | host: this spec and gh531 D6; facade adoption by construction: KEL-143 | g1 loss → g2 `HELLO` → `Ready` replay | a host-made second window; a hidden decision | AC8, AC9 | FACT: replay comes from the `window_ready` flag at install (`app_session.rs:5462`); gh531 D6 Option B for every boot kind. No conflict: X06-D1(c) was an unfiled research proposal and is superseded (gh531 D6 scope, amended by #657) |
 | A8 | Wire | keld-ipc | `LifecycleEvent::Ready` `0x00` | a new variant | none | FACT: doc "The host is ready for the app process to create windows / run." (`keld-ipc/src/lifecycle.rs:26`) |
 | A9 | Platforms | keld-core parser per OS | schema 2 on Windows/Linux → refusal | hollow backend method; silent fallback | AC11 | FACT: KEL-96 §4.4 forbids a hollow `WebEngine` method |
 
@@ -132,7 +136,9 @@ Independence and the coupling they expose:
   arm point never precedes a startup failure.
 - **A3 ↔ F02-T2.** This is an edge, not shared state. This spec fixes only where the
   registry install sits; F02-T2 builds it.
-- **A7 ↔ gh531 D6.** This is a cross-spec edge (§10 Q1).
+- **A7 ↔ gh531 D6 and KEL-143.** These are explicit cross-spec edges. D6 owns window
+  crash ownership for every boot kind. KEL-143 owns binding a recovered facade main's
+  constructors to replayed windows.
 
 Reuse:
 
@@ -362,27 +368,42 @@ healthy schema-2 session ended by a host timer.
 - **Host side, decided here.** The host rule is the same for every boot kind. Recovery
   is armed after the first successful `Ready` write, and g≥2 gets `Ready` replayed
   after its fresh `HELLO`. In a schema-2 boot the host creates no window in any
-  generation (AC8). This is consistent with gh531 D6 Option B, which needs a successor
-  for its window handover (criterion 30). It is also consistent with KEL-75, whose
-  `primary` owner stops at session stop, not at a window.
-- **Compat side, not decided.** A recovered facade main re-runs its top level, for
-  example `whenReady().then(createWindow)`. Under gh531 D6 its surviving windows are
-  handed over, so the new `Create` makes a second window. Whether that is acceptable,
-  whether the session ends, or whether construction adopts surviving windows is the
-  compat main-role loss decision. The cell stays `unknown` (AC9).
+  generation (AC8). This is gh531 D6 Option B, which sets the crash ownership of
+  windows for every boot kind and needs a successor for its handover (criterion 30).
+  It is consistent with KEL-75, whose `primary` owner stops at session stop, not at a
+  window.
+- **Compat side, decided by reference: gh531 D6 (host), KEL-143 (facade).** A
+  recovered facade main re-runs its top level, for example
+  `whenReady().then(createWindow)`. gh531 D6 hands it the surviving windows. Binding
+  its constructors to those replayed windows (adoption by construction) is the
+  `@keld/electron` facade's rule, and KEL-143 owns it. Until KEL-143 lands, a
+  recovered facade generation may create windows beside adopted ones. That is a
+  recorded unknown, not a host fault, and the first proof scores no generation-loss
+  path (AC9; gh531 D6 scope, amended by #657).
 
 This spec is safe in its own landing window. No `Create` exists until F02-T2, so no
 schema-2 generation can have a window.
 
 **Rejected:**
 
-- *Do not arm recovery for schema-2 boots now (Electron-faithful, X06-D1(c)).* That
-  silently contradicts the approved gh531 D6 and criterion 30. Only the owner can
-  amend those (§10 Q1).
+- *A boot-kind-scoped crash rule:* schema-2 boots that do not arm recovery, so role
+  loss ends the session. Criterion 30's transfer and replay would then have no
+  consumer, and the host would carry two lifecycle policies keyed on the descriptor.
+  It would also give up supervised recovery for every facade app. Electron 44.4.5 has
+  no main-gone semantics to copy, so "Electron-faithful" would only mean that the app
+  dies.
+- *X06-D1(c)'s session-ending default.* It was a research correction proposal that was
+  never filed (absent from the adopted decisions), so it cannot override the owner's
+  later D6. It is superseded.
 - *Withhold `Ready(g2)`.* The successor's `whenReady` would hang with no typed outcome.
 
-**Falsifier.** A host-created window in any schema-2 generation (AC8). Or F02-T2 makes
-`Create` reachable from a recovered generation before Q1 is decided.
+**Falsifiers:**
+
+- A host-created window in any schema-2 generation (AC8).
+- gh531 D6's existing two: KEL-143, or F02-T11, shows that a successor cannot safely
+  adopt a window it did not create.
+- The PANEL-P3 #420 trace shows a scored first-proof cell that crosses generation loss.
+- KEL-143 shows that a facade-created window cannot be rebound.
 
 ### 4.8 D8 — Wire
 
@@ -461,8 +482,8 @@ recomputes it per KEL-96's own rule:
 
 > This spine is a schema-1 (renderer-declared) boot. A schema-2 boot (GH-446) has no
 > host-owned window or document; its `Ready` follows authenticated `HELLO` and the UI
-> loop's first turn, and its recovered-generation window behaviour is owned by gh531 D6
-> and the compat main-role loss decision, not by AC5.
+> loop's first turn. Its recovered-generation window behaviour is owned by gh531 D6
+> (window crash ownership) and KEL-143 (facade adoption by construction), not by AC5.
 
 **KEL-139 AC3.** Append:
 
@@ -548,7 +569,6 @@ schema 2, `run_app` skips the renderer read, the renderer dispatch thread and
 - `crates/keld-cli/src/{boot,doctor,dev}.rs`.
 - `crates/keld-wv/src/engine.rs` and `crates/keld-wv/src/wkwebview/mod.rs`.
 - `crates/keld-host/tests/no_flag/{macos,linux,windows}/`.
-- `crates/keld-compat/fixtures/app-corpus/`, plus its mapped test once §10 Q2 is settled.
 - The spec and architecture files in §4.10.
 
 **Must not touch:**
@@ -556,7 +576,8 @@ schema 2, `run_app` skips the renderer read, the renderer dispatch thread and
 - `keld-ipc` wire and channel tables.
 - `packages/@keld/api` and `packages/@keld/kipc` behaviour.
 - The webview2 and webkitgtk backends.
-- The frozen `electron-lifecycle-v0` corpus and its receipts.
+- The frozen `electron-lifecycle-v0` corpus and its receipts, and the `electron-app-v1`
+  corpus (#656). This spec adds no corpus cell.
 - gh531 registry code (F02-T2).
 - Workspace `Cargo.toml` (no new dependency).
 
@@ -569,8 +590,7 @@ schema 2, `run_app` skips the renderer read, the renderer dispatch thread and
   - the coordinator trigger and `KELD-CORE-044`;
   - the Linux and Windows refusal;
   - the tests;
-  - the §4.10 text and the recomputed KEL-96 digest;
-  - the corpus cells.
+  - the §4.10 text and the recomputed KEL-96 digest.
 
   The descriptor cannot land without its consumer: KEL-96-D6 rejects a standalone
   descriptor as theater.
@@ -584,7 +604,8 @@ schema 2, `run_app` skips the renderer read, the renderer dispatch thread and
 | 4, 7 | `schema_two_ready_precedes_every_window_and_quit_is_ordered`; macOS no-flag integration with `NativeWindowObserver`. `first_turn_milestone_ignores_the_navigation_deadline`; keld-wv unit | census taken after the `READY` line; no sleep; the deadline NC passes a past `Instant` to the pure policy |
 | 5, 6 | `schema_two_ready_waits_for_host_initialized`, `foreign_or_repeated_ready_trigger_is_fatal`; keld-core router unit | echo-fence ordering, bounded by frames, not time |
 | 8 | `schema_two_successor_reads_ready_once_and_host_creates_no_window`; macOS recovery integration | existing recovery support; fence after `READY` |
-| 9, 12 | `electron-app-v1` cells `app.ready.no-host-window` and `app.ready.recovered-generation`; conformance | gh566 admission |
+| 9 | none: a recorded unknown owned by KEL-143; the PANEL-P3 #420 trace is the check that no scored first-proof cell crosses generation loss | n/a |
+| 12 | `app.ready.emitted-once` and `app.when-ready.is-ready-agreement` (`electron-app-v1`, #656) and `app.when-ready.host-ready-gate` run unchanged; "before any window" is AC4's keld-host test | unchanged cells |
 | 10 | the named existing tests; `lifecycle_corpus_rust_oracles_execute` | unchanged |
 | 11 | `schema_two_descriptor_is_refused_before_any_application_resource`; Linux and Windows no-flag integration (CI) | resource census like `windows_pre_ready_crash_denies_successor_before_provisioning` |
 
@@ -618,35 +639,19 @@ AC11 in CI only. No claim is made for unrun lanes.
 
 ## 10. Open questions
 
-1. **Compat main-role loss vs gh531 D6 (owner).**
-   - **The conflict.** X06-D1(c) records the default "role loss ends the session under
-     legacy", and #446 says that decision does not exist. gh531 D6 Option B (owner,
-     2026-10-07) keeps windows alive and hands them to the recovered successor. With
-     D6, a recovered facade main that runs `whenReady().then(createWindow)` opens a
-     second window beside the adopted one.
-   - **This spec.** It keeps the uniform host rule (D7), which is safe until F02-T2 adds
-     `Create`, and records the cell `unknown`.
-   - **Options:**
-     - (A) Schema-2 boots under `LegacySandboxOff` do not arm recovery: role loss ends
-       the session through the quit path. This amends gh531 D6 and criterion 30 for
-       those boots.
-     - (B) Keep D6 and accept re-run-main semantics, where a second window is possible.
-     - (C) Adoption by construction, where the successor's first constructors bind to
-       surviving windows (KEL-143).
-   - **Recommendation:** A. It is Electron-faithful, needs no new mechanism, and is the
-     only option that meets "never a second window" today. Its cost: D6's handover then
-     has no facade consumer until C exists.
-   - **Needed:** the decision, filed before F02-T2 (#449) makes `Create` reachable from
-     a recovered generation.
-2. **Issue AC1 cannot be met as written (owner or coordinator).**
-   - **The gap.** #445's claim records `app.ready.emitted-once` and
-     `app.when-ready.is-ready-agreement` as `pass` on today's facade, and it parks
-     "Ready before any window" to #446. So there is no red cell to flip.
-   - **Proposal.** Replace AC1 with this spec's AC12: one host-level cell that lands
-     `pass`, or flips if #445 lands it red with `implementing_ticket: GH-446`.
-   - **UNKNOWN.** gh566 admits only `crates/keld-compat/tests/<name>.rs` libtest
-     targets and `packages/**/*.test.ts` Bun targets (`check_targets`), while AC4's
-     oracle needs the real staged host and its native-window census.
-   - **First check in T1:** whether a keld-compat integration target can launch the
-     staged macOS host. If it cannot, the cell is `unknown` on macOS, with its negative
-     control naming the keld-host test.
+None open. Both questions raised in the first draft were decided on 2026-10-08 under
+the owner's delegation:
+
+1. **Compat main-role loss vs gh531 D6.** Decided: D6 Option B stands for every boot
+   kind, and there is no conflict. X06-D1(c) was an unfiled proposal and is superseded.
+   Adoption by construction belongs to KEL-143. The record is §4.7, AC9 and gh531 D6's
+   scope paragraph (amended by #657).
+2. **The issue's AC1.** Decided: it is restated as this spec's AC12, and no
+   `app.ready.no-host-window` cell is added. #656 records both cited cells as `pass`,
+   so nothing flips. gh566 admits only keld-compat libtest and `packages/**/*.test.ts`
+   targets, and its D8 rejected Rust oracle targets in other crates. "Ready before any
+   app window" is therefore proven by AC4's keld-host test. That routing edge belongs
+   to gh531's AX-click real-Mac cells (gh531 §4.i D3), not to this spec.
+
+Exact-content approval of the §4.10 text (KEL-96 and KEL-139) is still needed, but it
+is a process step, not an open design question.
