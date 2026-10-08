@@ -103,7 +103,10 @@ pub trait AppLinkDeadlines {
     /// the connection open.
     ///
     /// On Unix, shutdown of a cloned fd also unblocks a local `read` on
-    /// another clone of the same socket. On Windows, `TcpStream::shutdown`
+    /// another clone of the same socket. The Unix stream shuts its write
+    /// half before its read half and treats an already-shut half as
+    /// success, so a peer that has half-closed still gets this side's FIN.
+    /// On Windows, `TcpStream::shutdown`
     /// does **not** wake a blocking `read` already in progress on another
     /// thread ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594))
     /// — clone-shutdown is not peer-FIN. Local teardown must use
@@ -133,8 +136,26 @@ impl AppLinkDeadlines for std::os::unix::net::UnixStream {
         self.write_timeout()
     }
 
+    /// Shuts down the write half, then the read half. An already-shut half
+    /// is success. `SHUT_RDWR` is not used: after the peer's half-close,
+    /// XNU's `soshutdownlock_final` returns `ENOTCONN` because the read half
+    /// is already shut, before it reaches the write half, so the peer would
+    /// get no FIN until every descriptor here closed
+    /// (apple-oss-distributions/xnu `f6217f89`, `bsd/kern/uipc_socket.c`;
+    /// GH-528).
     fn shutdown_app_link(&self) -> io::Result<()> {
-        self.shutdown(Shutdown::Both)
+        shutdown_half(self, Shutdown::Write)?;
+        shutdown_half(self, Shutdown::Read)
+    }
+}
+
+/// One half of [`AppLinkDeadlines::shutdown_app_link`] on a Unix stream:
+/// `NotConnected` means that half, or the whole connection, is already shut.
+#[cfg(unix)]
+fn shutdown_half(stream: &std::os::unix::net::UnixStream, how: Shutdown) -> io::Result<()> {
+    match stream.shutdown(how) {
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        result => result,
     }
 }
 
