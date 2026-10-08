@@ -2400,8 +2400,10 @@ impl ProfileReleaseWait {
             return;
         }
         if self.post_exit_deadline.get().is_none() && self.browser_exited() {
-            self.post_exit_deadline
-                .set(Some(Instant::now() + self.grace));
+            let armed_at = Instant::now();
+            self.post_exit_deadline.set(Some(armed_at + self.grace));
+            #[cfg(all(feature = "media-acceptance", test))]
+            media_acceptance::observe_grace_armed(armed_at, self.grace);
         }
         if self
             .post_exit_deadline

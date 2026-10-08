@@ -155,6 +155,23 @@ pub(super) fn swallow_browser_exit(site: super::ReleaseSite) -> bool {
     true
 }
 
+static GRACE_ARMED_AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Evidence line for the instant a release barrier observed its browser
+/// process handle signaled and armed the post-exit grace.
+///
+/// Records the first arming instant so a fault child can bound the failure
+/// from the grace's own start, not from the swallow instant: the swallowed
+/// event and the arming poll are ordered only by the OS, so a swallow-relative
+/// lower bound held by timer overshoot alone.
+pub(super) fn observe_grace_armed(armed_at: Instant, grace: Duration) {
+    let _ = GRACE_ARMED_AT.set(armed_at);
+    println!(
+        "KELD_PROFILE_GRACE armed=post-exit grace_ms={}",
+        grace.as_millis()
+    );
+}
+
 /// Evidence line for a predecessor leaf the scavenger retained because its
 /// probe could not prove release (architecture 05: quarantined for a later pass).
 pub(super) fn observe_scavenge_retained(error: &WvError) {
@@ -1787,8 +1804,11 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
 
     /// Child role: the engine's own `BrowserProcessExited` is swallowed after
     /// the browser really exits. The release must fail `KELD-WV-009`, name the
-    /// host post-exit grace, and do so inside that grace of the fault — never
-    /// at an unrelated wall-clock bound and never by hanging until the watchdog.
+    /// host post-exit grace, and do so at that grace measured from its own
+    /// arming instant — never before it, never at an unrelated wall-clock
+    /// bound, and never by hanging until the watchdog. The swallow instant is
+    /// printed as evidence only: the swallowed event and the arming poll are
+    /// ordered by the OS, not by this test.
     fn swallowed_host_browser_exit_child() -> Result<(), WvError> {
         let grace = super::super::BROWSER_EXIT_GRACE;
         let root = profile_fixture_root("swallowed-host-exit");
@@ -1798,6 +1818,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         let plan = super::super::windows_profile_plan(&root, selection)?;
         let result = profile_fixture_engine(&root, selection).and_then(run_profile_fixture);
         let swallowed_at = SWALLOWED_BROWSER_EXIT_AT.get().copied();
+        let armed_at = GRACE_ARMED_AT.get().copied();
         let Err(error) = result else {
             return Err(failure(
                 "a swallowed BrowserProcessExited must fail the host release",
@@ -1806,10 +1827,14 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         let Some(swallowed_at) = swallowed_at else {
             return Err(failure("the fault was never injected"));
         };
-        let elapsed = swallowed_at.elapsed();
+        let Some(armed_at) = armed_at else {
+            return Err(failure("the post-exit grace was never armed"));
+        };
+        let since_arming = armed_at.elapsed();
         println!(
-            "KELD_PROFILE_RELEASE_FAULT elapsed_ms={} error={error}",
-            elapsed.as_millis()
+            "KELD_PROFILE_RELEASE_FAULT since_arming_ms={} since_swallow_ms={} error={error}",
+            since_arming.as_millis(),
+            swallowed_at.elapsed().as_millis()
         );
         let message = error.to_string();
         if !message.contains("KELD-WV-009")
@@ -1819,12 +1844,12 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 "failure was not attributed to the host post-exit grace: {message}"
             )));
         }
-        if elapsed < grace {
+        if since_arming < grace {
             return Err(failure(
                 "the host release failed before the post-exit grace",
             ));
         }
-        if elapsed > grace + Duration::from_secs(5) {
+        if since_arming > grace + Duration::from_secs(5) {
             return Err(failure(
                 "the host release failure was not bounded by the post-exit grace",
             ));
@@ -1850,7 +1875,8 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             "swallowed-host-exit",
             &[
                 "KELD_PROFILE_FAULT swallowed-browser-exit site=host",
-                "KELD_PROFILE_RELEASE_FAULT ",
+                "KELD_PROFILE_GRACE armed=post-exit grace_ms=5000",
+                "KELD_PROFILE_RELEASE_FAULT since_arming_ms=",
             ],
         )
     }
