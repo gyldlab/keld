@@ -239,10 +239,15 @@ fn operation_meaning(operation_id: &str) -> &'static str {
 /// Renders the human-readable report from the same canonical evidence records.
 fn render_report() -> String {
     let corpus = corpus();
+    render_report_from(&corpus, &published_boards(&corpus))
+        .expect("every published board shares one authority profile")
+}
+
+/// Renders the report over `boards`, one per `PUBLISHED` platform. `None` when the
+/// boards share no single authority profile (gh566 C7).
+fn render_report_from(corpus: &Corpus, boards: &[Scoreboard]) -> Option<String> {
     let pin = corpus.pin();
-    let boards = published_boards(&corpus);
-    let authority =
-        authority_line(&boards).expect("every published board shares one authority profile");
+    let authority = authority_line(boards)?;
     let mut out = String::new();
 
     writeln!(out, "# Bounded Electron lifecycle evidence report").expect("String write");
@@ -292,7 +297,7 @@ fn render_report() -> String {
     .expect("String write");
     writeln!(out, "| --- | --- | ---: | ---: | ---: | --- |").expect("String write");
 
-    for (published, board) in PUBLISHED.iter().zip(&boards) {
+    for (published, board) in PUBLISHED.iter().zip(boards) {
         let receipt = parse_receipt(published.receipt);
         writeln!(
             out,
@@ -357,7 +362,7 @@ fn render_report() -> String {
     )
     .expect("String write");
 
-    out
+    Some(out)
 }
 
 /// Verifies one CI receipt is tied to the claimed runner, source, runtime, and corpus.
@@ -593,6 +598,27 @@ fn report_authority_line_comes_from_the_board() {
         None,
         "two platform boards with different profiles must not render one line"
     );
+
+    // The rendered report itself follows the boards: an all-`unverified` set renders
+    // `unverified` (not the committed bytes), and a disagreeing set renders nothing.
+    let unverified_boards: Vec<Scoreboard> = PUBLISHED
+        .iter()
+        .map(|platform| {
+            let relabelled: Vec<EvidenceRecord> = platform
+                .evidence
+                .iter()
+                .map(|bytes| relabel(bytes))
+                .collect();
+            scored(&relabelled)
+        })
+        .collect();
+    let rendered =
+        render_report_from(&corpus, &unverified_boards).expect("one shared profile renders");
+    assert!(rendered.contains("- Authority profile: `unverified` ("));
+    assert_ne!(rendered.as_bytes(), REPORT_MD);
+    let mut mixed_boards = boards.clone();
+    mixed_boards[1] = scored(&all_unverified);
+    assert!(render_report_from(&corpus, &mixed_boards).is_none());
 }
 
 /// gh566 C1: every case the host OS's published receipt maps is a live, non-ignored

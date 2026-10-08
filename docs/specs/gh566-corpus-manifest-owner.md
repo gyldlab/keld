@@ -1183,6 +1183,9 @@ Two consumer-specific notes:
     §5 file list. Nothing else in gh532 changes.
 - **Implement in (T2 and T3):**
   - `crates/keld-compat/tests/support/corpus_manifest.rs` (new);
+  - `crates/keld-compat/tests/support/corpus_admission.rs` (new in T2). It holds
+    execution admission, split from the owner under the D1 review condition, because
+    the owner passed 1,500 lines;
   - `crates/keld-compat/tests/corpus_registry/{main,registry,rules}.rs` (new);
   - `crates/keld-compat/tests/lifecycle_corpus.rs`;
   - `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
@@ -1195,7 +1198,10 @@ Two consumer-specific notes:
   - `crates/keld-compat/tests/electron_lifecycle.rs`;
   - `packages/@keld/electron/src/app.test.ts`;
   - `crates/keld-compat/src/` and `crates/keld-compat/Cargo.toml`;
-  - `.gitattributes`, `.editorconfig` and `tools/`;
+  - `.gitattributes`, `.editorconfig` and `tools/`. There is one exception:
+    `tools/ci-inputs.json` registers the support modules as Rust readers and rebinds
+    its digests. Its `rust_source_census` fails closed on any new crate file, so T2
+    needs this edit (amended in T2, #640);
   - any part of gh532 other than the A1–A4 passages named above.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)

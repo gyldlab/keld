@@ -28,55 +28,72 @@ fn every_committed_corpus_is_registered() {
     );
     fixture_census(&found, REGISTRY).unwrap_or_else(|error| panic!("{error}"));
 
+    let census_detail =
+        |dirs: &[String], registry: &[Registration]| match fixture_census(dirs, registry) {
+            Err(CorpusError::FixtureCensus { detail }) => detail,
+            other => panic!(
+                "census must reject {dirs:?} ({} registrations): {other:?}",
+                registry.len()
+            ),
+        };
+
     let mut unregistered = found.clone();
     unregistered.push("fixtures/unregistered-corpus".to_owned());
-    let absent: Vec<String> = Vec::new();
+    assert!(census_detail(&unregistered, REGISTRY).contains("no registration validates"));
+    assert!(census_detail(&[], REGISTRY).contains("holds no committed corpus"));
     let renamed = Registration {
         fixture_dir: "fixtures/elsewhere",
         ..LIFECYCLE_V0
     };
-    for (dirs, registry) in [
-        (&unregistered, REGISTRY),
-        (&absent, REGISTRY),
-        (&found, &[LIFECYCLE_V0, LIFECYCLE_V0][..]),
-        (
-            &found,
-            &[
-                LIFECYCLE_V0,
-                Registration {
-                    corpus_id: "other",
-                    ..LIFECYCLE_V0
-                },
-            ][..],
-        ),
-        (&found, &[renamed][..]),
-    ] {
-        assert!(
-            matches!(
-                fixture_census(dirs, registry),
-                Err(CorpusError::FixtureCensus { .. })
-            ),
-            "census must reject {dirs:?} against {} registrations",
-            registry.len()
-        );
-    }
+    assert!(census_detail(&found, &[renamed]).contains("holds no committed corpus"));
+
+    // Each duplicate is isolated: the shared id keeps distinct directories, and the
+    // shared directory keeps distinct ids, so each control reaches its own check.
+    let mut two_dirs = found.clone();
+    two_dirs.push("fixtures/other-corpus".to_owned());
+    let same_id = [
+        LIFECYCLE_V0,
+        Registration {
+            fixture_dir: "fixtures/other-corpus",
+            ..LIFECYCLE_V0
+        },
+    ];
+    assert!(
+        census_detail(&two_dirs, &same_id)
+            .contains("corpus id electron-lifecycle-v0 is registered twice")
+    );
+    let same_dir = [
+        LIFECYCLE_V0,
+        Registration {
+            corpus_id: "other",
+            ..LIFECYCLE_V0
+        },
+    ];
+    assert!(
+        census_detail(&found, &same_dir)
+            .contains("fixture dir fixtures/lifecycle-corpus is registered twice")
+    );
 }
 
 /// Every registered corpus passes the static rules, and its committed records pass the
 /// harness-run rules, one `(platform, arch)` run at a time.
 #[test]
 fn registered_corpora_validate_with_their_records() {
-    let mut runs_checked = 0;
+    let mut lifecycle_runs = 0;
     for (reg, corpus) in REGISTRY.iter().zip(registered()) {
         for run in committed_runs(reg).unwrap_or_else(|error| panic!("{error}")) {
             corpus
                 .validate_harness_run(&run, corpus.records_as_of())
                 .unwrap_or_else(|error| panic!("{}: {error}", reg.corpus_id));
-            runs_checked += 1;
+            if reg.corpus_id == LIFECYCLE_V0.corpus_id {
+                lifecycle_runs += 1;
+            }
         }
     }
+    // Non-vacuity is pinned to the frozen corpus only, so a new registration needs no
+    // edit here (gh566 §4.4).
     assert_eq!(
-        runs_checked, 3,
+        lifecycle_runs, 3,
         "the lifecycle corpus publishes three platform runs"
     );
 }
@@ -145,37 +162,99 @@ fn owner_census_finds_one_parser_and_one_digest_helper() {
     );
     assert_rule(owner_census(&second_parser, &lib, &kinds), 2);
 
+    for token in [
+        concat!("let digest = Sha", "256::new();\n"),
+        concat!("const M: &str = \"fixtures/x/corpus", ".json\";\n"),
+        concat!("const D: &str = \"fixtures/x/denominator", ".json\";\n"),
+    ] {
+        assert_rule(
+            owner_census(&with_file(&sources, "tests/extra.rs", token), &lib, &kinds),
+            1,
+        );
+    }
+    for shape in [
+        concat!(
+            "#[derive(Deserialize)]\nstruct Other {\n    pub(crate) cells",
+            ": Vec<u8>,\n}\n"
+        ),
+        concat!(
+            "#[derive(\n    Debug,\n    Deserialize,\n)]\nstruct Other {\n    oracle",
+            "_id: String,\n}\n"
+        ),
+        concat!(
+            "#[derive(Deserialize)] struct Other {\n    test",
+            "_path: String,\n}\n"
+        ),
+    ] {
+        assert_rule(
+            owner_census(&with_file(&sources, "tests/extra.rs", shape), &lib, &kinds),
+            2,
+        );
+    }
+}
+
+/// gh532 AC10 (gh566 D10 rules 3–5): inside the owner each definition appears exactly
+/// once and no support module holds a test; `src/` exports only `evidence`; `sha2` is
+/// a dev-dependency only. Each rule has a synthetic negative input.
+#[test]
+fn owner_census_rejects_second_definitions_exports_and_dependency_kinds() {
+    let sources = load_test_sources().unwrap_or_else(|error| panic!("{error}"));
+    let lib = lib_rs();
+    let kinds = sha2_dependency_kinds().unwrap_or_else(|error| panic!("{error}"));
     let owner = sources
         .iter()
         .find(|(path, _)| path == OWNER_PATH)
         .map(|(_, text)| text.clone())
         .expect("owner source");
-    let mut doubled: Sources = sources
-        .iter()
-        .filter(|(path, _)| path != OWNER_PATH)
-        .cloned()
-        .collect();
-    doubled.push((
-        OWNER_PATH.to_owned(),
-        format!(
-            "{owner}\n{}",
-            concat!(
-                "pub fn sha",
-                "256_uri(b: &[u8]) -> String { String::new() }"
-            )
+    assert_rule(
+        owner_census(
+            &with_file(
+                &sources,
+                "tests/support/extra.rs",
+                concat!("#[", "test]\nfn t() {}\n"),
+            ),
+            &lib,
+            &kinds,
         ),
-    ));
-    assert_rule(owner_census(&doubled, &lib, &kinds), 3);
-    let mut with_test: Sources = sources
+        3,
+    );
+
+    // Rule 3: each owner definition exists exactly once; a second copy of each fails.
+    let owner_with = |extra: &str| -> Sources {
+        let mut edited: Sources = sources
+            .iter()
+            .filter(|(path, _)| path != OWNER_PATH)
+            .cloned()
+            .collect();
+        edited.push((OWNER_PATH.to_owned(), format!("{owner}\n{extra}\n")));
+        edited
+    };
+    for extra in [
+        concat!(
+            "pub fn sha",
+            "256_uri(b: &[u8]) -> String { String::new() }"
+        ),
+        concat!("fn second() { let _ = Sha", "256::digest(b\"\"); }"),
+        concat!(
+            "fn third() { let _ = serde_json::from_slice::<",
+            "ManifestV0>(b\"\"); }"
+        ),
+        concat!("#[", "test]\nfn t() {}"),
+    ] {
+        assert_rule(owner_census(&owner_with(extra), &lib, &kinds), 3);
+    }
+    let without_parser: Sources = sources
         .iter()
-        .filter(|(path, _)| path != OWNER_PATH)
-        .cloned()
+        .map(|(path, text)| {
+            let text = if path == OWNER_PATH {
+                text.replace(concat!("from_slice::<", "ManifestV0>"), "from_slice")
+            } else {
+                text.clone()
+            };
+            (path.clone(), text)
+        })
         .collect();
-    with_test.push((
-        OWNER_PATH.to_owned(),
-        format!("{owner}\n{}\nfn t() {{}}\n", concat!("#[", "test]")),
-    ));
-    assert_rule(owner_census(&with_test, &lib, &kinds), 3);
+    assert_rule(owner_census(&without_parser, &lib, &kinds), 3);
 
     let public_owner = format!("{lib}\npub mod corpus_manifest;\n");
     assert_rule(owner_census(&sources, &public_owner, &kinds), 4);

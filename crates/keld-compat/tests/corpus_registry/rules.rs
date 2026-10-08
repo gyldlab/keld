@@ -134,6 +134,22 @@ fn v0_shape_rejects_new_ids_and_foreign_pins() {
         matches!(error, CorpusError::UnadmittedPin { .. }),
         "{error}"
     );
+
+    // D4 compares the version and the commit together: a foreign version alone fails.
+    let foreign_version = replace_once(
+        &manifest,
+        "\"electron_version\": \"44.3.0\"",
+        "\"electron_version\": \"44.4.5\"",
+    );
+    let error = rejected(
+        &LIFECYCLE_V0,
+        &foreign_version,
+        &rehash(&foreign_version, &denominator),
+    );
+    assert!(
+        matches!(error, CorpusError::UnadmittedPin { .. }),
+        "{error}"
+    );
 }
 
 /// gh566 C8: the denominator agrees with the manifest's `corpus_id`, panel and exact
@@ -281,6 +297,15 @@ fn records_must_match_their_v0_cell() {
     )
     .expect_err("record outside the manifest");
     assert_eq!(field_of(&error), Some("cell"), "{error}");
+    // The cell key is the full (operation_id, oracle_id) pair: a foreign oracle id on a
+    // known operation is outside the manifest too (`score()` would only ignore it).
+    let error = run_with(
+        when_ready,
+        "\"id\": \"electron-v44.3.0.app.when-ready-initialized\"",
+        "\"id\": \"electron-v44.3.0.app.when-ready-foreign\"",
+    )
+    .expect_err("record with a foreign oracle id");
+    assert_eq!(field_of(&error), Some("cell"), "{error}");
 
     run_with(
         when_ready,
@@ -355,6 +380,14 @@ fn targets_reject_unregistered_recursive_foreign_and_missing() {
             },
         },
     ];
+    const BUN_MISSING: &[TestTarget] = &[
+        ELECTRON_LIFECYCLE,
+        APP_TEST,
+        TestTarget {
+            path: "packages/@keld/electron/src/missing.test.ts",
+            runner: Runner::Bun,
+        },
+    ];
     const BUN_OUTSIDE_PACKAGES: &[TestTarget] = &[
         ELECTRON_LIFECYCLE,
         APP_TEST,
@@ -379,6 +412,7 @@ fn targets_reject_unregistered_recursive_foreign_and_missing() {
         ("foreign package", FOREIGN),
         ("missing file", MISSING),
         ("bun outside packages", BUN_OUTSIDE_PACKAGES),
+        ("missing bun file", BUN_MISSING),
     ] {
         let error = rejected(&with(targets), &manifest, &denominator);
         assert!(

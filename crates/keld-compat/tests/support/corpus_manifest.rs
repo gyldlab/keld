@@ -1373,8 +1373,18 @@ pub fn owner_census(
         concat!("corpus", ".json\""),
         concat!("denominator", ".json\""),
     ];
+    let test_attribute = concat!("#[", "test]");
     let mut owner_seen = false;
     for (path, text) in sources {
+        if path.starts_with("tests/support/") && text.contains(test_attribute) {
+            return violation(
+                3,
+                path,
+                0,
+                "a support module holds a test, which would run in every including target"
+                    .to_owned(),
+            );
+        }
         if path == OWNER_PATH {
             owner_seen = true;
             census_owner(path, text)?;
@@ -1431,7 +1441,6 @@ fn census_owner(path: &str, text: &str) -> Result<(), CorpusError> {
             1,
             false,
         ),
-        (concat!("#[", "test]"), 0, false),
     ];
     for (pattern, expected, line_start) in checks {
         let count = text
@@ -1457,23 +1466,35 @@ fn census_owner(path: &str, text: &str) -> Result<(), CorpusError> {
 }
 
 /// Finds a field named in [`MANIFEST_FIELDS`] inside a struct that derives `Deserialize`.
+/// A derive may span lines (rustfmt splits long ones) and may share a line with the
+/// `struct` it decorates; any `pub` or `pub(...)` visibility is ignored.
 fn deserialize_manifest_field(text: &str) -> Option<(usize, &'static str)> {
+    let mut in_derive = false;
     let mut armed = false;
     let mut depth: i64 = 0;
     for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if depth == 0 {
-            if trimmed.starts_with("#[derive(") && trimmed.contains("Deserialize") {
-                armed = true;
-            } else if armed && trimmed.contains("struct ") && trimmed.ends_with('{') {
+            let mut rest = trimmed;
+            if in_derive || rest.starts_with("#[derive(") {
+                armed |= rest.contains("Deserialize");
+                if let Some((_, after)) = rest.split_once(")]") {
+                    in_derive = false;
+                    rest = after.trim();
+                } else {
+                    in_derive = true;
+                    continue;
+                }
+            }
+            if armed && rest.contains("struct ") && rest.ends_with('{') {
                 depth = 1;
                 armed = false;
-            } else if armed && !trimmed.starts_with("#[") && !trimmed.starts_with("//") {
-                armed = trimmed.is_empty();
+            } else if !rest.is_empty() && !rest.starts_with("#[") && !rest.starts_with("//") {
+                armed = false;
             }
             continue;
         }
-        let field = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+        let field = strip_visibility(trimmed);
         if depth == 1
             && let Some(name) = MANIFEST_FIELDS.iter().find(|name| {
                 field
@@ -1492,4 +1513,14 @@ fn deserialize_manifest_field(text: &str) -> Option<(usize, &'static str)> {
         }
     }
     None
+}
+
+/// Drops a leading `pub` or `pub(...)` visibility from a field line.
+fn strip_visibility(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix("pub(") {
+        return rest
+            .split_once(')')
+            .map_or(line, |(_, after)| after.trim_start());
+    }
+    line.strip_prefix("pub ").unwrap_or(line)
 }
