@@ -40,8 +40,9 @@ require_routed_result() {
 # contracts job result; 27 its router output; 28 the triggering event name;
 # 29 the router's rust_documentation_only output; 30 its check_os output;
 # 31 doctest job result; 32 its router output.
+readonly CHECK_ARGUMENT_COUNT=32
 check_results() {
-    if [[ "$#" -ne 32 ]]; then
+    if [[ "$#" -ne "$CHECK_ARGUMENT_COUNT" ]]; then
         fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, the workspace contracts result and router output, the event name, the rust_documentation_only and check_os router outputs, and the doctest result and router output, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
@@ -420,7 +421,7 @@ case "${1:-}" in
         self_test
         ;;
     *)
-        fail "unknown or missing command '${1:-}'. Use 'check' with the 30 arguments documented above check_results, or 'test'."
+        fail "unknown or missing command '${1:-}'. Use 'check' with the $CHECK_ARGUMENT_COUNT arguments documented above check_results, or 'test'."
         exit 1
         ;;
 esac

@@ -1432,9 +1432,11 @@ fn check_doctest_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` has no `{DOCTEST_JOB}` job. nextest skips doctests; restore the routed `cargo test --doc` lane."
         ));
     };
-    if workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.doctest == 'true'") {
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.doctest == 'true'")
+    {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must use job-level `if: needs.changes.outputs.doctest == 'true'`; the router owns which packages have doctests to run."
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.doctest == 'true'`; the router owns which packages have doctests to run, and without the dependency the job cannot read its outputs."
         ));
     }
     if workflow_job_level_property(&block, "runs-on").as_deref() != Some("macos-latest")
@@ -1488,9 +1490,11 @@ fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
         ));
     }
-    if workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'") {
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'")
+    {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
         ));
     }
     if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != ["os: [ubuntu-latest, macos-latest, windows-latest]"] {
@@ -3175,6 +3179,7 @@ mod tests {
             "      - run: llms-docs check .",
             "  doctest:",
             "    runs-on: macos-latest",
+            "    needs: changes",
             "    if: needs.changes.outputs.doctest == 'true'",
             "    steps:",
             "      - name: cargo test --doc",
@@ -3191,6 +3196,7 @@ mod tests {
             "          done",
             "  workspace-contracts:",
             "    runs-on: ${{ matrix.os }}",
+            "    needs: changes",
             "    if: needs.changes.outputs.workspace == 'true'",
             "    strategy:",
             "      matrix:",
@@ -4008,7 +4014,7 @@ mod tests {
                 "gated on another output",
             ),
             ("    if: needs.changes.outputs.doctest == 'true'\n", "", "ungated"),
-            ("    runs-on: macos-latest\n    if: needs.changes.outputs.doctest", "    runs-on: ubuntu-latest\n    if: needs.changes.outputs.doctest", "Ubuntu runner needs GTK apt"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: ubuntu-latest\n    needs: changes\n", "Ubuntu runner needs GTK apt"),
             (
                 "    if: needs.changes.outputs.doctest == 'true'\n    steps:\n      - name: cargo test --doc\n",
                 "    if: needs.changes.outputs.doctest == 'true'\n    strategy:\n      matrix:\n        os: [macos-latest]\n    steps:\n      - name: cargo test --doc\n",
@@ -4035,6 +4041,8 @@ mod tests {
                 "skipped step",
             ),
             ("  doctest:\n", "  doctests:\n", "renamed job"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n", "missing router dependency"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n    needs: fmt\n", "wrong dependency"),
         ] {
             assert!(valid_workflow().contains(old), "{label}");
             let temp = complete_fixture();
@@ -4070,14 +4078,15 @@ mod tests {
                 "echoed command",
             ),
             ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
+            ("    runs-on: ${{ matrix.os }}\n    needs: changes\n", "    runs-on: ${{ matrix.os }}\n", "missing router dependency"),
             (
-                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
-                "    runs-on: ubuntu-latest\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
+                "    runs-on: ubuntu-latest\n    needs: changes\n",
                 "fixed runner",
             ),
             (
-                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
-                "    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
+                "    needs: changes\n",
                 "missing runner",
             ),
             (
