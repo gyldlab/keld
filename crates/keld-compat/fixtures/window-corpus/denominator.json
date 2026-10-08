@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-window-v1",
-  "corpus_sha256": "sha256:8a636bf8a288cbf8017fcc7a21c3658471e9c8cc2865d900c640416bc611da2d",
+  "corpus_sha256": "sha256:fa399ec18adc5a93736accc44e66a2e06b6c10a1ee9ea3cc1e0f7a158a3d2c7c",
   "kind": "primary_workflow",
   "cells": [
     {
@@ -66,11 +66,11 @@
       "oracle_id": "electron-v44.4.5.browser-window.web-contents-destroyed-throws"
     },
     {
-      "operation_id": "window.close.repeat-after-veto-closes-once",
-      "oracle_id": "electron-v44.4.5.browser-window.close-try"
+      "operation_id": "window.close.repeat-after-veto-emits-closed",
+      "oracle_id": "electron-v44.4.5.browser-window.event-closed"
     },
     {
-      "operation_id": "window.destroy.after-veto-closes-once",
+      "operation_id": "window.destroy.after-veto-emits-closed",
       "oracle_id": "electron-v44.4.5.browser-window.destroy-guarantees-closed"
     }
   ]

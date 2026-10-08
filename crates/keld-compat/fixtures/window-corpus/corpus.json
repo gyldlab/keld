@@ -255,12 +255,12 @@
       "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: a destroyed window whose webContents read returns instead of throwing Object has been destroyed fails it."
     },
     {
-      "operation_id": "window.close.repeat-after-veto-closes-once",
-      "oracle_id": "electron-v44.4.5.browser-window.close-try",
+      "operation_id": "window.close.repeat-after-veto-emits-closed",
+      "oracle_id": "electron-v44.4.5.browser-window.event-closed",
       "doc_citation": {
-        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#winclose",
-        "quote": "Try to close the window. This has the same effect as a user manually clicking\nthe close button of the window.",
-        "quote_sha256": "sha256:0d46ef3c4dd72062859c2f7c5e87214dff201782de35859d5737b693cc131ffa"
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#event-closed",
+        "quote": "Emitted when the window is closed.",
+        "quote_sha256": "sha256:08289b47744c9bbedbf702faaf146b1bf41fc777614f7aefd66bd5e9213dcd86"
       },
       "expected_verdict": "fail",
       "implementing_ticket": "GH-450",
@@ -268,11 +268,11 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.close.repeat-after-veto-closes-once today: BrowserWindow has no close",
-      "negative_control": "Today: exporting a BrowserWindow with close fails the mapped case. After GH-450 inverts it: emitting closed from both the second close() and the Destroyed fact, so two closed events fire, fails it."
+      "test_name": "window.close.repeat-after-veto-emits-closed today: BrowserWindow has no close",
+      "negative_control": "Today: exporting a BrowserWindow with close fails the mapped case. After GH-450 inverts it: a window closed by a second close() after a vetoed close that never emits closed fails it."
     },
     {
-      "operation_id": "window.destroy.after-veto-closes-once",
+      "operation_id": "window.destroy.after-veto-emits-closed",
       "oracle_id": "electron-v44.4.5.browser-window.destroy-guarantees-closed",
       "doc_citation": {
         "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#windestroy",
@@ -285,8 +285,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/browser-window.test.ts",
-      "test_name": "window.destroy.after-veto-closes-once today: BrowserWindow has neither close nor destroy",
-      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: emitting closed from both destroy() and the Destroyed fact after the vetoed close fails it."
+      "test_name": "window.destroy.after-veto-emits-closed today: BrowserWindow has neither close nor destroy",
+      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: a destroy() after a vetoed close that never emits closed fails it."
     }
   ]
 }

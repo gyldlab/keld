@@ -16,7 +16,11 @@
  * The getter, state and close cases probe only the members their own ticket adds, so
  * GH-449's constructor leaves the GH-450 cases unchanged. The creation and triage cases
  * observe construction itself. GH-449's constructor therefore changes the triage
- * cases' current behaviour, and that PR re-records them (still red, GH-455).
+ * cases' current behaviour, and that PR re-records them (still red, GH-455). GH-449
+ * also breaks the two unknown cases it touches: its constructor breaks
+ * `app.window-created-events.constructor-order`, and its static `getAllWindows`
+ * breaks `window.get-all-windows.order`. That PR re-records both, still `unknown`,
+ * because their oracle stays a source receipt (gh532 §10 Q1).
  *
  * Three cells are `unknown` because their oracle is a v44.4.5 source receipt, not a
  * doc sentence, and gh532 §10 Q1 admits doc citations only. Each receipt is quoted
@@ -233,7 +237,7 @@ describe("GH-450 close state machine cells, red until implemented", () => {
 
   // browser-window.md:661 "and `close` event will also not be emitted\nfor this window,
   // but it guarantees the `closed` event will be emitted."
-  // Ordered observable: destroy() emits no 'close' and exactly one 'closed'.
+  // Ordered observable: destroy() emits no 'close', and 'closed' is emitted.
   test("window.destroy.closed-without-close today: BrowserWindow has no destroy", () => {
     expect(presentInstanceMethods(["destroy"])).toEqual([]);
   });
@@ -246,18 +250,19 @@ describe("GH-450 close state machine cells, red until implemented", () => {
     expect(presentInstanceMethods(["destroy"])).toEqual([]);
   });
 
-  // browser-window.md:666 "Try to close the window. This has the same effect as a user
-  // manually clicking\nthe close button of the window."
-  // Ordered observable: close() vetoed by preventDefault(); a second close() is not
-  // vetoed; 'closed' fires exactly once.
-  test("window.close.repeat-after-veto-closes-once today: BrowserWindow has no close", () => {
+  // browser-window.md:221 "Emitted when the window is closed."
+  // Ordered observable: close() vetoed by preventDefault(); a second close(), not
+  // vetoed, closes the window; 'closed' is emitted. (That the second close() is a new
+  // attempt is close()'s "Try to close the window", browser-window.md:666; the cell
+  // asserts only the cited 'closed' emission.)
+  test("window.close.repeat-after-veto-emits-closed today: BrowserWindow has no close", () => {
     expect(presentInstanceMethods(["close"])).toEqual([]);
   });
 
   // browser-window.md:661, as for window.destroy.closed-without-close.
-  // Ordered observable: close() vetoed by preventDefault(); destroy() emits no 'close'
-  // and exactly one 'closed'.
-  test("window.destroy.after-veto-closes-once today: BrowserWindow has neither close nor destroy", () => {
+  // Ordered observable: close() vetoed by preventDefault(); destroy() emits no 'close',
+  // and 'closed' is emitted.
+  test("window.destroy.after-veto-emits-closed today: BrowserWindow has neither close nor destroy", () => {
     expect(presentInstanceMethods(["close", "destroy"])).toEqual([]);
   });
 });
