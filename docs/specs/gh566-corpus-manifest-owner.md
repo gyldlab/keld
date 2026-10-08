@@ -28,8 +28,17 @@ Non-goals:
 - Every gh532 §1 non-goal and every item in the issue's Out of scope. That covers
   re-recording `electron-lifecycle-v0`, the KEL-77 fixture-set digest, any production
   keld-compat API or dependency, and the CLAUDECODE Bun reporter fix.
-- Changing a gh532 rule, AC, field name or file location. Where this spec is more
-  specific than gh532, it narrows a gh532 choice and says so.
+- Changing a gh532 rule, AC, field name or file location beyond the four recorded
+  amendments A1–A4 (§2). This PR amends gh532 in place for each one, and each place is
+  marked "amended by gh566 (#639)":
+  - AC17's subject (A1);
+  - the `platforms` cell field, in rule 8, the §4.2 example manifest and the owner
+    sketch (A2);
+  - the §4.5 callers (A3);
+  - the §5 file list (A4).
+
+  Anywhere else that this spec is more specific than gh532, it narrows a gh532 choice
+  and says so.
 - The product receipt schema and the KEL-78 evidence that decides a profile state. Both
   belong to X02-T5.
 - Committing a v1 corpus, a doc snapshot or a `.gitattributes` rule. The first consumer
@@ -40,14 +49,15 @@ Non-goals:
 
 ## 2. Spec refs
 
-- gh532, which this spec consumes unchanged:
+- The parts of gh532 that this spec consumes without amendment:
   - §3 AC1–AC12 and AC16.
   - §4.1, its facts and atoms.
   - §4.2 rules 1–8, the v1 example manifest and the owner sketch, except the cell field
     that A2 adds.
   - §6 T3, §7 (test plan), and the §10 Q1 and Q2 draft decisions.
-- Recorded gh532 amendments. gh532's approved text stays as it is. Once this spec is
-  approved, it governs X01-T4 wherever the two differ:
+- Recorded gh532 amendments. This PR applies each one to gh532 in place, the same way
+  gh532 amended the kel74 §4.1 `authority_profile` row. gh532's header and each changed
+  passage say "amended by gh566 (#639)":
   - **A1 — the subject of AC17.** gh532 AC17 binds "the lifecycle evidence report". The
     frozen v0 report cannot carry a pending cell, so this spec binds AC17 to `FailSplit`
     and its `Display` (D11). C9 keeps AC17's strength: a census forces every v1 report
@@ -891,7 +901,12 @@ v0 report, admitted by exact path. On origin/main `c1673d83`, all five such
 occurrences are in that file. The exemption ends when KEL-237 re-records the corpus.
 
 A v1 report therefore cannot count fails, or write either label, by itself. It must
-call `FailSplit`. The v0 report keeps `board.failed()` in its "Intentional divergence"
+call `FailSplit`.
+
+The census scans the rules module too. The AC17 test's exact `Display` assertion is
+therefore built from the owner constants `PENDING_LABEL` and `DIVERGENCE_LABEL`, never
+from literal labels. The C9 synthetic report sources, which do contain a label or
+`.failed()`, are assembled with `concat!`. The v0 report keeps `board.failed()` in its "Intentional divergence"
 column, and its bytes are unchanged.
 
 Rejected alternatives:
@@ -1152,7 +1167,12 @@ Two consumer-specific notes:
 
 ## 5. Boundaries
 
-- **Implement in (T1, this PR):** `docs/specs/gh566-corpus-manifest-owner.md` only.
+- **Implement in (T1, this PR):**
+  - `docs/specs/gh566-corpus-manifest-owner.md`;
+  - the in-place amendments A1–A4 to `docs/specs/gh532-first-proof-evidence-rules.md`:
+    the header note, AC17's subject, the rule 8 `platforms` paragraph, the `platforms`
+    field in the §4.2 example manifest and the owner sketch, the §4.5 callers and the
+    §5 file list. Nothing else in gh532 changes.
 - **Implement in (T2 and T3):**
   - `crates/keld-compat/tests/support/corpus_manifest.rs` (new);
   - `crates/keld-compat/tests/corpus_registry/{main,registry,rules}.rs` (new);
@@ -1168,7 +1188,7 @@ Two consumer-specific notes:
   - `packages/@keld/electron/src/app.test.ts`;
   - `crates/keld-compat/src/` and `crates/keld-compat/Cargo.toml`;
   - `.gitattributes`, `.editorconfig` and `tools/`;
-  - gh532 itself.
+  - any part of gh532 other than the A1–A4 passages named above.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
@@ -1229,7 +1249,7 @@ the `corpus_registry` target.
 | gh532 AC16 | `rules::snapshot_*` over an in-memory read seam, plus `rules::snapshot_would_be_normalised_rejects_crlf` (D5) over one temporary file | rules | T3 | integration |
 | C9 | `rules::report_census_rejects_reports_that_count_fails_themselves`: synthetic report sources that use `board.failed()` or a label are rejected, and a `FailSplit` source is accepted | rules | T3 | integration |
 | C10 | `rules::platforms_*`: empty, repeated, unknown and unregistered entries; `check_admission` with synthetic outputs for a declared host whose case is missing (`cfg`) or `(skip)`; the `unknown` list on an undeclared host; and a `pass` record for an undeclared platform | rules | T3 | integration |
-| gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
+| gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, built from `PENDING_LABEL` and `DIVERGENCE_LABEL` so the C9 census passes on the test itself; then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
 | C4, C5 (v1 controls), C6 | `rules::duplicate_keys_*`, `rules::records_*_v1` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
 **Negative-control routing.** `Corpus::parse` checks the digest first (D2). Every
