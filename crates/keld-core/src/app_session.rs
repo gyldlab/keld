@@ -7319,6 +7319,221 @@ mod tests {
             .expect("recovery-ordering router shutdown");
     }
 
+    /// One guarded primary router over a socket pair, with the FS worker held
+    /// by a test gate after it takes its job (GH-528 T2 router tests).
+    #[cfg(target_os = "macos")]
+    struct GuardedTestRouter {
+        router: PrimaryRouter,
+        client: std::os::unix::net::UnixStream,
+        snapshot: GuardSnapshot,
+        allowed: PathBuf,
+        taken: Receiver<()>,
+        release: Sender<()>,
+        window: Receiver<AppWindowCommand>,
+        guardian: Receiver<TestPrimaryOwnerCommand>,
+        _temp: tempfile::TempDir,
+    }
+
+    #[cfg(target_os = "macos")]
+    fn guarded_test_router() -> GuardedTestRouter {
+        use keld_ipc::link::AppLinkDeadlines as _;
+        use sha2::{Digest as _, Sha256};
+
+        let temp = tempfile::tempdir().expect("guarded router root");
+        let allowed = temp.path().join("allowed");
+        fs::create_dir(&allowed).expect("guarded router allowed root");
+        let scope = allowed.display().to_string().replace('\\', "/");
+        let manifest_text =
+            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
+        let manifest_path = temp.path().join(PERMISSIONS_FILE);
+        fs::write(&manifest_path, &manifest_text).expect("write guarded router manifest");
+        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        let verified = load_verified_manifest(
+            File::open(&manifest_path).expect("open guarded router manifest"),
+            manifest_path,
+            digest,
+        )
+        .expect("verify guarded router manifest");
+        let snapshot = GuardSnapshot::prepare(verified).expect("prepare guarded router broker");
+        let (taken_tx, taken) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::channel();
+        let gate = Arc::new(FsWorkerTestGate {
+            taken: taken_tx,
+            release: Mutex::new(release_rx),
+        });
+        let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("guarded client deadlines");
+        let (window_tx, window) = mpsc::channel();
+        let (guardian_tx, guardian) = mpsc::channel();
+        let router = PrimaryRouter::start_with_fs_test_gate(
+            server,
+            window_tx,
+            PlatformPrimaryOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+            Some(snapshot.fs_weak()),
+            Some(gate),
+        )
+        .expect("guarded test router");
+        GuardedTestRouter {
+            router,
+            client,
+            snapshot,
+            allowed,
+            taken,
+            release,
+            window,
+            guardian,
+            _temp: temp,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target: &Path) {
+        write_frame(
+            client,
+            FrameKind::Call,
+            0,
+            FS_CHANNEL,
+            CorrelationId(corr),
+            &encode(&FsRequest::Write {
+                path: target.display().to_string().replace('\\', "/"),
+                bytes: b"t2".to_vec(),
+            })
+            .expect("encode FS write"),
+        )
+        .expect("send FS write");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write_quit_call(client: &mut std::os::unix::net::UnixStream, corr: u32) {
+        write_frame(
+            client,
+            FrameKind::Call,
+            0,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(corr),
+            &encode(&LifecycleRequest::Quit).expect("encode Quit"),
+        )
+        .expect("send Quit");
+    }
+
+    /// Every frame the client reads before the link ends (EOF or reset).
+    #[cfg(target_os = "macos")]
+    fn read_frames_until_eof(
+        client: &mut std::os::unix::net::UnixStream,
+    ) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
+        let mut frames = Vec::new();
+        while let Ok(frame) = keld_ipc::link::read_frame(client) {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    /// GH-528 T2, spec gh527 criterion 6: retiring a generation answers its
+    /// pending calls on ERR-declaring channels with `KELD-IPC-023` before the
+    /// link closes. An admitted FS call held in its handler, and a Quit waiting
+    /// in its FS drain, are both pending; an echo call is answered at once and
+    /// never gets an ERR.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
+        let mut t = guarded_test_router();
+        assert_echo_call(&mut t.client, 10, "answered before retire");
+        write_fs_call(&mut t.client, 11, &t.allowed.join("held.txt"));
+        t.taken
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker took the FS job");
+        let (drain_tx, drain_rx) = mpsc::sync_channel(1);
+        t.snapshot.fs.observe_next_drain_wait(drain_tx);
+        write_quit_call(&mut t.client, 12);
+        drain_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit waits in its FS drain");
+
+        t.router.handle().retire_generation(1).expect("retire g1");
+        let frames = read_frames_until_eof(&mut t.client);
+        // Failing-first status: today retirement closes the link with no ERR.
+        assert!(frames.is_empty(), "retire wrote frames: {frames:?}");
+
+        t.release.send(()).expect("release FS worker");
+        t.router.shutdown().expect("router shutdown after retire");
+        assert!(matches!(
+            t.guardian.try_recv(),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    /// GH-528 T2, spec gh527 criterion 7: after an accepted Quit's real REPLY
+    /// and its FS drain, a CALL already received on an ERR-declaring channel is
+    /// answered with `KELD-IPC-024` and never executed; an echo CALL gets no
+    /// frame (KEL-133 keeps echo REPLY-only). The host still closes the link.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_drain_answers_received_calls_with_024_and_runs_none() {
+        let mut t = guarded_test_router();
+        let target = t.allowed.join("after-quit.txt");
+        // All three frames are buffered before the host can finish the Quit:
+        // its REPLY waits on the shutdown attribution acknowledged below.
+        write_quit_call(&mut t.client, 20);
+        write_fs_call(&mut t.client, 21, &target);
+        let echo = keld_ipc::echo::EchoRequest {
+            message: "after quit".to_owned(),
+            count: 22,
+        };
+        write_frame(
+            &mut t.client,
+            FrameKind::Call,
+            0,
+            ECHO_CHANNEL,
+            CorrelationId(22),
+            &encode(&echo).expect("encode echo"),
+        )
+        .expect("send echo after Quit");
+
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let (quit, quit_payload) = keld_ipc::link::read_frame(&mut t.client).expect("Quit REPLY");
+        assert_eq!(
+            (quit.kind, quit.channel, quit.corr),
+            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(20))
+        );
+        assert_eq!(
+            decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
+            LifecycleResponse::Quit
+        );
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("guardian shutdown")
+        else {
+            panic!("unexpected guardian command after the Quit REPLY");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        let after = read_frames_until_eof(&mut t.client);
+        // Failing-first status: today the host never reads past the Quit.
+        assert!(after.is_empty(), "frames after the Quit REPLY: {after:?}");
+        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        t.router.shutdown().expect("router shutdown after Quit");
+    }
+
     #[test]
     #[cfg(target_os = "macos")]
     fn fs_worker_keeps_ping_responsive_and_quit_waits_for_fs_terminal_outcome() {
