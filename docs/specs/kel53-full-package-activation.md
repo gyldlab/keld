@@ -1280,8 +1280,9 @@ scheduled task registered to a candidate-tree image), runs inside the attempt Jo
 the initiating logon session. System brokers that load no candidate image are out of
 scope. T4d proves this by census and static scan, not by inference from the launch
 route or by audit. The census: at Ready, at health acceptance and immediately before the
-helper clears the Job limit, every process in the attempt Job, which the helper's
-acceptance-only test seam lists (§5, `keld-runtime`), and every process whose image
+helper clears the Job limit, every process in the attempt Job, which the helper lists
+through the `keld-runtime` process-ID lister that slice S6b3 lands and S12 reuses
+(§5), and every process whose image
 lies in the candidate version tree, including the WebView2 browser process and its
 children and each admitted LPAC role, is a member of the attempt Job, and its primary
 token reports the journaled `AuthenticationId` through
@@ -1303,14 +1304,27 @@ expected way to end the session; the query decides. The same proof covers
 `health-accepted`, where the healthy application legitimately outlives the helper,
 because the landed `WindowsRecoveryInspection::recover` requires an exact
 process-family retirement binding for every phase
-(`crates/keld-update/src/windows_baseline/activate.rs:526-541`).
+(`crates/keld-update/src/windows_baseline/activate.rs:603-627`).
 
 Kill-on-close is kept only for prompt termination. The UAC helper, which launches the
 candidate, alone holds the attempt's unnamed `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job,
 without `JOB_OBJECT_LIMIT_BREAKAWAY_OK` or `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`, and
 makes the candidate a member before its first instruction runs. Helper death therefore
 ends the candidate during the health window, a deliberate crash-ownership change, and
-the helper clears the limit once `health-accepted` is durable. Job-name absence, PID
+the helper clears the limit once `health-accepted` is durable, through the one
+`keld-runtime` clear primitive, `WindowsProcessJob::release_family`, that slice S6b3
+lands for `PerUserDirect` ("Candidate release after commit"); Machine-UAC shares only
+that primitive and keeps this timing. Whether the elevated helper, or the candidate it
+launches with `CreateProcessWithTokenW`, also joins the initiating host's host-death Job
+is unknown: no evidence in this specification covers the Job membership of either
+launch, and a launch that names a parent process inherits that parent's job object
+([UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute),
+`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, `ms.date` 2021-02-02). S11's §7
+rows record both memberships and whether the candidate survives the initiating host's
+exit ("17 (Machine-UAC Job inheritance)"); a candidate inside that host-death Job stops
+S11 for an owner decision, because the defect that "Candidate release after commit"
+removes for `PerUserDirect` would recur here, and the elevated helper cannot classify
+the host's family. This amendment specifies no probe. Job-name absence, PID
 enumeration and the death of Job-handle holders still prove nothing about the family,
 and the seamless keeper slice's rule below is unchanged. The helper reuses the existing
 Windows Job wrappers; the new FFI calls, including the `keld-guard` logon-session
@@ -1783,7 +1797,9 @@ file, a read failure, that deadline or `AK1` rolled back it never arms its gate,
 later generation exit ends the host. On the rollback path, while the connection is still
 open, the owner sends `AK1` rolled back once and then ends the candidate family without
 waiting for the candidate to read it; after end of file or a signaled launch handle it
-sends none. A failed `AK1` write changes neither outcome.
+sends none. A failed `AK1` write changes neither outcome. On the accept path, once the
+candidate's end of file or that read's deadline has been reached, the `PerUserDirect`
+owner continues with "Candidate release after commit" below.
 
 *Bootstrap records.* (approved: KEL-270 owner decision `eff8e2fb`,
 2026-10-06) `BH1` to `BO1` land with S11, not S4 (§6). S6 and every `PerUserDirect` cell
@@ -1874,6 +1890,213 @@ the exchange binds without them.
 
 Clients reject the other `\\.\pipe\keld-*` namespaces before connecting, which is the
 `keld-ipc` rule for a separate-version protocol; Architecture 02 points here.
+
+**Candidate release after commit (`PerUserDirect`; criteria 8 and 9; slice S6b3).**
+(KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 2: a
+committed, healthy `PerUserDirect` candidate outlives the old host. Reply `559c07ac`
+gives the owner's rule, a native qualification of option A first, else option B: "the
+host clears kill-on-close on its own host-death Job just before it exits, after commit
+and after reaping its roles". Reply `079b239d` records that option A failed its
+qualification, so B applies. The design below is the coordinator's, made under the
+owner's delegation of 2026-10-08 for long-term robustness, on the native qualification
+of B of the same day; this amendment's pull request records that evidence and its
+hashes.) This paragraph owns the release: its facts, order, primitive, census, crash
+table, rollback, supervision after release, claim scope and rejected alternatives.
+
+*Facts.* Every no-argument launch of a Windows `keld-host` installs one unnamed,
+non-inheritable, non-breakaway, kill-on-close host-death Job, H, before any listener,
+child or window (the `--hello` diagnostic window runs without it), and today forgets
+its only handle so that the kernel closes it at termination
+(`crates/keld-host/src/main.rs:101`; `crates/keld-runtime/src/windows_job.rs:3209-3249`,
+the forget at `windows_job.rs:3248`; the KEL-78/T3 contract of Architecture 06 §1). In
+`PerUserDirect` the attempt owner is that host. It creates the candidate
+`CREATE_SUSPENDED` under its own token with no breakaway flag
+(`crates/keld-runtime/src/windows_lpac.rs:497`) and assigns it to the unnamed
+kill-on-close attempt Job, A, before its first instruction (S6b). A child belongs to
+every Job in its parent's chain, and closing the last handle of a kill-on-close Job ends
+the processes of that Job and of its nested Jobs
+([Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
+[Nested Jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs),
+both `ms.date` 2025-07-14), so the candidate is a member of A and of H. The native
+qualification of B, three identical runs on build 26300 of a harness that mirrors
+`keld-runtime`'s Jobs, showed: with neither Job cleared, with only A cleared and with
+only H cleared the candidate dies with the host; with both cleared it survives the
+host's exit; `JobObjectBasicProcessIdList` on H lists every member, and per-member
+`IsProcessInJob(A)` tells the family from the rest; a console child's `conhost.exe` is
+created asynchronously after the child resumes and inherits its creator's Jobs; a
+member's removal from the list can lag its termination; and 64 nested levels and 10
+update generations assigned without failure. Both clears are necessary, and together
+they are sufficient.
+
+*Handle ownership.* `install_host_death_job` returns an opaque capability,
+`WindowsHostDeathJob`: not `Clone`, no raw-handle accessor, the handle non-inheritable
+and held in `ManuallyDrop`, so that dropping the value never closes it. Nothing closes
+the handle while the host is alive, which is the KEL-78/T3 invariant unchanged, and an
+abnormal host death still closes it through the kernel, as today. It exposes the landed
+`WindowsHostJobObservation` through an accessor and one consuming operation,
+`release_for_exit`:
+
+```rust
+/// The host's own host-death Job. Not `Clone`; no raw-handle accessor; the handle is
+/// `ManuallyDrop<OwnedHandle>`, so dropping this value never closes it.
+pub struct WindowsHostDeathJob { /* private */ }
+impl WindowsHostDeathJob {
+    pub fn observation(&self) -> WindowsHostJobObservation;
+    /// The census, then the host-death clear; consumes the capability, never closes it.
+    pub fn release_for_exit(
+        self,
+        released: &WindowsReleasedAttempt,
+        deadline: Instant,
+    ) -> Result<WindowsExitCensus, WindowsHostJobError>;
+}
+pub fn install_host_death_job() -> Result<WindowsHostDeathJob, WindowsHostJobError>;
+impl WindowsProcessJob {
+    /// The attempt-Job clear; exclusive by type with `terminate_and_wait`.
+    pub fn release_family(self) -> Result<WindowsReleasedAttempt, WindowsHostJobError>;
+}
+/// The attempt Job after its clear read back `0`; keeps the handle for membership
+/// queries only.
+pub struct WindowsReleasedAttempt { /* private */ }
+/// Census witness for the §7 rows.
+pub struct WindowsExitCensus {
+    pub family: u32,
+    pub terminated: u32,
+    pub snapshots: u32,
+}
+```
+
+*One clear primitive.* `keld-runtime` has one crate-private clear beside
+`create_process_job` (`windows_job.rs:2620`): query the extended limits, strip
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, set them, and read the flags back through the
+landed `query_job_limit_flags` (`windows_job.rs:2673`); any read-back other than `0` is
+"not released", a typed `WindowsHostJobError`. Two consuming entries share it.
+`WindowsProcessJob::release_family(self)` clears A and returns `WindowsReleasedAttempt`,
+which keeps A's handle for membership queries only; it and `terminate_and_wait`
+(`windows_job.rs:2210`) both consume the Job, so by type a rolled-back attempt is never
+released and a released attempt is never terminated.
+`WindowsHostDeathJob::release_for_exit(self, &released, deadline)` runs the census and
+then clears H; it cannot be called without a released attempt, so H is never touched
+unless A was released first. Machine-UAC shares only the primitive: the elevated helper
+calls `release_family` once `health-accepted` is durable and keeps its own timing
+("Machine-UAC owner-loss retirement"; S11).
+
+*Order.* On the accept path the `PerUserDirect` owner proceeds in this order, each step
+only after the previous one has returned: (1) `HealthAccepted` is durable
+(`accept_health`, `crates/keld-update/src/windows_baseline/activate.rs:415`); (2) it
+writes `AK1` accepted and reaches the candidate's end of file or that read's deadline
+(*Health sequence*); (3) `complete()` publishes both known-good slots, retires the
+superseded version and removes the journal (`activate.rs:487`); (4) `release_family`,
+only after `complete()` returned `Ok`: on `Err` the host exits with both Jobs still
+kill-on-close, the candidate dies with it, and the `HealthAccepted` journal stays
+authoritative, as at W0b (availability only); (5) the host reaps its own roles,
+through the landed WebView2 `BrowserProcessExited` barrier
+(`crates/keld-wv/src/webview2/mod.rs:1229-1260`, its deadline at `mod.rs:186`) and the
+Bun teardown of the accepted-shutdown tail; (6) the census; (7) the H clear; (8) exit.
+Steps 6 and 7 are `release_for_exit`. Releasing before `complete()` is
+rejected: an owner lost between the release and journal removal would leave a
+`HealthAccepted` journal beside a running, released candidate; `recover` needs an exact
+process-family retirement binding for every launched phase (`activate.rs:603-627`),
+which no owner can compose while that family runs, so recovery would halt for as long
+as the candidate lived.
+
+*Census and policy.* The census takes a snapshot of H's process IDs with
+`QueryInformationJobObject(JobObjectBasicProcessIdList)`; a list shorter than the
+assigned count is retaken with a larger buffer. For every ID other than the host's own
+it opens the process with `PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE |
+PROCESS_SYNCHRONIZE`, one handle per member, through which it classifies, waits and, if
+needed, terminates; a second open for termination would be a second lookup of a
+reusable ID. An open that fails because no live process has that ID
+(`ERROR_INVALID_PARAMETER`: the member exited after the snapshot; S6b3's evidence
+confirms the status) means a new snapshot; any other open failure refuses. It
+classifies each opened member first by `IsProcessInJob(H)`: not in H means the ID was
+reused by a process outside H, so the member is skipped and a new snapshot taken; then
+by `IsProcessInJob(A)`: in A is family, which covers the candidate, every process it
+starts, its own host-death Job and, by construction, its console host, when the launch
+allocates one. Every other member is outside the family: the host's Bun primary and
+any descendant it left, since Bun receives no inner Job and is reaped only by H
+(`crates/keld-runtime/src/lib.rs:1221`, `lib.rs:1446-1450`); a WebView2 process past
+the barrier; and any console host that a member of H allocated (the host's own console
+host predates H and is not a member). Terminating a WebView2 process past the barrier
+assumes that no host WebView2 process serves the candidate: WebView2 ties every process
+of a user data folder to that folder's one browser process, shared across the
+processes that open it
+([Process model for WebView2 apps](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/process-model),
+`ms.date` 2022-04-01), and the KEL-135 profile lease (`profile.lock`,
+`crates/keld-wv/src/webview2/mod.rs:188`) is opened with no sharing and refuses a
+second opener with `ProfileInUse` rather than sharing (`mod.rs:521-538`), so the
+assumption holds while the old host holds its lease and the candidate mode never opens
+the user data folder that the old host holds; S6c owns that rule for its candidate mode
+(§6). The census terminates each member outside the family through the handle it
+opened, with the exit code `1` that the attempt Job's termination uses
+(`windows_job.rs:2193`), treating a member whose handle is already signaled as
+terminated, then waits for their handles under the deadline and takes a new snapshot;
+it repeats until a snapshot shows only the host and family, or until the deadline. A
+`TerminateProcess` failure on a live
+member, such as access denied, is not refused on its own: the member stays in the next
+snapshot, and the deadline refusal covers it. This is exactly what closing H at exit
+would do to those members, moved before the clear, and it is what makes the clear safe:
+after a clean snapshot no process outside the family exists in H that could start
+another, other than the host, which starts nothing after the census. At the deadline
+it refuses: `release_for_exit` returns the typed refusal, the host exits with H still
+kill-on-close, the candidate dies with it, and the next launch
+boots the committed version, since every record is already committed; the refusal is
+availability-only. S6c measures the deadline from the reaping latencies its PR records
+and fixes it there. Rejected: comparing H's member count with A's (a member can leave
+and another join between two reads); matching image names (a reused ID or a renamed
+image); refusing on any member outside the family at once (WebView2 and Bun stragglers
+would make release almost never succeed); and waiting without terminating (one stray
+Bun descendant would defeat release in every app).
+
+*Crash table.* An owner lost at W0a, after `HealthAccepted` is durable and before `AK1`
+accepted, or at W0b, after `AK1` accepted and before `complete()` returns, leaves what
+it leaves today: the candidate dies with the host through A and H, the journal still
+reads `HealthAccepted`, and recovery needs the retirement binding (refused with
+`JournalBoundRecoveryRequired` before S6d). An owner lost at W1, after `complete()` and
+before `release_family`, at W2, after `release_family` and before the H clear, while
+reaping or in the census, or at W4, where the census refuses at its deadline, leaves no
+journal: the candidate dies with the host and the next launch boots the committed
+version, availability only. After W3, both clears done, the candidate survives whatever
+the host does next. On rollback, `terminate_and_wait` consumes A, so `release_family`
+cannot be called, H keeps kill-on-close, and nothing is cleared.
+
+*Supervision after release.* The released candidate is itself a `keld-host`: before any
+child it installs its own host-death Job, nested under A and H, so its own abnormal
+death reaps its roles as today. S6c keeps that install first on the rendezvous-argument
+path; today `crates/keld-host/src/main.rs:85-90` refuses every argument before the
+install at `main.rs:101`. Each in-session update nests two further Jobs under the
+previous ones. On the qualification's 64 levels and 10 generations that growth is
+accepted; the §7 row repeats ten in-session updates.
+
+*Claim scope and residuals.* Only this host's own two Jobs are cleared. An outer Job
+that bounds the host, such as a launcher's or CI's kill-on-close Job, still bounds the
+candidate, and nothing here claims otherwise. Nothing in Keld hands H to another
+process; a same-user process that duplicates the handle out of the host
+(`PROCESS_DUP_HANDLE`) can join H, and what it does to the candidate is outside the
+`PerUserDirect` boundary (criterion 1). A keeper or a criterion-10 post-exit helper
+that the host starts inherits H and is outside A: B does not cover it, and the census
+would terminate it as a member outside the family. S6d's own specification solves that
+at the root before S6d starts (§6, §10).
+
+*Rejected alternatives.* Option A, breakaway from H: `JOB_OBJECT_LIMIT_BREAKAWAY_OK` is
+a property of the whole Job, and the qualification showed that any direct member, the
+Bun primary and the WebView2 processes included, could then create a child that leaves
+H (reply `079b239d`). An out-of-process relauncher or broker outside the Jobs: it adds
+a long-lived process and principal outside Keld's supervised family and loses the
+suspended-launch, assign-before-first-instruction binding that S6b proved. A keeper
+that retains the Job handle: rejected above for Machine-UAC, for the same reasons.
+Releasing before `complete()` (*Order*). A type witness from `complete()` on
+`release_family`, which would make step 4's order a compile-time fact as
+`release_for_exit`'s is: `keld-runtime` cannot name a `keld-update` type, because
+Architecture 01 §3 owns the dependency direction and gives `keld-runtime` only
+`keld-ipc` (`docs/architecture/01-overview.md:99-100` and `:111`). `keld-update`
+already sits above `keld-runtime` through a Windows dev-dependency (its tests,
+`crates/keld-update/Cargo.toml:31-34`); that edge alone would not block the reverse
+edge, because Cargo allows a
+[dev-dependency cycle](https://doc.rust-lang.org/cargo/reference/resolver.html#dev-dependency-cycles),
+so the architecture rule, not the manifest, is the blocker. S6c's composition and the
+r8 and r12 cells of the §7 row prove the order instead. Clearing without a
+census: the clear releases every member of H, so a Bun descendant or a WebView2
+straggler would outlive the host unsupervised.
 
 ### Trust, package and channel ownership
 
@@ -2284,6 +2507,20 @@ Implement in:
     `retirement_due` (`:137-152`) names the candidate for `PublishPending` only under
     the abandon intent and only when no pointer names it. Every mapping is unchanged
     under the ordinary intent;
+- landed-code change in `keld-runtime` and its call sites (slice S6b3; KEL-270 owner
+  decision `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 2, under replies
+  `559c07ac` and `079b239d`; "Candidate release after commit"): `install_host_death_job`
+  (`crates/keld-runtime/src/windows_job.rs:3209-3249`) returns the opaque
+  `WindowsHostDeathJob` capability instead of forgetting the Job handle
+  (`windows_job.rs:3248`), a breaking public API change; the capability holds the
+  handle in `ManuallyDrop`, so no caller can close it and dropping it changes nothing.
+  Its callers change mechanically, binding the capability and reading the observation
+  through its accessor: `crates/keld-host/src/main.rs:101`,
+  `crates/keld-host/tests/no_flag_windows.rs:204` and
+  `crates/keld-runtime/tests/windows_host_death_job.rs:2160`,
+  `windows_host_death_job.rs:2187` and `windows_host_death_job.rs:2225`. The host keeps
+  the capability until it exits; S6c adds the one `release_for_exit` call on the
+  committed exit path, and no other caller releases it;
 - the new T4d production FFI. Each call below lives in the named file of its existing
   owner, only after an issue-scoped amendment of that owner's AGENTS.md `unsafe` rule;
   calls that the owner already lists gain only the stated new scope:
@@ -2349,20 +2586,33 @@ Implement in:
   - `keld-runtime`, `src/windows_job.rs` (its KEL-270 whitelist): `CreateProcessWithTokenW`
     with `CREATE_SUSPENDED`; `AssignProcessToJobObject` on that suspended process (S11)
     and on the `PerUserDirect` same-token suspended child (S6b) (a listed call with a
-    new scope); `CompareObjectHandles`; clearing
-    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` with `SetInformationJobObject` after
-    `health-accepted` (a listed call with a new scope);
+    new scope); `CompareObjectHandles`; the one crate-private clear of
+    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` with `SetInformationJobObject` and a
+    `QueryInformationJobObject` read-back of `0` (slice S6b3; "Candidate release after
+    commit"), with exactly two scopes: the exact attempt Job through
+    `WindowsProcessJob::release_family`, after `complete()` in `PerUserDirect` (S6c)
+    and after `health-accepted` in `MachineUacDirect` (S11), and the host-death Job
+    through `WindowsHostDeathJob::release_for_exit`, after the census at a committed
+    exit (listed calls with a new scope; the amendment also narrows the crate rule that
+    forbids Job limit changes to admit exactly this strip); the production census of
+    `release_for_exit` (S6b3): `QueryInformationJobObject(JobObjectBasicProcessIdList)`
+    on the host-death Job, `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
+    PROCESS_TERMINATE | PROCESS_SYNCHRONIZE)` on each listed member, `IsProcessInJob`
+    against the host-death Job and the attempt Job, and `TerminateProcess` and
+    `WaitForSingleObject` on members outside the family (listed calls with new scopes);
     `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`, the System32-only search;
     `ShellExecuteExW` with `runas`, `SEE_MASK_NOCLOSEPROCESS`, `SEE_MASK_NOASYNC` and
     `SEE_MASK_FLAG_NO_UI`, the helper's own directory as `lpDirectory`, `nShow`
     `SW_HIDE` and no owner window, on a dedicated thread with `CoInitializeEx`
     (single-threaded apartment) and `CoUninitialize` around it ("Helper launch and
     self-anchor"; new `windows-sys` features `Win32_UI_Shell` and
-    `Win32_System_Com`); and, in acceptance builds only, an owner-side test seam that
-    lists the attempt Job's process IDs with `QueryInformationJobObject`
-    (`JobObjectBasicProcessIdList`) for the census, never as retirement evidence.
-    `OpenProcess`, `GetProcessTimes`, `QueryFullProcessImageNameW`, `OpenProcessToken`
-    and `WaitForSingleObject` are already listed;
+    `Win32_System_Com`); and the S6b3 process-ID lister over
+    `QueryInformationJobObject(JobObjectBasicProcessIdList)`, production code for the
+    host-death census, which S12 reuses for the Machine-UAC census of "Machine-UAC
+    owner-loss retirement" instead of adding an acceptance-only seam, never as
+    retirement evidence. `OpenProcess`, `GetProcessTimes`,
+    `QueryFullProcessImageNameW`, `OpenProcessToken`, `IsProcessInJob`,
+    `TerminateProcess` and `WaitForSingleObject` are already listed;
   - reuse decisions in `keld-runtime`: the suspended child's resume-once state and its
     single `ResumeThread` call in `windows_lpac.rs` (`spawn_suspended` at :313,
     `resume` at :564) are generalized into one suspended-child type that the LPAC
@@ -2375,7 +2625,7 @@ Implement in:
     the LPAC attribute list, beside the LPAC creation in `windows_lpac.rs` (an existing
     call with a new scope; slice S6b; Coordination record, Linear KEL-270 comment
     `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07). `assign_child`
-    (`windows_job.rs:1348`) takes a `std::process::Child`, which cannot represent the
+    (`windows_job.rs:1479`) takes a `std::process::Child`, which cannot represent the
     process that `CreateProcessWithTokenW` or that suspended creation returns, so it is
     extended to accept the suspended child's owned process handle rather than
     duplicated. The attempt-Job
@@ -2432,8 +2682,8 @@ Must not touch in Slice A:
   resolves it from a fresh UAC prompt without ordinary host boot, writing nothing when
   revalidation or the process-family proof fails. The §7 rows for criteria 8, 17 and 20
   define the expected results. Implementation follows these dependency-ordered slices,
-  each one PR (S4 is two, S4a and S4b; S6 is five, S6a, S6b, S6b2, S6c and S6d; S9 is
-  four, S9a to S9d) with its crates, gates and evidence:
+  each one PR (S4 is two, S4a and S4b; S6 is six, S6a, S6b, S6b2, S6b3, S6c and S6d; S9
+  is four, S9a to S9d) with its crates, gates and evidence:
   - S1, native qualification spike, in the nested research checkout only (no Keld
     code; no gate): `hProcess` and its rights from an elevated `runas` launch; the
     elevated helper opening the host process and its token after own-account and
@@ -2485,12 +2735,16 @@ Must not touch in Slice A:
     new `WindowsLaunchedProcess`, `WindowsClaimantRefusal`). Evidence: the
     process-object cells of the claimant-binding row at the binding; pipe, token,
     deadline and one-shot cells close in S6/S11.
-  - S6, `PerUserDirect` connect-back end to end, in five PRs. Coordination record
+  - S6, `PerUserDirect` connect-back end to end, in six PRs. Coordination record
     (Linear KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6
     splits into S6a to S6d; S6a and S6b are independent, S6c composes them, and S6d
     composes the landed lifecycle keeper into S6c's coordinator. Owner decision (Linear
     KEL-270 comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 3) adds
     S6b2, which changes the coordinator input that S6c composes and lands before it.
+    Item 2 of the same decision, under the owner's rule in reply `559c07ac` and the
+    failed option-A qualification in reply `079b239d`, adds S6b3, the candidate release
+    that S6c composes; it also lands before S6c (coordinator decisions under the
+    owner's delegation, 2026-10-08; "Candidate release after commit").
     Until S6d lands, an owner lost at any point after the candidate launch (`AwaitingHealth`,
     `HealthAccepted` or `RollbackPending`) leaves its journal pending; `recover` needs a
     retirement binding that only the keeper's `KELD-QF1` witness supplies once the owner
@@ -2565,6 +2819,32 @@ Must not touch in Slice A:
       unchanged). Evidence: the "10, 17 (coordinator image)" row; the landed
       activation, recovery and crash-cut tests pass through the crate-private
       file-taking function in place of each raw digest.
+    - S6b3, the candidate release primitives in `keld-runtime` (`windows_job.rs`), with
+      the mechanical call-site updates in `keld-host` (§5). Owner decision (Linear
+      KEL-270 comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 2, under
+      replies `559c07ac` and `079b239d`; coordinator decisions under the owner's
+      delegation, 2026-10-08; "Candidate release after commit"): the retained
+      `WindowsHostDeathJob` capability that `install_host_death_job` returns; the one
+      clear-with-read-back primitive with its two consuming entries,
+      `WindowsProcessJob::release_family` and `WindowsHostDeathJob::release_for_exit`;
+      the host-death Job process-ID lister; and the census, with its termination of
+      members outside the family and its deadline refusal. It lands before S6c, which
+      composes it in the §4 order and measures the census deadline; S11 reuses
+      `release_family`; S12 reuses the lister. It changes crash ownership and handle
+      ownership, so it needs an architecture review. Gates: unsafe (`keld-runtime`
+      amendment: the §5 scopes on listed calls, no new function names, and the
+      limit-change rule narrowed to this strip; the amendment carries an explained
+      instruction-budget change for `crates/keld-runtime/AGENTS.md` under
+      `.agents/instructions.md`, with named independent review evidence as the S6b
+      and S9b rule above provides, because the file is at 1833 bytes against its
+      1856-byte cap in `.agents/instruction-budget.tsv`), public API (breaking:
+      `install_host_death_job`'s return type; new: `WindowsHostDeathJob`,
+      `release_for_exit`, `release_family`, `WindowsReleasedAttempt` and
+      `WindowsExitCensus`); permission model, dependency and wire: none (every call
+      and constant is under a `windows-sys` feature the crate already enables, and
+      the clear removes only a termination the host could already perform on its own
+      family). Evidence: the "8, 9 (candidate release)" row except its S6c cells, in
+      child processes that stand in for the host and the candidate.
     - S6c, the composition in `keld-core` and `keld-host`, and the measured G constant
       in the `keld-ipc` attempt module. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): the `PerUserDirect` host
@@ -2585,20 +2865,41 @@ Must not touch in Slice A:
       (health sequence)" row with the G measurement, except its owner-killed cell (S6d).
       S6c keeps the host's boot `VerifiedWindowsImage` for that call; today
       `validate_installed_current_exe` drops it on return
-      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c also waits for the KEL-53
-      amendment that specifies item 2 of `740998f4`, the candidate's lifetime after
-      commit: the native qualification of option A (breakaway from the host-death Job)
-      failed its acceptance test, so the owner's rule selects option B, in which the
-      old host clears kill-on-close on its own host-death Job just before it exits,
-      after commit and after reaping its roles (Linear KEL-270 replies `559c07ac` and
-      `079b239d`, 2026-10-07); this spec does not yet specify B.
+      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c composes S6b3's release
+      in the order of "Candidate release after commit": after `complete()` returned
+      `Ok`, `release_family` (on `Err` it exits with both Jobs still kill-on-close);
+      then the host's own role teardown, the landed WebView2 `BrowserProcessExited`
+      barrier and the Bun teardown; then `release_for_exit`, with the census deadline
+      that S6c measures from the reaping latencies its PR records and fixes beside G;
+      then exit. It keeps `install_host_death_job` first on the rendezvous-argument
+      path, so the candidate's own host-death Job nests under the attempt Job. Its
+      candidate mode never opens the WebView2 user data folder that the old host
+      holds, the assumption under which the census may terminate a host WebView2
+      process past the barrier (§4 *Census and policy*). S6c also owns a design item
+      for the candidate's WebView2 profile during health: landed release boot selects
+      its persistent user-data folder before any listener, child or window
+      (Architecture 05 §1, `docs/architecture/05-webview-and-native.md:55-56`), and
+      the KEL-135 lease excludes a second same-app host until the host owner exits
+      (`05-webview-and-native.md:88`), so a candidate launched as landed would fail
+      with `ProfileInUse` while the old host holds the lease and could never reach
+      `Ready`; S6c must specify a profile handover, or a candidate-only profile, before
+      it starts, with no temporary-store fallback (`05-webview-and-native.md:64-65`).
+      Its evidence adds the S6c cells of the "8, 9 (candidate release)" row: survival
+      through the real host coordinator, the ten in-session updates, the measured
+      deadline and the `complete()` `Err` cut (r12).
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
       executable entry. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6c's coordinator starts a
       dedicated one-shot keeper process outside the attempt Job and hands it the Job and
       lease retention through the landed `KELD-HO1`/`KELD-HR1` handoff; the next writer,
       as successor, takes the `KELD-QO1`/`KELD-QA1`/`KELD-QF1` witness before `recover`.
-      S6d names the keeper's executable entry and its crates; none exists today. The
+      S6d names the keeper's executable entry and its crates; none exists today.
+      Design item, which S6d's own specification solves at the root before S6d starts
+      (§10): a keeper that the host starts inherits the host's host-death Job and is
+      outside the attempt Job, so option B does not cover it, and the S6b3 census would
+      terminate it as a member outside the family at a committed exit; it has no
+      release path today ("Candidate release after commit"). A criterion-10 post-exit
+      helper, if one is used, has the same gap. The
       adversarial controls of "Bounded per-attempt lifecycle keeper" pass before S6d
       connects the keeper to production writes. After S6d, recovery when every owner is
       lost, or across a reboot or hibernation, remains unsupported and halts with its
@@ -2712,18 +3013,27 @@ Must not touch in Slice A:
     source-locator encoding, `BQ1` field set and `BO1` classes its wire review fixes
     under *Bootstrap records*; approved: KEL-270 owner decision `eff8e2fb`,
     2026-10-06), and the `keld-runtime` token launch: `CreateProcessWithTokenW` with
-    `CREATE_SUSPENDED`, the token-launch Job assignment and the
-    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` clear after `health-accepted` (§5; Coordination
-    record, Linear KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07).
-    S11 removes the activation role's interim refusal (*Interim*). Gates: all five.
-    Evidence: the bootstrap rows under the UAC operator evidence protocol, including
-    the second ordinary account and alternate-administrator rows. It starts only after
-    S1 showed that the helper can open the host process and its token after
-    alternate-administrator consent, or after the owner decided otherwise.
+    `CREATE_SUSPENDED`, the token-launch Job assignment and, after `health-accepted`,
+    the attempt Job's release through S6b3's `WindowsProcessJob::release_family`, the
+    one clear primitive (§5; Coordination record, Linear KEL-270 comment
+    `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07; "Candidate release after
+    commit"). S11 removes the activation role's interim refusal (*Interim*). Gates: all
+    five. Evidence: the bootstrap rows under the UAC operator evidence protocol,
+    including the second ordinary account and alternate-administrator rows, and the
+    "17 (Machine-UAC Job inheritance)" row. It starts only after S1 showed that the
+    helper can open the host process and its token after alternate-administrator
+    consent, or after the owner decided otherwise. Start condition (coordinator
+    decision under the owner's delegation, 2026-10-08): its §7 rows record the elevated
+    helper's and the candidate's membership of the initiating host's host-death Job and
+    of the helper's attempt Job, and whether the candidate survives the initiating
+    host's exit; if the candidate is in that host-death Job, S11 stops for an owner
+    decision ("Machine-UAC owner-loss retirement"). This amendment specifies no probe.
   - S12, enabling owner-loss retirement (`keld-updater-helper`, `keld-guard`'s logon
-    wrapper, `keld-runtime`'s census seam). Gates: permission model, unsafe review of
-    the exact diff. Evidence: the owner-loss retirement row with its census and static
-    scan; only then does `RestartFirst` replace `RecoveryDisabled` for launched attempts.
+    wrapper, and the Machine-UAC census over `keld-runtime`'s S6b3 process-ID lister,
+    which S12 reuses rather than adding a seam). Gates: permission model, unsafe review
+    of the exact diff. Evidence: the owner-loss retirement row with its census and
+    static scan; only then does `RestartFirst` replace `RecoveryDisabled` for launched
+    attempts.
   T4d also updates the `activate.rs` retirement-binding documentation to name the
   recovery-only helper as a producer. FFI wrappers stay minimal beneath safe typed
   wrappers with owned handles and minimum access rights; no raw handle crosses a normal
@@ -2759,13 +3069,15 @@ Must not touch in Slice A:
 | 8 (connect-back in every direct mode) | separately for `PerUserDirect` with the host coordinator as owner, `PerUserDirect` with a criterion-10 post-exit helper if one is used, and `MachineUacDirect` with `keld-updater-helper.exe` as owner: the candidate inherits no endpoint, receives only its rendezvous name, connects back, is accepted, reports Ready and commits after 30 seconds, and the claimant-binding and endpoint-squatting rows pass in that cell; no `MachineUacDirect` cell uses a post-exit helper; `MachineSeamlessDirect` is refusal-only, so no claim is accepted before its authority is selected; a pass in one cell does not close another |
 | 8 (keld-attempt codec) | (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) each S4 record's golden bytes, and one negative per byte rule, each refused: each out-of-set purpose (with S11), class or result byte, including `0`; each magic at a position where it is not admitted; a truncated record and a record with one extra trailing byte; a one-field mutation of `AA1`, of `AR1` and of `AB1`; an `AC1` whose IDs fail the locator check, refused before `AA1`; an `AH1` with a foreign installation ID or client PID; locator calls with an all-zero or a duplicated input; an `AC1` whose server PID differs from `GetNamedPipeServerProcessId`; an `AF1` whose class is not admitted at its position (class `1` after `AB1`, class `2` before it); and a non-admitted magic followed by no further byte, refused before its deadline |
 | 8 (health sequence) | (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) in candidate mode an unexpected application-generation exit after `AY1` and before `AK1` ends the candidate host with no successor generation, and the owner rolls back; a negative control that arms the recovery gate at `Ready` instead fails this row, and a second negative control that defers the arm but keeps the `Ready`-keyed revocation predicate also fails this row; one byte after `AY1` fails health; an exit injected in the last G of the window fails health; an `AK1` accepted that the candidate loses to end of file, a read failure or its deadline leaves its gate unarmed, so a later generation exit ends the host; after `AK1` accepted the same exit is replaced in-process; an owner killed between the end of the window and the durable `HealthAccepted` has sent no `AK1`, and recovery rolls back; on rollback, `AK1` rolled back is written before the candidate family ends, and the rollback completes when the candidate never reads it; the owner disconnects only after the candidate's end of file or its deadline; a negative control that disconnects right after writing `AK1` accepted leaves the candidate unarmed |
+| 8, 9 (candidate release) | ("Candidate release after commit"; S6b3, in child processes that stand in for the host and the candidate; the S6c cells are named) r1, survival: a candidate committed through the §4 order is alive, with an unsignaled handle, after the old host has exited; both Jobs read back `0` before that exit; the next launch of the installation selects the committed version with no journal (S6c cell: through the real host coordinator); r2, one negative control per single clear: with only the attempt Job cleared, with only the host-death Job cleared, and with neither, the same candidate's handle is signaled after the host exits; r3, rollback: no clear runs, both Jobs read back `0x2000` until the host exits (the test reads the attempt Job through the landed `WindowsProcessJob::duplicate_lifecycle_keeper_handle` duplicate, `crates/keld-runtime/src/windows_job.rs:1611`, a non-inheritable handle with the `JOB_OBJECT_QUERY` and `JOB_OBJECT_TERMINATE` rights, taken while the Job is live and before `terminate_and_wait` consumed it; the duplicate is a separate handle to the same Job object and survives that call), and the candidate family is gone when the host's handle is signaled; r4, crash cuts, the host killed at W0a, W0b, W1, W2 and W4: at W0a and W0b the candidate is gone, the journal reads `HealthAccepted` and recovery refuses with `JournalBoundRecoveryRequired` before S6d; at W1, W2 and W4 the candidate is gone, no journal exists and the next launch selects the committed version; after W3 the candidate survives; r5, a straggler held past the deadline (seam-injected: a member outside the family whose handle stays unsignaled after termination, as the `pending_io_family` fixture holds one): `release_for_exit` returns the typed refusal, the host-death Job reads back `0x2000`, the host exits, the candidate is gone, and the next launch selects the committed version (S6c cell: the measured deadline); r6, a Bun descendant parked after the Bun primary exited, in the host-death Job and not in the attempt Job, is terminated by the census through its own handle, that handle is signaled before the clear, the witness counts it, and the candidate survives; r7, negative control without the census: a build that clears the host-death Job without it leaves that parked descendant alive after the host exits, so the row detects the gap; r8, negative control that releases before `complete()`: a build that calls `release_family` first and whose host is then killed before journal removal leaves a `HealthAccepted` journal beside a running candidate, and recovery refuses while it runs, so the row detects the gap; r9, KEL-78/T3 regressions: the landed `windows_host_death_job.rs` rows pass unchanged against the capability; dropping or forgetting the capability never closes the handle, so the Job still reads back `0x2000` and an abnormal host death still reaps the enrolled tree; a `compile_fail` doctest shows that the capability yields no raw handle and is not `Clone`; r10, the released candidate's own host-death Job: it is installed and nested (`nested_under_existing_job`), and the candidate's abnormal death reaps its own parked descendant after the old host is gone; r11, an outer Job and ten updates: a host bounded by an outer kill-on-close Job that the test holds releases its candidate, which still ends when the test closes that outer Job; ten in-session updates in a row, each released, with every assignment succeeding and the last candidate alive (S6c cell: through the real host coordinator); r12, a `complete()` that returns `Err` (seam-injected failed durable step): `release_family` is never called, both Jobs read back `0x2000` until the host exits, the candidate is gone with it, and the journal still reads `HealthAccepted`, as at W0b (S6c cell: through the real host coordinator) |
 | 8, 17 (D5 fallback) | when the Medium claimant cannot open the elevated owner, the claim binds on the `O:BA` owner and the session before sending and on the journaled owner process ID after acceptance; when the open is admitted, creation time and `helper_image_blake3` are checked as well |
 | 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL and its own user SID as owner before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS and, before sending, verifies that the host process image is its installation's selected `keld-host.exe`, the session, and a descriptor owned by that host's user SID; it takes the initiating token only from that host process object and refuses an elevated or non-Medium initiating token before any protected write; a forged rendezvous argument, a squatting server that is not that `keld-host.exe` (same-user code is outside the boundary and is not claimed), a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted with the initiating token unchanged once S1 shows the open works, and otherwise refuses with a typed `ProtectedStateUnchanged` before any protected write; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
 | 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
 | 17 (owner loss in `publish-pending`) | the owner is killed after the `publish-pending` journal is durable and before launch, at each persisted step (before publication, after publication, after the floor, after `current`): no candidate family exists and no logon-session proof is needed; in `MachineUacDirect` an ordinary launch returns `MachineRecoveryRequired` with `RecoverNow` once S10 is enabled, and the recovery role resolves the attempt with the abandon intent of D1 (refined): with the floor at its prior value the published candidate is retired, the journal is removed as `Abandoned`, the floor never moves and the same signed version is retryable; with the floor at the candidate, `current` is restored and the candidate retired before journal removal, and the version is consumed; in `PerUserDirect` the landed lease-only resume is unchanged |
 | 17 (abandon-intent crash cuts) | the recovery role is killed at every step of the abandon intent: after its re-mint record, after the candidate's retirement and before journal removal, and, at the candidate floor, after `current` is restored and after the retirement; at each of these cuts the journal is still `PublishPending`, the next ordinary launch returns `MachineRecoveryRequired` with `RecoverNow`, and the next recovery-role run resumes it on the writer lease alone, re-mints again, never needs the logon-session proof and never writes `AwaitingHealth` or `RollbackPending`. A cut after the journal's write-through rename to its `pending-*` leaf leaves no journal: the next ordinary launch selects the rollback target normally, and the next writer removes the `pending-*` leftover. Under the ordinary intent every step mapping and `retirement_due` result is unchanged, including the `CandidateUnpublished` refusal at the candidate floor |
-| 17 (owner-loss retirement) | helper terminated and crashed mid-health; helper crash after `health-accepted` both before the limit is cleared (the application ends) and after it (the healthy application keeps running); a `rollback-pending` crash; a live owner still holding the lease; sign-out, a real full restart and a Fast Startup shutdown mid-health, each binary: afterwards the session query returns no such logon session or a session with a different logon time, otherwise the row fails and recovery halts; logon-session LUID reuse with a different logon time (seam-injected); a denied or unknown session-query status (seam-injected), with the single accepted "no such logon session" status confirmed on real Windows; a reference to a token of that session kept alive after sign-out, such as a duplicated token handle in an unrelated process, which keeps recovery halted until it closes; the census at Ready, at health acceptance and before the limit clear, through the acceptance-only Job process-list seam and per-process `TokenStatistics`; the static scan of the host and WebView crates; negative controls showing that no admitted family member starts a candidate-tree image or family-supplied code outside the attempt Job or under another logon session, and that sandboxed roles cannot (netonly `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task registered to a candidate-tree image as falsifiers); Job membership before the first instruction under `CreateProcessWithTokenW` with `CREATE_SUSPENDED`; a descendant breakaway attempt; nested KEL-96 host Jobs; and a family still terminating with pending I/O (the `pending_io_family` fixture: the census seam holds a not-yet-exited Job member; seam-injected). Each row either proves both facts or halts fail-closed, and no family member runs or has pending I/O after a passed proof |
+| 17 (owner-loss retirement) | helper terminated and crashed mid-health; helper crash after `health-accepted` both before the limit is cleared (the application ends) and after it (the healthy application keeps running); a `rollback-pending` crash; a live owner still holding the lease; sign-out, a real full restart and a Fast Startup shutdown mid-health, each binary: afterwards the session query returns no such logon session or a session with a different logon time, otherwise the row fails and recovery halts; logon-session LUID reuse with a different logon time (seam-injected); a denied or unknown session-query status (seam-injected), with the single accepted "no such logon session" status confirmed on real Windows; a reference to a token of that session kept alive after sign-out, such as a duplicated token handle in an unrelated process, which keeps recovery halted until it closes; the census at Ready, at health acceptance and before the limit clear, through the `keld-runtime` process-ID lister (S6b3, §5) and per-process `TokenStatistics`; the static scan of the host and WebView crates; negative controls showing that no admitted family member starts a candidate-tree image or family-supplied code outside the attempt Job or under another logon session, and that sandboxed roles cannot (netonly `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task registered to a candidate-tree image as falsifiers); Job membership before the first instruction under `CreateProcessWithTokenW` with `CREATE_SUSPENDED`; a descendant breakaway attempt; nested KEL-96 host Jobs; and a family still terminating with pending I/O (the `pending_io_family` fixture, seam-injected: an unsignaled handle stands for a not-yet-exited member of the attempt Job, which the S6b3 lister then reports; the same device as r5 of the "8, 9 (candidate release)" row). Each row either proves both facts or halts fail-closed, and no family member runs or has pending I/O after a passed proof |
 | 17 (helper crash after `health-accepted`) | after the limit is cleared and with the application still running, a helper crash leaves `health-accepted` durable: the next ordinary launch, including a second launch of the application, refuses with `MachineRecoveryRequired` and `RestartFirst` guidance (`RecoveryDisabled` before S12); nothing is written; the recovery role halts while the initiating session is live and finishes the commit only after the session query proves that it ended |
+| 17 (Machine-UAC Job inheritance) | (S11 start condition; "Machine-UAC owner-loss retirement") under the UAC operator evidence protocol, S11 records `IsProcessInJob` of the elevated helper and of its candidate against the initiating host's host-death Job and against the helper's attempt Job, and whether the candidate is alive after the initiating host exits following `health-accepted`; a candidate inside the initiating host's host-death Job stops S11 for an owner decision, because the defect that "Candidate release after commit" removes for `PerUserDirect` would recur in `MachineUacDirect` and the helper cannot classify the host's family; a candidate outside it passes; this amendment specifies no probe, and the row is evidence, not a mechanism |
 | 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an `UpdateError::Baseline` refusal or merely no selection) and writes nothing; each `MachineRecoveryGuidance` variant's fix-guidance text matches its pinned bytes; the same states in `PerUserDirect` keep their landed recovery and repair; `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline` refusal; while S10's rows have not passed, the helper refuses the recovery role and the guidance is `RecoveryDisabled`; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
 | 17 (helper launch and self-anchor) | the host derives the helper path only from admitted provenance and records, and offers nothing without authenticated provenance; a `keld-updater-helper.exe` placed beside the host outside the tree, on `PATH` or in the current directory is never launched; a copy of the helper with planted DLLs in its own directory, one for every imported name and for the C runtime names, launched elevated on a clean VM, loads none of them and refuses on self-anchor; the helper's import table matches its allowlist; a DLL planted in the current directory or in a user-writable `PATH` entry is not loaded after `main`; the edge-set checks fail on an injected `keld-core` edge and on an injected Bun-spawn call; the helper refuses every role before the lease and any write when the recorded mode is `PerUserDirect`, `MachineSeamlessDirect` or managed, when it runs from a copy outside a protected version tree (including a forged tree layout in a user-writable directory), when its signer differs from the publisher scope, when its embedded payload is missing, duplicated or mismatched, or when its image digest is not the journaled one |
 | 17 (running-image binding) | (KEL-270 owner decision `740998f4`, item 1; S9d) for the helper and for the installed host separately: a genuine signed image of the same publisher that is not the located tree's file, started through a user-owned junction that is then retargeted at the protected version tree, is refused by the `keld-guard` running-image binding, the helper before its self-anchor, the lease and any write, and the host before any listener, child or window; a negative control that removes the binding lets the same launch pass the self-anchor or the installed boot, so the row detects the gap; a direct launch of the in-tree image passes; a launch whose running image is the located tree's verified file and that the path-only open admits today passes, and if the binding would refuse such a launch, S9d stops for an owner decision (§6) |
@@ -2788,6 +3100,15 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   (an amendment of `keld-guard`'s closed list), and the D4 move, which amends both
   `keld-core`'s AGENTS.md (removing its KEL-135 Authenticode allowance) and
   `keld-guard`'s (adding it); each needs independent unsafe review of the exact diff.
+  S6b3 amends `keld-runtime`'s rule with the clear and census scopes of §5 on listed
+  calls, adds no function name, narrows the rule that forbids Job limit changes to the
+  exact kill-on-close strip with read-back, and retains the host-death Job handle in
+  `ManuallyDrop` instead of forgetting it (KEL-270 owner decision `740998f4`, item 2;
+  coordinator decisions under the owner's delegation, 2026-10-08); that amendment
+  carries an explained instruction-budget change for `crates/keld-runtime/AGENTS.md`
+  under `.agents/instructions.md`, with named independent review evidence as for S6b
+  and S9b, since the file is at 1833 bytes against its 1856-byte cap in
+  `.agents/instruction-budget.tsv`.
   The helper crate holds none. Elsewhere, conditional on each exact native/helper
   implementation;
 - public API: yes — canonical package contents, update admission and unsupported-cell
@@ -2826,13 +3147,18 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   2026-10-07); and the new safe
   wrappers that `keld-runtime`, `keld-guard` and `keld-ipc` export to the helper crate,
   with the `--recovery-role` selector constant and the breaking rename of
-  `keld-runtime`'s `WindowsLpacChild` to `WindowsSuspendedChild` (S5);
+  `keld-runtime`'s `WindowsLpacChild` to `WindowsSuspendedChild` (S5); and S6b3's
+  breaking return type of `install_host_death_job`, now the opaque `WindowsHostDeathJob`
+  capability, with the new `release_for_exit`, `WindowsProcessJob::release_family`,
+  `WindowsReleasedAttempt` and `WindowsExitCensus` ("Candidate release after commit";
+  KEL-270 owner decision `740998f4`, item 2);
 - permission model: yes — the install-mode protection profiles, UAC elevation and
   hostile-role denial decide who can mutate executable state, though no app grant is
   added. T4d adds the elevated helper principal, its recovery-only role and the
   initiating-user-only connect-back DACL, and S9d admits only the running image to the
   helper's self-anchor and the installed boot (KEL-270 owner decision `740998f4`,
-  item 1);
+  item 1). S6b3 adds none: the clear removes only a termination that the host could
+  already perform on its own family, and it changes no principal, grant or DACL;
 - dependency addition: none in Slice A; yes for T4d — the new workspace member
   `crates/keld-updater-helper` with internal edges only to `keld-update`, `keld-ipc`,
   `keld-runtime` and `keld-guard`; the `windows-sys` features `Win32_UI_Shell` and
@@ -2845,7 +3171,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `keld-guard` are already in the workspace `windows-sys` pin and are not new features.
   S9d adds to that pin any feature that its selected source or comparison needs, such
   as `Win32_System_ProcessStatus` for `GetMappedFileNameW` or `K32GetMappedFileNameW`
-  (§5). No third-party crate is added to the workspace;
+  (§5). S6b3 adds none: every call and constant of the clear and the census is under
+  a `windows-sys` feature that `keld-runtime` already enables. No third-party crate is
+  added to the workspace;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
   and canonical package content are narrowed and require exact independent review; any
   new host/coordinator authentication channel remains separately owned and gated. T4d is
@@ -2858,7 +3186,8 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   owned by "Candidate connect-back" and pointed to from Architecture 02); the helper's
   fixed `--recovery-role` argument, a contract between a host and a helper of another
   version tree (S9b); and the
-  canonical package content, which now requires `keld-updater-helper.exe`.
+  canonical package content, which now requires `keld-updater-helper.exe`. S6b3 adds
+  none.
 
 ## 9. Perf impact
 
@@ -2886,6 +3215,23 @@ not requests to revisit that decision:
   slice S12): an optional simplification that finishes a `health-accepted` commit under
   the writer lease alone instead of the owner-loss proof. It is not part of T4d and
   needs its own reviewed amendment.
+- S6d keeper under option B (owner: the KEL-53 owner, GYLDLAB; tracked under KEL-270
+  before S6d starts): a keeper that the host starts inherits the host-death Job, is
+  outside the attempt Job, and would be terminated by the S6b3 census at a committed
+  exit; option B does not cover it ("Candidate release after commit"). S6d's own
+  specification must solve this at the root before S6d starts; this amendment does not.
+- Criterion-10 post-exit helper under option B (same owner): if such a helper is ever
+  used, it inherits the host-death Job in the same way and needs the same root fix
+  before it is specified.
+- Candidate WebView2 profile during health under option B (same owner; tracked under
+  KEL-270 before S6c starts): landed release boot selects its persistent user-data
+  folder before any listener, child or window (Architecture 05 §1,
+  `docs/architecture/05-webview-and-native.md:55-56`) and the KEL-135 lease excludes
+  a second same-app host until the host owner exits (`05-webview-and-native.md:88`),
+  so a candidate launched as landed would fail with `ProfileInUse` while the old host
+  holds the lease and could never reach `Ready`. S6c must specify a profile handover,
+  or a candidate-only profile, with no temporary-store fallback
+  (`05-webview-and-native.md:64-65`), before it starts; this amendment does not (§6).
 - T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
   falsifier before any privileged seamless mechanism is selected. The task probe is only
   wake-up feasibility.

@@ -98,11 +98,16 @@
   installs KEL-78/T3's separate unnamed, non-breakaway, kill-on-close inner
   Job, so host-only death reaps Bun and its enrolled descendants even while the
   launcher survives. The two Jobs have separate owners and separate host-death
-  falsifiers. The CLI keeps the full outer Job handle; only the reduced cleanup
-  duplicate reaches the sentinel, never the host or Bun. This `keld dev` proof does
-  not make it an installed updater launcher or select a MachineSeamless writer
-  mechanism. KEL-101 separately owns the named-pipe/DACL boundary; this KEL-96
-  slice makes no LPAC or privileged-dispatch claim.
+  falsifiers. The host keeps the inner Job's handle as a capability that nothing
+  closes while it runs, and clears that Job's kill-on-close exactly once, on a
+  `PerUserDirect` exit after a committed update, after a census of the Job shows only
+  the host and the committed candidate's family (KEL-53 §4 "Candidate release after
+  commit", slice S6b3); every other exit, and every abnormal death before that clear,
+  keeps the kill-on-close reap. The CLI keeps the full outer Job handle; only the
+  reduced cleanup duplicate reaches the sentinel, never the host or Bun. This
+  `keld dev` proof does not make it an installed updater launcher or select a
+  MachineSeamless writer mechanism. KEL-101 separately owns the named-pipe/DACL
+  boundary; this KEL-96 slice makes no LPAC or privileged-dispatch claim.
 - **Windows installed-root product direction (KEL-254/KEL-53):** the default direct
   install is per-user under the user's application location, with automatic updates
   under the same-user authority and no UAC. Program Files installs support explicit-UAC
@@ -523,10 +528,16 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   `KELD-AB1` health-receipt digest, the owner's expected digest and the two-step
   `accept_health` (a durable `health-accepted` before completion), the launch handle's
   liveness check, and the same-token `CREATE_SUSPENDED` candidate launch whose
-  attempt-Job membership precedes its first instruction. Live feed orchestration, that
+  attempt-Job membership precedes its first instruction. KEL-53 T4d S6b3 adds the
+  candidate release after commit: the host keeps its host-death Job as an opaque
+  capability, one clear primitive strips kill-on-close with a read-back, the attempt
+  Job is released only after the journal is removed, and the host-death Job only after
+  the host has reaped its roles and a census shows only itself and the candidate
+  family; rollback releases nothing, and a release refused at its deadline costs only
+  availability. Live feed orchestration, that
   composition (host candidate launch, the private health channel and its 30-second
-  `Ready` observation, candidate-mode selection) and installed-host lifecycle
-  composition remain unimplemented. Planned Windows
+  `Ready` observation, candidate-mode selection, the release order) and installed-host
+  lifecycle composition remain unimplemented. Planned Windows
   direct modes share this state machine: same-user authority for per-user installs,
   explicit UAC for machine installs, and no-UAC machine activation only after KEL-270's
   lifecycle proof and a separately approved architecture/spec amendment selects and
@@ -545,7 +556,9 @@ The default Windows direct install is per-user under the installing user's
 `FOLDERID_LocalAppData` application tree. `PerUserDirect` updates run as that ordinary
 user without UAC; strict Keld role restrictions deny Bun/webview writes to the install
 and updater state. This does not claim protection from the owning user or arbitrary
-native malware already running as that user.
+native malware already running as that user. After a committed `PerUserDirect` update
+the old host releases the healthy candidate from its own two Jobs before it exits, so
+the candidate outlives it (KEL-53 §4 "Candidate release after commit").
 
 An explicitly selected Program Files installation records one of two machine-wide
 modes. `MachineUacDirect` is the simple fallback: its trusted installer assigns BUILTIN
