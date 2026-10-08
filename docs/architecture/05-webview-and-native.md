@@ -71,6 +71,16 @@ current user, SYSTEM, and Administrators. Subsequent validation follows the Wind
 it rejects foreign ordinary-user read, write, execute, delete, or ACL/owner authority
 while retaining the AppContainer and capability ACEs WebView2 requires.
 
+During a `PerUserDirect` update the old host hands this persistent profile to the
+candidate: it ends its own application session, including the `BrowserProcessExited`
+barrier, the durable `idle` record and the lease release, before it launches the
+candidate, while the KEL-53 writer lease refuses every other launch before any profile
+is touched; the candidate acquires the same identity's profile as any clean successor,
+and a rolled-back attempt restores the old host's session in process through the
+crash-recovery probe. KEL-53 §4 "Profile handover" owns the order and rejects a
+candidate-only or shared store; the handover is specified (slice S6c), not yet
+implemented.
+
 Microsoft's upstream [WebView2 client support](https://learn.microsoft.com/microsoft-edge/webview2/#supported-windows-versions)
 includes Windows 10 SAC 1709 and later plus Windows 11. Keld has real-qualified this
 profile slice only on Windows 11 x64; older client releases remain unqualified for Keld.
