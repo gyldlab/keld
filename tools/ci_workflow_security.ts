@@ -92,12 +92,40 @@ function requiredAction(steps: Mapping[], name: string, action: string, expected
   return step;
 }
 
+/**
+ * Largest admitted `timeout-minutes` for a step whose `run` script invokes apt
+ * (#624). Slow but successful mirror downloads took up to 642 s; hangs ran to
+ * the 45-minute job timeout.
+ */
+export const aptStepTimeoutMaxMinutes = 15;
+const aptInvocation = /\bapt(-get)?\b/;
+
+/**
+ * A step whose `run` script mentions `apt` or `apt-get` must bound itself, so a
+ * hung Ubuntu mirror fails that step instead of the whole job. Only the parsed
+ * `run` string counts (never the step name); local actions and scripts the
+ * step calls are outside this check.
+ */
+function checkAptStepTimeout(step: Mapping, label: string): void {
+  if (typeof step.run !== "string" || !aptInvocation.test(step.run)) return;
+  const minutes = scalar(step["timeout-minutes"]);
+  if (minutes === undefined || !/^[1-9][0-9]*$/.test(minutes) || Number(minutes) > aptStepTimeoutMaxMinutes) {
+    fail(`${label} runs apt without a step timeout-minutes between 1 and ${aptStepTimeoutMaxMinutes}; a hung Ubuntu mirror must fail the step, not consume the job timeout. Do not retry or continue on error.`);
+  }
+}
+
 /** The CodeQL languages, each analysed by its own job `codeql-<language>`. */
 export const codeqlLanguages = ["rust", "javascript-typescript", "actions"] as const;
 
-/** The router output that selects one language's job (tools/ci_changes.sh). */
+/**
+ * One language's job condition: its router output (tools/ci_changes.sh), or a
+ * push whose router job did not succeed and so published no outputs. The push
+ * clause keeps main's baseline when the router fails; it never overrides a
+ * router that ran.
+ */
 export function codeqlRoute(language: string): string {
-  return `needs.changes.outputs.codeql_${language.replaceAll("-", "_")} == 'true'`;
+  const output = `needs.changes.outputs.codeql_${language.replaceAll("-", "_")}`;
+  return `\${{ !cancelled() && (${output} == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}`;
 }
 
 /**
@@ -162,6 +190,7 @@ export function checkWorkflowSecurity(source: string): void {
       if (uses === Object.hasOwn(step, "run")) fail(`${label} must contain exactly one action or executable run string.`);
       if (!uses) {
         if (typeof step.run !== "string" || !step.run.trim()) fail(`${label}.run must be a nonempty string.`);
+        checkAptStepTimeout(step, `${label} (${typeof step.name === "string" ? step.name : "unnamed"})`);
         continue;
       }
       const action = actionRef(step.uses, label);

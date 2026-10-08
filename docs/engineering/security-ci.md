@@ -7,7 +7,8 @@ change router (`tools/ci_changes.sh`) selects each CodeQL language only when tha
 language's analysed inputs changed: Rust for `*.rs` and Rust build inputs,
 JavaScript/TypeScript for the source and data files its extractor reads, and Actions
 for workflow and action files. Unknown inputs, all-lane fallbacks and workflow or
-router edits select every language. `CI required` rejects missing, failed or
+router edits select every language, and a push whose change router fails still
+runs every language. `CI required` rejects missing, failed or
 cancelled dependency review, a selected CodeQL language whose job is missing,
 skipped, failed or cancelled, and an unselected language whose job ran. A passing
 analysis is evidence that the tool ran; it is not a claim that Keld has no
@@ -15,7 +16,8 @@ vulnerabilities.
 
 `ci-hygiene check` runs the parsed workflow security check through Bun, the same
 runtime already required by `just ci`. `tools/ci_workflow_security.ts` owns checkout
-and scanner semantics; the Rust checker retains the other hygiene contracts.
+and scanner semantics, and the step timeout on every `run` script that invokes
+`apt`/`apt-get`; the Rust checker retains the other hygiene contracts.
 Each CodeQL language has its own job (`codeql-rust`, `codeql-javascript-typescript`,
 `codeql-actions`), because a job-level condition cannot read `matrix`. Each job must
 need the router, run only on its own router output, keep its `/language:<language>`

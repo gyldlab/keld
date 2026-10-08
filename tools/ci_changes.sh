@@ -69,10 +69,25 @@ select_every_codeql_language() {
     codeql_actions="$TRUE"
 }
 
+# An extensionless file can be a JavaScript entry point through its shebang.
+# Only a readable regular file without a `#!` first line is proven not to be
+# one; a deleted or unreadable path stays a possible input.
+codeql_extensionless_may_be_javascript() {
+    local root first=""
+    root="$(git rev-parse --show-toplevel)"
+    if [[ ! -f "$root/$1" || -L "$root/$1" || ! -r "$root/$1" ]]; then
+        return 0
+    fi
+    IFS= read -r -n 2 first <"$root/$1" || true
+    [[ "$first" == "#!" ]]
+}
+
 # CodeQL analyses source by language, independent of Cargo package ownership:
 # a documentation read that selects a Rust test package changes no analysed
-# source. Each pattern names what that language's extractor reads in build-mode
-# none. Every other path selects no analysis unless it falls back to all lanes.
+# source. The patterns follow the extractors' file types in CodeQL's supported
+# languages list and the JavaScript extractor's HTML/JS types; Rust also takes
+# its build inputs. Every other path selects no analysis unless it falls back
+# to all lanes; push always selects every language.
 classify_codeql_path() {
     case "$1" in
         *.rs | Cargo.toml | */Cargo.toml | Cargo.lock | */Cargo.lock | rust-toolchain.toml | .cargo/*)
@@ -81,9 +96,14 @@ classify_codeql_path() {
     esac
     case "$1" in
         packages/* | *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.es | *.es6 | \
-            *.htm | *.html | *.xhtm | *.xhtml | *.vue | *.hbs | *.ejs | *.njk | *.json | *.yaml | *.yml | \
-            *.raml | *.xml)
+            *.xsjs | *.xsjslib | *.htm | *.html | *.xhtm | *.xhtml | *.vue | *.hbs | *.ejs | *.njk | \
+            *.erb | *.jsp | *.dot | *.json | *.yaml | *.yml | *.raml | *.xml)
             codeql_javascript_typescript="$TRUE"
+            ;;
+        *)
+            if [[ "${1##*/}" != *.* ]] && codeql_extensionless_may_be_javascript "$1"; then
+                codeql_javascript_typescript="$TRUE"
+            fi
             ;;
     esac
     case "$1" in
