@@ -702,14 +702,14 @@ policy); a keld-wv-local constant with a parity test (the mirror this spec remov
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 (X05-T4, #597, Rust half): `channel_table.rs` with the three entries,
+- [x] T1 (X05-T4, #597, Rust half): `channel_table.rs` with the three entries,
   `HANDSHAKE_CHANNEL`, `validate_table` with its const assertion and fixtures, the
   `keld-guard` constants, derived constants in `keld-ipc` / `keld-native`, the
   entry-typed `privileged_call_receiver`, macOS bridge construction from the host, and
   the Rust no-literal and permission-literal scans, `check_allocations`, the committed
   baseline file and the `tools/ci_hygiene.rs` append-only rule. Criteria 1–6 (with 3a), 10–13 and 15.
   Criterion 16 belongs to F02-T2 (#449).
-- [ ] T2 (X05-T4, #597, TypeScript half): the generator target, the generated region,
+- [x] T2 (X05-T4, #597, TypeScript half): the generator target, the generated region,
   `HANDSHAKE_CHANNEL` in `RECEIVE_POLICIES`, the TypeScript and injected-script
   no-literal scan, and deletion of the parity test. Criteria 7–9 and 14. X05-T4 MAY land
   T1 and T2 as one PR. T2 depends on T1's file.
@@ -767,3 +767,45 @@ None. The five earlier questions were decided under the owner's delegation, reco
    step 6 and criterion 16;
 4. the architecture 02 §2 amendment: §2;
 5. emitting every entry: §4.3.
+
+## 11. Implementation record (X05-T4, #597)
+
+T1 and T2 landed as one PR. Wire bytes, `PROTOCOL_VERSION` 2 and the corpus digest
+`375f50c4...` are unchanged; before the change the criterion 6 rule reported exactly the
+seven production hits listed there. Where the implementation differs from §4 and §5:
+
+- **Public privileged reader.** `keld_ipc::link::read_primary_app_frame_interruptible_with_privileged_call`
+  takes `&'static ChannelEntry` instead of `ChannelId`, beyond the `write_hello` edit §5
+  names. It is the only caller of the entry-typed crate-private helper (§4.2) and
+  `keld-core`'s only privileged selection point; keeping `ChannelId` would need a runtime
+  lookup and would let a raw id select the privileged policy again. On that link the
+  class check runs inside the helper for each privileged `CALL` header: a constant
+  comparison on host-selected state that no frame can influence. *Falsifier:* a caller
+  that has to choose a privileged channel by a runtime id.
+- **Criterion 15 reach.** `keld-ipc`'s `guard_dispatch.rs` compared `operation` with the
+  `"fs.read"` / `"fs.write"` literals in production; it now uses the `keld-guard`
+  constants, because the criterion 15 scan rejects it otherwise.
+- **Scan locations.** The Rust criterion 6 and 15 scan is
+  `crates/keld-cli/tests/channel_table_scan.rs`, not `crates/keld-ipc/tests/`. CI selects
+  packages by Cargo reverse dependency plus `tools/ci-inputs.json` edges; the existing
+  workspace external-reads edge selects `keld-cli` for any `crates/*` change, while a
+  `keld-ipc` test would not run on a change confined to, say, `keld-wv`. The TypeScript
+  scan and drift tests are `packages/@keld/kipc/scripts/channel-table.test.ts`, beside
+  the generator test, in the same `bun test` lane. *Falsifier:* a router edge that runs
+  `keld-ipc` tests for every crate change without pulling in its reverse-dependency
+  closure.
+- **TypeScript literal grammar.** Criterion 7 rejects a `*channel*` binding assigned a
+  number, a `channel:` property set to a number, and an equality comparison between a
+  `*channel*` operand and a number. Positional numeric arguments are not detected.
+  `packages/*/src` is read as every package directory under `packages/`, scoped or not.
+- **Hygiene rule wiring.** `ci-hygiene check` runs the append-only rule after the
+  workflow semantic check; the resolved base is `KELD_CI_BASE_REF` or `origin/main`, and
+  the comparison point is its merge base with `HEAD`. Its CLI self-test now copies the
+  checkout into a git repository compared with its own `HEAD`.
+- **Smaller choices.** The receive-policy constructors keep naming `ECHO_CHANNEL` and
+  `LIFECYCLE_CHANNEL`, which are now the entries' ids. `TableDefect` has a hand-written
+  `Display` with fix guidance but no `KELD-*` code, like `HeaderError`: the real table is
+  checked at compile time, so it never surfaces at runtime. The test-only
+  `AllocationDefect` also has `Malformed { line }` for a malformed baseline line.
+  `keld-core` passes `ECHO_CHANNEL.0` to the bridge, the same constant its second check
+  uses.
