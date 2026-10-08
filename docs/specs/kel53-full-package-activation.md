@@ -2005,13 +2005,15 @@ confirms the status) means a new snapshot; any other open failure refuses. It
 classifies each opened member first by `IsProcessInJob(H)`: not in H means the ID was
 reused by a process outside H, so the member is skipped and a new snapshot taken; then
 by `IsProcessInJob(A)`: in A is family, which covers the candidate, every process it
-starts, its own host-death Job and, by construction, its console host. Every other
-member is outside the family: the host's Bun primary and any descendant it left, since
-Bun receives no inner Job and is reaped only by H (`crates/keld-runtime/src/lib.rs:1221`,
-`lib.rs:1446-1450`); a WebView2 process past the barrier; and the host's own console
-host, when it has one. Terminating a WebView2 process past the barrier assumes that no
-host WebView2 process serves the candidate: WebView2 ties every process of a user data
-folder to that folder's one browser process, shared across the processes that open it
+starts, its own host-death Job and, by construction, its console host, when the launch
+allocates one. Every other member is outside the family: the host's Bun primary and
+any descendant it left, since Bun receives no inner Job and is reaped only by H
+(`crates/keld-runtime/src/lib.rs:1221`, `lib.rs:1446-1450`); a WebView2 process past
+the barrier; and any console host that a member of H allocated (the host's own console
+host predates H and is not a member). Terminating a WebView2 process past the barrier
+assumes that no host WebView2 process serves the candidate: WebView2 ties every process
+of a user data folder to that folder's one browser process, shared across the
+processes that open it
 ([Process model for WebView2 apps](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/process-model),
 `ms.date` 2022-04-01), and the KEL-135 profile lease (`profile.lock`,
 `crates/keld-wv/src/webview2/mod.rs:188`) is opened with no sharing and refuses a
