@@ -1901,8 +1901,9 @@ of B of the same day; this amendment's pull request records that evidence and it
 hashes.) This paragraph owns the release: its facts, order, primitive, census, crash
 table, rollback, supervision after release, claim scope and rejected alternatives.
 
-*Facts.* Every Windows `keld-host` installs one unnamed, non-inheritable, non-breakaway,
-kill-on-close host-death Job, H, before any listener, child or window, and today forgets
+*Facts.* Every no-argument launch of a Windows `keld-host` installs one unnamed,
+non-inheritable, non-breakaway, kill-on-close host-death Job, H, before any listener,
+child or window (the `--hello` diagnostic window runs without it), and today forgets
 its only handle so that the kernel closes it at termination
 (`crates/keld-host/src/main.rs:101`; `crates/keld-runtime/src/windows_job.rs:3209-3249`,
 the forget at `windows_job.rs:3248`; the KEL-78/T3 contract of Architecture 06 §1). In
