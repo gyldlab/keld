@@ -2477,16 +2477,16 @@ Implement in:
     into a durable `HealthAccepted` step and the completion after it, so that the owner
     sends `AK1` accepted exactly after the durable write (*Health sequence*), a breaking
     public API change (slice S6b; same coordination record);
-  - `WindowsExtractionRoot::begin_activation` (`windows_extraction.rs:557-561`),
-    `WindowsRecoveryInspection::recover` (`windows_baseline/activate.rs:603-606`) and
-    `resume_unlaunched` (`windows_baseline/activate.rs:645-647`) take the attempt owner's
+  - `WindowsExtractionRoot::begin_activation` (`windows_extraction.rs:589-594`),
+    `WindowsRecoveryInspection::recover` (`windows_baseline/activate.rs:637-641`) and
+    `resume_unlaunched` (`windows_baseline/activate.rs:713-716`) take the attempt owner's
     `&keld_guard::VerifiedWindowsImage` instead of a raw
     `coordinator_image_blake3: [u8; 32]`, so a caller can supply only an image that
     passed `keld-guard` verification. Each public entry point delegates to one
     crate-private function that takes that image's `&std::fs::File`
     (`VerifiedWindowsImage::file`, `crates/keld-guard/src/windows_authenticode.rs:114`)
     and derives the digest; the crate-internal transaction tests
-    (`crates/keld-update/src/windows_baseline/tests.rs:23`, under `#[cfg(test)]`) call
+    (`crates/keld-update/src/windows_baseline/tests.rs:24`, under `#[cfg(test)]`) call
     that private function with plain files, so `keld-guard` gains no test constructor
     for its verified type, which a feature flag could expose to release builds through
     Cargo feature unification. No production caller can compute that digest,
