@@ -189,6 +189,11 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
       (err: unknown) => err,
     );
     report("again-same", again === first);
+    const quit = await app.quit().then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    report("quit-same", quit === first);
   },
 
   // app.quit never parks (PANEL-P2, #419): with the link already up, a timer

@@ -699,6 +699,7 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
     const report = await host.finish();
     expect(report.get("ready-code")).toBe("KELD-IPC-005");
     expect(report.get("again-same")).toBe("true");
+    expect(report.get("quit-same")).toBe("true");
   }, 30_000);
 
   test("app.quit never parks: code after it runs before the Quit REPLY", async () => {

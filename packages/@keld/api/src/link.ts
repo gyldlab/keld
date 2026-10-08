@@ -87,6 +87,8 @@ const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
 export class LifecycleLink {
   readonly #link: WorkerLink;
   #closed = false;
+  /** The error that ended the link without a local close: later quits rethrow it. */
+  #dead: KeldCallError | undefined;
   #quitPromise: Promise<void> | undefined;
 
   private constructor(link: WorkerLink) {
@@ -111,6 +113,7 @@ export class LifecycleLink {
     workerLink.onEnd((err: KeldCallError) => {
       if (session.#closed) return;
       session.#closed = true;
+      session.#dead = err;
       try {
         handlers.onLinkDead(err);
       } catch {
@@ -130,7 +133,7 @@ export class LifecycleLink {
   quit(): Promise<void> {
     if (this.#quitPromise) return this.#quitPromise;
     if (this.#closed) {
-      return Promise.reject(kipcError("KELD-IPC-001", "session is closed"));
+      return Promise.reject(this.#dead ?? kipcError("KELD-IPC-001", "session is closed"));
     }
     this.#closed = true;
     this.#quitPromise = quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
