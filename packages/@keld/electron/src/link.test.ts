@@ -716,6 +716,18 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
     expect(report.get("steps")).toBe("timer-ran,quit-resolved");
   }, 30_000);
 
+  test("a whenReady still waiting when quit closes the link rejects with KELD-IPC-022", async () => {
+    const host = await start("quit-before-ready");
+    await host.hello();
+    const call = await host.next("the role's Quit");
+    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x00])));
+    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
+    const report = await host.finish();
+    expect(report.get("quit-resolved")).toBe("true");
+    // Settled within four event-loop tasks after the Quit, never left pending.
+    expect(report.get("ready-after-quit")).toBe("KELD-IPC-022");
+  }, 30_000);
+
   test("a Quit REPLY that is not LifecycleResponse::Quit is KELD-IPC-003", async () => {
     const host = await start("quit");
     await host.hello();

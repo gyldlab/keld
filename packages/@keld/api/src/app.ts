@@ -96,8 +96,22 @@ function ensureLink(): Promise<LifecycleLink> {
   ignoreIfUnawaited(linkPromise);
   return linkPromise;
 }
+/** The typed close a `whenReady` still waiting sees once a Quit closed the link. */
+function closedByQuit(): Error {
+  return Object.assign(
+    new Error("KELD-IPC-022: the app quit before the host was ready; the role's link is closed"),
+    { code: "KELD-IPC-022" },
+  );
+}
+
 function sendQuit(): Promise<void> {
-  const done = ensureLink().then((link) => link.quit());
+  const done = ensureLink().then((link) =>
+    link.quit().finally(() => {
+      // The Quit closed the link, which suppresses onLinkDead: a whenReady
+      // still waiting can never see Ready, so it rejects with the close.
+      if (!hostReady && linkDead === undefined) failReadyWaiters(closedByQuit());
+    }),
+  );
   ignoreIfUnawaited(done);
   return done;
 }

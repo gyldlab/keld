@@ -215,6 +215,26 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     report("steps", steps.join(","));
   },
 
+  // A Quit before Ready closes the link: a whenReady still waiting rejects
+  // with the typed close (022) within a few tasks instead of never settling.
+  async "quit-before-ready"() {
+    const { app } = await import("../src/app.ts");
+    let settled = "pending";
+    void app.whenReady().then(
+      () => {
+        settled = "resolved";
+      },
+      (err: unknown) => {
+        settled = codeOf(err);
+      },
+    );
+    await settle("quit", app.quit());
+    for (let turn = 0; turn < 4; turn += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    report("ready-after-quit", settled);
+  },
+
   // A throwing onLinkDead is isolated: the process still reports and exits.
   async "throwing-dead"() {
     let resolveDead: () => void = () => undefined;
