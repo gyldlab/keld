@@ -73,6 +73,38 @@ impl core::fmt::Display for CallError {
 
 impl core::error::Error for CallError {}
 
+impl CallError {
+    /// `KELD-IPC-023`: the host retired the caller's role generation before
+    /// this call's handler finished (GH-527 spec §4.4, criterion 6). The host
+    /// writes it only on channels whose reply waiter declares `ERR`, then
+    /// closes the generation's link.
+    #[must_use]
+    pub fn generation_retired() -> Self {
+        Self {
+            code: "KELD-IPC-023".to_owned(),
+            message: "KELD-IPC-023: role generation retired before this call completed. The \
+                      role instance is being replaced or stopped: do not retry here; the \
+                      successor generation reissues the work after its own Ready."
+                .to_owned(),
+        }
+    }
+
+    /// `KELD-IPC-024`: the host accepted `Quit` and its drain ended with this
+    /// call still unanswered (GH-527 spec §4.4, criterion 7). The call was not
+    /// executed. The host writes it only on channels whose reply waiter
+    /// declares `ERR`, before it closes the link.
+    #[must_use]
+    pub fn quit_drained() -> Self {
+        Self {
+            code: "KELD-IPC-024".to_owned(),
+            message: "KELD-IPC-024: session ended by an accepted Quit before this call \
+                      completed. The application is quitting: do not issue new work; finish \
+                      only the shutdown path."
+                .to_owned(),
+        }
+    }
+}
+
 impl From<&DenyReason> for CallError {
     /// The single owner of the guard-denial → wire mapping.
     ///
@@ -132,6 +164,32 @@ mod tests {
         CallError {
             code: "KELD-GUARD001".to_owned(),
             message: "x".to_owned(),
+        }
+    }
+
+    /// GH-527 §4.4: the host's retire and Quit-drain answers carry their
+    /// registered codes, and each message leads with its code and ends with
+    /// the fix (arch 07 §2); the wire shape is the shared `CallError`.
+    #[test]
+    fn retire_and_quit_drain_errors_carry_registered_codes() {
+        for (error, code, fix) in [
+            (
+                CallError::generation_retired(),
+                "KELD-IPC-023",
+                "do not retry here",
+            ),
+            (
+                CallError::quit_drained(),
+                "KELD-IPC-024",
+                "do not issue new work",
+            ),
+        ] {
+            assert_eq!(error.code, code);
+            assert!(error.message.starts_with(&format!("{code}: ")), "{error}");
+            assert!(error.message.contains(fix), "{error}");
+            assert_eq!(error.to_string(), error.message, "code rendered once");
+            let wire = encode(&error).expect("encode");
+            assert_eq!(decode::<CallError>(&wire).expect("decode"), error);
         }
     }
 
