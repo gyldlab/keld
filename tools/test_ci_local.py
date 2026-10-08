@@ -628,6 +628,39 @@ class ProductionConsumerTests(unittest.TestCase):
                 for output in consumer["outputs"]:
                     self.assertTrue(selection[output], f"stale {victim} must still enable {output}")
 
+    def test_gitattributes_selects_keld_compat_through_its_declared_read(self):
+        # gh566 T3: the keld-compat snapshot normalisation check runs `git hash-object`,
+        # which reads .gitattributes, so the read is a declared Rust input edge.
+        source = Path(__file__).resolve().parent.parent
+        live = ci_inputs.load(source)
+        rust = [c for c in live["consumers"] if c["owner"] == "Rust workspace external reads"]
+        self.assertEqual(len(rust), 1)
+        self.assertIn(".gitattributes", rust[0]["inputs"])
+        # Today .gitattributes is an unknown input, so the fail-safe selects every lane.
+        live_selection = ci_inputs.classify(source, [".gitattributes"], paths_only=True)
+        for output in ("input_all", "input_rust", "input_package_keld-compat", "local_test"):
+            self.assertTrue(live_selection[output], output)
+        # The declared edge alone still selects the Rust test lanes if .gitattributes
+        # ever becomes a known input; without the edge, nothing would select them.
+        def known(with_edge):
+            def load(root):
+                contract = json.loads(json.dumps(live))
+                contract["known_inputs"] = contract["known_inputs"] + [".gitattributes"]
+                if not with_edge:
+                    for consumer in contract["consumers"]:
+                        consumer["inputs"] = [i for i in consumer["inputs"] if i != ".gitattributes"]
+                return contract
+            return load
+        for with_edge in (True, False):
+            with unittest.mock.patch.object(ci_inputs, "load", known(with_edge)):
+                selected = ci_inputs.classify(source, [".gitattributes"], paths_only=True)
+            self.assertFalse(selected["input_all"], with_edge)
+            for output in ("input_rust", "local_test"):
+                self.assertIs(selected[output], with_edge, (output, with_edge))
+        unrelated = ci_inputs.classify(source, ["README.md"], paths_only=True)
+        for output in ("input_rust", "input_package_keld-compat", "local_test"):
+            self.assertFalse(unrelated[output], output)
+
     def test_bound_production_readers_and_real_cross_tree_inputs(self):
         source = Path(__file__).resolve().parent.parent
         live_contract = ci_inputs.load(source)

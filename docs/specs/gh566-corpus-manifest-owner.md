@@ -1236,7 +1236,10 @@ Two consumer-specific notes:
     its digests. Its `rust_source_census` fails closed on any new crate file, so T2
     needs this edit (amended in T2, #640). In T3, the `corpus_citation.rs` reader also
     gains the `.gitattributes` input edge, because its D5 check runs
-    `git hash-object`;
+    `git hash-object`. `tools/test_ci_local.py` gains the router contract case
+    `test_gitattributes_selects_keld_compat_through_its_declared_read`. Its negative
+    control: without the edge, a known `.gitattributes` input would select no Rust
+    test lane;
   - any part of gh532 other than the A1–A4 passages named above.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
