@@ -32,7 +32,6 @@ import {
   WorkerLink,
   echoReplyWaiter,
   isCallError,
-  openWorkerLinkForTest,
   privilegedCallReceiver,
   replyWaiter,
   selectInboundPolicy,
@@ -42,6 +41,7 @@ import {
   type PendingCallEntry,
   type WorkerLinkOptions,
 } from "./transport.ts";
+import { openWorkerLinkForTest } from "./test-hooks.ts";
 
 const TOKEN_HEX = "ab".repeat(32);
 
@@ -165,6 +165,141 @@ describe("WorkerLink.open refuses invalid bounds before the Worker spawns", () =
       if (saved !== undefined) process.env.KELD_KIPC_TEST_HOOKS = saved;
     }
   });
+});
+
+describe("WorkerLink.open refuses a transport bundled into an app entry (GH-527 §4.2)", () => {
+  // A bundler that inlines the transport into the entry makes `import.meta.url`
+  // the entry, so the Worker would load the whole app. The bundled copy runs
+  // in its own process (a realm opens one link) against a live listener.
+  test("the bundled open is KELD-IPC-005 and nothing connects", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
+    const path = join(dir, "s.sock");
+    let connections = 0;
+    const listener = Bun.listen({
+      unix: path,
+      socket: {
+        open() {
+          connections += 1;
+        },
+        data() {},
+      },
+    });
+    try {
+      const entry = join(dir, "entry.ts");
+      await Bun.write(
+        entry,
+        `import { WorkerLink, isCallError } from ${JSON.stringify(join(import.meta.dir, "transport.ts"))};\n` +
+          "try {\n" +
+          "  await WorkerLink.open({ link: process.env.KELD_APP_LINK!, receive: { eventChannels: [3], callReceivers: [] } });\n" +
+          '  console.log("opened");\n' +
+          "} catch (err) {\n" +
+          '  console.log(isCallError(err) ? err.code : "untyped");\n' +
+          "}\n" +
+          "process.exit(0);\n",
+      );
+      const built = await Bun.build({ entrypoints: [entry], target: "bun", format: "esm" });
+      expect(built.success).toBe(true);
+      const bundle = join(dir, "main.js");
+      await Bun.write(bundle, built.outputs[0]!);
+      const proc = Bun.spawn(["bun", bundle], {
+        env: { ...process.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}` },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      expect({ stdout: stdout.trim(), code }).toEqual({ stdout: "KELD-IPC-005", code: 0 });
+      expect(connections).toBe(0);
+    } finally {
+      listener.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("WorkerLink.open refuses a bundle whatever its name (#643 review)", () => {
+  // Builds `entry` (TypeScript source) into one bundle file named `name` in a
+  // fresh directory with a live listener, runs `runner` (relative to that
+  // directory) with Bun, and returns its stdout once `ready` holds (or it exits).
+  async function runBundle(
+    name: string,
+    entrySource: string,
+    runner: string,
+    ready: (stdout: string) => boolean,
+  ): Promise<{ stdout: string; connections: number }> {
+    const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
+    const path = join(dir, "s.sock");
+    let connections = 0;
+    const listener = Bun.listen({
+      unix: path,
+      socket: {
+        open() {
+          connections += 1;
+        },
+        data() {},
+      },
+    });
+    let proc: ReturnType<typeof Bun.spawn> | undefined;
+    try {
+      const entry = join(dir, "entry.ts");
+      await Bun.write(entry, entrySource);
+      const built = await Bun.build({ entrypoints: [entry], target: "bun", format: "esm" });
+      expect(built.success).toBe(true);
+      await Bun.write(join(dir, name), built.outputs[0]!);
+      await Bun.write(join(dir, "main.js"), `import "./${name}";\n`);
+      proc = Bun.spawn(["bun", join(dir, runner)], {
+        env: { ...process.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}` },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let stdout = "";
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        stdout += decoder.decode(chunk.value, { stream: true });
+        if (ready(stdout)) break;
+      }
+      return { stdout, connections };
+    } finally {
+      proc?.kill();
+      listener.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const transportPath = JSON.stringify(join(import.meta.dir, "transport.ts"));
+  const openAndReport =
+    `import { isMainThread } from "node:worker_threads";\n` +
+    `import { WorkerLink, isCallError } from ${transportPath};\n` +
+    "WorkerLink.open({ link: process.env.KELD_APP_LINK!, receive: { eventChannels: [3], callReceivers: [] } }).then(\n" +
+    '  () => console.log(`${isMainThread ? "main" : "worker"}-open=opened`),\n' +
+    '  (err) => console.log(`${isMainThread ? "main" : "worker"}-open=${isCallError(err) ? err.code : "untyped"}`),\n' +
+    ");\n";
+
+  test("a bundle run as the process entry is refused, even when named kipc-transport.js", async () => {
+    const { stdout, connections } = await runBundle(
+      "kipc-transport.js",
+      openAndReport,
+      "kipc-transport.js",
+      (out) => out.includes("main-open="),
+    );
+    expect(stdout.trim()).toBe("main-open=KELD-IPC-005");
+    expect(connections).toBe(0);
+  }, 30_000);
+
+  test("a transport Worker that evaluates bundled app code cannot open a nested link", async () => {
+    // `main.js` imports the bundle `transport.js`, so the name and entry checks
+    // pass in main; the Worker then evaluates the whole bundle, app code too.
+    const { stdout, connections } = await runBundle(
+      "transport.js",
+      openAndReport,
+      "main.js",
+      (out) => out.includes("worker-open="),
+    );
+    expect(stdout).toContain("worker-open=KELD-IPC-005");
+    expect(connections).toBeLessThanOrEqual(1);
+  }, 30_000);
 });
 
 describe("§4.7 per-frame policy selection", () => {

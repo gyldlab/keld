@@ -46,8 +46,16 @@ them to the link. Frames it receives arrive through one bounded, ordered shared-
 ring that only the Worker writes; the blocking call's reply uses a separate reply slot
 that keeps its place in that order. The main thread can therefore park in a blocking
 host `CALL` while the link keeps draining. A second link for the same
-generation is refused, and the Worker's death is that role's link loss. v0 Bun
-consumers still own the socket on the main thread (§2).
+generation is refused, and the Worker's death is that role's link loss. Current
+(#528 T3): both Bun consumers, the hello scaffold's `AppLinkSession` and
+`@keld/api`'s `LifecycleLink` (which `@keld/electron` re-exports), own their link
+this way; the main-thread client path is removed. The role's `Quit` is its last call:
+the link closes the moment the Quit REPLY returns, on every OS, so the host's post-Quit
+drain ends at that EOF and a call still pending then ends as `KELD-IPC-022`, which
+callers treat as the drain's `KELD-IPC-024`. The transport Worker's entry is the
+transport file itself, so the transport is never bundled into an app entry, and a
+release build strips its test hooks through the `KELD_KIPC_RELEASE` build-time
+constant.
 
 **v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
 (`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
@@ -206,11 +214,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   `packages/@keld/kipc/src/transport.ts` as `src/kipc-transport.ts` and concatenates
   the echo adapter (`crates/keld-cli/templates/hello/src/kipc.ts`) into
   `src/main.ts`. The boot compiler stages `src/kipc-transport.ts` when present.
-  `@keld/electron` imports that same transport. `DirectedReader` parks
-  lifecycle Events while an Echo Reply is awaited so a host `Ready` cannot
-  fail stock echo. The stock scaffold consumes `LastWindowClosed` and sends a
-  correlated `Quit` on this same stream; its persistent reader leaves idle
-  Event waits open but starts the five-second frame deadline at the first byte
+  `@keld/electron` imports that same transport. Both run on the GH-527
+  `WorkerLink` (#528 T3): lifecycle Events reach their listeners from the
+  Worker's ordered ring, so a host `Ready` never fails stock echo. The stock
+  scaffold consumes `LastWindowClosed` and sends a correlated `Quit` on this
+  same link, which closes on its Reply; the Worker's reader leaves idle Event
+  waits open but starts the five-second frame deadline at the first byte
   (KEL-185). The scaffold does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver

@@ -212,8 +212,9 @@ Currently allocated:
 **`CorrelationId` pairs a `Reply` or `Err` with its `Call`.** The client picks it; the server echoes
 it back unchanged. Uncorrelated kinds use `0` (reserved for `HELLO`). `echo_call`
 hardcodes `CorrelationId(1)` for its one-shot path. `echo_invoke` takes the caller's
-`corr`; the Bun `AppLinkSession` allocates monotonically, skipping `0`. v0 is still
-one CALL in flight at a time (the reader has a single pending waiter).
+`corr`; the Bun `WorkerLink` under `AppLinkSession` allocates monotonically, skipping
+`0` and every id still pending. Its asynchronous calls may overlap; a role has at most
+one blocking call in flight (GH-527).
 
 ---
 

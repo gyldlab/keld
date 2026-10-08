@@ -554,6 +554,223 @@ fn host_only_death_reaps_the_strict_tree_and_relaunches() {
     );
 }
 
+/// The GH-527 role entry for the self-entry proof: it opens the role's
+/// `WorkerLink` from the staged transport, makes one echo CALL, then its Quit.
+/// `transport-module=` is the module `WorkerLink.open` spawns its Worker from
+/// (`new Worker(new URL(import.meta.url))` in that module); the authenticated
+/// HELLO, which only the Worker sends, shows the Worker ran from it.
+const WORKER_LINK_ENTRY: &str = r#"import { ECHO_CHANNEL, WorkerLink, quitAndCloseLink } from "./kipc-transport.ts";
+console.log(`KELD_LINUX_WORKER transport-module=${import.meta.resolve("./kipc-transport.ts")}`);
+const link = await WorkerLink.open({
+  link: process.env.KELD_APP_LINK!,
+  receive: { eventChannels: [3], callReceivers: [] },
+});
+const reply = await link.call(ECHO_CHANNEL, new TextEncoder().encode("strict"), 5_000);
+console.log(`KELD_LINUX_WORKER echo=${new TextDecoder().decode(reply)}`);
+await quitAndCloseLink(link, 5_000);
+console.log("KELD_LINUX_WORKER quit=ok");
+process.exit(0);
+"#;
+
+/// The negative-control entry. Main imports a copy of the transport from the
+/// writable role root, then removes that copy before it opens the link, so
+/// main's import succeeds and only the Worker's self-entry, which reloads
+/// the module's own file, can fail.
+const WORKER_LINK_NC_ENTRY: &str = r#"import { copyFileSync, mkdirSync, rmSync } from "node:fs";
+// A fresh directory: Bun's resolver does not see a file created at run time
+// in a directory it already listed.
+mkdirSync("/app/nc");
+copyFileSync("/code/kipc-transport.ts", "/app/nc/kipc-transport.ts");
+const { WorkerLink, isCallError } = await import("/app/nc/kipc-transport.ts");
+console.log(`KELD_LINUX_WORKER transport-module=${import.meta.resolve("/app/nc/kipc-transport.ts")}`);
+rmSync("/app/nc/kipc-transport.ts");
+try {
+  await WorkerLink.open({
+    link: process.env.KELD_APP_LINK!,
+    receive: { eventChannels: [3], callReceivers: [] },
+  });
+  console.log("KELD_LINUX_WORKER nc-open=opened");
+} catch (err) {
+  console.log(`KELD_LINUX_WORKER nc-open=${isCallError(err) ? err.code : "untyped"}`);
+}
+process.exit(0);
+"#;
+
+/// Starts the strict Bun role through the production role supervisor, which
+/// mints the app link and binds its socket (as the host does), with `entry` as
+/// `/code/main.ts` and the canonical transport as `/code/kipc-transport.ts`:
+/// exactly the files production binds (arch 06).
+fn start_worker_link_role(
+    role: &tempfile::TempDir,
+    staged: &tempfile::TempDir,
+    entry: &str,
+) -> keld_runtime::primary::PrimaryRoleSupervisor {
+    use keld_runtime::primary::{PrimaryRoleConfig, PrimaryRoleSupervisor};
+
+    let bun = find_bun();
+    fs::write(staged.path().join("main.ts"), entry).expect("stage the role entry");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/@keld/kipc/src/transport.ts"),
+        staged.path().join("kipc-transport.ts"),
+    )
+    .expect("stage the canonical transport");
+    let profile = strict_profile_for_program(role.path(), &bun)
+        .readonly_runtime(&staged.path().join("main.ts"), Path::new("/code/main.ts"))
+        .expect("strict entry mount")
+        .readonly_runtime(
+            &staged.path().join("kipc-transport.ts"),
+            Path::new("/code/kipc-transport.ts"),
+        )
+        .expect("strict transport mount");
+    PrimaryRoleSupervisor::start_with_bound_generations(
+        PrimaryRoleConfig::new(&bun)
+            .arg("run")
+            .arg("/code/main.ts")
+            .env("HOME", "/app")
+            .env("TMPDIR", "/tmp")
+            .restart_policy(keld_runtime::RestartPolicy {
+                max_crashes: 1,
+                window_secs: 30,
+            })
+            .admission_timeout(Duration::from_secs(20))
+            .linux_strict(profile),
+    )
+    .expect("start the strict role supervisor")
+}
+
+/// GH-528 T3, spec gh527 §4.10 and edge A4 (Linux strict self-entry mount
+/// proof): the GH-527 transport Worker runs under the strict profile from
+/// exactly the two files production binds, `/code/main.ts` and
+/// `/code/kipc-transport.ts`, with no third mount. The Worker's entry
+/// resolves to `/code/kipc-transport.ts` (and `WorkerLink.open` refuses any
+/// other file), Bun admits the Worker thread, an echo CALL round-trips
+/// against the real host writer, and the Quit closes the link on its REPLY.
+/// *Negative control:* `worker_link_role_without_the_transport_mount_never_connects`.
+#[test]
+fn worker_link_self_entry_runs_from_the_two_staged_files() {
+    use keld_ipc::link::{read_frame, write_frame};
+    use keld_ipc::{AppLinkDeadlines as _, FrameKind};
+
+    let role = owner_private_tempdir();
+    let staged = owner_private_tempdir();
+    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_ENTRY);
+    let Some(bound) = supervisor.recv_bound_generation(Duration::from_secs(30)) else {
+        supervisor.shutdown();
+        let output = supervisor.output();
+        panic!(
+            "the strict role did not authenticate\nstdout:\n{}\nstderr:\n{}",
+            output.stdout, output.stderr
+        );
+    };
+    let mut stream = bound.into_stream();
+    stream
+        .set_app_link_deadlines(Some(keld_ipc::APP_LINK_IO_DEADLINE))
+        .expect("host app-link deadlines");
+    let (echo, payload) = read_frame(&mut stream).expect("the role's echo CALL");
+    assert_eq!(
+        (echo.kind, echo.channel, payload.as_slice()),
+        (
+            FrameKind::Call,
+            keld_ipc::ECHO_CHANNEL,
+            b"strict".as_slice()
+        )
+    );
+    write_frame(
+        &mut stream,
+        FrameKind::Reply,
+        0,
+        echo.channel,
+        echo.corr,
+        b"strict-ok",
+    )
+    .expect("echo REPLY");
+    let (quit, quit_payload) = read_frame(&mut stream).expect("the role's Quit");
+    assert_eq!(
+        (quit.kind, quit.channel, quit_payload.as_slice()),
+        (
+            FrameKind::Call,
+            keld_ipc::LIFECYCLE_CHANNEL,
+            [0_u8].as_slice()
+        )
+    );
+    supervisor.accept_shutdown();
+    write_frame(
+        &mut stream,
+        FrameKind::Reply,
+        0,
+        quit.channel,
+        quit.corr,
+        &[0],
+    )
+    .expect("Quit REPLY");
+    assert!(
+        read_frame(&mut stream).is_err(),
+        "the role closes the link on its Quit REPLY"
+    );
+    let outcome = supervisor.wait_for_outcome();
+    let output = supervisor.output();
+    assert!(
+        matches!(outcome, keld_runtime::SupervisorOutcome::Stopped),
+        "strict WorkerLink role: {outcome:?}\nstderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output
+            .stdout
+            .contains("KELD_LINUX_WORKER transport-module=file:///code/kipc-transport.ts"),
+        "{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("KELD_LINUX_WORKER echo=strict-ok"),
+        "{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("KELD_LINUX_WORKER quit=ok"),
+        "{}",
+        output.stdout
+    );
+    eprintln!(
+        "KELD_LINUX_T3_WORKER_SELF_ENTRY mounts=/code/main.ts,/code/kipc-transport.ts status=passed"
+    );
+}
+
+/// Negative control for the self-entry proof, failing at the Worker's
+/// self-entry rather than at main's import: with the same two mounts, main
+/// imports a copy of the transport from the role root and removes it before
+/// `WorkerLink.open`. Main's import succeeds, the Worker cannot reload its
+/// entry, `open` rejects with `KELD-IPC-025` (the transport Worker died
+/// before HELLO), and the role never authenticates. So the passing case's
+/// Worker did load `/code/kipc-transport.ts` itself.
+#[test]
+fn worker_link_role_without_the_transport_mount_never_connects() {
+    let role = owner_private_tempdir();
+    let staged = owner_private_tempdir();
+    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_NC_ENTRY);
+    let outcome = supervisor.wait_for_outcome();
+    let output = supervisor.output();
+    assert!(
+        supervisor.try_recv_bound_generation().is_none(),
+        "a Worker without its entry file must never authenticate: {outcome:?}"
+    );
+    assert!(
+        output
+            .stdout
+            .contains("KELD_LINUX_WORKER transport-module=file:///app/nc/kipc-transport.ts"),
+        "main imported the role-root copy: {}",
+        output.stdout
+    );
+    assert!(
+        output
+            .stdout
+            .contains("KELD_LINUX_WORKER nc-open=KELD-IPC-025"),
+        "the Worker's self-entry failed: {}\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
 fn owner_private_tempdir() -> tempfile::TempDir {
     let role = tempfile::tempdir().expect("role-private root");
     fs::set_permissions(role.path(), fs::Permissions::from_mode(0o700))

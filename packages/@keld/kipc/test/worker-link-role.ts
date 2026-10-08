@@ -20,12 +20,12 @@ import {
   WORKER_LIVENESS_WINDOW_MS,
   WorkerLink,
   isCallError,
-  openWorkerLinkForTest,
   parseAppLink,
+  quitAndCloseLink,
   type WorkerLinkOptions,
-  type WorkerLinkTestHooks,
   type WorkerReceiveTable,
 } from "../src/transport.ts";
+import { openWorkerLinkForTest, type WorkerLinkTestHooks } from "../src/test-hooks.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -832,9 +832,116 @@ async function t2WorkerDies(): Promise<void> {
   expectThrow("call", () => link.callBlocking(channel, payload, 30_000));
 }
 
+// GH-528 T3: `onEnd` reports the link's end once, after every retained
+// record reached its listener; a listener added later still runs, a removed
+// one never does, and a throwing one does not stop the others.
+async function onEndReport(): Promise<void> {
+  const { link } = await open();
+  const log: string[] = [];
+  const events = collector(2);
+  link.onEvent(LIFECYCLE_CHANNEL, (payload) => {
+    events.listener(payload);
+    log.push(`event:${seqOf(payload)}`);
+  });
+  let resolveFirst: () => void = () => undefined;
+  const first = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  link.onEnd(() => {
+    throw new Error("test-only throwing end listener");
+  });
+  link.onEnd((err) => {
+    log.push(`end:${codeOf(err)}`);
+    resolveFirst();
+  });
+  const removed = link.onEnd(() => log.push("removed-ran"));
+  removed();
+  let uncaught = 0;
+  process.on("uncaughtException", () => {
+    uncaught += 1;
+  });
+  link.sendEvent(LIFECYCLE_CHANNEL, text("ready-for-events"));
+  await first;
+  await new Promise<void>((resolve) => {
+    link.onEnd((err) => {
+      log.push(`late:${codeOf(err)}`);
+      resolve();
+    });
+  });
+  await nextTask();
+  report("order", log.join(","));
+  report("uncaught", uncaught);
+}
+
+// GH-528 T3 (#636 gate review): the role's Quit is its last call, and it never
+// parks (PANEL-P2). The link closes the moment the REPLY settles, so a call
+// still pending then rejects with KELD-IPC-022 (which callers treat as the
+// host drain's 024) and the host reads EOF at once.
+async function quitClose(): Promise<void> {
+  const { link } = await open();
+  const log: string[] = [];
+  const pending = link.call(LIFECYCLE_CHANNEL, text("pending"), 30_000).then(
+    () => log.push("pending:returned"),
+    (err) => log.push(`pending:${codeOf(err)}`),
+  );
+  const ended = new Promise<void>((resolve) => {
+    link.onEnd((err) => {
+      log.push(`end:${codeOf(err)}`);
+      resolve();
+    });
+  });
+  await quitAndCloseLink(link, 30_000);
+  report("quit", "returned");
+  log.push("quit:returned");
+  await pending;
+  await ended;
+  report("order", log.join(","));
+}
+
+// GH-528 T3 end to end against the keld-core router: the role's Quit is its
+// last call and closes the link on its REPLY (quitAndCloseLink).
+async function t3QuitClose(): Promise<void> {
+  const { link } = await open();
+  const ended = new Promise<string>((resolve) => {
+    link.onEnd((err) => resolve(codeOf(err)));
+  });
+  await quitAndCloseLink(link, 30_000);
+  report("quit", "returned");
+  report("end-code", await ended);
+}
+
+// Fable review of #643: a wedged Worker that holds KICK cannot keep a closed
+// link's promises unsettled or the role alive. close() takes the dispatcher
+// itself, so the pending call and onEnd settle within a few tasks, and the
+// Worker is terminated APP_LINK_IO_DEADLINE_MS after the link finalized.
+async function wedgedKick(): Promise<void> {
+  let resolveExit: (code: number) => void = () => undefined;
+  const exited = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+  const { link, words } = await open({}, { wedgeHoldingKick: true, onWorkerExit: (code) => resolveExit(code) });
+  const log: string[] = [];
+  void link.call(LIFECYCLE_CHANNEL, text("pending"), 30_000).then(
+    () => log.push("pending:returned"),
+    (err) => log.push(`pending:${codeOf(err)}`),
+  );
+  link.onEnd((err) => log.push(`end:${codeOf(err)}`));
+  // The host's EVENT makes the Worker append, take KICK and wedge.
+  awaitWord(words, WORKER_LINK_TEST_WORDS.KICK_HELD, (value) => value === 1);
+  link.close();
+  for (let turn = 0; turn < 4; turn += 1) await nextTask();
+  report("settled-after-close", log.join(","));
+  await exited;
+  report("worker-ended", true);
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
   "t2-blocking-call": t2BlockingCall,
   "t2-worker-dies": t2WorkerDies,
+  "on-end": onEndReport,
+  "quit-close": quitClose,
+  "t3-quit-close": t3QuitClose,
+  "wedged-kick": wedgedKick,
   "expiry-after-close": expiryAfterClose,
   "expiry-during-park": expiryDuringPark,
   "claim-first-worker-dies": claimFirstWorkerDies,

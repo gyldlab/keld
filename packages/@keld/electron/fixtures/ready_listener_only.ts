@@ -1,3 +1,11 @@
+/**
+ * Ready-listener probe for `app.ts` (no host): a ready listener alone starts
+ * readiness observation, and a throwing ready listener does not skip a later
+ * one (KEL-72 listener isolation).
+ *
+ * `LifecycleLink.connect` is replaced so the probe is independent of the wire
+ * client; the sticky connect-failure path runs the real one (`app_ready.ts`).
+ */
 import { writeSync } from "node:fs";
 import { LifecycleLink } from "../src/link.ts";
 
@@ -28,7 +36,11 @@ const timeout = setTimeout(() => {
 }, 1_000);
 
 app.on("ready", () => {
+  throw new Error("KEL72_READY_LISTENER_THROW");
+});
+app.on("ready", () => {
   clearTimeout(timeout);
+  marker("KEL72_READY_SECOND");
   marker("KEL142_READY_LISTENER_ONLY");
   marker(`KEL142_CONNECT_CALLS=${connectCalls}`);
   process.exit(0);

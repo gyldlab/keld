@@ -454,8 +454,9 @@ Currently allocated:
 **`CorrelationId` pairs a `Reply` or `Err` with its `Call`.** The client picks it; the server echoes
 it back unchanged. Uncorrelated kinds use `0` (reserved for `HELLO`). `echo_call`
 hardcodes `CorrelationId(1)` for its one-shot path. `echo_invoke` takes the caller's
-`corr`; the Bun `AppLinkSession` allocates monotonically, skipping `0`. v0 is still
-one CALL in flight at a time (the reader has a single pending waiter).
+`corr`; the Bun `WorkerLink` under `AppLinkSession` allocates monotonically, skipping
+`0` and every id still pending. Its asynchronous calls may overlap; a role has at most
+one blocking call in flight (GH-527).
 
 ---
 
@@ -1320,8 +1321,16 @@ them to the link. Frames it receives arrive through one bounded, ordered shared-
 ring that only the Worker writes; the blocking call's reply uses a separate reply slot
 that keeps its place in that order. The main thread can therefore park in a blocking
 host `CALL` while the link keeps draining. A second link for the same
-generation is refused, and the Worker's death is that role's link loss. v0 Bun
-consumers still own the socket on the main thread (§2).
+generation is refused, and the Worker's death is that role's link loss. Current
+(#528 T3): both Bun consumers, the hello scaffold's `AppLinkSession` and
+`@keld/api`'s `LifecycleLink` (which `@keld/electron` re-exports), own their link
+this way; the main-thread client path is removed. The role's `Quit` is its last call:
+the link closes the moment the Quit REPLY returns, on every OS, so the host's post-Quit
+drain ends at that EOF and a call still pending then ends as `KELD-IPC-022`, which
+callers treat as the drain's `KELD-IPC-024`. The transport Worker's entry is the
+transport file itself, so the transport is never bundled into an app entry, and a
+release build strips its test hooks through the `KELD_KIPC_RELEASE` build-time
+constant.
 
 **v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
 (`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
@@ -1480,11 +1489,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   `packages/@keld/kipc/src/transport.ts` as `src/kipc-transport.ts` and concatenates
   the echo adapter (`crates/keld-cli/templates/hello/src/kipc.ts`) into
   `src/main.ts`. The boot compiler stages `src/kipc-transport.ts` when present.
-  `@keld/electron` imports that same transport. `DirectedReader` parks
-  lifecycle Events while an Echo Reply is awaited so a host `Ready` cannot
-  fail stock echo. The stock scaffold consumes `LastWindowClosed` and sends a
-  correlated `Quit` on this same stream; its persistent reader leaves idle
-  Event waits open but starts the five-second frame deadline at the first byte
+  `@keld/electron` imports that same transport. Both run on the GH-527
+  `WorkerLink` (#528 T3): lifecycle Events reach their listeners from the
+  Worker's ordered ring, so a host `Ready` never fails stock echo. The stock
+  scaffold consumes `LastWindowClosed` and sends a correlated `Quit` on this
+  same link, which closes on its Reply; the Worker's reader leaves idle Event
+  waits open but starts the five-second frame deadline at the first byte
   (KEL-185). The scaffold does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
@@ -2185,8 +2195,20 @@ Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
 is process-lifetime and not thenable. Keld's `app.quit()` returns
 `Promise<void>` so callers can observe `KELD-IPC-*` when the Quit Call fails
 on the transport. Restoring `void` would paper over kipc; the Promise is
-the public contract for this slice. Recorded on
+the public contract for this slice. Like Electron's, it returns at once and
+never parks the caller (PANEL-P2, #419; GH-528 T3). The role's link closes
+when the host's `LifecycleResponse::Quit` REPLY settles. Recorded on
 [`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
+Divergence (scoreboard ▲, GH-528 T3): the role's link runs in the GH-527
+transport Worker, and a realm opens one link. So `app.whenReady()` rejects with
+the typed error that failed or ended that link, and keeps rejecting with the
+same error. A failed connect is never retried, because a retry could only
+surface `KELD-IPC-005`. The error keeps the real cause:
+- a connect failure keeps its own code (`KELD-IPC-001`, `-005`, `-006`, `-007`);
+- a link that was up ends with the failure that ended it (`KELD-IPC-003`,
+  `-005`, `-006`);
+- a plain close is `KELD-IPC-022`.
 
 Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
 from `bunfig.toml` `[alias]` (it still loads the npm `electron` package
@@ -3005,13 +3027,31 @@ KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
 The Bun side speaks kipc directly — `packages/@keld/kipc/src/transport.ts` is the
 one TypeScript framing/HELLO/deadline/write owner (KEL-136). `keld create` embeds
 that file as `src/kipc-transport.ts`; the hello echo adapter and `@keld/electron`
-lifecycle adapter import it. `DirectedReader` on that transport parks lifecycle
-Events while waiting for Echo Reply so stock echo survives a preceding `Ready`.
+lifecycle adapter import it, and both open the role's link through its GH-527
+transport Worker (#528 T3). That Worker's entry is the transport file itself
+(`new Worker(new URL(import.meta.url))`), so the transport MUST stay its own staged
+file and MUST NOT be bundled into `src/main.ts`; `WorkerLink.open` refuses to run from
+any other file name. A release build of the transport (the future `keld build`,
+KEL-19) MUST build it as that separate file with `KELD_KIPC_RELEASE` defined as `true`
+and syntax minification, which removes every test-hook code path
+(`packages/@keld/kipc/src/release-build.test.ts`). `keld create` already writes every
+app's `src/kipc-transport.ts` with that constant defined
+(`crates/keld-cli/src/template.rs` `KIPC_RELEASE_DEFINITION`), so no created app can
+reach the hooks (`crates/keld-cli/tests/bun_echo.rs`
+`created_transport_registers_no_test_hook_seam`). Only the in-repo canonical file keeps
+them, reachable from `src/test-hooks.ts` under `KELD_KIPC_TEST_HOOKS=1`. The
+build path MUST keep the staged basename rule: the transport ships as its own file
+named `kipc-transport.ts` or `.js`. `WorkerLink.open` refuses a hashed chunk name, a
+transport that is the process entry (`bun build --compile` output included), and a
+call from inside a transport Worker.
 The non-release boot compiler copies that sidecar
 into the owner-private stage when present so `keld dev` Bun can resolve it.
 Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,
 binds `src/kipc-transport.ts` to `/code/kipc-transport.ts` as a second file
-mount (directory-wide `/code` mounts stay forbidden). KEL-98's bounded cold generator
+mount (directory-wide `/code` mounts stay forbidden). The transport Worker loads from
+that second mount; no third file is bound
+(`crates/keld-runtime/tests/linux_strict_boundary.rs`
+`worker_link_self_entry_runs_from_the_two_staged_files`). KEL-98's bounded cold generator
 derives the checked-in `src/echo.generated.ts` payload declarations from the Rust echo
 structs for `keld create`; type-only use keeps that source-time file out of the runtime
 stage. General `keld gen` / `@keld/schema` codegen (KEL-13) is not built, so this shared
@@ -4167,9 +4207,9 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
-| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client; the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs; general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
-| `package.keld-api` | All | **Specified only** — The typed SDK for supervised Bun roles is specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3); the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live. Its GH-527 WorkerLink owns each Bun role's link in a transport Worker, and the hello scaffold and @keld/api use it, with the main-thread client path removed (#528 T1-T3); a release build strips its test hooks, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs. The GRANT credit lane (T4), Linux and Windows qualification (T5), general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
+| `package.keld-api` | All | **Partial** — The @keld/api package implements the application lifecycle (whenReady, quit, last-window-closed) and the Echo channel over the role's app-link, which runs on the GH-527 WorkerLink from #528 T3; general typed channels and schema codegen remain absent. | [code](../../packages/@keld/api/src/index.ts), [test](../../packages/@keld/api/src/app.test.ts) | [Specified](../../docs/architecture/01-overview.md) | KEL-142 | `0768d11a6d6b9dc43e1e991be700db8d1ce555a6` |
 | `package.keld-web` | All | **Specified only** — The renderer bridge and polyfill package are specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `package.keld-cli` | All | **Specified only** — The npm binary resolver is specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `package.keld-schema` | All | **Specified only** — The contract-definition and code-generation package is specified but no package is tracked. | — | [Specified](../../docs/architecture/02-ipc.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -7190,5 +7230,6 @@ constraints, not per-app toggles. `keld migrate` is not live.
 
 | API | Electron oracle | Keld | Mark | Why |
 |---|---|---|---|---|
-| `app.quit` | [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit) | `Promise<void>` | ▲ | The Quit Call travels over kipc and can fail (`KELD-IPC-*`). Callers must be able to await or `.then` the result. Do not change the public signature to `void` to paper over that. Conformance: `crates/keld-compat/tests/electron_lifecycle.rs`, `packages/@keld/electron/src/app.ts`. |
-| `app` `ready` / `window-all-closed` listeners | Electron [`app`](https://www.electronjs.org/docs/latest/api/app) is a Node [EventEmitter](https://nodejs.org/docs/latest/api/events.html#emitteremiteventname-args): a throw in one listener propagates from `emit` and later listeners do not run | Per-listener `try/catch` in `emit` | ▲ | Host `Event` frames arrive on the kipc read loop. An uncaught throw would skip remaining listeners and abort the reader. Isolation is the contract for this slice; do not revert it to match EventEmitter. Conformance: `packages/@keld/electron/fixtures/app_ready.ts`, `crates/keld-compat/tests/electron_lifecycle.rs` (`app_ready_isolates_listeners_retries_connect_without_unhandled_rejection`). |
+| `app.quit` | [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit) | `Promise<void>`, never parking the caller | ▲ | The Quit Call travels over kipc and can fail (`KELD-IPC-*`). Callers must be able to await or `.then` the result. Do not change the public signature to `void` to paper over that. Since GH-528 T3 it returns at once as Electron's does (PANEL-P2, #419): code after `app.quit()` runs before the host's REPLY. The REPLY must be `LifecycleResponse::Quit` (otherwise `KELD-IPC-003`), and the role's link then closes. Conformance: `crates/keld-compat/tests/electron_lifecycle.rs`, `packages/@keld/electron/src/app.ts`, `packages/@keld/electron/src/link.test.ts` (`app.quit never parks`). |
+| `app` `ready` / `window-all-closed` listeners | Electron [`app`](https://www.electronjs.org/docs/latest/api/app) is a Node [EventEmitter](https://nodejs.org/docs/latest/api/events.html#emitteremiteventname-args): a throw in one listener propagates from `emit` and later listeners do not run | Per-listener `try/catch` in `emit` | ▲ | Host `Event` frames arrive on the kipc read loop. An uncaught throw would skip remaining listeners and abort the reader. Isolation is the contract for this slice; do not revert it to match EventEmitter. Conformance: `packages/@keld/electron/fixtures/ready_listener_only.ts` (`packages/@keld/electron/src/app.test.ts`; moved there from `app_ready.ts` in GH-528 T3). |
+| `app.whenReady` when the role's link fails | Electron's [`app.whenReady()`](https://www.electronjs.org/docs/latest/api/app#appwhenready) resolves once Electron is initialized and has no link to fail | Rejects with the typed error that failed or ended the link, and keeps rejecting with that same error | ▲ | Since GH-528 T3 a role opens one link per realm (GH-527 §4.2). So a failed connect, or a link that died before `Ready`, is sticky: every later `whenReady` (and `quit`) rejects with the same error, and connect is never retried. A retry could only surface `KELD-IPC-005`. The error carries the real cause: a connect failure keeps its own code (`KELD-IPC-001` no listener, `KELD-IPC-005` a malformed HELLO, `KELD-IPC-006` a silent host, `KELD-IPC-007` a token mismatch). A link that was up ends with the failure that ended it (`KELD-IPC-003` an undecodable lifecycle event, `KELD-IPC-005` a frame the session refused, `KELD-IPC-006` a stalled frame), and a plain close is `KELD-IPC-022`. Conformance: `packages/@keld/electron/fixtures/app_ready.ts` over the real connect, with `crates/keld-compat/tests/electron_lifecycle.rs` (`app_ready_isolates_listeners_retries_connect_without_unhandled_rejection`, a name kept for the frozen KEL-237 receipts); `packages/@keld/electron/src/link.test.ts` (one case per code). |

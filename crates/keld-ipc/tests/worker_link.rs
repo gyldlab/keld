@@ -510,6 +510,112 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     );
 }
 
+/// GH-528 T3: `WorkerLink.onEnd` reports the host's close once, as
+/// `KELD-IPC-022`, after the EVENTs that preceded it reached their listener. A
+/// listener added after the end still runs, a removed one never does, and a
+/// throwing one is isolated (reported once as uncaught) without stopping the
+/// others. *Negative control:* notifying before the ring is drained puts
+/// `end:` ahead of the events.
+#[test]
+fn on_end_reports_the_close_after_retained_records() {
+    let (mut stream, role) = start("on-end");
+    long_reads(&stream);
+    read_role_event(&mut stream, "ready-for-events");
+    for seq in 0..2 {
+        host_event(&mut stream, seq, 8);
+    }
+    stream
+        .shutdown(Shutdown::Both)
+        .expect("host closes the link");
+    drop(stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            (
+                "order",
+                "event:0,event:1,end:KELD-IPC-022,late:KELD-IPC-022",
+            ),
+            ("uncaught", "1"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// GH-528 T3 (#636 gate review, coordinator decision): the role's Quit is its
+/// last call, and the link closes the moment its REPLY returns, on every OS.
+/// The host reads EOF right after its REPLY with nothing else written, and
+/// the call still pending then rejects with `KELD-IPC-022`; a host answer
+/// written after that EOF is never delivered. *Negative control:* a Quit that
+/// does not close the link leaves the host waiting for EOF (the read fails at
+/// its deadline instead).
+#[test]
+fn quit_closes_the_link_right_after_the_reply() {
+    let (mut stream, role) = start("quit-close");
+    long_reads(&stream);
+    let pending = read_call_named(&mut stream, "pending");
+    let (quit, quit_payload) = read_call(&mut stream);
+    assert_eq!(quit.channel, LIFECYCLE_CHANNEL, "{quit:?}");
+    assert_eq!(quit_payload, [0x00], "LifecycleRequest::Quit");
+    // `LifecycleResponse::Quit`: the one REPLY the Quit accepts.
+    host_reply(&mut stream, quit, &[0x00]);
+    let after_reply = read_until_link_loss(&mut stream);
+    assert!(
+        after_reply.is_empty(),
+        "the role writes nothing after the Quit REPLY: {after_reply:?}"
+    );
+    // The answer a host drain would write now finds a closed link; whether
+    // the write itself fails is the OS's choice, and its bytes are never read.
+    let _ = write_call_error(
+        &mut stream,
+        LIFECYCLE_CHANNEL,
+        pending.corr,
+        &CallError::quit_drained(),
+    );
+    drop(stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("quit", "returned"),
+            (
+                "order",
+                "quit:returned,pending:KELD-IPC-022,end:KELD-IPC-022",
+            ),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Fable review of #643: a Worker wedged while it holds `KICK` cannot leave
+/// a closed link's promises unsettled or keep the role alive. After
+/// `close()`, the pending call rejects with `KELD-IPC-022` and `onEnd` fires
+/// within four event-loop tasks (a state check, not a duration), and the
+/// role exits once the Worker is terminated `APP_LINK_IO_DEADLINE_MS` after
+/// the link finalized. *Negative control:* `close()` requesting dispatch by
+/// `KICK`'s compare-and-exchange leaves the pending call and `onEnd` unsettled
+/// (`settled-after-close` is empty).
+#[test]
+fn close_settles_a_link_whose_worker_wedged_holding_kick() {
+    let (mut stream, role) = start("wedged-kick");
+    long_reads(&stream);
+    read_call_named(&mut stream, "pending");
+    host_event(&mut stream, 0, 8);
+    let _ = read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            (
+                "settled-after-close",
+                "pending:KELD-IPC-022,end:KELD-IPC-022",
+            ),
+            ("worker-ended", "true"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// Criterion 8 harness: one Worker fault while main is parked with a 30 s deadline.
 fn worker_fault(scenario: &str, liveness_branch: &str, exit_handler: &str) {
     let (mut stream, role) = start(scenario);

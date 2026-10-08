@@ -25,9 +25,13 @@ type ReadyWaiter = {
 let hostReady = false;
 let linkDead: Error | undefined;
 let readyWaiters: ReadyWaiter[] = [];
+/**
+ * The role's one link attempt (GH-527 §4.2: a realm opens one link). Never
+ * reset: a failed connect, or a link that died before Ready, stays the answer,
+ * so every later `whenReady` or `quit` rethrows that same typed error instead
+ * of retrying into `KELD-IPC-005`.
+ */
 let linkPromise: Promise<LifecycleLink> | undefined;
-/** Per-connect identity; prevents a synchronous dead session from being recached. */
-let linkSession: object | undefined;
 
 let nextListenerId = 1;
 const lastWindowClosedListeners = new Map<number, () => void>();
@@ -78,37 +82,36 @@ function ensureLink(): Promise<LifecycleLink> {
       ),
     );
   }
-  linkDead = undefined;
-  const session = {};
-  linkSession = session;
-  const pending = LifecycleLink.connect(envLink, {
+  linkPromise = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
     onLastWindowClosed,
     onApplicationCall: dispatchApplicationCall,
-    onLinkDead: (err: Error) => {
-      if (linkSession !== session) return;
-      try {
-        failReadyWaiters(err);
-      } finally {
-        if (!hostReady && linkSession === session) {
-          linkPromise = undefined;
-        }
-      }
-    },
-  });
-  const tracked = pending.catch((err: unknown) => {
-    if (linkSession === session) {
-      linkPromise = undefined;
-    }
+    onLinkDead: failReadyWaiters,
+  }).catch((err: unknown) => {
+    // The first connect failure is sticky: its typed error answers every
+    // later `whenReady` and `quit`.
+    if (err instanceof Error) linkDead ??= err;
     throw err;
   });
-  if (linkSession === session && !linkDead) {
-    linkPromise = tracked;
-  }
-  return tracked;
+  ignoreIfUnawaited(linkPromise);
+  return linkPromise;
 }
+/** The typed close a `whenReady` still waiting sees once a Quit closed the link. */
+function closedByQuit(): Error {
+  return Object.assign(
+    new Error("KELD-IPC-022: the app quit before the host was ready; the role's link is closed"),
+    { code: "KELD-IPC-022" },
+  );
+}
+
 function sendQuit(): Promise<void> {
-  const done = ensureLink().then((link) => link.quit());
+  const done = ensureLink().then((link) =>
+    link.quit().finally(() => {
+      // The Quit closed the link, which suppresses onLinkDead: a whenReady
+      // still waiting can never see Ready, so it rejects with the close.
+      if (!hostReady && linkDead === undefined) failReadyWaiters(closedByQuit());
+    }),
+  );
   ignoreIfUnawaited(done);
   return done;
 }
