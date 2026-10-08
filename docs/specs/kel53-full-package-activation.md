@@ -2086,10 +2086,14 @@ that retains the Job handle: rejected above for Machine-UAC, for the same reason
 Releasing before `complete()` (*Order*). A type witness from `complete()` on
 `release_family`, which would make step 4's order a compile-time fact as
 `release_for_exit`'s is: `keld-runtime` cannot name a `keld-update` type, because
-`keld-update` already depends on `keld-runtime` (its Windows tests,
-`crates/keld-update/Cargo.toml:31-34`) and `keld-runtime` depends on neither
-`keld-update` nor `keld-core`, so the dependency runs the other way; S6c's composition
-and the r8 and r12 cells of the §7 row prove the order instead. Clearing without a
+Architecture 01 §3 owns the dependency direction and gives `keld-runtime` only
+`keld-ipc` (`docs/architecture/01-overview.md:99-100` and `:111`). `keld-update`
+already sits above `keld-runtime` through a Windows dev-dependency (its tests,
+`crates/keld-update/Cargo.toml:31-34`); that edge alone would not block the reverse
+edge, because Cargo allows a
+[dev-dependency cycle](https://doc.rust-lang.org/cargo/reference/resolver.html#dev-dependency-cycles),
+so the architecture rule, not the manifest, is the blocker. S6c's composition and the
+r8 and r12 cells of the §7 row prove the order instead. Clearing without a
 census: the clear releases every member of H, so a Bun descendant or a WebView2
 straggler would outlive the host unsupervised.
 
