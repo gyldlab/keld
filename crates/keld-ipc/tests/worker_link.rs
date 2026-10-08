@@ -1375,7 +1375,7 @@ fn local_close_rejects_pending_calls_with_022() {
 
 /// §4.6 expiry rule: a `call()` answered while main is parked keeps that reply
 /// even when its overdue deadline timer runs before the dispatch task (a hook
-/// withholds the dispatch). Failing first: today the timer reports 006.
+/// withholds the dispatch). Failed first, reporting 006, at `17a480bc`.
 #[test]
 fn expiry_during_park_keeps_a_retained_reply() {
     let (mut stream, role) = start("expiry-during-park");
@@ -1392,8 +1392,8 @@ fn expiry_during_park_keeps_a_retained_reply() {
         &output,
         &[
             ("park-outlasted-deadline", "true"),
-            // Failing-first status: the overdue timer wins over the retained reply.
-            ("early-code", "KELD-IPC-006"),
+            ("early-returned", "true"),
+            ("early-value", "early-reply"),
             ("done", "true"),
         ],
     );

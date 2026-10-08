@@ -713,10 +713,21 @@ each record by its kind (criterion 27):
 - Asynchronous REPLY or `ERR`: main looks up `header.corr` among its own unresolved
   `call()`s, the set the correlation counter skips (§4.5). A match is removed, and its
   Promise resolves with the REPLY payload or rejects with `errorFromErrFrame` for an
-  `ERR`. With no match, main already rejected that call at its deadline, and the
-  record is discarded. The correlation id selects the Promise, never arrival order.
-  A `call()` deadline is a main-thread timer: on expiry main removes the entry,
-  rejects with `KELD-IPC-006` and posts `abandon(id)`, as `callBlocking` does.
+  `ERR`. With no match, main already rejected that call at its deadline. Main decides
+  an expiry only after dispatching every record retained by then (rule below), so this
+  record arrived after the decision and is discarded. The correlation id selects the Promise, never arrival order.
+  A `call()` deadline is a main-thread timer. When it fires, main first runs the
+  dispatch step (step 2) over the retained ring records, in issue order, exactly as
+  the dispatch task would. Only if the call is still unresolved after that step
+  does main remove the entry, reject with `KELD-IPC-006` and post `abandon(id)`, as
+  `callBlocking` does. Rationale (#528 T1, owner decision): timers cannot run while
+  main is parked, and the order in which the event loop then runs an overdue timer
+  and the dispatch task is unspecified (Bun 1.4.2 happened to dispatch first). A
+  reply retained before the expiry decision is the call's answer whichever ran
+  first. `abandon` is still sent only on an actual expiry, and listener order is
+  unchanged: it is the same dispatch step, after resume. *Falsifier:* a reply
+  retained before the expiry decision is reported as `KELD-IPC-006`, the
+  failing-first case of `expiry_during_park_keeps_a_retained_reply` at `17a480bc`.
 - Host CALL: main runs the handler that `setCallHandler` set for `header.channel` with
   the payload. When its Promise fulfils, main posts the returned kind and payload to
   the Worker. The Worker writes them with the CALL's channel and correlation id through

@@ -1870,6 +1870,11 @@ export class WorkerLink {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.#pending.get(corr)?.timer !== timer) return;
+        // A reply retained in the ring before this decision is the call's
+        // answer, whichever task the event loop ran first after a park (§4.6):
+        // run the dispatch step first, exactly as the dispatch task would.
+        this.#drainRing();
+        if (this.#pending.get(corr)?.timer !== timer) return;
         this.#pending.delete(corr);
         this.#post({ t: "abandon", corr });
         reject(linkError("KELD-IPC-006", `call deadline of ${deadlineMs} ms expired with no host reply`));
@@ -2138,6 +2143,28 @@ export class WorkerLink {
   /** One dispatch task (§4.6 steps 2 and 3); runs only while this side holds `KICK`. */
   #dispatch(): void {
     const ctrl = this.#ctrl;
+    const r = this.#drainRing();
+    Atomics.store(ctrl, KICK, 0);
+    // STATE is loaded before W_BYTES: every record appended before the Worker
+    // recorded STATE is then visible to the W_BYTES load (§4.6 step 3).
+    const state = Atomics.load(ctrl, STATE);
+    if ((Atomics.load(ctrl, W_BYTES) >>> 0) !== r) {
+      this.#requestDispatch();
+    } else {
+      this.#hooks?.onDispatchIdle?.(Atomics.load(ctrl, R_RECS) >>> 0, Atomics.load(ctrl, W_RECS) >>> 0);
+      if (state !== 0) this.#finalize(state);
+    }
+  }
+
+  /**
+   * The dispatch step (§4.6 step 2): delivers the records from `R_BYTES` up to
+   * the `W_BYTES` loaded at the start, in issue order, and returns the new
+   * `R_BYTES`. It owns no `KICK` state: the dispatch task runs it, and so does an
+   * expiring `call()` timer before it decides, so the requested task still
+   * re-checks the ring afterwards and no record is stranded.
+   */
+  #drainRing(): number {
+    const ctrl = this.#ctrl;
     const end = Atomics.load(ctrl, W_BYTES) >>> 0;
     let r = Atomics.load(ctrl, R_BYTES) >>> 0;
     let rRecs = Atomics.load(ctrl, R_RECS) >>> 0;
@@ -2200,21 +2227,12 @@ export class WorkerLink {
           break;
       }
     }
-    Atomics.store(ctrl, KICK, 0);
-    // STATE is loaded before W_BYTES: every record appended before the Worker
-    // recorded STATE is then visible to the W_BYTES load (§4.6 step 3).
-    const state = Atomics.load(ctrl, STATE);
-    if ((Atomics.load(ctrl, W_BYTES) >>> 0) !== r) {
-      this.#requestDispatch();
-    } else {
-      this.#hooks?.onDispatchIdle?.(Atomics.load(ctrl, R_RECS) >>> 0, Atomics.load(ctrl, W_RECS) >>> 0);
-      if (state !== 0) this.#finalize(state);
-    }
     if (failed) {
       setImmediate(() => {
         throw firstError;
       });
     }
+    return r;
   }
 
   /** Runs the host-CALL handler; its answer goes back through the Worker (§4.6). */
