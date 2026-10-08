@@ -3,9 +3,9 @@
  *
  * Oracles:
  * - Link death after connect (before Ready) must reject `whenReady()` with
- *   a typed kipc error (`KELD-IPC-001`), not hang.
- * - `linkPromise` must be dropped so a later `whenReady()` retries connect.
- * - A throwing `ready` listener must not skip waiter drain or the retry.
+ *   the typed error that ended the link, not hang.
+ * - The death is sticky (GH-528 T3): a later `whenReady()` rejects with the
+ *   same error, and connect is not attempted again (one link per realm).
  *
  * Spawned as a child by `src/app.test.ts` so stubbing `LifecycleLink.connect`
  * cannot leak into `link.test.ts` in the same bun-test process.
@@ -73,28 +73,21 @@ if (app.isReady()) {
 }
 marker("KEL72_WHEN_READY_DEAD");
 
-const retry = app.whenReady();
+const again = await app.whenReady().then(
+  () => null,
+  (err: unknown) => err,
+);
 await new Promise<void>((resolve) => {
   setImmediate(resolve);
 });
-
-if (connectCalls < afterHelloCalls + 1) {
-  writeSync(2, `KEL72_CONNECT_NOT_RETRIED calls=${connectCalls} afterHello=${afterHelloCalls}\n`);
+if (again !== firstErr) {
+  writeSync(2, `KEL72_DEATH_NOT_STICKY again=${String(again)}\n`);
   process.exit(1);
 }
-if (!lastHandlers) {
-  writeSync(2, "KEL72_RETRY_HANDLERS_MISSING\n");
+if (connectCalls !== afterHelloCalls) {
+  writeSync(2, `KEL72_CONNECT_RETRIED calls=${connectCalls} afterHello=${afterHelloCalls}\n`);
   process.exit(1);
 }
-
-lastHandlers.onReady();
-await retry;
-marker("KEL72_RETRY_READY");
+marker("KEL72_DEATH_STICKY");
 marker(`KEL72_CONNECT_CALLS=${connectCalls}`);
-
-if (!app.isReady()) {
-  writeSync(2, "KEL72_NOT_READY_AFTER_RETRY\n");
-  process.exit(1);
-}
-
 process.exit(0);

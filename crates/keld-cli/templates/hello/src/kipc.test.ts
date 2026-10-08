@@ -14,8 +14,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CLIENT_AWAIT_HELLO,
   FLAG_RAW,
+  RECEIVE_POLICIES,
   FrameKind,
   echoReplyWaiter,
   validateReceivedHeader,
@@ -287,6 +287,8 @@ describe("FrameReader — untrusted peer bytes", () => {
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
   });
 });
+
+const CLIENT_AWAIT_HELLO = RECEIVE_POLICIES.clientAwaitHello;
 
 describe("shared receiver rules (KEL-133)", () => {
   test("HELLO shape failures are KELD-IPC-005 and foreign length never 007", () => {

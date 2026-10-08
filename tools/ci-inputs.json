@@ -156,6 +156,7 @@
         "crates/keld-cli/src/mcp/docs_search.rs",
         "crates/keld-cli/tests/doctor_mcp.rs",
         "crates/keld-cli/src/template.rs",
+        "crates/keld-cli/tests/bun_echo.rs",
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
@@ -166,6 +167,7 @@
         "crates/keld-compat/tests/support/corpus_citation.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/linux_strict_boundary.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
         "crates/keld-runtime/tests/windows_primary_generation.rs",
         "crates/keld-host/tests/no_flag/linux/support/project.rs",
@@ -324,6 +326,7 @@
         "crates/keld-cli/src/mcp/docs_search.rs",
         "crates/keld-cli/tests/doctor_mcp.rs",
         "crates/keld-cli/src/template.rs",
+        "crates/keld-cli/tests/bun_echo.rs",
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
@@ -334,6 +337,7 @@
         "crates/keld-compat/tests/support/corpus_citation.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
+        "crates/keld-runtime/tests/linux_strict_boundary.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
         "crates/keld-runtime/tests/windows_primary_generation.rs",
         "crates/keld-host/tests/no_flag/linux/support/project.rs",
@@ -348,14 +352,14 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "00ea537ce47500d83b91ada0a9c9bbc77000eec94fb19d9f9cdbc0f8a818644f"
+      "sha256": "1996780938bffa721c831c20804e54bf0e7352a27cc0563ee6bdbb443e2fab38"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "8a87cb0f3840e1ffb8b172140cc563d83a5450e76f67c3c9c38a98f9ed37498a"
+      "sha256": "d049ad1af71c85e7a1c71d8f450344eb1692b22e40996b946457c0e66c077d4e"
     },
     "policy-readers": {
       "patterns": [
@@ -365,7 +369,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "0aeea93d5c6c3f014e8619a7e5669f382014a612747ddcb43aab72decb9aacff"
+      "sha256": "fa5be918e1edc42e6542c6a8d35e3ea7c1f61ce5478659e0c5959cf4a0678be6"
     },
     "audit-readers": {
       "patterns": [
@@ -426,6 +430,8 @@
     ],
     "keld-compat": [
       "packages/@keld/electron/*",
+      "packages/@keld/api/*",
+      "packages/@keld/kipc/src/transport.ts",
       "crates/keld-compat/fixtures/lifecycle-corpus/*"
     ],
     "keld-update": [

@@ -44,6 +44,33 @@ gitleaks runs on every event. Its configuration (`.gitleaks.toml`) and fingerpri
 ignores (`.gitleaksignore`) have no other reader, so a change to either selects no
 other CI lane.
 
+The Ubuntu WebKitGTK `.deb` set comes from a first-party `actions/cache` entry. Its key is
+the runner image (`ImageOS`, `ImageVersion`) plus the SHA256 of the job's exact package list
+(`tools/ci_webkitgtk_apt.sh key`). The cache is not trusted. apt accepts a file already in
+its archive directory when only the size matches (the `pkgAcqArchive::pkgAcqArchive`
+constructor in `apt-pkg/acquire-item.cc`, lines 3494-3512 in apt 2.7.14 on Ubuntu 24.04),
+so the script:
+
+1. still runs `apt-get update`, which verifies the signed InRelease metadata. Under apt's
+   default `APT::Update::Error-Mode=persistent`, a transient fetch failure is only a warning
+   and apt keeps the lists it verified earlier, while a signature failure is still an error
+   (`AcquireUpdate` in `apt-pkg/update.cc`). The trust root is therefore always signed, but not
+   guaranteed fresh. The default is kept deliberately: it tolerates mirror flakes, and
+   stale-but-signed lists can only name older signed packages, which step 3 still binds;
+2. lists the exact files with `apt-get install --print-uris -o Acquire::ForceHash=SHA256`;
+3. stages a cached file only when its SHA256 and size match that signed index entry.
+
+Every other package downloads and is hash-checked by apt. Index lists are never cached, and
+the workflow-security check refuses any other `actions/cache` step. On a miss the step runs
+the plain update and install behind the 15-minute step timeout, then saves the cache. A stuck
+cache download aborts after 2 minutes (`SEGMENT_DOWNLOAD_TIMEOUT_MINS`) and proceeds as a
+miss, and both cache steps have a 5-minute bound.
+
+The main-scoped caches (this one and `rust-cache`) stay trustworthy only while default-branch
+workflows never run pull-request code. `tools/ci_workflow_security.ts` therefore parses every
+workflow with a `pull_request_target` trigger (today `keldbot.yml`), and refuses any
+`actions/checkout`, `run:` step or reusable-workflow job in it.
+
 Dependency review first checks every API response page for GitHub's incomplete
 snapshot warning. Unavailable APIs, malformed refs or incomplete snapshots fail the
 job; restore the dependency graph's base/head metadata and rerun the same head.

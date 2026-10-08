@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { aptStepTimeoutMinutes, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
+import { aptStepTimeoutMinutes, webkitgtkAptJobs, webkitgtkDebCachePath, checkPullRequestTargetWorkflow, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
 type FixtureJob = {
   steps: Step[];
+  env?: Record<string, unknown>;
   permissions?: Record<string, unknown>;
   strategy?: { matrix: Record<string, unknown> };
   needs?: unknown;
@@ -137,6 +138,63 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   const unrelated = fixture();
   unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
   expect(() => check(unrelated)).not.toThrow();
+});
+
+for (const job of webkitgtkAptJobs) {
+  test(`${job} WebKitGTK .deb cache keeps its key, verified install and miss-only save`, () => {
+    const mutations: [string, (f: Fixture) => void, string][] = [
+      ["key without the image and package binding", f => { step(f, job, "Resolve WebKitGTK apt cache key").run = 'echo "key=webkitgtk" >> "$GITHUB_OUTPUT"\n'; }, "resolve the cache key"],
+      ["restore under another key", f => { (step(f, job, "Restore WebKitGTK .deb cache").with as Step).key = "webkitgtk-${{ runner.os }}"; }, "Restore WebKitGTK .deb cache"],
+      ["cache the apt index lists", f => { (step(f, job, "Restore WebKitGTK .deb cache").with as Step).path = "/var/lib/apt/lists"; }, "Restore WebKitGTK .deb cache"],
+      ["save on a hit", f => { step(f, job, "Save WebKitGTK .deb cache").if = String(step(f, job, "Restore WebKitGTK .deb cache").if ?? "always()"); }, "only on a miss"],
+      ["save under another key", f => { (step(f, job, "Save WebKitGTK .deb cache").with as Step).key = "other"; }, "Save WebKitGTK .deb cache"],
+      ["install bypassing verification", f => { const s = f.jobs[job]!.steps.find(c => typeof c.run === "string" && c.run.includes("ci_webkitgtk_apt.sh install"))!; s.run = `sudo cp ${webkitgtkDebCachePath}/*.deb /var/cache/apt/archives/ && sudo apt-get update && sudo apt-get install -y $KELD_WEBKITGTK_PACKAGES\n`; }, "install with exactly"],
+      ["missing package list", f => { delete (f.jobs[job]!.env as Step).KELD_WEBKITGTK_PACKAGES; }, "KELD_WEBKITGTK_PACKAGES"],
+      ["save before install", f => { const steps = f.jobs[job]!.steps; const save = steps.findIndex(c => c.name === "Save WebKitGTK .deb cache"); const [s] = steps.splice(save, 1); steps.splice(save - 1, 0, s!); }, "key, restore, install, save"],
+      ["floating cache action", f => { step(f, job, "Restore WebKitGTK .deb cache").uses = "actions/cache/restore@v6"; }, "immutable"],
+      ["unbounded restore", f => { delete step(f, job, "Restore WebKitGTK .deb cache")["timeout-minutes"]; }, "Restore WebKitGTK .deb cache"],
+      ["restore bound above 5 minutes", f => { step(f, job, "Restore WebKitGTK .deb cache")["timeout-minutes"] = 30; }, "timeout-minutes: 5"],
+      ["unbounded save", f => { delete step(f, job, "Save WebKitGTK .deb cache")["timeout-minutes"]; }, "Save WebKitGTK .deb cache"],
+      ["stuck download held to the step bound", f => { (step(f, job, "Restore WebKitGTK .deb cache").env as Step).SEGMENT_DOWNLOAD_TIMEOUT_MINS = "10"; }, "abort as a miss"],
+    ];
+    for (const [label, mutate, message] of mutations) {
+      const f = fixture();
+      mutate(f);
+      expect(() => check(f), label).toThrow(message);
+    }
+  });
+}
+
+const keldbot = readFileSync(join(import.meta.dir, "../.github/workflows/keldbot.yml"), "utf8");
+
+test("pull_request_target workflows never check out or run pull-request code", () => {
+  expect(() => checkPullRequestTargetWorkflow(keldbot, "keldbot.yml")).not.toThrow();
+  const parsed = Bun.YAML.parse(keldbot) as { jobs: Record<string, { steps: Step[] }> };
+  const firstJob = Object.keys(parsed.jobs)[0]!;
+  for (const [label, inserted, message] of [
+    ["run step", { run: "echo ${{ github.event.pull_request.title }}" }, "run: step under pull_request_target"],
+    ["checkout", { uses: checkout, with: { ref: "${{ github.event.pull_request.head.sha }}" } }, "checks out code"],
+    ["checkout with case and subpath", { uses: "Actions/Checkout/.@3d3c42e5aac5ba805825da76410c181273ba90b1" }, "checks out code"],
+  ] as const) {
+    const f = Bun.YAML.parse(keldbot) as typeof parsed;
+    f.jobs[firstJob]!.steps.push({ ...inserted });
+    expect(() => checkPullRequestTargetWorkflow(Bun.YAML.stringify(f), "keldbot.yml"), label).toThrow(message);
+  }
+  const reusable = Bun.YAML.parse(keldbot) as Record<string, unknown> & typeof parsed;
+  (reusable.jobs as Record<string, unknown>).extra = { uses: "owner/repo/.github/workflows/x.yml@3d3c42e5aac5ba805825da76410c181273ba90b1" };
+  expect(() => checkPullRequestTargetWorkflow(Bun.YAML.stringify(reusable), "keldbot.yml")).toThrow("reusable workflow");
+  // Every trigger form is recognised, including flow and alias steps.
+  for (const on of ["pull_request_target", "[push, pull_request_target]"]) {
+    expect(() => checkPullRequestTargetWorkflow(`on: ${on}\njobs:\n  j:\n    steps:\n      - &s { run: echo }\n      - *s\n`, "x.yml")).toThrow("run: step");
+  }
+  // Negative control: the same run step under pull_request is not this rule's concern.
+  expect(() => checkPullRequestTargetWorkflow("on: pull_request\njobs:\n  j:\n    steps:\n      - run: echo\n", "x.yml")).not.toThrow();
+});
+
+test("no other step may use actions/cache, so apt index lists are never cached", () => {
+  const f = fixture();
+  f.jobs.fmt!.steps.push({ name: "Cache apt lists", uses: "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", with: { path: "/var/lib/apt/lists", key: "lists" } });
+  expect(() => check(f)).toThrow("outside the WebKitGTK .deb cache steps");
 });
 
 test("no job outside the per-language owners may run CodeQL", () => {
@@ -322,6 +380,13 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
     };
     const original = run(source);
     expect(original.exitCode).toBe(0);
+    // The CLI also refuses a pull_request_target workflow that runs shell code.
+    const keldbotPath = join(checkoutRoot, ".github/workflows/keldbot.yml");
+    writeFileSync(keldbotPath, keldbot.replace("    steps:\n", "    steps:\n      - run: echo injected\n"));
+    const prTarget = run(source);
+    expect(prTarget.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(prTarget.stderr)).toContain("pull_request_target");
+    writeFileSync(keldbotPath, keldbot);
     expect(new TextDecoder().decode(original.stdout)).toContain("CI workflow security semantics ok");
     const actionsRoute = `    if: ${codeqlRoute("actions")}\n`;
     expect(source).toContain(actionsRoute);

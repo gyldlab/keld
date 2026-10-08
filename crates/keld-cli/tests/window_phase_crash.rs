@@ -210,7 +210,7 @@ fn ready_then_exit_zero_fails_the_window_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("z{}", std::process::id());
     let (root, pid_path) = project_with_main_rewrite(dir.path(), &name, |scaffolded| {
-        let lifecycle_wait = "    await quitAfterLastWindowClosed(session);";
+        let lifecycle_wait = "    await windowsClosed;";
         assert!(
             scaffolded.contains(lifecycle_wait),
             "template shape changed; this fixture edits its lifecycle-wait line"
@@ -234,7 +234,7 @@ fn finally_process_exit_zero_fails_the_window_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("f{}", std::process::id());
     let (root, pid_path) = project_with_main_rewrite(dir.path(), &name, |scaffolded| {
-        let lifecycle_wait = "    await quitAfterLastWindowClosed(session);";
+        let lifecycle_wait = "    await windowsClosed;";
         let finally_close = "  session.close();";
         assert!(
             scaffolded.contains(lifecycle_wait),
@@ -376,7 +376,7 @@ fn an_app_that_dies_after_reporting_ready_fails_the_run() {
     let gen_lit = gen_path.display().to_string();
     let main = root.join("src/main.ts");
     let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
-    let lifecycle_wait = "    await quitAfterLastWindowClosed(session);";
+    let lifecycle_wait = "    await windowsClosed;";
     assert!(
         scaffolded.contains(lifecycle_wait),
         "template shape changed; this fixture edits its lifecycle-wait line"

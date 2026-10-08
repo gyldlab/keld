@@ -27,8 +27,11 @@ pub(crate) fn assert_imported_kipc_sidecar_exists(root: &Path) {
 /// bundled into that entry, so no stale compatibility sidecar may remain.
 pub(crate) fn assert_self_contained_kipc_entry(root: &Path) {
     let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main.ts");
+    // An import, not the name: the inlined transport itself names its staged
+    // file in `WorkerLink.open`'s refusal text (GH-527 §4.2).
     assert!(
-        !main.contains("kipc-transport.ts"),
+        !main.contains("from \"./kipc-transport.ts\"")
+            && !main.contains("import(\"./kipc-transport.ts\")"),
         "bundled Linux entry retained a local transport import: {main}"
     );
     assert!(

@@ -21,7 +21,6 @@ import { describe, expect, test } from "bun:test";
 import {
   ALLOCATED_CHANNELS,
   APP_LINK_IO_DEADLINE_MS,
-  DirectedReader,
   DrainSignal,
   ECHO_CHANNEL,
   FLAG_RAW,
@@ -33,7 +32,6 @@ import {
   LIFECYCLE_CHANNEL,
   MAX_FRAME_LEN,
   MAX_PENDING_CHUNKS,
-  MAX_PARKED_FRAMES,
   PROTOCOL_VERSION,
   RECEIVE_POLICIES,
   WriteQueue,
@@ -505,53 +503,6 @@ describe("FrameReader chunk queue", () => {
     8_000,
   );
 
-  test("Ready before Echo Reply parks; later event receive drains FIFO", async () => {
-    const ready = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00]));
-    const reply = encodeFrame(FrameKind.Reply, ECHO_CHANNEL, 1, new Uint8Array([0x01]));
-    const reader = new FrameReader();
-    const directed = new DirectedReader(reader);
-    const waiting = directed.receive(
-      echoReplyWaiter(1),
-      RECEIVE_POLICIES.lifecycleEventReceiver,
-    );
-    reader.push(ready);
-    reader.push(reply);
-    const got = await waiting;
-    expect(got.header.kind).toBe(FrameKind.Reply);
-    expect(got.header.corr).toBe(1);
-    expect(directed.parkedCount()).toBe(1);
-    const parked = await directed.receive(RECEIVE_POLICIES.lifecycleEventReceiver);
-    expect(parked.header.kind).toBe(FrameKind.Event);
-    expect(parked.payload).toEqual(new Uint8Array([0x00]));
-    expect(directed.parkedCount()).toBe(0);
-  });
-
-  test("without park, Ready before Echo Reply fails closed", async () => {
-    const ready = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00]));
-    const reader = new FrameReader();
-    const directed = new DirectedReader(reader);
-    const waiting = directed.receive(echoReplyWaiter(1));
-    reader.push(ready);
-    await expect(waiting).rejects.toThrow("KELD-IPC-005");
-  });
-
-  test("park overflow is KELD-IPC-005 and does not merge frames", async () => {
-    const reader = new FrameReader();
-    const directed = new DirectedReader(reader);
-    const waiting = directed.receive(
-      echoReplyWaiter(1),
-      RECEIVE_POLICIES.lifecycleEventReceiver,
-    );
-    const event = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00]));
-    for (let i = 0; i < MAX_PARKED_FRAMES; i += 1) {
-      reader.push(event);
-    }
-    reader.push(event);
-    await expect(waiting).rejects.toThrow("KELD-IPC-005");
-    await expect(waiting).rejects.toThrow("parked-frame queue is full");
-    expect(directed.parkedCount()).toBe(MAX_PARKED_FRAMES);
-  });
-
   test("fragmented pushes keep a chunk queue, not a merged prefix", async () => {
     const payload = new Uint8Array(4096).fill(0x5a);
     const frame = encodeFrame(FrameKind.Reply, ECHO_CHANNEL, 1, payload);
@@ -947,19 +898,28 @@ describe("one source / no second copy", () => {
     expect(readerOwners).toEqual(["packages/@keld/kipc/src/transport.ts"]);
   });
 
-  test("DirectedReader exists only in the canonical transport", () => {
+  // GH-527 §4.13 removal check: the main-thread client path is gone. The one
+  // production `connectKipcSocket` call is the transport Worker's, and no
+  // `DirectedReader` remains anywhere.
+  test("the transport Worker is the only production connectKipcSocket caller", () => {
     const files: string[] = [];
     walkFiles(join(REPO_ROOT, "packages"), ".ts", files);
     walkFiles(join(REPO_ROOT, "crates/keld-cli/templates"), ".ts", files);
-    const owners: string[] = [];
+    const callers: string[] = [];
+    const directed: string[] = [];
     for (const file of files) {
-      if (file.endsWith(".test.ts")) continue;
       const text = readFileSync(file, "utf8");
-      if (text.includes("export class DirectedReader")) {
-        owners.push(relative(REPO_ROOT, file).replaceAll("\\", "/"));
+      const path = relative(REPO_ROOT, file).replaceAll("\\", "/");
+      if (text.includes("DirectedReader")) directed.push(path);
+      if (file.endsWith(".test.ts")) continue;
+      for (const match of text.matchAll(/(?<!function )\bconnectKipcSocket\(/g)) {
+        const owner = text.lastIndexOf("\nclass ", match.index);
+        const ownerName = owner < 0 ? "" : /class (\w+)/.exec(text.slice(owner))?.[1] ?? "";
+        callers.push(`${path}:${ownerName}`);
       }
     }
-    expect(owners).toEqual(["packages/@keld/kipc/src/transport.ts"]);
+    expect(callers).toEqual(["packages/@keld/kipc/src/transport.ts:TransportWorker"]);
+    expect(directed.filter((path) => !path.endsWith("transport.test.ts"))).toEqual([]);
   });
 
   test("hello scaffold shim is a re-export, not a second implementation", () => {

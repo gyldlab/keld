@@ -116,19 +116,25 @@ negative control: the one mutation that MUST make the test fail.
    criterion 5.
 7. **Quit.** (a) Given a parked blocking `Quit`, when the host accepts it, then the
    call returns the host's real `LifecycleResponse::Quit` bytes and the link closes
-   afterwards. (b) Given another blocking call written behind the accepted `Quit`
-   before the role ends its link, then that call throws `KELD-IPC-024` and the host
-   never runs it. With the unbounded FS drain (§4.9), these are the CALLs the host
-   receives behind the accepted `Quit`. The drain ends on the role's EOF, so this
-   holds however late the host runs (#528 T2); a call that a §4.9 liveness backstop
-   overtakes throws `KELD-IPC-022`, which the caller treats as `KELD-IPC-024`. The
+   afterwards. (b) Given another call written behind the accepted `Quit`, then the
+   host answers it with `KELD-IPC-024` and never runs it. With the unbounded FS drain
+   (§4.9), these are the CALLs the host receives behind the accepted `Quit`. The drain
+   ends on the role's EOF, so this holds however late the host runs (#528 T2). The
    deterministic proofs are keld-core router tests: one buffers the CALL before the
    `Quit` completes; the other stalls the drain past its idle backstop before the
-   role ends the link, and every buffered CALL still gets `KELD-IPC-024`.
+   role ends the link, and every buffered CALL still gets `KELD-IPC-024`. (c)
+   (amended by #528 T3, coordinator decision on #636) The role's `Quit` is its last
+   call. It never parks the caller (PANEL-P2, #419). The link closes the moment the
+   Quit REPLY settles (`quitAndCloseLink`), so a call still pending then throws
+   `KELD-IPC-022`, which the caller treats as `KELD-IPC-024` (§4.4). The host's drain
+   ends at that EOF, not at a backstop.
    *Negative controls:* a host that closes without writing the Quit REPLY makes (a)
    throw `KELD-IPC-022`, so a client-synthesized Quit success fails (a); a drain that
    checks its idle backstop before every read answers none of the stalled drain's
-   CALLs, so it fails (b).
+   CALLs, so it fails (b); a Quit that does not close the link leaves the host
+   waiting for EOF and ends the drain at its idle backstop, so it fails (c); a Quit
+   that parks (`callBlocking`) keeps a timer set after `app.quit()` from running
+   before the REPLY, so it fails (c).
 8. **Worker death or wedge wakes immediately.** Given a parked call with a 30 s
    deadline, in each of three arms, then `callBlocking` throws `KELD-IPC-025`, not
    `KELD-IPC-006`, and the host observes link loss and takes KEL-75's natural-crash
@@ -144,7 +150,7 @@ negative control: the one mutation that MUST make the test fail.
    the wake comes from the liveness branch; a termination path that runs the exit
    handler does not satisfy (b). Only the test-only `openWorkerLinkForTest`, under
    `KELD_KIPC_TEST_HOOKS=1`, accepts fault data; the production Worker has no such
-   message or option. (c) *Wedge:* a test-only hook stops the
+   message or option, and a release build has no hook code path at all (#528 T3). (c) *Wedge:* a test-only hook stops the
    Worker's event loop. *Control for (b) and (c):* removing the liveness check
    (§4.5) makes the call fail with `KELD-IPC-006` at its deadline, so the code
    assertion fails (#418 risk 1).
@@ -509,11 +515,13 @@ and updates this table in the same PR.
 | `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound (with the credit lane, its share of them, §4.7), or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, or reduce the host event rate toward this role. Retained events were delivered in order. (T4 adds "or enable the credit lane" to the registry heading when it lands.) |
 | `KELD-IPC-027` | `@keld/kipc` | a call was pending, or was issued, after the Worker processed an `abandon` that exceeded `MAX_ABANDONED_CALLS` (the expiring call itself throws `KELD-IPC-006`) | too many unanswered calls; the link was closed rather than track another abandoned id | The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect. |
 
-`KELD-IPC-023` and `KELD-IPC-024` are best effort (§4.9). `KELD-IPC-024` is guaranteed
-for a CALL the role wrote behind an accepted `Quit` before it ended the link; a call
-that a §4.9 liveness backstop overtakes sees `KELD-IPC-022` at the close instead.
-Behind an accepted `Quit` the two codes mean the same: the call is terminal and the
-host ran none of it. Callers MUST treat `KELD-IPC-024` and `KELD-IPC-022` alike there.
+`KELD-IPC-023` and `KELD-IPC-024` are best effort (§4.9). The host writes
+`KELD-IPC-024` for every CALL it receives behind an accepted `Quit` while the link can
+carry it. A role whose `Quit` closes the link on its REPLY (#528 T3, §4.9) reads none of
+those answers: its calls still pending then end as `KELD-IPC-022`, as does a call that a
+§4.9 liveness backstop overtakes. Behind an accepted `Quit` the two codes mean the same:
+the call is terminal and the host ran none of it. Callers MUST treat `KELD-IPC-024` and
+`KELD-IPC-022` alike there.
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
 an invalid `receive` table (§4.5), an outbound frame on channel 0, a listener or state
@@ -521,7 +529,9 @@ applier on a channel that `receive.eventChannels` does not name, a `callBlocking
 any state applier (in the wake drain or a dispatch task, so no fact is re-applied), an
 `ERR` whose payload is not a `CallError` (it closes the link), a second in-flight
 blocking call, an invalid deadline, an unsolicited correlation id, a malformed `GRANT`,
-an applier that throws, or a host CALL whose call handler is missing or fails (§4.6).
+an applier that throws, or a host CALL whose call handler is missing or fails (§4.6). An
+applier or call handler that throws a typed `KELD-*` error closes the link with that
+code as its cause instead (#528 T3: the real cause stands).
 A `KELD-IPC-005` raised by an API call before any write is thrown to that caller. A
 `KELD-IPC-005` that closes the link (an inbound frame the Worker rejects, a reused
 correlation id, a throwing applier, a failed call handler) records `STATE = 22`, so
@@ -574,8 +584,21 @@ export class WorkerLink {
   /** Framework-only answer to host CALLs on a `receive.callReceivers` channel; at most one per channel. */
   setCallHandler(channel: number, handler: (payload: Uint8Array) => Promise<WorkerCallReply>): void;
   onEvent(channel: number, listener: (payload: Uint8Array) => void): () => void;
+  /**
+   * #528 T3: runs once after the link ended and every retained record was
+   * delivered, with the typed failure that ended it, or the recorded code for
+   * a plain close (022) or a lost Worker, full ring or abandoned cap (25 to 27).
+   */
+  onEnd(listener: (error: KeldCallError) => void): () => void;
   close(): void;
 }
+
+/**
+ * #528 T3: the role's Quit, its last call. It never parks the caller; the link
+ * closes the moment the REPLY settles (§4.9). It resolves on
+ * `LifecycleResponse::Quit`, and any other REPLY rejects with `KELD-IPC-003`.
+ */
+export function quitAndCloseLink(link: WorkerLink, deadlineMs: number): Promise<void>;
 ```
 
 `callBlocking`:
@@ -966,8 +989,7 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   - *Quit* (macOS and Linux). The FS drain stays unbounded, so every admitted
     handler finishes and sends its real reply (KEL-130 durability). After the real
     `Quit` REPLY and that drain, the reader reads on until the role ends the link:
-    the role's EOF is the drain's normal end, and #528 T3's `WorkerLink` MUST end its
-    link after the `Quit` REPLY (half-close, then read to EOF). Each CALL received on
+    the role's EOF is the drain's normal end. Each CALL received on
     an `ERR`-declaring channel gets `KELD-IPC-024` and is never executed; an echo CALL
     gets no frame. A frame that has already arrived is always read and answered,
     however late the host runs. Only liveness backstops end the drain otherwise:
@@ -976,11 +998,26 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     sending; and an answer write that does not finish within `HOST_ANSWER_BUDGET`, for
     one that stops reading. The host then closes the link, so KEL-139 AC6's
     `reply -> quiesce/drain -> close` order holds.
-    The guarantee: `KELD-IPC-024` for every CALL the role wrote before it ended the
-    link, when it ends the link and keeps reading within those backstops. A call that
-    a backstop overtakes is not answered at the host and sees `KELD-IPC-022` at the
-    close. Both are terminal and neither call ran, so callers MUST treat them alike
-    (§4.4). The host's link close reaches a role that has half-closed: keld-ipc's
+    The role side (#528 T3; coordinator decision on #636, which replaced a
+    half-close-then-read-to-EOF rule): the role's `Quit` is its last call, and the
+    link closes fully the moment the Quit REPLY settles, on every OS
+    (`quitAndCloseLink` in the transport; `LifecycleLink.quit` and the hello
+    `AppLinkSession.quit` use it). The Quit is an asynchronous call that never parks
+    the caller (PANEL-P2, #419: `app.quit` returns immediately). It resolves only on
+    `LifecycleResponse::Quit`; any other REPLY rejects with `KELD-IPC-003`. A call
+    answered by a record delivered before the close keeps that answer. A call still
+    pending at the close ends as `KELD-IPC-022`, which callers treat as `KELD-IPC-024`
+    (§4.4; both terminal, neither ran). The host reads EOF at once, so its drain ends there without waiting
+    on a backstop (`QuitDrainEnd::PeerClosed`), and an answer it still writes to a
+    CALL the role left behind the `Quit` fails (`EPIPE`, a reset or `NotConnected`)
+    and ends the drain quietly as a lost link (`AnswerLost`): no error, no link-failure
+    report, and the Quit tail goes on to the guardian and the UI Quit. *Falsifier:* a
+    caller or contract that needs data after the Quit REPLY, or that must tell
+    `KELD-IPC-024` apart from `KELD-IPC-022`. The rejected alternative, a write
+    half-close, needed `node:net` beside `Bun.connect` (FACT, Bun 1.4.2 macOS:
+    `Bun.connect`'s `shutdown(true)` and `end()` close both directions of a Unix
+    socket) and would only have turned `KELD-IPC-022` into `KELD-IPC-024`. A role that
+    does half-close still gets the host's FIN: keld-ipc's
     Unix `shutdown_app_link` shuts the write half before the read half, so the role
     reads EOF at that close, before the `Quit` tail asks the guardian to stop it.
     FACT (macOS): `shutdown(SHUT_RDWR)` after the peer's half-close returns
@@ -995,11 +1032,25 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
 - macOS: the first proof. FACT: the send space is 8,192 bytes
   (`net.local.stream.sendspace`). The arm-B evidence is macOS arm64 only.
 - Linux: the strict profile mounts exactly `/code/main.ts` and
-  `/code/kipc-transport.ts`. The self-entry Worker MUST load from the latter. UNKNOWN:
-  Bun's Worker resolution under the strict remap, and whether thread creation is
-  admitted (INFERENCE: Bun already runs threads). Qualified in T5.
-- Windows: `Bun.connect({ unix: "\\\\.\\pipe\\..." })` from a Worker is UNKNOWN.
-  Qualified in T5.
+  `/code/kipc-transport.ts`. The self-entry Worker MUST load from the latter. #528 T3
+  adds the proof: `crates/keld-runtime/tests/linux_strict_boundary.rs`
+  `worker_link_self_entry_runs_from_the_two_staged_files` opens a `WorkerLink` under
+  the strict profile with only those two files bound, reports the Worker entry at
+  `/code/kipc-transport.ts`, and round-trips an echo CALL and the Quit (Linux x86_64
+  CI). Its negative control fails at the Worker's self-entry rather than at main's
+  import: main imports a copy of the transport from the role root, then removes the
+  copy before `open`. The Worker cannot reload its entry, `open` rejects with
+  `KELD-IPC-025`, and the role never authenticates. T5 still qualifies criteria 1 to 14
+  and 18 to 20 on Linux.
+- Windows: a Bun Worker connecting with `Bun.connect({ unix: "\\\\.\\pipe\\..." })`
+  is observed on CI windows-latest at #643 (`a9e5206c`). These pass with `WorkerLink`
+  over the named pipe:
+  - `keld-runtime::windows_primary_generation`;
+  - `windows_lpac_app_link exact_package_grant_preserves_bun_hello_and_rejects_wrong_token`;
+  - the hello `bun_echo created_template_*` cases;
+  - `concurrent_hello`.
+
+  T5 still qualifies criteria 1 to 14 and 18 to 20 on Windows.
 - Runtime seam: before this change, the main thread owns the socket, the reader and
   the writer. After it, the Worker owns them and main owns the correlation counter,
   the cursors and the deadline. OS grants: none added. Crash domain: §4.2. Handle
@@ -1056,9 +1107,49 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
 - Handlers: the host router changes only for §4.9 retire and Quit `ERR`s.
 - Generated contracts: none (`keld gen` is not built). Persisted state: none.
 - Temporary adapter: the main-thread `connectKipcSocket`, `FrameReader` and
-  `DirectedReader` client path, owned by `@keld/kipc`. It is removed in T3 once both
-  consumers are on `WorkerLink`. The removal check: no production `connectKipcSocket`
-  call outside the Worker entry.
+  `DirectedReader` client path, owned by `@keld/kipc`. Removed in #528 T3: both
+  consumers are on `WorkerLink`, `DirectedReader`, `MAX_PARKED_FRAMES` and
+  `CLIENT_AWAIT_HELLO` are gone, and `FrameReader`, `WriteQueue` and
+  `connectKipcSocket` remain only as the Worker's own reader, writer and connect. The
+  removal check is a test (`transport.test.ts`, "the transport Worker is the only
+  production connectKipcSocket caller").
+- T3 additions (#528 T3; owner decisions recorded on #528):
+  - `WorkerLink.onEnd(listener)` runs once, in a task after every retained record
+    and pending-call rejection, with the typed failure that ended the link, or the
+    recorded code for a plain close (022) or a lost Worker, full ring or abandoned
+    cap (25 to 27). `LifecycleLink`'s `onLinkDead` and the hello idle wait for
+    `LastWindowClosed` need it (public API).
+  - `quitAndCloseLink(link, deadlineMs)` is the one owner of the Quit's request,
+    reply check and close (§4.9). It is asynchronous and never parks.
+  - An end that main records (`close()`, a failed applier or handler) always
+    finalizes. Main takes the dispatcher itself, so a Worker wedged while holding
+    `KICK` cannot leave calls or `onEnd` unsettled. After finalizing, main also
+    terminates a Worker still alive `APP_LINK_IO_DEADLINE_MS` later, so it cannot keep
+    the role running.
+  - Release builds strip the test hooks: every hook site tests the build-time
+    constant `KELD_KIPC_RELEASE`, `openWorkerLinkForTest` moves to the in-repo
+    `src/test-hooks.ts`, and `src/release-build.test.ts` proves a release build
+    (`KELD_KIPC_RELEASE` defined `true`, syntax minification) names no hook.
+  - The transport is never bundled into an app entry. `WorkerLink.open` refuses
+    with `KELD-IPC-005` in three cases, each with a test and a negative control:
+    - it runs inside a transport Worker, because a bundle carrying app code would
+      recurse;
+    - the transport module is the process entry (`Bun.main`), whatever its name;
+    - it runs from a file other than `transport.ts` or `kipc-transport.ts`.
+
+    A build path (`keld build`) MUST keep that staged basename rule: no hashed chunk
+    names and no `bun build --compile`.
+  - `keld create` writes each app's transport with `KELD_KIPC_RELEASE` defined, so no
+    created app can reach the test hooks.
+- `@keld/electron`-visible behaviour changes in T3 (recorded in arch 04 and the
+  compat scoreboard):
+  - `app.quit()` never parks.
+  - `app.whenReady()` (and `onLinkDead`) reject with the real cause code. A connect
+    failure keeps its own code, a link that was up ends with the failure that ended
+    it, and a plain close is `KELD-IPC-022`.
+  - A failed connect, or a link that died before `Ready`, is sticky: every later
+    `whenReady` and `quit` rejects with that same error, and connect is never
+    retried.
 - Permanent compatibility facade: none.
 
 ## 5. Boundaries
@@ -1144,7 +1235,10 @@ unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
 `eventReceiver(channel)`, the `replyBytes` option, the constants; from #528 T1 also
 `selectInboundPolicy` with `InboundTable`, `PendingCallEntry` and `InboundAction`,
 `WORKER_LINK_CONTROL`, `FrameReader.end`, and the test-only `openWorkerLinkForTest`,
-`WorkerLinkTestHooks`, `WorkerBlockingFault` and `WORKER_LINK_TEST_WORDS`); `keld-ipc`'s
+`WorkerLinkTestHooks`, `WorkerBlockingFault` and `WORKER_LINK_TEST_WORDS`; from #528 T3
+`WorkerLink.onEnd` and `quitAndCloseLink`, with `openWorkerLinkForTest` moved to the
+in-repo `src/test-hooks.ts` and `DirectedReader`, `MAX_PARKED_FRAMES` and
+`CLIENT_AWAIT_HELLO` removed); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
 `ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (#528 T1
 shipped the §4.7 fallback's `ChannelId`; X05-T4, #631, retired it) and returning

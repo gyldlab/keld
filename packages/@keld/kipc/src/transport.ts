@@ -145,9 +145,6 @@ export const RECEIVE_POLICIES = {
   lifecycleEventReceiver: eventReceiverOn(LIFECYCLE_CHANNEL),
 } as const;
 
-/** Scaffold alias for `RECEIVE_POLICIES.clientAwaitHello`. */
-export const CLIENT_AWAIT_HELLO: ReceivePolicy = RECEIVE_POLICIES.clientAwaitHello;
-
 export function echoReplyWaiter(corr: number): ReceivePolicy {
   return { channel: ECHO_CHANNEL, kinds: [FrameKind.Reply], corr: { rule: "exactly", id: corr } };
 }
@@ -807,82 +804,6 @@ export class FrameReader {
   }
 }
 
-/** Bounded parked-frame budget for one app-link mux (Ready + LastWindowClosed + PING). */
-export const MAX_PARKED_FRAMES = 8;
-
-function admitsHeader(policy: ReceivePolicy, header: FrameHeader): boolean {
-  try {
-    validateReceivedHeader(policy, header);
-    return true;
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("KELD-IPC-")) {
-      return false;
-    }
-    throw err;
-  }
-}
-
-/**
- * Single reader of one `FrameReader` that can wait for a policy while parking
- * unmatched lifecycle Events/PINGs. Stock echo must not treat a preceding
- * `Ready` Event as a failed Echo Reply (KEL-185 same-stream seam). This is
- * not a Close/Quit consumer: adapters still own codecs and when to Quit.
- */
-export class DirectedReader {
-  readonly #reader: FrameReader;
-  readonly #parked: DecodedFrame[] = [];
-
-  constructor(reader: FrameReader) {
-    this.#reader = reader;
-  }
-
-  /** Frames parked because they matched `park` while waiting for another policy. */
-  parkedCount(): number {
-    return this.#parked.length;
-  }
-
-  /**
-   * Returns the next frame admitted by `want`. When `park` is set, admitted
-   * `park` frames are queued in arrival order instead of failing the wait.
-   * Anything else stays `KELD-IPC-005`. Park overflow is also `KELD-IPC-005`.
-   */
-  async receive(want: ReceivePolicy, park?: ReceivePolicy): Promise<DecodedFrame> {
-    const parkedHit = this.#takeParked(want);
-    if (parkedHit !== undefined) {
-      return parkedHit;
-    }
-    for (;;) {
-      const frame = await this.#reader.readFrame();
-      if (admitsHeader(want, frame.header)) {
-        return frame;
-      }
-      if (park !== undefined && admitsHeader(park, frame.header)) {
-        if (this.#parked.length >= MAX_PARKED_FRAMES) {
-          throw kipcError(
-            "KELD-IPC-005",
-            "parked-frame queue is full. Drain parked lifecycle frames before waiting for another policy.",
-          );
-        }
-        this.#parked.push(frame);
-        continue;
-      }
-      validateReceivedHeader(want, frame.header);
-      throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
-    }
-  }
-
-  #takeParked(want: ReceivePolicy): DecodedFrame | undefined {
-    for (let i = 0; i < this.#parked.length; i += 1) {
-      const frame = this.#parked[i];
-      if (frame !== undefined && admitsHeader(want, frame.header)) {
-        this.#parked.splice(i, 1);
-        return frame;
-      }
-    }
-    return undefined;
-  }
-}
-
 /**
  * Wakes every waiter parked on `wait()`. A single-slot signal drops the
  * first waiter when ping-reply and `quit()` both hit backpressure.
@@ -1336,6 +1257,17 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The `KELD-*` code an error carries (its `code` field or leading code), else `KELD-IPC-005`. */
+function keldCodeOf(err: unknown): string {
+  if (isCallError(err)) return err.code;
+  return /^KELD-[A-Z]+-\d{3}/.exec(errorText(err))?.[0] ?? "KELD-IPC-005";
+}
+
+/** An error's text without its leading `KELD-*` code, for a cause that states the code once. */
+function uncodedText(err: unknown): string {
+  return errorText(err).replace(/^KELD-[A-Z]+-\d{3}: /, "");
+}
+
 function codeOfText(text: string): string {
   const match = /^KELD-[A-Z]+-\d{3}/.exec(text);
   return match === null ? "KELD-IPC-001" : match[0];
@@ -1610,6 +1542,18 @@ function requireOutboundFrame(channel: number, payload: Uint8Array): void {
   }
 }
 
+/**
+ * Build-time constant for release bundles (#528 T3). A release build of this
+ * file defines `KELD_KIPC_RELEASE` as `true` (`Bun.build`'s `define`, with
+ * syntax minification); the source and dev builds leave it undefined, so the
+ * hooks stay, behind `KELD_KIPC_TEST_HOOKS=1`. Every test-hook site tests
+ * `typeof KELD_KIPC_RELEASE === "undefined"` itself, because the bundler folds
+ * that expression at each site and removes the branch, while it does not
+ * inline a module constant that holds it in this file (measured, Bun 1.4.2;
+ * `src/release-build.test.ts` pins the result).
+ */
+declare const KELD_KIPC_RELEASE: boolean | undefined;
+
 /** Test-only words shared by main, the Worker and a test thread (criteria 8, 18, 26). */
 export const WORKER_LINK_TEST_WORDS = Object.freeze({
   /** Main's liveness branch ran (count). */
@@ -1626,7 +1570,8 @@ export const WORKER_LINK_TEST_WORDS = Object.freeze({
   TEST_0: 5,
   /** The Worker's claim compare-and-exchange on `BLOCKING` succeeded (set to 1, notified). */
   CLAIMED: 6,
-  TEST_2: 7,
+  /** The Worker holds `KICK` and is about to wedge (`wedgeHoldingKick`; set to 1, notified). */
+  KICK_HELD: 7,
   LENGTH: 8,
 });
 
@@ -1638,7 +1583,11 @@ export interface WorkerBlockingFault {
   readonly stallMs?: number;
 }
 
-/** Test-only hooks; accepted only by `openWorkerLinkForTest` under `KELD_KIPC_TEST_HOOKS=1`. */
+/**
+ * Test-only hooks; accepted only by `openWorkerLinkForTest`
+ * (`src/test-hooks.ts`) under `KELD_KIPC_TEST_HOOKS=1`, and absent from a
+ * release build.
+ */
 export interface WorkerLinkTestHooks {
   /** `WORKER_LINK_TEST_WORDS.LENGTH` words on a SharedArrayBuffer. */
   readonly words: Int32Array;
@@ -1669,6 +1618,10 @@ export interface WorkerLinkTestHooks {
   readonly claimFault?: "skip-publish" | "throw" | "stall-until-deadline-cas";
   /** Hold the Worker's message handling until `BLOCKING` is nonzero (criterion 20). */
   readonly holdMessagesUntilBlocking?: boolean;
+  /** The Worker wedges right after it takes `KICK`, before it posts its kick (Fable review of #643). */
+  readonly wedgeHoldingKick?: boolean;
+  /** Runs when the transport Worker exits. */
+  readonly onWorkerExit?: (code: number) => void;
 }
 
 interface WorkerHookData {
@@ -1676,9 +1629,48 @@ interface WorkerHookData {
   onBlockingCall?: WorkerBlockingFault;
   claimFault?: WorkerLinkTestHooks["claimFault"];
   holdMessagesUntilBlocking?: boolean;
+  wedgeHoldingKick?: boolean;
 }
 
 const WORKER_LINK_MARKER = "keld-kipc-worker-link/v1";
+
+/**
+ * The file names this module may run from (GH-527 §4.2): the canonical
+ * `transport.ts`, or the `kipc-transport.ts` an app stages beside its entry.
+ * The transport Worker's entry is this module's own file, so a module that a
+ * bundler inlined into an app entry would start a Worker running that whole
+ * app; `WorkerLink.open` refuses it instead.
+ */
+const TRANSPORT_FILE = /^(?:kipc-)?transport\.(?:ts|js|mjs)$/;
+
+function requireStagedTransport(): void {
+  // A transport Worker evaluating this module again (a bundle that carries app
+  // code) must never open a link of its own: that would recurse.
+  if (isWorkerLinkBoot(workerData)) {
+    throw linkError(
+      "KELD-IPC-005",
+      "WorkerLink.open ran inside a transport Worker: the transport was bundled with app code, which the " +
+        "Worker evaluated. Stage the transport as src/kipc-transport.ts beside the entry and import it",
+    );
+  }
+  // A bundle run as the process entry is that entry, whatever its file name.
+  if (Bun.main === import.meta.path) {
+    throw linkError(
+      "KELD-IPC-005",
+      "the kipc transport is the process entry: it was bundled into the app entry, so the transport Worker " +
+        "would load the whole app. Stage it as src/kipc-transport.ts beside the entry and import it",
+    );
+  }
+  const file = new URL(import.meta.url).pathname.split("/").pop() ?? "";
+  if (!TRANSPORT_FILE.test(file)) {
+    throw linkError(
+      "KELD-IPC-005",
+      `the kipc transport runs from \`${file}\`, not its own staged file: the transport Worker would load that ` +
+        "whole file. Stage the transport as src/kipc-transport.ts beside the entry and import it; never bundle " +
+        "it into the app entry",
+    );
+  }
+}
 
 interface WorkerLinkBoot {
   marker: typeof WORKER_LINK_MARKER;
@@ -1749,12 +1741,6 @@ function ringCopy(ring: Uint8Array, mask: number, pos: number, len: number): Uin
 
 let workerLinkOpened = false;
 
-/** Bound by `WorkerLink`'s static block; the only path to its private constructor with hooks. */
-let openWorkerLinkWithHooks: (
-  options: WorkerLinkOptions,
-  hooks: WorkerLinkTestHooks,
-) => Promise<{ link: WorkerLink; control: Int32Array }>;
-
 interface PendingAsyncCall {
   resolve: (bytes: Uint8Array) => void;
   reject: (err: Error) => void;
@@ -1783,6 +1769,7 @@ export class WorkerLink {
   readonly #appliers = new Map<number, (payload: Uint8Array) => void>();
   readonly #listeners = new Map<number, Set<(payload: Uint8Array) => void>>();
   readonly #callHandlers = new Map<number, (payload: Uint8Array) => Promise<WorkerCallReply>>();
+  readonly #endListeners = new Set<(error: KeldCallError) => void>();
   #nextCorr = 1;
   #blockingInFlight = false;
   #applying = false;
@@ -1797,11 +1784,35 @@ export class WorkerLink {
     | { resolve: (link: WorkerLink) => void; reject: (err: Error) => void }
     | undefined;
 
+  // The only path to the private open with hooks: a seam that `src/test-hooks.ts`
+  // reads. A release build has neither the seam nor any hook branch.
   static {
-    openWorkerLinkWithHooks = async (options, hooks) => {
-      const link = await WorkerLink.#open(options, hooks);
-      return { link, control: link.#ctrl };
-    };
+    if (typeof KELD_KIPC_RELEASE === "undefined") {
+      const seam = (
+        options: WorkerLinkOptions,
+        hooks: WorkerLinkTestHooks,
+      ): Promise<{ link: WorkerLink; control: Int32Array }> => {
+        if (process.env.KELD_KIPC_TEST_HOOKS !== "1") {
+          return Promise.reject(
+            linkError(
+              "KELD-IPC-005",
+              "openWorkerLinkForTest runs only under KELD_KIPC_TEST_HOOKS=1; roles open their link with WorkerLink.open",
+            ),
+          );
+        }
+        if (
+          !(hooks?.words instanceof Int32Array) ||
+          !(hooks.words.buffer instanceof SharedArrayBuffer) ||
+          hooks.words.length < WORKER_LINK_TEST_WORDS.LENGTH
+        ) {
+          return Promise.reject(
+            linkError("KELD-IPC-005", "test hooks need WORKER_LINK_TEST_WORDS.LENGTH Int32 words on a SharedArrayBuffer"),
+          );
+        }
+        return WorkerLink.#open(options, hooks).then((link) => ({ link, control: link.#ctrl }));
+      };
+      (globalThis as unknown as Record<symbol, unknown>)[Symbol.for("keld.kipc.worker-link-test-seam/v1")] = seam;
+    }
   }
 
   private constructor(
@@ -1818,10 +1829,13 @@ export class WorkerLink {
     this.#worker = worker;
     this.#causePort = causePort;
     this.#table = config.table;
-    this.#hooks = hooks;
+    this.#hooks = typeof KELD_KIPC_RELEASE === "undefined" ? hooks : undefined;
     worker.on("message", (message: FromWorker) => this.#onWorkerMessage(message));
     worker.on("error", (err: Error) => this.#onWorkerGone(`transport Worker error: ${errorText(err)}`));
-    worker.on("exit", (code: number) => this.#onWorkerGone(`transport Worker exited with code ${code}`));
+    worker.on("exit", (code: number) => {
+      this.#onWorkerGone(`transport Worker exited with code ${code}`);
+      if (typeof KELD_KIPC_RELEASE === "undefined") this.#hooks?.onWorkerExit?.(code);
+    });
   }
 
   /** Spawns the transport Worker, which connects and completes HELLO. At most once per realm. */
@@ -1834,6 +1848,7 @@ export class WorkerLink {
     hooks: WorkerLinkTestHooks | undefined,
   ): Promise<WorkerLink> {
     const config = validateWorkerLinkOptions(options);
+    requireStagedTransport();
     if (workerLinkOpened) {
       throw linkError(
         "KELD-IPC-005",
@@ -1842,7 +1857,7 @@ export class WorkerLink {
     }
     workerLinkOpened = true;
     const sab = new SharedArrayBuffer(CONTROL_BYTES + config.replyBytes + config.ringBytes);
-    if (hooks?.counterStart !== undefined) {
+    if (typeof KELD_KIPC_RELEASE === "undefined" && hooks?.counterStart !== undefined) {
       const ctrl = new Int32Array(sab, 0, CONTROL_WORDS);
       for (const word of [W_BYTES, A_BYTES, R_BYTES]) Atomics.store(ctrl, word, hooks.counterStart | 0);
     }
@@ -1858,13 +1873,14 @@ export class WorkerLink {
       callReceivers: config.callReceivers,
       causePort: port2,
       hooks:
-        hooks === undefined
+        typeof KELD_KIPC_RELEASE !== "undefined" || hooks === undefined
           ? undefined
           : {
               words: hooks.words.buffer as SharedArrayBuffer,
               onBlockingCall: hooks.onBlockingCall,
               claimFault: hooks.claimFault,
               holdMessagesUntilBlocking: hooks.holdMessagesUntilBlocking,
+              wedgeHoldingKick: hooks.wedgeHoldingKick,
             },
     };
     const worker = new Worker(new URL(import.meta.url), { workerData: boot, transferList: [port2] });
@@ -1970,12 +1986,41 @@ export class WorkerLink {
     };
   }
 
+  /**
+   * Runs `listener` once with the error that ended the link, in a task after
+   * the link ended, every retained record was delivered and every pending call
+   * rejected (their rejection handlers run first). That error is the typed
+   * failure when the end had one (`KELD-IPC-005` for a frame the session
+   * refused, `KELD-IPC-006` for a stalled frame, an applier's own code), else
+   * the recorded code: `KELD-IPC-022` for a plain close, 25 to 27 for a lost
+   * Worker, a full ring or too many abandoned calls. Pending calls still
+   * reject with the recorded code (§4.4). A listener added later runs in a
+   * later task. One that throws is isolated, as an EVENT listener is. Returns
+   * a function that removes it.
+   */
+  onEnd(listener: (error: KeldCallError) => void): () => void {
+    if (!this.#finalized) {
+      this.#endListeners.add(listener);
+      return () => {
+        this.#endListeners.delete(listener);
+      };
+    }
+    const state = Atomics.load(this.#ctrl, STATE);
+    let removed = false;
+    setImmediate(() => {
+      if (!removed) listener(this.#endError(state));
+    });
+    return () => {
+      removed = true;
+    };
+  }
+
   /** Ends the link; pending calls reject with `KELD-IPC-022` once retained records are delivered. */
   close(): void {
     if (this.#recordMain(STATE_CLOSED, "WorkerLink.close() ended the link")) {
       this.#post({ t: "close" });
     }
-    this.#requestDispatch();
+    this.#forceDispatch();
   }
 
   #requireEventChannel(channel: number): void {
@@ -2020,19 +2065,50 @@ export class WorkerLink {
     return this.#workerCause;
   }
 
+  /**
+   * The error `onEnd` reports: the typed failure that ended the link when it
+   * had one (a refused or stalled frame, an applier's own code), else the
+   * recorded code: `KELD-IPC-022` for a plain close, 25 to 27 for the others.
+   */
+  #endError(state: number): KeldCallError {
+    const cause = this.#localCause ?? this.#readWorkerCause(state);
+    if (state === STATE_CLOSED && cause !== undefined) {
+      const code = /^KELD-[A-Z]+-\d{3}/.exec(cause)?.[0];
+      if (code !== undefined && code !== "KELD-IPC-001" && code !== "KELD-IPC-022") {
+        return codedError(code, cause);
+      }
+    }
+    return terminalError(state, cause);
+  }
+
   #throwIfTerminal(): void {
     const state = Atomics.load(this.#ctrl, STATE);
     if (state !== 0) throw this.#terminalError(state);
   }
 
   /** Fails the link from main with a session-contract violation, recorded as 22 (§4.4). */
-  #failLink(detail: string): void {
-    const cause = `KELD-IPC-005: ${detail}`;
+  /**
+   * Fails the link from main, recorded as 22 (§4.4). The cause is `code`:
+   * `KELD-IPC-005` for a session-contract violation, or the typed code that a
+   * throwing applier or call handler raised.
+   */
+  #failLink(detail: string, code = "KELD-IPC-005"): void {
+    const cause = `${code}: ${detail}`;
     if (this.#recordMain(STATE_CLOSED, cause)) {
       console.error(`kipc WorkerLink: ${cause}`);
       this.#post({ t: "close" });
     }
-    this.#requestDispatch();
+    this.#forceDispatch();
+  }
+
+  /**
+   * Takes the dispatcher whatever `KICK` holds, so an end that main records
+   * always finalizes: a wedged Worker can hold `KICK` set and never post its
+   * kick (§4.6). A second dispatch task is harmless.
+   */
+  #forceDispatch(): void {
+    Atomics.store(this.#ctrl, KICK, 1);
+    setImmediate(() => this.#runDispatchTask());
   }
 
   #terminateWorker(): void {
@@ -2044,7 +2120,7 @@ export class WorkerLink {
   /** Main's wait loop (§4.5 step 3). */
   #park(corr: number, deadlineMs: number): Uint8Array {
     const ctrl = this.#ctrl;
-    const words = this.#hooks?.words;
+    const words = typeof KELD_KIPC_RELEASE === "undefined" ? this.#hooks?.words : undefined;
     const started = performance.now();
     const deadlineAt = started + deadlineMs;
     let heartbeat = Atomics.load(ctrl, HEARTBEAT);
@@ -2053,7 +2129,7 @@ export class WorkerLink {
     for (;;) {
       const seen = Atomics.load(ctrl, SEQ);
       if (Atomics.load(ctrl, REPLY_READY) === 1) return this.#takeReply();
-      this.#hooks?.beforeStateCheck?.();
+      if (typeof KELD_KIPC_RELEASE === "undefined") this.#hooks?.beforeStateCheck?.();
       if (Atomics.load(ctrl, STATE) !== 0) return this.#endPark(corr);
       const now = performance.now();
       const beat = Atomics.load(ctrl, HEARTBEAT);
@@ -2061,7 +2137,9 @@ export class WorkerLink {
         heartbeat = beat;
         heartbeatAt = now;
       } else if (now - heartbeatAt >= WORKER_LIVENESS_WINDOW_MS) {
-        if (words !== undefined) Atomics.add(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH, 1);
+        if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
+          Atomics.add(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH, 1);
+        }
         this.#recordMain(
           STATE_WORKER_LOST,
           `the transport Worker heartbeat did not move for ${WORKER_LIVENESS_WINDOW_MS} ms while a call was parked`,
@@ -2071,20 +2149,22 @@ export class WorkerLink {
         return this.#endPark(corr);
       }
       if (claimedAt === undefined && now >= deadlineAt) {
-        if (this.#hooks?.beforeDeadlineCas?.() === false) continue;
+        if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.beforeDeadlineCas?.() === false) continue;
         if (Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
           this.#post({ t: "abandon", corr });
           throw linkError("KELD-IPC-006", `blocking call deadline of ${deadlineMs} ms expired with no host reply`);
         }
         // The Worker already claimed the reply: wait for its publish, bounded.
         claimedAt = performance.now();
-        if (words !== undefined) {
+        if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
           Atomics.store(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 1);
           Atomics.notify(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED);
         }
       }
       if (claimedAt !== undefined && now - claimedAt >= WORKER_LIVENESS_WINDOW_MS) {
-        if (words !== undefined) Atomics.add(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH, 1);
+        if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
+          Atomics.add(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH, 1);
+        }
         this.#recordMain(
           STATE_WORKER_LOST,
           `the transport Worker claimed the reply but did not publish it within ${WORKER_LIVENESS_WINDOW_MS} ms`,
@@ -2118,7 +2198,7 @@ export class WorkerLink {
     const at = Atomics.load(ctrl, REPLY_AT) >>> 0;
     let bytes: Uint8Array;
     try {
-      this.#hooks?.beforeWakeDrain?.();
+      if (typeof KELD_KIPC_RELEASE === "undefined") this.#hooks?.beforeWakeDrain?.();
       this.#applyUpTo(at);
       bytes = new Uint8Array(len);
       bytes.set(this.#slot.subarray(0, len));
@@ -2167,7 +2247,10 @@ export class WorkerLink {
       // A mirror that cannot apply a fact must not serve stale state: stop
       // delivery at this record and end the link.
       this.#deliveryStopAt = pos;
-      this.#failLink(`the state applier for channel ${header.channel} threw: ${errorText(err)}`);
+      this.#failLink(
+        `the state applier for channel ${header.channel} threw: ${uncodedText(err)}`,
+        keldCodeOf(err),
+      );
       return false;
     } finally {
       this.#applying = false;
@@ -2181,7 +2264,7 @@ export class WorkerLink {
   }
 
   #runDispatchTask(): void {
-    const defer = this.#hooks?.deferDispatch;
+    const defer = typeof KELD_KIPC_RELEASE === "undefined" ? this.#hooks?.deferDispatch : undefined;
     if (defer === undefined) this.#dispatch();
     else defer(() => this.#dispatch());
   }
@@ -2197,7 +2280,9 @@ export class WorkerLink {
     if ((Atomics.load(ctrl, W_BYTES) >>> 0) !== r) {
       this.#requestDispatch();
     } else {
-      this.#hooks?.onDispatchIdle?.(Atomics.load(ctrl, R_RECS) >>> 0, Atomics.load(ctrl, W_RECS) >>> 0);
+      if (typeof KELD_KIPC_RELEASE === "undefined") {
+        this.#hooks?.onDispatchIdle?.(Atomics.load(ctrl, R_RECS) >>> 0, Atomics.load(ctrl, W_RECS) >>> 0);
+      }
       if (state !== 0) this.#finalize(state);
     }
   }
@@ -2292,7 +2377,7 @@ export class WorkerLink {
     try {
       answer = handler(payload);
     } catch (err) {
-      this.#failLink(`the call handler for channel ${header.channel} threw: ${errorText(err)}`);
+      this.#failLink(`the call handler for channel ${header.channel} threw: ${uncodedText(err)}`, keldCodeOf(err));
       return;
     }
     Promise.resolve(answer).then(
@@ -2319,7 +2404,7 @@ export class WorkerLink {
         });
       },
       (err: unknown) => {
-        this.#failLink(`the call handler for channel ${header.channel} failed: ${errorText(err)}`);
+        this.#failLink(`the call handler for channel ${header.channel} failed: ${uncodedText(err)}`, keldCodeOf(err));
       },
     );
   }
@@ -2334,6 +2419,23 @@ export class WorkerLink {
       clearTimeout(waiter.timer);
       waiter.reject(this.#terminalError(state));
     }
+    // In a later task, so every pending call's rejection handlers ran first.
+    setImmediate(() => {
+      const listeners = [...this.#endListeners];
+      this.#endListeners.clear();
+      for (const listener of listeners) {
+        try {
+          listener(this.#endError(state));
+        } catch (err) {
+          setImmediate(() => {
+            throw err;
+          });
+        }
+      }
+    });
+    // Ends a Worker that is still alive past its own close (wedged, or a peer
+    // that never completes the close), so it cannot keep the role running.
+    setTimeout(() => this.#terminateWorker(), APP_LINK_IO_DEADLINE_MS).unref();
   }
 
   #onWorkerMessage(message: FromWorker): void {
@@ -2364,40 +2466,30 @@ export class WorkerLink {
       opened.reject(linkError("KELD-IPC-025", `${cause} before HELLO completed`));
     }
     this.#recordMain(STATE_WORKER_LOST, cause);
-    // The Worker can no longer race on KICK, so main takes the dispatcher.
-    Atomics.store(this.#ctrl, KICK, 1);
-    setImmediate(() => this.#runDispatchTask());
+    this.#forceDispatch();
   }
 }
 
 /**
- * Test-only `WorkerLink.open` with the GH-528 hooks (spec §7), returning the
- * link's control words for assertions. Refuses to run unless the environment
- * sets `KELD_KIPC_TEST_HOOKS=1`; production roles never set it, so the hooks
- * stay inert there.
+ * The role's lifecycle `Quit` (GH-527 §4.9), the one owner of its request and
+ * reply: one asynchronous CALL carrying `LifecycleRequest::Quit` that never
+ * parks the caller (PANEL-P2, #419: `app.quit` returns immediately), and the
+ * link closes fully the moment its REPLY or typed failure settles, on every
+ * OS. A call still pending then rejects with `KELD-IPC-022`, which callers
+ * treat as the host drain's `KELD-IPC-024` (§4.4; both terminal, neither ran).
+ * The host reads EOF at once, so its post-Quit drain ends without waiting on
+ * its backstop. Resolves once the REPLY is `LifecycleResponse::Quit`; any other
+ * REPLY rejects with `KELD-IPC-003`, and a host ERR with its own `CallError`.
  */
-export function openWorkerLinkForTest(
-  options: WorkerLinkOptions,
-  hooks: WorkerLinkTestHooks,
-): Promise<{ link: WorkerLink; control: Int32Array }> {
-  if (process.env.KELD_KIPC_TEST_HOOKS !== "1") {
-    return Promise.reject(
-      linkError(
-        "KELD-IPC-005",
-        "openWorkerLinkForTest runs only under KELD_KIPC_TEST_HOOKS=1; roles open their link with WorkerLink.open",
-      ),
-    );
+export async function quitAndCloseLink(link: WorkerLink, deadlineMs: number): Promise<void> {
+  try {
+    const reply = await link.call(LIFECYCLE_CHANNEL, new Uint8Array([0x00]), deadlineMs);
+    if (reply.length !== 1 || reply[0] !== 0) {
+      throw linkError("KELD-IPC-003", "the Quit REPLY must contain LifecycleResponse::Quit");
+    }
+  } finally {
+    link.close();
   }
-  if (
-    !(hooks?.words instanceof Int32Array) ||
-    !(hooks.words.buffer instanceof SharedArrayBuffer) ||
-    hooks.words.length < WORKER_LINK_TEST_WORDS.LENGTH
-  ) {
-    return Promise.reject(
-      linkError("KELD-IPC-005", "test hooks need WORKER_LINK_TEST_WORDS.LENGTH Int32 words on a SharedArrayBuffer"),
-    );
-  }
-  return openWorkerLinkWithHooks(options, hooks);
 }
 
 /**
@@ -2443,8 +2535,9 @@ class TransportWorker {
     this.#ringRecords = boot.ringRecords;
     this.#replyBytes = boot.replyBytes;
     this.#table = inboundTable(boot.eventChannels, boot.callReceivers);
-    this.#hooks = boot.hooks;
-    this.#words = boot.hooks === undefined ? undefined : new Int32Array(boot.hooks.words);
+    this.#hooks = typeof KELD_KIPC_RELEASE === "undefined" ? boot.hooks : undefined;
+    this.#words =
+      typeof KELD_KIPC_RELEASE === "undefined" && boot.hooks !== undefined ? new Int32Array(boot.hooks.words) : undefined;
     this.#heartbeat = setInterval(() => {
       Atomics.add(this.#ctrl, HEARTBEAT, 1);
     }, WORKER_HEARTBEAT_INTERVAL_MS);
@@ -2455,7 +2548,9 @@ class TransportWorker {
     // The Worker's exit handler (§4.5 "orderly exit"): an uncaught error
     // records 25, or keeps the code recorded first.
     const onFault = (err: unknown): void => {
-      if (this.#words !== undefined) Atomics.add(this.#words, WORKER_LINK_TEST_WORDS.EXIT_HANDLER, 1);
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#words !== undefined) {
+        Atomics.add(this.#words, WORKER_LINK_TEST_WORDS.EXIT_HANDLER, 1);
+      }
       this.#end(STATE_WORKER_LOST, `transport Worker fault: ${errorText(err)}`);
     };
     process.on("uncaughtException", onFault);
@@ -2541,7 +2636,7 @@ class TransportWorker {
     // A failed claim means main abandoned the call at its deadline: a late
     // reply, discarded whatever its size.
     if (Atomics.compareExchange(ctrl, BLOCKING, corr, 0) !== corr) return;
-    if (this.#words !== undefined) {
+    if (typeof KELD_KIPC_RELEASE === "undefined" && this.#words !== undefined) {
       Atomics.store(this.#words, WORKER_LINK_TEST_WORDS.CLAIMED, 1);
       Atomics.notify(this.#words, WORKER_LINK_TEST_WORDS.CLAIMED);
     }
@@ -2553,13 +2648,19 @@ class TransportWorker {
       return;
     }
     try {
-      if (this.#hooks?.claimFault === "throw") throw new Error("test-only claim-step fault");
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.claimFault === "throw") {
+        throw new Error("test-only claim-step fault");
+      }
       Atomics.store(ctrl, REPLY_AT, Atomics.load(ctrl, W_BYTES));
       this.#slot.set(frame.payload, 0);
       Atomics.store(ctrl, REPLY_KIND, frame.header.kind);
       Atomics.store(ctrl, REPLY_LEN, frame.payload.byteLength);
-      if (this.#hooks?.claimFault === "skip-publish") return;
-      if (this.#hooks?.claimFault === "stall-until-deadline-cas" && this.#words !== undefined) {
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.claimFault === "skip-publish") return;
+      if (
+        typeof KELD_KIPC_RELEASE === "undefined" &&
+        this.#hooks?.claimFault === "stall-until-deadline-cas" &&
+        this.#words !== undefined
+      ) {
         Atomics.wait(this.#words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 0, 60_000);
       }
       Atomics.store(ctrl, REPLY_READY, 1);
@@ -2613,6 +2714,13 @@ class TransportWorker {
   /** Requests one main dispatch task: only the side that sets KICK 0 -> 1 posts (§4.6 step 3). */
   #kick(): void {
     if (Atomics.compareExchange(this.#ctrl, KICK, 0, 1) === 0) {
+      if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.wedgeHoldingKick === true && this.#words !== undefined) {
+        // Test hook: wedge while holding KICK, never posting the kick.
+        Atomics.store(this.#words, WORKER_LINK_TEST_WORDS.KICK_HELD, 1);
+        Atomics.notify(this.#words, WORKER_LINK_TEST_WORDS.KICK_HELD);
+        Atomics.wait(this.#words, WORKER_LINK_TEST_WORDS.WEDGE, 0);
+        return;
+      }
       this.#port.postMessage({ t: "kick" } satisfies FromWorker);
     }
   }
@@ -2628,7 +2736,7 @@ class TransportWorker {
   }
 
   #onMessage(message: ToWorker): void {
-    if (this.#hooks?.holdMessagesUntilBlocking === true && !this.#released) {
+    if (typeof KELD_KIPC_RELEASE === "undefined" && this.#hooks?.holdMessagesUntilBlocking === true && !this.#released) {
       // Test hook (criterion 20): every frame main posts is queued before any is handled.
       while (Atomics.load(this.#ctrl, BLOCKING) === 0) {
         Atomics.wait(this.#ctrl, BLOCKING, 0, 5);
@@ -2653,7 +2761,7 @@ class TransportWorker {
           abandoned: false,
         });
         this.#write(FrameKind.Call, message.channel, message.corr, message.payload);
-        if (message.blocking) this.#armBlockingFault();
+        if (typeof KELD_KIPC_RELEASE === "undefined" && message.blocking) this.#armBlockingFault();
         return;
       }
       case "event":
@@ -2680,6 +2788,7 @@ class TransportWorker {
 
   /** Test hook (criteria 8 and 14): a fault after the Worker has written a blocking CALL. */
   #armBlockingFault(): void {
+    if (typeof KELD_KIPC_RELEASE !== "undefined") return;
     const fault = this.#hooks?.onBlockingCall;
     const words = this.#words;
     if (fault === undefined || words === undefined) return;

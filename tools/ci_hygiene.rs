@@ -2450,13 +2450,8 @@ fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    if uncommented_line_contains(&text, "actions/checkout@")
-        || uncommented_line_contains(&text, "run:")
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{KELDBOT_WORKFLOW}` uses `pull_request_target` with a repository checkout or shell `run:` step. Keep PR-controlled code off this secret-bearing workflow; validate proposed workflow bytes in unprivileged CI instead."
-        ));
-    }
+    // No checkout or `run:` step under pull_request_target: owned by the parsed
+    // check in tools/ci_workflow_security.ts, which covers every such workflow.
     for job in ["gatekeeper", "title-lint"] {
         let Some(block) = workflow_job_block(&text, job) else {
             return Err(format!(
@@ -4490,21 +4485,6 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("missing synchronize trigger must fail");
         assert!(error.contains("synchronize"), "{error}");
-    }
-
-    #[test]
-    fn keldbot_pull_request_target_never_checks_out_or_runs_pr_code() {
-        let temp = complete_fixture();
-        temp.write(
-            KELDBOT_WORKFLOW,
-            &valid_keldbot_workflow().replacen(
-                "    steps:\n",
-                "    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n",
-                1,
-            ),
-        );
-        let error = check(temp.path()).expect_err("secret-bearing checkout must fail");
-        assert!(error.contains("checkout"), "{error}");
     }
 
     #[test]
