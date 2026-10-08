@@ -33,6 +33,10 @@ readonly ALL_CHECK_OS='["ubuntu-latest","macos-latest","windows-latest"]'
 readonly DOCUMENTATION_CHECK_OS='["windows-latest"]'
 check_os="$ALL_CHECK_OS"
 rust_documentation_only="$FALSE"
+# `cargo test --doc` for the selected packages that have a library target
+# (#632); nextest does not run doctests.
+doctest="$FALSE"
+doctest_packages=""
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
@@ -150,6 +154,8 @@ emit() {
     printf 'workspace=%s\n' "$workspace"
     printf 'check_os=%s\n' "$check_os"
     printf 'rust_documentation_only=%s\n' "$rust_documentation_only"
+    printf 'doctest=%s\n' "$doctest"
+    printf 'doctest_packages=%s\n' "$doctest_packages"
     if [[ -n "$consumer_contract" ]]; then
         if [[ "$local_force_all" == "$TRUE" ]]; then
             printf '%s\n' "$consumer_contract" | grep '^local_' | sed 's/=false$/=true/'
@@ -606,6 +612,38 @@ finalize_rust_packages() {
     fi
 }
 
+# Workspace packages with a library target, the only targets that carry
+# doctests; `cargo test --doc` refuses a bin-only package.
+library_package_names() {
+    load_workspace_metadata
+    printf '%s\n' "$workspace_metadata_cache" |
+        jq -r '
+            .packages[]
+            | select(any(.targets[]?; any(.kind[]?; . == "lib" or . == "rlib" or . == "dylib" or . == "proc-macro")))
+            | .name
+        ' | tr -d '\r'
+}
+
+# The doctest lane uses the same selection as clippy/test, restricted to
+# packages that can have doctests. A Rust selection of only bin-only packages
+# has no doctest to run and leaves the lane unselected.
+finalize_doctest_packages() {
+    if [[ "$rust" != "$TRUE" ]]; then
+        return
+    fi
+    local libraries package_name selected=""
+    libraries="$(library_package_names)"
+    for package_name in $packages; do
+        if grep -Fxq -- "$package_name" <<<"$libraries"; then
+            selected+="$package_name"$'\n'
+        fi
+    done
+    doctest_packages="$(printf '%s' "$selected" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+    if [[ -n "$doctest_packages" ]]; then
+        doctest="$TRUE"
+    fi
+}
+
 finalize_ts_packages() {
     if [[ "$ts" != "$TRUE" ]]; then
         return
@@ -653,6 +691,7 @@ finalize_selection() {
         all_workspace_packages="$TRUE"
     fi
     finalize_rust_packages
+    finalize_doctest_packages
     finalize_ts_packages
 }
 

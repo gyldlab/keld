@@ -56,6 +56,8 @@ jobs:
       workspace: ${{ steps.classify.outputs.workspace }}
       check_os: ${{ steps.classify.outputs.check_os }}
       rust_documentation_only: ${{ steps.classify.outputs.rust_documentation_only }}
+      doctest: ${{ steps.classify.outputs.doctest }}
+      doctest_packages: ${{ steps.classify.outputs.doctest_packages }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -403,6 +405,36 @@ jobs:
           else
             python3 -B tools/test_workspace.py
           fi
+
+  # nextest does not run doctests (#632). The router selects the clippy/test
+  # packages that have a library target; one OS proves them, and macOS links no
+  # WebKitGTK, so the lane has no network apt step.
+  doctest:
+    name: doctests (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.doctest == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-08-05
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo test --doc
+        shell: bash
+        env:
+          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.doctest_packages }}
+        run: |
+          if [ -z "$KELD_CI_DOCTEST_PACKAGES" ]; then
+            echo "::error::doctest lane ran with no package; check the router's doctest_packages output"
+            exit 1
+          fi
+          for package in $KELD_CI_DOCTEST_PACKAGES; do
+            cargo test -p "$package" --doc
+          done
 
   bun-test:
     name: bun test (TypeScript)
@@ -829,6 +861,7 @@ jobs:
       - codeql-actions
       - dependency-review
       - workspace-contracts
+      - doctest
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -867,6 +900,8 @@ jobs:
           KELD_EVENT_NAME: ${{ github.event_name }}
           KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}
           KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}
+          KELD_RESULT_DOCTEST: ${{ needs.doctest.result }}
+          KELD_ROUTE_DOCTEST: ${{ needs.changes.outputs.doctest }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -899,4 +934,6 @@ jobs:
             "$KELD_ROUTE_WORKSPACE" \
             "$KELD_EVENT_NAME" \
             "$KELD_ROUTE_RUST_DOCUMENTATION_ONLY" \
-            "$KELD_ROUTE_CHECK_OS"
+            "$KELD_ROUTE_CHECK_OS" \
+            "$KELD_RESULT_DOCTEST" \
+            "$KELD_ROUTE_DOCTEST"
