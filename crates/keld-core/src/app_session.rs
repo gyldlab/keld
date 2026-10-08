@@ -389,6 +389,15 @@ impl FsDispatchSession {
         Ok(())
     }
 
+    /// The admitted, unanswered FS call of `attempt`, if any (GH-527 §4.9).
+    fn pending_call_for(&self, attempt: u32) -> Option<PendingFsCall> {
+        self.state.lock().ok().and_then(|state| {
+            state
+                .pending_call
+                .filter(|pending| pending.attempt == attempt)
+        })
+    }
+
     fn retire_pending_call_for_attempt(&self, attempt: u32) -> Result<(), HostAppError> {
         let mut state = self
             .state
@@ -4499,6 +4508,11 @@ struct ActivePrimaryGeneration {
     attempt: u32,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
+    /// Correlation id of this generation's accepted-but-unanswered `Quit`
+    /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
+    /// the generation lock, so retirement answers it at most once and never
+    /// after its real REPLY.
+    pending_quit: Option<CorrelationId>,
 }
 
 #[cfg(target_os = "macos")]
@@ -4799,6 +4813,130 @@ impl PrimaryRouterHandle {
         ])
     }
 
+    /// Answers `attempt`'s pending role calls on ERR-declaring channels with
+    /// `error` before its link closes (GH-527 §4.9, criterion 6): the admitted
+    /// FS call and a `Quit` still waiting in its FS drain. Echo calls are
+    /// answered synchronously by the reader and are never pending, so echo
+    /// keeps KEL-133's REPLY-only rule. The caller holds the generation lock,
+    /// which also orders this against an FS handler's own terminal write: a
+    /// real reply written first has already cleared its pending entry.
+    ///
+    /// Delivery is best effort by contract: a link that cannot carry the ERR
+    /// is already lost, and the role observes that close as `KELD-IPC-022`.
+    /// The retirement outcome does not depend on it.
+    fn answer_pending_calls_locked(
+        &self,
+        current: &mut Option<ActivePrimaryGeneration>,
+        attempt: u32,
+        error: &CallError,
+    ) {
+        let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
+            return;
+        };
+        let fs_call = self
+            .fs
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .and_then(|fs| fs.pending_call_for(attempt));
+        let pending = [
+            fs_call.map(|call| (FS_CHANNEL, call.correlation)),
+            active
+                .pending_quit
+                .take()
+                .map(|corr| (LIFECYCLE_CHANNEL, corr)),
+        ];
+        for (channel, corr) in pending.into_iter().flatten() {
+            if keld_ipc::write_call_error(&mut active.writer, channel, corr, error).is_err() {
+                break;
+            }
+        }
+    }
+
+    /// After an accepted `Quit`'s real REPLY and its FS drain, answers every
+    /// CALL the reader receives within [`QUIT_DRAIN_WINDOW`] (or before the
+    /// peer closes) on an ERR-declaring channel with `KELD-IPC-024`, and runs
+    /// none of them (GH-527 §4.9, criterion 7). An echo CALL gets no frame:
+    /// KEL-133 keeps echo REPLY-only. The host then closes the link as before,
+    /// so KEL-139 AC6's `reply -> quiesce/drain -> close` order holds.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn answer_calls_after_quit(
+        &self,
+        attempt: u32,
+        reader: &mut BootstrapStream,
+    ) -> Result<(), HostAppError> {
+        let window_closed = AtomicBool::new(false);
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        thread::scope(|scope| {
+            let window = &window_closed;
+            thread::Builder::new()
+                .name("keld-core-quit-drain-window".to_owned())
+                .spawn_scoped(scope, move || {
+                    if matches!(
+                        done_rx.recv_timeout(QUIT_DRAIN_WINDOW),
+                        Err(RecvTimeoutError::Timeout)
+                    ) {
+                        window.store(true, Ordering::Release);
+                    }
+                })
+                .map_err(|source| app_io("lifecycle Quit drain window", &source))?;
+            let result = self.answer_received_calls(attempt, reader, &window_closed);
+            drop(done_tx);
+            result
+        })
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn answer_received_calls(
+        &self,
+        attempt: u32,
+        reader: &mut BootstrapStream,
+        window_closed: &AtomicBool,
+    ) -> Result<(), HostAppError> {
+        let error = CallError::quit_drained();
+        loop {
+            let frame = if self.fs.is_some() {
+                read_primary_app_frame_interruptible_with_privileged_call(
+                    reader,
+                    window_closed,
+                    || None,
+                    &keld_ipc::channel_table::FS,
+                    || false,
+                )
+            } else {
+                read_primary_app_frame_interruptible(reader, window_closed, || None)
+            };
+            // The Quit is accepted and answered. The drain ends when its window
+            // closes, the peer closes, or the peer sends a frame the session
+            // does not admit; each ends in the same host-initiated close, so
+            // none is a fault of this accepted shutdown.
+            let Ok(Some((header, _payload))) = frame else {
+                return Ok(());
+            };
+            let declares_err = header.channel() == LIFECYCLE_CHANNEL
+                || (self.fs.is_some() && header.channel() == FS_CHANNEL);
+            if header.kind() != FrameKind::Call || !declares_err {
+                continue;
+            }
+            let mut current = self
+                .current
+                .lock()
+                .map_err(|_| app_detail("lifecycle Quit drain", "generation lock poisoned"))?;
+            let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
+                return Ok(());
+            };
+            if keld_ipc::write_call_error(
+                &mut active.writer,
+                header.channel(),
+                header.corr(),
+                &error,
+            )
+            .is_err()
+            {
+                return Ok(());
+            }
+        }
+    }
+
     fn has_outstanding_fs_call(&self, attempt: u32) -> bool {
         let _transition = self.shutdown.transition_guard();
         let Some(fs) = self.fs.as_ref().and_then(Weak::upgrade) else {
@@ -4973,19 +5111,19 @@ impl PrimaryRouterHandle {
         attempt: u32,
         correlation: CorrelationId,
         reply: &[u8],
-        #[cfg(windows)] reader: &mut BootstrapStream,
+        reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
         {
             let transition = self.shutdown.transition_guard();
-            let current_guard = self.current.lock().map_err(|_| {
+            let mut current_guard = self.current.lock().map_err(|_| {
                 app_detail("primary session generation", "generation lock poisoned")
             })?;
-            if current_guard
-                .as_ref()
-                .is_none_or(|active| active.attempt != attempt)
-            {
+            let Some(active) = current_guard
+                .as_mut()
+                .filter(|active| active.attempt == attempt)
+            else {
                 return Ok(());
-            }
+            };
             if !self.shutdown.is_running() {
                 drop(current_guard);
                 drop(transition);
@@ -4995,6 +5133,9 @@ impl PrimaryRouterHandle {
                     Ok(())
                 };
             }
+            // Pending until its REPLY: a retirement during the FS drain below
+            // answers it with KELD-IPC-023 (GH-527 §4.9).
+            active.pending_quit = Some(correlation);
         }
 
         // This reader is paused in Quit, so no later FS Call can enter. Keep
@@ -5045,6 +5186,7 @@ impl PrimaryRouterHandle {
                 "current primary generation disappeared before the reply",
             )
         })?;
+        active.pending_quit = None;
         write_frame(
             &mut active.writer,
             FrameKind::Reply,
@@ -5056,6 +5198,8 @@ impl PrimaryRouterHandle {
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
         drop(current_guard);
         self.quiesce_and_drain_fs()?;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        self.answer_calls_after_quit(attempt, reader)?;
         let mut current_guard = self
             .current
             .lock()
@@ -5196,6 +5340,7 @@ impl PrimaryRouterHandle {
                 attempt,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
+                pending_quit: None,
             });
             drop(current);
             // Publication and retained replay are one transition with live
@@ -5247,6 +5392,11 @@ impl PrimaryRouterHandle {
             let mut current = self.current.lock().map_err(|_| {
                 app_detail("primary session generation", "generation lock poisoned")
             })?;
+            self.answer_pending_calls_locked(
+                &mut current,
+                attempt,
+                &CallError::generation_retired(),
+            );
             self.retire_current_generation_locked(
                 &mut current,
                 attempt,
@@ -5734,10 +5884,7 @@ fn read_primary_frames(
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-                        #[cfg(windows)]
                         handle.lifecycle_quit(attempt, header.corr(), &reply, reader)?;
-                        #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        handle.lifecycle_quit(attempt, header.corr(), &reply)?;
                         return Ok(());
                     }
                 }
@@ -5783,6 +5930,14 @@ fn read_primary_frames(
         }
     }
 }
+
+/// How long an accepted `Quit`'s drain keeps reading after its REPLY and FS
+/// drain before the host closes the link (GH-527 §4.9): one reader poll, so
+/// a CALL already in flight behind the `Quit` is answered with
+/// `KELD-IPC-024` and a peer that never closes delays the close by at most
+/// this much plus one poll.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const QUIT_DRAIN_WINDOW: Duration = APP_LINK_READER_POLL;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn write_primary_reply(
@@ -7082,6 +7237,7 @@ mod tests {
             attempt: 1,
             writer: server,
             reader_stop: Arc::clone(&reader_stop),
+            pending_quit: None,
         })));
         let (guardian_tx, guardian_rx) = mpsc::channel();
         let (window_tx, window_rx) = mpsc::channel();
@@ -7204,6 +7360,7 @@ mod tests {
             attempt: 1,
             writer: g1_server,
             reader_stop: Arc::clone(&reader_stop),
+            pending_quit: None,
         })));
         let (guardian_tx, guardian_rx) = mpsc::channel();
         let (window_tx, window_rx) = mpsc::channel();
@@ -7456,8 +7613,31 @@ mod tests {
 
         t.router.handle().retire_generation(1).expect("retire g1");
         let frames = read_frames_until_eof(&mut t.client);
-        // Failing-first status: today retirement closes the link with no ERR.
-        assert!(frames.is_empty(), "retire wrote frames: {frames:?}");
+        let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> = frames
+            .iter()
+            .map(|(header, payload)| {
+                let error: CallError = decode(payload).expect("retire answer is a CallError");
+                (header.kind, header.channel, header.corr, error.code)
+            })
+            .collect();
+        assert_eq!(
+            answers,
+            vec![
+                (
+                    FrameKind::Err,
+                    FS_CHANNEL,
+                    CorrelationId(11),
+                    "KELD-IPC-023".to_owned()
+                ),
+                (
+                    FrameKind::Err,
+                    LIFECYCLE_CHANNEL,
+                    CorrelationId(12),
+                    "KELD-IPC-023".to_owned()
+                ),
+            ],
+            "exactly the two pending calls are answered, then the link closes"
+        );
 
         t.release.send(()).expect("release FS worker");
         t.router.shutdown().expect("router shutdown after retire");
@@ -7522,8 +7702,16 @@ mod tests {
             .send(Ok(()))
             .expect("acknowledge guardian shutdown");
         let after = read_frames_until_eof(&mut t.client);
-        // Failing-first status: today the host never reads past the Quit.
-        assert!(after.is_empty(), "frames after the Quit REPLY: {after:?}");
+        assert_eq!(after.len(), 1, "only the FS CALL is answered: {after:?}");
+        let (header, payload) = &after[0];
+        assert_eq!(
+            (header.kind, header.channel, header.corr),
+            (FrameKind::Err, FS_CHANNEL, CorrelationId(21))
+        );
+        assert_eq!(
+            decode::<CallError>(payload).expect("024 CallError").code,
+            "KELD-IPC-024"
+        );
         assert!(!target.exists(), "a post-Quit FS CALL must not execute");
         assert_eq!(
             t.window
@@ -7864,6 +8052,7 @@ mod tests {
                 attempt: 1,
                 writer: g1_server,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                pending_quit: None,
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             pending_echo: Arc::new(Mutex::new(None)),
@@ -8833,8 +9022,11 @@ mod tests {
         handle.install_generation(2, g2_server).expect("install g2");
         assert_lifecycle_event(&mut g2_client, LifecycleEvent::Ready);
         assert_lifecycle_event(&mut g2_client, LifecycleEvent::LastWindowClosed);
+        // A stale Quit returns before it reads; the peerless reader is unused.
+        let (mut stale_reader, stale_peer) = UnixStream::pair().expect("stale Quit reader");
+        drop(stale_peer);
         handle
-            .lifecycle_quit(1, CorrelationId(72), &[0])
+            .lifecycle_quit(1, CorrelationId(72), &[0], &mut stale_reader)
             .expect("stale g1 Quit is ignored");
         assert!(
             handle.shutdown.is_running(),
@@ -9025,8 +9217,14 @@ mod tests {
         .expect("Quit race router");
         let handle = router.handle();
         let quit_handle = handle.clone();
-        let quit_thread =
-            std::thread::spawn(move || quit_handle.lifecycle_quit(1, CorrelationId(81), &[0]));
+        // The router's own reader serves the link; this direct Quit drains a
+        // peerless stream, so its post-REPLY drain ends at EOF at once.
+        let (mut quit_reader, quit_peer) =
+            std::os::unix::net::UnixStream::pair().expect("direct Quit reader");
+        drop(quit_peer);
+        let quit_thread = std::thread::spawn(move || {
+            quit_handle.lifecycle_quit(1, CorrelationId(81), &[0], &mut quit_reader)
+        });
         observed_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("Quit reached guardian owner");
@@ -9455,6 +9653,7 @@ mod tests {
                 attempt: 1,
                 writer: server,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                pending_quit: None,
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "macos")]
@@ -9675,6 +9874,7 @@ mod tests {
                             attempt: if case == "successor" { 3 } else { 1 },
                             writer,
                             reader_stop: Arc::new(AtomicBool::new(false)),
+                            pending_quit: None,
                         });
                     if case != "successor" {
                         failure.retired_after_failed_ready = None;
@@ -9856,6 +10056,7 @@ mod tests {
                 attempt: 1,
                 writer: server,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                pending_quit: None,
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "macos")]
