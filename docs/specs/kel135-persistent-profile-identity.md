@@ -1,7 +1,14 @@
 # Spec: host-owned persistent webview profile identity
 Status: approved
-Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-09-24
+Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-10-08
 Approval: Linear comment `75d75f6e-76e9-4fd1-a130-9d57548d0372` · decision SHA-256 `b9f48f14a5d6fefe4cd0f94b1a97b14292cead5ba0202facbd81c6b6a1a44040`
+
+Windows release-barrier clarification, 2026-10-08 (KEL-132 hosted-CI diagnosis; §4
+Platform policy): the `BrowserProcessExited` waits are liveness-gated on the browser
+process handle with a 5 s post-exit grace, and an unproven scavenge probe retains the
+leaf without failing the current host. No boundary change: it names the barrier the
+approved contract already required and claims no new approval; the fix PR carries the
+owner's review.
 
 Media acceptance amendment: **adopted**, 2026-09-10; see §7.1. The approved
 status and approval above apply to the original T0 contract, not retrospectively
@@ -417,7 +424,12 @@ quarantine. The first successful exclusive controller proves the old browser col
 released the UDF; the host verifies the environment-reported path, closes the recovery
 webview/controller after registering `BrowserProcessExited` on
 `ICoreWebView2Environment5`, retains that environment object until the event, then
-releases it. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
+releases it. That wait is liveness-gated: the host opens a `SYNCHRONIZE` handle to the
+probe's browser process before `Close` and keeps waiting without a wall-clock bound
+while that handle is unsignaled; once it is signaled, a 5 s post-exit grace bounds the
+event, because WebView2 raises it only after the collection has released the UDF. A
+mismatched or abnormal exit, a dropped observer, or that grace expiry proves failure;
+a separate launch-only deadline bounds environment and controller creation. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
 `starting → running` startup. A crash before durable `idle` leaves quarantine intact; a
 crash after `idle` has no live recovery collection. No suffix/new/default store is
 created, and normal store lookup/navigation cannot precede durable `idle`.
@@ -430,9 +442,12 @@ is admissible without the exclusive-UDF recovery sequence.
 Windows dev-ephemeral UDFs live at a unique owner-private
 `FOLDERID_LocalAppData/Keld/ephemeral/v1/<launch-nonce>` leaf with a durable schema
 marker and exclusive lease; they are never selected by a later app session. Graceful
-exit waits for `BrowserProcessExited` before guarded deletion. After host crash, the next
-host performs bounded marker-validated scavenging; a still-busy leaf remains quarantined
-for a later pass and is never reused. Here `ephemeral` means nonpersistent session
+exit waits for `BrowserProcessExited` under the same liveness-gated barrier (browser
+process handle opened before `Close`, 5 s post-exit grace) before guarded deletion.
+After host crash, the next host performs bounded marker-validated scavenging; a
+still-busy leaf, or one whose exclusive-UDF probe could not prove release, remains
+quarantined for a later pass, never fails the current host's own release, and is never
+reused. Here `ephemeral` means nonpersistent session
 selection, not a false guarantee that a crashed WebView2 process leaves zero disk bytes
 immediately.
 

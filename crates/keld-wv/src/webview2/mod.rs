@@ -54,7 +54,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::os::windows::io::AsRawHandle as _;
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -91,7 +91,7 @@ use webview2_com::{
 };
 use windows::Win32::Foundation::{
     E_POINTER, E_UNEXPECTED, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_STATE,
-    FILETIME, HANDLE, HWND, RECT, WAIT_FAILED,
+    FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, RECT, WAIT_FAILED, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
@@ -103,7 +103,10 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetProcessTimes, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE,
+    RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
+};
 use windows::Win32::System::WindowsProgramming::{DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE};
 use windows::Win32::UI::HiDpi::{
     AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -183,7 +186,33 @@ pub fn runtime_version() -> Result<String, WvError> {
     })
 }
 
-const PROFILE_RELEASE_DEADLINE: Duration = Duration::from_secs(15);
+/// Kill-switch bound on launching `WebView2`: environment resolution plus the
+/// browser-process launch inside controller creation.
+///
+/// Measured on Windows 11 10.0.26300 with runtime 154.x (KEL-132 diagnosis):
+/// environment creation 2–10 ms, controller creation 260–506 ms; hosted CI
+/// never failed this phase in 165 recorded runs (2026-10-03 to 2026-10-08).
+/// It bounds a hung launch only. Browser shutdown is never charged to it.
+const PROFILE_LAUNCH_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Grace for `BrowserProcessExited` after the expected browser process handle
+/// is signaled.
+///
+/// `WebView2` raises the event only after the browser collection has released
+/// its resources, including the user data folder
+/// (`ICoreWebView2Environment5::add_BrowserProcessExited`). Termination to
+/// callback was measured at about 8 ms (KEL-132 diagnosis, 60 runs), so this
+/// bounds that documented contract, not shutdown itself. Shutdown is gated on
+/// process liveness instead: three hosted runs exceeded the former 15 s
+/// wall-clock bound while the browser was still shutting down normally.
+const BROWSER_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+const LAUNCH_DEADLINE_EXPIRED: &str =
+    "the WebView2 launch deadline expired before the environment or controller completed";
+const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
+const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
+const BROWSER_EXIT_WAKE_UNREGISTERED: &str =
+    "the browser-exit wake could not be registered, so the release barrier would be unbounded";
 const PROFILE_MARKER: &str = "profile.owner.v1";
 const PROFILE_LEASE: &str = "profile.lock";
 const PROFILE_LIFECYCLE: &str = "profile.lifecycle.v1";
@@ -288,6 +317,11 @@ fn profile_failure(kind: ProfileErrorKind) -> WvError {
     ProfileError::platform_failure(kind).into()
 }
 
+/// A `KELD-WV-009` that names the exact barrier or observable that failed.
+fn profile_failure_with(kind: ProfileErrorKind, context: &'static str) -> WvError {
+    ProfileError::platform_failure_with_context(kind, context).into()
+}
+
 /// One successful COM initialization, released on its initializing thread.
 #[derive(Debug)]
 #[must_use]
@@ -343,14 +377,71 @@ fn initialize_process_dpi_awareness() -> Result<(), WvError> {
     }
 }
 
-fn wait_with_message_pump_until<T>(
+fn milliseconds_until(deadline: Instant) -> Result<u32, WvError> {
+    u32::try_from(
+        deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .saturating_add(1)
+            .min(u128::from(u32::MAX)),
+    )
+    .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))
+}
+
+/// Waits once for this thread's queue, one of `handles`, or `milliseconds`,
+/// then translates and dispatches at most one queued message.
+fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Result<(), WvError> {
+    // SAFETY: `handles` are live kernel handles the caller owns for the whole
+    // call, or absent; this thread then waits only for its Win32/COM queue,
+    // one of those handles, or the timeout. Contract:
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-msgwaitformultipleobjectsex
+    let wait = unsafe {
+        MsgWaitForMultipleObjectsEx(handles, milliseconds, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+    };
+    if wait == WAIT_FAILED {
+        return Err(profile_failure_with(
+            ProfileErrorKind::LifecycleUnproven,
+            MESSAGE_WAIT_FAILED,
+        ));
+    }
+    let mut message = MSG::default();
+    // SAFETY: `message` is writable and each removed message is translated
+    // and dispatched once on its owning thread. Contract:
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
+    if unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+        if message.message == WM_QUIT {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                MESSAGE_PUMP_QUIT,
+            ));
+        }
+        // SAFETY: `message` is the live record just removed from this
+        // thread's queue. Contracts:
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-translatemessage
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-dispatchmessagew
+        unsafe {
+            let _ = TranslateMessage(&raw const message);
+            DispatchMessageW(&raw const message);
+        }
+    }
+    Ok(())
+}
+
+/// Pumps this thread until `receiver` yields or the launch `deadline` expires.
+///
+/// This bounds `WebView2` launches only ([`PROFILE_LAUNCH_DEADLINE`]). Browser
+/// shutdown goes through [`wait_for_browser_exit`], which has no wall-clock
+/// bound while the browser process is alive.
+fn wait_for_launch_with_message_pump_until<T>(
     receiver: &Receiver<T>,
     deadline: Instant,
 ) -> Result<T, WvError> {
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        if Instant::now() >= deadline {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                LAUNCH_DEADLINE_EXPIRED,
+            ));
         }
         match receiver.try_recv() {
             Ok(value) => return Ok(value),
@@ -359,40 +450,7 @@ fn wait_with_message_pump_until<T>(
             }
             Err(TryRecvError::Empty) => {}
         }
-        let milliseconds = u32::try_from(
-            deadline
-                .saturating_duration_since(now)
-                .as_millis()
-                .saturating_add(1)
-                .min(u128::from(u32::MAX)),
-        )
-        .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
-        // SAFETY: no handles are supplied; this thread waits only for its
-        // Win32/COM queue or the remaining monotonic deadline. Contract:
-        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-msgwaitformultipleobjectsex
-        let wait = unsafe {
-            MsgWaitForMultipleObjectsEx(None, milliseconds, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
-        };
-        if wait == WAIT_FAILED {
-            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
-        }
-        let mut message = MSG::default();
-        // SAFETY: `message` is writable and each removed message is translated
-        // and dispatched once on its owning thread. Contract:
-        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
-        if unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-            if message.message == WM_QUIT {
-                return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
-            }
-            // SAFETY: `message` is the live record just removed from this
-            // thread's queue. Contracts:
-            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-translatemessage
-            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-dispatchmessagew
-            unsafe {
-                let _ = TranslateMessage(&raw const message);
-                DispatchMessageW(&raw const message);
-            }
-        }
+        pump_message_or_handle(None, milliseconds_until(deadline)?)?;
     }
 }
 
@@ -935,8 +993,12 @@ fn recover_purge_owner(
         lifecycle: Some(owner.lifecycle),
         recovery_required: true,
     };
-    if prove_exclusive_udf_released_on_cleanup_sta(&candidate)? == ExclusiveUdfRelease::Busy {
-        return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+    match prove_exclusive_udf_released_on_cleanup_sta(&candidate)? {
+        ExclusiveUdfRelease::Released => {}
+        ExclusiveUdfRelease::Busy => {
+            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        }
+        ExclusiveUdfRelease::Unproven(error) => return Err(error),
     }
     let idle = owner.lifecycle.complete_windows_recovery()?;
     replace_lifecycle(&candidate.plan, idle)?;
@@ -1186,7 +1248,7 @@ fn create_environment_for_profile_with_options(
     create_environment_for_profile_with_options_until(
         profile,
         options,
-        Instant::now() + PROFILE_RELEASE_DEADLINE,
+        Instant::now() + PROFILE_LAUNCH_DEADLINE,
     )
 }
 
@@ -1216,10 +1278,58 @@ const fn matching_browser_exit(expected: u32, actual: u32, normal: bool) -> bool
     expected != 0 && expected == actual && normal
 }
 
+/// Which `BrowserProcessExited` barrier an observation or fault belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseSite {
+    /// The engine's own browser process, released at graceful exit.
+    Host,
+    /// The hidden exclusive-UDF probe used by recovery, purge and scavenging.
+    Probe,
+}
+
+/// Why a `BrowserProcessExited` barrier failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfileReleaseFault {
+    /// The expected browser process is gone and no matching event arrived
+    /// within [`BROWSER_EXIT_GRACE`].
+    GraceExpired,
+    /// The event named the expected process with an abnormal exit kind.
+    AbnormalExit,
+    /// The observer was dropped before the event was delivered.
+    ObserverDropped,
+}
+
+impl ProfileReleaseFault {
+    /// Names the failed barrier and site for `KELD-WV-009` without allocating.
+    const fn context(self, site: ReleaseSite) -> &'static str {
+        match (self, site) {
+            (Self::GraceExpired, ReleaseSite::Host) => {
+                "the host browser process exited without raising BrowserProcessExited within the post-exit grace"
+            }
+            (Self::GraceExpired, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe browser process exited without raising BrowserProcessExited within the post-exit grace"
+            }
+            (Self::AbnormalExit, ReleaseSite::Host) => {
+                "BrowserProcessExited reported an abnormal host browser exit"
+            }
+            (Self::AbnormalExit, ReleaseSite::Probe) => {
+                "BrowserProcessExited reported an abnormal exclusive-UDF probe browser exit"
+            }
+            (Self::ObserverDropped, ReleaseSite::Host) => {
+                "the host BrowserProcessExited observer was dropped before the event"
+            }
+            (Self::ObserverDropped, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe BrowserProcessExited observer was dropped before the event"
+            }
+        }
+    }
+}
+
 fn observe_profile_browser_exit(
     environment: &ICoreWebView2Environment,
     expected_pid: Arc<AtomicU32>,
     wake: Option<EventLoopProxy<WindowsLoopEvent>>,
+    site: ReleaseSite,
 ) -> Result<BrowserExitObservation, WvError> {
     let environment5: ICoreWebView2Environment5 = environment
         .cast()
@@ -1239,11 +1349,18 @@ fn observe_profile_browser_exit(
         let normal = kind == COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL;
         #[cfg(all(feature = "media-acceptance", test))]
         media_acceptance::observe_browser_exit(pid, expected, normal);
+        #[cfg(all(feature = "media-acceptance", test))]
+        if media_acceptance::swallow_browser_exit(site) {
+            return Ok(());
+        }
         if matching_browser_exit(expected, pid, normal) || (expected != 0 && expected == pid) {
             let result = if normal {
                 Ok(())
             } else {
-                Err(profile_failure(ProfileErrorKind::LifecycleUnproven))
+                Err(profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    ProfileReleaseFault::AbnormalExit.context(site),
+                ))
             };
             tx.send(result)
                 .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
@@ -1273,7 +1390,7 @@ fn create_environment_with_options(
     create_environment_with_options_until(
         directory,
         options,
-        Instant::now() + PROFILE_RELEASE_DEADLINE,
+        Instant::now() + PROFILE_LAUNCH_DEADLINE,
     )
 }
 
@@ -1310,7 +1427,7 @@ fn create_environment_with_options_until(
         });
     }
 
-    let environment = wait_with_message_pump_until(&rx, deadline)?;
+    let environment = wait_for_launch_with_message_pump_until(&rx, deadline)?;
     environment.map_err(|err| WvError::WebView2RuntimeMissing {
         detail: err.to_string(),
     })
@@ -1359,7 +1476,7 @@ fn create_controller_observed(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
-    create_controller_observed_until(environment, hwnd, Instant::now() + PROFILE_RELEASE_DEADLINE)
+    create_controller_observed_until(environment, hwnd, Instant::now() + PROFILE_LAUNCH_DEADLINE)
 }
 
 fn create_controller_observed_until(
@@ -1386,7 +1503,7 @@ fn create_controller_observed_until(
         )
     };
     launched.map_err(ControllerCreationError::Windows)?;
-    wait_with_message_pump_until(&rx, deadline)
+    wait_for_launch_with_message_pump_until(&rx, deadline)
         .map_err(ControllerCreationError::Pump)?
         .map_err(ControllerCreationError::Windows)
 }
@@ -1460,8 +1577,12 @@ fn recover_windows_profile(profile: &mut SelectedWindowsProfile) -> Result<(), W
         return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
     }
 
-    if prove_exclusive_udf_released(profile)? == ExclusiveUdfRelease::Busy {
-        return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+    match prove_exclusive_udf_released(profile)? {
+        ExclusiveUdfRelease::Released => {}
+        ExclusiveUdfRelease::Busy => {
+            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        }
+        ExclusiveUdfRelease::Unproven(error) => return Err(error),
     }
     let idle = quarantined.complete_windows_recovery()?;
     replace_lifecycle(&profile.plan, idle)?;
@@ -1472,10 +1593,16 @@ fn recover_windows_profile(profile: &mut SelectedWindowsProfile) -> Result<(), W
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Outcome of one hidden exclusive-UDF probe against a validated leaf.
+#[derive(Debug)]
 enum ExclusiveUdfRelease {
+    /// The probe controller launched and `BrowserProcessExited` proved release.
     Released,
+    /// `ERROR_INVALID_STATE`: another collection still holds the exclusive UDF.
     Busy,
+    /// The probe launched but could not prove release; the carried
+    /// `KELD-WV-009` names the launch bound or barrier that failed.
+    Unproven(WvError),
 }
 
 fn prove_exclusive_udf_released_on_cleanup_sta(
@@ -1503,15 +1630,24 @@ fn prove_exclusive_udf_released_on_hwnd(
     profile: &SelectedWindowsProfile,
     window: HWND,
 ) -> Result<ExclusiveUdfRelease, WvError> {
-    let deadline = Instant::now() + PROFILE_RELEASE_DEADLINE;
+    // One launch budget covers environment and controller creation. The exit
+    // wait below is liveness-gated and never shares it: charging a second
+    // browser launch and its shutdown to one wall-clock bound is what failed
+    // hosted CI (KEL-132 occurrences 2 and 3).
+    let launch_deadline = Instant::now() + PROFILE_LAUNCH_DEADLINE;
     let environment = create_environment_for_profile_with_options_until(
         profile,
         CoreWebView2EnvironmentOptions::default(),
-        deadline,
+        launch_deadline,
     )?;
     let expected_pid = Arc::new(AtomicU32::new(0));
-    let observation = observe_profile_browser_exit(&environment, Arc::clone(&expected_pid), None)?;
-    let controller = match create_controller_observed_until(&environment, window, deadline) {
+    let observation = observe_profile_browser_exit(
+        &environment,
+        Arc::clone(&expected_pid),
+        None,
+        ReleaseSite::Probe,
+    )?;
+    let controller = match create_controller_observed_until(&environment, window, launch_deadline) {
         Ok(controller) => controller,
         Err(error) if error.is_invalid_state() => {
             remove_browser_exit_observer(&observation.environment, observation.token)?;
@@ -1519,9 +1655,11 @@ fn prove_exclusive_udf_released_on_hwnd(
         }
         Err(error) => {
             remove_browser_exit_observer(&observation.environment, observation.token)?;
-            return Err(WvError::WebView2RuntimeMissing {
-                detail: error.to_string(),
-            });
+            return Ok(ExclusiveUdfRelease::Unproven(
+                WvError::WebView2RuntimeMissing {
+                    detail: error.to_string(),
+                },
+            ));
         }
     };
     // SAFETY: the controller was created on this STA for the live recovery
@@ -1531,15 +1669,21 @@ fn prove_exclusive_udf_released_on_hwnd(
     let pid = webview_browser_process_id(&webview)
         .ok_or_else(|| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
     expected_pid.store(pid, Ordering::Release);
+    // Opened before `Close`: the kernel object, not the reusable id,
+    // identifies the probe browser from here on.
+    let process = open_browser_process(pid);
     // SAFETY: the recovery controller is live on this STA and is closed once.
     unsafe { controller.Close() }
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
     drop(webview);
     drop(controller);
-    let observed = wait_with_message_pump_until(&observation.receiver, deadline)?;
+    let release = ProfileReleaseWait::new(Some(observation.receiver), process);
+    let observed = wait_for_browser_exit(&release, ReleaseSite::Probe);
     remove_browser_exit_observer(&observation.environment, observation.token)?;
-    observed?;
-    Ok(ExclusiveUdfRelease::Released)
+    Ok(match observed {
+        Ok(()) => ExclusiveUdfRelease::Released,
+        Err(error) => ExclusiveUdfRelease::Unproven(error),
+    })
 }
 
 fn delete_ephemeral_profile(profile: SelectedWindowsProfile) -> Result<(), WvError> {
@@ -1651,11 +1795,28 @@ fn try_scavenge_ephemeral_profile(
         recovery_required: false,
     };
     match prove_exclusive_udf_released(&candidate)? {
-        ExclusiveUdfRelease::Busy => return Ok(false),
         ExclusiveUdfRelease::Released => {}
+        // Architecture 05: a still-busy leaf stays quarantined for a later
+        // pass. The same holds when this pass could not prove release: the
+        // predecessor leaf is retained, and the current host's own release is
+        // never failed by it.
+        ExclusiveUdfRelease::Busy => return Ok(false),
+        ExclusiveUdfRelease::Unproven(error) => {
+            observe_scavenge_retained(&error);
+            return Ok(false);
+        }
     }
     delete_ephemeral_profile(candidate)?;
     Ok(true)
+}
+
+/// Test-only evidence line for a retained predecessor leaf; a no-op in
+/// shipping builds, which carry no profile tracing.
+fn observe_scavenge_retained(error: &WvError) {
+    #[cfg(all(feature = "media-acceptance", test))]
+    media_acceptance::observe_scavenge_retained(error);
+    #[cfg(not(all(feature = "media-acceptance", test)))]
+    let _ = error;
 }
 
 fn scavenge_ephemeral_profiles(local_app_data: &Path) -> Result<usize, WvError> {
@@ -2026,19 +2187,42 @@ impl View {
     }
 }
 
+/// Opens a `SYNCHRONIZE` handle to the browser process `WebView2` reported.
+///
+/// The kernel object, not the reusable process id, identifies the browser
+/// from here on: the handle stays unsignaled while the process runs and is
+/// signaled at termination, which is the liveness fact the release barrier
+/// gates on. `None` means the process could not be opened; the waiter then has
+/// no liveness proof and bounds the event by the post-exit grace alone.
+fn open_browser_process(pid: u32) -> Option<OwnedHandle> {
+    if pid == 0 {
+        return None;
+    }
+    // SAFETY: requests only SYNCHRONIZE on the id a live webview reported and
+    // never inherits the handle; a failed open yields an error, not a handle.
+    // Contract:
+    // https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.ok()?;
+    // SAFETY: `handle` is the valid process handle returned above and nothing
+    // else owns it; `OwnedHandle` closes it exactly once on drop.
+    Some(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+}
+
+/// Records the browser process behind the live views and opens its handle
+/// before any controller is closed.
 fn remember_browser_process_id(
     views: &BTreeMap<u32, View>,
     expected_browser_pid: &AtomicU32,
-) -> Result<(), WvError> {
+) -> Result<Option<OwnedHandle>, WvError> {
     if views.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let pid = views
         .values()
         .find_map(View::browser_process_id)
         .ok_or_else(|| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
     expected_browser_pid.store(pid, Ordering::Release);
-    Ok(())
+    Ok(open_browser_process(pid))
 }
 
 fn commit_profile_stop(stop: Option<&PersistentStopTransition>) {
@@ -2047,75 +2231,239 @@ fn commit_profile_stop(stop: Option<&PersistentStopTransition>) {
     }
 }
 
+/// Thread-pool callback: wakes the tao loop so [`ProfileReleaseWait::poll`]
+/// observes the signaled browser process handle.
+unsafe extern "system" fn browser_exit_wake(context: *mut core::ffi::c_void, _timed_out: bool) {
+    // SAFETY: `context` is the `EventLoopProxy` box `BrowserExitWake::register`
+    // leaked for exactly this registration; `Drop` reclaims it only after
+    // `UnregisterWaitEx` has waited for this callback to return.
+    let proxy = unsafe { &*context.cast::<EventLoopProxy<WindowsLoopEvent>>() };
+    let _ = proxy.send_event(WindowsLoopEvent::ProfileReleaseWake);
+}
+
+/// One registered wait that posts `ProfileReleaseWake` when the browser
+/// process handle is signaled, so the loop needs no polling timer.
+struct BrowserExitWake {
+    wait: HANDLE,
+    proxy: *mut EventLoopProxy<WindowsLoopEvent>,
+}
+
+impl BrowserExitWake {
+    fn register(
+        process: &OwnedHandle,
+        proxy: EventLoopProxy<WindowsLoopEvent>,
+    ) -> Result<Self, WvError> {
+        let proxy = Box::into_raw(Box::new(proxy));
+        let mut wait = HANDLE::default();
+        // SAFETY: `process` is a live owned SYNCHRONIZE handle that outlives
+        // this registration (`ProfileReleaseWait` drops the wake before the
+        // handle), `browser_exit_wake` has the `WAITORTIMERCALLBACK` ABI,
+        // `context` is the box leaked above, and `WT_EXECUTEONLYONCE` runs the
+        // callback at most once on a pool thread; tao's `EventLoopProxy` is
+        // `Send + Sync`. Contract:
+        // https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-registerwaitforsingleobject
+        let registered = unsafe {
+            RegisterWaitForSingleObject(
+                &raw mut wait,
+                HANDLE(process.as_raw_handle()),
+                Some(browser_exit_wake),
+                Some(proxy.cast_const().cast()),
+                INFINITE,
+                WT_EXECUTEONLYONCE,
+            )
+        };
+        if registered.is_err() {
+            // SAFETY: no wait was registered, so nothing else can reach the box.
+            drop(unsafe { Box::from_raw(proxy) });
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                BROWSER_EXIT_WAKE_UNREGISTERED,
+            ));
+        }
+        Ok(Self { wait, proxy })
+    }
+}
+
+impl Drop for BrowserExitWake {
+    fn drop(&mut self) {
+        // SAFETY: `wait` is this live registration, unregistered once.
+        // INVALID_HANDLE_VALUE blocks until an in-flight callback has
+        // returned, and this is never called from the callback thread.
+        // Contract:
+        // https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-unregisterwaitex
+        if unsafe { UnregisterWaitEx(self.wait, Some(INVALID_HANDLE_VALUE)) }.is_ok() {
+            // SAFETY: the box was leaked by `register`; after the blocking
+            // unregistration no callback can observe it, so it is reclaimed
+            // once. A failed unregistration leaks it instead of racing.
+            drop(unsafe { Box::from_raw(self.proxy) });
+        }
+    }
+}
+
+/// Liveness-gated wait for the `BrowserProcessExited` release barrier.
+///
+/// The barrier observable is the event delivered through `receiver`. Whether
+/// that event can still arrive is proven by `process`: while the handle is
+/// unsignaled the browser is alive and shutting down, and no wall-clock bound
+/// applies (KEL-132: hosted shutdowns exceeded the former 15 s bound). Once it
+/// is signaled only `grace` bounds the event, because `WebView2` raises it
+/// after the collection has released its resources. A queued event always
+/// wins over the grace, and the barrier starts at [`Self::arm`], after the
+/// controllers were closed.
 struct ProfileReleaseWait {
     receiver: Option<Receiver<Result<(), WvError>>>,
+    /// Declared before `process`: the registration drops before its handle.
+    wake: Option<BrowserExitWake>,
+    process: Option<OwnedHandle>,
+    grace: Duration,
+    armed: Cell<bool>,
     observed: Cell<bool>,
-    failed: Cell<bool>,
-    deadline: Cell<Option<Instant>>,
-    timeout: Duration,
+    fault: Cell<Option<ProfileReleaseFault>>,
+    post_exit_deadline: Cell<Option<Instant>>,
 }
 
 impl ProfileReleaseWait {
-    fn new(receiver: Option<Receiver<Result<(), WvError>>>) -> Self {
-        Self::with_timeout(receiver, PROFILE_RELEASE_DEADLINE)
+    fn new(receiver: Option<Receiver<Result<(), WvError>>>, process: Option<OwnedHandle>) -> Self {
+        Self::with_grace(receiver, process, BROWSER_EXIT_GRACE)
     }
 
-    fn with_timeout(receiver: Option<Receiver<Result<(), WvError>>>, timeout: Duration) -> Self {
+    fn with_grace(
+        receiver: Option<Receiver<Result<(), WvError>>>,
+        process: Option<OwnedHandle>,
+        grace: Duration,
+    ) -> Self {
         Self {
             receiver,
+            wake: None,
+            process,
+            grace,
+            armed: Cell::new(false),
             observed: Cell::new(false),
-            failed: Cell::new(false),
-            deadline: Cell::new(None),
-            timeout,
+            fault: Cell::new(None),
+            post_exit_deadline: Cell::new(None),
         }
     }
 
-    fn arm(&self) {
-        if self.deadline.get().is_none() {
-            self.deadline.set(Some(Instant::now() + self.timeout));
+    /// Registers the wake that drives [`Self::poll`] from the tao loop once
+    /// the browser process exits. Without a handle there is nothing to wait on
+    /// and the post-exit grace is armed at [`Self::arm`] instead.
+    fn with_loop_wake(mut self, proxy: EventLoopProxy<WindowsLoopEvent>) -> Result<Self, WvError> {
+        if let Some(process) = self.process.as_ref() {
+            self.wake = Some(BrowserExitWake::register(process, proxy)?);
         }
+        Ok(self)
+    }
+
+    /// Starts the barrier after the controllers were closed. Idempotent.
+    fn arm(&self) {
+        self.armed.set(true);
+        self.poll();
+    }
+
+    fn browser_exited(&self) -> bool {
+        let Some(process) = self.process.as_ref() else {
+            return true;
+        };
+        // SAFETY: `process` is a live owned SYNCHRONIZE handle; a zero timeout
+        // only queries whether it is signaled. Contract:
+        // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
+        let state = unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), 0) };
+        state != WAIT_TIMEOUT
     }
 
     fn poll(&self) {
-        if self.observed.get() {
-            return;
-        }
-        if self
-            .deadline
-            .get()
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            self.failed.set(true);
+        if self.observed.get() || self.fault.get().is_some() {
             return;
         }
         let Some(receiver) = self.receiver.as_ref() else {
             self.observed.set(true);
             return;
         };
+        // The barrier observable is drained first: a queued event is proof of
+        // release whatever the process handle or the grace say.
         match receiver.try_recv() {
-            Ok(Ok(())) => self.observed.set(true),
-            Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
-                self.failed.set(true);
+            Ok(Ok(())) => {
                 self.observed.set(true);
+                return;
+            }
+            Ok(Err(_)) => {
+                self.fault.set(Some(ProfileReleaseFault::AbnormalExit));
+                return;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.fault.set(Some(ProfileReleaseFault::ObserverDropped));
+                return;
             }
             Err(TryRecvError::Empty) => {}
         }
+        if !self.armed.get() {
+            return;
+        }
+        if self.post_exit_deadline.get().is_none() && self.browser_exited() {
+            self.post_exit_deadline
+                .set(Some(Instant::now() + self.grace));
+        }
+        if self
+            .post_exit_deadline
+            .get()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.fault.set(Some(ProfileReleaseFault::GraceExpired));
+        }
+    }
+
+    fn fault(&self) -> Option<ProfileReleaseFault> {
+        self.fault.get()
     }
 
     fn exit_ready(&self, expected_pid: &AtomicU32) -> bool {
-        expected_pid.load(Ordering::Acquire) == 0 || self.observed.get() || self.failed.get()
+        expected_pid.load(Ordering::Acquire) == 0
+            || self.observed.get()
+            || self.fault.get().is_some()
     }
 
+    /// Schedules the loop's next wake: only the post-exit grace is a timer.
+    /// Before the process exits the loop waits for the exit event or the
+    /// registered process wake, never for a wall-clock deadline.
     fn schedule(&self, control_flow: &mut ControlFlow) {
-        let Some(deadline) = self.deadline.get() else {
-            return;
-        };
-        if self.observed.get() || self.failed.get() {
+        if self.observed.get() || self.fault.get().is_some() {
             return;
         }
+        let Some(deadline) = self.post_exit_deadline.get() else {
+            return;
+        };
         if !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline) {
             *control_flow = ControlFlow::WaitUntil(deadline);
         }
+    }
+}
+
+/// Pumps this thread until `release` observes the barrier or faults.
+///
+/// Wakes on a queued message, on the browser process handle, or at the
+/// post-exit grace; there is no other bound while the process is alive.
+fn wait_for_browser_exit(release: &ProfileReleaseWait, site: ReleaseSite) -> Result<(), WvError> {
+    release.arm();
+    loop {
+        release.poll();
+        if release.observed.get() {
+            return Ok(());
+        }
+        if let Some(fault) = release.fault() {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                fault.context(site),
+            ));
+        }
+        let milliseconds = match release.post_exit_deadline.get() {
+            Some(deadline) => milliseconds_until(deadline)?,
+            None => INFINITE,
+        };
+        let process = release
+            .process
+            .as_ref()
+            .map(|process| [HANDLE(process.as_raw_handle())]);
+        pump_message_or_handle(process.as_ref().map(<[HANDLE; 1]>::as_slice), milliseconds)?;
     }
 }
 
@@ -2310,6 +2658,7 @@ impl WebView2Engine {
             &environment,
             Arc::clone(&expected_browser_pid),
             Some(event_loop.create_proxy()),
+            ReleaseSite::Host,
         )?;
         let mut engine = Self::from_environment(com, event_loop, environment);
         engine.profile = Some(profile);
@@ -2336,10 +2685,13 @@ impl WebView2Engine {
         let scavenge_root = ephemeral_scavenge_root(self.profile.as_ref());
         let mut views = std::mem::take(&mut self.views);
         let expected_browser_pid = Arc::clone(&self.expected_browser_pid);
-        remember_browser_process_id(&views, &expected_browser_pid)?;
+        let browser = remember_browser_process_id(&views, &expected_browser_pid)?;
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
         let stop_in_loop = stop_transition.clone();
-        let release = Rc::new(ProfileReleaseWait::new(self.browser_exit.take()));
+        let release = Rc::new(
+            ProfileReleaseWait::new(self.browser_exit.take(), browser)
+                .with_loop_wake(event_loop.create_proxy())?,
+        );
         let release_in_loop = Rc::clone(&release);
         let mut exit_requested = false;
         let code = event_loop.run_return(move |event, _, control_flow| {
@@ -2393,8 +2745,11 @@ impl WebView2Engine {
                 release_in_loop.schedule(control_flow);
             }
         });
-        if release.failed.get() {
-            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        if let Some(fault) = release.fault() {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                fault.context(ReleaseSite::Host),
+            ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
         self.finish_profile_release(release.observed.get())?;
@@ -2522,15 +2877,18 @@ impl WebView2Engine {
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
         let mut views = std::mem::take(&mut self.views);
         let expected_browser_pid = Arc::clone(&self.expected_browser_pid);
-        remember_browser_process_id(&views, &expected_browser_pid)?;
+        let browser = remember_browser_process_id(&views, &expected_browser_pid)?;
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
         let stop_in_loop = stop_transition.clone();
-        let release = Rc::new(ProfileReleaseWait::new(self.browser_exit.take()));
+        let release = Rc::new(
+            ProfileReleaseWait::new(self.browser_exit.take(), browser)
+                .with_loop_wake(event_loop.create_proxy())?,
+        );
         let release_in_loop = Rc::clone(&release);
         let mut exit_requested = false;
         let code = event_loop.run_return(move |event, _, control_flow| {
             release_in_loop.poll();
-            if release_in_loop.failed.get() {
+            if release_in_loop.fault().is_some() {
                 exit_requested = true;
             }
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
@@ -2615,8 +2973,11 @@ impl WebView2Engine {
             }
         });
         stop_app_wake_bridge(&stop_bridge, bridge);
-        if release.failed.get() {
-            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        if let Some(fault) = release.fault() {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                fault.context(ReleaseSite::Host),
+            ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
         let app_result = finish_app_run_flags(&self, &navigation_timed_out, &fatal, code);
@@ -2925,17 +3286,19 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 mod tests {
     use super::{
         COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY, PROFILE_LEASE,
-        PROFILE_LIFECYCLE, PROFILE_MARKER, ProfileReleaseWait, SavedPermission, WebView2Engine,
-        app_window_slot_available, dacl_has_untrusted_access, initial_navigation_failure_is_fatal,
-        initialize_com_sta, initialize_process_dpi_awareness, prepare_windows_profile_at,
+        PROFILE_LIFECYCLE, PROFILE_MARKER, ProfileReleaseFault, ProfileReleaseWait, ReleaseSite,
+        SavedPermission, WebView2Engine, app_window_slot_available, dacl_has_untrusted_access,
+        initial_navigation_failure_is_fatal, initialize_com_sta, initialize_process_dpi_awareness,
+        open_browser_process, prepare_windows_profile_at, profile_failure, profile_failure_with,
         purge_persistent_profile_at, runtime_version, saved_media_permission_needs_deny,
-        try_scavenge_ephemeral_profile, wait_with_message_pump_until, webview2_permission_state,
-        windows_profile_plan,
+        try_scavenge_ephemeral_profile, wait_for_browser_exit,
+        wait_for_launch_with_message_pump_until, webview2_permission_state, windows_profile_plan,
     };
     use crate::error::WvError;
     use crate::profile::{
-        EphemeralProfile, ProfileIdentity, ProfileLifecyclePhase, ProfileLifecycleRecord,
-        ProfileProcessIdentity, ProfilePurgePhase, ProfilePurgeRecord, WebProfileSelection,
+        EphemeralProfile, ProfileErrorKind, ProfileIdentity, ProfileLifecyclePhase,
+        ProfileLifecycleRecord, ProfileProcessIdentity, ProfilePurgePhase, ProfilePurgeRecord,
+        WebProfileSelection,
     };
 
     /// The CI runners and this developer machine both ship the Evergreen
@@ -3172,45 +3535,301 @@ mod tests {
         initialize_process_dpi_awareness().expect("existing identical DPI policy");
     }
 
+    type ReleaseChannel = (
+        std::sync::mpsc::Sender<Result<(), WvError>>,
+        std::sync::mpsc::Receiver<Result<(), WvError>>,
+    );
+
+    fn release_channel() -> ReleaseChannel {
+        std::sync::mpsc::channel()
+    }
+
+    /// The production handle helper on this live test process: unsignaled.
+    fn alive_process_handle() -> std::os::windows::io::OwnedHandle {
+        open_browser_process(std::process::id()).expect("open this test process")
+    }
+
+    /// The production handle helper on a `cmd /c exit 0` child, opened before
+    /// it is reaped and returned after it has really terminated: signaled.
+    fn exited_process_handle() -> std::os::windows::io::OwnedHandle {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit", "0"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn exited fixture child");
+        let handle = open_browser_process(child.id()).expect("open fixture child");
+        assert!(child.wait().expect("fixture child exit").success());
+        handle
+    }
+
+    /// KEL-132 regression: while the expected browser process is alive the
+    /// release wait has no wall-clock bound at all. A zero grace is the
+    /// smallest bound any absolute deadline could express; it must not fire.
     #[test]
-    fn absent_browser_exit_has_one_nonrenewable_deadline() {
-        let (_sender, receiver) = std::sync::mpsc::channel::<Result<(), WvError>>();
-        let release = ProfileReleaseWait::with_timeout(Some(receiver), std::time::Duration::ZERO);
+    fn live_browser_process_keeps_the_release_wait_open_without_a_wall_clock_bound() {
+        let (_sender, receiver) = release_channel();
+        let release = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(alive_process_handle()),
+            std::time::Duration::ZERO,
+        );
         release.arm();
-        let first = release.deadline.get().expect("armed deadline");
-        release.arm();
+        release.poll();
         assert_eq!(
-            release.deadline.get(),
-            Some(first),
-            "events cannot renew it"
+            release.fault(),
+            None,
+            "a live browser must not be failed by a wall-clock bound"
+        );
+        assert!(!release.observed.get());
+        assert_eq!(
+            release.post_exit_deadline.get(),
+            None,
+            "no grace may be armed while the browser is alive"
         );
         let mut control_flow = super::ControlFlow::Wait;
         release.schedule(&mut control_flow);
-        assert_eq!(control_flow, super::ControlFlow::WaitUntil(first));
-        release.poll();
-        assert!(release.failed.get());
-        assert!(!release.observed.get());
+        assert_eq!(
+            control_flow,
+            super::ControlFlow::Wait,
+            "the loop waits for the exit event or the process wake, not a timer"
+        );
+        let expected = std::sync::atomic::AtomicU32::new(7);
+        assert!(!release.exit_ready(&expected));
+    }
 
-        let (sender, receiver) = std::sync::mpsc::channel::<Result<(), WvError>>();
-        let ready = ProfileReleaseWait::with_timeout(Some(receiver), std::time::Duration::ZERO);
-        ready.arm();
-        sender.send(Ok(())).expect("queue late success");
-        ready.poll();
-        assert!(ready.failed.get());
-        assert!(!ready.observed.get());
+    /// Once the process handle is signaled, only the post-exit grace bounds
+    /// the event: it is armed once at the observed exit, scheduled as the
+    /// loop's only timer, and expires into exactly one fault.
+    #[test]
+    fn exited_browser_process_without_an_event_fails_only_after_the_grace() {
+        let (_sender, receiver) = release_channel();
+        let release = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(exited_process_handle()),
+            std::time::Duration::from_hours(1),
+        );
+        release.poll();
+        assert_eq!(
+            release.post_exit_deadline.get(),
+            None,
+            "the barrier starts at Close, not while controllers are open"
+        );
+        release.arm();
+        let deadline = release
+            .post_exit_deadline
+            .get()
+            .expect("grace armed at the observed exit");
+        release.arm();
+        release.poll();
+        assert_eq!(
+            release.post_exit_deadline.get(),
+            Some(deadline),
+            "later polls cannot renew the grace"
+        );
+        assert_eq!(release.fault(), None, "the grace has not expired yet");
+        let mut control_flow = super::ControlFlow::Wait;
+        release.schedule(&mut control_flow);
+        assert_eq!(control_flow, super::ControlFlow::WaitUntil(deadline));
+
+        let (_sender, receiver) = release_channel();
+        let expired = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(exited_process_handle()),
+            std::time::Duration::ZERO,
+        );
+        expired.arm();
+        assert_eq!(expired.fault(), Some(ProfileReleaseFault::GraceExpired));
+        assert!(!expired.observed.get());
+        let expected = std::sync::atomic::AtomicU32::new(7);
+        assert!(expired.exit_ready(&expected));
+        let mut control_flow = super::ControlFlow::Wait;
+        expired.schedule(&mut control_flow);
+        assert_eq!(
+            control_flow,
+            super::ControlFlow::Wait,
+            "a fault schedules nothing"
+        );
+    }
+
+    /// The barrier observable is drained first: an event queued before the
+    /// poll proves release even when the process is gone and the grace is zero.
+    #[test]
+    fn queued_exit_event_is_drained_before_the_grace_is_judged() {
+        let (sender, receiver) = release_channel();
+        sender.send(Ok(())).expect("queue the release event");
+        let release = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(exited_process_handle()),
+            std::time::Duration::ZERO,
+        );
+        release.arm();
+        assert!(release.observed.get());
+        assert_eq!(release.fault(), None);
+    }
+
+    #[test]
+    fn abnormal_exit_and_dropped_observer_fail_while_the_browser_is_alive() {
+        let (sender, receiver) = release_channel();
+        sender
+            .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
+            .expect("queue the abnormal exit");
+        let abnormal = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(alive_process_handle()),
+            std::time::Duration::from_hours(1),
+        );
+        abnormal.arm();
+        assert_eq!(abnormal.fault(), Some(ProfileReleaseFault::AbnormalExit));
+        assert!(!abnormal.observed.get());
+
+        let (sender, receiver) = release_channel();
+        drop(sender);
+        let dropped = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(alive_process_handle()),
+            std::time::Duration::from_hours(1),
+        );
+        dropped.arm();
+        assert_eq!(dropped.fault(), Some(ProfileReleaseFault::ObserverDropped));
+        let expected = std::sync::atomic::AtomicU32::new(7);
+        assert!(dropped.exit_ready(&expected));
+    }
+
+    /// Without a process handle there is no liveness proof, so the grace is
+    /// the only bound and it starts at Close: fail-closed and bounded.
+    #[test]
+    fn absent_process_handle_fails_closed_after_the_grace() {
+        let (_sender, receiver) = release_channel();
+        let release =
+            ProfileReleaseWait::with_grace(Some(receiver), None, std::time::Duration::ZERO);
+        release.poll();
+        assert_eq!(release.fault(), None, "the barrier starts at Close");
+        release.arm();
+        assert_eq!(release.fault(), Some(ProfileReleaseFault::GraceExpired));
         assert!(
-            ready
-                .receiver
-                .as_ref()
-                .expect("receiver")
-                .try_recv()
-                .is_ok(),
-            "expired result must remain unconsumed"
+            open_browser_process(0).is_none(),
+            "a zero id never opens a process"
         );
     }
 
     #[test]
-    fn expired_pump_rejects_ready_result_before_queued_messages() {
+    fn release_fault_contexts_name_barrier_and_site() {
+        let faults = [
+            ProfileReleaseFault::GraceExpired,
+            ProfileReleaseFault::AbnormalExit,
+            ProfileReleaseFault::ObserverDropped,
+        ];
+        let mut contexts = std::collections::BTreeSet::new();
+        for site in [ReleaseSite::Host, ReleaseSite::Probe] {
+            for fault in faults {
+                let context = fault.context(site);
+                let site_word = match site {
+                    ReleaseSite::Host => "host",
+                    ReleaseSite::Probe => "exclusive-UDF probe",
+                };
+                assert!(context.contains(site_word), "{context}");
+                assert!(contexts.insert(context), "duplicate context: {context}");
+            }
+        }
+        let error = profile_failure_with(
+            ProfileErrorKind::LifecycleUnproven,
+            ProfileReleaseFault::GraceExpired.context(ReleaseSite::Host),
+        );
+        let message = error.to_string();
+        assert!(message.contains("KELD-WV-009"), "{message}");
+        assert!(
+            message.contains("Observed: the host browser process exited without raising"),
+            "{message}"
+        );
+        let WvError::ProfileSelection(profile) = error else {
+            panic!("profile failure must stay typed");
+        };
+        assert_eq!(profile.kind(), ProfileErrorKind::LifecycleUnproven);
+        assert_eq!(
+            profile.context(),
+            Some(ProfileReleaseFault::GraceExpired.context(ReleaseSite::Host))
+        );
+        assert_eq!(
+            profile_failure(ProfileErrorKind::LifecycleUnproven).to_string(),
+            "KELD-WV-009: profile selection failed: durable profile lifecycle state cannot prove safe reuse because recovery state cannot be proven on this platform/version. If persistent profiles are unsupported here, use explicit ephemeral mode; otherwise complete engine-release or boot recovery before lookup.",
+            "an unattributed failure keeps the exact prior text"
+        );
+    }
+
+    /// The probe's pump driver wakes on the process handle: a signaled handle
+    /// with an empty receiver and a zero grace fails at once, attributed to
+    /// the probe site, instead of spinning or waiting for a message.
+    #[test]
+    fn exit_wait_pump_fails_promptly_for_a_signaled_process_without_an_event() {
+        let (_sender, receiver) = release_channel();
+        let release = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(exited_process_handle()),
+            std::time::Duration::ZERO,
+        );
+        let error = wait_for_browser_exit(&release, ReleaseSite::Probe)
+            .expect_err("a gone probe browser without its event must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("the exclusive-UDF probe browser process exited without raising"),
+            "{error}"
+        );
+    }
+
+    /// With a live process the pump has no timer: it keeps pumping unrelated
+    /// messages until the event arrives from another thread with a wake.
+    #[test]
+    fn exit_wait_pump_keeps_pumping_while_the_process_is_alive_until_the_event() {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_APP, WM_NULL,
+        };
+
+        let mut message = MSG::default();
+        // SAFETY: the no-remove query creates this test thread's message queue;
+        // the output is live. Contract:
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
+        let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
+        // SAFETY: a current-thread id query has no preconditions.
+        let thread_id = unsafe { GetCurrentThreadId() };
+        let (sender, receiver) = release_channel();
+        let release = ProfileReleaseWait::with_grace(
+            Some(receiver),
+            Some(alive_process_handle()),
+            std::time::Duration::ZERO,
+        );
+        let worker = std::thread::spawn(move || {
+            // SAFETY: both posts target this test's own live queue with
+            // pointer-free messages; the first is unrelated input the pump
+            // must survive, the second is the wake that follows the event.
+            // Contract: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postthreadmessagew
+            unsafe { PostThreadMessageW(thread_id, WM_APP, WPARAM(0), LPARAM(0)) }
+                .expect("queue unrelated message");
+            sender.send(Ok(())).expect("deliver the release event");
+            // SAFETY: as above.
+            unsafe { PostThreadMessageW(thread_id, WM_NULL, WPARAM(0), LPARAM(0)) }
+                .expect("queue the wake");
+        });
+        wait_for_browser_exit(&release, ReleaseSite::Host)
+            .expect("a live browser's event must be observed");
+        worker.join().expect("worker thread");
+        assert!(release.observed.get());
+        assert_eq!(
+            release.post_exit_deadline.get(),
+            None,
+            "the live process never armed a grace"
+        );
+    }
+
+    /// The launch pump keeps the absolute bound: a ready result arriving at
+    /// or after the launch deadline loses to it. This bounds launches only;
+    /// browser shutdown never uses this pump.
+    #[test]
+    fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::System::Threading::GetCurrentThreadId;
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -3228,8 +3847,12 @@ mod tests {
             .expect("queue inert message");
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(7_u8).expect("queue ready result");
-        wait_with_message_pump_until(&receiver, std::time::Instant::now())
-            .expect_err("expired work must lose to the absolute deadline");
+        let error = wait_for_launch_with_message_pump_until(&receiver, std::time::Instant::now())
+            .expect_err("expired launch work must lose to the absolute deadline");
+        assert!(
+            error.to_string().contains("launch deadline expired"),
+            "{error}"
+        );
         // SAFETY: removes only this test's inert WM_NULL records without
         // dispatch. Contract: PeekMessageW above.
         while unsafe { PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE) }.as_bool()

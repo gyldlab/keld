@@ -126,6 +126,41 @@ pub(super) fn observe_browser_exit(actual: u32, expected: u32, normal: bool) {
     println!("KELD_MEDIA_BROWSER_EXIT pid={actual} expected={expected} normal={normal}");
 }
 
+/// Environment selector for the deterministic `BrowserProcessExited` fault.
+///
+/// `host` swallows the engine's own release event; `probe` swallows the
+/// exclusive-UDF scavenge probe's event. Only the media-acceptance libtest
+/// binary compiles this hook; shipping builds carry no such switch.
+const SWALLOW_BROWSER_EXIT_ENV: &str = "KELD_PROFILE_TEST_SWALLOW_BROWSER_EXIT";
+
+static SWALLOWED_BROWSER_EXIT_AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Returns `true` when the fixture selected this site's event for swallowing.
+///
+/// Records the first swallow instant so the child can prove the product
+/// failed within the post-exit grace of the fault, not at an unrelated bound.
+pub(super) fn swallow_browser_exit(site: super::ReleaseSite) -> bool {
+    let Some(selected) = std::env::var_os(SWALLOW_BROWSER_EXIT_ENV) else {
+        return false;
+    };
+    let site = match site {
+        super::ReleaseSite::Host => "host",
+        super::ReleaseSite::Probe => "probe",
+    };
+    if selected != site {
+        return false;
+    }
+    let _ = SWALLOWED_BROWSER_EXIT_AT.set(Instant::now());
+    println!("KELD_PROFILE_FAULT swallowed-browser-exit site={site}");
+    true
+}
+
+/// Evidence line for a predecessor leaf the scavenger retained because its
+/// probe could not prove release (architecture 05: quarantined for a later pass).
+pub(super) fn observe_scavenge_retained(error: &WvError) {
+    println!("KELD_PROFILE_SCAVENGE retained=unproven error={error}");
+}
+
 pub(super) fn permission_uri(
     args: &ICoreWebView2PermissionRequestedEventArgs,
 ) -> windows::core::Result<String> {
@@ -329,6 +364,22 @@ fn parent_deadline_is_valid(value: &str) -> bool {
     })
 }
 
+/// The fixture page: it blocks on its nonce-bound release request until the
+/// independent observers exist, then requests media and posts the outcome.
+fn media_page_html(nonce: u128, constraints: &str, track_kind: &str) -> String {
+    format!(
+        r"<!doctype html><script>
+(async()=>{{await fetch('/{nonce}/release',{{cache:'no-store'}});
+try{{const stream=await navigator.mediaDevices.getUserMedia({constraints});
+const matching=stream.getTracks().filter(track=>track.kind==='{track_kind}'&&track.readyState==='live');
+if(matching.length===0)throw new DOMException('no requested live track','KeldNoLiveTrack');
+for(const track of stream.getTracks())track.stop();
+chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+matching.every(track=>track.readyState==='ended'));
+}}catch(error){{chrome.webview.postMessage('{nonce}:'+window.isSecureContext+':'+error.name)}}}})();
+</script>"
+    )
+}
+
 fn run_case(
     kind: &str,
     mode: &str,
@@ -352,8 +403,12 @@ fn run_case(
     let tid = unsafe { GetCurrentThreadId() };
     let environment = fixture_environment(directory)?;
     let expected_browser_pid = Arc::new(AtomicU32::new(0));
-    let browser_exit =
-        super::observe_profile_browser_exit(&environment, Arc::clone(&expected_browser_pid), None)?;
+    let browser_exit = super::observe_profile_browser_exit(
+        &environment,
+        Arc::clone(&expected_browser_pid),
+        None,
+        super::ReleaseSite::Host,
+    )?;
     println!("KELD_MEDIA_PHASE environment-ready");
     let mut engine = WebView2Engine::from_environment(
         super::initialize_com_sta()?,
@@ -367,17 +422,7 @@ fn run_case(
     let address = listener.local_addr().map_err(failure)?;
     let url = format!("http://{address}/{nonce}/");
     let expected_origin = format!("http://{address}/");
-    let html = format!(
-        r"<!doctype html><script>
-(async()=>{{await fetch('/{nonce}/release',{{cache:'no-store'}});
-try{{const stream=await navigator.mediaDevices.getUserMedia({constraints});
-const matching=stream.getTracks().filter(track=>track.kind==='{track_kind}'&&track.readyState==='live');
-if(matching.length===0)throw new DOMException('no requested live track','KeldNoLiveTrack');
-for(const track of stream.getTracks())track.stop();
-chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+matching.every(track=>track.readyState==='ended'));
-}}catch(error){{chrome.webview.postMessage('{nonce}:'+window.isSecureContext+':'+error.name)}}}})();
-</script>"
-    );
+    let html = media_page_html(nonce, constraints, track_kind);
     let (release_tx, release_rx) = mpsc::channel();
     let (message_tx, message_rx) = mpsc::channel();
     let on_http_error = http_error_reporter(message_tx.clone());
@@ -398,9 +443,8 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
     }
     let principal = webview_media_principal(media_id);
     let view = engine.view(media_id)?;
-    let mut browser_pid = 0;
-    // SAFETY: live view and writable process id on the creating STA.
-    unsafe { view.webview.BrowserProcessId(&raw mut browser_pid) }.map_err(failure)?;
+    let browser_pid = super::webview_browser_process_id(&view.webview)
+        .ok_or_else(|| failure("the media view reported no browser process id"))?;
     println!(
         "KELD_MEDIA_VIEW id={} browser_pid={browser_pid}",
         media_id.0
@@ -1698,6 +1742,175 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
     #[ignore = "real Windows WebView2 media acceptance subprocess"]
     fn windows_media_acceptance_subprocess() -> Result<(), WvError> {
         run_media_acceptance()
+    }
+
+    /// Re-runs one ignored fault case in a fresh process with the swallow
+    /// selector set, so the fault is confined to that child's handler.
+    fn spawn_browser_exit_fault_child(
+        case: &str,
+        site: &str,
+    ) -> Result<std::process::Output, WvError> {
+        std::process::Command::new(std::env::current_exe().map_err(failure)?)
+            .args([
+                &format!("webview2::media_acceptance::tests::{case}"),
+                "--ignored",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(SWALLOW_BROWSER_EXIT_ENV, site)
+            .output()
+            .map_err(failure)
+    }
+
+    fn require_child_markers(
+        output: &std::process::Output,
+        label: &str,
+        markers: &[&str],
+    ) -> Result<(), WvError> {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!(
+            "KELD_PROFILE_FAULT_CHILD case={label} exit={}\n{stdout}\n{stderr}",
+            output.status
+        );
+        if !output.status.success() {
+            return Err(failure(format!("{label} child failed its own oracle")));
+        }
+        for marker in markers {
+            if !stdout.contains(marker) {
+                return Err(failure(format!("{label} child did not print {marker}")));
+            }
+        }
+        Ok(())
+    }
+
+    /// Child role: the engine's own `BrowserProcessExited` is swallowed after
+    /// the browser really exits. The release must fail `KELD-WV-009`, name the
+    /// host post-exit grace, and do so inside that grace of the fault — never
+    /// at an unrelated wall-clock bound and never by hanging until the watchdog.
+    fn swallowed_host_browser_exit_child() -> Result<(), WvError> {
+        let grace = super::super::BROWSER_EXIT_GRACE;
+        let root = profile_fixture_root("swallowed-host-exit");
+        std::fs::create_dir_all(&root).map_err(failure)?;
+        let ephemeral = crate::profile::EphemeralProfile::from_host_random([26; 32])?;
+        let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+        let plan = super::super::windows_profile_plan(&root, selection)?;
+        let result = profile_fixture_engine(&root, selection).and_then(run_profile_fixture);
+        let swallowed_at = SWALLOWED_BROWSER_EXIT_AT.get().copied();
+        let Err(error) = result else {
+            return Err(failure(
+                "a swallowed BrowserProcessExited must fail the host release",
+            ));
+        };
+        let Some(swallowed_at) = swallowed_at else {
+            return Err(failure("the fault was never injected"));
+        };
+        let elapsed = swallowed_at.elapsed();
+        println!(
+            "KELD_PROFILE_RELEASE_FAULT elapsed_ms={} error={error}",
+            elapsed.as_millis()
+        );
+        let message = error.to_string();
+        if !message.contains("KELD-WV-009")
+            || !message.contains("host browser process exited without raising")
+        {
+            return Err(failure(format!(
+                "failure was not attributed to the host post-exit grace: {message}"
+            )));
+        }
+        if elapsed < grace {
+            return Err(failure(
+                "the host release failed before the post-exit grace",
+            ));
+        }
+        if elapsed > grace + Duration::from_secs(5) {
+            return Err(failure(
+                "the host release failure was not bounded by the post-exit grace",
+            ));
+        }
+        if !plan.control_dir.exists() {
+            return Err(failure("an unproven release must retain the leaf"));
+        }
+        std::fs::remove_dir_all(root).map_err(failure)
+    }
+
+    #[test]
+    #[ignore = "real Windows WebView2 swallowed BrowserProcessExited fault injection"]
+    fn windows_swallowed_browser_exit_fails_bounded_subprocess() -> Result<(), WvError> {
+        if std::env::var_os(SWALLOW_BROWSER_EXIT_ENV).is_some() {
+            return run_with_watchdog(FIXTURE_DEADLINE, swallowed_host_browser_exit_child);
+        }
+        let output = spawn_browser_exit_fault_child(
+            "windows_swallowed_browser_exit_fails_bounded_subprocess",
+            "host",
+        )?;
+        require_child_markers(
+            &output,
+            "swallowed-host-exit",
+            &[
+                "KELD_PROFILE_FAULT swallowed-browser-exit site=host",
+                "KELD_PROFILE_RELEASE_FAULT ",
+            ],
+        )
+    }
+
+    /// Child role: the predecessor leaf's exclusive-UDF probe launches, closes,
+    /// and its `BrowserProcessExited` is swallowed, so the probe cannot prove
+    /// release. The current host's own teardown must still return `Ok`, delete
+    /// its own leaf, and retain the predecessor for a later pass.
+    fn unproven_probe_retains_predecessor_child() -> Result<(), WvError> {
+        let root = profile_fixture_root("unproven-probe");
+        std::fs::create_dir_all(&root).map_err(failure)?;
+        let old = crate::profile::EphemeralProfile::from_host_random([27; 32])?;
+        let old_selection = crate::profile::WebProfileSelection::ephemeral_dev(old);
+        let old_plan = super::super::windows_profile_plan(&root, old_selection)?;
+        drop(super::super::prepare_windows_profile_at(
+            &root,
+            old_selection,
+        )?);
+        let current = crate::profile::EphemeralProfile::from_host_random([28; 32])?;
+        let selection = crate::profile::WebProfileSelection::ephemeral_dev(current);
+        let plan = super::super::windows_profile_plan(&root, selection)?;
+        let result = profile_fixture_engine(&root, selection).and_then(run_profile_fixture);
+        if let Err(error) = result {
+            eprintln!("KELD_PROFILE_RETAINED {}", root.display());
+            return Err(failure(format!(
+                "an unproven predecessor probe failed the current host's own release: {error}"
+            )));
+        }
+        if SWALLOWED_BROWSER_EXIT_AT.get().is_none() {
+            return Err(failure("the probe fault was never injected"));
+        }
+        if plan.control_dir.exists() {
+            return Err(failure("the current host did not release its own leaf"));
+        }
+        if !old_plan.control_dir.exists() {
+            return Err(failure("the unproven predecessor leaf was deleted"));
+        }
+        println!("KELD_PROFILE_UNPROVEN_PROBE retained=true");
+        std::fs::remove_dir_all(root).map_err(failure)
+    }
+
+    #[test]
+    #[ignore = "real Windows WebView2 unproven exclusive-UDF probe retains the predecessor"]
+    fn windows_unproven_probe_retains_predecessor_subprocess() -> Result<(), WvError> {
+        if std::env::var_os(SWALLOW_BROWSER_EXIT_ENV).is_some() {
+            return run_with_watchdog(FIXTURE_DEADLINE, unproven_probe_retains_predecessor_child);
+        }
+        let output = spawn_browser_exit_fault_child(
+            "windows_unproven_probe_retains_predecessor_subprocess",
+            "probe",
+        )?;
+        require_child_markers(
+            &output,
+            "unproven-probe",
+            &[
+                "KELD_PROFILE_FAULT swallowed-browser-exit site=probe",
+                "KELD_PROFILE_SCAVENGE retained=unproven",
+                "KELD_PROFILE_UNPROVEN_PROBE retained=true",
+            ],
+        )
     }
 
     #[test]

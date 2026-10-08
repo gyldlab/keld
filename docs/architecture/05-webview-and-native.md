@@ -64,6 +64,15 @@ attribute, or canonical id fails closed as `KELD-WV-009`. Only the authenticated
 `stdin-v1` dev lease selects a fresh ephemeral profile; release failures never fall
 back to a shared or temporary WebView2 store.
 
+Graceful exit, purge and crash recovery wait for
+[`BrowserProcessExited`](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2environment5#add_browserprocessexited)
+while the expected browser process handle, opened before `Close`, is unsignaled; only a
+5 s post-exit grace bounds the event once the process is gone, because WebView2 raises
+it after the collection has released the user-data folder. A launch deadline bounds
+environment and controller creation only. A predecessor dev-ephemeral leaf whose
+exclusive-UDF probe is busy or cannot prove release is retained for a later pass and
+never fails the current host's own release.
+
 Keld uses [`CreateDirectoryW` security attributes](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
 to create profile directories atomically with a protected inheritable DACL for the
 current user, SYSTEM, and Administrators. Subsequent validation follows the Windows
