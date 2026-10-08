@@ -1628,8 +1628,10 @@ export interface WorkerLinkTestHooks {
    * Runs in the park just before main's deadline compare-and-exchange on
    * `BLOCKING`. Holding it until the Worker sets `CLAIMED` makes "the claim
    * came first" a fact at any host round-trip speed (criteria 18 and 26).
+   * Returning `false` skips the deadline step for this pass, so the park's own
+   * `STATE` and liveness checks run first (a Worker that died before its claim).
    */
-  readonly beforeDeadlineCas?: () => void;
+  readonly beforeDeadlineCas?: () => boolean;
   readonly onBlockingCall?: WorkerBlockingFault;
   /** Claim-step faults (criteria 18 and 26). */
   readonly claimFault?: "skip-publish" | "throw" | "stall-until-deadline-cas";
@@ -2033,7 +2035,7 @@ export class WorkerLink {
         return this.#endPark(corr);
       }
       if (claimedAt === undefined && now >= deadlineAt) {
-        this.#hooks?.beforeDeadlineCas?.();
+        if (this.#hooks?.beforeDeadlineCas?.() === false) continue;
         if (Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
           this.#post({ t: "abandon", corr });
           throw linkError("KELD-IPC-006", `blocking call deadline of ${deadlineMs} ms expired with no host reply`);

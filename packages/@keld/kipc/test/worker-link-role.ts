@@ -14,8 +14,10 @@ import {
   ECHO_CHANNEL,
   FrameKind,
   LIFECYCLE_CHANNEL,
+  WORKER_HEARTBEAT_INTERVAL_MS,
   WORKER_LINK_CONTROL,
   WORKER_LINK_TEST_WORDS,
+  WORKER_LIVENESS_WINDOW_MS,
   WorkerLink,
   isCallError,
   openWorkerLinkForTest,
@@ -407,24 +409,46 @@ function callEnded(words: Int32Array): void {
 /**
  * Holds main's deadline compare-and-exchange until the Worker has claimed the
  * reply, so the post-claim path under test runs whatever the host round trip
- * costs; no step depends on a 200 ms deadline outrunning that trip.
+ * costs; no step depends on a 200 ms deadline outrunning that trip. The hold is
+ * bounded by the link itself: it waits in heartbeat-sized slices and gives the
+ * park back (returns false) once `STATE` is set or the Worker's heartbeat has
+ * not moved for the liveness window, so a Worker that dies before its claim
+ * still ends in the park's typed liveness code, never a hang.
  */
-function claimFirst(words: () => Int32Array): () => void {
+function claimFirst(words: () => Int32Array, control: () => Int32Array): () => boolean {
   return () => {
     const w = words();
+    const c = control();
+    let beat = Atomics.load(c, WORKER_LINK_CONTROL.HEARTBEAT);
+    let beatAt = performance.now();
     while (Atomics.load(w, WORKER_LINK_TEST_WORDS.CLAIMED) === 0) {
-      Atomics.wait(w, WORKER_LINK_TEST_WORDS.CLAIMED, 0, 60_000);
+      if (Atomics.load(c, WORKER_LINK_CONTROL.STATE) !== 0) return false;
+      const now = performance.now();
+      const current = Atomics.load(c, WORKER_LINK_CONTROL.HEARTBEAT);
+      if (current !== beat) {
+        beat = current;
+        beatAt = now;
+      } else if (now - beatAt >= WORKER_LIVENESS_WINDOW_MS) {
+        return false;
+      }
+      Atomics.wait(w, WORKER_LINK_TEST_WORDS.CLAIMED, 0, WORKER_HEARTBEAT_INTERVAL_MS);
     }
+    return true;
   };
 }
 
 async function claimStall(): Promise<void> {
   let testWords: Int32Array = new Int32Array(new SharedArrayBuffer(4));
+  let testControl: Int32Array = new Int32Array(new SharedArrayBuffer(64));
   const { link, control, words } = await open(
     {},
-    { claimFault: "stall-until-deadline-cas", beforeDeadlineCas: claimFirst(() => testWords) },
+    {
+      claimFault: "stall-until-deadline-cas",
+      beforeDeadlineCas: claimFirst(() => testWords, () => testControl),
+    },
   );
   testWords = words;
+  testControl = control;
   const watchdog = startWatchdog(control, words);
   expectThrow("call", () => link.callBlocking(ECHO_CHANNEL, text("stall"), 200));
   callEnded(words);
@@ -435,17 +459,39 @@ async function claimStall(): Promise<void> {
 // Criterion 26: no unbounded parked wait after a claim.
 async function claimSkipPublish(): Promise<void> {
   let testWords: Int32Array = new Int32Array(new SharedArrayBuffer(4));
+  let testControl: Int32Array = new Int32Array(new SharedArrayBuffer(64));
   const { link, control, words } = await open(
     {},
-    { claimFault: "skip-publish", beforeDeadlineCas: claimFirst(() => testWords) },
+    { claimFault: "skip-publish", beforeDeadlineCas: claimFirst(() => testWords, () => testControl) },
   );
   testWords = words;
+  testControl = control;
   const watchdog = startWatchdog(control, words);
   expectThrow("call", () => link.callBlocking(ECHO_CHANNEL, text("skip"), 300));
   callEnded(words);
   report("state", word(control, WORKER_LINK_CONTROL.STATE));
   report("post-claim-branch", Atomics.load(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH));
   report("watchdog-advances-below-limit", (await watchdog) < WATCHDOG_LIMIT);
+}
+
+// The claim-first hold is bounded: a Worker that dies (process.exit, no exit
+// handler) before it claims leaves the park to record 025 through its liveness
+// branch; the host never answers, so no claim can happen.
+async function claimFirstWorkerDies(): Promise<void> {
+  let testWords: Int32Array = new Int32Array(new SharedArrayBuffer(4));
+  let testControl: Int32Array = new Int32Array(new SharedArrayBuffer(64));
+  const { link, control, words } = await open(
+    {},
+    {
+      onBlockingCall: { kind: "exit", delayMs: 50 },
+      beforeDeadlineCas: claimFirst(() => testWords, () => testControl),
+    },
+  );
+  testWords = words;
+  testControl = control;
+  expectThrow("call", () => link.callBlocking(ECHO_CHANNEL, text("dies-before-claim"), 200));
+  report("claimed", Atomics.load(words, WORKER_LINK_TEST_WORDS.CLAIMED));
+  report("liveness-branch", Atomics.load(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH));
 }
 
 async function claimThrow(): Promise<void> {
@@ -742,6 +788,7 @@ async function expiryDuringPark(): Promise<void> {
 
 const SCENARIOS: Record<string, () => Promise<void>> = {
   "expiry-during-park": expiryDuringPark,
+  "claim-first-worker-dies": claimFirstWorkerDies,
   "local-close": localClose,
   "reply-then-close": replyThenClose,
   "applier-blocking-in-dispatch": applierBlockingInDispatch,

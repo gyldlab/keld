@@ -1446,3 +1446,25 @@ fn expiry_during_park_keeps_a_retained_reply() {
         ],
     );
 }
+
+/// The claim-first hold is bounded: the Worker exits abruptly before any claim
+/// (the host never answers), and the parked call still ends in `KELD-IPC-025`
+/// through main's liveness branch instead of hanging inside the hold.
+#[test]
+fn claim_first_hold_ends_in_025_when_the_worker_dies_before_its_claim() {
+    let (mut stream, role) = start("claim-first-worker-dies");
+    long_reads(&stream);
+    read_call_named(&mut stream, "dies-before-claim");
+    read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("call-code", "KELD-IPC-025"),
+            ("call-returned", "false"),
+            ("claimed", "0"),
+            ("liveness-branch", "1"),
+            ("done", "true"),
+        ],
+    );
+}
