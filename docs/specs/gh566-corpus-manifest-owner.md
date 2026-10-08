@@ -18,8 +18,9 @@ onto it without changing a committed byte. It also decides how #445 and #448 add
 corpora. Each adds data, one registry entry and its own conformance tests. It adds no
 new parser, digest helper, validator or validator test target.
 
-Observable outcome: gh532 AC1–AC12, AC16 and AC17, plus this spec's C1–C8, pass as tests
-in `crates/keld-compat/tests/`, each with its named negative control. And
+Observable outcome: gh532 AC1–AC12, AC16 and AC17 (as amended by A1), plus this spec's
+C1–C10, pass as tests in `crates/keld-compat/tests/`, each with its named negative
+control. And
 `git diff origin/main -- crates/keld-compat/fixtures/` is empty.
 
 Non-goals:
@@ -40,13 +41,22 @@ Non-goals:
 ## 2. Spec refs
 
 - gh532, which this spec consumes unchanged:
-  - §3 AC1–AC12, AC16 and AC17. AC17's renderer is narrowed in D11.
+  - §3 AC1–AC12 and AC16.
   - §4.1, its facts and atoms.
-  - §4.2 rules 1–8, the v1 example manifest and the owner sketch.
+  - §4.2 rules 1–8, the v1 example manifest and the owner sketch, except the cell field
+    that A2 adds.
   - §6 T3, §7 (test plan), and the §10 Q1 and Q2 draft decisions.
-- gh532, which this spec deliberately widens, saying where:
-  - §4.5, the migration unit: three including targets instead of two (D8, §4.5).
-  - §5, the X01-T4 boundary: one added test target (§5).
+- Recorded gh532 amendments. gh532's approved text stays as it is. Once this spec is
+  approved, it governs X01-T4 wherever the two differ:
+  - **A1 — the subject of AC17.** gh532 AC17 binds "the lifecycle evidence report". The
+    frozen v0 report cannot carry a pending cell, so this spec binds AC17 to `FailSplit`
+    and its `Display` (D11). C9 keeps AC17's strength: a census forces every v1 report
+    to render its fail counts through `FailSplit`, and a negative control proves that a
+    report which formats its own counts fails.
+  - **A2 — a v1 cell field, `platforms`.** It adds one required field to the gh532
+    rule 8 cell shape (D13, C10).
+  - **A3 — the §4.5 migration unit.** Three including targets instead of two (D8, §4.5).
+  - **A4 — the §5 X01-T4 boundary.** One added test target (§5).
 - [`kel74-compat-evidence-schema.md`](kel74-compat-evidence-schema.md) §4.1–§4.3: the
   record, the denominator and `score()`. This spec consumes them only through the public
   `parse_evidence`, `parse_denominator` and `score`.
@@ -64,9 +74,10 @@ Non-goals:
 
 ### 3.1 Adopted from gh532
 
-gh532 AC1–AC12, AC16 and AC17 are criteria of this spec as written there, with their
-negative controls. The one narrowing is AC17's renderer (D11). §6 assigns each one to a task, and §7 assigns each one to a test. The
-issue's own criteria and controls map onto them as follows:
+gh532 AC1–AC12 and AC16 are criteria of this spec as written there, with their negative
+controls. AC17 is a criterion with the subject amendment A1, which C9 enforces. §6
+assigns each criterion to a task, and §7 assigns each one to a test. The issue's own
+criteria and controls map onto them as follows:
 
 | Issue criterion or negative control | Proved by |
 |---|---|
@@ -87,10 +98,12 @@ issue's own criteria and controls map onto them as follows:
    `published_receipt_cases_remain_live_tests` runs on an OS, then every `mapped_cases`
    entry `<target>::<name>` in that OS's committed receipt is listed exactly once, as
    `<name>: test`, by
-   `cargo test --offline -p keld-compat --test <target> -- --list`. *Negative
-   control:* the test fails if one `lifecycle_corpus` case is renamed, or moved into a
-   module (which gives it a `module::` prefix). `rust_case_listed` rejects a missing,
-   duplicated or prefixed name.
+   `cargo test --offline -p keld-compat --test <target> -- --list`. It must also be
+   absent from `-- --list --ignored`, so an ignored test, or a name that exists only in
+   the receipt, is never admitted (F4). *Negative control:* the test fails if one
+   `lifecycle_corpus` case is renamed, moved into a module (which gives it a `module::`
+   prefix) or marked `#[ignore]`. `rust_case_listed` rejects a missing, duplicated or
+   prefixed name.
 2. **C2 — Every committed corpus is registered (D8).** Given
    `crates/keld-compat/fixtures/`, when the census runs, then the set of directories that
    hold a `corpus.json` equals the set of `REGISTRY` fixture directories. Corpus ids and
@@ -118,7 +131,9 @@ issue's own criteria and controls map onto them as follows:
 5. **C5 — Records agree with their cell (D6).** Given a run, when it is validated, then:
    - each record names a manifest cell by its full `CellKey`: `operation.id` together
      with `operation.oracle.id`;
-   - each cell has at most one record in the run;
+   - each cell has at most one record in the run. This reuses `score()`'s
+     `EvidenceError::DuplicateCell` (F11) instead of adding a second uniqueness check;
+   - a record for a platform the cell does not declare has `result: unknown` (C10);
    - each record has the manifest `kind`;
    - each record's `result` is the cell's `expected_verdict` or `unknown`, and only
      `unknown` for an uncited v1 cell;
@@ -155,7 +170,37 @@ issue's own criteria and controls map onto them as follows:
    *Negative control:* each of these is rejected with `DenominatorMismatch`: a
    denominator missing one manifest cell (for example the only `fail` cell), one with an
    extra cell, one with a different `corpus_id`, and a manifest that repeats a
-   `CellKey`.
+   `CellKey`. Each mutation recomputes the denominator digest in memory, so it reaches
+   this check rather than `DigestMismatch` (§7, "Negative-control routing").
+9. **C9 — Every v1 report renders its fail counts through `FailSplit` (D11, A1).**
+   Given the keld-compat test sources, when the census runs, then the label strings
+   `Pending implementation` and `Intentional divergence`, and every `.failed()` call,
+   appear only in the owner and in the frozen v0 report. The v0 report,
+   `tests/lifecycle_evidence_report.rs`, is admitted by exact path until KEL-237
+   re-records the corpus. *Negative control:* each of these synthetic report sources is
+   rejected with `ReportBypassesFailSplit`: one that renders `board.failed()`, and one
+   that writes either label itself. A synthetic source that renders through `FailSplit`
+   is accepted.
+10. **C10 — Declared platforms (D13, A2).** Given a v1 cell, when it is parsed, then its
+    `platforms` is a non-empty set of distinct `platform_token` values, each also in
+    its registration's `platforms`. When admission runs on a host platform:
+    - each cell that declares the host platform has exactly one passing mapped case
+      there;
+    - each cell that does not declare it appears in the admission report's `unknown`
+      list, never as passed and never silently skipped.
+
+    A record for an undeclared platform has `result: unknown`. *Negative control:*
+    each of these is rejected:
+    - an empty `platforms` (`EmptyPlatforms`), or a repeated, unknown or unregistered
+      entry (`InvalidPlatforms`);
+    - a declared platform whose case is missing because a `cfg` gate compiled the test
+      out (`CaseNotAdmitted`);
+    - a declared platform whose Bun case reports `(skip)` from `skipIf`
+      (`CaseNotAdmitted`);
+    - a `pass` record for an undeclared platform (`RecordRule`).
+
+    *Positive control:* on an undeclared host, the cell is in the report's `unknown`
+    list and admission passes.
 
 ## 4. Design
 
@@ -205,6 +250,17 @@ are additional to gh532 §4.1:
   (`platform_token`, `arch_token` and `verdict_token`).
 - **F10.** Open PR #609 edits four `assert_receipt` lines in
   `lifecycle_evidence_report.rs`. The overlap is textual only.
+- **F11.** `score()` returns `EvidenceError::DuplicateCell` when two records name one
+  `CellKey`. It ignores, without rejecting, a record whose cell is outside the
+  denominator or whose `kind` differs (`evidence.rs` `score`, rustdoc and body).
+- **F12.** Probe with git 2.51.0 on 2026-10-08, using a snapshot-like path under
+  `text=auto eol=lf`. `git hash-object --path=<path> <file>`, which applies the
+  attribute filters, differs from `git hash-object --no-filters <file>` for CRLF bytes.
+  The two are equal for LF bytes and for a lone CR. A CRLF page therefore matches its
+  digest in the working tree, then fails after commit and re-checkout, for example in
+  CI.
+- **F13.** #445 and #448 are macOS-only first-proof cells, and they record Windows and
+  Linux as `unknown`.
 
 Decision atoms. Each is falsified by its own observable:
 
@@ -213,21 +269,29 @@ Decision atoms. Each is falsified by its own observable:
 | Owner shape | `tests/support/corpus_manifest.rs` | sources → one parser and one digest helper | a second copy drifts | gh532 AC10 |
 | Digest | `sha256_uri` | bytes read → `sha256:` + hex | normalised or re-serialised bytes | gh532 AC7 and AC11 |
 | Shape and parse | `Registration::shape` and `V0_FROZEN` | registration + bytes → v0 or v1, with a denominator that agrees | a manifest chooses its own rules; a duplicate key; a cell missing from the denominator | gh532 AC11, C4 and C8 |
-| Pin | `V1_ADMITTED_PINS` and `V0_FROZEN.pin` | upstream, `oracle_id` and record revision → consistent | mixed pins in one corpus | gh532 AC1, AC2 and AC11 |
+| Pin | the one `ADMITTED_PINS` table, scoped per entry | upstream, `oracle_id` and record revision → consistent | mixed pins in one corpus | gh532 AC1, AC2 and AC11 |
+| Platforms | the cell `platforms` field, bounded by the registration | host platform → admitted, or listed `unknown` | a macOS-only cell fails on Linux, or an unrun lane reads as pass | C10 |
 | Citation and snapshot | `doc_citation` and `doc_snapshots` via one read seam | cell + pinned page → quote found | a fabricated quote with a matching digest | gh532 AC3 and AC16 |
 | Verdict keys | the v1 cell rules | cell → `pass`, `fail` + one key, or `unknown` | pending work read as ▲; an uncited `pass` | gh532 AC4–AC6 |
 | Record results | the run validator | record + cell → admitted | a `pass` record scored on a red cell | C5 |
 | Authority | the run validator | panel or receipt state → one label | `unverified` relabelled | gh532 AC8 and AC12, C6 and C7 |
 | Engine | the manifest `engine` map, or the v0 facade token | platform → identity | mixed engines | gh532 AC9 |
 | Registry | the `REGISTRY` code | `test_path` → an admitted oracle | a self-admitted, recursive or unrouted target | C2 and C3 |
-| Admission | the libtest and Bun parsers | runner output → exactly one passing case | a removed, skipped or source-only test | the live controls |
-| Pending split | `Run::fail_split` | manifest key + `fail` record → two counts | lumped into ▲ | gh532 AC17 |
+| Admission | the libtest and Bun parsers, plus `check_admission` | runner output on the host → exactly one passing case for each declared cell | a removed, skipped, cfg-gated or source-only test | the live controls and C10 |
+| Pending split | `Run::fail_split` and the report census | manifest key + `fail` record → two counts, rendered only through `FailSplit` | lumped into ▲; a report that counts by itself | gh532 AC17 and C9 |
 | Frozen migration | the `V0_FROZEN` table and the receipt guard | committed bytes and names → identical and live | drift, or orphaned receipt cases | gh532 AC11 and C1 |
 
 Edges between atoms are explicit, never hidden:
 
+- Pin, Shape and parse, Verdict keys, Citation and snapshot, and Registry all consume
+  Digest. `Corpus::parse` checks the digest first, on the raw bytes (D2). Every
+  negative control that mutates the manifest for another atom therefore recomputes the
+  denominator digest in memory, so it reaches its own check (§7, "Negative-control
+  routing").
 - Citation and snapshot consumes Pin, because the commit is part of both the URL and the
   snapshot path.
+- Admission and Record results consume Platforms. The host platform decides which cells
+  are admitted and which are listed `unknown`.
 - Record results, Authority and Engine consume the parsed `Corpus`, which carries the
   digest, pin and cells. Their tests therefore start from a valid corpus and mutate one
   record field.
@@ -301,6 +365,17 @@ moved unchanged.
   unchanged: the first `e` becomes `E`, and the digest must differ.
 - `artifact_digest: manifest_bytes` (gh532 rule 5) selects this one meaning. v0 implies
   it.
+- `Corpus::parse` runs its checks in a fixed order:
+  1. digest, on the raw manifest bytes;
+  2. parse and shape (D3);
+  3. pin (D4);
+  4. denominator agreement (C8);
+  5. cell keys and platforms (D6, D13);
+  6. citations and snapshots (D5);
+  7. registry and targets (D8).
+
+  The digest comes first because it needs no parse. A one-byte flip therefore fails as
+  `DigestMismatch`, even when the flip also breaks a later rule.
 
 Rejected alternatives:
 
@@ -309,7 +384,7 @@ Rejected alternatives:
 - Normalising CRLF in the test. That passes on bytes that differ from the committed blob.
 - The KEL-77 length-framed set digest. It exists for sets of several files. v1 binds each
   snapshot through its `doc_snapshots` digest inside the manifest bytes (gh532 rule 2),
-  so the framing pitfall in the 2026-08-19 [runtime] learning does not apply.
+  so the framing pitfall recorded at `docs/agents/learnings.md:118` does not apply.
 - A `-text` attribute now. F6 shows that LF blobs already round-trip, and a CRLF page
   fails closed instead (D5).
 
@@ -321,7 +396,7 @@ Rejected alternatives:
 shape. A manifest cannot choose its own.
 
 - `Shape::FrozenV0` is admitted only when the registration's `corpus_id` is
-  `V0_FROZEN.corpus_id` (`electron-lifecycle-v0`). Any other id fails with
+  `V0_FROZEN_CORPUS_ID` (`electron-lifecycle-v0`). Any other id fails with
   `V0ShapeNotAdmitted`.
 - `Shape::V1` parses `ManifestV1`. It requires
   `"schema": "keld.compat.corpus/v1"`: a missing field is a parse error, and any other
@@ -335,12 +410,22 @@ shape. A manifest cannot choose its own.
   are therefore written once. The facts v0 lacks (the engine token and the digest
   meaning) come from `V0_FROZEN` constants, never from the bytes.
 - The manifest's `panel` and `kind` strings must equal `panel_token` and `kind_token`
-  of the typed `Panel` and `OperationKind` that `parse_denominator` returns. These two
-  owner-local maps follow the `platform_token` precedent (F9). Each is an exhaustive
-  `match`, so a new KEL-74 variant breaks compilation instead of passing silently. The
-  denominator bytes are parsed only by `parse_denominator`. All five owner maps are
-  removable once KEL-74 makes its own `as_str` public, which is a public-API change
-  outside X01-T4.
+  of the typed `Panel` and `OperationKind` that `parse_denominator` returns. No
+  existing mapping can be reused. KEL-74's own `as_str` and `parse_*` are private
+  (F9), and making them public is a public-API change outside X01-T4's boundary
+  (gh532 §5). The denominator bytes are parsed only by `parse_denominator`.
+
+  These two maps are therefore new, and this module owns them. They join the three
+  maps moved from the report test (`platform_token`, `arch_token` and
+  `verdict_token`), so the test tree holds exactly one copy of each. Each is an
+  exhaustive `match`, so a new KEL-74 variant breaks compilation instead of passing
+  silently.
+
+  Tracking: #566 records all five as one residual. The T2 PR opens a follow-up GitHub
+  issue, linked from #566. Its removal condition is that KEL-74 publishes `as_str` for
+  `Panel`, `OperationKind`, `Platform`, `Arch` and `Verdict`, following #638's
+  `AuthorityProfile::as_str`. The owner then calls those methods and deletes its five
+  maps.
 - The denominator must agree with the manifest (C8), keeping both live lifecycle checks.
   Its `corpus_id` equals the manifest's. Its cell set equals the manifest's cell set
   exactly, where a cell is the KEL-74 `CellKey` (`operation_id`, `oracle_id`). Manifest
@@ -358,15 +443,17 @@ Rejected alternatives:
 
 *Falsifier:* a v1 registration whose bytes omit `schema` is accepted.
 
-**D4 — Pin consistency.** The admitted pins are code:
+**D4 — Pin consistency.** The admitted pins are code, in one table, `ADMITTED_PINS`.
+Each entry carries a scope:
 
-- `V1_ADMITTED_PINS` is one entry, `44.4.5` @
-  `694f45852a0f1726cd23bfd379854de489cccb65`.
-- `V0_FROZEN.pin` is `44.3.0` @ `07e460719c75b2ec5ee4893f7d2192ef31c7b8c2`, admitted only
-  for the frozen id.
+| Pin | Scope |
+|---|---|
+| `44.3.0` @ `07e460719c75b2ec5ee4893f7d2192ef31c7b8c2` | `PinScope::FrozenV0`, for `V0_FROZEN_CORPUS_ID` only |
+| `44.4.5` @ `694f45852a0f1726cd23bfd379854de489cccb65` | `PinScope::V1` |
 
-The manifest `upstream` pair must equal an admitted pair exactly, version and commit
-together. Otherwise it fails with `UnadmittedPin`.
+The manifest `upstream` pair must equal the pair of one entry, version and commit
+together, whose scope admits the registration's shape and id. Otherwise it fails with
+`UnadmittedPin`. No other copy of a pin exists.
 
 `Pin` derives four strings, and they are never retyped:
 
@@ -383,12 +470,16 @@ record's `operation.oracle.revision` must equal the revision. Both fail with
 
 This replaces the hard-coded `44.3.0` assertions. The v0 `upstream.app_docs` must start
 with `doc_blob_prefix()`. That is stricter than the live `contains(commit)`, and the
-frozen bytes satisfy it. The lifecycle receipt and report checks read `V0_FROZEN.pin`
-instead of literals.
+frozen bytes satisfy it.
+
+The lifecycle receipt checks and the v0 report read the pin from the parsed `Corpus`
+(`corpus.pin()`), never from a constant. This matches D1, where every step consumes
+the parsed value.
 
 Rejected alternatives:
 
 - A pin field in the registration, which copies manifest data.
+- Separate v0 and v1 pin constants. That is two copies of one admission rule.
 - Comparing only the version, or only the commit.
 - Checking `oracle_id` with a pattern that ignores the commit.
 - Per-corpus hard-coded assertions, which is the live approach.
@@ -470,9 +561,15 @@ Rejected alternatives:
 
 Two outcomes are known and fail closed:
 
-- A cited page whose raw bytes contain CRLF is normalised when it is committed (F6), so
-  its digest check fails. The fix is a `-text` attribute scoped to that path, in that
-  consumer's PR.
+- **A CRLF page.** A cited page whose raw bytes contain CRLF matches its digest in the
+  working tree, so it passes locally. It is normalised when committed (F6, F12), so it
+  fails after re-checkout, in CI. The owner closes that gap for committed corpora:
+  `Corpus::load` requires that `git hash-object --path=<snapshot path> <file>` equal
+  `git hash-object --no-filters <file>`. Otherwise it fails with
+  `SnapshotWouldBeNormalised`, which names the page and the fix: a `-text` attribute
+  scoped to that path, in that consumer's PR. *Negative control:* CRLF bytes written to
+  a temporary file and checked under a snapshot path are rejected. LF bytes are
+  accepted.
 - A cited page with a `mermaid` fence would be held to Keld's diagram policy (F7). The
   consumer then scopes `tools/mermaid_docs.rs`, which is a CI-tool change with its own
   review. Neither page the first consumers cite has one (F7).
@@ -513,12 +610,22 @@ Rejected alternatives:
 A run is the set of records for one `(platform, arch)`. A slice that mixes runs fails
 with `MixedRun`. The owner has two run validators:
 
-- `Corpus::validate_harness_run(records)`, for the showcase panel;
-- `Corpus::validate_product_run(&ProductReceipt, records)`, for the product panel.
+- `Corpus::validate_harness_run(records, as_of)`, for the showcase panel;
+- `Corpus::validate_product_run(&ProductReceipt, records, as_of)`, for the product panel.
 
-Each refuses the other panel. Both apply the same record checks:
+Each refuses the other panel. Both call `score(corpus.denominator(), records, as_of)`
+once. That reuses KEL-74's `DuplicateCell` for uniqueness (F11), wrapped as
+`CorpusError::Evidence`. The returned `Run` keeps the `Scoreboard`, so reports and
+`fail_split` consume it and never score twice. `as_of` stays explicit (gh532 §7). The
+registry test passes one committed constant: v1 records carry no waiver (D6), so the
+date changes no result.
 
-- C5 membership, uniqueness, kind and result;
+`score()` ignores, without rejecting, a record outside the denominator or of a foreign
+kind (F11). The owner therefore keeps its own checks for those two cases. Both run
+validators apply the same record checks:
+
+- C5 membership, kind and result, plus the C10 rule that a record for an undeclared
+  platform is `unknown`;
 - `artifact.sha256` equals the corpus digest (gh532 AC7);
 - `operation.oracle.revision` equals `oracle_revision()` (gh532 AC2);
 - `revisions.engine` is the platform's token, then `@`, then a non-empty revision with no
@@ -564,8 +671,13 @@ ran. In that case the view is amended; no second validator is added.
 
 **D8 — Registry, targets, coverage and census.** The registry is
 `pub const REGISTRY: &[Registration]` in the owner. X01-T4 ships it as
-`[LIFECYCLE_V0]`. A `Registration` has four fields: `corpus_id`; `fixture_dir`, relative
-to `crates/keld-compat`; `shape`; and `targets: &[TestTarget]`. A `TestTarget` is a
+`[LIFECYCLE_V0]`. A `Registration` has five fields:
+
+- `corpus_id`;
+- `fixture_dir`, relative to `crates/keld-compat`;
+- `shape`;
+- `platforms: &[Platform]`, the lanes this corpus may declare (D13);
+- `targets: &[TestTarget]`. A `TestTarget` is a
 `path` plus `Runner::Libtest { target }` or `Runner::Bun`. This is the gh532 rule 8 data
 registry of admitted targets. It is not a scenario wrapper registry in the
 `.agents/test-layout.md` sense.
@@ -579,11 +691,18 @@ Target rules (C3):
 - **Bun targets** live under `packages/`. The literal path in this module is what makes
   the CI router re-run keld-compat when that package changes (F5).
 
-Admission keeps the live command lines, environment and exact-case parsers unchanged:
+Admission keeps the live command lines, environment and exact-case parsers unchanged,
+and splits in two:
 
-- `admit_libtest` runs each distinct libtest target once, over any set of corpora.
-- `admit_bun` does the same for each distinct Bun file.
-- Every mapped cell must have exactly one passing case.
+- `admit_libtest` runs each distinct libtest target once, over any set of corpora, on
+  the host. `admit_bun` does the same for each distinct Bun file.
+- A pure `check_admission(corpora, host: Platform, outputs)` then decides. Each mapped
+  cell that declares the host platform needs exactly one passing case in that host's
+  output. Each cell that does not declare it goes into the returned
+  `AdmissionReport`'s `unknown` list (D13). No cell is skipped silently.
+- The registry test asserts that the `unknown` list equals the cells whose
+  `platforms` exclude the host. Negative controls feed `check_admission` synthetic
+  outputs for any host.
 
 Coverage comes from one new integration target, `tests/corpus_registry/main.rs`, with
 `mod registry; mod rules;` and the owner include. It runs these tests over `REGISTRY`:
@@ -634,16 +753,24 @@ this rule.
 3. **The report.** The live `lifecycle_report_is_a_deterministic_view_of_canonical_records`
    test passes unchanged against `report.md`.
 4. **The receipt names (C1).** `published_receipt_cases_remain_live_tests` checks the
-   host OS's receipt by platform (F2). It runs one libtest `--list` per target named
-   there (F4). Following `.agents/test-layout.md`, it also preserves every
+   host OS's receipt by platform (F2). It runs one libtest `--list` and one
+   `--list --ignored` per target named there (F4). A name is admitted only if the first
+   lists it once and the second does not list it. Following `.agents/test-layout.md`, it also preserves every
    `lifecycle_corpus` name at the crate root, keeps the target names and keeps the live
    negative-control input tables byte-identical.
 5. **Mutation runs.** The T2 PR records three of the issue's controls as temporary
-   mutations: the one-byte manifest flip, the 44.4.5 commit inside the 44.3.0 corpus,
-   and a mapped Bun test changed to `test.skip`. It also records the C1 rename. Each one
-   fails its named test and is then restored. The fourth issue control, deleting
-   `implementing_ticket` from a red fixture cell, needs the v1 parser, so the T3 PR runs
-   it.
+   on-disk mutations, plus the C1 rename. Each one fails its named test with the
+   `CorpusError` variant listed here, and is then restored:
+   - the one-byte manifest flip, which yields `DigestMismatch`;
+   - the 44.4.5 commit inside the 44.3.0 corpus, which yields `PinMismatch`. The run
+     also rewrites `denominator.json`'s `corpus_sha256` to the digest of the mutated
+     manifest, so it passes the digest gate (D2) and reaches the pin check;
+   - a mapped Bun test changed to `test.skip`, which yields `CaseNotAdmitted`;
+   - the C1 rename, which makes `published_receipt_cases_remain_live_tests` fail and
+     name the missing case.
+
+   The fourth issue control, deleting `implementing_ticket` from a red fixture cell,
+   needs the v1 parser. The T3 PR runs it, and it yields `VerdictRule`.
    The PR also lists `cargo test -p keld-compat -- --list` before and after, as an
    inventory diff: additions only, no omissions or renames.
 
@@ -677,8 +804,8 @@ From `lifecycle_evidence_report.rs`:
   `verdict_token`, the owner's one copy of each map (F9).
 - **Removed:**
   - `expected_verdict()` (D6);
-  - the `CORPUS_SHA` and `ELECTRON_COMMIT` constants and the `44.3.0` literals (now read
-    from `V0_FROZEN`);
+  - the `CORPUS_SHA` and `ELECTRON_COMMIT` constants and the `44.3.0` literals. These
+    now come from `V0_CORPUS_SHA256` and from the parsed `corpus.pin()` (D4);
   - the `include_bytes!` of `denominator.json` (now read from `Corpus::denominator()`);
   - the generic per-record assertions, which become `validate_harness_run`;
   - the literal authority line, which becomes the C7 line helper.
@@ -698,11 +825,36 @@ Two items stay where they are:
 - The KEL-77 producer constant is outside keld-compat. It was parked from #637 and is
   recorded on #566.
 
-*Falsifier:* the gh532 AC10 census finds `fn sha256_uri`, `Sha256`, `corpus.json"` or
-`denominator.json"` in any keld-compat test source other than the owner. The census
-patterns, the fixture file names and the C2 fixture walk all live in the owner, which
-the census skips. Test files only call owner functions, and they build their synthetic
-negative inputs with `concat!`, so no scanned file carries a pattern.
+The gh532 AC10 census (`owner_census`) checks five rules. Each has a synthetic
+negative input, rejected with `CensusViolation`, which names the rule and the file:
+
+1. Outside the owner, no keld-compat test source contains `fn sha256_uri`, `Sha256`,
+   `corpus.json"` or `denominator.json"`.
+2. Outside the owner, no struct that derives `Deserialize` declares a manifest field:
+   `corpus_id`, `cells`, `upstream`, `oracle_id`, `expected_verdict` or `test_path`.
+   The census tracks this with a line state machine. It starts at a `#[derive(…)]`
+   line that names `Deserialize` and ends where that struct's body closes. This
+   catches a second manifest parser under any name. The receipt structs pass, because
+   none of their fields has one of those names.
+3. Inside the owner, everything appears exactly once:
+   - one `fn sha256_uri`;
+   - one `Sha256::digest` call site;
+   - one deserialisation site per shape, written
+     `serde_json::from_slice::<ManifestV0>` and `serde_json::from_slice::<ManifestV1>`;
+   - no `#[test]`.
+4. `src/lib.rs` declares exactly one public module, `pub mod evidence;`, with no other
+   `pub mod` or `pub use` (gh532 §7). *Negative control:* a synthetic `lib.rs` that adds
+   `pub mod corpus_manifest;` is rejected.
+5. `cargo metadata` lists `sha2` for keld-compat with kind `dev` only.
+
+C9 adds a sixth rule, for reports (D11).
+
+The census patterns, the fixture file names and the C2 fixture walk all live in the
+owner. Rules 1, 2 and 6 scan everything except the owner, and rule 3 counts inside it.
+Test files only call owner functions, and they build their synthetic negative inputs
+with `concat!`, so no scanned file carries a pattern.
+
+*Falsifier:* any of the five rules, or C9's, accepts its own synthetic negative input.
 
 **D11 — Pending versus divergence (gh532 AC17).**
 
@@ -721,13 +873,22 @@ Pending implementation: 1 (GH-445)
 Intentional divergence: 1
 ```
 
-This narrows gh532 AC17, whose wording names "the lifecycle evidence report". The
-frozen v0 report cannot carry a pending cell, because the v0 shape has no
-`implementing_ticket` field and denies unknown fields. A split there would always equal
-`board.failed()`, so no control on it could fail. AC17 therefore binds `FailSplit` and
-its `Display`, and every v1 report renders its pending and divergence counts through
-them. The v0 report keeps `board.failed()` in its "Intentional divergence" column, and
-its bytes are unchanged.
+This is recorded gh532 amendment A1 (§2). gh532 AC17 names "the lifecycle evidence
+report". The frozen v0 report cannot carry a pending cell: the v0 shape has no
+`implementing_ticket` field, and it denies unknown fields. A split there would always
+equal `board.failed()`, so no control on it could fail. AC17 therefore binds
+`FailSplit` and its `Display`.
+
+C9 keeps the original strength, so that every v1 report renders its counts through
+them. That is census rule 6, `report_census`, in the owner. Outside the owner, the
+label strings `Pending implementation` and `Intentional divergence` and any `.failed()`
+call may appear only in `tests/lifecycle_evidence_report.rs`. That file is the frozen
+v0 report, admitted by exact path. On origin/main `c1673d83`, all five such
+occurrences are in that file. The exemption ends when KEL-237 re-records the corpus.
+
+A v1 report therefore cannot count fails, or write either label, by itself. It must
+call `FailSplit`. The v0 report keeps `board.failed()` in its "Intentional divergence"
+column, and its bytes are unchanged.
 
 Rejected alternatives:
 
@@ -737,7 +898,8 @@ Rejected alternatives:
 - Deriving the split from records alone, which cannot tell the two cases apart.
 
 *Falsifier:* one pending and one divergence `fail` record render as a single count, or
-the pending cell is labelled "Intentional divergence".
+the pending cell is labelled "Intentional divergence". C9 falsifier: a synthetic
+report outside the exempt path that renders `board.failed()` passes the census.
 
 **D12 — Sequencing with #637, and the task split.**
 
@@ -774,6 +936,41 @@ Rejected alternatives:
 
 *Falsifier:* T2 cannot pass without a v1 rule. In that case T2 and T3 merge into one PR.
 
+**D13 — Declared platforms per cell (C10; gh532 amendment A2).** #445 and #448 are
+macOS-only first-proof cells (F13). Without a per-cell platform set, admission would
+require a passing case on every lane, so those cells would fail on Linux and Windows.
+
+Delegated owner decision: every v1 cell carries an explicit `platforms` field. It is a JSON array of `platform_token` values. The
+array must be non-empty and hold no repeats, and every value must be in the
+registration's `platforms` (code, so a manifest cannot widen its own lanes).
+
+- **Declared platform.** On a declared platform, admission requires exactly one
+  passing mapped case. A test that a `cfg` gate compiles out has no case, and a Bun
+  `skipIf` reports `(skip)`. The existing exact-case parsers reject both, so each fails
+  admission as `CaseNotAdmitted`.
+- **Undeclared platform.** On an undeclared platform, the cell goes into the
+  `AdmissionReport`'s `unknown` list. That is the unrun lane of gh532 rule 4: never
+  passed, never silently skipped.
+- **Records.** A record for an undeclared platform must say `result: unknown`
+  (`RecordRule`), and the AC9 engine map still has to cover that platform.
+
+v0 cells have no `platforms` field, because the bytes are frozen. They take the
+`LIFECYCLE_V0` registration's `platforms`, which is all three. The Windows-only
+`#[cfg(windows)]` test is not a corpus cell, so nothing changes for v0.
+
+Rejected alternatives:
+
+- **Platforms per registration only.** That cannot express one macOS-only cell inside
+  a corpus that also has three-platform cells.
+- **Inferring platforms from `cfg` attributes or `skipIf` in test source.** That
+  treats source text as admission evidence, which the live controls forbid.
+- **Treating a missing case on any platform as `unknown`.** That would hide a removed
+  or skipped test on a declared platform, which is exactly what the admission controls
+  exist to catch.
+
+*Falsifier:* a declared-platform cell is admitted with no passing case on that host,
+or an undeclared-platform cell is neither in the `unknown` list nor rejected.
+
 ### 4.3 Owner sketch
 
 This is test-only Rust and shows the shape, not every variant. The final form belongs to
@@ -790,18 +987,25 @@ pub fn sha256_uri(bytes: &[u8]) -> String { format!("sha256:{:x}", Sha256::diges
 pub struct Pin { pub version: &'static str, pub commit: &'static str }
 impl Pin { /* oracle_prefix, oracle_revision, doc_blob_prefix, snapshot_dir (D4) */ }
 
-pub const V1_ADMITTED_PINS: &[Pin] =
-    &[Pin { version: "44.4.5", commit: "694f45852a0f1726cd23bfd379854de489cccb65" }];
+pub const V0_FROZEN_CORPUS_ID: &str = "electron-lifecycle-v0";
+pub enum PinScope { FrozenV0 { corpus_id: &'static str }, V1 }
+pub struct AdmittedPin { pub pin: Pin, pub scope: PinScope }
+/// The one admitted-pin table (D4). A new pin needs a reviewed spec amendment.
+pub const ADMITTED_PINS: &[AdmittedPin] = &[
+    AdmittedPin { pin: Pin { version: "44.3.0", commit: "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2" },
+                  scope: PinScope::FrozenV0 { corpus_id: V0_FROZEN_CORPUS_ID } },
+    AdmittedPin { pin: Pin { version: "44.4.5", commit: "694f45852a0f1726cd23bfd379854de489cccb65" },
+                  scope: PinScope::V1 },
+];
 pub const V0_CORPUS_SHA256: &str =
     "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2";
 /// Frozen v0 facade (gh532 AC11). Removal: KEL-237 re-records the corpus as v1.
 pub const V0_FROZEN: FrozenV0 = FrozenV0 {
-    corpus_id: "electron-lifecycle-v0",
-    pin: Pin { version: "44.3.0", commit: "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2" },
     engine_token: "headless-lifecycle-conformance",
     harness_profile: AuthorityProfile::LegacySandboxOff, // fixed; v1 uses HARNESS_PROFILE
     files: &[("corpus.json", V0_CORPUS_SHA256) /* 14 more, pinned at the T2 base */],
 };
+pub const HARNESS_PROFILE: AuthorityProfile = AuthorityProfile::LegacySandboxOff; // v1 only
 
 pub enum Shape { FrozenV0, V1 }
 pub enum Runner { Libtest { target: &'static str }, Bun }
@@ -810,12 +1014,14 @@ pub struct Registration {
     pub corpus_id: &'static str,
     pub fixture_dir: &'static str,
     pub shape: Shape,
+    pub platforms: &'static [Platform], // upper bound for each cell's `platforms` (D13)
     pub targets: &'static [TestTarget],
 }
 pub const LIFECYCLE_V0: Registration = Registration {
-    corpus_id: "electron-lifecycle-v0",
+    corpus_id: V0_FROZEN_CORPUS_ID,
     fixture_dir: "fixtures/lifecycle-corpus",
     shape: Shape::FrozenV0,
+    platforms: &[Platform::Macos, Platform::Linux, Platform::Windows],
     targets: &[
         TestTarget { path: "crates/keld-compat/tests/electron_lifecycle.rs",
                      runner: Runner::Libtest { target: "electron_lifecycle" } },
@@ -826,37 +1032,61 @@ pub const LIFECYCLE_V0: Registration = Registration {
 pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0];
 
 impl Corpus {
+    /// Checks run in the D2 order: digest first, then parse, pin, denominator, cells,
+    /// citations and targets.
     pub fn parse(reg: &Registration, manifest: &[u8], denominator: &[u8],
                  read_snapshot: &dyn Fn(&str) -> io::Result<Vec<u8>>)
                  -> Result<Self, CorpusError>;
-    pub fn load(reg: &Registration) -> Result<Self, CorpusError>; // reads the fixture dir
+    /// Reads the fixture dir; adds the D5 `git hash-object` normalisation check.
+    pub fn load(reg: &Registration) -> Result<Self, CorpusError>;
+    /// The committed manifest and denominator bytes, for in-memory mutation controls.
+    pub fn fixture_bytes(reg: &Registration) -> Result<(Vec<u8>, Vec<u8>), CorpusError>;
+    pub fn pin(&self) -> Pin;
     pub fn denominator(&self) -> &Denominator;
-    pub fn validate_harness_run<'a>(&'a self, records: &'a [EvidenceRecord])
+    /// Calls `score()` once; its `DuplicateCell` is the uniqueness check (C5).
+    pub fn validate_harness_run<'a>(&'a self, records: &'a [EvidenceRecord], as_of: CivilDate)
         -> Result<Run<'a>, CorpusError>;
     pub fn validate_product_run<'a>(&'a self, receipt: &ProductReceipt<'_>,
-                                    records: &'a [EvidenceRecord])
+                                    records: &'a [EvidenceRecord], as_of: CivilDate)
         -> Result<Run<'a>, CorpusError>;
 }
 pub enum ProfileState { Unverified, Legacy, Strict }
 pub struct ProductReceipt<'a> { pub state: ProfileState, pub cells: &'a [CellKey] } // KEL-74 CellKey
-impl Run<'_> { pub fn fail_split(&self) -> FailSplit; }
+impl Run<'_> {
+    pub fn board(&self) -> &Scoreboard;
+    pub fn fail_split(&self) -> FailSplit; // the only fail-count renderer (C9)
+}
 
 pub fn rust_case_passed(stdout: &str, name: &str) -> bool; // moved unchanged
 pub fn bun_case_passed(stderr: &str, name: &str) -> bool;  // moved unchanged
-pub fn rust_case_listed(stdout: &str, name: &str) -> bool; // one `<name>: test` line (C1)
-pub fn admit_libtest(corpora: &[&Corpus]) -> Result<(), CorpusError>;
-pub fn admit_bun(corpora: &[&Corpus]) -> Result<(), CorpusError>;
+/// One `<name>: test` line in `--list`, and none in `--list --ignored` (C1).
+pub fn rust_case_listed(list: &str, ignored: &str, name: &str) -> bool;
+pub fn admit_libtest(corpora: &[&Corpus]) -> Result<RunnerOutputs, CorpusError>;
+pub fn admit_bun(corpora: &[&Corpus]) -> Result<RunnerOutputs, CorpusError>;
+/// Pure: admitted cells for `host`, and the `unknown` list for undeclared cells (D13).
+pub fn check_admission(corpora: &[&Corpus], host: Platform, outputs: &RunnerOutputs)
+    -> Result<AdmissionReport, CorpusError>;
+pub fn owner_census(tests: &Sources, lib_rs: &str, sha2_kinds: &[Option<String>])
+    -> Result<(), CorpusError>; // D10 rules 1–5 and C9's rule 6
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CorpusError {
+    Evidence(EvidenceError), // KEL-74 parse or score failure, e.g. DuplicateCell
+    DigestMismatch { corpus_id: String, declared: String, computed: String },
     V0ShapeNotAdmitted { corpus_id: String },
     DuplicateKey { corpus_id: String, field: &'static str, key: String },
     UnadmittedPin { corpus_id: String, version: String, commit: String },
     PinMismatch { corpus_id: String, cell: String, found: String, expected: String },
+    DenominatorMismatch { corpus_id: String, detail: String },
+    EmptyPlatforms { corpus_id: String, cell: String },
     UnregisteredTarget { corpus_id: String, cell: String, test_path: String },
     QuoteAbsent { corpus_id: String, cell: String, page: String },
+    SnapshotWouldBeNormalised { corpus_id: String, page: String },
+    CaseNotAdmitted { corpus_id: String, cell: String, target: String, host: &'static str },
     LabelMismatch { corpus_id: String, cell: String, receipt_state: &'static str,
                     label: &'static str },
+    ReportBypassesFailSplit { file: String, line: usize },
+    CensusViolation { rule: u8, file: String, line: usize },
     // … one variant per rejection named in §3 and gh532 §3
 }
 ```
@@ -866,7 +1096,8 @@ pub enum CorpusError {
 To add a v1 corpus, a consumer changes only data and one registry line:
 
 1. **The fixture directory.** Add `crates/keld-compat/fixtures/<dir>/` containing:
-   - `corpus.json`, in gh532's §4.2 example shape;
+   - `corpus.json`, in gh532's §4.2 example shape plus each cell's `platforms` (A2).
+     #445's and #448's cells declare `["macos"]`;
    - `denominator.json` (KEL-74), whose `corpus_sha256` is the `sha256_uri` of the exact
      `corpus.json` bytes;
    - `doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/<page path>`, the raw
@@ -874,12 +1105,14 @@ To add a v1 corpus, a consumer changes only data and one registry line:
      by the gh532 rule 2 reviewer command;
    - optionally `evidence/*.json`, harness records only, until X02-T5 (C6).
 2. **The registry entry.** Append one `Registration` to `REGISTRY` in
-   `tests/support/corpus_manifest.rs`. It names `Shape::V1` and the targets the corpus
-   maps. Those are keld-compat libtest targets or Bun `*.test.ts` files under
-   `packages/` (C3).
+   `tests/support/corpus_manifest.rs`. It names `Shape::V1`, the `platforms` its cells
+   may declare, and the targets the corpus maps. Those targets are keld-compat libtest
+   targets or Bun `*.test.ts` files under `packages/` (C3).
 3. **The mapped tests.** Put them in the registered targets. A red cell's test asserts
-   today's behaviour and passes (gh532 rule 3). No mapped test is skipped, ignored or
-   retried.
+   today's behaviour and passes (gh532 rule 3). On each declared platform, no mapped test
+   is skipped, ignored, `cfg`-gated out or retried. On an undeclared platform, the
+   admission report lists the cell as `unknown`, and any record for it says `unknown`
+   (C10).
 
 The consumer may add oracle targets for its conformance tests and register them. It adds
 no parser, digest helper, validator or validator test target. The `corpus_registry`
@@ -942,16 +1175,23 @@ Two consumer-specific notes:
     the census; the `corpus_registry` target; and the D10 removals.
   - Criteria: gh532 AC10 and AC11; AC2, AC7 and AC9 over v0 cells and records (AC9
     through the `V0_FROZEN` engine token); the gh532 AC8 clause that rejects `strict_bun`
-    on a conformance-harness record; C1, C2, C3, C7 and C8; and C5's v0 controls. T2
-    moves the live per-record result check into `validate_harness_run`, so its
-    replacement is tested in the same PR.
+    on a conformance-harness record; C1 (including the `--list --ignored` exclusion),
+    C2, C3, C7 and C8; and C5's v0 controls. T2 moves the live per-record result check
+    into `validate_harness_run`, so its replacement is tested in the same PR. In T2,
+    admission admits every v0 cell on every host, because v0 cells have no `platforms`.
   - The PR carries the D9 diff, inventory and mutation evidence.
 - [ ] **T3** v1 manifest and rules, also branched from a main that contains #638.
-  - Scope: `ManifestV1` with `UniqueMap`, citations and snapshots, verdict keys, the
-    `engine` map, product runs, and `FailSplit`.
+  - Scope:
+    - `ManifestV1` with `UniqueMap`;
+    - citations and snapshots, including the D5 normalisation check;
+    - verdict keys and the `engine` map;
+    - the `platforms` field on cells and on `Registration`, and `check_admission`'s
+      `unknown` list (D13);
+    - product runs;
+    - `FailSplit`, with census rule 6.
   - Criteria: gh532 AC1; AC2 for v1; AC3–AC6; AC7's `artifact_digest` clause; AC8's
-    product clauses; AC9's manifest `engine` map; AC12, AC16 and AC17; C4 and C6; and
-    C5's v1 controls.
+    product clauses; AC9's manifest `engine` map; AC12, AC16 and AC17; C4, C6, C9 and
+    C10; and C5's v1 controls.
   - The T3 PR runs the fourth issue control as a mutation: deleting
     `implementing_ticket` from a red fixture cell.
 
@@ -969,26 +1209,51 @@ the `corpus_registry` target.
 
 | Criterion | Test | Target | Task | Kind |
 |---|---|---|---|---|
-| gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`. It runs `cargo metadata` to read the `sha2` dependency kind. The patterns live in the owner, and the synthetic negative inputs are built with `concat!`, so no scanned file carries a pattern (D10). | registry | T2 | integration |
+| gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`, covering D10 rules 1–5: tokens outside the owner, `Deserialize` manifest structs, exactly-one inside the owner, the `src/lib.rs` `pub mod` control, and the `sha2` kind via `cargo metadata`. Each rule has a synthetic negative input built with `concat!`. | registry | T2 | integration |
 | gh532 AC11 | `lifecycle_corpus_fixture_bytes_match_origin_main`; `rules::v0_shape_rejects_new_ids_and_foreign_pins` | lifecycle_corpus, rules | T2 | integration |
 | C8 | `rules::denominator_must_match_manifest_cells_and_id`, which mutates the committed lifecycle denominator in memory | rules | T2 | integration |
 | gh532 AC2, AC7 and AC9 (v0), AC8 harness clause | `rules::harness_run_rejects_digest_revision_engine_and_label_mutations`, which mutates one committed record in memory | rules | T2 | integration |
 | C5 (v0 controls) | `rules::records_must_match_their_v0_cell`, covering result against expected, duplicate, `waived`, kind and membership | rules | T2 | integration |
 | Committed corpora | `registered_corpora_validate_with_their_records`: static rules plus `evidence/*.json` grouped into runs, on `electron-lifecycle-v0` | registry | T2 | integration |
 | Live admission controls | `rust_case_results_reject_…` and `bun_case_results_reject_…`, both moved unchanged; `registered_corpora_{libtest,bun}_oracles_execute` | lifecycle_corpus, registry | T2 | integration |
-| C1 | `published_receipt_cases_remain_live_tests`, plus `rust_case_listed` rows | lifecycle_evidence_report | T2 | integration |
+| C1 | `published_receipt_cases_remain_live_tests`, plus `rust_case_listed` rows: missing, duplicated, prefixed, and listed under `--ignored` | lifecycle_evidence_report | T2 | integration |
 | C2 | `every_committed_corpus_is_registered`, with synthetic negative controls | registry | T2 | integration |
 | C3 | `rules::targets_reject_unregistered_recursive_foreign_and_missing` | rules | T2 | integration |
 | C7 | `report_authority_line_comes_from_the_board`, with in-test boards from `score()` | lifecycle_evidence_report | T2 | integration |
 | gh532 AC1–AC7 and AC9 (v1) | `rules::pin_*`, `citation_*`, `red_cell_*`, `uncited_*`, `digest_*` and `engine_*`: one accept case plus each named mutation, on in-test v1 manifests | rules | T3 | integration |
 | gh532 AC8 and AC12 | `rules::product_run_*`: every state × label pair, and a receipt with no record | rules | T3 | integration |
-| gh532 AC16 | `rules::snapshot_*` over an in-memory read seam | rules | T3 | integration |
+| gh532 AC16 | `rules::snapshot_*` over an in-memory read seam, plus `rules::snapshot_would_be_normalised_rejects_crlf` (D5) over one temporary file | rules | T3 | integration |
+| C9 | `rules::report_census_rejects_reports_that_count_fails_themselves`: synthetic report sources that use `board.failed()` or a label are rejected, and a `FailSplit` source is accepted | rules | T3 | integration |
+| C10 | `rules::platforms_*`: empty, repeated, unknown and unregistered entries; `check_admission` with synthetic outputs for a declared host whose case is missing (`cfg`) or `(skip)`; the `unknown` list on an undeclared host; and a `pass` record for an undeclared platform | rules | T3 | integration |
 | gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
 | C4, C5 (v1 controls), C6 | `rules::duplicate_keys_*`, `rules::records_*_v1` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
+**Negative-control routing.** `Corpus::parse` checks the digest first (D2). Every
+control that mutates the manifest for another atom therefore rewrites the in-memory
+denominator's `corpus_sha256` to the mutated manifest's digest, using the rules
+module's `rehash_denominator`. That helper calls the owner's `sha256_uri`. Each control
+asserts the exact `CorpusError` variant:
+
+| Control | Mutation | Rehash | Expected variant |
+|---|---|---|---|
+| One-byte flip (issue; gh532 AC7, AC11) | first `e` → `E` in the manifest | no; the digest is the target | `DigestMismatch` |
+| 44.4.5 inside the 44.3.0 corpus (issue; gh532 AC11) | one v0 `oracle_id` prefix → `electron-v44.4.5.` | yes | `PinMismatch` |
+| Record revision (gh532 AC2) | one record's revision → `…@694f4585…` | no; record only | `PinMismatch` |
+| New id in the v0 shape (gh532 AC11) | registration id `electron-lifecycle-v1` | no; bytes unchanged | `V0ShapeNotAdmitted` |
+| C8 missing, extra or renamed cell or id | edit the denominator only | no; manifest unchanged | `DenominatorMismatch` |
+| C8 repeated `CellKey` | duplicate one manifest cell | yes | `DenominatorMismatch` |
+| C4 repeated key | repeat one `engine` key | yes | `DuplicateKey` |
+| Deleted ticket (issue; gh532 AC4) | remove `implementing_ticket` from a red cell | yes | `VerdictRule` |
+| Fabricated quote (gh532 AC16) | quote absent from the page, with its correct `quote_sha256` | yes | `QuoteAbsent` |
+| Empty `platforms` (C10) | `"platforms": []` | yes | `EmptyPlatforms` |
+| C3 unregistered or recursive target | edit the registration only | no | `UnregisteredTarget` / `InvalidTarget` |
+| Skipped Bun test (issue) | `(skip)` row, or `test.skip` on disk in the T2 run | no | `CaseNotAdmitted` |
+| C5 duplicate record | a second record for one cell | no | `Evidence(DuplicateCell)` |
+
 Anti-flake: gh532 §7 applies. There is no clock and no network, and there are no ports
-beyond the live `electron_lifecycle` ones. Rule cases use in-memory bytes and snapshots,
-so no temporary directories are needed. The nested `cargo` and `bun` runs keep the live
+beyond the live `electron_lifecycle` ones. Rule cases use in-memory bytes and snapshots.
+The one temporary file, for D5's CRLF control, sits under `std::env::temp_dir()`, and a
+drop guard removes it. The nested `cargo` and `bun` runs keep the live
 `--offline` mode, environment and exact-case parsers. Concurrent runs of the oracle
 targets are isolated by `electron_lifecycle`'s per-process session directories.
 
@@ -1017,7 +1282,8 @@ instead of claiming a number.
 ## 10. Open questions
 
 None. Every design point above is an owner-delegated decision, recorded with its
-rejected alternatives and its falsifier. Two gh532 draft decisions stay with gh532, not
+rejected alternatives and its falsifier. The four gh532 amendments A1–A4 (§2) are part
+of what this spec's approval approves. Two gh532 draft decisions stay with gh532, not
 here: §10 Q1 (citation kinds) and Q2 (the harness label). This spec implements each of
 them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant, which
 leaves the frozen v0 label unchanged.
