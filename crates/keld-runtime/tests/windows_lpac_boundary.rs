@@ -320,10 +320,13 @@ fn zero_capability_lpac_denies_host_authority_and_inherits_only_allowlisted_hand
 /// reports NULL for all three standard handles, a failed standard-output write,
 /// and the listed copy valid at the value the census found. Without the flag, the
 /// child's standard handles are this process's own instead, duplicated outside
-/// the handle list. The child never touches an unlisted value: an LPAC child
-/// runs with the strict handle-check mitigation, under which an invalid handle
-/// reference ends the process with `STATUS_INVALID_HANDLE`; the report records
-/// that policy.
+/// the handle list. The census above is the whole oracle for unlisted objects,
+/// so the child never touches an unlisted value. That is also defense in depth:
+/// on Windows 11 10.0.26300 an LPAC child was observed running with the strict
+/// handle-check mitigation (flags `0x3`), under which an invalid handle reference
+/// ends the process with `STATUS_INVALID_HANDLE`. That is observed, not a
+/// documented contract, so the report records the policy without the row relying
+/// on it.
 fn prove_handle_list_child_holds_only_the_listed_handle(
     profile: &WindowsLpacProfile,
     fixture: &Path,
@@ -392,7 +395,7 @@ fn prove_handle_list_child_holds_only_the_listed_handle(
     println!("KELD_WINDOWS_F51_HANDLE_LIST exit={exit} {report}");
     assert_eq!(exit, 0, "handle-list child failed: {report}");
     // NUL is a character device (file type 2). The strict-handle-check policy is
-    // recorded, not asserted: it is the OS's default for this child.
+    // recorded, not asserted: it was observed on this OS build, not documented.
     assert!(
         report.starts_with(&format!(
             "{NO_STANDARD_HANDLE_REPORT} listed=0x{listed_in_child:x}:valid:type=2 \
