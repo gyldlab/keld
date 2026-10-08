@@ -632,7 +632,13 @@ finalize_doctest_packages() {
         return
     fi
     local libraries package_name selected=""
-    libraries="$(library_package_names)"
+    # github/local run this inside a command substitution, where Bash clears
+    # errexit: a failed metadata or jq read must stop the router before it
+    # publishes any output, never become an empty doctest selection.
+    if ! libraries="$(library_package_names)"; then
+        echo "ci router: cannot list library packages from cargo metadata; refusing to emit a doctest selection" >&2
+        exit 1
+    fi
     for package_name in $packages; do
         if grep -Fxq -- "$package_name" <<<"$libraries"; then
             selected+="$package_name"$'\n'

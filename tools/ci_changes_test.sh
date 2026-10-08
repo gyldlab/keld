@@ -576,7 +576,7 @@ printf '%s\n' \
     '    ;;' \
     '  *) root="${root//\\/\\\\}" ;;' \
     'esac' \
-    'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[]}%s]}\\n" "$root" "$root" "$root" "$root" "$root" "$root" "$literal_package"' \
+    'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[],\\\"targets\\\":[{\\\"kind\\\":[\\\"lib\\\"]}]}%s]}\\n" "$root" "$root" "$root" "$root" "$root" "$root" "$literal_package"' \
     >"$temp_dir/fake-bin/cargo"
 chmod +x "$temp_dir/fake-bin/cargo"
 
@@ -599,8 +599,48 @@ fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\
 expect_flags "pull-request base/head classifies the actual diff" "$fake_runtime_flags" "$pr_result"
 expect_package_token "pull-request base/head selects changed package" keld-runtime "$pr_result"
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
-expect_exact_output "Rust selection without a library target selects no doctest" doctest false "$pr_result"
-expect_empty_output "Rust selection without a library target doctests nothing" doctest_packages "$pr_result"
+expect_exact_output "pull-request Rust change selects the doctest lane" doctest true "$pr_result"
+expect_exact_output "pull-request Rust change doctests its library package" doctest_packages keld-runtime "$pr_result"
+# Push mode: a Rust change selects doctests; the docs-only push below is the
+# negative control, and so is this push's own no-library case further down.
+push_rust_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$base_sha" GITHUB_SHA="$runtime_sha" "$router" github)"
+expect_exact_output "push Rust change selects the doctest lane" doctest true "$push_rust_result"
+expect_exact_output "push Rust change doctests its library package" doctest_packages keld-runtime "$push_rust_result"
+
+# Fail closed: a library-target read that fails must stop the router before it
+# publishes, even though github mode clears errexit inside its substitution.
+# Artifacts stay under the fixture's git-ignored target/ so later local-mode
+# cases still see a clean checkout.
+failing_jq_dir="$temp_dir/target/failing-jq"
+mkdir -p "$failing_jq_dir"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'for arg in "$@"; do case "$arg" in *proc-macro*) exit 7 ;; esac; done' \
+    "exec \"$temp_dir/fake-bin/jq\" \"\$@\"" >"$failing_jq_dir/jq"
+chmod +x "$failing_jq_dir/jq"
+rm -f "$temp_dir/target/failed-library-output"
+if failed_library="$(cd "$temp_dir" && PATH="$failing_jq_dir:$temp_dir/fake-bin:$PATH" GITHUB_OUTPUT="$temp_dir/target/failed-library-output" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$base_sha" KELD_CI_HEAD_SHA="$runtime_sha" "$router" github 2>&1)"; then
+    echo "FAIL: a failed library-target read published a router selection" >&2
+    printf '%s\n' "$failed_library" >&2
+    exit 1
+fi
+if grep -q '^rust=' <<<"$failed_library" || [[ -e "$temp_dir/target/failed-library-output" ]]; then
+    echo "FAIL: a failed library-target read wrote router outputs" >&2
+    exit 1
+fi
+if ! grep -Fq "ci router: cannot list library packages from cargo metadata" <<<"$failed_library"; then
+    echo "FAIL: a failed library-target read did not report the fail-closed router error" >&2
+    printf '%s\n' "$failed_library" >&2
+    exit 1
+fi
+echo "ok: a failed library-target read fails the router before any output"
+# Negative control: the same invocation with a working jq publishes doctests.
+rm -f "$temp_dir/target/library-output"
+(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" GITHUB_OUTPUT="$temp_dir/target/library-output" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$base_sha" KELD_CI_HEAD_SHA="$runtime_sha" "$router" github >/dev/null)
+if ! grep -Fxq 'doctest=true' "$temp_dir/target/library-output"; then
+    echo "FAIL: the working library-target read did not publish the doctest selection" >&2
+    exit 1
+fi
+echo "ok: a working library-target read publishes the doctest selection"
 
 # A backslash is a legal Unix filename byte, not a path separator. On Unix,
 # prove ingestion preserves an embedded backslash. Windows cannot create this
@@ -629,6 +669,8 @@ git -C "$temp_dir" commit -qm docs
 docs_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$runtime_sha" GITHUB_SHA="$docs_sha" "$router" github)"
 expect_flags "push before/head classifies the actual diff" "$docs_only" "$push_result"
+expect_exact_output "docs-only push selects no doctest" doctest false "$push_result"
+expect_empty_output "docs-only push doctests nothing" doctest_packages "$push_result"
 expect_mermaid_flag "prose-only docs outside diagrams skip Mermaid" false "$push_result"
 expect_codeql "docs-only push still analyses every CodeQL language" "$codeql_all" "$push_result"
 # Negative control: the identical docs-only diff as a pull request skips CodeQL.
@@ -787,6 +829,10 @@ fixture_without_consumer="$(cd "$temp_dir" && printf '%s\0' "$fixture_path" | PA
 fake_fixture_without_consumer=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=false'
 expect_flags "unreferenced crate fixture does not invent a Bun consumer" "$fake_fixture_without_consumer" "$fixture_without_consumer"
 expect_empty_output "unreferenced crate fixture selects no Bun suite" ts_packages "$fixture_without_consumer"
+# A Rust selection whose packages (keld-ipc and its dependents here) have no
+# library target selects no doctest.
+expect_exact_output "Rust selection without a library target selects no doctest" doctest false "$fixture_without_consumer"
+expect_empty_output "Rust selection without a library target doctests nothing" doctest_packages "$fixture_without_consumer"
 
 # A Bun suite the Keld workspace does not own: this fixture proves the lane is
 # derived from the checked-out packages/ tree, not from a hard-coded path.

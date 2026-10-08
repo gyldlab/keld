@@ -409,6 +409,15 @@ jobs:
   # nextest does not run doctests (#632). The router selects the clippy/test
   # packages that have a library target; one OS proves them, and macOS links no
   # WebKitGTK, so the lane has no network apt step.
+  # Known limit: rustdoc compiles doctests for the host target only, so a
+  # doctest inside an item or module gated by cfg(windows), cfg(unix) for a
+  # non-macOS target, or cfg(target_os = ...) that excludes macOS never runs
+  # here. Today the only doctest (keld-ipc guard_dispatch.rs, compile_fail) is
+  # ungated. Falsifier: list doc-comment fences with
+  #   rg -n '^\s*//[/!]\s*```(rust|compile_fail|no_run|should_panic)?\s*$' crates/*/src
+  # and check each hit's enclosing cfg; if any excludes macOS, add that OS to
+  # this job. A static check is not sound without evaluating cfg across the
+  # module tree, cfg_attr, #[path], include! and macro-generated docs.
   doctest:
     name: doctests (macos-latest)
     runs-on: macos-latest
