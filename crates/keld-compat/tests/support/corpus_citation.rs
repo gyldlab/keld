@@ -205,3 +205,62 @@ pub fn check_normalisation(repo_rel: &str, file: &Path) -> Result<(), CorpusErro
     }
     Ok(())
 }
+
+/// Rejects a snapshot path whose Git attributes transform bytes at checkout, so the
+/// working tree would differ from the committed blob on another clone (gh566 D5). The
+/// check is by path, so it also covers a page that is not committed yet. It costs one
+/// `git check-attr` call per page. Transforming means any of these: `eol=crlf`; an
+/// unspecified `eol` while `text` is not unset (then `core.autocrlf` may convert);
+/// `ident`; a `working-tree-encoding`; or a `filter`.
+pub fn check_checkout_attributes(repo_root: &Path, repo_rel: &str) -> Result<(), CorpusError> {
+    let output = Command::new("git")
+        .args([
+            "check-attr",
+            "text",
+            "eol",
+            "ident",
+            "working-tree-encoding",
+            "filter",
+            "--",
+        ])
+        .arg(repo_rel)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| CorpusError::RunnerFailed {
+            target: "git check-attr".to_owned(),
+            detail: format!("cannot run git: {error}"),
+        })?;
+    if !output.status.success() {
+        return Err(CorpusError::RunnerFailed {
+            target: "git check-attr".to_owned(),
+            detail: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let attribute = |name: &str| {
+        stdout
+            .lines()
+            .filter_map(|line| line.rsplit_once(": "))
+            .find_map(|(head, value)| head.ends_with(&format!(": {name}")).then_some(value))
+            .unwrap_or("unspecified")
+    };
+    let reject = |name: &str, value: &str| CorpusError::SnapshotCheckoutFilter {
+        path: repo_rel.to_owned(),
+        attribute: name.to_owned(),
+        value: value.to_owned(),
+    };
+    let eol = attribute("eol");
+    if eol == "crlf" || (eol != "lf" && attribute("text") != "unset") {
+        return Err(reject("eol", eol));
+    }
+    if attribute("ident") == "set" {
+        return Err(reject("ident", "set"));
+    }
+    for name in ["working-tree-encoding", "filter"] {
+        let value = attribute(name);
+        if value != "unspecified" && value != "unset" {
+            return Err(reject(name, value));
+        }
+    }
+    Ok(())
+}

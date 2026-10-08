@@ -295,7 +295,7 @@ pub use error::CorpusError;
 mod citation;
 // The child modules' public items; each including target uses a different subset.
 #[allow(unused_imports)]
-pub use citation::{DocCitation, SnapshotReader, check_normalisation};
+pub use citation::{DocCitation, SnapshotReader, check_checkout_attributes, check_normalisation};
 #[path = "corpus_runs.rs"]
 mod runs;
 #[allow(unused_imports)]
@@ -642,6 +642,7 @@ impl Corpus {
             let rel = format!("{}{page}", corpus.pin.snapshot_dir());
             let repo_rel = format!("crates/keld-compat/{}/{rel}", reg.fixture_dir);
             citation::check_normalisation(&repo_rel, &join_rel(&dir, &rel))?;
+            citation::check_checkout_attributes(&workspace_root(), &repo_rel)?;
         }
         Ok(corpus)
     }

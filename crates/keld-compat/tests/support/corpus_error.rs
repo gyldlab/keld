@@ -168,6 +168,12 @@ pub enum CorpusError {
     UncitedSnapshotEntry { corpus_id: String, page: String },
     /// Git would normalise a snapshot on commit, so CI would read other bytes (gh566 D5).
     SnapshotWouldBeNormalised { page: String, path: String },
+    /// A snapshot path's attributes transform bytes at checkout (gh566 D5).
+    SnapshotCheckoutFilter {
+        path: String,
+        attribute: String,
+        value: String,
+    },
     /// A product run was requested for a non-product corpus.
     NotProductPanel { corpus_id: String },
     /// A product receipt cell has no record, so the run would be dropped (gh532 AC8).
@@ -413,6 +419,14 @@ impl fmt::Display for CorpusError {
             Self::SnapshotWouldBeNormalised { page, path } => write!(
                 f,
                 "snapshot {path} of {page} would be normalised by git on commit, so CI would read other bytes (gh566 D5). Add a path-scoped `-text` attribute."
+            ),
+            Self::SnapshotCheckoutFilter {
+                path,
+                attribute,
+                value,
+            } => write!(
+                f,
+                "snapshot {path} has checkout attribute {attribute}={value}, so another clone would check out other bytes (gh566 D5). Give doc-snapshots/ `-text` and no filter."
             ),
             Self::NotProductPanel { corpus_id } => write!(
                 f,

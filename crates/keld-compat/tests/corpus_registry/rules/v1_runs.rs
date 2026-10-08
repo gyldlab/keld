@@ -261,6 +261,10 @@ fn product_records_need_receipt() {
 /// text is built from the owner constants, so the C9 census passes on this test.
 #[test]
 fn fail_split_counts_pending_apart_from_divergence() {
+    // The labels are pinned independently of `Display`, which uses the same constants,
+    // so swapping or renaming them fails here (C9-allowed forms).
+    assert_eq!(PENDING_LABEL, concat!("Pending ", "implementation"));
+    assert_eq!(DIVERGENCE_LABEL, concat!("Intentional ", "divergence"));
     let corpus = accepted(&manifest());
     let run = corpus
         .validate_harness_run(&macos_run(&corpus), V1_RECORDS_AS_OF)

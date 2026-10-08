@@ -11,9 +11,13 @@ Amended by gh566 (#639), [`gh566-corpus-manifest-owner.md`](gh566-corpus-manifes
 - A3, the §4.5 migration unit.
 - A4, the §5 X01-T4 file list.
 
-Amended again by gh566 T2 (#640), in rule 8: execution admission and the censuses live
-in two sibling support modules, `corpus_admission.rs` and `corpus_census.rs`, split from
-the owner under gh566 D1.
+Amended again in rule 8, under gh566 D1:
+
+- By gh566 T2 (#640): execution admission and the censuses moved to the sibling
+  support modules `corpus_admission.rs` and `corpus_census.rs`.
+- By gh566 T3 (#646): the error vocabulary, citations (including `DocCitation`) and
+  record runs moved to the owner's child modules `corpus_error.rs`,
+  `corpus_citation.rs` and `corpus_runs.rs`.
 
 ## 1. Goal & non-goals
 
@@ -416,10 +420,20 @@ code, so a manifest cannot admit its own targets. Test targets include it with
 `#[path = "support/corpus_manifest.rs"] mod corpus_manifest;`, which is the
 keld-ipc convention. X01-T4 (#566) implements it and migrates `lifecycle_corpus.rs`
 and `lifecycle_evidence_report.rs` byte-for-byte. Under gh566 D1's review condition,
-two sibling support modules hold parts of this owner's responsibility. Execution
-admission lives in `tests/support/corpus_admission.rs`, and the owner and fixture
-censuses live in `tests/support/corpus_census.rs`. Neither parses a manifest, and
-neither holds a digest helper (amended by gh566 T2, #640).
+the owner's responsibility is split across five modules (amended by gh566 T2, #640,
+and T3, #646):
+
+- Two sibling support modules: execution admission in
+  `tests/support/corpus_admission.rs`, and the owner and fixture censuses in
+  `tests/support/corpus_census.rs`.
+- Three child modules that the owner declares itself:
+  - the `CorpusError` vocabulary, in `tests/support/corpus_error.rs`;
+  - citations and snapshots, in `tests/support/corpus_citation.rs`, which defines the
+    nested `DocCitation` cell shape;
+  - record runs and `FailSplit`, in `tests/support/corpus_runs.rs`.
+
+Manifest bytes are deserialized only in `corpus_manifest.rs`, which includes the
+`DocCitation` nested in each v1 cell, and only that file holds the digest helper.
 
 Each v1 cell also declares `platforms`, a non-empty set of distinct platform tokens
 (`macos`, `windows`, `linux`). The set is bounded by the platforms the code registry

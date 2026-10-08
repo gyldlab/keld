@@ -594,6 +594,19 @@ Two outcomes are known and fail closed:
   scoped to that path, in that consumer's PR. *Negative control:* CRLF bytes written to
   a temporary file and checked under a snapshot path are rejected. LF bytes are
   accepted.
+- **A checkout filter** (amended in T3, #646). The check-in comparison misses attributes
+  that act at checkout: `eol=crlf`, `ident`, `working-tree-encoding` and `filter`.
+  These pass locally and fail only on another clone.
+  - `Corpus::load` also runs `git check-attr` once per page and rejects any transforming
+    attribute with `SnapshotCheckoutFilter`. It also rejects an `eol` that is not `lf`
+    while `text` is not unset, because `core.autocrlf` could then convert the page.
+  - The check is by path, so it works offline and before the page is committed.
+  - Rejected alternative: comparing the working-tree bytes with the committed blob
+    (`git cat-file blob <commit>:<path>`). A page being added has no committed blob yet,
+    so that check could not run before the commit that adds it.
+  - *Negative control:* in a throwaway repository, `eol=crlf`, `!eol` with
+    `text=auto`, `ident`, `working-tree-encoding=UTF-16` and `filter=lfs` are each
+    rejected, while `text=auto eol=lf` and `-text` are accepted.
 - A cited page with a `mermaid` fence would be held to Keld's diagram policy (F7). The
   consumer then scopes `tools/mermaid_docs.rs`, which is a CI-tool change with its own
   review. Neither page the first consumers cite has one (F7).

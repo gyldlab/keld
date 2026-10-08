@@ -161,10 +161,13 @@ pub fn owner_census(
     ];
     let test_attribute = concat!("#[", "test]");
     // Rule 6 (gh566 C9): fail counts and their labels render only through FailSplit.
+    // The fail-count method in any call form: a method call, a fully qualified call
+    // through the `Scoreboard` path, or that path passed to `map`.
     let report_tokens = [
         concat!("Pending ", "implementation"),
         concat!("Intentional ", "divergence"),
-        concat!(".fail", "ed()"),
+        concat!(".fail", "ed("),
+        concat!("::fail", "ed"),
     ];
     let mut owner_seen = false;
     for (path, text) in sources {

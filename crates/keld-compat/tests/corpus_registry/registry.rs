@@ -303,6 +303,11 @@ fn report_census_rejects_reports_that_count_fails_themselves() {
     let kinds = sha2_dependency_kinds().unwrap_or_else(|error| panic!("{error}"));
     owner_census(&sources, &lib, &kinds).unwrap_or_else(|error| panic!("{error}"));
     for report in [
+        concat!("fn r(b: &Board) -> usize { Scoreboard::fail", "ed(&b) }\n"),
+        concat!(
+            "fn r(b: &[Board]) -> Vec<usize> { b.iter().map(Scoreboard::fail",
+            "ed).collect() }\n"
+        ),
         concat!("fn r(b: &Board) -> usize { b.fail", "ed() }\n"),
         concat!("const P: &str = \"Pending ", "implementation\";\n"),
         concat!("const D: &str = \"Intentional ", "divergence\";\n"),
