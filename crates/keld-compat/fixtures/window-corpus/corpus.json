@@ -1,0 +1,292 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-window-v1",
+  "scope": "@keld/electron BrowserWindow cells for the draw.io first-proof window path on macOS at Electron 44.4.5; not median-app product compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "wkwebview"
+  },
+  "doc_snapshots": {
+    "docs/api/app.md": "sha256:49238ddf50585d8a581bd7b5141ec825216cd9b82e6bc82bd97cad4200593ebf",
+    "docs/api/browser-window.md": "sha256:49061d5eebfc1ef617d77fa71b13d79f0995bec92eaa518c2d06c8a1dbf29b9b"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "window.constructor.host-id",
+      "oracle_id": "electron-v44.4.5.browser-window.win-id-unique",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#winid-readonly",
+        "quote": "A `Integer` property representing the unique ID of the window. Each ID is unique among all `BrowserWindow` instances of the entire Electron application.",
+        "quote_sha256": "sha256:33c443f32b16cd912f9300aa9080123cfa4ed81043db88faf1d4a5eb3d79cf45"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.constructor.host-id today: @keld/electron exports no BrowserWindow constructor, so no window id exists",
+      "negative_control": "Today: exporting a BrowserWindow constructor from @keld/electron fails the mapped case. After GH-449 inverts it: minting the id in the facade instead of taking the host-delivered WindowId fails it."
+    },
+    {
+      "operation_id": "app.browser-window-created.once-per-window",
+      "oracle_id": "electron-v44.4.5.app.event-browser-window-created",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#event-browser-window-created",
+        "quote": "Emitted when a new [browserWindow](browser-window.md) is created.",
+        "quote_sha256": "sha256:71060ca298ba85209e29584c592ff5a3e42b9b71a7195a438ab8317321742ba4"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "app.browser-window-created.once-per-window today: construction throws, so a browser-window-created listener never runs",
+      "negative_control": "Today: exporting a BrowserWindow whose construction emits browser-window-created fails the mapped case. After GH-449 inverts it: emitting browser-window-created twice, or not at all, for one window fails it."
+    },
+    {
+      "operation_id": "app.web-contents-created.once-per-window",
+      "oracle_id": "electron-v44.4.5.app.event-web-contents-created",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#event-web-contents-created",
+        "quote": "Emitted when a new [webContents](web-contents.md) is created.",
+        "quote_sha256": "sha256:edc9d77851abf9e23ea54bc1e1de1750a6fabc1f531313279c9608444fb01ab1"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "app.web-contents-created.once-per-window today: construction throws, so a web-contents-created listener never runs",
+      "negative_control": "Today: exporting a BrowserWindow whose construction emits web-contents-created fails the mapped case. After GH-449 inverts it: not emitting web-contents-created, so draw.io's will-navigate listener count stays zero, fails it."
+    },
+    {
+      "operation_id": "app.window-created-events.constructor-order",
+      "oracle_id": "electron-v44.4.5.browser-window.creation-event-order",
+      "expected_verdict": "unknown",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "app.window-created-events.constructor-order today: no creation event and no constructor return exist to order",
+      "negative_control": "Today: exporting a BrowserWindow constructor fails the mapped case. Unknown, not cited: only a v44.4.5 source receipt orders the two events against the constructor return, and gh532 Q1 admits doc citations only."
+    },
+    {
+      "operation_id": "window.get-all-windows.sync",
+      "oracle_id": "electron-v44.4.5.browser-window.get-all-windows",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#browserwindowgetallwindows",
+        "quote": "Returns `BrowserWindow[]` - An array of all opened browser windows.",
+        "quote_sha256": "sha256:3735650e3a0cda0b970cfcdff895998494b9a449585799305cc2231243708dc0"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.get-all-windows.sync today: BrowserWindow.getAllWindows does not exist",
+      "negative_control": "Today: exporting a BrowserWindow with a static getAllWindows fails the mapped case. After GH-449 inverts it: returning a Promise, or an array without the opened window, fails it."
+    },
+    {
+      "operation_id": "window.get-all-windows.order",
+      "oracle_id": "electron-v44.4.5.browser-window.get-all-windows-order",
+      "expected_verdict": "unknown",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.get-all-windows.order today: no BrowserWindow.getAllWindows exists whose order could be observed",
+      "negative_control": "Today: exporting a BrowserWindow with a static getAllWindows fails the mapped case. Unknown, not cited: the v44.4.5 docs leave the order unspecified (an unordered map in the source), so Keld's creation order is ▲-stronger and never scored as parity."
+    },
+    {
+      "operation_id": "window.get-focused-window.sync",
+      "oracle_id": "electron-v44.4.5.browser-window.get-focused-window",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#browserwindowgetfocusedwindow",
+        "quote": "Returns `BrowserWindow | null` - The window that is focused in this application, otherwise returns `null`.",
+        "quote_sha256": "sha256:d19ebe17d6654549e989723dd73bd58d3550e6e40fe8a55c56f669c19f9e9d9b"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.get-focused-window.sync today: BrowserWindow.getFocusedWindow does not exist",
+      "negative_control": "Today: exporting a BrowserWindow with a static getFocusedWindow fails the mapped case. After GH-449 inverts it: returning a Promise instead of the focused window or null fails it."
+    },
+    {
+      "operation_id": "window.maximize.state-in-listener",
+      "oracle_id": "electron-v44.4.5.browser-window.event-maximize",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#event-maximize",
+        "quote": "Emitted when window is maximized.",
+        "quote_sha256": "sha256:64c9b0c2e6ed56a66f7b24be0b0e89b02e6020dd633e8b992ea33474349d2936"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.maximize.state-in-listener today: BrowserWindow has no maximize or isMaximized",
+      "negative_control": "Today: exporting a BrowserWindow with isMaximized fails the mapped case. After GH-449 inverts it: updating the isMaximized mirror after the maximize listener runs fails it."
+    },
+    {
+      "operation_id": "window.set-full-screen.state",
+      "oracle_id": "electron-v44.4.5.browser-window.is-full-screen",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#winisfullscreen",
+        "quote": "When querying for a BrowserWindow's fullscreen status, you should ensure that either the ['enter-full-screen'](browser-window.md#event-enter-full-screen) or ['leave-full-screen'](browser-window.md#event-leave-full-screen) events have been emitted.",
+        "quote_sha256": "sha256:73e0c9d74c4cb4396ee4fd5cf6492224bdc1edb2b0c9d325c193141afdbdaa1b"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-449",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.set-full-screen.state today: BrowserWindow has no setFullScreen or isFullScreen",
+      "negative_control": "Today: exporting a BrowserWindow with isFullScreen fails the mapped case. After GH-449 inverts it: isFullScreen() still false once enter-full-screen has been emitted after setFullScreen(true) fails it."
+    },
+    {
+      "operation_id": "window.constructor.drawio-options",
+      "oracle_id": "electron-v44.4.5.browser-window.constructor-options",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#class-browserwindow-extends-basewindow",
+        "quote": "It creates a new `BrowserWindow` with native properties as set by the `options`.",
+        "quote_sha256": "sha256:62a7d458d2fe9ee0193a2cf3746ab720ef05a580bf329f0379d17ab971f2ad37"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-455",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.constructor.drawio-options today: the draw.io main-window options create no window and throw TypeError, not a triage error",
+      "negative_control": "Today: making the draw.io main-window options construct a window fails the mapped case. After GH-455 inverts it: refusing disableBlinkFeatures, so draw.io's main window is not created, fails it."
+    },
+    {
+      "operation_id": "window.constructor.escalating-web-preferences",
+      "oracle_id": "electron-v44.4.5.browser-window.constructor-options",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#class-browserwindow-extends-basewindow",
+        "quote": "It creates a new `BrowserWindow` with native properties as set by the `options`.",
+        "quote_sha256": "sha256:62a7d458d2fe9ee0193a2cf3746ab720ef05a580bf329f0379d17ab971f2ad37"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-455",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.constructor.escalating-web-preferences today: each escalating value throws TypeError, not a KELD-COMPAT triage refusal",
+      "negative_control": "Today: refusing any of the six escalating values with a KELD-COMPAT triage error fails the mapped case. After GH-455 implements it: honouring or silently ignoring nodeIntegration:true fails it."
+    },
+    {
+      "operation_id": "window.close-event.prevent-default",
+      "oracle_id": "electron-v44.4.5.browser-window.event-close-cancel",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#event-close",
+        "quote": "Calling `event.preventDefault()`\nwill cancel the close.",
+        "quote_sha256": "sha256:66329c599a8c5b327ccee17eaa5118b7a3d4340222843d05b394398d05d51184"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-450",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.close-event.prevent-default today: BrowserWindow has no close, so no close event can be vetoed",
+      "negative_control": "Today: exporting a BrowserWindow with close fails the mapped case. After GH-450 inverts it: removing the view on CloseRequested before the reply, so a vetoed close still closes, fails it."
+    },
+    {
+      "operation_id": "window.destroy.closed-without-close",
+      "oracle_id": "electron-v44.4.5.browser-window.destroy-guarantees-closed",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#windestroy",
+        "quote": "and `close` event will also not be emitted\nfor this window, but it guarantees the `closed` event will be emitted.",
+        "quote_sha256": "sha256:76bd63c23175eade83a2b5359ef154442eafaf2b4c073e351a3f3e6d63c4c50e"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-450",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.destroy.closed-without-close today: BrowserWindow has no destroy",
+      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: emitting close from destroy() fails it."
+    },
+    {
+      "operation_id": "window.closed.is-destroyed-in-listener",
+      "oracle_id": "electron-v44.4.5.browser-window.closed-after-mark-destroyed",
+      "expected_verdict": "unknown",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.closed.is-destroyed-in-listener today: BrowserWindow has no isDestroyed",
+      "negative_control": "Today: exporting a BrowserWindow with isDestroyed fails the mapped case. Unknown, not cited: its oracle is a v44.4.5 source receipt (gh532 Q1). Once GH-450 implements it, emitting closed before the tombstone flips fails it."
+    },
+    {
+      "operation_id": "window.web-contents.read-after-destroy-throws",
+      "oracle_id": "electron-v44.4.5.browser-window.web-contents-destroyed-throws",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#winwebcontents-readonly",
+        "quote": "Reading this property throws `Object has been destroyed` once the window has been destroyed",
+        "quote_sha256": "sha256:99536610717896138308ec71cd3cfe01acc75d61da9330fa836144059d1f5843"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-450",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.web-contents.read-after-destroy-throws today: BrowserWindow has no destroy, so no window can be read after destruction",
+      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: a destroyed window whose webContents read returns instead of throwing Object has been destroyed fails it."
+    },
+    {
+      "operation_id": "window.close.repeat-after-veto-closes-once",
+      "oracle_id": "electron-v44.4.5.browser-window.close-try",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#winclose",
+        "quote": "Try to close the window. This has the same effect as a user manually clicking\nthe close button of the window.",
+        "quote_sha256": "sha256:0d46ef3c4dd72062859c2f7c5e87214dff201782de35859d5737b693cc131ffa"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-450",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.close.repeat-after-veto-closes-once today: BrowserWindow has no close",
+      "negative_control": "Today: exporting a BrowserWindow with close fails the mapped case. After GH-450 inverts it: emitting closed from both the second close() and the Destroyed fact, so two closed events fire, fails it."
+    },
+    {
+      "operation_id": "window.destroy.after-veto-closes-once",
+      "oracle_id": "electron-v44.4.5.browser-window.destroy-guarantees-closed",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/browser-window.md#windestroy",
+        "quote": "and `close` event will also not be emitted\nfor this window, but it guarantees the `closed` event will be emitted.",
+        "quote_sha256": "sha256:76bd63c23175eade83a2b5359ef154442eafaf2b4c073e351a3f3e6d63c4c50e"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-450",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/browser-window.test.ts",
+      "test_name": "window.destroy.after-veto-closes-once today: BrowserWindow has neither close nor destroy",
+      "negative_control": "Today: exporting a BrowserWindow with destroy fails the mapped case. After GH-450 inverts it: emitting closed from both destroy() and the Destroyed fact after the vetoed close fails it."
+    }
+  ]
+}

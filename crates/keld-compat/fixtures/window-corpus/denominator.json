@@ -1,0 +1,77 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-window-v1",
+  "corpus_sha256": "sha256:8eecac5ea831d203347f3b3d1219c9c9ce803f638f129ed3b46e2c05ac059da6",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "window.constructor.host-id",
+      "oracle_id": "electron-v44.4.5.browser-window.win-id-unique"
+    },
+    {
+      "operation_id": "app.browser-window-created.once-per-window",
+      "oracle_id": "electron-v44.4.5.app.event-browser-window-created"
+    },
+    {
+      "operation_id": "app.web-contents-created.once-per-window",
+      "oracle_id": "electron-v44.4.5.app.event-web-contents-created"
+    },
+    {
+      "operation_id": "app.window-created-events.constructor-order",
+      "oracle_id": "electron-v44.4.5.browser-window.creation-event-order"
+    },
+    {
+      "operation_id": "window.get-all-windows.sync",
+      "oracle_id": "electron-v44.4.5.browser-window.get-all-windows"
+    },
+    {
+      "operation_id": "window.get-all-windows.order",
+      "oracle_id": "electron-v44.4.5.browser-window.get-all-windows-order"
+    },
+    {
+      "operation_id": "window.get-focused-window.sync",
+      "oracle_id": "electron-v44.4.5.browser-window.get-focused-window"
+    },
+    {
+      "operation_id": "window.maximize.state-in-listener",
+      "oracle_id": "electron-v44.4.5.browser-window.event-maximize"
+    },
+    {
+      "operation_id": "window.set-full-screen.state",
+      "oracle_id": "electron-v44.4.5.browser-window.is-full-screen"
+    },
+    {
+      "operation_id": "window.constructor.drawio-options",
+      "oracle_id": "electron-v44.4.5.browser-window.constructor-options"
+    },
+    {
+      "operation_id": "window.constructor.escalating-web-preferences",
+      "oracle_id": "electron-v44.4.5.browser-window.constructor-options"
+    },
+    {
+      "operation_id": "window.close-event.prevent-default",
+      "oracle_id": "electron-v44.4.5.browser-window.event-close-cancel"
+    },
+    {
+      "operation_id": "window.destroy.closed-without-close",
+      "oracle_id": "electron-v44.4.5.browser-window.destroy-guarantees-closed"
+    },
+    {
+      "operation_id": "window.closed.is-destroyed-in-listener",
+      "oracle_id": "electron-v44.4.5.browser-window.closed-after-mark-destroyed"
+    },
+    {
+      "operation_id": "window.web-contents.read-after-destroy-throws",
+      "oracle_id": "electron-v44.4.5.browser-window.web-contents-destroyed-throws"
+    },
+    {
+      "operation_id": "window.close.repeat-after-veto-closes-once",
+      "oracle_id": "electron-v44.4.5.browser-window.close-try"
+    },
+    {
+      "operation_id": "window.destroy.after-veto-closes-once",
+      "oracle_id": "electron-v44.4.5.browser-window.destroy-guarantees-closed"
+    }
+  ]
+}
