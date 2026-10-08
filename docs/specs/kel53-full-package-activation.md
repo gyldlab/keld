@@ -2030,7 +2030,9 @@ terminates each member outside the family through the handle it opened, with the
 code `1` that the attempt Job's termination uses (`windows_job.rs:2193`),
 treating a member whose handle is already signaled as terminated, then waits for their
 handles under the deadline and takes a new snapshot; it repeats until a snapshot shows
-only the host and family, or until the deadline. This is exactly what closing H at exit
+only the host and family, or until the deadline. A `TerminateProcess` failure on a live
+member, such as access denied, is not refused on its own: the member stays in the next
+snapshot, and the deadline refusal covers it. This is exactly what closing H at exit
 would do to those members, moved before the clear, and it is what makes the clear safe:
 after a clean snapshot no process outside the family exists in H that could start
 another, other than the host, which starts nothing after the census. At the deadline
