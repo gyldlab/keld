@@ -5,13 +5,13 @@
 # Trust chain. `apt-get update` verifies the signed InRelease files and, through
 # them, the Packages indexes that carry each .deb's SHA256. apt itself does not
 # re-hash a file it finds already present in its archive directory: it accepts
-# it when only the size matches (apt-pkg/acquire-item.cc,
-# pkgAcqArchive::QueueNext, apt 2.7.14 and main). So a restored cache file is
-# placed there only after its SHA256 and size equal what the freshly fetched
-# indexes say for the exact file apt is about to install
+# it when only the size matches (the pkgAcqArchive::pkgAcqArchive constructor in
+# apt-pkg/acquire-item.cc, lines 3494-3512 in apt 2.7.14; same on main). So a
+# restored cache file is placed there only after its SHA256 and size equal what
+# apt's signed indexes say for the exact file it is about to install
 # (`apt-get install --print-uris -o Acquire::ForceHash=SHA256`). Every other
 # package is downloaded and hash-checked by apt as usual. Index lists are never
-# cached: a cached list would carry no fresh signature check.
+# cached; apt keeps only the lists it verified itself.
 set -euo pipefail
 
 readonly CACHE_KEY_PREFIX=keld-webkitgtk-debs-v1
@@ -72,8 +72,18 @@ install_packages() {
     local packages archives plan start
     packages="$(require_packages)"
     archives="$(apt_archives_dir)"
+    if [[ -L "$cache_dir" ]]; then
+        fail "the cache directory $cache_dir is a symlink; refusing to stage from or write through it."
+    fi
     mkdir -p "$cache_dir"
 
+    # apt's default APT::Update::Error-Mode=persistent turns a transient index
+    # fetch failure into a warning and keeps the lists apt verified earlier (the
+    # image's or a previous update's); a signature (auth) failure is still an
+    # error (apt-pkg/update.cc, AcquireUpdate). The trust root therefore stays
+    # signed, but it is not guaranteed to be fresh. That default is kept: it
+    # tolerates mirror flakes, and stale-but-signed lists can only name older
+    # signed packages, which the SHA256 staging check still binds (#645).
     start=$SECONDS
     sudo apt-get update
     echo "ci-webkitgtk-apt: apt-get update took $((SECONDS - start)) s"
@@ -122,6 +132,9 @@ install_packages() {
     if [[ ${#planned_files[@]} -gt 0 ]]; then
         for file in "${planned_files[@]}"; do
             if [[ -f "$archives/$file" ]]; then
+                # A restored entry may be a symlink; replace it rather than
+                # write the downloaded package through it.
+                rm -f -- "$cache_dir/$file"
                 cp -- "$archives/$file" "$cache_dir/$file"
             fi
         done
@@ -231,6 +244,27 @@ EOF
     [[ ! -e "$temp/outside/escape.deb" ]] || fail "self-test: a hostile file name escaped the archive directory"
     grep -q 'rejected 1' "$temp/out" || { cat "$temp/out" >&2; fail "self-test: a hostile file name was not rejected"; }
     echo "ok: a hostile planned file name is rejected"
+
+    # Negative control: a planted cache symlink is never staged, and the refresh
+    # replaces it instead of writing the downloaded package through it.
+    write_plan
+    rm -f "$cache/liba_1.0_amd64.deb"
+    printf 'outside target\n' >"$temp/c/outside/target"
+    ln -s "$temp/c/outside/target" "$cache/liba_1.0_amd64.deb"
+    run_install || { cat "$temp/out" >&2; fail "self-test 'symlink' failed"; }
+    expect_downloads "a planted cache symlink is not staged" "liba_1.0_amd64.deb"
+    [[ "$(cat "$temp/c/outside/target")" == "outside target" ]] ||
+        fail "self-test: the cache refresh wrote through a planted symlink"
+    [[ -f "$cache/liba_1.0_amd64.deb" && ! -L "$cache/liba_1.0_amd64.deb" ]] ||
+        fail "self-test: the planted symlink was not replaced by the verified package"
+    echo "ok: a planted cache symlink is replaced, never written through"
+    # A symlinked cache directory is refused outright.
+    ln -s "$cache" "$temp/c/linked-cache"
+    if PATH="$temp/bin:$PATH" KELD_WEBKITGTK_PACKAGES="liba libb" "$self" install "$temp/c/linked-cache" >"$temp/out" 2>&1; then
+        fail "self-test: a symlinked cache directory was accepted"
+    fi
+    grep -q "is a symlink" "$temp/out" || fail "self-test: a symlinked cache directory did not report the refusal"
+    echo "ok: a symlinked cache directory is refused"
 
     # A failed index refresh stops before any install.
     write_plan

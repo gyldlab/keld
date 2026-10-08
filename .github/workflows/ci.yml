@@ -158,8 +158,9 @@ jobs:
       # The .deb set comes from a first-party cache keyed by the exact package
       # list and runner image (#645). tools/ci_webkitgtk_apt.sh still runs
       # apt-get update and stages a cached file only after its SHA256 matches
-      # the freshly signed index; everything else downloads as before. A miss
-      # takes the old path and then saves the cache.
+      # apt's signed index; everything else downloads as before. A miss takes
+      # the old path and then saves the cache. A stuck cache download aborts
+      # after 2 minutes and proceeds as a miss; both cache steps are bounded.
       # A hung Ubuntu mirror must fail the install, not consume the 45-minute
       # job (#624): over the last 100 CI runs it took p50 30 s and p90 95 s, slow
       # downloads still succeeded in 524 s and 642 s, and two hangs ran ~2630 s.
@@ -170,6 +171,9 @@ jobs:
       - name: Restore WebKitGTK .deb cache
         id: webkitgtk-apt-cache
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
+        timeout-minutes: 5
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/keld-webkitgtk-debs
@@ -180,6 +184,7 @@ jobs:
         run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
       - name: Save WebKitGTK .deb cache
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true' && steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/keld-webkitgtk-debs
@@ -537,8 +542,9 @@ jobs:
       # The .deb set comes from a first-party cache keyed by the exact package
       # list and runner image (#645). tools/ci_webkitgtk_apt.sh still runs
       # apt-get update and stages a cached file only after its SHA256 matches
-      # the freshly signed index; everything else downloads as before. A miss
-      # takes the old path and then saves the cache.
+      # apt's signed index; everything else downloads as before. A miss takes
+      # the old path and then saves the cache. A stuck cache download aborts
+      # after 2 minutes and proceeds as a miss; both cache steps are bounded.
       # Same evidence-based bound as the clippy leg (#624): above the slowest
       # observed successful apt step (642 s), far below the 44-minute hangs.
       - name: Resolve WebKitGTK apt cache key
@@ -546,6 +552,9 @@ jobs:
         run: tools/ci_webkitgtk_apt.sh key >> "$GITHUB_OUTPUT"
       - name: Restore WebKitGTK .deb cache
         id: webkitgtk-apt-cache
+        timeout-minutes: 5
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/keld-webkitgtk-debs
@@ -555,6 +564,7 @@ jobs:
         run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
       - name: Save WebKitGTK .deb cache
         if: steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/keld-webkitgtk-debs
