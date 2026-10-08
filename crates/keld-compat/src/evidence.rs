@@ -605,8 +605,8 @@ impl Scoreboard {
     /// The authority profile shared by every contributing record.
     ///
     /// `None` when no record contributes or when two contributing records
-    /// differ, so a mixed board is never reported under one record's
-    /// profile. Render it with [`AuthorityProfile::as_str`].
+    /// differ in profile, so a mixed board is never reported under one
+    /// record's profile. Render it with [`AuthorityProfile::as_str`].
     #[must_use]
     pub fn authority_profile(&self) -> Option<AuthorityProfile> {
         self.authority_profile
@@ -1563,6 +1563,13 @@ mod tests {
         ),
     ];
 
+    /// All five v1 `authority_profile` strings with their literal variants.
+    fn all_authority() -> impl Iterator<Item = (&'static str, AuthorityProfile)> + Clone {
+        OTHER_AUTHORITY
+            .into_iter()
+            .chain([("unverified", AuthorityProfile::Unverified)])
+    }
+
     /// `valid_evidence_json` moved to `cell` and labelled with the literal
     /// `authority_profile` string `profile`; digest and engine are unchanged.
     fn evidence_json_with_authority(cell: (&str, &str), profile: &str) -> String {
@@ -1941,15 +1948,58 @@ mod tests {
     }
 
     #[test]
+    fn contributing_identity_requires_one_profile_digest_and_engine() {
+        // Each case differs in exactly one identity dimension, so deleting
+        // any one comparison in `shared_authority_profile` or
+        // `contributing_identity_consistent` fails here.
+        for (left, _) in all_authority() {
+            for (right, _) in all_authority().filter(|(text, _)| *text != left) {
+                let board = score_showcase(left, right);
+                assert!(!board.complete(), "{left}+{right}");
+                assert_eq!(board.unweighted_percent(), None, "{left}+{right}");
+                assert_eq!(board.authority_profile(), None, "{left}+{right}");
+            }
+        }
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.panel = Panel::Showcase;
+        let mut digest = pass_with_authority(CELL_ECHO, "legacy_sandbox_off");
+        digest.artifact.sha256 = DIGEST_B.to_owned();
+        let mut engine = pass_with_authority(CELL_ECHO, "legacy_sandbox_off");
+        engine.revisions.engine = "cef".to_owned();
+        for (dimension, echo) in [("digest", digest), ("engine", engine)] {
+            let window = pass_with_authority(CELL_WINDOW, "legacy_sandbox_off");
+            let board = score(&denom, &[window, echo], AS_OF).expect("score");
+            assert!(!board.complete(), "{dimension}");
+            assert_eq!(board.unweighted_percent(), None, "{dimension}");
+            assert_eq!(
+                board.authority_profile(),
+                Some(AuthorityProfile::LegacySandboxOff),
+                "{dimension} mismatch alone does not mix profiles"
+            );
+        }
+        // Records that fill no committed cell contribute no profile.
+        denom.cells.truncate(1);
+        let foreign_kind = evidence_json_with_authority(CELL_WINDOW, "unverified")
+            .replace(r#""kind": "primary_workflow""#, r#""kind": "install""#);
+        let foreign_kind = parse_evidence(foreign_kind.as_bytes()).expect("install record");
+        let outside = pass_with_authority(CELL_ECHO, "unverified");
+        let window = pass_with_authority(CELL_WINDOW, "strict_bun");
+        let records = [window, foreign_kind.clone(), outside.clone()];
+        let board = score(&denom, &records, AS_OF).expect("score");
+        assert!(board.complete());
+        assert_eq!(board.authority_profile(), Some(AuthorityProfile::StrictBun));
+        let board = score(&denom, &[foreign_kind, outside], AS_OF).expect("score");
+        assert_eq!(board.missing(), 1);
+        assert_eq!(board.authority_profile(), None, "no contributing record");
+    }
+
+    #[test]
     fn authority_vocabulary_round_trips_and_unverified_is_distinct() {
         // gh532 AC15. Negative controls: swapping any two `as_str` arms fails
         // the round trip, and a sixth, unknown string is still KELD-COMPAT-005.
         // §4.4: `unverified` is a fifth v1 arm, not a schema bump.
         assert_eq!(EVIDENCE_SCHEMA, "keld.compat.evidence/v1");
-        let all = OTHER_AUTHORITY
-            .into_iter()
-            .chain([("unverified", AuthorityProfile::Unverified)]);
-        for (text, variant) in all {
+        for (text, variant) in all_authority() {
             let record = pass_with_authority(CELL_WINDOW, text);
             assert_eq!(record.authority_profile(), variant, "{text}");
             assert_eq!(variant.as_str(), text);
