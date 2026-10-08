@@ -685,6 +685,10 @@ jobs:
           bun --no-install test tools/ci_workflow_security.test.ts
       - name: Check this checkout
         if: needs.changes.outputs.hygiene == 'true'
+        # GH-508 append-only baseline: compare with the PR base or, on push,
+        # the previous tip; ci-hygiene fails closed when that commit is absent.
+        env:
+          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
           target/ci-hygiene/ci-hygiene check .

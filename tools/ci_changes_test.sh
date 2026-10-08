@@ -199,6 +199,14 @@ codeql_js_only=$'codeql_rust=false\ncodeql_javascript_typescript=true\ncodeql_ac
 check_os_all='["ubuntu-latest","macos-latest","windows-latest"]'
 check_os_documentation='["windows-latest"]'
 
+# GH-508: the kipc allocation baseline (alone or with its table) selects the
+# hosted hygiene check that owns its append-only rule, in addition to its Rust
+# and docs owners; any other crate-local text file does not (negative control).
+allocations_flags=$'rust=true\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
+channel_table_flags=$'rust=true\ndocs=false\nhygiene=true\ngui=true\nmsrv=true\ndeny=false\nts=true\nwebkitgtk=true'
+allocations_and_table_flags=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=false\nts=true\nwebkitgtk=true'
+crate_text_flags=$'rust=true\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=true'
+
 # A developer checkout can contain unknown inputs. Prove the live fallback,
 # then run clean-path exclusion controls in a separate tracked-byte snapshot.
 # The unknown input is retained in place; it is never ignored or special-cased.
@@ -420,6 +428,16 @@ expect_no_package_selection "agent assembly config selects no package/suite" "$a
 host_classification="$(result_for_paths crates/keld-ipc/src/lib.rs)"
 expect_flags "IPC source also feeds Bun constant assertions" "$ipc_fixture_flags" "$host_classification"
 expect_package_token "IPC change includes host consumer" keld-host "$host_classification"
+
+allocations_classification="$(result_for_paths crates/keld-ipc/channel_allocations.txt)"
+expect_flags "channel allocation baseline selects its hosted append-only hygiene check" "$allocations_flags" "$allocations_classification"
+expect_package_token "channel allocation baseline still tests its owning crate" keld-ipc "$allocations_classification"
+channel_table_classification="$(result_for_paths crates/keld-ipc/src/channel_table.rs)"
+expect_flags "channel table source also selects the append-only hygiene check" "$channel_table_flags" "$channel_table_classification"
+allocations_and_table_classification="$(result_for_paths crates/keld-ipc/src/channel_table.rs crates/keld-ipc/channel_allocations.txt)"
+expect_flags "a renumber of table and baseline together selects the hygiene check" "$allocations_and_table_flags" "$allocations_and_table_classification"
+crate_text_classification="$(result_for_paths crates/keld-ipc/notes.txt)"
+expect_flags "another crate-local text file does not select hygiene" "$crate_text_flags" "$crate_text_classification"
 
 compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
 expect_flags "compat-only change skips GUI smoke but installs GTK for its selected test closure" "$compat_flags" "$compat_classification"

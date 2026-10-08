@@ -745,6 +745,15 @@ classify_path() {
         markdown_changed="$TRUE"
     fi
 
+    # GH-508: the kipc channel allocation baseline is append-only against its
+    # merge base, and `ci-hygiene check` is that rule's only hosted owner. The
+    # table it records is routed with it. Additive: owners below still apply.
+    case "$changed_file" in
+        crates/keld-ipc/channel_allocations.txt | crates/keld-ipc/src/channel_table.rs)
+            hygiene="$TRUE"
+            ;;
+    esac
+
     case "$changed_file" in
         # Agent instruction and assembly changes must run both generated-doc
         # freshness and the merge-blocking instruction-context/hygiene gates.
