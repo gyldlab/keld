@@ -43,17 +43,28 @@ pub enum ProfileErrorKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileError {
     kind: ProfileErrorKind,
+    context: Option<&'static str>,
 }
 
 impl ProfileError {
     const fn new(kind: ProfileErrorKind) -> Self {
-        Self { kind }
+        Self {
+            kind,
+            context: None,
+        }
     }
 
     /// Returns the stable failure category without parsing display text.
     #[must_use]
     pub const fn kind(&self) -> ProfileErrorKind {
         self.kind
+    }
+
+    /// Returns the platform-owned detail naming the exact barrier or
+    /// observable that failed, when the failing site recorded one.
+    #[must_use]
+    pub const fn context(&self) -> Option<&'static str> {
+        self.context
     }
 
     /// Constructs the release-mode missing-identity failure.
@@ -65,6 +76,18 @@ impl ProfileError {
     #[cfg(target_os = "windows")]
     pub(crate) const fn platform_failure(kind: ProfileErrorKind) -> Self {
         Self::new(kind)
+    }
+
+    /// Windows failure that names the exact barrier or observable that failed.
+    #[cfg(target_os = "windows")]
+    pub(crate) const fn platform_failure_with_context(
+        kind: ProfileErrorKind,
+        context: &'static str,
+    ) -> Self {
+        Self {
+            kind,
+            context: Some(context),
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -107,7 +130,11 @@ impl fmt::Display for ProfileError {
                 "durable profile lifecycle state cannot prove safe reuse because recovery state cannot be proven on this platform/version. If persistent profiles are unsupported here, use explicit ephemeral mode; otherwise complete engine-release or boot recovery before lookup"
             }
         };
-        write!(f, "KELD-WV-009: profile selection failed: {detail}.")
+        write!(f, "KELD-WV-009: profile selection failed: {detail}.")?;
+        if let Some(context) = self.context {
+            write!(f, " Observed: {context}.")?;
+        }
+        Ok(())
     }
 }
 
