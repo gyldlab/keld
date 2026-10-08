@@ -161,7 +161,10 @@ criteria and controls map onto them as follows:
    with files under `evidence/`, when the registry test runs, then it fails with
    `ProductRecordsNeedReceipt`. This holds until X02-T5's receipt reader supplies a
    `ProductReceipt`. *Negative control:* a synthetic product corpus with one record is
-   rejected, and it is never scored as a harness run.
+   rejected, and it is never scored as a harness run. Given an in-test `ProductReceipt`
+   over cells {A} and passing records for cells {A, B}, `validate_product_run` fails
+   with `UncoveredProductRecord` before scoring. *Negative control:* without the
+   set-equality check, B scores as a pass (D7).
 7. **C7 — The report's authority line is derived (D10).** Given the migrated report,
    when it renders, then its authority line names
    `board.authority_profile().map(AuthorityProfile::as_str)`, which must be one shared
@@ -662,7 +665,12 @@ Labels then follow the panel:
   | `Strict` | `StrictBun` |
 
   Each receipt cell needs exactly one record (`MissingProductRecord`, so the run is not
-  dropped). A wrong label fails with `LabelMismatch`, which names both the receipt
+  dropped), and no record may name a cell outside the receipt (`UncoveredProductRecord`,
+  checked before scoring). The record `CellKey` set must equal the receipt's `cells` set
+  exactly. Otherwise a manifest cell the run never covered could still be counted as a
+  pass, because it belongs to the denominator. *Negative control:* a manifest with cells
+  A and B, a receipt covering only A, and passing records for both. The check must
+  reject it with `UncoveredProductRecord`, and removing the check lets B score as a pass. A wrong label fails with `LabelMismatch`, which names both the receipt
   state and the record label (gh532 AC12). X02-T5's receipt parser builds the view. It
   owns the receipt schema and the legacy-declaration and strict-archive evidence that
   decides the state.
