@@ -2874,10 +2874,18 @@ Must not touch in Slice A:
       path, so the candidate's own host-death Job nests under the attempt Job. Its
       candidate mode never opens the WebView2 user data folder that the old host
       holds, the assumption under which the census may terminate a host WebView2
-      process past the barrier (§4 *Census and policy*). Its evidence adds the S6c
-      cells of the "8, 9 (candidate release)" row: survival through the real host
-      coordinator, the ten in-session updates, the measured deadline and the
-      `complete()` `Err` cut (r12).
+      process past the barrier (§4 *Census and policy*). S6c also owns a design item
+      for the candidate's WebView2 profile during health: landed release boot selects
+      its persistent user-data folder before any listener, child or window
+      (Architecture 05 §1, `docs/architecture/05-webview-and-native.md:55-56`), and
+      the KEL-135 lease excludes a second same-app host until the host owner exits
+      (`05-webview-and-native.md:88`), so a candidate launched as landed would fail
+      with `ProfileInUse` while the old host holds the lease and could never reach
+      `Ready`; S6c must specify a profile handover, or a candidate-only profile, before
+      it starts, with no temporary-store fallback (`05-webview-and-native.md:64-65`).
+      Its evidence adds the S6c cells of the "8, 9 (candidate release)" row: survival
+      through the real host coordinator, the ten in-session updates, the measured
+      deadline and the `complete()` `Err` cut (r12).
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
       executable entry. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6c's coordinator starts a
@@ -3214,6 +3222,15 @@ not requests to revisit that decision:
 - Criterion-10 post-exit helper under option B (same owner): if such a helper is ever
   used, it inherits the host-death Job in the same way and needs the same root fix
   before it is specified.
+- Candidate WebView2 profile during health under option B (same owner; tracked under
+  KEL-270 before S6c starts): landed release boot selects its persistent user-data
+  folder before any listener, child or window (Architecture 05 §1,
+  `docs/architecture/05-webview-and-native.md:55-56`) and the KEL-135 lease excludes
+  a second same-app host until the host owner exits (`05-webview-and-native.md:88`),
+  so a candidate launched as landed would fail with `ProfileInUse` while the old host
+  holds the lease and could never reach `Ready`. S6c must specify a profile handover,
+  or a candidate-only profile, with no temporary-store fallback
+  (`05-webview-and-native.md:64-65`), before it starts; this amendment does not (§6).
 - T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
   falsifier before any privileged seamless mechanism is selected. The task probe is only
   wake-up feasibility.
