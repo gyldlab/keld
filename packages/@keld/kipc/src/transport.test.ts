@@ -24,8 +24,10 @@ import {
   DrainSignal,
   ECHO_CHANNEL,
   FLAG_RAW,
+  FS_CHANNEL,
   FrameKind,
   FrameReader,
+  HANDSHAKE_CHANNEL,
   HEADER_LEN,
   LIFECYCLE_CHANNEL,
   MAX_FRAME_LEN,
@@ -88,25 +90,25 @@ function walkFiles(root: string, suffix: string, into: string[]): void {
 }
 
 describe("wire constants match keld-ipc", () => {
+  // Channel ids are generated from keld_ipc::channel_table; the drift check in
+  // scripts/channel-table.test.ts replaces the old source-text parity (GH-508).
   test("Rust source pins the same numbers this module exports", () => {
     const lib = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/lib.rs"), "utf8");
     const frame = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/frame.rs"), "utf8");
-    const echo = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/echo.rs"), "utf8");
-    const lifecycle = readFileSync(join(REPO_ROOT, "crates/keld-ipc/src/lifecycle.rs"), "utf8");
     expect(lib).toContain("pub const PROTOCOL_VERSION: u8 = 2;");
     expect(lib).toContain("pub const HEADER_LEN: usize = 16;");
     expect(lib).toContain("pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;");
     expect(lib).toContain("Duration::from_secs(5)");
     expect(frame).toContain("pub const FLAG_RAW: u16 = 1 << 0;");
     expect(frame).toContain("Ping = 10");
-    expect(echo).toContain("ChannelId(1)");
-    expect(lifecycle).toContain("ChannelId(3)");
     expect(PROTOCOL_VERSION).toBe(2);
     expect(HEADER_LEN).toBe(16);
     expect(MAX_FRAME_LEN).toBe(16 * 1024 * 1024);
     expect(APP_LINK_IO_DEADLINE_MS).toBe(5_000);
     expect(FLAG_RAW).toBe(1);
+    expect(HANDSHAKE_CHANNEL).toBe(0);
     expect(ECHO_CHANNEL).toBe(1);
+    expect(FS_CHANNEL).toBe(2);
     expect(LIFECYCLE_CHANNEL).toBe(3);
     expect(FrameKind.Ping).toBe(10);
   });

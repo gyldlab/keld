@@ -1,7 +1,8 @@
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
- * Wire constants match `keld_ipc::{frame,lib,echo,lifecycle}` — not reverse-engineered.
+ * Wire constants match `keld_ipc::{frame,lib}` — not reverse-engineered — and the channel ids
+ * are generated from `keld_ipc::channel_table` into the region below (GH-508).
  * `keld create` embeds this file as `src/kipc-transport.ts`. `@keld/electron` imports
  * it. Do not add a second reader/writer/constant owner.
  *
@@ -28,10 +29,17 @@ export const PROTOCOL_VERSION = 2;
 export const HEADER_LEN = 16;
 /** Control-plane frame payload cap — mirrors `keld_ipc::MAX_FRAME_LEN` (16 MiB). */
 export const MAX_FRAME_LEN = 16 * 1024 * 1024;
-/** Mirrors `keld_ipc::echo::ECHO_CHANNEL`. */
+// @generated-begin channel-table: packages/@keld/kipc/scripts/echo-codegen.ts from
+// crates/keld-ipc/src/channel_table.rs. Do not edit by hand; run bun run echo:generate.
+/** Reserved `HELLO` channel (`keld_ipc::channel_table::HANDSHAKE_CHANNEL`). */
+export const HANDSHAKE_CHANNEL = 0;
+/** Channel `echo` (`keld_ipc::channel_table::ECHO`). */
 export const ECHO_CHANNEL = 1;
-/** Mirrors `keld_ipc::LIFECYCLE_CHANNEL`. */
+/** Channel `fs` (`keld_ipc::channel_table::FS`). */
+export const FS_CHANNEL = 2;
+/** Channel `lifecycle` (`keld_ipc::channel_table::LIFECYCLE`). */
 export const LIFECYCLE_CHANNEL = 3;
+// @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
 export const APP_LINK_IO_DEADLINE_MS = 5_000;
 /** Header flag mirroring `keld_ipc::frame::FLAG_RAW`. */
@@ -105,13 +113,13 @@ export interface ReceivePolicy {
 
 export const RECEIVE_POLICIES = {
   serverPreAuthHello: {
-    channel: 0,
+    channel: HANDSHAKE_CHANNEL,
     kinds: [FrameKind.Hello],
     corr: { rule: "zero" },
     exactLen: 32,
   } as ReceivePolicy,
   clientAwaitHello: {
-    channel: 0,
+    channel: HANDSHAKE_CHANNEL,
     kinds: [FrameKind.Hello],
     corr: { rule: "zero" },
     exactLen: 32,
