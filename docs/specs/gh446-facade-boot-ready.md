@@ -106,7 +106,7 @@ The names below are proposed.
    - the census stays 0 throughout, because the host creates no window in any generation.
 
    *NC:* removing the `window_ready` replay in successor install leaves the successor's `whenReady` pending past its echo fence.
-9. **Recovered generation, compat side.** The `electron-app-v1` cell `app.ready.recovered-generation` is recorded `unknown` on macOS. It is uncited (gh532 rule 6), because Electron has no main-process recovery to cite. Its mapped today-test asserts that a fresh role process observes exactly one replayed `Ready`. *NC:* names #449's keld-core adoption test `successor_create_adopts_the_oldest_unclaimed_window`: deleting the registry's adoption arm makes a successor `Create` produce a second window. That test enforces the invariant that a recovered generation never produces a second window (D7).
+9. **Recovered generation, compat side.** The `electron-app-v1` cell `app.ready.recovered-generation` is recorded `unknown` on macOS. It is uncited (gh532 rule 6), because Electron has no main-process recovery to cite. Its mapped today-test asserts that a fresh role process observes exactly one replayed `Ready`. *NC:* names #449's keld-core test of gh531 criterion 46: deleting the registry's adoption arm makes the first successor `Create` build a window. That test enforces the invariant that a recovered generation never produces a second window (D7).
 10. **Renderer boots and the KEL-237 gate.** On the final diff, these pass unchanged:
     - `successor_reader_waits_for_retired_fs_drain_before_ready_and_call` (the "G2 Ready replay", `app_session.rs:8633`);
     - `recovered_generation_orders_window_events_once_across_installation` (9599);
@@ -326,9 +326,12 @@ ahead (AC5, AC14), or on a pre-`Init` event (AC7).
 2. **No window call before Ready.** The host refuses every window call until the first
    `Ready` write: a call admitted before that write gets `KELD-CORE-040` (registry not
    ready) and creates nothing.
-   - The not-ready state ends in the same router transition that writes the first
-     `Ready`, under the shutdown transition guard, as the recovery-arm enqueue does
-     today. So a call sent in the task in which `whenReady()` resolves is served.
+   - The not-ready state ends immediately before the first `Ready` is written, inside
+     the same router transition and under the shutdown transition guard, as the
+     recovery-arm enqueue does today. So any window call the role sends after it
+     observes `Ready`, including one in the task in which `whenReady()` resolves, is
+     served. If that `Ready` write then fails, the startup failure (rule 3) ends the
+     session.
    - A successor generation cannot reach a window call before its `Ready` replay,
      because install replays `Ready` before it starts the reader (`app_session.rs:5462`).
    - The rule is the host's, keyed on the registry's state. The facade's own
@@ -375,8 +378,8 @@ pre-loop slot and implements rule 2 with its first window call (AC16; gh531 crit
 4. The generation is installed.
 5. The window-call servers are installed, the engine is created, and the loop is entered.
 6. The `Init` turn fires `HostInitialized`.
-7. One `Ready` write. In the same transition, the registry's not-ready state ends (from
-   F02-T2 on). Then the recovery arm runs (unchanged protocol).
+7. In one transition, the registry's not-ready state ends (from F02-T2 on), and then
+   the one `Ready` is written. Then the recovery arm runs (unchanged protocol).
 8. The link dispatches `Ready` in a later task, and `onHostReady` resolves the waiters.
 
 So `ready` always follows the main's synchronous top level. This matches Electron's
@@ -423,6 +426,12 @@ after the fence (lost `Ready`). AC6 sees a second `Ready`.
     milestone (`Init`) is a strict prefix of the work schema 1's milestone already
     covers (`Init`, then navigation). So 15 s cannot cut short a start that schema 1
     accepts.
+  - **The bound's evidence.** Every sample behind that sizing rule is from Windows
+    (WebView2 on Windows 10.0.26300 and hosted `windows-latest` runners, #370). UNKNOWN:
+    the macOS distribution of time to `Init`. Until it is measured, the bound is
+    justified on macOS only by the strict-prefix argument above, not by macOS data. The
+    first measurement action is to record time to `Init` in T1's AC4 run on the
+    physical Mac.
   - **On expiry.**
     1. Return `KELD-CORE-037` with the detail "the UI loop did not deliver its first
        turn within 15 s". No `Ready` is written.
@@ -432,8 +441,19 @@ after the fence (lost `Ready`). AC6 sees a second `Ready`.
     3. Call the host terminal function once.
   - **Why the UI thread cannot do it.** tao delivers proxy commands only after
     `launched` sets ready (A5), so `Fatal` would wait for the very `Init` that never
-    came. Before `Init`, a schema-2 boot holds no UI-owned resource, so nothing is left
-    for the UI thread to tear down.
+    came.
+  - **What the exit leaves behind: host death for the profile store.** Before `Init`,
+    the engine already exists, and `WkWebViewEngine::new` opened the profile store
+    (`crates/keld-wv/src/wkwebview/macos_profile.rs:231-259`). Releasing it,
+    `clean_shutdown` (`macos_profile.rs:339`), needs the AppKit main thread, which is
+    the stuck thread. So no clean-shutdown path exists here, and this spec claims none.
+    - In a persistent-profile boot, the terminal function's `exit(1)` is host death for
+      the profile. The store's lifecycle record stays `Starting`. The next launch in
+      the same boot finds a dead non-idle owner and quarantines the store, and a
+      same-boot quarantine refuses with `KELD-WV-009` until the next reboot. This is
+      the existing profile-lock recovery path (`crates/keld-wv/src/profile.rs`
+      `next_lifecycle_action`, 1668-1700), unchanged here.
+    - An ephemeral-dev profile keeps no durable state (`macos_profile.rs:262-271`).
   - **The terminal function.** keld-host passes its existing failure tail into
     `run_guarded`: print the error, remove the dev stage, `exit(1)`
     (`crates/keld-host/src/main.rs:116-133`). Process exit stays in the binary.
@@ -477,20 +497,40 @@ after the fence (lost `Ready`). AC6 sees a second `Ready`.
 - **The invariant (Agent Brief):** a recovered generation must never produce a second
   window for a document the lost generation opened. The gh531 registry owns this rule,
   and the facade only complies (gh531 D6 scope, amended by #657):
-  - A recovered generation's `Create` never creates a native window while a
-    transferred window is unclaimed. Instead it adopts the oldest unclaimed window and
-    returns that window's existing pair and replayed state.
-  - The constructor binds to that pair and emits `browser-window-created` once.
-  - Bounds and title come from the replay.
-  - Renderer-authority options (`webPreferences`, after #455's triage) must match, or
-    the `Create` is refused with a typed error.
-  - The rule keys on registry state, never on boot kind. Renderer boots never populate
-    the registry (gh531 criterion 15).
+  - The keld-core registry owns the rule. It keys on per-link subscription and
+    per-window state, never on boot kind. Renderer boots never populate the registry
+    (gh531 criterion 15).
+  - **Create before Subscribe.** A `window` CALL from a link not subscribed to
+    `window` is refused with `KELD-CORE-045` and changes no state. A blocking `Create`
+    that hits this surfaces as a thrown constructor error (gh508 c16: a supervised
+    restart starts unsubscribed). So transfer has one point, `Subscribe` (gh531
+    criterion 46).
+  - **Adoptable windows.** Each `Open` window transferred at `Subscribe` is marked
+    `adoptable`. The mark is cleared by adoption, by the owner's first
+    window-addressed CALL naming that window, or by `Destroyed`.
+  - **Adoption.** A successor's `Create` adopts the adoptable window with the lowest
+    `WindowId`, answering `REPLY Adopted { window }` with no EVENT and no state
+    change. With no adoptable window left, `Create` creates a new one.
+    - Ids are minted in `Create` admission order, the same order as `getAllWindows`.
+    - In T1, `Create` carries no renderer-authority option, so there is nothing to
+      match. #455 adds the rule: adopt the lowest-id adoptable window whose triaged
+      renderer-authority options equal the request's; if none matches, create. There
+      is no refusal code.
+  - **Identity.** The replayed `Created` builds the mirror entry and its
+    `BrowserWindow` object, and on `Adopted` the constructor returns that same object,
+    so `fromId(win.id) === win`. `browser-window-created` and `web-contents-created`
+    fire once, at adoption, never at replay. Bounds and title come from the replay.
+  - **Unclaimed survivors.** They stay `Open`, owned by the successor and counted by
+    T11's last-window check. They can be closed natively, and they stay adoptable until
+    claimed. A later constructor can therefore bind a forgotten survivor. That is
+    deterministic, never produces a second window and never makes the host navigate;
+    it is recorded as a ▲ divergence (cell `app.window.adopted-survivor`, #449).
   - The app owns navigation, so an adopted window's document survives only until the
     recovered main navigates.
 
-  Transfer, the `Created` replay at `Subscribe` (criterion 30 without `pending_close`)
-  and `Create` adoption land with #449 (gh531 T1). `pending_close` and closes during
+  Transfer, the `Created` replay at `Subscribe` (criterion 30 without `pending_close`),
+  `adoptable`, criterion 46, `WindowResponse::Adopted` and `KELD-CORE-045` land with
+  #449 (gh531 T1). `pending_close` and closes during
   the recovery gap stay with #450 (gh531 T2).
 - **The compat cell.** `app.ready.recovered-generation` is `unknown` (AC9). It is
   uncited, and its NC names #449's keld-core adoption test.
@@ -513,6 +553,11 @@ schema-2 generation can have a window.
   and a host refusal beside it would give one policy two owners.
 - *Suppressing a same-URL `loadURL` after adoption.* It changes Electron semantics, and
   it stalls `did-finish-load` waiters.
+- *Counting pre-transfer windows, so `Create` can adopt before `Subscribe`.* It adds a
+  second transfer path, and a `REPLY Created` ahead of its replayed EVENT breaks the
+  O1 ordering.
+- *A `Ready` or time cutoff for adoption.* Apps create windows after async `whenReady`
+  work, and timers are nondeterministic.
 - *X06-D1(c)'s session-ending default.* It was a research correction proposal that was
   never filed (it is absent from the adopted decisions), so it cannot override the
   owner's later D6. It is superseded.
@@ -522,8 +567,9 @@ schema-2 generation can have a window.
 
 - A host-created window in any schema-2 generation (AC8).
 - AC8's census exceeds the pre-crash count once #449 lands.
-- A keld-core registry test with a fake UI port yields two windows. The NC deletes the
-  adoption arm (#449).
+- Any sequence that builds a window while an adoptable one exists (gh531 criterion 46,
+  #449). Its NCs: deleting the adoption arm builds on the first `Create`, and deleting
+  the 045 check builds before `Subscribe`.
 - `NativeWindowObserver` shows a new window identity after facade recovery. This one
   backs the PROPOSED gh531 adoption sentence (§10).
 - gh531 D6's own falsifier: a successor cannot safely adopt a window it did not create.
@@ -775,7 +821,7 @@ the startup milestone: initial navigation with its deadline, or `Init`. Under sc
 | 4, 7 | `schema_two_ready_precedes_every_window_and_quit_is_ordered`; macOS no-flag integration with `NativeWindowObserver`. `init_arm_alone_emits_host_initialized` (with the pre-`Init` `Opened` case) and `init_disarms_the_milestone_deadline`; keld-wv unit | census taken after the `READY` line; no sleep; constructed tao events and a past `Instant` |
 | 5, 6 | `schema_two_ready_waits_for_host_initialized`, `foreign_or_repeated_ready_trigger_is_fatal`; keld-core router unit | echo-fence ordering, bounded by frames, not time |
 | 8 | `schema_two_successor_reads_ready_once_and_host_creates_no_window`; macOS recovery integration | existing recovery support; fence after `READY` |
-| 9 | cell `app.ready.recovered-generation` (`unknown`, uncited) → a Bun today-test in `app-surface.test.ts`; its NC names #449's `successor_create_adopts_the_oldest_unclaimed_window` | gh566 admission; fresh role process, no timing |
+| 9 | cell `app.ready.recovered-generation` (`unknown`, uncited) → a Bun today-test in `app-surface.test.ts`; its NC names #449's keld-core test of gh531 criterion 46 | gh566 admission; fresh role process, no timing |
 | 10 | the named existing tests; `lifecycle_corpus_rust_oracles_execute` | unchanged |
 | 11 | `schema_two_descriptor_is_refused_before_any_application_resource`; Linux and Windows no-flag integration (CI) | resource census like `windows_pre_ready_crash_denies_successor_before_provisioning` |
 | 12 | `app.ready.emitted-once` and `app.when-ready.is-ready-agreement` (`electron-app-v1`, #656) and `app.when-ready.host-ready-gate` run unchanged; "before any window" is AC4's keld-host test | unchanged cells |
