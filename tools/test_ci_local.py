@@ -631,13 +631,19 @@ class ProductionConsumerTests(unittest.TestCase):
     def test_gitattributes_selects_keld_compat_through_its_declared_read(self):
         # gh566 T3: the keld-compat snapshot normalisation check runs `git hash-object`,
         # which reads .gitattributes, so the read is a declared Rust input edge.
+        # A bound tracked snapshot, so an unrelated dirty edit in the developer's checkout
+        # cannot turn on a fallback and mask the controls below.
         source = Path(__file__).resolve().parent.parent
-        live = ci_inputs.load(source)
+        fixture = tempfile.TemporaryDirectory(prefix="keld-ci-gitattributes-")
+        self.addCleanup(fixture.cleanup)
+        root = Path(fixture.name)
+        tracked_snapshot(source, root)
+        live = ci_inputs.load(root)
         rust = [c for c in live["consumers"] if c["owner"] == "Rust workspace external reads"]
         self.assertEqual(len(rust), 1)
         self.assertIn(".gitattributes", rust[0]["inputs"])
         # Today .gitattributes is an unknown input, so the fail-safe selects every lane.
-        live_selection = ci_inputs.classify(source, [".gitattributes"], paths_only=True)
+        live_selection = ci_inputs.classify(root, [".gitattributes"], paths_only=True)
         for output in ("input_all", "input_rust", "input_package_keld-compat", "local_test"):
             self.assertTrue(live_selection[output], output)
         # The declared edge alone still selects the Rust test lanes if .gitattributes
@@ -653,11 +659,11 @@ class ProductionConsumerTests(unittest.TestCase):
             return load
         for with_edge in (True, False):
             with unittest.mock.patch.object(ci_inputs, "load", known(with_edge)):
-                selected = ci_inputs.classify(source, [".gitattributes"], paths_only=True)
+                selected = ci_inputs.classify(root, [".gitattributes"], paths_only=True)
             self.assertFalse(selected["input_all"], with_edge)
             for output in ("input_rust", "local_test"):
                 self.assertIs(selected[output], with_edge, (output, with_edge))
-        unrelated = ci_inputs.classify(source, ["README.md"], paths_only=True)
+        unrelated = ci_inputs.classify(root, ["README.md"], paths_only=True)
         for output in ("input_rust", "input_package_keld-compat", "local_test"):
             self.assertFalse(unrelated[output], output)
 
