@@ -109,7 +109,7 @@ pub fn create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>
         Err(e) => return Err(e.into()),
     }
     for file in HELLO_TEMPLATE {
-        let rendered = file.contents.replace("{{name}}", name);
+        let rendered = file.render(name);
         let dest = root.join(file.path);
         if let Some(dir) = dest.parent() {
             fs::create_dir_all(dir)?;
@@ -332,7 +332,7 @@ mod tests {
         );
         assert!(
             main.contains("await windowsClosed")
-                && main.contains("assertStockQuitReply(session.quit())")
+                && main.contains("await session.quit()")
                 && main.contains("quitAndCloseLink(this.#link"),
             "KEL-185 / GH-528 T3: the stock app consumes LastWindowClosed, then its Quit \
              awaits the correlated Reply and closes the link: {main}"

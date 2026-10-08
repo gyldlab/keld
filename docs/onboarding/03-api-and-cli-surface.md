@@ -662,7 +662,8 @@ if (import.meta.main) {
     console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
     console.log("{{name}}: main process ready (IPC echo ok)");
     await windowsClosed;
-    assertStockQuitReply(session.quit());
+    // Resolves only on the host's `LifecycleResponse::Quit`, then the link closes.
+    await session.quit();
     process.exit(0);
   } finally {
     session.close();

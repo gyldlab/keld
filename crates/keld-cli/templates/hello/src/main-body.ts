@@ -9,12 +9,6 @@
  * on that same connection, which closes the link on its Reply.
  */
 
-function assertStockQuitReply(payload: Uint8Array): void {
-  if (payload.length !== 1 || payload[0] !== 0) {
-    throw kipcError("KELD-IPC-003", "Quit Reply must contain LifecycleResponse::Quit");
-  }
-}
-
 /** Resolves on the host's LastWindowClosed; rejects when the link ends first. */
 function lastWindowClosed(session: AppLinkSession): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -42,7 +36,8 @@ if (import.meta.main) {
     console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
     console.log("{{name}}: main process ready (IPC echo ok)");
     await windowsClosed;
-    assertStockQuitReply(session.quit());
+    // Resolves only on the host's `LifecycleResponse::Quit`, then the link closes.
+    await session.quit();
     process.exit(0);
   } finally {
     session.close();

@@ -9,6 +9,29 @@ pub struct TemplateFile {
     pub contents: &'static str,
 }
 
+/// The canonical transport's build-time declaration (#528 T3).
+pub const KIPC_RELEASE_DECLARATION: &str = "declare const KELD_KIPC_RELEASE: boolean | undefined;";
+
+/// What a created app's `src/kipc-transport.ts` carries instead: the release
+/// constant defined, so no created app can reach the `WorkerLink` test hooks;
+/// they stay only in the in-repo canonical file.
+pub const KIPC_RELEASE_DEFINITION: &str = "const KELD_KIPC_RELEASE: boolean | undefined = true;";
+
+impl TemplateFile {
+    /// The file as `keld create` writes it for project `name`: `{{name}}`
+    /// substituted, and the transport with [`KIPC_RELEASE_DEFINITION`] in
+    /// place of [`KIPC_RELEASE_DECLARATION`].
+    #[must_use]
+    pub fn render(&self, name: &str) -> String {
+        let rendered = self.contents.replace("{{name}}", name);
+        if self.path == "src/kipc-transport.ts" {
+            rendered.replacen(KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1)
+        } else {
+            rendered
+        }
+    }
+}
+
 /// All template files for the vanilla hello project.
 pub const HELLO_TEMPLATE: &[TemplateFile] = &[
     TemplateFile {
@@ -120,6 +143,31 @@ mod tests {
         assert!(
             !shim.contains("export class FrameReader"),
             "the in-repo shim must not be a second FrameReader"
+        );
+    }
+
+    /// #528 T3: a created app's transport defines the release constant, so its
+    /// test-hook branches are dead; the rendering depends on the canonical
+    /// file declaring the constant exactly once (a missed rename fails here).
+    #[test]
+    fn created_transport_defines_the_release_constant() {
+        use super::{KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION};
+
+        let file = HELLO_TEMPLATE
+            .iter()
+            .find(|file| file.path == "src/kipc-transport.ts")
+            .expect("keld create must emit the canonical transport");
+        assert_eq!(file.contents.matches(KIPC_RELEASE_DECLARATION).count(), 1);
+        let rendered = file.render("demo");
+        assert!(
+            !rendered.contains(KIPC_RELEASE_DECLARATION),
+            "declaration left in place"
+        );
+        assert_eq!(rendered.matches(KIPC_RELEASE_DEFINITION).count(), 1);
+        assert_eq!(
+            rendered.replacen(KIPC_RELEASE_DEFINITION, KIPC_RELEASE_DECLARATION, 1),
+            file.contents,
+            "the release constant is the only change to the canonical transport"
         );
     }
 

@@ -122,10 +122,11 @@ export class AppLinkSession {
   }
 
   /**
-   * Sends `Quit`, the link's last call, and closes the link on its REPLY
-   * (GH-527 §4.9). Returns the host's `LifecycleResponse::Quit` bytes.
+   * Sends `Quit`, the link's last call, without parking, and closes the link
+   * on its REPLY (GH-527 §4.9). Resolves once the host's REPLY is
+   * `LifecycleResponse::Quit`.
    */
-  quit(): Uint8Array {
+  quit(): Promise<void> {
     return quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
   }
 
