@@ -497,7 +497,9 @@ and updates this table in the same PR.
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
 an invalid `receive` table (§4.5), an outbound frame on channel 0, a listener or state
-applier on a channel that `receive.eventChannels` does not name, a second in-flight
+applier on a channel that `receive.eventChannels` does not name, a `callBlocking` from
+any state applier (in the wake drain or a dispatch task, so no fact is re-applied), an
+`ERR` whose payload is not a `CallError` (it closes the link), a second in-flight
 blocking call, an invalid deadline, an unsolicited correlation id, a malformed `GRANT`,
 an applier that throws, or a host CALL whose call handler is missing or fails (§4.6).
 A `KELD-IPC-005` raised by an API call before any write is thrown to that caller. A
@@ -607,7 +609,12 @@ export class WorkerLink {
    returns or throws.
 
 Link termination. Every side that ends the link does so with one
-`Atomics.compareExchange(ctrl, STATE, 0, code)`, then bumps `SEQ` and notifies. Only
+`Atomics.compareExchange(ctrl, STATE, 0, code)`, then bumps `SEQ` and notifies. A
+parked main that sees `STATE` (or records 25 itself) loads `REPLY_READY` once more
+before it throws: the Worker publishes a claimed reply before it records any code, so a
+reply visible then arrived first and is returned (#528 T1 review). Frames main posted
+before it recorded a code are still written in post order; the `close` main posts
+after its own record ends the socket, and no inbound frame is retained after it. Only
 the first succeeds, so the recorded code never changes and the Worker and main cannot
 disagree about it. The Worker records 22 (EOF, I/O error or a link-closing
 `KELD-IPC-005`), 25 (its own orderly exit, or a fault after a claim), 26 (overflow) or 27 (abandoned cap); main
