@@ -825,8 +825,8 @@ rule reported exactly the seven production hits listed there (eight after #628, 
 - **Scans are defence in depth.** The criterion 6 and 7 scans cannot see every spelling
   of an id (a const alias, `ChannelId { 0: 1 }`, extra parentheses, a renamed import, a
   macro, `header.channel.0 == 2`); the guarantee belongs to the type-level follow-up
-  issue that makes `ChannelId` unforgeable outside `keld-ipc`, so production code can
-  obtain an id only from a table entry.
+  issue #634, which makes `ChannelId` unforgeable outside `keld-ipc`, so production code
+  can obtain an id only from a table entry.
 - **Executed evidence.** CI runs `cargo nextest`, which does not run doctests, so the
   criterion 1 and 10 compile-fail doctests (each paired with a compiling positive
   control) are local evidence (`cargo test -p keld-ipc --doc`). Stable rustdoc does not
@@ -847,7 +847,10 @@ rule reported exactly the seven production hits listed there (eight after #628, 
   (`ReceiveClass::carries_host_events`), not a lifecycle-id compare; `reply_waiter`
   keeps the echo entry's REPLY-only refusal, and channel 0 has no entry. The generated
   TypeScript region adds `HOST_EVENT_CHANNELS`, read from `carries_host_events`, which
-  `eventReceiver` uses; #628's `channel === 0` checks use `HANDSHAKE_CHANNEL`.
+  `eventReceiver` uses, and `AllocatedChannel` / `ALLOCATED_CHANNELS`: TypeScript
+  `replyWaiter` takes an `AllocatedChannel` and rejects any other id at runtime with
+  `KELD-IPC-005`, matching the entry-only Rust waiter. #628's `channel === 0` checks use
+  `HANDSHAKE_CHANNEL`.
 - **Smaller choices.** The receive-policy constructors keep naming `ECHO_CHANNEL` and
   `LIFECYCLE_CHANNEL`, which are now the entries' ids. `TableDefect` has a hand-written
   `Display` with fix guidance but no `KELD-*` code, like `HeaderError`: the real table is

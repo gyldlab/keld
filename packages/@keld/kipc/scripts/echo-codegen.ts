@@ -388,12 +388,19 @@ export function renderChannelTableRegion(rustSource: string): string {
     lines.push(`/** Channel \`${entry.name}\` (\`keld_ipc::channel_table::${entry.rustName}\`). */`);
     lines.push(`export const ${channelConstantName(entry.name)} = ${entry.id};`);
   }
+  const allocated = table.entries.map((entry) => channelConstantName(entry.name));
+  lines.push(
+    "/** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */",
+    `export type AllocatedChannel = ${allocated.map((name) => `typeof ${name}`).join(" | ")};`,
+    "/** Every allocated channel id, in table order. */",
+    `export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([${allocated.join(", ")}]);`,
+  );
   const eventChannels = table.entries
     .filter((entry) => table.hostEventClasses.includes(entry.receiveClass))
     .map((entry) => channelConstantName(entry.name));
   lines.push(
     "/** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */",
-    `export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([${eventChannels.join(", ")}]);`,
+    `export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([${eventChannels.join(", ")}]);`,
   );
   lines.push(CHANNEL_REGION_END);
   return lines.join("\n");

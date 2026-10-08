@@ -19,6 +19,7 @@ import { join, relative } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
+  ALLOCATED_CHANNELS,
   APP_LINK_IO_DEADLINE_MS,
   DirectedReader,
   DrainSignal,
@@ -43,11 +44,13 @@ import {
   echoReplyWaiter,
   encodeHeader,
   eventReceiver,
+  isAllocatedChannel,
   kipcError,
   lifecycleReplyWaiter,
   replyWaiter,
   validateReceivedHeader,
   withIoDeadline,
+  type AllocatedChannel,
 } from "./transport.ts";
 
 const REPO_ROOT = join(import.meta.dir, "../../../..");
@@ -221,10 +224,33 @@ describe("GH-527 receive policy mirrors", () => {
   });
 
   test("replyWaiter refuses the HELLO channel and the REPLY-only echo channel", () => {
-    expect(() => replyWaiter(0, 7)).toThrow("KELD-IPC-005: channel 0 carries only HELLO");
+    expect(() => replyWaiter(HANDSHAKE_CHANNEL as number as AllocatedChannel, 7)).toThrow(
+      "KELD-IPC-005: channel 0 carries only HELLO",
+    );
     expect(() => replyWaiter(ECHO_CHANNEL, 7)).toThrow(
       "KELD-IPC-005: echo replies use the REPLY-only echo reply waiter",
     );
+  });
+
+  test("replyWaiter accepts only channel table ids, by type and at runtime (GH-597)", () => {
+    expect(ALLOCATED_CHANNELS).toEqual([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]);
+    for (const channel of [ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]) {
+      expect(isAllocatedChannel(channel)).toBe(true);
+    }
+    for (const unallocated of [HANDSHAKE_CHANNEL, 4, 9, 0xffff, 2.5, -1]) {
+      expect(isAllocatedChannel(unallocated)).toBe(false);
+    }
+    // Type-level negative control: if `replyWaiter` widened its parameter to
+    // `number`, this directive would be unused and `bun run typecheck` fails.
+    // @ts-expect-error 4 is not an allocated channel
+    expect(() => replyWaiter(4, 7)).toThrow(
+      "KELD-IPC-005: channel is not allocated by the channel table",
+    );
+    for (const unallocated of [9, 0xffff]) {
+      expect(() => replyWaiter(unallocated as AllocatedChannel, 7)).toThrow(
+        "KELD-IPC-005: channel is not allocated by the channel table",
+      );
+    }
   });
 
   test("eventReceiver equals the lifecycle event policy and refuses other channels", () => {

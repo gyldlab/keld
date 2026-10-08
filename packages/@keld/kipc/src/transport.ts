@@ -39,8 +39,12 @@ export const ECHO_CHANNEL = 1;
 export const FS_CHANNEL = 2;
 /** Channel `lifecycle` (`keld_ipc::channel_table::LIFECYCLE`). */
 export const LIFECYCLE_CHANNEL = 3;
+/** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
+export type AllocatedChannel = typeof ECHO_CHANNEL | typeof FS_CHANNEL | typeof LIFECYCLE_CHANNEL;
+/** Every allocated channel id, in table order. */
+export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]);
 /** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
-export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([LIFECYCLE_CHANNEL]);
+export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([LIFECYCLE_CHANNEL]);
 // @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
 export const APP_LINK_IO_DEADLINE_MS = 5_000;
@@ -155,13 +159,20 @@ export function lifecycleReplyWaiter(corr: number): ReceivePolicy {
 /**
  * Mirror of `keld_ipc::receive::ReceivePolicy::reply_waiter` (GH-527 §4.7,
  * corpus `reply-waiter:<channel>:<corr>`): `REPLY` or the CallError-carrying
- * `ERR` on `channel` with exactly `corr`, no `PING`. Channel 0 carries only
- * `HELLO`, and echo replies keep KEL-133 row 4's REPLY-only
- * `echoReplyWaiter`, so both are `KELD-IPC-005`.
+ * `ERR` on `channel` with exactly `corr`, no `PING`. Like the Rust waiter,
+ * which takes a table entry, `channel` must be an allocated table id (the
+ * generated `AllocatedChannel`, checked again at runtime); channel 0 carries
+ * only `HELLO`, and echo replies keep KEL-133 row 4's REPLY-only
+ * `echoReplyWaiter`, so each is `KELD-IPC-005`.
  */
-export function replyWaiter(channel: number, corr: number): ReceivePolicy {
-  if (channel === HANDSHAKE_CHANNEL) {
+export function replyWaiter(channel: AllocatedChannel, corr: number): ReceivePolicy {
+  // The type admits only table ids; a caller's cast cannot widen the runtime rule.
+  const id: number = channel;
+  if (id === HANDSHAKE_CHANNEL) {
     throw kipcError("KELD-IPC-005", "channel 0 carries only HELLO");
+  }
+  if (!isAllocatedChannel(id)) {
+    throw kipcError("KELD-IPC-005", "channel is not allocated by the channel table");
   }
   if (channel === ECHO_CHANNEL) {
     throw kipcError("KELD-IPC-005", "echo replies use the REPLY-only echo reply waiter");
@@ -180,8 +191,16 @@ function eventReceiverOn(channel: number): ReceivePolicy {
  * (the generated `HOST_EVENT_CHANNELS`) is admitted; any other channel is
  * `KELD-IPC-005`.
  */
+/**
+ * Whether `channel` is an allocated table id (the generated `ALLOCATED_CHANNELS`;
+ * Rust's `keld_ipc::channel_table::entry`).
+ */
+export function isAllocatedChannel(channel: number): channel is AllocatedChannel {
+  return (ALLOCATED_CHANNELS as readonly number[]).includes(channel);
+}
+
 export function eventReceiver(channel: number): ReceivePolicy {
-  if (!HOST_EVENT_CHANNELS.includes(channel)) {
+  if (!(HOST_EVENT_CHANNELS as readonly number[]).includes(channel)) {
     throw kipcError("KELD-IPC-005", "channel carries no host EVENTs");
   }
   return eventReceiverOn(channel);
@@ -1394,10 +1413,13 @@ export function selectInboundPolicy(
     case FrameKind.Err: {
       const entry = pending.get(header.corr);
       if (entry === undefined) return { policy: NO_FRAME_POLICY, action: "append" };
+      // An unallocated pending channel has no waiter: its reply is "no match".
       const policy =
         entry.channel === ECHO_CHANNEL
           ? echoReplyWaiter(header.corr)
-          : replyWaiter(entry.channel, header.corr);
+          : isAllocatedChannel(entry.channel)
+            ? replyWaiter(entry.channel, header.corr)
+            : NO_FRAME_POLICY;
       if (entry.abandoned) return { policy, action: "discard" };
       return { policy, action: entry.blocking ? "claim" : "append" };
     }

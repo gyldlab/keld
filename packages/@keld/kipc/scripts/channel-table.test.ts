@@ -40,8 +40,12 @@ export const ECHO_CHANNEL = 1;
 export const FS_CHANNEL = 2;
 /** Channel \`lifecycle\` (\`keld_ipc::channel_table::LIFECYCLE\`). */
 export const LIFECYCLE_CHANNEL = 3;
+/** An allocated channel id (\`keld_ipc::channel_table::CHANNEL_TABLE\`). */
+export type AllocatedChannel = typeof ECHO_CHANNEL | typeof FS_CHANNEL | typeof LIFECYCLE_CHANNEL;
+/** Every allocated channel id, in table order. */
+export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL]);
 /** Channels whose receive class carries host \`EVENT\`s (\`ReceiveClass::carries_host_events\`). */
-export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([LIFECYCLE_CHANNEL]);
+export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([LIFECYCLE_CHANNEL]);
 // @generated-end channel-table`;
 
 function replaceOnce(text: string, from: string, to: string): string {
@@ -288,7 +292,7 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
     const rule = "        matches!(self, Self::HostCallWithEvents)\n";
     const widened = replaceOnce(tableSource, rule, "        matches!(self, Self::HostCallWithEvents | Self::GuardedCall)\n");
     expect(renderChannelTableRegion(widened)).toContain(
-      "export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([FS_CHANNEL, LIFECYCLE_CHANNEL]);",
+      "export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([FS_CHANNEL, LIFECYCLE_CHANNEL]);",
     );
     const narrowed = replaceOnce(tableSource, rule, "        matches!(self, Self::HostEvent)\n");
     expect(renderChannelTableRegion(narrowed)).toContain("Object.freeze([]);");

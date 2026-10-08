@@ -27,6 +27,7 @@ import {
   primaryAppReceiver,
   privilegedCallReceiver,
   replyWaiter,
+  type AllocatedChannel,
   validateReceivedHeader,
 } from "../../kipc/src/transport.ts";
 
@@ -110,7 +111,7 @@ function policyByName(name: string): ReceivePolicy {
       return primaryAppReceiver();
     case "reply-waiter": {
       const [channel, corr] = (arg ?? "").split(":");
-      return replyWaiter(Number(channel), Number(corr));
+      return replyWaiter(Number(channel) as AllocatedChannel, Number(corr));
     }
     case "event-receiver":
       return eventReceiver(Number(arg));
