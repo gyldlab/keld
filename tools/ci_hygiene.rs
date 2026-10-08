@@ -1748,7 +1748,7 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
     // against the router's `ts_packages` output. Behaviour, not text.
     if uncommented_line_contains(&block, "apt-get") {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must not call `apt-get`. Bun ships from `oven-sh/setup-bun`; a second live Ubuntu apt lane contends with Linux GUI smoke on the Azure mirrors."
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must not call `apt-get`. Bun ships from `oven-sh/setup-bun` and links no WebKitGTK, so an apt step there only adds Ubuntu mirror exposure (#630)."
         ));
     }
     Ok(())
