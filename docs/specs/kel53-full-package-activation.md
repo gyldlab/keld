@@ -1801,6 +1801,38 @@ sends none. A failed `AK1` write changes neither outcome. On the accept path, on
 candidate's end of file or that read's deadline has been reached, the `PerUserDirect`
 owner continues with "Candidate release after commit" below.
 
+*Margin and deadlines (slice S6c).* (Coordinator decisions under the owner's
+delegation of 2026-10-08; they fix values that approved text left to S6c: "G is a
+constant that S6c fixes", "each slice sets its deadlines from measurements that its PR
+records" (§6) and "the candidate reads `AK1` under a deadline".) G is measured on the
+production path, not on a model: a real `keld-host` candidate in candidate mode under
+the S6c harness as owner; the harness terminates the candidate's Bun primary, a member
+of the attempt Job that it lists; the interval runs on the owner's monotonic clock
+from the return of that termination to the owner's end-of-file observation in its
+health window (`crates/keld-ipc/src/attempt/window.rs:47-55`, the `EndOfFile` read);
+thirty runs idle and thirty under load, as the S6b3 flake audit ran, with minimum,
+median and maximum recorded. G is the larger of 2 s and four times the observed
+maximum, rounded up to the next 500 ms. The record (machine, OS build, host build,
+harness commit and the sixty samples) is the keld-benches artifact that the S6c pull
+request names with its hash, and the constant joins `ATTEMPT_HEALTH_WINDOW` in the
+`keld-ipc` attempt module (`crates/keld-ipc/src/attempt/window.rs:18-20`) as the margin
+that the owner passes to `await_health_window`
+(`crates/keld-ipc/src/attempt/channel.rs:202-206`). A G that is too small lets an exit
+in the last G of the window commit; a G that is too large only delays commit, so the
+rule errs large. The candidate reads `AK1` (`await_health_accepted`,
+`channel.rs:556-575`) under a deadline of `ATTEMPT_HEALTH_WINDOW` + G + 15 s from its
+own `AY1` send, the allowance covering the owner's durable `HealthAccepted` write and
+its `AK1` write; past it the candidate stays unarmed, as the sequence above says. The
+owner's other deadlines follow one rule, each at least four times the maximum that the
+S6c pull request measures on the same harness, with a floor: `AB1` after `AR1` (the
+candidate's image verification, claimant location and candidate-boot read), floor
+30 s; `AY1` after `AB1` (the candidate's Bun start, engine, window and navigation),
+floor 60 s; the accept close-wait (`accept`, `channel.rs:282-290`),
+`APP_LINK_IO_DEADLINE` (`crates/keld-ipc/src/lib.rs:82`); the census deadline of
+`release_for_exit`, floor 5 s. A candidate whose session fails before `Ready` sends
+`AF1` class 3 before it exits, so the owner reads a record rather than end of file
+wherever the candidate can still write one.
+
 *Bootstrap records.* (approved: KEL-270 owner decision `eff8e2fb`,
 2026-10-06) `BH1` to `BO1` land with S11, not S4 (§6). S6 and every `PerUserDirect` cell
 use none of them. Before S11, S1's stop rule can still change the bootstrap. Two of
@@ -1890,6 +1922,175 @@ the exchange binds without them.
 
 Clients reject the other `\\.\pipe\keld-*` namespaces before connecting, which is the
 `keld-ipc` rule for a separate-version protocol; Architecture 02 points here.
+
+**Profile handover (`PerUserDirect`; criteria 8 and 20; KEL-135 criteria 10 and 11;
+slice S6c).** (Design item F47, Linear KEL-270 comment
+`fffd7f38-987c-44a2-8ea7-c43e08ccfa37`, 2026-10-08, raised by the #629 delta review and
+recorded in §6 and §10 by the S6b3 amendment. The design below is the coordinator's,
+made under the owner's delegation of 2026-10-08 for long-term robustness; this
+amendment's pull request records its decisions and the judgements beyond the record.)
+This paragraph owns the handover: its facts, what the old host keeps, the order, the
+gap and its closure, what the user sees, rollback and restore, the crash table, the
+census interaction, the dependencies and the rejected alternatives.
+
+*Facts.* A Windows release host selects its persistent profile identity before any
+listener, child or window (Architecture 05 §1, `05-webview-and-native.md:55-56`) and
+takes the KEL-135 lease when it constructs its engine: `WebView2Engine::new`
+(`crates/keld-wv/src/webview2/mod.rs:2235-2244`) prepares the profile (`mod.rs:834-842`),
+which opens `profile.lock` (`mod.rs:188`) with no sharing (`mod.rs:792-795`); a second
+opener gets `ProfileInUse` (`mod.rs:521-538`). Every environment of that engine requests
+exclusive user-data-folder access (`mod.rs:1200`), so even a free lease admits no second
+browser collection on the folder while the first is alive (KEL-135 criterion 10; the
+recovery probe reads that refusal as `Busy`, `mod.rs:1518-1521`). The lease is released
+only after the host's clean teardown wrote `stopping`, waited for `BrowserProcessExited`
+and wrote `idle` (`mod.rs:2411-2434`; KEL-135 §4 "Clean teardown"). In `run_app_direct`
+the engine is constructed after the Bun primary and the router
+(`crates/keld-core/src/app_session.rs:2722-2727`), and the host-initiated session tail of
+CLI lease loss (`app_session.rs:5341-5361`) prepares the accepted shutdown, quiesces,
+closes the app link, shuts the guardian down and sends `AppWindowCommand::Quit` to the
+UI loop (`finish_tail`, `app_session.rs:5542-5547`), after which the router and the
+primary owner are shut down (`app_session.rs:2755-2760`). A candidate launched as landed
+would therefore fail its own `WebView2Engine::new` with `ProfileInUse` and never reach
+`Ready` (design item F47).
+
+*Decision.* The old host hands the persistent profile to the candidate by ending its
+own application session before it launches the candidate, and the candidate, which
+verifies the same publisher scope and app id (`app_session.rs:2528-2541`) and so selects
+the same `ProfileIdentity` and folder (`app_session.rs:2496-2515`; `mod.rs:403-421`),
+acquires that profile as any clean successor does (KEL-135 §4 matrix, "graceful host
+restart"). The old host keeps its host-death Job H, the writer lease, the minted
+attempt, the endpoint, the launch record and the attempt Job A. It keeps no window, no
+WebView2 environment and no application role: at most one application instance runs on
+the user's data at any time, as a quit-and-install update does, and the two-instance
+overlap that the S6b3 order implied (its step 5 reaped the old roles after commit) no
+longer exists.
+
+*Order.* On the `PerUserDirect` path the coordinator proceeds in this order, each step
+only after the previous one has returned: (1) with the completed stage,
+`load_windows_activation_write_snapshot` takes the exclusive writer lease
+(`crates/keld-update/src/windows_baseline/load.rs:662-668`) and `begin_activation`
+mints the identities, writing nothing
+(`crates/keld-update/src/windows_baseline/activate.rs:170-186`); (2) the owner creates
+and holds its endpoint and reads the descriptor back ("Candidate connect-back",
+*Order*); (3) the handover: the session tail runs with a host-initiated handover cause,
+which is the CLI-lease-loss tail of `app_session.rs:5341-5361` under a second cause, so
+the application receives no `LastWindowClosed` (`app_session.rs:3540-3556`) and no
+fabricated reply, the app link closes, the Bun primary is reaped, the UI loop commits
+`stopping`, drops its views, waits for the barrier, writes `idle` and releases the
+lease, and the router and the primary owner are shut down; (4) `journal()` writes
+`PublishPending` and runs to `AwaitingHealth` (`activate.rs:238-300`); (5) the candidate
+is launched suspended, assigned to A and resumed; (6) the claim, the candidate-boot
+read, `AB1`, the candidate's own session (its engine acquires the profile and finds
+`idle`), `AY1`, the window and `AK1` follow "Candidate connect-back"; (7) `complete()`,
+`release_family`, the census, the host-death clear, the detach and exit follow
+"Candidate release after commit". A tail that fails in step 3 refuses the attempt
+before any record (`WindowsMintedAttempt::refuse`: nothing journaled, the lease
+released) and the host exits with the tail's error as on any other failed tail; the
+next launch boots the current version, and the profile recovers through its own
+quarantine and probe if `idle` was not reached. Step 3 precedes step 4 so that no cut
+inside the handover leaves a launched phase: a `PublishPending` journal is resumable
+under the lease alone, a launched phase needs the retirement binding
+(`activate.rs:713-740`), and the handover adds a barrier wait that would otherwise
+lengthen the window between `AwaitingHealth` and launch. Rejected: journaling before
+the handover, which shortens the user-visible gap by the journal steps and lengthens
+the pending-launched crash window by the barrier wait.
+
+*The gap and its closure.* Between the old host's lease release in step 3 and the
+candidate's acquisition in step 6 no process holds `profile.lock`. A same-app launch in
+that gap cannot take it: every no-argument launch selects its package under the
+snapshot lease before any profile is touched (`app_session.rs:639-656`, `:2402-2415`,
+`:2431-2440`; the profile is first touched at `:2722-2727`), and a sharing conflict on
+`activation.lock` refuses with a typed `WriterActive` without a record read
+(`load.rs:150-166`; criterion 20; owner decision D3). The writer lease is taken in step
+1, before the profile is released, and the transaction holds it through resolution, so
+the exclusion that closes the gap is the landed writer lease and no handover token is
+needed. A same-user process that is not a Keld launch is outside the `PerUserDirect`
+boundary (criterion 1). The candidate takes no snapshot lease (criterion 20's one
+exception) and acquires the profile after the old host wrote `idle`; a predecessor's
+non-idle record from a dead process is quarantined and probed by the existing recovery
+(`mod.rs:735-773`, `:1450-1472`), so the candidate needs no profile rule of its own.
+
+*What the user sees.* The old window closes at step 3; the candidate's window appears
+after steps 4 to 6 (launch, claim, candidate-boot read, app start, engine, navigation).
+On rollback the candidate's window closes and the old version's window reappears after
+the restore below. During either gap a manual launch of the app refuses with
+`WriterActive` before any window. The gap's length is measured by the S6c pull request
+and not promised here; the barrier's own bound is PR #658's. Foreground and focus
+restoration for the new window are not specified by this amendment (§10).
+
+*Rollback and restore.* On the rollback path the owner sends `AK1` rolled back, ends the
+candidate family (`terminate_and_wait` consumes A and proves Job zero), rolls the
+journal back (`roll_back`: the candidate retired, the journal removed, the lease
+released) and then restores its user interface in process: it runs a fresh application
+session of the rollback target, which is its own version tree (the running host's
+`current`), from the Bun start through the router, the engine and the window, with the
+boot selection it booted with. The engine's second construction acquires the lease,
+finds the candidate's `starting` or `running` record with a dead owner
+(`mod.rs:750-758`), quarantines and probes through the exclusive-UDF recovery
+(`mod.rs:1450-1472`; KEL-135 §4 "After non-idle Windows host death") and starts
+normally. A second session in one process is admitted by the libraries: tao 0.35.3
+imposes no once-per-process rule on `EventLoopBuilder::build` and requires only the
+main thread (`tao-0.35.3/src/platform_impl/windows/event_loop.rs:180-185`; the
+workspace pin is `Cargo.lock:2774-2775`), the DPI-awareness setter accepts an
+already-set equal context (`mod.rs:317-342`), and COM is initialized per engine
+(`mod.rs:296-300`). S6c's first commit proves it with the two-sessions cell of the §7
+row before anything else; if that cell cannot pass, S6c stops for a coordinator
+decision between the recorded alternative (keep the event loop alive and replace the
+environment inside it) and a relaunch. Rejected: exiting for a relaunch, which needs a
+relaunched host that outlives the old host and therefore a second attempt Job, a
+second `release_family` scope and a second census on the rollback path, contradicting
+"on rollback nothing is cleared"; and keeping the old application role alive without a
+window during health, which runs two application instances on the user's data and
+leaves a windowless application for the whole window.
+
+*Crash table.* H1, before step 1: nothing changes. H2, after step 1 or 2 and before step
+3: nothing is journaled; the lease and the endpoint close with the process; the next
+launch boots the current version and the completed stage stays a tolerated leftover.
+H3, inside step 3 before `idle`: nothing is journaled; the profile record is `running`
+or `stopping` under the old host's own process, and the next launch quarantines and
+probes it. H4, after `idle` and before step 4: nothing is journaled; the profile is
+`idle`. H5, after step 4 and before step 5: `AwaitingHealth` with no family, as today a
+crash between the journal and the launch; recovery needs the retirement binding
+(`JournalBoundRecoveryRequired` before S6d). H6, during health: the candidate dies with
+the host through A and H; the journal reads `AwaitingHealth`; the profile record names
+the candidate's dead process and is probed on the next admitted launch. H7, after `AK1`
+accepted: W0a to W4 of "Candidate release after commit", unchanged. H8, inside the
+restore after rollback: the journal is already removed; the next launch boots the
+rollback target and probes the profile. A candidate lost before `AB1` (`AF1` class 1 or
+3, or end of file), after `AB1` and before `AY1` (class 2 or 3, or end of file) or after
+`AY1` (end of file or a signaled launch handle) rolls back and restores as above. Both
+lost: as H6.
+
+*Census interaction.* After step 3 the old host has no browser collection. The
+candidate's collection is created inside the candidate, so its browser, renderer, GPU
+and utility processes are members of A and of H, which the census classifies as family
+(*Census and policy*). A process of the old collection that outlives the barrier is in
+H and outside A, and the census terminates it as it terminates any WebView2 process
+past the barrier. The assumption under which the census may do so, that no host
+WebView2 process serves the candidate, now holds because the old collection has exited
+before the candidate's is created and because the exclusive-folder option admits no
+second collection while one is alive; it no longer rests on the old host holding the
+lease.
+
+*Dependencies.* S6c starts only after (a) PR #658 (KEL-135, head `2550bc4b`) has
+landed: it makes the `BrowserProcessExited` barrier liveness-gated with a 5 s post-exit
+grace in place of the unmeasured 15 s bound at `mod.rs:186`, and the handover waits on
+that barrier once per update; and (b) the F51 fix to the same-token launch (Linear
+KEL-270 comment `fffd7f38`): the candidate holds no handle of the owner's standard
+streams, so a reader of the old host's piped stdout or stderr observes end of file when
+the old host exits while the candidate runs; the §7 row observes exactly that through a
+piped harness, and the mechanism is owned by that fix.
+
+*Rejected alternatives.* A candidate-only profile: a release host never falls back to a
+shared or temporary store (Architecture 05 §1, `05-webview-and-native.md:64-65`; KEL-135
+criteria 3 and 10), and a surviving candidate on a second store would have to migrate
+or re-create its session to own the persistent one. A shared store: KEL-135 §4 rejects
+shared same-app cross-process stores for v1
+(`kel135-persistent-profile-identity.md:263-265`), and the exclusive-folder option
+enforces it. Health without a window: `Ready` is driven by the window's navigation
+(Architecture 06 §1), and a candidate whose WebView2 path is never exercised would
+commit the component most likely to fail in an update. A handover token or a second
+lease: the writer lease already excludes every launch that could reach the profile.
 
 **Candidate release after commit (`PerUserDirect`; criteria 8 and 9; slice S6b3).**
 (KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 2: a
@@ -1988,11 +2189,14 @@ writes `AK1` accepted and reaches the candidate's end of file or that read's dea
 superseded version and removes the journal (`activate.rs:487`); (4) `release_family`,
 only after `complete()` returned `Ok`: on `Err` the host exits with both Jobs still
 kill-on-close, the candidate dies with it, and the `HealthAccepted` journal stays
-authoritative, as at W0b (availability only); (5) the host reaps its own roles,
-through the landed WebView2 `BrowserProcessExited` barrier
-(`crates/keld-wv/src/webview2/mod.rs:1229-1260`, its deadline at `mod.rs:186`) and the
-Bun teardown of the accepted-shutdown tail; (6) the census; (7) the H clear; (8) exit.
-Steps 6 and 7 are `release_for_exit`. Releasing before `complete()` is
+authoritative, as at W0b (availability only); (5) the host's own roles were reaped and
+its WebView2 collection released by the profile handover before the launch ("Profile
+handover", step 3), through the landed WebView2 `BrowserProcessExited` barrier
+(`crates/keld-wv/src/webview2/mod.rs:1229-1260`, its deadline at `mod.rs:186` until PR
+#658) and the Bun teardown of the host-initiated tail, so this step has nothing left to
+reap; (6) the census; (7) the H clear; (8) the detach of the launch record
+(*Launch-record detach*); (9) exit. Steps 6 and 7 are `release_for_exit`. Releasing
+before `complete()` is
 rejected: an owner lost between the release and journal removal would leave a
 `HealthAccepted` journal beside a running, released candidate; `recover` needs an exact
 process-family retirement binding for every launched phase (`activate.rs:603-627`),
@@ -2024,9 +2228,10 @@ processes that open it
 `ms.date` 2022-04-01), and the KEL-135 profile lease (`profile.lock`,
 `crates/keld-wv/src/webview2/mod.rs:188`) is opened with no sharing and refuses a
 second opener with `ProfileInUse` rather than sharing (`mod.rs:521-538`), so the
-assumption holds while the old host holds its lease and the candidate mode never opens
-the user data folder that the old host holds; S6c owns that rule for its candidate mode
-(§6). The census terminates each member outside the family through the handle it
+assumption holds after the profile handover because the old collection exited before
+the candidate's was created and the exclusive-folder option admits no second collection
+while one is alive ("Profile handover", *Census interaction*), which S6c proves (§6,
+§7). The census terminates each member outside the family through the handle it
 opened, with the exit code `1` that the attempt Job's termination uses
 (`windows_job.rs:2193`), treating a member whose handle is already signaled as
 terminated, then waits for their handles under the deadline and takes a new snapshot;
@@ -2066,6 +2271,50 @@ path; today `crates/keld-host/src/main.rs:85-90` refuses every argument before t
 install at `main.rs:101`. Each in-session update nests two further Jobs under the
 previous ones. On the qualification's 64 levels and 10 generations that growth is
 accepted; the §7 row repeats ten in-session updates.
+
+*Launch-record detach.* (Design item F50, Linear KEL-270 comment
+`fffd7f38-987c-44a2-8ea7-c43e08ccfa37`, 2026-10-08; coordinator decision under the
+owner's delegation of 2026-10-08; slice S6b4.) The launch record owns the suspended
+child, and dropping either terminates a process that was not reaped
+(`crates/keld-runtime/src/windows_job.rs:1095-1114`;
+`crates/keld-runtime/src/windows_lpac.rs:819-826`), so an orderly exit after step 7
+would terminate the candidate that the two clears had just released. S6b4 adds one
+consuming detach, `WindowsLaunchedProcess::detach(self, &WindowsExitCensus)`, which
+closes the record's process and thread handles without terminating and returns only the
+process ID and creation time for the exit log. It is callable only with the witness
+that `release_for_exit` returns, and `release_for_exit` is callable only with a
+`WindowsReleasedAttempt` (`windows_job.rs:3525-3530`), so by type the detach follows
+both clears. To make that witness a proof, `WindowsExitCensus` loses its public fields
+(`windows_job.rs:3558-3572`; `family`, `terminated` and `snapshots` become accessors),
+because a value with public fields is constructible by any caller. The detach refuses,
+and terminates as today, a child that was never resumed, so a suspended candidate
+cannot escape. The Machine-UAC helper (S11) releases only the attempt Job and has no
+host-death census, so its detach needs a binding to `WindowsReleasedAttempt`; S11's
+amendment adds it, and the host path never accepts that weaker witness. Nothing else
+changes: the Drop paths keep their one `TerminateProcess`, no call is added and the
+`keld-runtime` `AGENTS.md` scopes are unchanged, so S6b4 is gated by public API alone.
+
+```rust
+impl WindowsLaunchedProcess {
+    /// Step 8 of the accept order: after both clears, keep the released candidate.
+    /// Refuses, and terminates as today, a child that was never resumed.
+    pub fn detach(
+        self,
+        census: &WindowsExitCensus,
+    ) -> Result<WindowsDetachedLaunch, WindowsHostJobError>;
+}
+/// The released candidate by identity only; holds no handle.
+pub struct WindowsDetachedLaunch { /* private */ }
+impl WindowsDetachedLaunch {
+    pub fn process_id(&self) -> u32;
+    pub fn creation_time(&self) -> u64;
+}
+impl WindowsExitCensus {
+    pub fn family(&self) -> u32;
+    pub fn terminated(&self) -> u32;
+    pub fn snapshots(&self) -> u32;
+}
+```
 
 *Claim scope and residuals.* Only this host's own two Jobs are cleared. An outer Job
 that bounds the host, such as a launcher's or CI's kill-on-close Job, still bounds the
@@ -2521,6 +2770,61 @@ Implement in:
   `windows_host_death_job.rs:2187` and `windows_host_death_job.rs:2225`. The host keeps
   the capability until it exits; S6c adds the one `release_for_exit` call on the
   committed exit path, and no other caller releases it;
+- landed-code change in `keld-runtime` (slice S6b4; design item F50, Linear KEL-270
+  comment `fffd7f38`, 2026-10-08; "Candidate release after commit", *Launch-record
+  detach*): `WindowsLaunchedProcess::detach(self, &WindowsExitCensus)` and
+  `WindowsDetachedLaunch` are added, and `WindowsExitCensus`
+  (`crates/keld-runtime/src/windows_job.rs:3558-3572`) loses its public fields for
+  accessors, a breaking change whose only readers are the S6b3 tests in this
+  repository. No `unsafe` block changes and no call is added: the detach marks the child
+  so that its Drop skips the existing `TerminateProcess` (`windows_lpac.rs:819-826`);
+- landed-code changes in `keld-core`, `keld-wv` and `keld-host` (slice S6c; "Profile
+  handover"; "Candidate connect-back", *Health sequence* and *Margin and deadlines*;
+  "Candidate release after commit"):
+  - `run_app_direct` (`crates/keld-core/src/app_session.rs:2543-2548`) becomes a loop
+    of application sessions in one process: a session ends by the user's Quit, a fatal,
+    CLI lease loss or the handover; after a handover the main thread runs the
+    coordinator (launch, claim, health, resolution), then either the committed exit
+    path or a fresh session of the rollback target with the same boot selection. The
+    handover reuses the CLI-lease-loss tail (`app_session.rs:5341-5361`, `:5542-5547`)
+    under a second shutdown cause; no `AppWindowCommand` variant is added
+    (`crates/keld-wv/src/engine.rs:91-96`), and `WebView2Engine::new`
+    (`crates/keld-wv/src/webview2/mod.rs:2235-2244`) is documented as constructible
+    again on the main thread after a previous engine's session ended, which the
+    two-sessions cell proves;
+  - the coordinator: its inputs are the host's `ActivePackageSelection` (identity and
+    publisher scope, `crates/keld-update/src/windows_baseline.rs:204-207`), the
+    `ExpectedAppIdentity` read from its verified image, and the signed package; it
+    builds `WindowsBaselineTrust` (`windows_baseline.rs:57-71`) and `UpdateVerifier`
+    (`crates/keld-update/src/provenance.rs:190-193`), verifies, extracts and completes
+    the stage, takes the write snapshot (`windows_baseline/load.rs:662-668`), mints,
+    creates the endpoint, hands over, journals, launches through `spawn_same_token`,
+    `WindowsLaunchedProcess::record` and `assign_child` (S6b), accepts the claim, drives
+    the exchange with the measured G, and resolves. Any accessor it needs that
+    `keld-update` does not expose (the volume GUID of `WindowsBaselineTrust` has none
+    today) is added under the public-API gate. The host's boot `VerifiedWindowsImage`
+    is retained for `begin_activation`;
+  - candidate mode in `app_session.rs`, selected only by an accepted claim:
+    `signal_ready` (`app_session.rs:4590-4625`) sends `AY1` and requests no arm; a
+    `health_accepted` flag set by the `AK1` reader replaces `window_ready` in the two
+    terminal predicates (`app_session.rs:5371-5377`, `:5923-5931`) and then requests the
+    arm; before it, a revocation closes the attempt connection, denies the gate and
+    ends the host; a session error before `Ready` sends `AF1` class 3 before exit; the
+    boot selection is minted from `WindowsCandidateBoot::into_selection` with the
+    candidate's verified identity, so the candidate selects the same persistent
+    profile;
+  - `keld-host` `main.rs`: the exact-shape check of the single rendezvous argument (row
+    "17 (argument shape)"), which opens nothing, precedes `install_host_death_job`
+    (`crates/keld-host/src/main.rs:101-108`), which precedes `prepare_webview_process`
+    and the claim, so the candidate's host-death Job nests under A and H ("Candidate
+    release after commit", *Supervision after release*); every other argument keeps
+    today's refusal (`main.rs:85-90`);
+  - the S6c evidence trigger: a debug-only seam, as the landed
+    `KELD_TEST_WINDOWS_LEASE_CENSUS` seam (`app_session.rs:2608-2625`,
+    `cfg(all(debug_assertions, windows))`), that names the signed package inputs for
+    one attempt and is absent from release builds; no production caller invokes the
+    coordinator before S6d (§6);
+  - dependencies: PR #658 and the F51 fix ("Profile handover", *Dependencies*);
 - the new T4d production FFI. Each call below lives in the named file of its existing
   owner, only after an issue-scoped amendment of that owner's AGENTS.md `unsafe` rule;
   calls that the owner already lists gain only the stated new scope:
@@ -2682,8 +2986,8 @@ Must not touch in Slice A:
   resolves it from a fresh UAC prompt without ordinary host boot, writing nothing when
   revalidation or the process-family proof fails. The §7 rows for criteria 8, 17 and 20
   define the expected results. Implementation follows these dependency-ordered slices,
-  each one PR (S4 is two, S4a and S4b; S6 is six, S6a, S6b, S6b2, S6b3, S6c and S6d; S9
-  is four, S9a to S9d) with its crates, gates and evidence:
+  each one PR (S4 is two, S4a and S4b; S6 is seven, S6a, S6b, S6b2, S6b3, S6b4, S6c and
+  S6d; S9 is four, S9a to S9d) with its crates, gates and evidence:
   - S1, native qualification spike, in the nested research checkout only (no Keld
     code; no gate): `hProcess` and its rights from an elevated `runas` launch; the
     elevated helper opening the host process and its token after own-account and
@@ -2735,7 +3039,7 @@ Must not touch in Slice A:
     new `WindowsLaunchedProcess`, `WindowsClaimantRefusal`). Evidence: the
     process-object cells of the claimant-binding row at the binding; pipe, token,
     deadline and one-shot cells close in S6/S11.
-  - S6, `PerUserDirect` connect-back end to end, in six PRs. Coordination record
+  - S6, `PerUserDirect` connect-back end to end, in seven PRs. Coordination record
     (Linear KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6
     splits into S6a to S6d; S6a and S6b are independent, S6c composes them, and S6d
     composes the landed lifecycle keeper into S6c's coordinator. Owner decision (Linear
@@ -2851,49 +3155,69 @@ Must not touch in Slice A:
       the clear removes only a termination the host could already perform on its own
       family). Evidence: the "8, 9 (candidate release)" row except its S6c cells, in
       child processes that stand in for the host and the candidate.
-    - S6c, the composition in `keld-core` and `keld-host`, and the measured G constant
-      in the `keld-ipc` attempt module. Coordination record (Linear KEL-270 comment
-      `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): the `PerUserDirect` host
-      coordinator, which passes S6b2's entry points the `VerifiedWindowsImage`
-      from the host's one `keld-guard` verification of its own image (KEL-270 owner decision `740998f4`,
-      item 3); the `app_session.rs` candidate mode that defers both the
-      recovery-gate arm and the terminal-revocation predicate to `AK1` accepted
-      (*Health sequence*); `keld-host`'s rendezvous argument; and the measurement that
-      fixes the margin G (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06),
-      whose constant joins the 30-second one and whose artifact is kept in the
-      keld-benches repository, with the harness in this repository. Gates: public API
-      (the coordinator entry and the `keld-host` argument
-      contract), permission model (claimant admission end to end); unsafe, dependency
-      and wire: none. Evidence: row 8; the `PerUserDirect` host-coordinator cells of the
-      connect-back, claimant-binding and endpoint-squatting rows; the "17 (argument
-      shape)" row for the candidate's rendezvous argument; row 20's typed `WriterActive`
-      for every launch during an attempt that is not the accepted claimant; and the "8
-      (health sequence)" row with the G measurement, except its owner-killed cell (S6d).
+    - S6b4, the launch-record detach in `keld-runtime` (`windows_job.rs`). Design item
+      F50 (Linear KEL-270 comment `fffd7f38-987c-44a2-8ea7-c43e08ccfa37`, 2026-10-08;
+      coordinator decision under the owner's delegation of 2026-10-08; "Candidate
+      release after commit", *Launch-record detach*): `WindowsLaunchedProcess::detach`
+      with its `WindowsExitCensus` witness, `WindowsDetachedLaunch`, and the census's
+      fields made private behind accessors. It is a slice of its own rather than part
+      of S6c because S11's helper needs the same primitive and because it changes only
+      `keld-runtime`, a crate outside S6c's. It lands before S6c and waits for no
+      unlanded slice. Gates: public API (breaking: the `WindowsExitCensus` fields; new:
+      `detach` and `WindowsDetachedLaunch`); unsafe, permission model, dependency and
+      wire: none (no `unsafe` block changes, no call, principal, grant, crate or byte is
+      added). Evidence: the "8, 9 (launch-record detach)" row in child processes that
+      stand in for the host and the candidate, and r9's `compile_fail` doctest extended
+      to the census.
+    - S6c, the composition in `keld-core`, `keld-wv` and `keld-host`, and the measured
+      G constant in the `keld-ipc` attempt module. Coordination record (Linear KEL-270
+      comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): the `PerUserDirect`
+      host coordinator, which passes S6b2's entry points the `VerifiedWindowsImage`
+      from the host's one `keld-guard` verification of its own image (KEL-270 owner
+      decision `740998f4`, item 3); the `app_session.rs` candidate mode that defers
+      both the recovery-gate arm and the terminal-revocation predicate to `AK1`
+      accepted (*Health sequence*); `keld-host`'s rendezvous argument; and the
+      measurement that fixes the margin G (approved: KEL-270 owner decision
+      `eff8e2fb`, 2026-10-06), by the protocol of *Margin and deadlines*, whose constant
+      joins the 30-second one and whose artifact is kept in the keld-benches
+      repository, with the harness in this repository. Coordinator decisions under the
+      owner's delegation of 2026-10-08 (design item F47, Linear KEL-270 comment
+      `fffd7f38`): S6c composes the profile handover of §4 "Profile handover" (the old
+      host ends its application session through the host-initiated tail before it
+      launches the candidate; the writer lease closes the gap; the candidate acquires
+      the same persistent profile; rollback restores a fresh session in process), adds
+      `keld-wv` to its crates for the engine's second construction, and fixes its
+      deadlines by the rule of *Margin and deadlines*. S6c starts only after S6b4, PR
+      #658 and the F51 fix have landed ("Profile handover", *Dependencies*). Gates:
+      public API (the coordinator entry, the `keld-host` argument contract, the session
+      loop's handover cause, the documented second construction of `WebView2Engine`,
+      and any `keld-update` accessor the coordinator's trust inputs need), permission
+      model (claimant admission end to end); unsafe, dependency and wire: none (the
+      handover reuses the landed tail, barrier and profile recovery; the exchange is
+      S6a's; no byte, crate or FFI call is added). Evidence: row 8; the `PerUserDirect`
+      host-coordinator cells of the connect-back, claimant-binding and
+      endpoint-squatting rows; the "17 (argument shape)" row for the candidate's
+      rendezvous argument; row 20's typed `WriterActive` for every launch during an
+      attempt that is not the accepted claimant, including a launch during the
+      handover gap; the "8 (health sequence)" row with the G measurement, except its
+      owner-killed cell (S6d); the "8, 20 (profile handover)" row with its negative
+      controls; the "8 (margin G and deadlines)" row; and the S6c cells of the "8, 9
+      (candidate release)" row: survival through the real host coordinator, the crash
+      cuts (r4), the negative control that releases before `complete()` (r8), the ten
+      in-session updates, the measured deadline and the `complete()` `Err` cut (r12).
       S6c keeps the host's boot `VerifiedWindowsImage` for that call; today
       `validate_installed_current_exe` drops it on return
-      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c composes S6b3's release
+      (`crates/keld-core/src/app_session.rs:2402-2415`). S6c composes S6b3's release
       in the order of "Candidate release after commit": after `complete()` returned
       `Ok`, `release_family` (on `Err` it exits with both Jobs still kill-on-close);
-      then the host's own role teardown, the landed WebView2 `BrowserProcessExited`
-      barrier and the Bun teardown; then `release_for_exit`, with the census deadline
-      that S6c measures from the reaping latencies its PR records and fixes beside G;
-      then exit. It keeps `install_host_death_job` first on the rendezvous-argument
-      path, so the candidate's own host-death Job nests under the attempt Job. Its
-      candidate mode never opens the WebView2 user data folder that the old host
-      holds, the assumption under which the census may terminate a host WebView2
-      process past the barrier (§4 *Census and policy*). S6c also owns a design item
-      for the candidate's WebView2 profile during health: landed release boot selects
-      its persistent user-data folder before any listener, child or window
-      (Architecture 05 §1, `docs/architecture/05-webview-and-native.md:55-56`), and
-      the KEL-135 lease excludes a second same-app host until the host owner exits
-      (`05-webview-and-native.md:88`), so a candidate launched as landed would fail
-      with `ProfileInUse` while the old host holds the lease and could never reach
-      `Ready`; S6c must specify a profile handover, or a candidate-only profile, before
-      it starts, with no temporary-store fallback (`05-webview-and-native.md:64-65`).
-      Its evidence adds the S6c cells of the "8, 9 (candidate release)" row: survival
-      through the real host coordinator, the crash cuts (r4), the negative control that
-      releases before `complete()` (r8), the ten in-session updates, the measured
-      deadline and the `complete()` `Err` cut (r12).
+      then `release_for_exit`, with the census deadline that S6c measures and fixes
+      beside G, the roles having been reaped and the WebView2 collection released by
+      the handover before the launch; then S6b4's detach; then exit. It keeps
+      `install_host_death_job` first on the rendezvous-argument path, after the
+      exact-shape check that opens nothing, so the candidate's own host-death Job nests
+      under the attempt Job. The census may terminate a WebView2 process past the
+      barrier because the old collection exited before the candidate's was created
+      (§4 "Profile handover", *Census interaction*).
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
       executable entry. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6c's coordinator starts a
@@ -3077,6 +3401,9 @@ Must not touch in Slice A:
 | 8 (keld-attempt codec) | (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) each S4 record's golden bytes, and one negative per byte rule, each refused: each out-of-set purpose (with S11), class or result byte, including `0`; each magic at a position where it is not admitted; a truncated record and a record with one extra trailing byte; a one-field mutation of `AA1`, of `AR1` and of `AB1`; an `AC1` whose IDs fail the locator check, refused before `AA1`; an `AH1` with a foreign installation ID or client PID; locator calls with an all-zero or a duplicated input; an `AC1` whose server PID differs from `GetNamedPipeServerProcessId`; an `AF1` whose class is not admitted at its position (class `1` after `AB1`, class `2` before it); and a non-admitted magic followed by no further byte, refused before its deadline |
 | 8 (health sequence) | (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06) in candidate mode an unexpected application-generation exit after `AY1` and before `AK1` ends the candidate host with no successor generation, and the owner rolls back; a negative control that arms the recovery gate at `Ready` instead fails this row, and a second negative control that defers the arm but keeps the `Ready`-keyed revocation predicate also fails this row; one byte after `AY1` fails health; an exit injected in the last G of the window fails health; an `AK1` accepted that the candidate loses to end of file, a read failure or its deadline leaves its gate unarmed, so a later generation exit ends the host; after `AK1` accepted the same exit is replaced in-process; an owner killed between the end of the window and the durable `HealthAccepted` has sent no `AK1`, and recovery rolls back; on rollback, `AK1` rolled back is written before the candidate family ends, and the rollback completes when the candidate never reads it; the owner disconnects only after the candidate's end of file or its deadline; a negative control that disconnects right after writing `AK1` accepted leaves the candidate unarmed |
 | 8, 9 (candidate release) | ("Candidate release after commit"; S6b3, in child processes that stand in for the host and the candidate; the S6c cells are named) r1, survival: a candidate committed through the §4 order is alive, with an unsignaled handle, after the old host has exited; both Jobs read back `0` before that exit; the next launch of the installation selects the committed version with no journal (S6c cell: through the real host coordinator); r2, one negative control per single clear: with only the attempt Job cleared, with only the host-death Job cleared, and with neither, the same candidate's handle is signaled after the host exits; r3, rollback: no clear runs, both Jobs read back `0x2000` until the host exits (the test reads the attempt Job through the landed `WindowsProcessJob::duplicate_lifecycle_keeper_handle` duplicate, `crates/keld-runtime/src/windows_job.rs:1611`, a non-inheritable handle with the `JOB_OBJECT_QUERY` and `JOB_OBJECT_TERMINATE` rights, taken while the Job is live and before `terminate_and_wait` consumed it; the duplicate is a separate handle to the same Job object and survives that call), and the candidate family is gone when the host's handle is signaled; r4, crash cuts, the host killed at W0a, W0b, W1, W2 and W4: at W0a and W0b the candidate is gone, the journal reads `HealthAccepted` and recovery refuses with `JournalBoundRecoveryRequired` before S6d; at W1, W2 and W4 the candidate is gone, no journal exists and the next launch selects the committed version; after W3 the candidate survives (S6c cell: the journal and recovery through the real host coordinator); r5, a straggler held past the deadline (seam-injected: a member outside the family whose handle stays unsignaled after termination, as the `pending_io_family` fixture holds one): `release_for_exit` returns the typed refusal, the host-death Job reads back `0x2000`, the host exits, the candidate is gone, and the next launch selects the committed version (S6c cell: the measured deadline); r6, a Bun descendant parked after the Bun primary exited, in the host-death Job and not in the attempt Job, is terminated by the census through its own handle, that handle is signaled before the clear, the witness counts it, and the candidate survives; r7, negative control without the census: a build that clears the host-death Job without it leaves that parked descendant alive after the host exits, so the row detects the gap; r8, negative control that releases before `complete()`: a build that calls `release_family` first and whose host is then killed before journal removal leaves a `HealthAccepted` journal beside a running candidate, and recovery refuses while it runs, so the row detects the gap (S6c cell: the journal and recovery through the real host coordinator); r9, KEL-78/T3 regressions: the landed `windows_host_death_job.rs` rows pass unchanged against the capability; dropping or forgetting the capability never closes the handle, so the Job still reads back `0x2000` and an abnormal host death still reaps the enrolled tree; a `compile_fail` doctest shows that the capability yields no raw handle and is not `Clone`; r10, the released candidate's own host-death Job: it is installed and nested (`nested_under_existing_job`), and the candidate's abnormal death reaps its own parked descendant after the old host is gone; r11, an outer Job and ten updates: a host bounded by an outer kill-on-close Job that the test holds releases its candidate, which still ends when the test closes that outer Job; ten in-session updates in a row, each released, with every assignment succeeding and the last candidate alive (S6c cell: through the real host coordinator); r12, a `complete()` that returns `Err` (seam-injected failed durable step): `release_family` is never called, both Jobs read back `0x2000` until the host exits, the candidate is gone with it, and the journal still reads `HealthAccepted`, as at W0b (S6c cell: through the real host coordinator) |
+| 8, 20 (profile handover) | ("Profile handover"; S6c, through the real host coordinator unless a cell names a child process) h1, order: at the candidate's launch the old host holds the writer lease and its endpoint, has written `idle`, holds no `profile.lock` opener and no WebView2 process, and no process of its Bun generation exists; the journal is absent until after `idle` and present only from step 4; h2, acquisition: the candidate's engine acquires the same identity's folder (the old host's control directory) and reaches `Ready`; a negative control that launches the candidate while the old host still holds its lease refuses with `ProfileInUse` and never reaches `Ready`; h3, the gap: a no-argument launch started between the old host's `idle` and the candidate's acquisition refuses with `WriterActive` before any profile open, and `profile.lock` has no opener but the old host and then the candidate; a negative control that releases the profile before the writer lease is taken lets that launch acquire `profile.lock`, so the row detects the gap; h4, rollback restore: after a candidate that fails health (`AF1` before `AB1`, `AF1` after `AB1`, end of file after `AY1`, and a launch handle signaled after `AY1`, one cell each) the old host ends the family, rolls back, and a fresh session of the rollback target acquires the folder through the quarantine and the exclusive-UDF probe (the candidate's record read `running` under a dead process) and reaches `Ready` in the same process (same process ID and creation time); h5, two sessions: a host runs two consecutive application sessions in one process with no update, which S6c's first commit proves before the rest; h6, crash cuts H2, H3, H4, H5, H6 and H8 of the crash table, each binary: the journal state and the next launch's outcome are those the table states, and at H3 the next launch quarantines and probes before `Ready`; h7, one instance: at `AB1` no process of the old generation is alive, and a negative control that keeps the old Bun primary alive through the handover fails this cell; h8, user-visible: the window census is zero during the gap and one after `Ready`, with the gap's length recorded, not asserted; h9, a failed tail (seam-injected barrier grace expiry): nothing is journaled, the lease is released, the host exits with the tail's error, and the next launch boots the current version; h10, F51: with the old host's stdout and stderr piped to the harness, the harness reads end of file on both when the old host's handle is signaled while the candidate runs |
+| 8, 9 (launch-record detach) | ("Candidate release after commit", *Launch-record detach*; S6b4, in child processes that stand in for the host and the candidate) d1, after both clears and `detach`, the host exits in order and the candidate's handle stays unsignaled; d2, negative control: a build that drops the record without `detach` after both clears leaves the candidate's handle signaled after the host's orderly exit, so the row detects the gap; d3, a never-resumed child refuses `detach` and is terminated as today; d4, a `compile_fail` doctest shows that `WindowsExitCensus` cannot be built in safe code outside the crate, so `detach` is uncallable before `release_for_exit`; d5, after `detach` the host holds no handle to the candidate (a handle census of the host's own table); d6, S6c cell: r1 through the real host coordinator passes only with the detach |
+| 8 (margin G and deadlines) | (*Margin and deadlines*; S6c) the G record: sixty samples (thirty idle, thirty under load) of the revocation-to-end-of-file latency measured on the owner's monotonic clock through the real candidate host, with minimum, median and maximum, and G equal to the rule's value, recorded in the keld-benches artifact that the pull request names with its hash; an exit injected at the window's end minus G/2 fails health; a negative control that halves G lets an exit injected at the window's end minus the measured maximum commit, so the row detects an undersized margin; the candidate's `AK1` deadline equals `ATTEMPT_HEALTH_WINDOW` + G + 15 s, and an `AK1` arriving after it leaves the candidate unarmed; each owner deadline is at least four times its measured maximum with its floor, recorded with the measurement; a candidate whose session fails before `Ready` sends `AF1` class 3, which the owner reads as a record, not end of file |
 | 8, 17 (D5 fallback) | when the Medium claimant cannot open the elevated owner, the claim binds on the `O:BA` owner and the session before sending and on the journaled owner process ID after acceptance; when the open is admitted, creation time and `helper_image_blake3` are checked as well |
 | 17 (D2 bootstrap) | the host creates the bootstrap endpoint with its two-SID DACL and its own user SID as owner before `ShellExecuteExW`, refuses when no `hProcess` is returned, accepts only a client whose process ID equals the `hProcess` process ID while `hProcess` is unsignaled, and impersonates no one; the helper opens with identification-level QoS and, before sending, verifies that the host process image is its installation's selected `keld-host.exe`, the session, and a descriptor owned by that host's user SID; it takes the initiating token only from that host process object and refuses an elevated or non-Medium initiating token before any protected write; a forged rendezvous argument, a squatting server that is not that `keld-host.exe` (same-user code is outside the boundary and is not claimed), a client that is not the launched helper and a second ordinary user's process each refuse; alternate-administrator consent is admitted with the initiating token unchanged once S1 shows the open works, and otherwise refuses with a typed `ProtectedStateUnchanged` before any protected write; source pinning runs under token impersonation, and a failed revert terminates the helper (seam-injected) |
 | 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
@@ -3116,6 +3443,10 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   under `.agents/instructions.md`, with named independent review evidence as for S6b
   and S9b, since the file is at 1833 bytes against its 1856-byte cap in
   `.agents/instruction-budget.tsv`.
+  S6b4 and S6c add none: the detach skips an existing `TerminateProcess` on a Drop path,
+  the handover reuses the landed session tail, barrier and profile recovery, and no FFI
+  call or `unsafe` block is added or changed (coordinator decisions under the owner's
+  delegation of 2026-10-08).
   The helper crate holds none. Elsewhere, conditional on each exact native/helper
   implementation;
 - public API: yes — canonical package contents, update admission and unsupported-cell
@@ -3158,14 +3489,23 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   breaking return type of `install_host_death_job`, now the opaque `WindowsHostDeathJob`
   capability, with the new `release_for_exit`, `WindowsProcessJob::release_family`,
   `WindowsReleasedAttempt` and `WindowsExitCensus` ("Candidate release after commit";
-  KEL-270 owner decision `740998f4`, item 2);
+  KEL-270 owner decision `740998f4`, item 2); S6b4's breaking privatization of
+  `WindowsExitCensus`'s fields with its new `detach` and `WindowsDetachedLaunch`
+  (design item F50, Linear KEL-270 comment `fffd7f38`); and S6c's session loop with its
+  handover cause, the documented second construction of `WebView2Engine`, the
+  debug-only evidence seam, and any `keld-update` accessor the coordinator's trust
+  inputs need ("Profile handover"; coordinator decisions under the owner's delegation
+  of 2026-10-08);
 - permission model: yes — the install-mode protection profiles, UAC elevation and
   hostile-role denial decide who can mutate executable state, though no app grant is
   added. T4d adds the elevated helper principal, its recovery-only role and the
   initiating-user-only connect-back DACL, and S9d admits only the running image to the
   helper's self-anchor and the installed boot (KEL-270 owner decision `740998f4`,
   item 1). S6b3 adds none: the clear removes only a termination that the host could
-  already perform on its own family, and it changes no principal, grant or DACL;
+  already perform on its own family, and it changes no principal, grant or DACL. S6b4
+  adds none. S6c adds the claimant admission end to end (the owner accepts only the
+  exact process it launched and still retains) and no grant or DACL beyond S4a's
+  connect-back endpoint;
 - dependency addition: none in Slice A; yes for T4d — the new workspace member
   `crates/keld-updater-helper` with internal edges only to `keld-update`, `keld-ipc`,
   `keld-runtime` and `keld-guard`; the `windows-sys` features `Win32_UI_Shell` and
@@ -3179,8 +3519,8 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   S9d adds to that pin any feature that its selected source or comparison needs, such
   as `Win32_System_ProcessStatus` for `GetMappedFileNameW` or `K32GetMappedFileNameW`
   (§5). S6b3 adds none: every call and constant of the clear and the census is under
-  a `windows-sys` feature that `keld-runtime` already enables. No third-party crate is
-  added to the workspace;
+  a `windows-sys` feature that `keld-runtime` already enables; S6b4 and S6c add no call
+  and no crate. No third-party crate is added to the workspace;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
   and canonical package content are narrowed and require exact independent review; any
   new host/coordinator authentication channel remains separately owned and gated. T4d is
@@ -3193,8 +3533,8 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   owned by "Candidate connect-back" and pointed to from Architecture 02); the helper's
   fixed `--recovery-role` argument, a contract between a host and a helper of another
   version tree (S9b); and the
-  canonical package content, which now requires `keld-updater-helper.exe`. S6b3 adds
-  none.
+  canonical package content, which now requires `keld-updater-helper.exe`. S6b3, S6b4
+  and S6c add none.
 
 ## 9. Perf impact
 
@@ -3230,15 +3570,20 @@ not requests to revisit that decision:
 - Criterion-10 post-exit helper under option B (same owner): if such a helper is ever
   used, it inherits the host-death Job in the same way and needs the same root fix
   before it is specified.
-- Candidate WebView2 profile during health under option B (same owner; tracked under
-  KEL-270 before S6c starts): landed release boot selects its persistent user-data
-  folder before any listener, child or window (Architecture 05 §1,
-  `docs/architecture/05-webview-and-native.md:55-56`) and the KEL-135 lease excludes
-  a second same-app host until the host owner exits (`05-webview-and-native.md:88`),
-  so a candidate launched as landed would fail with `ProfileInUse` while the old host
-  holds the lease and could never reach `Ready`. S6c must specify a profile handover,
-  or a candidate-only profile, with no temporary-store fallback
-  (`05-webview-and-native.md:64-65`), before it starts; this amendment does not (§6).
+- Candidate WebView2 profile during health under option B: specified by §4 "Profile
+  handover" (design item F47; coordinator decisions under the owner's delegation of
+  2026-10-08). Open under it, each with its owner: foreground and focus restoration for
+  the candidate's window and for the restored window after rollback (owner: the KEL-53
+  owner, GYLDLAB; a product choice outside this amendment); the production trigger of
+  the coordinator, which belongs to feed orchestration and has no caller before S6d
+  (same owner; §6); and the two-sessions cell, which S6c's first commit proves before
+  the rest, with the recorded alternative if it cannot pass (owner: the S6c
+  coordinator; §4 "Profile handover", *Rollback and restore*).
+- Launch-record detach for the Machine-UAC helper (owner: the S11 amendment): the
+  helper releases only the attempt Job and has no host-death census, so its detach
+  needs a binding to `WindowsReleasedAttempt`; S6b4 adds only the host's census-bound
+  detach, and the host path never accepts that weaker witness ("Candidate release
+  after commit", *Launch-record detach*).
 - T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
   falsifier before any privileged seamless mechanism is selected. The task probe is only
   wake-up feasibility.
