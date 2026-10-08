@@ -63,7 +63,7 @@ pub fn standard_handle_report() -> String {
     // SAFETY: the marker is live for this synchronous call, `written` is writable
     // and no overlapped structure is passed. A null or closed handle fails the
     // call instead of writing anywhere.
-    let wrote = unsafe {
+    let succeeded = unsafe {
         WriteFile(
             stdout,
             CANDIDATE_STDOUT_MARKER.as_ptr(),
@@ -72,7 +72,7 @@ pub fn standard_handle_report() -> String {
             std::ptr::null_mut(),
         )
     };
-    let write = if wrote == 0 {
+    let write = if succeeded == 0 {
         format!(
             "error:{}",
             std::io::Error::last_os_error()
