@@ -115,6 +115,9 @@ const DOC_PLACEHOLDER_COMMANDS: &[&str] = &[
 /// The `hygiene` recipe's hello-command regression, run by the hosted hygiene job (#650).
 const HELLO_COMMAND_COMMANDS: &[&str] = &["python3 -B tools/test_hello_command.py"];
 
+/// The checkout-hook trust-boundary test, run by the hosted hygiene job (#650).
+const HOOKS_TEST_COMMANDS: &[&str] = &["tools/hooks_test.sh"];
+
 const AUDIT_DOC_COMMANDS: &[&str] = &[
     "python3 -B docs/audits/verify.py",
     "python3 -B docs/audits/test_verify.py",
@@ -2074,6 +2077,11 @@ fn check_hello_command_step(text: &str) -> Result<(), String> {
     check_hygiene_contract_step(text, "Hello command contract", HELLO_COMMAND_COMMANDS)
 }
 
+/// The installed checkout hooks must never run incoming code (#650).
+fn check_hooks_test_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(text, "Checkout hook trust boundary", HOOKS_TEST_COMMANDS)
+}
+
 fn check_agent_context_step(text: &str) -> Result<(), String> {
     check_hygiene_contract_step(
         text,
@@ -2904,6 +2912,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_atomic_protocol_step(&text)?;
     check_doc_placeholders_step(&text)?;
     check_hello_command_step(&text)?;
+    check_hooks_test_step(&text)?;
     check_agent_context_step(&text)?;
     check_public_audit_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
@@ -3391,6 +3400,9 @@ mod tests {
             "      - name: Hello command contract",
             "        run: |",
             "          python3 -B tools/test_hello_command.py",
+            "      - name: Checkout hook trust boundary",
+            "        run: |",
+            "          tools/hooks_test.sh",
             "      - name: Atomic problem-solving protocol contract",
             "        run: |",
             "          mkdir -p target/atomic-protocol",
@@ -3994,6 +4006,18 @@ mod tests {
                 "          python3 -B tools/test_hello_command.py\n",
                 "          echo python3 -B tools/test_hello_command.py\n",
                 "echoed hello contract",
+                "without wrappers",
+            ),
+            (
+                "      - name: Checkout hook trust boundary\n",
+                "      - name: Removed hooks step\n",
+                "missing hooks step",
+                "Checkout hook trust boundary",
+            ),
+            (
+                "          tools/hooks_test.sh\n",
+                "          tools/hooks_test.sh || true\n",
+                "suppressed hooks test",
                 "without wrappers",
             ),
         ] {

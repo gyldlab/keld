@@ -735,6 +735,12 @@ jobs:
       - name: Hello command contract
         run: |
           python3 -B tools/test_hello_command.py
+      # The checkout-hook trust boundary (.githooks, tools/hooks_install.sh): the
+      # installed hooks must never run the incoming branch's code. Its inputs are
+      # unknown or hygiene paths, all of which select this job (#650).
+      - name: Checkout hook trust boundary
+        run: |
+          tools/hooks_test.sh
       - name: Atomic problem-solving protocol contract
         run: |
           mkdir -p target/atomic-protocol

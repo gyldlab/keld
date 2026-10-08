@@ -6,6 +6,24 @@ fixture="$(mktemp -d "${TMPDIR:-/tmp}/keld-hooks-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
 git -C "$fixture" init -q -b main
+
+# A minimal stand-in for `just <recipe>`: it runs that recipe's body from the
+# fixture's justfile. Hosted runners do not install `just` (#650), and the test
+# only needs "a hook that calls just executes the working tree's recipe": the
+# legacy negative control depends on it, and so does catching a regression in
+# the installed hooks. It is not an executor for real recipes.
+shim_bin="$fixture/shim-bin"
+mkdir -p "$shim_bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'recipe="$1"' \
+  'body="$(awk -v r="$recipe:" '"'"'found && /^[^ \t]/ {exit} found && NF {sub(/^    /, ""); print} $0 == r {found = 1}'"'"' justfile)"' \
+  '[[ -n "$body" ]] || { echo "just stand-in: no recipe $recipe" >&2; exit 1; }' \
+  'bash -euo pipefail -c "$body"' \
+  >"$shim_bin/just"
+chmod +x "$shim_bin/just"
+export PATH="$shim_bin:$PATH"
 empty_hooks="$fixture/empty-hooks"
 mkdir -p "$empty_hooks"
 git -C "$fixture" config core.hooksPath "$empty_hooks"
@@ -54,7 +72,7 @@ git -C "$fixture" switch -q main
 
 (
   cd "$fixture"
-  just hooks-install
+  "$source_root/tools/hooks_install.sh"
 )
 git -C "$fixture" switch attack >"$fixture/checkout.out" 2>&1
 

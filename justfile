@@ -39,13 +39,13 @@ ci-full-inventory: ci-policy-full typescript fmt-check clippy test doc deny
 ci-route:
     tools/ci_changes.sh local
 
-# Hosted CI runs every ci-policy gate (#650) except two that need the real
-# `just` executable, which hosted runners deliberately do not install:
-# hooks-test (it runs `just hooks-install`) and ci-router-test's
-# test_ci_local.py ExecutorTests (they drive real recipes). The rest of
-# test_ci_local.py runs hosted through tools/ci_changes_test.sh. agent-context's
-# workspace.py check also runs hosted, but only a developer checkout has task
-# records for it to validate.
+# Hosted CI runs every ci-policy gate (#650) except the four test_ci_local.py
+# ExecutorTests inside ci-router-test, which drive real recipes through the
+# `just` executable (tools/ci_local.py inventory/execute); hosted runners do not
+# install `just`, and adding it (for example via taiki-e/install-action) would be
+# a dependency-gate decision. Everything else in test_ci_local.py runs hosted
+# through tools/ci_changes_test.sh. agent-context's workspace.py check also runs
+# hosted, but only a developer checkout has task records for it to validate.
 [parallel]
 ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
@@ -75,6 +75,7 @@ typescript:
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
+    tools/agents_md.sh test
     tools/agents_md.sh
 
 # Live Git publication history/ancestry is not a tracked-file diff input.
@@ -429,18 +430,7 @@ _competitors-sync *args:
 
 # Install reviewed hook copies outside the working tree (local config only — not --global).
 hooks-install:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    ROOT="$(git rev-parse --show-toplevel)"
-    COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
-    HOOKS_DIR="$COMMON_DIR/keld-hooks"
-    mkdir -p "$HOOKS_DIR"
-    cp -- "$ROOT/.githooks/post-merge" "$HOOKS_DIR/post-merge"
-    cp -- "$ROOT/.githooks/post-checkout" "$HOOKS_DIR/post-checkout"
-    chmod +x "$HOOKS_DIR/post-merge" "$HOOKS_DIR/post-checkout"
-    git -C "$ROOT" config core.hooksPath "$HOOKS_DIR"
-    echo "hooks-install: installed reviewed reminder hooks at $HOOKS_DIR (local)."
-    echo "hooks-install: checkout/merge will not execute working-tree code."
+    tools/hooks_install.sh
 
 # Validate the actual session receipt; this is local/remote-evidence admission, not CI.
 session-closeout receipt:

@@ -15,6 +15,7 @@ trap cleanup EXIT
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
 "$repo_root/tools/ci_webkitgtk_apt.sh" test
+"$repo_root/tools/agents_md.sh" test
 
 result_for_paths() {
     printf '%s\0' "$@" | "$router" classify
@@ -1015,4 +1016,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests
