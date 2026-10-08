@@ -980,9 +980,13 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     link, when it ends the link and keeps reading within those backstops. A call that
     a backstop overtakes is not answered at the host and sees `KELD-IPC-022` at the
     close. Both are terminal and neither call ran, so callers MUST treat them alike
-    (§4.4). FACT (macOS, #636): after the role's half-close, the host's
-    `shutdown(SHUT_RDWR)` returns `ENOTCONN` and sends no FIN, so the role's EOF
-    arrives when the host drops its last link handle at the end of the `Quit` tail.
+    (§4.4). The host's link close reaches a role that has half-closed: keld-ipc's
+    Unix `shutdown_app_link` shuts the write half before the read half, so the role
+    reads EOF at that close, before the `Quit` tail asks the guardian to stop it.
+    FACT (macOS): `shutdown(SHUT_RDWR)` after the peer's half-close returns
+    `ENOTCONN` before reaching the write half and sends no FIN (XNU
+    `soshutdownlock_final`, `bsd/kern/uipc_socket.c` at `f6217f89`), which is why
+    the halves are shut separately.
     Windows keeps its existing post-`Quit` peer-close check, which treats bytes after
     the REPLY as an error, until T5 qualifies the same rule there.
 

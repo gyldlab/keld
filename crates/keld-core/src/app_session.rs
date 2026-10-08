@@ -4534,7 +4534,7 @@ struct PrimaryRouterHandle {
 
 /// Test hook state for [`PrimaryRouterHandle::stall_next_quit_drain`].
 #[cfg(all(test, target_os = "macos"))]
-type QuitDrainStall = (SyncSender<Instant>, Receiver<()>);
+type QuitDrainStall = (SyncSender<()>, Receiver<()>);
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
@@ -4913,7 +4913,9 @@ impl PrimaryRouterHandle {
             return;
         };
         #[cfg(all(test, target_os = "macos"))]
-        self.stall_quit_drain_for_test(idle_deadline);
+        let idle_deadline = self
+            .stall_quit_drain_for_test(started)
+            .unwrap_or(idle_deadline);
         let error = CallError::quit_drained();
         let privileged_call = self.fs.is_some().then_some(&keld_ipc::channel_table::FS);
         // The peer's EOF, a backstop deadline, and a frame the session does not
@@ -4945,27 +4947,29 @@ impl PrimaryRouterHandle {
         }
     }
 
-    /// Test hook: holds the next post-Quit drain after it fixes its deadlines,
-    /// reporting its idle deadline, until the test resumes it.
+    /// Test hook: holds the next post-Quit drain before its first read until
+    /// the test resumes it, then gives it an idle deadline that has already
+    /// passed, as a host stall longer than its idle backstop would.
     #[cfg(all(test, target_os = "macos"))]
-    fn stall_next_quit_drain(&self, stalled: SyncSender<Instant>, resume: Receiver<()>) {
+    fn stall_next_quit_drain(&self, stalled: SyncSender<()>, resume: Receiver<()>) {
         *self
             .quit_drain_stall
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((stalled, resume));
     }
 
+    /// Returns the injected idle deadline (`started`, already passed) when
+    /// the hook is armed.
     #[cfg(all(test, target_os = "macos"))]
-    fn stall_quit_drain_for_test(&self, idle_deadline: Instant) {
-        let stall = self
+    fn stall_quit_drain_for_test(&self, started: Instant) -> Option<Instant> {
+        let (stalled, resume) = self
             .quit_drain_stall
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some((stalled, resume)) = stall {
-            let _ = stalled.send(idle_deadline);
-            let _ = resume.recv_timeout(Duration::from_secs(5));
-        }
+            .take()?;
+        let _ = stalled.send(());
+        let _ = resume.recv_timeout(Duration::from_secs(5));
+        Some(started)
     }
 
     fn has_outstanding_fs_call(&self, attempt: u32) -> bool {
@@ -7873,8 +7877,9 @@ mod tests {
 
     /// GH-528 T2 (gate review of #636): the post-Quit drain ends on the peer's
     /// EOF and never drops a CALL that has already arrived. Three FS CALLs are
-    /// buffered behind the Quit; the drain is then stalled, as by host
-    /// scheduling, until its idle window has passed, and only then does the
+    /// buffered behind the Quit; the drain is then held before its first read
+    /// and given an idle deadline that has already passed, as a host stall
+    /// longer than its idle backstop would leave it, and only then does the
     /// role end the link. Every buffered call still gets `KELD-IPC-024`, in
     /// order, and none runs. *Negative control:* checking the idle deadline
     /// before every read (as the earlier timer-window drain did) answers none
@@ -7906,40 +7911,16 @@ mod tests {
             (quit.kind, quit.channel, quit.corr),
             (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(50))
         );
-        let idle_deadline = stalled
+        stalled
             .recv_timeout(Duration::from_secs(5))
             .expect("the drain fixed its deadlines and stalled");
-        // The stall must outlast the drain's idle window. This waits on the
-        // clock that is the precondition, not on another thread's progress.
-        thread::sleep(
-            idle_deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
-        );
-        assert!(Instant::now() > idle_deadline);
         client
             .shutdown(std::net::Shutdown::Write)
             .expect("the role ends the link after the Quit REPLY");
         resume.send(()).expect("resume the stalled drain");
 
-        // The drain ends on that EOF and the Quit tail runs. The role's own
-        // EOF arrives once the host has dropped its link handles: on macOS a
-        // `shutdown(SHUT_RDWR)` after the peer's half-close is `ENOTCONN` and
-        // sends no FIN, so the tail is acknowledged before reading to EOF.
-        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("guardian shutdown after the drain")
-        else {
-            panic!("unexpected guardian command after the Quit drain");
-        };
-        shutdown
-            .send(Ok(()))
-            .expect("acknowledge guardian shutdown");
-        assert_eq!(
-            t.window
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit"),
-            AppWindowCommand::Quit
-        );
+        // The drain ends on that EOF, and the host's link close reaches the
+        // half-closed role before its tail asks the guardian to stop it.
         let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
             read_frames_until_eof(&mut client)
                 .iter()
@@ -7963,6 +7944,83 @@ mod tests {
             "every CALL written before the role ended the link gets 024"
         );
         assert!(!target.exists(), "a post-Quit FS CALL must not execute");
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("guardian shutdown after the drain")
+        else {
+            panic!("unexpected guardian command after the Quit drain");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        t.router.shutdown().expect("router shutdown after Quit");
+    }
+
+    /// GH-528 (#636 follow-up): a role that half-closes after its Quit REPLY
+    /// reads EOF from the host's link close itself, before the guardian is
+    /// asked to stop it. The Quit tail sends the guardian `Shutdown` only
+    /// after the link close (KEL-139 AC6), and the test does not acknowledge
+    /// it until after the probe, so neither a kill nor the host dropping its
+    /// link handles can have produced this EOF. The probe is a nonblocking
+    /// read, so the result does not depend on a timeout. *Negative control:*
+    /// `shutdown(Both)` in `shutdown_app_link` is `ENOTCONN` after the
+    /// half-close on macOS and sends no FIN, so the probe reads `WouldBlock`.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
+        use std::io::Read as _;
+
+        let (t, mut client) = guarded_test_router();
+        write_quit_call(&mut client, 80);
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
+        assert_eq!(
+            (quit.kind, quit.channel, quit.corr),
+            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(80))
+        );
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("the role ends the link after the Quit REPLY");
+
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the Quit tail reached the guardian after the link close")
+        else {
+            panic!("unexpected guardian command after the Quit REPLY");
+        };
+        client.set_nonblocking(true).expect("nonblocking probe");
+        let mut byte = [0_u8; 1];
+        let probe = client.read(&mut byte);
+        assert!(
+            matches!(probe, Ok(0)),
+            "the role reads the host's EOF before the guardian stops it: {probe:?}"
+        );
+        client.set_nonblocking(false).expect("blocking link");
+
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
         t.router.shutdown().expect("router shutdown after Quit");
     }
 

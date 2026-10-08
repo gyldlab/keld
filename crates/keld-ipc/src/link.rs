@@ -103,7 +103,10 @@ pub trait AppLinkDeadlines {
     /// the connection open.
     ///
     /// On Unix, shutdown of a cloned fd also unblocks a local `read` on
-    /// another clone of the same socket. On Windows, `TcpStream::shutdown`
+    /// another clone of the same socket. The Unix stream shuts its write
+    /// half before its read half and treats an already-shut half as
+    /// success, so a peer that has half-closed still gets this side's FIN.
+    /// On Windows, `TcpStream::shutdown`
     /// does **not** wake a blocking `read` already in progress on another
     /// thread ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594))
     /// — clone-shutdown is not peer-FIN. Local teardown must use
@@ -133,9 +136,34 @@ impl AppLinkDeadlines for std::os::unix::net::UnixStream {
         self.write_timeout()
     }
 
+    /// Shuts down the write half, then the read half. An already-shut half
+    /// is success. `SHUT_RDWR` is not used: after the peer's half-close,
+    /// XNU's `soshutdownlock_final` returns `ENOTCONN` because the read half
+    /// is already shut, before it reaches the write half, so the peer would
+    /// get no FIN until every descriptor here closed
+    /// (apple-oss-distributions/xnu `f6217f89`, `bsd/kern/uipc_socket.c`;
+    /// GH-528).
     fn shutdown_app_link(&self) -> io::Result<()> {
-        self.shutdown(Shutdown::Both)
+        shutdown_write_then_read(|how| self.shutdown(how))
     }
+}
+
+/// The Unix [`AppLinkDeadlines::shutdown_app_link`] order: the write half,
+/// then the read half. Both halves are always attempted, so a failed write
+/// half cannot leave a local reader blocked. `NotConnected` means that half,
+/// or the whole connection, is already shut, and is success; the first other
+/// error is returned.
+#[cfg(unix)]
+fn shutdown_write_then_read(
+    mut shutdown: impl FnMut(Shutdown) -> io::Result<()>,
+) -> io::Result<()> {
+    let already_shut_is_success = |result: io::Result<()>| match result {
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        result => result,
+    };
+    let write = already_shut_is_success(shutdown(Shutdown::Write));
+    let read = already_shut_is_success(shutdown(Shutdown::Read));
+    write.and(read)
 }
 
 impl AppLinkDeadlines for std::net::TcpStream {
@@ -1450,6 +1478,103 @@ mod tests {
             "shutdown must surface as I/O close, got {err}"
         );
         assert!(err.to_string().contains("KELD-IPC-001"), "{err}");
+    }
+
+    /// GH-528 (#636 follow-up): after the peer's half-close, this side's
+    /// `shutdown_app_link` still sends its FIN, so the peer reads EOF while
+    /// this side's descriptors stay open. XNU's `soshutdownlock_final`
+    /// returns `ENOTCONN` for `SHUT_RDWR` once the read half is shut and
+    /// skips the write half (apple-oss-distributions/xnu `f6217f89`,
+    /// `bsd/kern/uipc_socket.c`), so the write half goes first. The probes
+    /// are nonblocking reads, so the result does not depend on a timeout.
+    /// *Negative control:* `shutdown(Both)` leaves the peer at `WouldBlock`
+    /// and returns `ENOTCONN`.
+    #[test]
+    #[cfg(unix)]
+    fn shutdown_app_link_after_peer_half_close_still_sends_eof() {
+        use std::io::Read as _;
+
+        let (host, peer) = connected_pair();
+        let mut byte = [0_u8; 1];
+        peer.shutdown(Shutdown::Write).expect("peer half-close");
+        assert_eq!((&host).read(&mut byte).expect("host reads EOF"), 0);
+        let shutdown = host.shutdown_app_link();
+        peer.set_nonblocking(true).expect("nonblocking probe");
+        let probe = (&peer).read(&mut byte);
+        assert!(
+            matches!(probe, Ok(0)),
+            "the peer reads this side's EOF while its descriptor is open: {probe:?}"
+        );
+        shutdown.expect("an already-shut read half is success");
+        host.shutdown_app_link()
+            .expect("a second shutdown is idempotent");
+    }
+
+    /// #641 review: a write half that fails with an error other than
+    /// `NotConnected` must not skip the read half, or a local reader stays
+    /// blocked. The shim records each attempt. *Negative control:* returning
+    /// early on the write error (`?`) records only `Write`.
+    #[test]
+    #[cfg(unix)]
+    fn shutdown_attempts_the_read_half_after_a_failed_write_half() {
+        let mut attempts = Vec::new();
+        let result = shutdown_write_then_read(|how| {
+            attempts.push(how);
+            match how {
+                Shutdown::Write => Err(io::Error::from(ErrorKind::PermissionDenied)),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(attempts, [Shutdown::Write, Shutdown::Read]);
+        assert_eq!(
+            result.expect_err("the write error is returned").kind(),
+            ErrorKind::PermissionDenied
+        );
+
+        let mut attempts = Vec::new();
+        let result = shutdown_write_then_read(|how| {
+            attempts.push(how);
+            match how {
+                Shutdown::Write => Err(io::Error::from(ErrorKind::NotConnected)),
+                _ => Err(io::Error::from(ErrorKind::BrokenPipe)),
+            }
+        });
+        assert_eq!(attempts, [Shutdown::Write, Shutdown::Read]);
+        assert_eq!(
+            result
+                .expect_err("the first error other than NotConnected is returned")
+                .kind(),
+            ErrorKind::BrokenPipe
+        );
+
+        let result = shutdown_write_then_read(|_| Err(io::Error::from(ErrorKind::NotConnected)));
+        assert!(
+            result.is_ok(),
+            "already-shut halves are success: {result:?}"
+        );
+    }
+
+    /// The write-then-read order keeps the read half: a silent peer still
+    /// gets EOF, and another clone of this side reads EOF too, so a local
+    /// reader is released without the peer's help.
+    #[test]
+    #[cfg(unix)]
+    fn shutdown_app_link_shuts_both_halves_for_a_silent_peer() {
+        use std::io::Read as _;
+
+        let (host, peer) = connected_pair();
+        let local = host.try_clone().expect("local reader clone");
+        host.shutdown_app_link().expect("shutdown both halves");
+        let mut byte = [0_u8; 1];
+        peer.set_nonblocking(true).expect("nonblocking peer probe");
+        assert_eq!((&peer).read(&mut byte).expect("peer reads EOF"), 0);
+        local
+            .set_nonblocking(true)
+            .expect("nonblocking local probe");
+        assert_eq!(
+            (&local).read(&mut byte).expect("a local clone reads EOF"),
+            0
+        );
     }
 
     #[test]
