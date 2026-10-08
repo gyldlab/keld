@@ -102,12 +102,12 @@
   closes while it runs, and clears that Job's kill-on-close exactly once, on a
   `PerUserDirect` exit after a committed update, after a census of the Job shows only
   the host and the committed candidate's family (KEL-53 §4 "Candidate release after
-  commit", slice S6b3); every other exit, and every abnormal death, keeps the
-  kill-on-close reap. The CLI keeps the full outer Job handle; only the reduced cleanup
-  duplicate reaches the sentinel, never the host or Bun. This `keld dev` proof does
-  not make it an installed updater launcher or select a MachineSeamless writer
-  mechanism. KEL-101 separately owns the named-pipe/DACL boundary; this KEL-96
-  slice makes no LPAC or privileged-dispatch claim.
+  commit", slice S6b3); every other exit, and every abnormal death before that clear,
+  keeps the kill-on-close reap. The CLI keeps the full outer Job handle; only the
+  reduced cleanup duplicate reaches the sentinel, never the host or Bun. This
+  `keld dev` proof does not make it an installed updater launcher or select a
+  MachineSeamless writer mechanism. KEL-101 separately owns the named-pipe/DACL
+  boundary; this KEL-96 slice makes no LPAC or privileged-dispatch claim.
 - **Windows installed-root product direction (KEL-254/KEL-53):** the default direct
   install is per-user under the user's application location, with automatic updates
   under the same-user authority and no UAC. Program Files installs support explicit-UAC
