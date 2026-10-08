@@ -52,6 +52,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read as _, Write as _};
+use std::mem::ManuallyDrop;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -2299,21 +2300,27 @@ unsafe extern "system" fn browser_exit_wake(context: *mut core::ffi::c_void, _ti
 
 /// One registered wait that posts `ProfileReleaseWake` when the browser
 /// process handle is signaled, so the loop needs no polling timer.
+///
+/// The registration owns the process handle it waits on: closing a handle
+/// while a registered wait is still pending is undefined
+/// (`RegisterWaitForSingleObject` contract), so the handle is closed only
+/// after a successful unregistration and leaked otherwise.
 struct BrowserExitWake {
     wait: HANDLE,
     proxy: *mut EventLoopProxy<WindowsLoopEvent>,
+    process: ManuallyDrop<OwnedHandle>,
 }
 
 impl BrowserExitWake {
     fn register(
-        process: &OwnedHandle,
+        process: OwnedHandle,
         proxy: EventLoopProxy<WindowsLoopEvent>,
     ) -> Result<Self, WvError> {
         let proxy = Box::into_raw(Box::new(proxy));
         let mut wait = HANDLE::default();
-        // SAFETY: `process` is a live owned SYNCHRONIZE handle that outlives
-        // this registration (`ProfileReleaseWait` drops the wake before the
-        // handle), `browser_exit_wake` has the `WAITORTIMERCALLBACK` ABI,
+        // SAFETY: `process` is a live owned SYNCHRONIZE handle that this
+        // registration owns and closes only after `Drop` has unregistered the
+        // wait, `browser_exit_wake` has the `WAITORTIMERCALLBACK` ABI,
         // `context` is the box leaked above, and `WT_EXECUTEONLYONCE` runs the
         // callback at most once on a pool thread; tao's `EventLoopProxy` is
         // `Send + Sync`. Contract:
@@ -2331,12 +2338,21 @@ impl BrowserExitWake {
         if registered.is_err() {
             // SAFETY: no wait was registered, so nothing else can reach the box.
             drop(unsafe { Box::from_raw(proxy) });
+            // No wait references `process`, so dropping it here is sound.
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 BROWSER_EXIT_WAKE_UNREGISTERED,
             ));
         }
-        Ok(Self { wait, proxy })
+        Ok(Self {
+            wait,
+            proxy,
+            process: ManuallyDrop::new(process),
+        })
+    }
+
+    fn process(&self) -> HANDLE {
+        HANDLE(self.process.as_raw_handle())
     }
 }
 
@@ -2350,8 +2366,32 @@ impl Drop for BrowserExitWake {
         if unsafe { UnregisterWaitEx(self.wait, Some(INVALID_HANDLE_VALUE)) }.is_ok() {
             // SAFETY: the box was leaked by `register`; after the blocking
             // unregistration no callback can observe it, so it is reclaimed
-            // once. A failed unregistration leaks it instead of racing.
+            // once.
             drop(unsafe { Box::from_raw(self.proxy) });
+            // SAFETY: the registration that referenced the handle is gone, so
+            // the handle is closed exactly once, here.
+            unsafe { ManuallyDrop::drop(&mut self.process) };
+        }
+        // A failed unregistration leaves the wait live: the box stays leaked
+        // rather than raced, and the handle stays open rather than closed under
+        // a pending wait.
+    }
+}
+
+/// The expected browser process, identified by its kernel object rather than
+/// its reusable id.
+enum BrowserProcess {
+    /// Waited on directly by [`wait_for_browser_exit`] (probe path).
+    Polled(OwnedHandle),
+    /// Owned by the registered exit wake that posts to the tao loop (host path).
+    Watched(BrowserExitWake),
+}
+
+impl BrowserProcess {
+    fn raw(&self) -> HANDLE {
+        match self {
+            Self::Polled(process) => HANDLE(process.as_raw_handle()),
+            Self::Watched(wake) => wake.process(),
         }
     }
 }
@@ -2368,9 +2408,7 @@ impl Drop for BrowserExitWake {
 /// controllers were closed.
 struct ProfileReleaseWait {
     receiver: Option<Receiver<Result<(), WvError>>>,
-    /// Declared before `process`: the registration drops before its handle.
-    wake: Option<BrowserExitWake>,
-    process: Option<OwnedHandle>,
+    process: Option<BrowserProcess>,
     grace: Duration,
     armed: Cell<bool>,
     observed: Cell<bool>,
@@ -2390,8 +2428,7 @@ impl ProfileReleaseWait {
     ) -> Self {
         Self {
             receiver,
-            wake: None,
-            process,
+            process: process.map(BrowserProcess::Polled),
             grace,
             armed: Cell::new(false),
             observed: Cell::new(false),
@@ -2401,12 +2438,16 @@ impl ProfileReleaseWait {
     }
 
     /// Registers the wake that drives [`Self::poll`] from the tao loop once
-    /// the browser process exits. Without a handle there is nothing to wait on
-    /// and the post-exit grace is armed at [`Self::arm`] instead.
+    /// the browser process exits; the registration then owns the handle.
+    /// Without a handle there is nothing to wait on and the post-exit grace
+    /// is armed at [`Self::arm`] instead.
     fn with_loop_wake(mut self, proxy: EventLoopProxy<WindowsLoopEvent>) -> Result<Self, WvError> {
-        if let Some(process) = self.process.as_ref() {
-            self.wake = Some(BrowserExitWake::register(process, proxy)?);
-        }
+        self.process = match self.process.take() {
+            Some(BrowserProcess::Polled(process)) => Some(BrowserProcess::Watched(
+                BrowserExitWake::register(process, proxy)?,
+            )),
+            other => other,
+        };
         Ok(self)
     }
 
@@ -2423,7 +2464,7 @@ impl ProfileReleaseWait {
         // SAFETY: `process` is a live owned SYNCHRONIZE handle; a zero timeout
         // only queries whether it is signaled. Contract:
         // https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
-        let state = unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), 0) };
+        let state = unsafe { WaitForSingleObject(process.raw(), 0) };
         state != WAIT_TIMEOUT
     }
 
@@ -2517,10 +2558,7 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait, site: ReleaseSite) -> Res
         }
         let (process, milliseconds) = match release.post_exit_deadline.get() {
             None => (
-                release
-                    .process
-                    .as_ref()
-                    .map(|process| [HANDLE(process.as_raw_handle())]),
+                release.process.as_ref().map(|process| [process.raw()]),
                 INFINITE,
             ),
             Some(deadline) => (None, milliseconds_until(deadline)?),
