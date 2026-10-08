@@ -128,6 +128,21 @@ expect_output_package_absent() {
     echo "ok: $label"
 }
 
+# The Ubuntu leg must build and test the whole selection, not a GTK-free subset.
+expect_ubuntu_runs_every_package() {
+    local label="$1"
+    local actual="$2"
+    local packages_line ubuntu_line
+    packages_line="$(grep '^packages=' <<<"$actual")"
+    ubuntu_line="$(grep '^ubuntu_packages=' <<<"$actual")"
+    if [[ -z "${packages_line#packages=}" || "${ubuntu_line#ubuntu_packages=}" != "${packages_line#packages=}" ]]; then
+        echo "FAIL: $label: ubuntu_packages must equal packages" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
 expect_nongtk_excludes() {
     local label="$1"
     local token="$2"
@@ -190,7 +205,9 @@ ipc_fixture_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\nd
 ts_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
 wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
-workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=false'
+# Workflow/router edits run every lane, and the Ubuntu leg installs WebKitGTK to
+# build and test the full package set (#630).
+workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
 all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
 codeql_none=$'codeql_rust=false\ncodeql_javascript_typescript=false\ncodeql_actions=false'
 codeql_all=$'codeql_rust=true\ncodeql_javascript_typescript=true\ncodeql_actions=true'
@@ -324,6 +341,25 @@ expect_codeql "unknown path selects every CodeQL language" "$codeql_all" "$unkno
 for input in tools/ci_changes.sh tools/ci_required.sh tools/ci_inputs.py tools/ci-inputs.json; do
     expect_codeql "router owner $input selects every CodeQL language" "$codeql_all" "$(result_for_paths "$input")"
 done
+
+# #630: an all-workspace fallback (router, workflow or ci-inputs.json edits)
+# builds and tests every package on Ubuntu, installing WebKitGTK; it never
+# narrows to the GTK-free subset. The #640 diff (a keld-compat change plus a
+# ci-inputs.json rebind) ran only keld-guard keld-ipc keld-native keld-pack.
+for input in tools/ci_changes.sh tools/ci-inputs.json .github/workflows/ci.yml; do
+    fallback="$(result_for_paths "$input")"
+    expect_exact_output "$input installs WebKitGTK on Ubuntu" webkitgtk true "$fallback"
+    expect_ubuntu_runs_every_package "$input runs every package on Ubuntu" "$fallback"
+done
+pr640_shape="$(result_for_paths crates/keld-compat/tests/lifecycle_corpus.rs tools/ci-inputs.json)"
+expect_exact_output "#640 diff installs WebKitGTK on Ubuntu" webkitgtk true "$pr640_shape"
+expect_ubuntu_runs_every_package "#640 diff runs every package on Ubuntu" "$pr640_shape"
+for package in keld-compat keld-core keld-wv keld-host keld-cli keld-runtime keld-update; do
+    expect_output_package_token "#640 diff tests GTK-linked $package on Ubuntu" ubuntu_packages "$package" "$pr640_shape"
+done
+# Negative control: a doc-read-only selection still has no Ubuntu leg. The
+# fake-metadata repository below proves a fallback without GTK crates skips apt.
+expect_exact_output "doc-read-only selection still installs no WebKitGTK" webkitgtk false "$reader_doc_pr"
 
 # gitleaks configuration: the unconditional gitleaks job is its only reader.
 for input in .gitleaks.toml .gitleaksignore; do
@@ -515,7 +551,7 @@ expect_package_token "unknown input selects all workspace packages" keld-host "$
 expect_output_package_token "unknown input still exercises the Bun lane" ts_packages packages/@keld/electron "$unknown_root_classification"
 
 workflow_classification="$(result_for_paths .github/workflows/ci.yml)"
-expect_flags "workflow input exercises all jobs; GTK apt stays on GUI smoke only" "$workflow_all" "$workflow_classification"
+expect_flags "workflow input exercises all jobs, with Ubuntu WebKitGTK apt" "$workflow_all" "$workflow_classification"
 expect_output_package_token "workflow input exercises the Bun lane over every suite" ts_packages packages/@keld/electron "$workflow_classification"
 
 keldbot_workflow_classification="$(result_for_paths .github/workflows/keldbot.yml)"
@@ -537,7 +573,7 @@ expect_flags "required-result evaluator edit still exercises all jobs" "$workflo
 expect_mermaid_flag "router and required-result changes run the full Mermaid lane" true "$router_script_classification"
 for input in tools/ci_inputs.py tools/ci_local.py tools/test_ci_local.py tools/ci-inputs.json; do
     helper_classification="$(result_for_paths "$input")"
-    expect_flags "router owner $input selects every job without duplicate GTK apt" "$workflow_all" "$helper_classification"
+    expect_flags "router owner $input selects every job, with Ubuntu WebKitGTK apt" "$workflow_all" "$helper_classification"
 done
 
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
@@ -847,6 +883,12 @@ fixture_without_consumer="$(cd "$temp_dir" && printf '%s\0' "$fixture_path" | PA
 fake_fixture_without_consumer=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=false'
 expect_flags "unreferenced crate fixture does not invent a Bun consumer" "$fake_fixture_without_consumer" "$fixture_without_consumer"
 expect_empty_output "unreferenced crate fixture selects no Bun suite" ts_packages "$fixture_without_consumer"
+# #630 negative control: an all-workspace fallback whose packages link no
+# keld-wv installs no WebKitGTK and still tests every package on Ubuntu.
+fake_fallback="$(cd "$temp_dir" && printf '%s\0' .github/workflows/ci.yml | PATH="$temp_dir/fake-bin:$PATH" "$router" classify)"
+expect_exact_output "fallback without GTK crates installs no WebKitGTK" webkitgtk false "$fake_fallback"
+expect_ubuntu_runs_every_package "fallback without GTK crates still tests every package on Ubuntu" "$fake_fallback"
+
 # A Rust selection whose packages (keld-ipc and its dependents here) have no
 # library target selects no doctest.
 expect_exact_output "Rust selection without a library target selects no doctest" doctest false "$fixture_without_consumer"

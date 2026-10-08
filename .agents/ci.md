@@ -23,8 +23,9 @@ are source of truth; this file owns the design invariants.
 - Build closures come from current metadata where available. Unknown/shared/workspace
   graph/comparison-base inputs fail safe by enabling every possibly affected lane,
   including Ubuntu WebKitGTK apt.
-- Workflow/router edits exercise every conditional lane. Linux GUI smoke owns live
-  WebKitGTK apt; Ubuntu clippy and MSRV MUST NOT duplicate `apt-get update`.
+- Workflow/router edits exercise every conditional lane. Each Ubuntu leg building
+  GTK-linked crates, fallbacks included, installs WebKitGTK behind a 15-minute step
+  timeout and tests the full selection. MSRV stays on macOS without apt.
 - Router metadata/parse failure fails the router job before outputs. It MUST NOT emit an
   empty/skipped-green selection.
 - Contract tests cover relevant, unrelated, unknown, empty, PR, and push diffs. Verify

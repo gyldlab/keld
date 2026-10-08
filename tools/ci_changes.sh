@@ -125,10 +125,9 @@ classify_codeql_path() {
     esac
 }
 
-# Unknown/shared inputs must not skip Linux GTK clippy. Workflow/router edits
-# still enable every *job* (including GUI smoke, which installs WebKitGTK) but
-# MUST NOT also install GTK on Ubuntu clippy and MSRV: those extra apt-get
-# update calls contend with the smoke job and hang on Azure Ubuntu mirrors.
+# Unknown/shared inputs must not skip Linux GTK clippy. Every all-workspace
+# selection, including workflow/router edits through mark_all, also installs
+# WebKitGTK on Ubuntu when its packages link it (finalize_rust_packages, #630).
 mark_unknown() {
     mark_all
     webkitgtk="$TRUE"
@@ -581,13 +580,14 @@ finalize_rust_packages() {
         ubuntu_leg="$FALSE"
     fi
 
-    # An attributable selected `--all-targets` closure that reaches keld-wv
-    # installs GTK and runs its original package set on Ubuntu. The workflow
-    # consumes this derived selection directly instead of recomputing policy.
-    # The all-workspace workflow/router fallback keeps its documented GTK-free
-    # subset because GUI smoke is the sole live apt owner for that input class.
-    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" && \
-        "$ubuntu_leg" == "$TRUE" ]]; then
+    # Any selected `--all-targets` closure that reaches keld-wv installs GTK and
+    # runs its whole package set on Ubuntu, including the all-workspace
+    # fallback: a GTK-free subset there left keld-core, keld-wv, keld-host,
+    # keld-cli, keld-compat, keld-runtime and keld-update without Linux clippy
+    # or tests whenever a PR touched tools/ (#630). The apt step is bounded by
+    # its 15-minute timeout. The workflow consumes this derived selection
+    # directly instead of recomputing policy.
+    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$ubuntu_leg" == "$TRUE" ]]; then
         webkitgtk="$TRUE"
     fi
     if [[ "$ubuntu_leg" != "$TRUE" ]]; then
