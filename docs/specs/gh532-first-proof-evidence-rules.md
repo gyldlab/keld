@@ -411,7 +411,11 @@ validation, and the per-corpus registry of admitted test targets. The registry i
 code, so a manifest cannot admit its own targets. Test targets include it with
 `#[path = "support/corpus_manifest.rs"] mod corpus_manifest;`, which is the
 keld-ipc convention. X01-T4 (#566) implements it and migrates `lifecycle_corpus.rs`
-and `lifecycle_evidence_report.rs` byte-for-byte.
+and `lifecycle_evidence_report.rs` byte-for-byte. Under gh566 D1's review condition,
+two sibling support modules hold parts of this owner's responsibility. Execution
+admission lives in `tests/support/corpus_admission.rs`, and the owner and fixture
+censuses live in `tests/support/corpus_census.rs`. Neither parses a manifest, and
+neither holds a digest helper (amended by gh566 T2, #640).
 
 Each v1 cell also declares `platforms`, a non-empty set of distinct platform tokens
 (`macos`, `windows`, `linux`). The set is bounded by the platforms the code registry

@@ -4,10 +4,13 @@
 use std::fs;
 
 use crate::corpus_admission::{admit_bun, admit_libtest};
+use crate::corpus_census::{
+    Sources, committed_corpus_dirs, fixture_census, load_test_sources, owner_census,
+    sha2_dependency_kinds,
+};
 use crate::corpus_manifest::{
-    Corpus, CorpusError, LIFECYCLE_V0, OWNER_PATH, REGISTRY, Registration, Sources,
-    committed_corpus_dirs, committed_runs, crate_root, fixture_census, load_test_sources,
-    owner_census, sha2_dependency_kinds,
+    Corpus, CorpusError, LIFECYCLE_V0, OWNER_PATH, REGISTRY, Registration, committed_runs,
+    crate_root,
 };
 
 /// Loads every registered corpus.

@@ -5,7 +5,7 @@
 
 use keld_compat::evidence::{EvidenceError, EvidenceRecord, Platform, parse_evidence};
 
-use crate::corpus_admission::{RunnerKind, RunnerOutput, check_admission};
+use crate::corpus_admission::{RunnerKind, RunnerOutput, check_admission, check_cells};
 use crate::corpus_manifest::{
     Corpus, CorpusError, LIFECYCLE_V0, Registration, Runner, TestTarget, V0_FROZEN,
     committed_record_files, sha256_uri,
@@ -471,6 +471,22 @@ fn admission_rejects_missing_skipped_and_ignored_cases() {
         .map(|name| format!("(pass) app > {name} [1.00ms]"))
         .collect();
     bun(&passing).unwrap_or_else(|error| panic!("{error}"));
+    // Defence in depth: admission fails closed on a cell whose path maps no target.
+    let mut stray = corpus.cells()[0].clone();
+    stray.test_path = "crates/keld-compat/tests/unregistered.rs".to_owned();
+    for kind in [RunnerKind::Libtest, RunnerKind::Bun] {
+        assert!(matches!(
+            check_cells(
+                corpus.id(),
+                &[stray.clone()],
+                corpus.registration(),
+                kind,
+                &[]
+            ),
+            Err(CorpusError::UnregisteredTarget { .. })
+        ));
+    }
+
     let mut skipped = passing.clone();
     skipped[0] = format!("(skip) app > {}", bun_cells[0]);
     assert!(matches!(

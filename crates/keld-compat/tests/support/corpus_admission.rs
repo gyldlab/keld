@@ -10,7 +10,9 @@
 
 use std::process::Command;
 
-use crate::corpus_manifest::{Corpus, CorpusError, Runner, TestTarget, workspace_root};
+use crate::corpus_manifest::{
+    Cell, Corpus, CorpusError, Registration, Runner, TestTarget, workspace_root,
+};
 
 /// Require exactly one successful libtest pretty-format case, not a substring.
 /// Ignored, missing, similarly named and duplicate records fail closed.
@@ -182,33 +184,54 @@ pub fn check_admission(
     outputs: &[RunnerOutput],
 ) -> Result<(), CorpusError> {
     for corpus in corpora {
-        for cell in corpus.cells() {
-            let Some(target) = corpus
-                .registration()
-                .targets
-                .iter()
-                .find(|target| target.path == cell.test_path)
-            else {
-                continue;
-            };
-            if runner_kind(target.runner) != kind {
-                continue;
-            }
-            let passed = outputs
-                .iter()
-                .find(|output| output.path == target.path)
-                .is_some_and(|output| match kind {
-                    RunnerKind::Libtest => rust_case_passed(&output.text, &cell.test_name),
-                    RunnerKind::Bun => bun_case_passed(&output.text, &cell.test_name),
-                });
-            if !passed {
-                return Err(CorpusError::CaseNotAdmitted {
-                    corpus_id: corpus.id().to_owned(),
-                    cell: cell.key.operation_id.clone(),
-                    target: target.path.to_owned(),
-                    test_name: cell.test_name.clone(),
-                });
-            }
+        check_cells(
+            corpus.id(),
+            corpus.cells(),
+            corpus.registration(),
+            kind,
+            outputs,
+        )?;
+    }
+    Ok(())
+}
+
+/// Admission over one corpus's cells. A cell whose path maps no registered target fails
+/// closed (`UnregisteredTarget`), even though `Corpus::parse` already rejects one:
+/// admission never skips a cell silently.
+pub fn check_cells(
+    corpus_id: &str,
+    cells: &[Cell],
+    registration: &Registration,
+    kind: RunnerKind,
+    outputs: &[RunnerOutput],
+) -> Result<(), CorpusError> {
+    for cell in cells {
+        let target = registration
+            .targets
+            .iter()
+            .find(|target| target.path == cell.test_path)
+            .ok_or_else(|| CorpusError::UnregisteredTarget {
+                corpus_id: corpus_id.to_owned(),
+                cell: cell.key.operation_id.clone(),
+                test_path: cell.test_path.clone(),
+            })?;
+        if runner_kind(target.runner) != kind {
+            continue;
+        }
+        let passed = outputs
+            .iter()
+            .find(|output| output.path == target.path)
+            .is_some_and(|output| match kind {
+                RunnerKind::Libtest => rust_case_passed(&output.text, &cell.test_name),
+                RunnerKind::Bun => bun_case_passed(&output.text, &cell.test_name),
+            });
+        if !passed {
+            return Err(CorpusError::CaseNotAdmitted {
+                corpus_id: corpus_id.to_owned(),
+                cell: cell.key.operation_id.clone(),
+                target: target.path.to_owned(),
+                test_name: cell.test_name.clone(),
+            });
         }
     }
     Ok(())

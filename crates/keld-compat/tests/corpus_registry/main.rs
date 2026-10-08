@@ -12,6 +12,8 @@
 
 #[path = "../support/corpus_admission.rs"]
 mod corpus_admission;
+#[path = "../support/corpus_census.rs"]
+mod corpus_census;
 #[path = "../support/corpus_manifest.rs"]
 mod corpus_manifest;
 mod registry;
