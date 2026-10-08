@@ -231,11 +231,13 @@ const BROWSER_EXIT_GRACE: Duration = Duration::from_secs(5);
 ///   36765077550) exceeded the former 15 s bound inside a 16.58 s test wall
 ///   and #3 (run 37746982794) took about 14.2 s; the hosted harness prints no
 ///   durations, so 16.58 s is the hosted upper-bound observation;
-/// - fresh samples 2026-10-08, runtime 154.0.4258.62, the media-acceptance
-///   evidence lines (`evidence/kel135-fix3/samples-pass{1,2}`, 132 fixture
-///   runs): idle, host-own n=33 max 7.0 s and probe n=67 max 7.0 s; under
-///   full-core load (16 busy-loop burners on 16 logical cores), host-own n=57
-///   max 59.1 s and probe n=46 max 43.9 s, every one healthy (its event came).
+/// - fresh samples 2026-10-08, runtime 154.0.4258.62, 132 media-acceptance
+///   fixture runs (source: the measurement table in
+///   <https://github.com/gyldlab/keld/pull/658>): idle, host-own n=33 max 7.0 s
+///   and probe n=67 max 7.0 s; under full-core load (16 busy-loop burners on
+///   16 logical cores), host-own n=57 max 59.1 s and probe n=46 max 43.9 s,
+///   every one healthy (its event came).
+///
 /// 4 x 59.07 s = 236.3 s -> 240 s. The idle and hosted basis alone would give
 /// 4 x 16.58 s = 66.3 s -> 75 s; the saturated-load basis rules, because a
 /// false trip quarantines a healthy store while a late true-hang detection
@@ -256,7 +258,7 @@ const BROWSER_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// it is unverified. So this guard is the only kill switch, and its expiry
 /// leaves the store exactly as a browser crash or kill would, which the
 /// profile contract tolerates (quarantine plus exclusive-UDF probe).
-const BROWSER_SHUTDOWN_HANG_GUARD: Duration = Duration::from_secs(240);
+const BROWSER_SHUTDOWN_HANG_GUARD: Duration = Duration::from_mins(4);
 
 const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";
