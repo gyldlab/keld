@@ -2,7 +2,7 @@
 
 Spec: `docs/architecture/05-webview-and-native.md`; platform truth: `docs/research/library/host-platforms/06-webview-reality.md`; v0 trait: `src/engine.rs`.
 
-- Backend `unsafe` MUST deny `unsafe_op_in_unsafe_fn`; each block needs `// SAFETY:`. Windows FFI: folders/files/volumes/process/windows/ACL/WebView2. macOS `wkwebview/{macos_profile,macos_bridge}.rs` only (KEL-142 bridge): WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata and parent ACL reads (`acl_get_fd_np`, `acl_get_entry`, `acl_get_tag_type`, `acl_free`), rejecting `ACL_EXTENDED_ALLOW` and read errors. Debug `profile-test-hooks` may read host camera/mic status and observe public sheets with owned blocks on UI thread. No module-wide allow. Core SecCode FFI: `keld-core/AGENTS.md`.
+- Backend `unsafe` MUST deny `unsafe_op_in_unsafe_fn`; each block needs `// SAFETY:`. Windows FFI: folders/files/volumes/windows/ACL/WebView2/process (`OpenProcess` SYNCHRONIZE, `WaitForSingleObject`, one `RegisterWaitForSingleObject`/`UnregisterWaitEx` exit wake whose pool callback only posts via tao `EventLoopProxy`). macOS `wkwebview/{macos_profile,macos_bridge}.rs` only (KEL-142 bridge): WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata and parent ACL reads (`acl_get_fd_np`, `acl_get_entry`, `acl_get_tag_type`, `acl_free`), rejecting `ACL_EXTENDED_ALLOW` and read errors. Debug `profile-test-hooks` may read host camera/mic status and observe public sheets with owned blocks on UI thread. No module-wide allow. Core SecCode FFI: `keld-core/AGENTS.md`.
 - Engine/window mutations MUST stay on tao UI thread (later core queue); platform handles MUST NOT be touched on I/O/pool threads.
 - `WebEngine` trait changes require design review; backends MUST use its API. No new method until a live backend implements it in the same PR (root YAGNI).
 - Platform quirks MUST cite OS, version, source; revert uncited workarounds.
@@ -19,8 +19,7 @@ Spec: `docs/architecture/05-webview-and-native.md`; platform truth: `docs/resear
   (`KELD-GUARD006`) until window-level grants exist — that is fail-closed,
   not a reason to present AppProcess. Per backend:
   - macOS 12+ (wry interim): agents MUST NOT omit wry `with_permission_handler`;
-    wry auto-grants new media requests when absent. Pinned wry cfg-removes its
-    delegate on older debug hosts; oldest-OS proof is open ([source](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs)).
+    wry auto-grants new media requests when absent.
   - Linux (wry interim): WebKitGTK 2.52.6 and wry 0.56.1 default-deny an
     unhandled new request, but that fallback is not proof Keld evaluated the
     right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance remains mandatory.
