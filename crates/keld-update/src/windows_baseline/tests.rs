@@ -3,6 +3,7 @@
 mod alias;
 mod capture;
 mod claimant;
+mod coordinator_image_operator;
 mod helper;
 mod installed_host_operator;
 mod locate;

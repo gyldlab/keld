@@ -58,8 +58,8 @@ impl Candidate {
         let owner_image = fixture.path().join("owner-host.exe");
         let bytes = owner_image_bytes();
         std::fs::write(&owner_image, &bytes).expect("write the owner image");
-        // The independent oracle: BLAKE3 of the image bytes, in memory.
-        let attempt = begin_by(&trust, "3.0.0", &content, *blake3::hash(&bytes).as_bytes());
+        // The owner journals the digest of its own image's open file.
+        let attempt = begin_by(&trust, "3.0.0", &content, &open_image(&owner_image));
         (
             Self {
                 fixture,

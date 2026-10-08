@@ -4,7 +4,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Cursor, Read as _, Seek as _, SeekFrom};
+use std::io::{self, Cursor, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
@@ -106,6 +106,79 @@ pub(super) fn dacl_handle(path: &Path) -> File {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .expect("open SYSTEM fixture descriptor handle")
+}
+
+/// Length of the fixture attempt owner's image: the longest input of the official
+/// BLAKE3 test vectors, more than six 16 KiB positioned reads of the production digest
+/// plus a partial one, so a digest of part of the image differs from the whole image's.
+pub(super) const COORDINATOR_IMAGE_LEN: usize = 102_400;
+
+/// BLAKE3 of [`coordinator_image_bytes`], from the official BLAKE3 test vectors
+/// (`test_vectors/test_vectors.json`, `input_len` 102400, the first 32 output bytes):
+/// an oracle for the journaled `helper_image_blake3` that no code in this workspace
+/// computed.
+pub(super) const COORDINATOR_IMAGE_BLAKE3: [u8; 32] = [
+    0xbc, 0x3e, 0x3d, 0x41, 0xa1, 0x14, 0x6b, 0x06, 0x9a, 0xbf, 0xfa, 0xd3, 0xc0, 0xd4, 0x48, 0x60,
+    0xcf, 0x66, 0x43, 0x90, 0xaf, 0xce, 0x4d, 0x96, 0x61, 0xf7, 0x90, 0x2e, 0x79, 0x43, 0xe0, 0x85,
+];
+
+/// The official BLAKE3 test-vector input of [`COORDINATOR_IMAGE_LEN`] bytes: byte `i`
+/// is `i % 251`, which has no repeating 16 KiB block.
+pub(super) fn coordinator_image_bytes() -> Vec<u8> {
+    (0..COORDINATOR_IMAGE_LEN)
+        .map(|index| u8::try_from(index % 251).expect("below 251"))
+        .collect()
+}
+
+/// The fixture attempt owner's image beside the installation under `root`, opened as
+/// `keld_guard::WindowsAuthenticodeImage::open` opens a verified image: for reading,
+/// sharing only reads. It is written once, by whichever process first needs it, and its
+/// bytes are [`coordinator_image_bytes`]; its digest is [`COORDINATOR_IMAGE_BLAKE3`].
+pub(super) fn coordinator_image(root: &Path) -> File {
+    fixture_image(root, "coordinator-image.bin", &coordinator_image_bytes())
+}
+
+/// An image of the fixture owner's length whose last byte differs, so a digest that
+/// stopped short of the final byte would wrongly equal the fixture owner's.
+pub(super) fn other_coordinator_image(root: &Path) -> File {
+    let mut bytes = coordinator_image_bytes();
+    *bytes.last_mut().expect("non-empty image") ^= 1;
+    fixture_image(root, "other-coordinator-image.bin", &bytes)
+}
+
+/// A copy of the fixture owner's image opened without read access: a handle whose
+/// digest cannot be derived. Its own file, so no read handle of the fixture owner's
+/// image, which shares only reads, conflicts with this write-access open.
+pub(super) fn unreadable_coordinator_image(root: &Path) -> File {
+    let leaf = "unreadable-coordinator-image.bin";
+    drop(fixture_image(root, leaf, &coordinator_image_bytes()));
+    OpenOptions::new()
+        .append(true)
+        .open(root.join(leaf))
+        .expect("open the image copy without read access")
+}
+
+fn fixture_image(root: &Path, leaf: &str, bytes: &[u8]) -> File {
+    let path = root.join(leaf);
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            file.write_all(bytes).expect("write the fixture image");
+            file.sync_all().expect("flush the fixture image");
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => panic!("create the fixture image {}: {error}", path.display()),
+    }
+    let image = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&path)
+        .expect("open the fixture image sharing only reads");
+    assert_eq!(
+        fs::read(&path).expect("read the fixture image back"),
+        bytes,
+        "the fixture image holds exactly its bytes"
+    );
+    image
 }
 
 pub(super) fn suite_root() -> PathBuf {

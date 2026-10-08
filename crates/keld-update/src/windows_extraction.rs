@@ -545,19 +545,62 @@ impl WindowsExtractionRoot {
     /// journal `AwaitingHealth`. The attempt keeps the lease until health commits or
     /// rolls it back.
     ///
+    /// `coordinator` is the attempt owner's own image from its one `keld-guard`
+    /// Authenticode verification. The journaled `helper_image_blake3` is derived inside
+    /// `keld-update` from every byte of that image's pinned handle; no caller computes
+    /// or supplies the digest (KEL-53 §4 "Candidate connect-back", *Order*). The
+    /// verified image is the only accepted argument:
+    ///
+    /// ```no_run
+    /// # use keld_update::{CompletedWindowsStage, WindowsExtractionRoot};
+    /// fn begin(
+    ///     root: WindowsExtractionRoot,
+    ///     stage: CompletedWindowsStage,
+    ///     coordinator: &keld_guard::VerifiedWindowsImage,
+    /// ) {
+    ///     let _ = root.begin_activation(stage, coordinator);
+    /// }
+    /// ```
+    ///
+    /// The same call with a bare file does not compile. Only the parameter type differs
+    /// from the example above, which pins every other part of the snippet; rustdoc
+    /// checks the error code on nightly builds only:
+    ///
+    /// ```compile_fail,E0308
+    /// # use keld_update::{CompletedWindowsStage, WindowsExtractionRoot};
+    /// fn begin(
+    ///     root: WindowsExtractionRoot,
+    ///     stage: CompletedWindowsStage,
+    ///     coordinator: &std::fs::File,
+    /// ) {
+    ///     let _ = root.begin_activation(stage, coordinator);
+    /// }
+    /// ```
+    ///
     /// # Errors
-    /// Refuses a root without the writer lease, a zero coordinator digest, a stage
-    /// whose completion record does not name that exact candidate, a candidate
-    /// outside the installation scope or not above the floor, or any unverified or
-    /// unreferenced version. Every refusal is [`UpdateError::Activation`] with
-    /// [`crate::ActivationEffect::ProtectedStateUnchanged`]: nothing was written and
-    /// only the stage remains, a tolerated leftover, never an unreferenced version.
+    /// Refuses a root without the writer lease, a coordinator image that cannot be
+    /// read, a stage whose completion record does not name that exact candidate, a
+    /// candidate outside the installation scope or not above the floor, or any
+    /// unverified or unreferenced version. Every refusal is [`UpdateError::Activation`]
+    /// with [`crate::ActivationEffect::ProtectedStateUnchanged`]: nothing was written
+    /// and only the stage remains, a tolerated leftover, never an unreferenced version.
     /// [`crate::WindowsMintedAttempt::journal`] documents the refusals of the durable
     /// steps.
     pub fn begin_activation(
         self,
         stage: CompletedWindowsStage,
-        coordinator_image_blake3: [u8; 32],
+        coordinator: &keld_guard::VerifiedWindowsImage,
+    ) -> Result<crate::WindowsMintedAttempt, UpdateError> {
+        self.begin_activation_with_image_file(stage, coordinator.file())
+    }
+
+    /// [`Self::begin_activation`] for the coordinator image's open file: the one
+    /// crate-private path behind that entry point, which crate-internal tests drive
+    /// with plain files. The digest is derived by the writer snapshot's transaction.
+    pub(crate) fn begin_activation_with_image_file(
+        self,
+        stage: CompletedWindowsStage,
+        coordinator_image: &std::fs::File,
     ) -> Result<crate::WindowsMintedAttempt, UpdateError> {
         let Self {
             authority,
@@ -567,7 +610,7 @@ impl WindowsExtractionRoot {
         drop(versions);
         match authority {
             RootAuthority::ActivationWriter { snapshot } => {
-                snapshot.begin_activation(stage.name, &stage.identity, coordinator_image_blake3)
+                snapshot.begin_activation(stage.name, &stage.identity, coordinator_image)
             }
             RootAuthority::OwnerPrivate { .. } | RootAuthority::Machine { .. } => {
                 Err(UpdateError::activation(

@@ -34,7 +34,9 @@ use crate::windows_baseline::{
 const UNSIGNED_HOST_ENV: &str = "KELD_KEL254_UNSIGNED_HOST";
 const EMBEDDED_HOST_ENV: &str = "KELD_KEL254_EMBEDDED_HOST";
 const APP_ID_ENV: &str = "KELD_KEL254_APP_ID";
-const SIGNED_HOST_ENV: &str = "KELD_KEL254_SIGNED_HOST";
+/// A `keld-host.exe` signed by a KEL-135 acceptance publisher with a `keld.app-id/v1:`
+/// description; the KEL-270 T4d S6b2 operator cell presents the same signed build.
+pub(super) const SIGNED_HOST_ENV: &str = "KELD_KEL254_SIGNED_HOST";
 const RECORD_PUBLISHER_HOST_ENV: &str = "KELD_KEL254_RECORD_PUBLISHER_HOST";
 const BOOT_SOURCE_ENV: &str = "KELD_KEL254_BOOT_SOURCE";
 const INSTALL_PARENT_ENV: &str = "KELD_KEL254_INSTALL_PARENT";
@@ -42,7 +44,7 @@ const LABEL: &str = "KeldPerUserFixture";
 const HOST: &str = "keld-host.exe";
 const HELPER: &str = "keld-updater-helper.exe";
 
-fn env_path(name: &str) -> PathBuf {
+pub(super) fn env_path(name: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name} must be set")))
 }
 
