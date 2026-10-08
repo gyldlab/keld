@@ -743,7 +743,9 @@ fixture. None depends on timing, ports or platform. The macOS bridge test is a
   `Authority`, `TableDefect`, `validate_table`, `entry`, `HANDSHAKE_CHANNEL`,
   `CHANNEL_TABLE` and the entry constants); `privileged_call_receiver` parameter and
   return type; `RendererBridgeEndpoint::new` gains a parameter; TypeScript gains
-  `FS_CHANNEL` and `HANDSHAKE_CHANNEL`. `check_allocations` and `AllocationDefect` are
+  `FS_CHANNEL` and `HANDSHAKE_CHANNEL`. X05-T4 also changed
+  `link::read_primary_app_frame_interruptible_with_privileged_call` to take
+  `&'static ChannelEntry` (§11) and added `keld_guard::capability::{FS_READ, FS_WRITE}`. `check_allocations` and `AllocationDefect` are
   `#[cfg(test)]` and not public. F02-T2 later adds `LifecycleRequest::Subscribe`,
   `LifecycleResponse::{Subscribed, SubscribeRefused}` and `SubscribeRefusal`.
 - **permission model:** yes (listed by #508's body). The `Authority` declaration
@@ -795,9 +797,28 @@ seven production hits listed there. Where the implementation differs from §4 an
   `keld-ipc` tests for every crate change without pulling in its reverse-dependency
   closure.
 - **TypeScript literal grammar.** Criterion 7 rejects a `*channel*` binding assigned a
-  number, a `channel:` property set to a number, and an equality comparison between a
-  `*channel*` operand and a number. Positional numeric arguments are not detected.
-  `packages/*/src` is read as every package directory under `packages/`, scoped or not.
+  number (any type annotation), a `channel:` property set to a number, an equality
+  comparison between a `*channel*` operand and a number (optionally parenthesised), and a
+  number as the channel argument of the transport's positional `writeFrame` /
+  `encodeHeader`; the two `HELLO` writers that passed `0` there now pass
+  `HANDSHAKE_CHANNEL`. Not detected: `case 1:`, numeric object keys, and a constant whose
+  name lacks `channel`. `packages/*/src` is read as every package directory under
+  `packages/`, scoped or not.
+- **Fail-closed hardening beyond the text.** The Rust scan never excludes a file that an
+  ungated `mod` declaration may reach, a gated `mod x;` nested in an inline module, or a
+  `#[path` form it cannot read; `\s` is Unicode whitespace. The generator admits one
+  `#[cfg(test)] mod tests {` as the file's last item, no other `cfg` gate and no block
+  comment, so no entry can sit outside what it parses. Two checks run in CI beside the
+  criterion 6 scan: no `ChannelEntry::new(` outside the table and a constructor without
+  visibility (criterion 1), and no digit literal as the admitted id passed to
+  `RendererBridgeEndpoint::new`, `BridgeState::new` or `render_bridge_script` (criteria
+  11 and 12).
+- **Executed evidence.** CI runs `cargo nextest`, which does not run doctests, so the
+  criterion 1 and 10 compile-fail doctests (each paired with a compiling positive
+  control) are local evidence (`cargo test -p keld-ipc --doc`). Stable rustdoc does not
+  check a `compile_fail` error code, so none is given. Criterion 10's guarantee is that
+  `privileged_call_receiver` builds no policy for a non-guarded entry; `ReceivePolicy`'s
+  fields stay public (KEL-133), so a caller can still edit a policy it already holds.
 - **Hygiene rule wiring.** `ci-hygiene check` runs the append-only rule after the
   workflow semantic check; the resolved base is `KELD_CI_BASE_REF` or `origin/main`, and
   the comparison point is its merge base with `HEAD`. Its CLI self-test now copies the

@@ -18,6 +18,7 @@ import {
   ECHO_CHANNEL,
   FrameKind,
   FrameReader,
+  HANDSHAKE_CHANNEL,
   RECEIVE_POLICIES,
   WriteQueue,
   connectKipcSocket,
@@ -99,7 +100,7 @@ export class AppLinkSession {
     const directed = new DirectedReader(reader);
     const session = new AppLinkSession(socket, reader, drain, directed, writes);
     try {
-      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
+      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token));
       const helloReply = await withIoDeadline(directed.receive(CLIENT_AWAIT_HELLO));
       if (!timingSafeEqual(helloReply.payload, token)) {
         throw kipcError("KELD-IPC-007", "HELLO session token mismatch");

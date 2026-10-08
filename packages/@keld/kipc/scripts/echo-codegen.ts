@@ -279,11 +279,36 @@ export function channelConstantName(name: string): string {
   return `${name.toUpperCase().replaceAll("-", "_")}_CHANNEL`;
 }
 
+/**
+ * The production lines of `channel_table.rs`: everything before its one
+ * `#[cfg(test)] mod tests { ... }`, which must be the file's last item. Any other
+ * `cfg` gate, anything after the test module and any block comment fails, so no
+ * entry can sit where this parser does not read it.
+ */
+function productionLines(all: readonly string[]): readonly string[] {
+  const gates = all.flatMap((line, index) => (/^\s*#\[cfg/.test(line) ? [index] : []));
+  if (gates.length > 1 || (gates.length === 1 && all[gates[0]] !== "#[cfg(test)]")) {
+    channelFail(gates[gates.length === 1 ? 0 : 1] + 1, "only one `#[cfg(test)]`, gating the final `mod tests {`, is admitted");
+  }
+  let production: readonly string[] = all;
+  if (gates.length === 1) {
+    const gate = gates[0];
+    if (all[gate + 1] !== "mod tests {") channelFail(gate + 2, "the `#[cfg(test)]` gate must open `mod tests {`");
+    const close = all.indexOf("}", gate + 2);
+    if (close === -1) channelFail(gate + 2, "unterminated `mod tests {`");
+    const trailing = all.slice(close + 1).findIndex((line) => line.trim().length !== 0);
+    if (trailing !== -1) channelFail(close + trailing + 2, "nothing may follow the test module");
+    production = all.slice(0, gate);
+  }
+  production.forEach((line, index) => {
+    if (line.includes("/*") || line.includes("*/")) channelFail(index + 1, "block comments are not admitted");
+  });
+  return production;
+}
+
 /** Parses the production half of `crates/keld-ipc/src/channel_table.rs`. */
 export function parseChannelTable(rustSource: string): ChannelTable {
-  const all = rustSource.replaceAll("\r\n", "\n").split("\n");
-  const testModule = all.indexOf("#[cfg(test)]");
-  const lines = testModule === -1 ? all : all.slice(0, testModule);
+  const lines = productionLines(rustSource.replaceAll("\r\n", "\n").split("\n"));
   let handshake: number | undefined;
   const entries = new Map<string, ChannelTableEntry>();
   let listed: string[] | undefined;

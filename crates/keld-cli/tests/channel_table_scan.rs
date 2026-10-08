@@ -417,3 +417,125 @@ fn criterion_fifteen_controls_fail_on_real_sources() {
         .is_empty()
     );
 }
+
+/// The exclusion engine fails closed: a file that any ungated declaration
+/// reaches, a gated declaration nested in an inline module, and a `#[path`
+/// form it cannot read all stay scanned. Unicode whitespace matches `\s`.
+#[test]
+fn exclusions_never_hide_a_production_file() {
+    let literal = "const X: ChannelId = ChannelId(1);\n";
+    let files = |sources: Sources| -> BTreeSet<String> {
+        channel_hits(&sources)
+            .into_iter()
+            .map(|hit| hit.file)
+            .collect()
+    };
+    let aliased = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "pub mod fs;\n#[cfg(test)]\n#[path = \"fs.rs\"]\nmod fs_again;\n",
+        ),
+        ("crates/x/src/fs.rs", literal),
+    ]);
+    assert_eq!(
+        files(aliased),
+        BTreeSet::from(["crates/x/src/fs.rs".to_owned()])
+    );
+    let nested = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "pub mod util;\npub mod a {\n    #[cfg(test)]\n    mod util;\n}\n",
+        ),
+        ("crates/x/src/util.rs", literal),
+    ]);
+    assert_eq!(
+        files(nested),
+        BTreeSet::from(["crates/x/src/util.rs".to_owned()])
+    );
+    let raw_path = synthetic(&[
+        (
+            "crates/x/src/lib.rs",
+            "#[cfg(test)]\n#[path = r\"t_tests.rs\"]\nmod t;\n",
+        ),
+        ("crates/x/src/t.rs", literal),
+        ("crates/x/src/t_tests.rs", literal),
+    ]);
+    assert_eq!(
+        files(raw_path),
+        BTreeSet::from([
+            "crates/x/src/t.rs".to_owned(),
+            "crates/x/src/t_tests.rs".to_owned()
+        ])
+    );
+    for spaced in [
+        "ChannelId(\u{0B}1)",
+        "ChannelId(\u{2003}1)",
+        "const ECHO_CHANNEL:\u{A0}u16 = 1;",
+    ] {
+        let sources = synthetic(&[("crates/x/src/lib.rs", spaced)]);
+        assert_eq!(channel_hits(&sources).len(), 1, "{spaced:?}");
+    }
+}
+
+/// Criterion 1 in CI (the compile-fail doctest is local only): the table's
+/// constructor stays private and nothing else constructs an entry.
+#[test]
+fn only_the_table_constructs_channel_entries() {
+    let sources = real_sources();
+    let table = source(&sources, TABLE);
+    assert!(scan::entry_constructor_is_private(table));
+    assert!(scan::entry_construction_hits(&sources, Path::new(TABLE)).is_empty());
+
+    let public = replace_once(table, "    const fn new(", "    pub const fn new(");
+    assert!(!scan::entry_constructor_is_private(&public));
+    let second = format!("{table}\nimpl ChannelEntry {{\n    const fn new() {{}}\n}}\n");
+    assert!(!scan::entry_constructor_is_private(&second));
+    let native = "crates/keld-native/src/fs.rs";
+    let minted = format!(
+        "{}\nconst PROBE: ChannelEntry = ChannelEntry::new(\"probe\", 4, C, A);\n",
+        source(&sources, native)
+    );
+    let hits = scan::entry_construction_hits(&with_file(sources, native, minted), Path::new(TABLE));
+    assert_eq!(hits_in(&hits, native).len(), 1);
+}
+
+/// The macOS bridge's admitted id travels as a plain `u16` from `keld-core`,
+/// which the two criterion 6 patterns cannot see; a positional literal at any
+/// hop fails here instead (criteria 11 and 12).
+const BRIDGE_ID_CALLS: &[(&str, usize)] = &[
+    ("RendererBridgeEndpoint::new", 2),
+    ("BridgeState::new", 1),
+    ("render_bridge_script", 1),
+];
+
+#[test]
+fn bridge_admitted_id_is_never_a_positional_literal() {
+    let sources = real_sources();
+    assert!(scan::positional_literal_hits(&sources, BRIDGE_ID_CALLS).is_empty());
+    let session = "crates/keld-core/src/app_session.rs";
+    let bridge = "crates/keld-wv/src/wkwebview/macos_bridge.rs";
+    for (file, from, to) in [
+        (
+            session,
+            "renderer_outcomes_rx, ECHO_CHANNEL.0)",
+            "renderer_outcomes_rx, 1)",
+        ),
+        (
+            bridge,
+            "BridgeState::new(webview, admitted_channel)",
+            "BridgeState::new(webview, 1)",
+        ),
+        (
+            bridge,
+            "render_bridge_script(PAGE_FACADE_SCRIPT, admitted_channel)",
+            "render_bridge_script(PAGE_FACADE_SCRIPT, 1)",
+        ),
+    ] {
+        let mutated = replace_once(source(&sources, file), from, to);
+        let hits = scan::positional_literal_hits(
+            &with_file(sources.clone(), file, mutated),
+            BRIDGE_ID_CALLS,
+        );
+        assert_eq!(hits_in(&hits, file).len(), 1, "{to}");
+    }
+}

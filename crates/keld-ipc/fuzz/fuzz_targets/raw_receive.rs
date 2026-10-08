@@ -10,8 +10,8 @@
 
 use std::io::Cursor;
 
-use keld_ipc::link::read_validated_frame;
 use keld_ipc::channel_table;
+use keld_ipc::link::read_validated_frame;
 use keld_ipc::receive::{ReceivePolicy, validate_received_header};
 use keld_ipc::{CorrelationId, FrameHeader, FrameKind, HEADER_LEN};
 

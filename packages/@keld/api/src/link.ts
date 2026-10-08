@@ -40,6 +40,7 @@ import {
   DrainSignal,
   FrameKind,
   FrameReader,
+  HANDSHAKE_CHANNEL,
   LIFECYCLE_CHANNEL,
   RECEIVE_POLICIES,
   WriteQueue,
@@ -112,7 +113,7 @@ export class LifecycleLink {
     const writes = new WriteQueue(socket, drain);
     const session = new LifecycleLink(socket, reader, writes);
     try {
-      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
+      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token));
       const helloReply = await withIoDeadline(reader.readFrame());
       validateReceivedHeader(RECEIVE_POLICIES.clientAwaitHello, helloReply.header);
       if (!timingSafeEqual(helloReply.payload, token)) {

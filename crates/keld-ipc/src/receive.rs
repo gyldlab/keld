@@ -345,8 +345,8 @@ impl ReceivePolicy {
     /// Privileged receiver: authenticated `CALL`s on one host-selected channel
     /// table entry (spec table row 8). This policy cannot mint authority — the
     /// guard still runs after payload decode. Only a
-    /// [`ReceiveClass::GuardedCall`] entry admits it, so no privileged policy
-    /// exists for an unallocated id or a host-internal channel (GH-508 spec
+    /// [`ReceiveClass::GuardedCall`] entry admits it, so this constructor builds
+    /// no policy for an unallocated id or a host-internal channel (GH-508 spec
     /// criterion 10). The class check runs at policy construction.
     ///
     /// # Errors

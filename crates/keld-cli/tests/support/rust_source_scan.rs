@@ -266,6 +266,9 @@ pub struct Exclusions {
     pub lines: BTreeSet<usize>,
     /// Files a test-gated `mod <name>;` resolves to.
     pub files: BTreeSet<PathBuf>,
+    /// Every file an ungated `mod <name>;` may resolve to. A file that some
+    /// production declaration reaches is never excluded.
+    pub declared: BTreeSet<PathBuf>,
 }
 
 /// Whether a single-line attribute is test-only: `#[cfg(test)]` or
@@ -332,10 +335,25 @@ fn single_line_attribute<'a>(original: &'a str, code: &str) -> Option<&'a str> {
     (code.starts_with("#[") && code.ends_with(']') && balanced(code)).then(|| original.trim())
 }
 
-fn path_attribute(attribute: &str) -> Option<String> {
+/// A `#[path ...]` attribute: a plain `#[path = "value"]`, or any other form,
+/// which the caller must treat as unresolvable.
+enum PathAttribute {
+    Plain(String),
+    Unreadable,
+}
+
+fn path_attribute(attribute: &str) -> Option<PathAttribute> {
     let compact: String = attribute.chars().filter(|c| !c.is_whitespace()).collect();
-    let value = compact.strip_prefix("#[path=\"")?.strip_suffix("\"]")?;
-    Some(value.to_owned())
+    if !compact.starts_with("#[path") {
+        return None;
+    }
+    let value = compact
+        .strip_prefix("#[path=\"")
+        .and_then(|rest| rest.strip_suffix("\"]"))
+        .filter(|value| !value.contains(['"', '\\']));
+    Some(value.map_or(PathAttribute::Unreadable, |value| {
+        PathAttribute::Plain(value.to_owned())
+    }))
 }
 
 fn strip_visibility(item: &str) -> &str {
@@ -444,12 +462,17 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
     let mut index = 0;
     while index < lines.len() {
         if single_line_attribute(lines[index], &lexed.code[index]).is_none() {
+            if let Some((name, ";")) = module_declaration(lexed.code[index].trim()) {
+                found
+                    .declared
+                    .extend(resolve_module_file(declaring, name, None));
+            }
             index += 1;
             continue;
         }
         let group_start = index;
         let mut test_only = false;
-        let mut path_value = None;
+        let mut path_value: Option<PathAttribute> = None;
         let mut item = index;
         while item < lines.len() {
             if let Some(attribute) = single_line_attribute(lines[item], &lexed.code[item]) {
@@ -468,11 +491,23 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
         if item >= lines.len() {
             break;
         }
+        let code = lexed.code[item].trim();
         if !test_only {
+            if let Some((name, ";")) = module_declaration(code) {
+                // Over-approximate production reach: both the plain and the
+                // `#[path]` resolution count as declared.
+                found
+                    .declared
+                    .extend(resolve_module_file(declaring, name, None));
+                if let Some(PathAttribute::Plain(value)) = &path_value {
+                    found
+                        .declared
+                        .extend(resolve_module_file(declaring, name, Some(value)));
+                }
+            }
             index = item;
             continue;
         }
-        let code = lexed.code[item].trim();
         if let Some((name, rest)) = module_declaration(code) {
             if rest.starts_with('{') {
                 if let Some(end) = inline_module_end(&lexed.code, item) {
@@ -481,12 +516,22 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
                     continue;
                 }
             } else if rest == ";" {
-                found
-                    .files
-                    .extend(resolve_module_file(declaring, name, path_value.as_deref()));
-                found.lines.extend(group_start..=item);
-                index = item + 1;
-                continue;
+                // A declaration nested in an inline module, or with a `#[path`
+                // this scanner cannot read, resolves elsewhere: stay scanned.
+                let top_level = !lines[item].starts_with(char::is_whitespace);
+                let readable = !matches!(path_value, Some(PathAttribute::Unreadable));
+                if top_level && readable {
+                    let path = match &path_value {
+                        Some(PathAttribute::Plain(value)) => Some(value.as_str()),
+                        _ => None,
+                    };
+                    found
+                        .files
+                        .extend(resolve_module_file(declaring, name, path));
+                    found.lines.extend(group_start..=item);
+                    index = item + 1;
+                    continue;
+                }
             }
         } else if single_line_item(code) {
             found.lines.extend(group_start..=item);
@@ -553,9 +598,14 @@ pub fn remaining(sources: &Sources) -> BTreeMap<PathBuf, (String, Lexed, BTreeSe
         let found = exclusions(path, text, &view);
         lexed.insert(path.clone(), (view, found));
     }
+    let declared: BTreeSet<PathBuf> = lexed
+        .values()
+        .flat_map(|(_, found)| found.declared.iter().cloned())
+        .collect();
     let excluded_files: BTreeSet<PathBuf> = lexed
         .values()
         .flat_map(|(_, found)| found.files.iter().cloned())
+        .filter(|file| !declared.contains(file))
         .collect();
     let mut out = BTreeMap::new();
     for (path, (view, found)) in lexed {
@@ -583,11 +633,14 @@ fn line_of(text: &str, offset: usize) -> usize {
     text[..offset].bytes().filter(|&b| b == b'\n').count() + 1
 }
 
-fn skip_whitespace(bytes: &[u8], mut at: usize) -> usize {
-    while at < bytes.len() && bytes[at].is_ascii_whitespace() {
-        at += 1;
-    }
-    at
+/// Skips Unicode whitespace, as the spec's `\s` matches.
+fn skip_whitespace(text: &str, at: usize) -> usize {
+    let skipped: usize = text[at..]
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .map(char::len_utf8)
+        .sum();
+    at + skipped
 }
 
 /// 1-based lines where `ChannelId\(\s*[0-9]` or
@@ -596,14 +649,14 @@ pub fn channel_literal_lines(text: &str) -> BTreeSet<usize> {
     let bytes = text.as_bytes();
     let mut lines = BTreeSet::new();
     for (offset, _) in text.match_indices("ChannelId(") {
-        let at = skip_whitespace(bytes, offset + "ChannelId(".len());
+        let at = skip_whitespace(text, offset + "ChannelId(".len());
         if bytes.get(at).is_some_and(u8::is_ascii_digit) {
             lines.insert(line_of(text, offset));
         }
     }
     for (offset, _) in text.match_indices("const") {
         let mut at = offset + "const".len();
-        let name_start = skip_whitespace(bytes, at);
+        let name_start = skip_whitespace(text, at);
         if name_start == at {
             continue;
         }
@@ -616,19 +669,19 @@ pub fn channel_literal_lines(text: &str) -> BTreeSet<usize> {
         if !text[name_start..at].contains("CHANNEL") {
             continue;
         }
-        at = skip_whitespace(bytes, at);
+        at = skip_whitespace(text, at);
         if bytes.get(at) != Some(&b':') {
             continue;
         }
-        at = skip_whitespace(bytes, at + 1);
+        at = skip_whitespace(text, at + 1);
         if !text[at..].starts_with("u16") {
             continue;
         }
-        at = skip_whitespace(bytes, at + "u16".len());
+        at = skip_whitespace(text, at + "u16".len());
         if bytes.get(at) != Some(&b'=') {
             continue;
         }
-        at = skip_whitespace(bytes, at + 1);
+        at = skip_whitespace(text, at + 1);
         if bytes.get(at).is_some_and(u8::is_ascii_digit) {
             lines.insert(line_of(text, offset));
         }
@@ -695,12 +748,115 @@ pub fn exported_capability_names(guard_lib: &str) -> BTreeSet<String> {
         .position(|line| line.trim() == "pub mod capability {")
         .expect("keld-guard exports `pub mod capability {`");
     let end = inline_module_end(&view.code, start).expect("capability module closes");
-    lines[start..=end]
+    lines[start + 1..end]
         .iter()
-        .filter_map(|line| {
-            let value = line.trim().strip_prefix("pub const ")?;
-            let (_, value) = value.split_once(": &str = \"")?;
-            Some(value.strip_suffix("\";")?.to_owned())
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        .map(|line| {
+            line.strip_prefix("pub const ")
+                .and_then(|value| value.split_once(": &str = \""))
+                .and_then(|(_, value)| value.strip_suffix("\";"))
+                .unwrap_or_else(|| {
+                    panic!("capability module line is not `pub const NAME: &str = \"…\";`: {line}")
+                })
+                .to_owned()
         })
         .collect()
+}
+
+/// The remaining code view of a file: comments and literal contents blanked,
+/// test-only lines removed.
+fn remaining_code(view: &Lexed, excluded: &BTreeSet<usize>) -> String {
+    view.code
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if excluded.contains(&index) {
+                ""
+            } else {
+                line.as_str()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Calls `call(` in remaining code whose `argument`-th (0-based) top-level
+/// argument starts with a decimal digit: a hand-written id passed positionally.
+pub fn positional_literal_hits(sources: &Sources, calls: &[(&str, usize)]) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for (path, (_, view, excluded)) in remaining(sources) {
+        let code = remaining_code(&view, &excluded);
+        for &(call, argument) in calls {
+            for (offset, _) in code.match_indices(&format!("{call}(")) {
+                let preceded_by_ident = code[..offset].chars().next_back().is_some_and(is_ident);
+                if preceded_by_ident {
+                    continue;
+                }
+                let mut depth = 0_i32;
+                let mut index = 0;
+                let base = offset + call.len() + 1;
+                let mut start = base;
+                for (at, c) in code[base..].char_indices() {
+                    let at = base + at;
+                    match c {
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' | '}' if depth == 0 => break,
+                        ')' | ']' | '}' => depth -= 1,
+                        ',' if depth == 0 => {
+                            if index == argument {
+                                break;
+                            }
+                            index += 1;
+                            start = at + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                if index == argument
+                    && code[start..]
+                        .trim_start()
+                        .starts_with(|c: char| c.is_ascii_digit())
+                {
+                    hits.push(Hit {
+                        file: display(&path),
+                        line: line_of(&code, offset),
+                    });
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Criterion 1: `ChannelEntry::new(` calls in the remaining code of every
+/// input except `table`.
+pub fn entry_construction_hits(sources: &Sources, table: &Path) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for (path, (_, view, excluded)) in remaining(sources) {
+        if path == table {
+            continue;
+        }
+        let code = remaining_code(&view, &excluded);
+        for (offset, _) in code.match_indices("ChannelEntry::new(") {
+            hits.push(Hit {
+                file: display(&path),
+                line: line_of(&code, offset),
+            });
+        }
+    }
+    hits
+}
+
+/// Criterion 1: the table's code declares exactly one `fn new(`, and it has no
+/// visibility, so no other module can construct an entry.
+pub fn entry_constructor_is_private(table: &str) -> bool {
+    let view = lex(table);
+    let declarations: Vec<&str> = view
+        .code
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| line.contains("fn new("))
+        .collect();
+    declarations.len() == 1 && declarations[0].starts_with("const fn new(")
 }

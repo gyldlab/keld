@@ -53,15 +53,18 @@ function replaceOnce(text: string, from: string, to: string): string {
 
 /**
  * Numeric channel-id literal shapes: a `*channel*` binding assigned a number,
- * a `channel:` property set to a number, and an equality comparison between a
- * `*channel*` operand and a number (either side). Ordering comparisons
- * (`channel <= 0`, `channel > 0xffff`) are u16 bounds checks, not ids.
+ * a `channel:` property set to a number, an equality comparison between a
+ * `*channel*` operand and a number (either side), and a number as the channel
+ * (third) argument of the transport's positional `writeFrame` / `encodeHeader`.
+ * Ordering comparisons (`channel <= 0`, `channel > 0xffff`) are u16 bounds
+ * checks, not ids.
  */
 const CHANNEL_LITERAL_PATTERNS: readonly RegExp[] = [
-  /\b\w*channel\w*\s*(?::\s*number\s*)?=(?!=)\s*\d/i,
-  /\b\w*channel\w*\s*:\s*\d/i,
-  /\b\w*channel\w*\s*[!=]==?\s*\d/i,
-  /\d\s*[!=]==?\s*[\w.]*channel\w*/i,
+  /\b\w*channel\w*\s*(?::\s*[\w<>|[\]\s]+)?=(?!=)\s*\(?\s*\d/i,
+  /\b\w*channel\w*\s*:\s*\(?\s*\d/i,
+  /\b\w*channel\w*\s*[!=]==?\s*\(?\s*\d/i,
+  /\d\s*\)?\s*[!=]==?\s*[\w.]*channel\w*/i,
+  /\b(?:writeFrame|encodeHeader)\(\s*[^,()]+,\s*[^,()]+,\s*\d/,
 ];
 
 const PRODUCTION_EXTENSIONS = /\.(?:[cm]?ts|[cm]?js)$/;
@@ -213,9 +216,19 @@ describe("criterion 7: no hand-written channel id in production TypeScript", () 
       { path: "x.ts", source: "if (!Number.isInteger(channel) || channel <= 0 || channel > 0xffff) {}" },
       { path: "y.ts", source: "if (header.channel !== policy.channel && channel === ECHO_CHANNEL) {}" },
       { path: "z.ts", source: "export function f(channel: number): void {}" },
+      { path: "w.ts", source: "writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token);" },
     ];
     expect(channelLiteralHits(clean)).toEqual([]);
-    for (const seeded of ["const fooChannel = 3;", "{ alsoChannel: 3 }", "if (1 === msg.channel) {}", "x.channel == 2"]) {
+    for (const seeded of [
+      "const fooChannel = 3;",
+      "{ alsoChannel: 3 }",
+      "if (1 === msg.channel) {}",
+      "x.channel == 2",
+      "const ECHO_CHANNEL: U16 = 1;",
+      "if (header.channel !== (1)) {}",
+      "await writes.writeFrame(FrameKind.Hello, 0, 0, 0, token);",
+      "const header = encodeHeader(FrameKind.Call, 0, 1, corr, len);",
+    ]) {
       expect(channelLiteralHits([{ path: "s.ts", source: seeded }])).toHaveLength(1);
     }
   });
@@ -335,6 +348,30 @@ describe("criterion 9: the generator fails closed and names the source line", ()
     expect(() => renderChannelTableRegion(collision)).toThrow("duplicate HANDSHAKE_CHANNEL");
     const duplicateConstant = `${tableSource.slice(0, tableSource.indexOf("#[cfg(test)]"))}pub const ECHO: ChannelEntry =\n    ChannelEntry::new("echo", 1, ReceiveClass::HostCall, Authority::HostInternal);\n`;
     expect(() => renderChannelTableRegion(duplicateConstant)).toThrow("duplicate entry constant ECHO");
+  });
+
+  test("nothing can hide an entry from the parser", () => {
+    const probe =
+      'pub const PROBE: ChannelEntry =\n    ChannelEntry::new("probe", 4, ReceiveClass::HostCall, Authority::HostInternal);\n';
+    const testGate = "#[cfg(test)]\nmod tests {";
+    const hidden: [string, string, RegExp][] = [
+      ["entry after the test module", `${tableSource}${probe}`, /nothing may follow the test module/],
+      [
+        "second cfg gate",
+        replaceOnce(tableSource, "pub const CHANNEL_TABLE", "#[cfg(test)]\nuse crate::frame as _;\n\npub const CHANNEL_TABLE"),
+        /only one `#\[cfg\(test\)\]`/,
+      ],
+      ["platform gate", replaceOnce(tableSource, "pub const LIFECYCLE", "#[cfg(windows)]\npub const LIFECYCLE"), /only one/],
+      [
+        "block comment",
+        replaceOnce(tableSource, "/// Every allocated channel", "/* pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO]; */\n/// Every allocated channel"),
+        /block comments are not admitted/,
+      ],
+      ["gate without the test module", replaceOnce(tableSource, testGate, "#[cfg(test)]\nmod fixtures {"), /must open `mod tests \{`/],
+    ];
+    for (const [label, source, message] of hidden) {
+      expect(() => renderChannelTableRegion(source), label).toThrow(message);
+    }
   });
 
   test("fixtures after the test-module gate never reach the generator", () => {
