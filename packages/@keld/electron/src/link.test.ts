@@ -420,6 +420,87 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
     next(why: string): Promise<{ header: { kind: number; channel: number; corr: number }; payload: Uint8Array }>;
     /** The role's role-side report once it exits by itself (kill switch only). */
     finish(): Promise<Map<string, string>>;
+    /** Resolves once the role has printed `key`; the kill switch bounds it. */
+    reported(key: string): Promise<void>;
+  }
+
+  /** Spawns the role and reads its stdout as it arrives. */
+  function spawnRole(scenario: string, link: string): {
+    proc: ReturnType<typeof Bun.spawn>;
+    stdout: Promise<string>;
+    seen: (key: string) => Promise<void>;
+  } {
+    const proc = Bun.spawn(["bun", roleScript, scenario], {
+      env: { ...process.env, KELD_APP_LINK: link },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    role = proc;
+    let text = "";
+    const waiters: Array<{ key: string; resolve: () => void }> = [];
+    const wake = (): void => {
+      for (let i = waiters.length - 1; i >= 0; i -= 1) {
+        if (text.includes(`KELD_LL ${waiters[i]!.key}=`)) waiters.splice(i, 1)[0]!.resolve();
+      }
+    };
+    const stdout = (async () => {
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        text += decoder.decode(chunk.value, { stream: true });
+        wake();
+      }
+      return text;
+    })();
+    return {
+      proc,
+      stdout,
+      seen: (key) =>
+        rejectWithin(
+          5_000,
+          new Promise<void>((resolve) => {
+            waiters.push({ key, resolve });
+            wake();
+          }),
+          `the role never reported ${key}`,
+        ),
+    };
+  }
+
+  async function finishRole(
+    proc: ReturnType<typeof Bun.spawn>,
+    stdoutText: Promise<string>,
+  ): Promise<Map<string, string>> {
+    const [stdout, stderr, code] = await rejectWithin(
+      20_000,
+      Promise.all([
+        stdoutText,
+        new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+        proc.exited,
+      ]),
+      "the role did not exit",
+    );
+    const out = new Map<string, string>();
+    for (const line of stdout.split("\n")) {
+      const rest = line.startsWith("KELD_LL ") ? line.slice("KELD_LL ".length) : undefined;
+      const at = rest?.indexOf("=") ?? -1;
+      if (rest !== undefined && at > 0) out.set(rest.slice(0, at), rest.slice(at + 1));
+    }
+    expect({ code, done: out.get("done"), stderr: code === 0 ? "" : stderr }).toEqual({
+      code: 0,
+      done: "true",
+      stderr: "",
+    });
+    return out;
+  }
+
+  /** A role whose app-link endpoint has no listener: its connect fails at once. */
+  async function startAbsent(scenario: string): Promise<Map<string, string>> {
+    sockN += 1;
+    const run = spawnRole(scenario, `${join(root, `${sockN}-absent.s`)}#${TOKEN_HEX}`);
+    return finishRole(run.proc, run.stdout);
   }
 
   async function start(scenario: string): Promise<Host> {
@@ -451,12 +532,7 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
         },
       },
     });
-    const proc = Bun.spawn(["bun", roleScript, scenario], {
-      env: { ...process.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}` },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    role = proc;
+    const run = spawnRole(scenario, `${path}#${TOKEN_HEX}`);
     const socket = await rejectWithin(10_000, opened, "the role never connected");
     return {
       socket,
@@ -473,28 +549,11 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
       next(why) {
         return rejectWithin(5_000, reader.readFrame(), why);
       },
-      async finish() {
-        const [stdout, stderr, code] = await rejectWithin(
-          20_000,
-          Promise.all([
-            new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
-            new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
-            proc.exited,
-          ]),
-          "the role did not exit",
-        );
-        const out = new Map<string, string>();
-        for (const line of stdout.split("\n")) {
-          const rest = line.startsWith("KELD_LL ") ? line.slice("KELD_LL ".length) : undefined;
-          const at = rest?.indexOf("=") ?? -1;
-          if (rest !== undefined && at > 0) out.set(rest.slice(0, at), rest.slice(at + 1));
-        }
-        expect({ code, done: out.get("done"), stderr: code === 0 ? "" : stderr }).toEqual({
-          code: 0,
-          done: "true",
-          stderr: "",
-        });
-        return out;
+      finish() {
+        return finishRole(run.proc, run.stdout);
+      },
+      reported(key) {
+        return run.seen(key);
       },
     };
   }
@@ -566,8 +625,8 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
     const report = await host.finish();
     expect(report.get("ready")).toBe("true");
     expect(report.get("last-window-closed")).toBe("true");
-    expect(report.get("dead-code")).toBe("KELD-IPC-022");
-    expect(report.get("dead-message")).toContain("KELD-IPC-003");
+    // The applier's own typed failure ends the link (#643 review: keep the cause).
+    expect(report.get("dead-code")).toBe("KELD-IPC-003");
     expect(report.get("dead-message")).toContain("discriminant 7");
   }, 30_000);
 
@@ -595,13 +654,12 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
     expect(report.get("connect-message")).toContain("FLAG_RAW");
   }, 30_000);
 
-  test("an undeclared kind after HELLO ends the link with a KELD-IPC-005 cause", async () => {
+  test("an undeclared kind after HELLO ends the link with KELD-IPC-005", async () => {
     const host = await start("events");
     await host.hello();
     host.write(encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()));
     const report = await host.finish();
-    expect(report.get("dead-code")).toBe("KELD-IPC-022");
-    expect(report.get("dead-message")).toContain("KELD-IPC-005");
+    expect(report.get("dead-code")).toBe("KELD-IPC-005");
   }, 30_000);
 
   test("an EVENT with a nonzero correlation ends the link and is not dispatched", async () => {
@@ -610,8 +668,61 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, o
     host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 4, new Uint8Array([0x00])));
     const report = await host.finish();
     expect(report.get("ready")).toBeUndefined();
-    expect(report.get("dead-code")).toBe("KELD-IPC-022");
-    expect(report.get("dead-message")).toContain("KELD-IPC-005");
+    expect(report.get("dead-code")).toBe("KELD-IPC-005");
+  }, 30_000);
+
+  test("a frame that stalls after its first byte ends the link with KELD-IPC-006", async () => {
+    const host = await start("events");
+    await host.hello();
+    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00])).subarray(0, 1));
+    const report = await host.finish();
+    expect(report.get("dead-code")).toBe("KELD-IPC-006");
+  }, 30_000);
+
+  test("a connect with no listener is KELD-IPC-001", async () => {
+    const report = await startAbsent("connect");
+    expect(report.get("connect-resolved")).toBe("false");
+    expect(report.get("connect-code")).toBe("KELD-IPC-001");
+  }, 30_000);
+
+  test("a HELLO reply with another session token is KELD-IPC-007", async () => {
+    const host = await start("connect");
+    await host.hello(encodeFrame(FrameKind.Hello, 0, 0, new Uint8Array(32).fill(0x73)));
+    const report = await host.finish();
+    expect(report.get("connect-code")).toBe("KELD-IPC-007");
+  }, 30_000);
+
+  test("app.whenReady rejects with the cause that ended the link, and keeps it", async () => {
+    const host = await start("when-ready");
+    await host.hello();
+    host.write(encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()));
+    const report = await host.finish();
+    expect(report.get("ready-code")).toBe("KELD-IPC-005");
+    expect(report.get("again-same")).toBe("true");
+  }, 30_000);
+
+  test("app.quit never parks: code after it runs before the Quit REPLY", async () => {
+    const host = await start("quit-yields");
+    await host.hello();
+    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00])));
+    const call = await host.next("the role's Quit");
+    expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
+    // A parked main thread could not run the timer set after app.quit().
+    await host.reported("timer-ran");
+    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x00])));
+    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
+    const report = await host.finish();
+    expect(report.get("steps")).toBe("timer-ran,quit-resolved");
+  }, 30_000);
+
+  test("a Quit REPLY that is not LifecycleResponse::Quit is KELD-IPC-003", async () => {
+    const host = await start("quit");
+    await host.hello();
+    const call = await host.next("the role's Quit");
+    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x01])));
+    const report = await host.finish();
+    expect(report.get("quit-code")).toBe("KELD-IPC-003");
+    expect(report.get("quit-message")).toContain("LifecycleResponse::Quit");
   }, 30_000);
 
   test("host Err on Quit rejects with its CallError and closes the link", async () => {

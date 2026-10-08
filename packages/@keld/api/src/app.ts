@@ -25,9 +25,13 @@ type ReadyWaiter = {
 let hostReady = false;
 let linkDead: Error | undefined;
 let readyWaiters: ReadyWaiter[] = [];
+/**
+ * The role's one link attempt (GH-527 §4.2: a realm opens one link). Never
+ * reset: a failed connect, or a link that died before Ready, stays the answer,
+ * so every later `whenReady` or `quit` rethrows that same typed error instead
+ * of retrying into `KELD-IPC-005`.
+ */
 let linkPromise: Promise<LifecycleLink> | undefined;
-/** Per-connect identity; prevents a synchronous dead session from being recached. */
-let linkSession: object | undefined;
 
 let nextListenerId = 1;
 const lastWindowClosedListeners = new Map<number, () => void>();
@@ -78,34 +82,19 @@ function ensureLink(): Promise<LifecycleLink> {
       ),
     );
   }
-  linkDead = undefined;
-  const session = {};
-  linkSession = session;
-  const pending = LifecycleLink.connect(envLink, {
+  linkPromise = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
     onLastWindowClosed,
     onApplicationCall: dispatchApplicationCall,
-    onLinkDead: (err: Error) => {
-      if (linkSession !== session) return;
-      try {
-        failReadyWaiters(err);
-      } finally {
-        if (!hostReady && linkSession === session) {
-          linkPromise = undefined;
-        }
-      }
-    },
-  });
-  const tracked = pending.catch((err: unknown) => {
-    if (linkSession === session) {
-      linkPromise = undefined;
-    }
+    onLinkDead: failReadyWaiters,
+  }).catch((err: unknown) => {
+    // The first connect failure is sticky: its typed error answers every
+    // later `whenReady` and `quit`.
+    if (err instanceof Error) linkDead ??= err;
     throw err;
   });
-  if (linkSession === session && !linkDead) {
-    linkPromise = tracked;
-  }
-  return tracked;
+  ignoreIfUnawaited(linkPromise);
+  return linkPromise;
 }
 function sendQuit(): Promise<void> {
   const done = ensureLink().then((link) => link.quit());

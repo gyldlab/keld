@@ -121,8 +121,11 @@ export class LifecycleLink {
   }
 
   /**
-   * Sends the role's Quit and closes the link on its REPLY (GH-527 §4.9). A
-   * host ERR rejects with that error. Concurrent calls share one Quit.
+   * Sends the role's Quit without parking (PANEL-P2: `app.quit` returns
+   * immediately) and closes the link once its REPLY or typed failure settles
+   * (GH-527 §4.9). Resolves on `LifecycleResponse::Quit`; a host ERR rejects
+   * with that error, any other REPLY with `KELD-IPC-003`. Concurrent calls
+   * share one Quit.
    */
   quit(): Promise<void> {
     if (this.#quitPromise) return this.#quitPromise;
@@ -130,10 +133,7 @@ export class LifecycleLink {
       return Promise.reject(kipcError("KELD-IPC-001", "session is closed"));
     }
     this.#closed = true;
-    this.#quitPromise = new Promise<void>((resolve) => {
-      quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
-      resolve();
-    });
+    this.#quitPromise = quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
     return this.#quitPromise;
   }
 

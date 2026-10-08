@@ -172,6 +172,44 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     await settle("quit-after-close", session.quit());
   },
 
+  // app.whenReady over the real link: the error that ended the link rejects
+  // it, and stays the answer for a later whenReady (sticky, GH-528 T3).
+  async "when-ready"() {
+    const { app } = await import("../src/app.ts");
+    let first: unknown;
+    try {
+      await app.whenReady();
+      report("ready-resolved", true);
+    } catch (err) {
+      first = err;
+      reportError("ready", err);
+    }
+    const again = await app.whenReady().then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    report("again-same", again === first);
+  },
+
+  // app.quit never parks (PANEL-P2, #419): with the link already up, a timer
+  // set after app.quit() runs before the host answers the Quit; the host
+  // waits for that report.
+  async "quit-yields"() {
+    const { app } = await import("../src/app.ts");
+    await app.whenReady();
+    const steps: string[] = [];
+    const quit = app.quit().then(
+      () => steps.push("quit-resolved"),
+      (err: unknown) => steps.push(`quit:${codeOf(err)}`),
+    );
+    setTimeout(() => {
+      steps.push("timer-ran");
+      report("timer-ran", true);
+    }, 0);
+    await quit;
+    report("steps", steps.join(","));
+  },
+
   // A throwing onLinkDead is isolated: the process still reports and exits.
   async "throwing-dead"() {
     let resolveDead: () => void = () => undefined;
