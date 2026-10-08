@@ -263,6 +263,23 @@ pub enum AuthorityProfile {
     LegacySandboxOff,
     /// User-approved tool child.
     UserApprovedToolChild,
+    /// Run without verified containment; never strict or legacy evidence.
+    Unverified,
+}
+
+impl AuthorityProfile {
+    /// The `authority_profile` string for this variant: the one
+    /// variant-to-string map for records, reports and scoreboard rendering.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StrictBun => "strict_bun",
+            Self::SandboxedAddonWorker => "sandboxed_addon_worker",
+            Self::LegacySandboxOff => "legacy_sandbox_off",
+            Self::UserApprovedToolChild => "user_approved_tool_child",
+            Self::Unverified => "unverified",
+        }
+    }
 }
 
 /// Which denominator this cell belongs to.
@@ -518,6 +535,7 @@ pub struct Scoreboard {
     unknown: usize,
     waived: usize,
     missing: usize,
+    authority_profile: Option<AuthorityProfile>,
     unweighted_percent: Option<u8>,
     complete: bool,
     claim: String,
@@ -582,6 +600,16 @@ impl Scoreboard {
     #[must_use]
     pub fn missing(&self) -> usize {
         self.missing
+    }
+
+    /// The authority profile shared by every contributing record.
+    ///
+    /// `None` when no record contributes or when two contributing records
+    /// differ, so a mixed board is never reported under one record's
+    /// profile. Render it with [`AuthorityProfile::as_str`].
+    #[must_use]
+    pub fn authority_profile(&self) -> Option<AuthorityProfile> {
+        self.authority_profile
     }
 
     /// `None` when incomplete, mixed-identity, or product with no committed corpus.
@@ -791,7 +819,9 @@ pub fn score(
         }
     }
 
-    let identity_ok = contributing_identity_consistent(by_cell.values().copied());
+    let authority_profile = shared_authority_profile(by_cell.values().copied());
+    let identity_ok =
+        contributing_identity_consistent(by_cell.values().copied(), authority_profile);
     let n = denominator.cells.len();
     let corpus_ok =
         product_corpus_is_documented_committed(denominator.panel, &denominator.corpus_id);
@@ -829,6 +859,7 @@ pub fn score(
         unknown,
         waived,
         missing,
+        authority_profile,
         unweighted_percent,
         complete,
         claim,
@@ -976,6 +1007,7 @@ fn parse_authority(value: &str) -> Result<AuthorityProfile, EvidenceError> {
         "sandboxed_addon_worker" => Ok(AuthorityProfile::SandboxedAddonWorker),
         "legacy_sandbox_off" => Ok(AuthorityProfile::LegacySandboxOff),
         "user_approved_tool_child" => Ok(AuthorityProfile::UserApprovedToolChild),
+        "unverified" => Ok(AuthorityProfile::Unverified),
         other => Err(EvidenceError::InvalidRecord {
             detail: format!("unknown authority_profile `{other}`"),
         }),
@@ -1404,17 +1436,32 @@ fn validate_scored_waiver(
     }
 }
 
+/// The one profile-agreement rule: `Some` only when at least one record
+/// contributes and every contributing record has the same profile. `score`
+/// gates identity on it and [`Scoreboard::authority_profile`] reports it.
+fn shared_authority_profile<'a>(
+    mut records: impl Iterator<Item = &'a EvidenceRecord>,
+) -> Option<AuthorityProfile> {
+    let first = records.next()?.authority_profile;
+    records
+        .all(|record| record.authority_profile == first)
+        .then_some(first)
+}
+
+/// Contributing records share one authority profile (`shared_profile`, from
+/// [`shared_authority_profile`]), one artifact digest and one engine.
 fn contributing_identity_consistent<'a>(
     mut records: impl Iterator<Item = &'a EvidenceRecord>,
+    shared_profile: Option<AuthorityProfile>,
 ) -> bool {
     let Some(first) = records.next() else {
         return true;
     };
-    records.all(|record| {
-        record.artifact.sha256 == first.artifact.sha256
-            && record.authority_profile == first.authority_profile
-            && record.revisions.engine == first.revisions.engine
-    })
+    shared_profile.is_some()
+        && records.all(|record| {
+            record.artifact.sha256 == first.artifact.sha256
+                && record.revisions.engine == first.revisions.engine
+        })
 }
 
 /// Documented committed product corpus ids. T1: none, so product panels
@@ -1494,10 +1541,55 @@ mod tests {
     }
 
     fn second_pass() -> EvidenceRecord {
-        let mut json = valid_evidence_json();
-        json = json.replace("hello.window.open", "hello.ipc.echo");
-        json = json.replace("hello-window-visible", "kipc-echo-roundtrip");
-        parse_evidence(json.as_bytes()).expect("second cell")
+        pass_with_authority(CELL_ECHO, "strict_bun")
+    }
+
+    /// The two `valid_denominator_json` cells as `(operation_id, oracle_id)`.
+    const CELL_WINDOW: (&str, &str) = ("hello.window.open", "hello-window-visible");
+    const CELL_ECHO: (&str, &str) = ("hello.ipc.echo", "kipc-echo-roundtrip");
+
+    /// The four pre-T2 `authority_profile` strings and the variant each must
+    /// parse to. A literal oracle, independent of `parse_authority`/`as_str`.
+    const OTHER_AUTHORITY: [(&str, AuthorityProfile); 4] = [
+        ("strict_bun", AuthorityProfile::StrictBun),
+        (
+            "sandboxed_addon_worker",
+            AuthorityProfile::SandboxedAddonWorker,
+        ),
+        ("legacy_sandbox_off", AuthorityProfile::LegacySandboxOff),
+        (
+            "user_approved_tool_child",
+            AuthorityProfile::UserApprovedToolChild,
+        ),
+    ];
+
+    /// `valid_evidence_json` moved to `cell` and labelled with the literal
+    /// `authority_profile` string `profile`; digest and engine are unchanged.
+    fn evidence_json_with_authority(cell: (&str, &str), profile: &str) -> String {
+        let label = format!(r#""authority_profile": "{profile}""#);
+        let json = valid_evidence_json()
+            .replace(r#""authority_profile": "strict_bun""#, &label)
+            .replace(CELL_WINDOW.0, cell.0)
+            .replace(CELL_WINDOW.1, cell.1);
+        assert!(json.contains(&label), "fixture must carry {label}");
+        json
+    }
+
+    fn pass_with_authority(cell: (&str, &str), profile: &str) -> EvidenceRecord {
+        parse_evidence(evidence_json_with_authority(cell, profile).as_bytes())
+            .expect("closed v1 record")
+    }
+
+    /// Two-cell showcase board: the panel that may publish a percentage, so
+    /// only identity consistency can withhold it.
+    fn score_showcase(window_profile: &str, echo_profile: &str) -> Scoreboard {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.panel = Panel::Showcase;
+        let records = [
+            pass_with_authority(CELL_WINDOW, window_profile),
+            pass_with_authority(CELL_ECHO, echo_profile),
+        ];
+        score(&denom, &records, AS_OF).expect("score")
     }
 
     #[test]
@@ -1778,6 +1870,103 @@ mod tests {
         );
         assert_eq!(board.unweighted_percent, None);
         assert!(!board.claim.contains("100%"));
+    }
+
+    #[test]
+    fn unverified_is_never_merged_with_another_profile() {
+        // gh532 AC13. Negative controls: `parse_authority` mapping
+        // "unverified" to `LegacySandboxOff` or `StrictBun`, and a profile
+        // comparison that treats `Unverified` as equal to another variant.
+        for (other, _) in OTHER_AUTHORITY {
+            // Control: the same two records under one shared profile are
+            // complete, so only the profile difference withholds below.
+            let control = score_showcase(other, other);
+            assert!(
+                control.complete(),
+                "{other}+{other} control must be complete"
+            );
+            assert_eq!(control.unweighted_percent(), Some(100), "{other}+{other}");
+            for (window, echo) in [("unverified", other), (other, "unverified")] {
+                let board = score_showcase(window, echo);
+                assert_eq!(
+                    (board.passed(), board.missing()),
+                    (2, 0),
+                    "{window}+{echo}: the unverified run is counted, not dropped"
+                );
+                assert!(!board.complete(), "{window}+{echo} must not be complete");
+                assert_eq!(board.unweighted_percent(), None, "{window}+{echo}");
+            }
+        }
+    }
+
+    #[test]
+    fn scoreboard_reports_unverified_only_for_an_all_unverified_board() {
+        // gh532 AC14. Negative controls: an accessor that returns the first
+        // record's profile for a mixed board, one that reports
+        // `LegacySandboxOff` or `StrictBun` for an all-`unverified` board, and
+        // a claim or rendered profile that names `strict_bun` or
+        // `legacy_sandbox_off` for an `unverified` run.
+        let board = score_showcase("unverified", "unverified");
+        assert_eq!((board.passed(), board.missing()), (2, 0));
+        assert_eq!(
+            board.authority_profile(),
+            Some(AuthorityProfile::Unverified)
+        );
+        assert_eq!(
+            board.authority_profile().map(AuthorityProfile::as_str),
+            Some("unverified")
+        );
+        // KEL-74 §4.3 rule 7: the claim format is unchanged and names no profile.
+        assert_eq!(
+            board.claim(),
+            format!("2/2 of showcase corpus phase2-hello@{DIGEST_B} (primary_workflow)")
+        );
+        for promoted in ["strict_bun", "legacy_sandbox_off"] {
+            assert!(!board.claim().contains(promoted), "{}", board.claim());
+        }
+        for (other, variant) in OTHER_AUTHORITY {
+            let uniform = score_showcase(other, other);
+            assert_eq!(
+                uniform.authority_profile(),
+                Some(variant),
+                "{other}+{other}"
+            );
+            // Both cell orders, so neither a first- nor a last-record
+            // accessor can report one profile for a mixed board.
+            for (window, echo) in [("unverified", other), (other, "unverified")] {
+                let mixed = score_showcase(window, echo);
+                assert_eq!(mixed.authority_profile(), None, "{window}+{echo}");
+            }
+        }
+    }
+
+    #[test]
+    fn authority_vocabulary_round_trips_and_unverified_is_distinct() {
+        // gh532 AC15. Negative controls: swapping any two `as_str` arms fails
+        // the round trip, and a sixth, unknown string is still KELD-COMPAT-005.
+        // §4.4: `unverified` is a fifth v1 arm, not a schema bump.
+        assert_eq!(EVIDENCE_SCHEMA, "keld.compat.evidence/v1");
+        let all = OTHER_AUTHORITY
+            .into_iter()
+            .chain([("unverified", AuthorityProfile::Unverified)]);
+        for (text, variant) in all {
+            let record = pass_with_authority(CELL_WINDOW, text);
+            assert_eq!(record.authority_profile(), variant, "{text}");
+            assert_eq!(variant.as_str(), text);
+        }
+        for (text, variant) in OTHER_AUTHORITY {
+            assert_ne!(AuthorityProfile::Unverified, variant, "{text}");
+        }
+        for unknown in ["verified", "Unverified", "unverified_sandbox_off", ""] {
+            let json = evidence_json_with_authority(CELL_WINDOW, unknown);
+            let err = parse_evidence(json.as_bytes()).expect_err(unknown);
+            assert_eq!(err.code(), "KELD-COMPAT-005", "{unknown}");
+            assert!(
+                err.to_string()
+                    .contains(&format!("unknown authority_profile `{unknown}`")),
+                "{err}"
+            );
+        }
     }
 
     #[test]
