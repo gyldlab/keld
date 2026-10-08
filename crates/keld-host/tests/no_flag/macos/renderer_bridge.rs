@@ -162,20 +162,55 @@ await new Promise(() => {{}});
         ),
     )
     .expect("write KEL-142 API entry");
+    // GH-527 §4.2: the transport is the transport Worker's entry, so it stays
+    // its own staged file (`src/kipc-transport.ts`, which the dev stage copies
+    // beside `src/main.ts`); the bundle imports it rather than inlining it.
+    let build = project.join("kel142-build.ts");
+    fs::write(&build, KIPC_SIDECAR_BUILD).expect("write KEL-142 bundle script");
     let result = Command::new("bun")
-        .args([
-            "build",
-            source.to_str().expect("source path"),
-            "--target=bun",
-            "--format=esm",
-            "--outfile",
-        ])
+        .arg(&build)
+        .arg(&source)
         .arg(&output)
         .output()
         .expect("bundle exact @keld/api fixture");
     assert!(result.status.success(), "bun build failed: {result:?}");
+    fs::copy(
+        repo.join("packages/@keld/kipc/src/transport.ts"),
+        project.join("src/kipc-transport.ts"),
+    )
+    .expect("stage the canonical transport beside the bundle");
+    let bundled = fs::read_to_string(&output).expect("read KEL-142 bundle");
+    assert!(
+        bundled.contains("from \"./kipc-transport.ts\"") && !bundled.contains("class WorkerLink"),
+        "the bundle must import the staged transport, never inline it"
+    );
     fs::remove_file(source).expect("remove bundle-only source");
+    fs::remove_file(build).expect("remove bundle-only script");
 }
+
+/// Bundles an `@keld/api` entry with the kipc transport left external as
+/// `./kipc-transport.ts` (GH-527 §4.2: the Worker's entry is that file).
+const KIPC_SIDECAR_BUILD: &str = r#"const [entry, out] = process.argv.slice(2);
+const result = await Bun.build({
+  entrypoints: [entry],
+  target: "bun",
+  format: "esm",
+  plugins: [{
+    name: "kipc-transport-sidecar",
+    setup(build) {
+      build.onResolve({ filter: /[\\/]kipc[\\/]src[\\/]transport\.ts$/ }, () => ({
+        path: "./kipc-transport.ts",
+        external: true,
+      }));
+    },
+  }],
+});
+if (!result.success) {
+  console.error(result.logs);
+  process.exit(1);
+}
+await Bun.write(out, result.outputs[0]);
+"#;
 
 fn spawn_render_beacon() -> (u16, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind KEL-142 render beacon");

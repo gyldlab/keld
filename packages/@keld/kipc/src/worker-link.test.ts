@@ -167,6 +167,55 @@ describe("WorkerLink.open refuses invalid bounds before the Worker spawns", () =
   });
 });
 
+describe("WorkerLink.open refuses a transport bundled into an app entry (GH-527 §4.2)", () => {
+  // A bundler that inlines the transport into the entry makes `import.meta.url`
+  // the entry, so the Worker would load the whole app. The bundled copy runs
+  // in its own process (a realm opens one link) against a live listener.
+  test("the bundled open is KELD-IPC-005 and nothing connects", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
+    const path = join(dir, "s.sock");
+    let connections = 0;
+    const listener = Bun.listen({
+      unix: path,
+      socket: {
+        open() {
+          connections += 1;
+        },
+        data() {},
+      },
+    });
+    try {
+      const entry = join(dir, "entry.ts");
+      await Bun.write(
+        entry,
+        `import { WorkerLink, isCallError } from ${JSON.stringify(join(import.meta.dir, "transport.ts"))};\n` +
+          "try {\n" +
+          "  await WorkerLink.open({ link: process.env.KELD_APP_LINK!, receive: { eventChannels: [3], callReceivers: [] } });\n" +
+          '  console.log("opened");\n' +
+          "} catch (err) {\n" +
+          '  console.log(isCallError(err) ? err.code : "untyped");\n' +
+          "}\n" +
+          "process.exit(0);\n",
+      );
+      const built = await Bun.build({ entrypoints: [entry], target: "bun", format: "esm" });
+      expect(built.success).toBe(true);
+      const bundle = join(dir, "main.js");
+      await Bun.write(bundle, built.outputs[0]!);
+      const proc = Bun.spawn(["bun", bundle], {
+        env: { ...process.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}` },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      expect({ stdout: stdout.trim(), code }).toEqual({ stdout: "KELD-IPC-005", code: 0 });
+      expect(connections).toBe(0);
+    } finally {
+      listener.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 describe("§4.7 per-frame policy selection", () => {
   const table: InboundTable = {
     eventChannels: new Set([LIFECYCLE_CHANNEL]),

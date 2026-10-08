@@ -145,9 +145,6 @@ export const RECEIVE_POLICIES = {
   lifecycleEventReceiver: eventReceiverOn(LIFECYCLE_CHANNEL),
 } as const;
 
-/** Scaffold alias for `RECEIVE_POLICIES.clientAwaitHello`. */
-export const CLIENT_AWAIT_HELLO: ReceivePolicy = RECEIVE_POLICIES.clientAwaitHello;
-
 export function echoReplyWaiter(corr: number): ReceivePolicy {
   return { channel: ECHO_CHANNEL, kinds: [FrameKind.Reply], corr: { rule: "exactly", id: corr } };
 }
@@ -804,82 +801,6 @@ export class FrameReader {
     if (this.#frameDeadline === undefined) return;
     clearTimeout(this.#frameDeadline);
     this.#frameDeadline = undefined;
-  }
-}
-
-/** Bounded parked-frame budget for one app-link mux (Ready + LastWindowClosed + PING). */
-export const MAX_PARKED_FRAMES = 8;
-
-function admitsHeader(policy: ReceivePolicy, header: FrameHeader): boolean {
-  try {
-    validateReceivedHeader(policy, header);
-    return true;
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("KELD-IPC-")) {
-      return false;
-    }
-    throw err;
-  }
-}
-
-/**
- * Single reader of one `FrameReader` that can wait for a policy while parking
- * unmatched lifecycle Events/PINGs. Stock echo must not treat a preceding
- * `Ready` Event as a failed Echo Reply (KEL-185 same-stream seam). This is
- * not a Close/Quit consumer: adapters still own codecs and when to Quit.
- */
-export class DirectedReader {
-  readonly #reader: FrameReader;
-  readonly #parked: DecodedFrame[] = [];
-
-  constructor(reader: FrameReader) {
-    this.#reader = reader;
-  }
-
-  /** Frames parked because they matched `park` while waiting for another policy. */
-  parkedCount(): number {
-    return this.#parked.length;
-  }
-
-  /**
-   * Returns the next frame admitted by `want`. When `park` is set, admitted
-   * `park` frames are queued in arrival order instead of failing the wait.
-   * Anything else stays `KELD-IPC-005`. Park overflow is also `KELD-IPC-005`.
-   */
-  async receive(want: ReceivePolicy, park?: ReceivePolicy): Promise<DecodedFrame> {
-    const parkedHit = this.#takeParked(want);
-    if (parkedHit !== undefined) {
-      return parkedHit;
-    }
-    for (;;) {
-      const frame = await this.#reader.readFrame();
-      if (admitsHeader(want, frame.header)) {
-        return frame;
-      }
-      if (park !== undefined && admitsHeader(park, frame.header)) {
-        if (this.#parked.length >= MAX_PARKED_FRAMES) {
-          throw kipcError(
-            "KELD-IPC-005",
-            "parked-frame queue is full. Drain parked lifecycle frames before waiting for another policy.",
-          );
-        }
-        this.#parked.push(frame);
-        continue;
-      }
-      validateReceivedHeader(want, frame.header);
-      throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
-    }
-  }
-
-  #takeParked(want: ReceivePolicy): DecodedFrame | undefined {
-    for (let i = 0; i < this.#parked.length; i += 1) {
-      const frame = this.#parked[i];
-      if (frame !== undefined && admitsHeader(want, frame.header)) {
-        this.#parked.splice(i, 1);
-        return frame;
-      }
-    }
-    return undefined;
   }
 }
 
@@ -1680,6 +1601,27 @@ interface WorkerHookData {
 
 const WORKER_LINK_MARKER = "keld-kipc-worker-link/v1";
 
+/**
+ * The file names this module may run from (GH-527 §4.2): the canonical
+ * `transport.ts`, or the `kipc-transport.ts` an app stages beside its entry.
+ * The transport Worker's entry is this module's own file, so a module that a
+ * bundler inlined into an app entry would start a Worker running that whole
+ * app; `WorkerLink.open` refuses it instead.
+ */
+const TRANSPORT_FILE = /^(?:kipc-)?transport\.(?:ts|js|mjs)$/;
+
+function requireStagedTransport(): void {
+  const file = new URL(import.meta.url).pathname.split("/").pop() ?? "";
+  if (!TRANSPORT_FILE.test(file)) {
+    throw linkError(
+      "KELD-IPC-005",
+      `the kipc transport runs from \`${file}\`, not its own staged file: the transport Worker would load that ` +
+        "whole file. Stage the transport as src/kipc-transport.ts beside the entry and import it; never bundle " +
+        "it into the app entry",
+    );
+  }
+}
+
 interface WorkerLinkBoot {
   marker: typeof WORKER_LINK_MARKER;
   sab: SharedArrayBuffer;
@@ -1835,6 +1777,7 @@ export class WorkerLink {
     hooks: WorkerLinkTestHooks | undefined,
   ): Promise<WorkerLink> {
     const config = validateWorkerLinkOptions(options);
+    requireStagedTransport();
     if (workerLinkOpened) {
       throw linkError(
         "KELD-IPC-005",
