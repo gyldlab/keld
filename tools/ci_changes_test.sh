@@ -366,6 +366,16 @@ expect_exact_output "TypeScript consumer change runs on every OS" check_os "$che
 expect_exact_output "workflow edit runs on every OS" check_os "$check_os_all" "$workflow_codeql"
 expect_exact_output "unknown path runs on every OS" check_os "$check_os_all" "$unknown_codeql"
 
+# #632: the channel allocation baseline feeds the hygiene job's append-only
+# check (ci-hygiene check), and its keld-ipc reader keeps the Rust lane.
+allocations="$(result_for_paths crates/keld-ipc/channel_allocations.txt)"
+expect_exact_output "channel allocations select the hygiene lane" hygiene true "$allocations"
+expect_package_token "channel allocations still test their keld-ipc reader" keld-ipc "$allocations"
+# Negative control: another crate-local text file is not a hygiene input.
+other_crate_text="$(result_for_paths crates/keld-ipc/notes.txt)"
+expect_exact_output "other crate-local text skips the hygiene lane" hygiene false "$other_crate_text"
+expect_package_token "other crate-local text still tests its owner" keld-ipc "$other_crate_text"
+
 # #632: doctests run for exactly the selected packages that have a library
 # target; bin-only packages have none and `cargo test --doc` rejects them.
 ipc_doctest="$(result_for_paths crates/keld-ipc/src/codec.rs)"

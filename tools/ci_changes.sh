@@ -748,6 +748,14 @@ classify_path() {
             hygiene="$TRUE"
             ;;
 
+        # GH-508's committed channel allocation baseline. The hygiene job's
+        # ci-hygiene check holds it append-only against the comparison base;
+        # the crate-local block above keeps its keld-ipc reader on Rust (#632).
+        crates/keld-ipc/channel_allocations.txt)
+            docs="$TRUE"
+            hygiene="$TRUE"
+            ;;
+
         # Markdown-like content is documentation even if it lives beside a
         # crate. It cannot alter the compiled host executable.
         *.adoc | *.md | *.mdx | *.rst | *.txt)

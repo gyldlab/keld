@@ -674,8 +674,14 @@ jobs:
           rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
           target/ci-hygiene/ci-hygiene-test
           bun --no-install test tools/ci_workflow_security.test.ts
+      # The checkout check holds crates/keld-ipc/channel_allocations.txt
+      # append-only against this event's comparison base: the pull request's
+      # base commit, or the previous main tip on push. Its origin/main default
+      # would compare a push with itself (#632).
       - name: Check this checkout
         if: needs.changes.outputs.hygiene == 'true'
+        env:
+          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
           target/ci-hygiene/ci-hygiene check .

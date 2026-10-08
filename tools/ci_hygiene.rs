@@ -1472,6 +1472,26 @@ fn check_doctest_job(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+const ALLOCATIONS_BASE_STEP: &str = "Check this checkout";
+const ALLOCATIONS_BASE_REF: &str =
+    "${{ github.event.pull_request.base.sha || github.event.before }}";
+
+/// The checkout check compares crates/keld-ipc/channel_allocations.txt with
+/// this event's comparison base (#632); its origin/main default would compare
+/// a push to main with itself.
+fn check_allocations_base_ref(text: &str) -> Result<(), String> {
+    let block = workflow_job_block(text, "hygiene").unwrap_or_default();
+    let bound = workflow_named_step_mapping(&block, ALLOCATIONS_BASE_STEP, "env").is_some_and(|entries| {
+        entries == [("KELD_CI_BASE_REF".to_owned(), ALLOCATIONS_BASE_REF.to_owned())]
+    });
+    if !bound {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` step `{ALLOCATIONS_BASE_STEP}` must bind exactly `env: KELD_CI_BASE_REF: {ALLOCATIONS_BASE_REF}` so the channel allocation append-only check compares against the event's base."
+        ));
+    }
+    Ok(())
+}
+
 const WORKSPACE_JOB: &str = "workspace-contracts";
 const WORKSPACE_STEP: &str = "Local workspace path and process contracts";
 
@@ -2780,6 +2800,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_check_job_os_matrix(&text)?;
     check_workspace_contracts_job(&text)?;
     check_doctest_job(&text)?;
+    check_allocations_base_ref(&text)?;
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
@@ -3162,6 +3183,12 @@ mod tests {
             "          python3 -B tools/test_session_closeout_hook.py",
             "          python3 -B tools/workspace.py check",
             "          python3 -B tools/test_workspace.py",
+            "      - name: Check this checkout",
+            "        if: needs.changes.outputs.hygiene == 'true'",
+            "        env:",
+            "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}",
+            "        run: |",
+            "          target/ci-hygiene/ci-hygiene check .",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
             "      - run: rustc --edition=2024 --test tools/product_status.rs",
             "      - run: product-status check .",
@@ -4041,6 +4068,23 @@ mod tests {
             temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
             let error = check(temp.path()).expect_err(label);
             assert!(error.contains("doctest"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn allocations_check_compares_against_the_event_base() {
+        check_allocations_base_ref(&valid_workflow()).expect("fixture base binding passes");
+        let bound = "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}\n";
+        for (replacement, label) in [
+            ("", "missing binding"),
+            ("          KELD_CI_BASE_REF: origin/main\n", "self-comparing default on push"),
+            ("          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha }}\n", "no push base"),
+            ("          KELD_CI_BASE_REF: ${{ github.sha }}\n", "the head itself"),
+        ] {
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(bound, replacement, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("KELD_CI_BASE_REF"), "{label}: {error}");
         }
     }
 
