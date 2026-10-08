@@ -1783,6 +1783,7 @@ export class WorkerLink {
   readonly #appliers = new Map<number, (payload: Uint8Array) => void>();
   readonly #listeners = new Map<number, Set<(payload: Uint8Array) => void>>();
   readonly #callHandlers = new Map<number, (payload: Uint8Array) => Promise<WorkerCallReply>>();
+  readonly #endListeners = new Set<(error: KeldCallError) => void>();
   #nextCorr = 1;
   #blockingInFlight = false;
   #applying = false;
@@ -1967,6 +1968,30 @@ export class WorkerLink {
     set.add(listener);
     return () => {
       set.delete(listener);
+    };
+  }
+
+  /**
+   * Runs `listener` once with the link's terminal error, in a task after the
+   * link ended, every retained record was delivered and every pending call
+   * rejected (their rejection handlers run first). A listener added later
+   * runs in a later task. One that throws is isolated, as an EVENT listener
+   * is. Returns a function that removes it.
+   */
+  onEnd(listener: (error: KeldCallError) => void): () => void {
+    if (!this.#finalized) {
+      this.#endListeners.add(listener);
+      return () => {
+        this.#endListeners.delete(listener);
+      };
+    }
+    const state = Atomics.load(this.#ctrl, STATE);
+    let removed = false;
+    setImmediate(() => {
+      if (!removed) listener(this.#terminalError(state));
+    });
+    return () => {
+      removed = true;
     };
   }
 
@@ -2334,6 +2359,20 @@ export class WorkerLink {
       clearTimeout(waiter.timer);
       waiter.reject(this.#terminalError(state));
     }
+    // In a later task, so every pending call's rejection handlers ran first.
+    setImmediate(() => {
+      const listeners = [...this.#endListeners];
+      this.#endListeners.clear();
+      for (const listener of listeners) {
+        try {
+          listener(this.#terminalError(state));
+        } catch (err) {
+          setImmediate(() => {
+            throw err;
+          });
+        }
+      }
+    });
   }
 
   #onWorkerMessage(message: FromWorker): void {
@@ -2367,6 +2406,24 @@ export class WorkerLink {
     // The Worker can no longer race on KICK, so main takes the dispatcher.
     Atomics.store(this.#ctrl, KICK, 1);
     setImmediate(() => this.#runDispatchTask());
+  }
+}
+
+/**
+ * The role's lifecycle `Quit` (GH-527 §4.9): one blocking CALL carrying
+ * `LifecycleRequest::Quit`, and the link closes the moment its REPLY (or any
+ * outcome) returns, on every OS. The close is synchronous with the return, so
+ * no record that arrives after the REPLY is delivered first: a call still
+ * pending then rejects with `KELD-IPC-022`, which callers treat as the host
+ * drain's `KELD-IPC-024` (§4.4; both terminal, neither ran). The host reads
+ * EOF at once, so its post-Quit drain ends without waiting on its backstop.
+ * Returns the host's `LifecycleResponse::Quit` bytes.
+ */
+export function quitAndCloseLink(link: WorkerLink, deadlineMs: number): Uint8Array {
+  try {
+    return link.callBlocking(LIFECYCLE_CHANNEL, new Uint8Array([0x00]), deadlineMs);
+  } finally {
+    link.close();
   }
 }
 
