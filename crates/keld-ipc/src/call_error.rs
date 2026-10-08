@@ -75,16 +75,18 @@ impl core::error::Error for CallError {}
 
 impl CallError {
     /// `KELD-IPC-023`: the host retired the caller's role generation before
-    /// this call's handler finished (GH-527 spec §4.4, criterion 6). The host
-    /// writes it only on channels whose reply waiter declares `ERR`, then
-    /// closes the generation's link.
+    /// this call's handler finished (GH-527 spec §4.4, criterion 6). Like
+    /// `KELD-IPC-022`, the call's host effect is unknown. The host writes it
+    /// only on channels whose reply waiter declares `ERR`, then closes the
+    /// generation's link.
     #[must_use]
     pub fn generation_retired() -> Self {
         Self {
             code: "KELD-IPC-023".to_owned(),
             message: "KELD-IPC-023: role generation retired before this call completed. The \
-                      role instance is being replaced or stopped: do not retry here; the \
-                      successor generation reissues the work after its own Ready."
+                      role instance is being replaced or stopped, and the call's host effect is \
+                      unknown: its handler may have run. Do not replay it, here or from the \
+                      successor generation, without an idempotency contract for that call."
                 .to_owned(),
         }
     }
@@ -176,7 +178,7 @@ mod tests {
             (
                 CallError::generation_retired(),
                 "KELD-IPC-023",
-                "do not retry here",
+                "without an idempotency contract",
             ),
             (
                 CallError::quit_drained(),

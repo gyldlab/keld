@@ -163,7 +163,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: role generation retired before this call completed
-- fix: The role instance is being replaced or stopped. Do not retry here; the successor generation reissues the work after its own Ready.
+- fix: The role instance is being replaced or stopped, and the call's host effect is unknown: its handler may have run. Do not replay it, here or from the successor generation, without an idempotency contract for that call.
 
 ## KELD-IPC-024
 

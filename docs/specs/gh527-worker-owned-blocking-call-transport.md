@@ -116,14 +116,19 @@ negative control: the one mutation that MUST make the test fail.
    criterion 5.
 7. **Quit.** (a) Given a parked blocking `Quit`, when the host accepts it, then the
    call returns the host's real `LifecycleResponse::Quit` bytes and the link closes
-   afterwards. (b) Given another blocking call still pending when the host's Quit
-   drain ends, then that call throws `KELD-IPC-024`. With the unbounded FS drain
-   (§4.9), "still pending" means a CALL the host received behind the accepted `Quit`
-   (#528 T2). Because whether an in-flight frame arrives inside the drain window is a
-   race, the deterministic proof is the keld-core router test, whose client buffers
-   the CALL before the `Quit` completes. *Negative control:* a host that
-   closes without writing the Quit REPLY makes (a) throw `KELD-IPC-022`, so a
-   client-synthesized Quit success fails (a).
+   afterwards. (b) Given another blocking call written behind the accepted `Quit`
+   before the role ends its link, then that call throws `KELD-IPC-024` and the host
+   never runs it. With the unbounded FS drain (§4.9), these are the CALLs the host
+   receives behind the accepted `Quit`. The drain ends on the role's EOF, so this
+   holds however late the host runs (#528 T2); a call that a §4.9 liveness backstop
+   overtakes throws `KELD-IPC-022`, which the caller treats as `KELD-IPC-024`. The
+   deterministic proofs are keld-core router tests: one buffers the CALL before the
+   `Quit` completes; the other stalls the drain past its idle backstop before the
+   role ends the link, and every buffered CALL still gets `KELD-IPC-024`.
+   *Negative controls:* a host that closes without writing the Quit REPLY makes (a)
+   throw `KELD-IPC-022`, so a client-synthesized Quit success fails (a); a drain that
+   checks its idle backstop before every read answers none of the stalled drain's
+   CALLs, so it fails (b).
 8. **Worker death or wedge wakes immediately.** Given a parked call with a 30 s
    deadline, in each of three arms, then `callBlocking` throws `KELD-IPC-025`, not
    `KELD-IPC-006`, and the host observes link loss and takes KEL-75's natural-crash
@@ -498,11 +503,17 @@ and updates this table in the same PR.
 | Code | Emitter | When | Message | Fix |
 |---|---|---|---|---|
 | `KELD-IPC-022` | `@keld/kipc` | the link reached EOF or an I/O error, or was closed for a `KELD-IPC-005` session-contract violation, while a call was pending, and no host `ERR` arrived for it | link closed before the host replied; no reply was received and the call's host effect is unknown | Treat the call as not answered. The role's link is gone: check the host log for the close cause, and do not retry on this link, because it cannot reconnect. |
-| `KELD-IPC-023` | `keld-ipc` (host writes it with `write_call_error`) | the host retired this role generation before the call's handler finished | role generation retired before this call completed | The role instance is being replaced or stopped. Do not retry here; the successor generation reissues the work after its own `Ready`. |
+| `KELD-IPC-023` | `keld-ipc` (host writes it with `write_call_error`) | the host retired this role generation before the call's handler finished | role generation retired before this call completed | The role instance is being replaced or stopped, and the call's host effect is unknown: its handler may have run. Do not replay it, here or from the successor generation, without an idempotency contract for that call. |
 | `KELD-IPC-024` | `keld-ipc` (host writes it with `write_call_error`) | the host accepted `Quit` and its drain ended with this call still pending | session ended by an accepted Quit before this call completed | The application is quitting. Do not issue new work; finish only the shutdown path. |
 | `KELD-IPC-025` | `@keld/kipc` | the transport Worker exited, or its heartbeat stopped for `WORKER_LIVENESS_WINDOW_MS`, while the role is open | transport Worker dead or unresponsive; the role's link is lost | The role has no link and cannot reconnect. Report the crash. The host restarts the role per its policy; check the role log for the Worker's last error. |
 | `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound (with the credit lane, its share of them, §4.7), or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, or reduce the host event rate toward this role. Retained events were delivered in order. (T4 adds "or enable the credit lane" to the registry heading when it lands.) |
 | `KELD-IPC-027` | `@keld/kipc` | a call was pending, or was issued, after the Worker processed an `abandon` that exceeded `MAX_ABANDONED_CALLS` (the expiring call itself throws `KELD-IPC-006`) | too many unanswered calls; the link was closed rather than track another abandoned id | The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect. |
+
+`KELD-IPC-023` and `KELD-IPC-024` are best effort (§4.9). `KELD-IPC-024` is guaranteed
+for a CALL the role wrote behind an accepted `Quit` before it ended the link; a call
+that a §4.9 liveness backstop overtakes sees `KELD-IPC-022` at the close instead.
+Behind an accepted `Quit` the two codes mean the same: the call is terminal and the
+host ran none of it. Callers MUST treat `KELD-IPC-024` and `KELD-IPC-022` alike there.
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
 an invalid `receive` table (§4.5), an outbound frame on channel 0, a listener or state
@@ -945,17 +956,33 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
   - *Retire* (a revocation of generation g). The pending calls are g's admitted FS
     call and a `Quit` still waiting in its FS drain (the generation records that
     `Quit` until its REPLY). The `ERR` writes and the FS handler's own terminal write
-    are ordered by the generation lock. Delivery is best effort: a link that cannot
-    carry the `ERR` is already lost, and the role sees `KELD-IPC-022`.
-    Failed-write retirements send nothing.
+    are ordered by the generation lock, so a real reply written first wins. Delivery
+    is best effort: each `ERR` write is bounded by `HOST_ANSWER_BUDGET` (one
+    `APP_LINK_READER_POLL`) instead of the writer's `APP_LINK_IO_DEADLINE`, so a role
+    that stops reading holds the generation lock for at most one budget. A write that
+    fails or times out marks the link lost: no later answer is attempted, the link
+    closes as before, and the role sees `KELD-IPC-022`. Failed-write retirements send
+    nothing.
   - *Quit* (macOS and Linux). The FS drain stays unbounded, so every admitted
     handler finishes and sends its real reply (KEL-130 durability). After the real
-    `Quit` REPLY and that drain, the reader keeps reading for one
-    `APP_LINK_READER_POLL` window (`QUIT_DRAIN_WINDOW`) or until the peer closes.
-    Each CALL received on an `ERR`-declaring channel gets `KELD-IPC-024` and is never
-    executed; an echo CALL gets no frame. The host still closes the link, so KEL-139
-    AC6's `reply -> quiesce/drain -> close` order holds. A frame still in flight
-    after the window is not pending at the host, and its call sees `KELD-IPC-022`.
+    `Quit` REPLY and that drain, the reader reads on until the role ends the link:
+    the role's EOF is the drain's normal end, and #528 T3's `WorkerLink` MUST end its
+    link after the `Quit` REPLY (half-close, then read to EOF). Each CALL received on
+    an `ERR`-declaring channel gets `KELD-IPC-024` and is never executed; an echo CALL
+    gets no frame. A frame that has already arrived is always read and answered,
+    however late the host runs. Only liveness backstops end the drain otherwise:
+    `HOST_ANSWER_BUDGET` without a byte, checked only on an idle poll, for a role that
+    never ends the link; `APP_LINK_IO_DEADLINE` in total, for one that never stops
+    sending; and an answer write that does not finish within `HOST_ANSWER_BUDGET`, for
+    one that stops reading. The host then closes the link, so KEL-139 AC6's
+    `reply -> quiesce/drain -> close` order holds.
+    The guarantee: `KELD-IPC-024` for every CALL the role wrote before it ended the
+    link, when it ends the link and keeps reading within those backstops. A call that
+    a backstop overtakes is not answered at the host and sees `KELD-IPC-022` at the
+    close. Both are terminal and neither call ran, so callers MUST treat them alike
+    (§4.4). FACT (macOS, #636): after the role's half-close, the host's
+    `shutdown(SHUT_RDWR)` returns `ENOTCONN` and sends no FIN, so the role's EOF
+    arrives when the host drops its last link handle at the end of the `Quit` tail.
     Windows keeps its existing post-`Quit` peer-close check, which treats bytes after
     the REPLY as an error, until T5 qualifies the same rule there.
 

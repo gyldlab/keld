@@ -776,7 +776,7 @@ test enumerates every pair and asserts its row.
 | O8 | `Opening` | `Destroy` | `Opening` | ERR 038 |
 | O9 | `Opening` | `Released` | `Opening` | one host diagnostic (invariant violation); ignored |
 | O10 | `Opening` | `Role loss` | `Closing` | `WindowClosing(w)`; the build result is awaited as a late input (C1, C2); no frame; no pair was ever delivered, so nothing is adopted (T9) |
-| O11 | `Opening` | `Session end` | `Closing` | as the `Role loss` row; the blocked `Create` caller gets gh527's `KELD-IPC-024` from the host drain (T10) |
+| O11 | `Opening` | `Session end` | `Closing` | as the `Role loss` row; the blocked `Create` caller gets gh527's `KELD-IPC-024` from the host drain when its CALL was written before the role ended the link, else `KELD-IPC-022` at the close; gh527 §4.4 and §4.9 make 024 best effort, and the facade treats the two alike (amended by #636) (T10) |
 | O12 | `Opening` | `Bounds fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
 | O13 | `Opening` | `Focus fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
 | O14 | `Opening` | `Maximized fact` | — | impossible: a fact names a `view`, and an `Opening` window has no view until O1 maps it; classified as an unmapped-view fact (see State facts) |
