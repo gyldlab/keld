@@ -213,6 +213,9 @@ const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting f
 const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
 const BROWSER_EXIT_WAKE_UNREGISTERED: &str =
     "the browser-exit wake could not be registered, so the release barrier would be unbounded";
+const PROBE_BROWSER_ID_MISSING: &str =
+    "the exclusive-UDF probe controller reported no browser process id";
+const PROBE_CLOSE_FAILED: &str = "the exclusive-UDF probe controller could not be closed";
 const PROFILE_MARKER: &str = "profile.owner.v1";
 const PROFILE_LEASE: &str = "profile.lock";
 const PROFILE_LIFECYCLE: &str = "profile.lifecycle.v1";
@@ -1577,7 +1580,7 @@ fn recover_windows_profile(profile: &mut SelectedWindowsProfile) -> Result<(), W
         return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
     }
 
-    match prove_exclusive_udf_released(profile)? {
+    match prove_exclusive_udf_released(profile, PROFILE_LAUNCH_DEADLINE)? {
         ExclusiveUdfRelease::Released => {}
         ExclusiveUdfRelease::Busy => {
             return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
@@ -1600,8 +1603,9 @@ enum ExclusiveUdfRelease {
     Released,
     /// `ERROR_INVALID_STATE`: another collection still holds the exclusive UDF.
     Busy,
-    /// The probe launched but could not prove release; the carried
-    /// `KELD-WV-009` names the launch bound or barrier that failed.
+    /// A probe step could not prove release: launch, observer registration
+    /// or removal, browser id, `Close`, or the exit barrier. The carried
+    /// error names the step.
     Unproven(WvError),
 }
 
@@ -1612,78 +1616,124 @@ fn prove_exclusive_udf_released_on_cleanup_sta(
         scope
             .spawn(|| {
                 let _com = initialize_com_sta()?;
-                prove_exclusive_udf_released(profile)
+                prove_exclusive_udf_released(profile, PROFILE_LAUNCH_DEADLINE)
             })
             .join()
             .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?
     })
 }
 
+/// Runs one hidden exclusive-UDF probe with `launch_budget` for environment
+/// and controller creation ([`PROFILE_LAUNCH_DEADLINE`] in production).
+///
+/// Only the host-side recovery window can fail the caller. Every probe step
+/// that cannot prove release is an [`ExclusiveUdfRelease::Unproven`] outcome
+/// (architecture 05): the scavenger retains the leaf for a later pass,
+/// while recovery and purge still fail on it.
 fn prove_exclusive_udf_released(
     profile: &SelectedWindowsProfile,
+    launch_budget: Duration,
 ) -> Result<ExclusiveUdfRelease, WvError> {
     let window = RecoveryWindow::new()?;
-    prove_exclusive_udf_released_on_hwnd(profile, window.0)
+    Ok(prove_exclusive_udf_released_on_hwnd(
+        profile,
+        window.0,
+        launch_budget,
+    ))
 }
 
 fn prove_exclusive_udf_released_on_hwnd(
     profile: &SelectedWindowsProfile,
     window: HWND,
-) -> Result<ExclusiveUdfRelease, WvError> {
+    launch_budget: Duration,
+) -> ExclusiveUdfRelease {
     // One launch budget covers environment and controller creation. The exit
     // wait below is liveness-gated and never shares it: charging a second
     // browser launch and its shutdown to one wall-clock bound is what failed
     // hosted CI (KEL-132 occurrences 2 and 3).
-    let launch_deadline = Instant::now() + PROFILE_LAUNCH_DEADLINE;
-    let environment = create_environment_for_profile_with_options_until(
+    let launch_deadline = Instant::now() + launch_budget;
+    let environment = match create_environment_for_profile_with_options_until(
         profile,
         CoreWebView2EnvironmentOptions::default(),
         launch_deadline,
-    )?;
+    ) {
+        Ok(environment) => environment,
+        Err(error) => return ExclusiveUdfRelease::Unproven(error),
+    };
     let expected_pid = Arc::new(AtomicU32::new(0));
-    let observation = observe_profile_browser_exit(
+    let observation = match observe_profile_browser_exit(
         &environment,
         Arc::clone(&expected_pid),
         None,
         ReleaseSite::Probe,
-    )?;
-    let controller = match create_controller_observed_until(&environment, window, launch_deadline) {
+    ) {
+        Ok(observation) => observation,
+        Err(error) => return ExclusiveUdfRelease::Unproven(error),
+    };
+    let outcome = probe_exclusive_udf_with_observer(
+        &environment,
+        window,
+        &expected_pid,
+        observation.receiver,
+        launch_deadline,
+    );
+    match remove_browser_exit_observer(&observation.environment, observation.token) {
+        Ok(()) => outcome,
+        Err(error) => ExclusiveUdfRelease::Unproven(error),
+    }
+}
+
+/// Launches the probe controller, closes it, and waits for its exit barrier
+/// while `receiver` is observed. The controller is closed on every path past
+/// its creation, so the probe never leaves a browser holding the UDF.
+fn probe_exclusive_udf_with_observer(
+    environment: &ICoreWebView2Environment,
+    window: HWND,
+    expected_pid: &AtomicU32,
+    receiver: Receiver<Result<(), WvError>>,
+    launch_deadline: Instant,
+) -> ExclusiveUdfRelease {
+    let controller = match create_controller_observed_until(environment, window, launch_deadline) {
         Ok(controller) => controller,
-        Err(error) if error.is_invalid_state() => {
-            remove_browser_exit_observer(&observation.environment, observation.token)?;
-            return Ok(ExclusiveUdfRelease::Busy);
-        }
+        Err(error) if error.is_invalid_state() => return ExclusiveUdfRelease::Busy,
         Err(error) => {
-            remove_browser_exit_observer(&observation.environment, observation.token)?;
-            return Ok(ExclusiveUdfRelease::Unproven(
-                WvError::WebView2RuntimeMissing {
-                    detail: error.to_string(),
-                },
-            ));
+            return ExclusiveUdfRelease::Unproven(WvError::WebView2RuntimeMissing {
+                detail: error.to_string(),
+            });
         }
     };
     // SAFETY: the controller was created on this STA for the live recovery
     // window. No navigation or content is created by this probe.
-    let webview = unsafe { controller.CoreWebView2() }
-        .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
-    let pid = webview_browser_process_id(&webview)
-        .ok_or_else(|| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
-    expected_pid.store(pid, Ordering::Release);
+    let webview = unsafe { controller.CoreWebView2() }.ok();
+    let pid = webview.as_ref().and_then(webview_browser_process_id);
     // Opened before `Close`: the kernel object, not the reusable id,
     // identifies the probe browser from here on.
-    let process = open_browser_process(pid);
-    // SAFETY: the recovery controller is live on this STA and is closed once.
-    unsafe { controller.Close() }
-        .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
+    let process = pid.and_then(open_browser_process);
+    if let Some(pid) = pid {
+        expected_pid.store(pid, Ordering::Release);
+    }
+    // SAFETY: the recovery controller is live on this STA and is closed once,
+    // whether or not its webview or browser id could be read.
+    let closed = unsafe { controller.Close() };
     drop(webview);
     drop(controller);
-    let release = ProfileReleaseWait::new(Some(observation.receiver), process);
-    let observed = wait_for_browser_exit(&release, ReleaseSite::Probe);
-    remove_browser_exit_observer(&observation.environment, observation.token)?;
-    Ok(match observed {
+    if pid.is_none() {
+        return ExclusiveUdfRelease::Unproven(profile_failure_with(
+            ProfileErrorKind::LifecycleUnproven,
+            PROBE_BROWSER_ID_MISSING,
+        ));
+    }
+    if closed.is_err() {
+        return ExclusiveUdfRelease::Unproven(profile_failure_with(
+            ProfileErrorKind::LifecycleUnproven,
+            PROBE_CLOSE_FAILED,
+        ));
+    }
+    let release = ProfileReleaseWait::new(Some(receiver), process);
+    match wait_for_browser_exit(&release, ReleaseSite::Probe) {
         Ok(()) => ExclusiveUdfRelease::Released,
         Err(error) => ExclusiveUdfRelease::Unproven(error),
-    })
+    }
 }
 
 fn delete_ephemeral_profile(profile: SelectedWindowsProfile) -> Result<(), WvError> {
@@ -1745,6 +1795,7 @@ fn delete_ephemeral_control(
 fn try_scavenge_ephemeral_profile(
     local_app_data: &Path,
     profile: EphemeralProfile,
+    launch_budget: Duration,
 ) -> Result<bool, WvError> {
     let plan = windows_profile_plan(local_app_data, WebProfileSelection::ephemeral_dev(profile))?;
     let (mut ancestor_handles, _) =
@@ -1794,7 +1845,7 @@ fn try_scavenge_ephemeral_profile(
         lifecycle: None,
         recovery_required: false,
     };
-    match prove_exclusive_udf_released(&candidate)? {
+    match prove_exclusive_udf_released(&candidate, launch_budget)? {
         ExclusiveUdfRelease::Released => {}
         // Architecture 05: a still-busy leaf stays quarantined for a later
         // pass. The same holds when this pass could not prove release: the
@@ -1819,7 +1870,12 @@ fn observe_scavenge_retained(error: &WvError) {
     let _ = error;
 }
 
-fn scavenge_ephemeral_profiles(local_app_data: &Path) -> Result<usize, WvError> {
+/// Scavenges predecessor dev-ephemeral leaves with `launch_budget` per probe
+/// ([`PROFILE_LAUNCH_DEADLINE`] in production).
+fn scavenge_ephemeral_profiles(
+    local_app_data: &Path,
+    launch_budget: Duration,
+) -> Result<usize, WvError> {
     // One old leaf is attempted during a subsequent dev host's graceful
     // teardown, after that host's own BrowserProcessExited barrier. This is a
     // bounded cleanup schedule, not a startup-path or performance claim.
@@ -1844,7 +1900,7 @@ fn scavenge_ephemeral_profiles(local_app_data: &Path) -> Result<usize, WvError> 
         let Ok(profile) = EphemeralProfile::from_namespace_segment(&name) else {
             continue;
         };
-        match try_scavenge_ephemeral_profile(local_app_data, profile) {
+        match try_scavenge_ephemeral_profile(local_app_data, profile, launch_budget) {
             Ok(true) => removed += 1,
             Ok(false) => {}
             Err(WvError::ProfileSelection(error))
@@ -2499,7 +2555,7 @@ fn scavenge_after_release(root: Option<PathBuf>) -> Result<(), WvError> {
         .name("keld-wv-profile-scavenge".to_owned())
         .spawn(move || {
             let _com = initialize_com_sta()?;
-            scavenge_ephemeral_profiles(&root).map(|_| ())
+            scavenge_ephemeral_profiles(&root, PROFILE_LAUNCH_DEADLINE).map(|_| ())
         })
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?
         .join()
@@ -3291,12 +3347,14 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY, PROFILE_LEASE,
-        PROFILE_LIFECYCLE, PROFILE_MARKER, ProfileReleaseFault, ProfileReleaseWait, ReleaseSite,
-        SavedPermission, WebView2Engine, app_window_slot_available, dacl_has_untrusted_access,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY,
+        ExclusiveUdfRelease, PROFILE_LAUNCH_DEADLINE, PROFILE_LEASE, PROFILE_LIFECYCLE,
+        PROFILE_MARKER, ProfileReleaseFault, ProfileReleaseWait, ReleaseSite, SavedPermission,
+        WebView2Engine, app_window_slot_available, dacl_has_untrusted_access,
         initial_navigation_failure_is_fatal, initialize_com_sta, initialize_process_dpi_awareness,
         open_browser_process, prepare_windows_profile_at, profile_failure, profile_failure_with,
-        purge_persistent_profile_at, runtime_version, saved_media_permission_needs_deny,
+        prove_exclusive_udf_released, purge_persistent_profile_at, runtime_version,
+        saved_media_permission_needs_deny, scavenge_ephemeral_profiles,
         try_scavenge_ephemeral_profile, wait_for_browser_exit,
         wait_for_launch_with_message_pump_until, webview2_permission_state, windows_profile_plan,
     };
@@ -4207,7 +4265,10 @@ mod tests {
         std::fs::write(plan.control_dir.join(PROFILE_MARKER), &plan.marker)
             .expect("write old marker");
         std::fs::write(plan.control_dir.join(PROFILE_LEASE), []).expect("write old lease");
-        assert!(try_scavenge_ephemeral_profile(&root, profile).expect("scavenge old leaf"));
+        assert!(
+            try_scavenge_ephemeral_profile(&root, profile, PROFILE_LAUNCH_DEADLINE)
+                .expect("scavenge old leaf")
+        );
         assert!(!plan.control_dir.exists());
 
         let corrupt = EphemeralProfile::from_host_random([18; 32]).expect("ephemeral");
@@ -4222,8 +4283,45 @@ mod tests {
             .expect("write foreign marker");
         std::fs::write(corrupt_plan.control_dir.join(PROFILE_LEASE), [])
             .expect("write corrupt lease");
-        assert!(try_scavenge_ephemeral_profile(&root, corrupt).is_err());
+        assert!(try_scavenge_ephemeral_profile(&root, corrupt, PROFILE_LAUNCH_DEADLINE).is_err());
         assert!(corrupt_plan.control_dir.exists());
+        std::fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    /// A predecessor probe that cannot prove release retains the leaf and
+    /// never fails the current host's own release, for every probe step and
+    /// not only the exit wait (architecture 05; KEL-135 review). The injected
+    /// step is the launch: a zero launch budget expires environment creation
+    /// at its first pump, before any browser launches. Oracle: the probe
+    /// outcome is `Unproven` naming the launch deadline, the scavenge pass
+    /// returns `Ok(0)`, and both leaf directories still exist.
+    #[test]
+    fn expired_probe_launch_retains_the_leaf_without_failing_the_scavenge() {
+        let _com = initialize_com_sta().expect("STA for the probe");
+        let root = create_private_test_root("scavenge-expired-probe-launch");
+        let profile = EphemeralProfile::from_host_random([19; 32]).expect("ephemeral");
+        let selection = WebProfileSelection::ephemeral_dev(profile);
+        let predecessor = prepare_windows_profile_at(&root, selection).expect("predecessor leaf");
+        let plan = predecessor.plan.clone();
+        match prove_exclusive_udf_released(&predecessor, std::time::Duration::ZERO)
+            .expect("a probe step that cannot prove release never fails the caller")
+        {
+            ExclusiveUdfRelease::Unproven(error) => assert!(
+                error.to_string().contains("launch deadline expired"),
+                "the retention must name the launch deadline: {error}"
+            ),
+            other => panic!("expected an unproven probe, got {other:?}"),
+        }
+        drop(predecessor);
+        assert!(plan.user_data_dir.exists(), "the leaf outlives its owner");
+
+        let removed = scavenge_ephemeral_profiles(&root, std::time::Duration::ZERO)
+            .expect("an unproven probe never fails the scavenge pass");
+        assert_eq!(removed, 0, "nothing may be deleted on an unproven probe");
+        assert!(
+            plan.control_dir.exists() && plan.user_data_dir.exists(),
+            "the leaf must be retained for a later pass"
+        );
         std::fs::remove_dir_all(&root).expect("remove test root");
     }
 
