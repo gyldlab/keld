@@ -11,6 +11,10 @@ Amended by gh566 (#639), [`gh566-corpus-manifest-owner.md`](gh566-corpus-manifes
 - A3, the §4.5 migration unit.
 - A4, the §5 X01-T4 file list.
 
+Amended again by gh566 T2 (#640), in rule 8: execution admission and the censuses live
+in two sibling support modules, `corpus_admission.rs` and `corpus_census.rs`, split from
+the owner under gh566 D1.
+
 ## 1. Goal & non-goals
 
 The first-proof conformance entries (F01-T1, F03-T1, F04-T1 and the other direct
