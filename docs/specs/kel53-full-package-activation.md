@@ -2048,12 +2048,13 @@ accepted; the §7 row repeats ten in-session updates.
 
 *Claim scope and residuals.* Only this host's own two Jobs are cleared. An outer Job
 that bounds the host, such as a launcher's or CI's kill-on-close Job, still bounds the
-candidate, and nothing here claims otherwise. A same-user process cannot join H, whose
-handle is unnamed, non-inheritable and held only by the host; what such a process does
-to the candidate is outside the `PerUserDirect` boundary (criterion 1). A keeper or a
-criterion-10 post-exit helper that the host starts inherits H and is outside A: B does
-not cover it, and the census would terminate it as a member outside the family. S6d's
-own specification solves that at the root before S6d starts (§6, §10).
+candidate, and nothing here claims otherwise. Nothing in Keld hands H to another
+process; a same-user process that duplicates the handle out of the host
+(`PROCESS_DUP_HANDLE`) can join H, and what it does to the candidate is outside the
+`PerUserDirect` boundary (criterion 1). A keeper or a criterion-10 post-exit helper
+that the host starts inherits H and is outside A: B does not cover it, and the census
+would terminate it as a member outside the family. S6d's own specification solves that
+at the root before S6d starts (§6, §10).
 
 *Rejected alternatives.* Option A, breakaway from H: `JOB_OBJECT_LIMIT_BREAKAWAY_OK` is
 a property of the whole Job, and the qualification showed that any direct member, the
