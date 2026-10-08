@@ -1,7 +1,15 @@
 # Spec: first-proof evidence rules (X01-T3)
 
 Status: approved
-Linear: GH-532 (#517) · Owner: @0monish · Updated: 2026-10-07
+Linear: GH-532 (#517) · Owner: @0monish · Updated: 2026-10-08
+
+Amended by gh566 (#639), [`gh566-corpus-manifest-owner.md`](gh566-corpus-manifest-owner.md)
+§2, in four places, each marked in the text:
+
+- A1, the subject of AC17.
+- A2, the v1 cell field `platforms`, in rule 8, the §4.2 example and the owner sketch.
+- A3, the §4.5 migration unit.
+- A4, the §5 X01-T4 file list.
 
 ## 1. Goal & non-goals
 
@@ -180,9 +188,12 @@ scorer and parser (task T2). "v1 manifest" means a manifest carrying
 17. **Pending is reported apart from divergence.** Given a corpus with one cell that
     carries `implementing_ticket` and one that carries `intentional_divergence`
     (both `expected_verdict: fail`, so both records say `result: fail`), when the
-    lifecycle evidence report renders, then it counts and labels them separately,
-    as "Pending implementation" (listing the ticket keys) and "Intentional
-    divergence". The split comes from the manifest key, because the records cannot
+    report renders through the shared `FailSplit` renderer, then it counts and labels
+    them separately, as "Pending implementation" (listing the ticket keys) and
+    "Intentional divergence". Every v1 report renders its fail counts through
+    `FailSplit`, and a source census enforces that. The frozen v0 lifecycle report
+    cannot carry a pending cell, so it keeps its own column (amended by gh566 (#639),
+    A1). The split comes from the manifest key, because the records cannot
     tell the two apart. *Negative control:* a report that lumps them into one count
     or one label fails, and so does one that labels a pending cell "Intentional
     divergence" or shows it as ▲.
@@ -402,6 +413,13 @@ code, so a manifest cannot admit its own targets. Test targets include it with
 keld-ipc convention. X01-T4 (#566) implements it and migrates `lifecycle_corpus.rs`
 and `lifecycle_evidence_report.rs` byte-for-byte.
 
+Each v1 cell also declares `platforms`, a non-empty set of distinct platform tokens
+(`macos`, `windows`, `linux`). The set is bounded by the platforms the code registry
+admits for the corpus. Execution admission requires exactly one passing mapped case
+on each declared platform. On an undeclared platform the cell is an unrun lane: it is
+reported `unknown` (rule 4), and any record for it says `result: unknown` (amended by
+gh566 (#639), A2).
+
 Example v1 manifest with one cited, passing cell. The pin, URL, quote, digest and
 test name are real. The corpus id is illustrative, because the first consumer
 chooses it:
@@ -432,6 +450,7 @@ chooses it:
         "quote_sha256": "sha256:da3a396b4213c28480a7800d50256736f7fcc6d5dda4bb0cb3fa570e1d63291a"
       },
       "expected_verdict": "pass",
+      "platforms": ["macos"],
       "test_path": "crates/keld-compat/tests/electron_lifecycle.rs",
       "test_name": "when_ready_does_not_resolve_before_host_ready_event",
       "negative_control": "Replacing whenReady with Promise.resolve() makes the mapped conformance test fail before host Ready."
@@ -459,6 +478,7 @@ pub struct CellV1 {
     pub intentional_divergence: Option<String>,
     #[serde(default)]
     pub implementing_ticket: Option<String>, // addition
+    pub platforms: Vec<String>,              // addition (amended by gh566 (#639), A2)
     pub test_path: String,
     pub test_name: String,
     pub negative_control: String,
@@ -538,8 +558,9 @@ v1 fallback reader instead. The format review gate on T2 (§8) checks this decis
 - Platform notes: the rules are platform-neutral, and the first consumer is macOS
   first-proof cells. Records are scored per platform.
 - Runtime seam: none.
-- Migration unit: the callers are `tests/lifecycle_corpus.rs` and
-  `tests/lifecycle_evidence_report.rs`. Persisted state is the committed
+- Migration unit: the callers are `tests/lifecycle_corpus.rs`,
+  `tests/lifecycle_evidence_report.rs` and the new `tests/corpus_registry/main.rs`
+  (amended by gh566 (#639), A3). Persisted state is the committed
   `fixtures/lifecycle-corpus/*` bytes, which stay unchanged. There is no temporary
   adapter. The v0-shape reader is the retained compatibility facade, and its removal
   condition is KEL-237 re-recording that corpus in the v1 shape with fresh receipts.
@@ -557,7 +578,8 @@ v1 fallback reader instead. The format review gate on T2 (§8) checks this decis
   `just llms` and passes `just llms-check`.
 - Implement in (X01-T4): `crates/keld-compat/tests/support/corpus_manifest.rs`,
   `crates/keld-compat/tests/lifecycle_corpus.rs`,
-  `crates/keld-compat/tests/lifecycle_evidence_report.rs`. The `doc-snapshots/` files
+  `crates/keld-compat/tests/lifecycle_evidence_report.rs`, and
+  `crates/keld-compat/tests/corpus_registry/` (amended by gh566 (#639), A4). The `doc-snapshots/` files
   are committed by the change that adds a v1 corpus, not by X01-T4, whose AC16 cases
   use in-test snapshots.
 - Must not touch: the rest of `crates/keld-compat/src/` (other vocabularies, the
