@@ -10,8 +10,10 @@
 
 use std::process::Command;
 
+use keld_compat::evidence::{CellKey, Platform};
+
 use crate::corpus_manifest::{
-    Cell, Corpus, CorpusError, Registration, Runner, TestTarget, workspace_root,
+    Cell, Corpus, CorpusError, Registration, Runner, TestTarget, host_platform, workspace_root,
 };
 
 /// Require exactly one successful libtest pretty-format case, not a substring.
@@ -176,35 +178,51 @@ fn run_bun(path: &str) -> Result<String, CorpusError> {
     Ok(stderr)
 }
 
-/// Pure admission check: every cell mapped to a `kind` target has exactly one passing
-/// case in that target's output. A green runner with a missing case fails closed.
+/// Cells whose mapped test is not run on this host: their lane is `unknown`, never
+/// passed and never silently skipped (gh566 D13).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdmissionReport {
+    /// (corpus id, cell) pairs that do not declare the host platform.
+    pub unknown: Vec<(String, CellKey)>,
+}
+
+/// Pure admission check on `host`: every cell mapped to a `kind` target that declares
+/// `host` has exactly one passing case in that target's output. A green runner with a
+/// missing, skipped or `cfg`-gated case fails closed.
 pub fn check_admission(
     corpora: &[&Corpus],
+    host: Platform,
     kind: RunnerKind,
     outputs: &[RunnerOutput],
-) -> Result<(), CorpusError> {
+) -> Result<AdmissionReport, CorpusError> {
+    let mut report = AdmissionReport::default();
     for corpus in corpora {
-        check_cells(
+        for key in check_cells(
             corpus.id(),
             corpus.cells(),
             corpus.registration(),
+            host,
             kind,
             outputs,
-        )?;
+        )? {
+            report.unknown.push((corpus.id().to_owned(), key));
+        }
     }
-    Ok(())
+    Ok(report)
 }
 
-/// Admission over one corpus's cells. A cell whose path maps no registered target fails
-/// closed (`UnregisteredTarget`), even though `Corpus::parse` already rejects one:
-/// admission never skips a cell silently.
+/// Admission over one corpus's cells; returns the cells that do not declare `host`. A
+/// cell whose path maps no registered target fails closed (`UnregisteredTarget`), even
+/// though `Corpus::parse` already rejects one: admission never skips a cell silently.
 pub fn check_cells(
     corpus_id: &str,
     cells: &[Cell],
     registration: &Registration,
+    host: Platform,
     kind: RunnerKind,
     outputs: &[RunnerOutput],
-) -> Result<(), CorpusError> {
+) -> Result<Vec<CellKey>, CorpusError> {
+    let mut unknown = Vec::new();
     for cell in cells {
         let target = registration
             .targets
@@ -216,6 +234,10 @@ pub fn check_cells(
                 test_path: cell.test_path.clone(),
             })?;
         if runner_kind(target.runner) != kind {
+            continue;
+        }
+        if !cell.platforms.contains(&host) {
+            unknown.push(cell.key.clone());
             continue;
         }
         let passed = outputs
@@ -234,17 +256,17 @@ pub fn check_cells(
             });
         }
     }
-    Ok(())
+    Ok(unknown)
 }
 
-/// Runs and admits every libtest-mapped cell of `corpora`.
-pub fn admit_libtest(corpora: &[&Corpus]) -> Result<(), CorpusError> {
+/// Runs and admits every libtest-mapped cell of `corpora` on this host.
+pub fn admit_libtest(corpora: &[&Corpus]) -> Result<AdmissionReport, CorpusError> {
     let outputs = run_targets(corpora, RunnerKind::Libtest)?;
-    check_admission(corpora, RunnerKind::Libtest, &outputs)
+    check_admission(corpora, host_platform(), RunnerKind::Libtest, &outputs)
 }
 
-/// Runs and admits every Bun-mapped cell of `corpora`.
-pub fn admit_bun(corpora: &[&Corpus]) -> Result<(), CorpusError> {
+/// Runs and admits every Bun-mapped cell of `corpora` on this host.
+pub fn admit_bun(corpora: &[&Corpus]) -> Result<AdmissionReport, CorpusError> {
     let outputs = run_targets(corpora, RunnerKind::Bun)?;
-    check_admission(corpora, RunnerKind::Bun, &outputs)
+    check_admission(corpora, host_platform(), RunnerKind::Bun, &outputs)
 }

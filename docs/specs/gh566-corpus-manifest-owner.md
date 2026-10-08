@@ -594,6 +594,19 @@ Two outcomes are known and fail closed:
   scoped to that path, in that consumer's PR. *Negative control:* CRLF bytes written to
   a temporary file and checked under a snapshot path are rejected. LF bytes are
   accepted.
+- **A checkout filter** (amended in T3, #646). The check-in comparison misses attributes
+  that act at checkout: `eol=crlf`, `ident`, `working-tree-encoding` and `filter`.
+  These pass locally and fail only on another clone.
+  - `Corpus::load` also runs `git check-attr` once per page and rejects any transforming
+    attribute with `SnapshotCheckoutFilter`. It also rejects an `eol` that is not `lf`
+    while `text` is not unset, because `core.autocrlf` could then convert the page.
+  - The check is by path, so it works offline and before the page is committed.
+  - Rejected alternative: comparing the working-tree bytes with the committed blob
+    (`git cat-file blob <commit>:<path>`). A page being added has no committed blob yet,
+    so that check could not run before the commit that adds it.
+  - *Negative control:* in a throwaway repository, `eol=crlf`, `!eol` with
+    `text=auto`, `ident`, `working-tree-encoding=UTF-16` and `filter=lfs` are each
+    rejected, while `text=auto eol=lf` and `-text` are accepted.
 - A cited page with a `mermaid` fence would be held to Keld's diagram policy (F7). The
   consumer then scopes `tools/mermaid_docs.rs`, which is a CI-tool change with its own
   review. Neither page the first consumers cite has one (F7).
@@ -1203,6 +1216,22 @@ Two consumer-specific notes:
   - `crates/keld-compat/tests/support/corpus_census.rs` (new in T2). It holds the
     owner and fixture censuses, which were split for the same reason when the owner
     crossed 1,500 lines again;
+  - `crates/keld-compat/tests/support/corpus_{error,citation,runs}.rs` (new in T3).
+    These are child modules of the owner, declared and included by the owner itself,
+    so consumers still include only the owner. T3 places each new responsibility that
+    has its own invariant in one of them, planned up front to keep the owner under
+    1,500 lines (D1):
+    - the `CorpusError` vocabulary;
+    - citations and snapshots (D5);
+    - record runs and `FailSplit` (D7, D11).
+
+    Manifest parsing (both shapes), the digest, the pin table, the cell rules and the
+    registry stay in the owner (amended in T3);
+  - `crates/keld-compat/tests/corpus_registry/rules/v1_{fixture,manifest,snapshots,runs}.rs`
+    (new in T3). The v1 rule cases are submodules of `rules`, so their names read
+    `rules::v1_manifest::…`, `rules::v1_snapshots::…` and `rules::v1_runs::…`. The C9
+    report census lives with the other censuses, as
+    `registry::report_census_rejects_reports_that_count_fails_themselves`;
   - `crates/keld-compat/tests/corpus_registry/{main,registry,rules}.rs` (new);
   - `crates/keld-compat/tests/lifecycle_corpus.rs`;
   - `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
@@ -1218,7 +1247,12 @@ Two consumer-specific notes:
   - `.gitattributes`, `.editorconfig` and `tools/`. There is one exception:
     `tools/ci-inputs.json` registers the support modules as Rust readers and rebinds
     its digests. Its `rust_source_census` fails closed on any new crate file, so T2
-    needs this edit (amended in T2, #640);
+    needs this edit (amended in T2, #640). In T3, the `corpus_citation.rs` reader also
+    gains the `.gitattributes` input edge, because its D5 check runs
+    `git hash-object`. `tools/test_ci_local.py` gains the router contract case
+    `test_gitattributes_selects_keld_compat_through_its_declared_read`. Its negative
+    control: without the edge, a known `.gitattributes` input would select no Rust
+    test lane;
   - any part of gh532 other than the A1–A4 passages named above.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
