@@ -39,6 +39,13 @@ ci-full-inventory: ci-policy-full typescript fmt-check clippy test doc deny
 ci-route:
     tools/ci_changes.sh local
 
+# Hosted CI runs every ci-policy gate (#650) except two that need the real
+# `just` executable, which hosted runners deliberately do not install:
+# hooks-test (it runs `just hooks-install`) and ci-router-test's
+# test_ci_local.py ExecutorTests (they drive real recipes). The rest of
+# test_ci_local.py runs hosted through tools/ci_changes_test.sh. agent-context's
+# workspace.py check also runs hosted, but only a developer checkout has task
+# records for it to validate.
 [parallel]
 ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
@@ -68,62 +75,7 @@ typescript:
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    fail=0
-    if [[ ! -f ".agents/index.md" ]]; then
-        echo "error: .agents/index.md is missing (create the agent playbook router)"
-        fail=1
-    fi
-    for playbook in testing.md research.md dependencies.md; do
-        if [[ ! -f ".agents/$playbook" ]]; then
-            echo "error: .agents/$playbook is missing (restore the expected agent playbook)"
-            fail=1
-        elif [[ -f ".agents/index.md" ]] && ! grep -Fq "($playbook)" ".agents/index.md"; then
-            echo "error: .agents/index.md does not link $playbook (add it to the task router)"
-            fail=1
-        fi
-    done
-    matcher='allow\([[:space:]]*unsafe_code[[:space:]]*\)|unsafe[[:space:]]*(extern|fn|impl|trait|\{)'
-    # String fixtures — do not plant unsafe in crates/ just to exercise the matcher.
-    # Arrays (not heredocs): just 1.58+ still lexes heredoc bodies as justfile syntax.
-    must_match=(
-        '#[allow(unsafe_code)]'
-        '#[allow( unsafe_code )]'
-        'unsafe extern "C" fn f()'
-        'unsafe fn f()'
-        'unsafe impl Foo {}'
-        'unsafe trait Bar {}'
-        'unsafe { }'
-        'unsafe{'
-    )
-    for sample in "${must_match[@]}"; do
-        if ! printf '%s\n' "$sample" | grep -E -q "$matcher"; then
-            echo "error: agents-md matcher missed fixture: $sample"
-            fail=1
-        fi
-    done
-    must_not_match=(
-        'fn safe() {}'
-        '#[allow(dead_code)]'
-        'extern "C" fn f()'
-    )
-    for sample in "${must_not_match[@]}"; do
-        if printf '%s\n' "$sample" | grep -E -q "$matcher"; then
-            echo "error: agents-md matcher false-positive: $sample"
-            fail=1
-        fi
-    done
-    files=$(grep -R -l -E "$matcher" crates --include='*.rs' || true)
-    crates=$(printf '%s\n' "$files" | awk -F/ '$1=="crates" && NF>=2 {print $2}' | sort -u)
-    for crate in $crates; do
-        if [[ ! -f "crates/$crate/AGENTS.md" ]]; then
-            echo "error: crates/$crate uses unsafe but has no AGENTS.md (root AGENTS.md § Working invariants)"
-            fail=1
-        fi
-    done
-    if [[ "$fail" -ne 0 ]]; then exit 1; fi
-    echo "agents-md ok"
+    tools/agents_md.sh
 
 # Live Git publication history/ancestry is not a tracked-file diff input.
 audit-docs: audit-docs-test
