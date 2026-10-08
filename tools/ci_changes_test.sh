@@ -23,7 +23,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os|rust_documentation_only)=)' <<<"$actual")"
+    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os|rust_documentation_only|doctest|doctest_packages)=)' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -107,6 +107,21 @@ expect_output_package_token() {
     package_line="$(grep "^${output_name}=" <<<"$actual")"
     if ! grep -Eq "(^| )${token}( |$)" <<<"${package_line#"${output_name}"=}"; then
         echo "FAIL: $label: ${output_name} does not contain $token" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
+expect_output_package_absent() {
+    local label="$1"
+    local output_name="$2"
+    local token="$3"
+    local actual="$4"
+    local line
+    line="$(grep "^${output_name}=" <<<"$actual")"
+    if grep -Eq "(^| )${token}( |$)" <<<"${line#"${output_name}"=}"; then
+        echo "FAIL: $label: ${output_name} unexpectedly contains $token" >&2
         printf '%s\n' "$actual" >&2
         exit 1
     fi
@@ -351,6 +366,32 @@ expect_exact_output "TypeScript consumer change runs on every OS" check_os "$che
 expect_exact_output "workflow edit runs on every OS" check_os "$check_os_all" "$workflow_codeql"
 expect_exact_output "unknown path runs on every OS" check_os "$check_os_all" "$unknown_codeql"
 
+# #632: doctests run for exactly the selected packages that have a library
+# target; bin-only packages have none and `cargo test --doc` rejects them.
+ipc_doctest="$(result_for_paths crates/keld-ipc/src/codec.rs)"
+expect_exact_output "IPC source selects the doctest lane" doctest true "$ipc_doctest"
+expect_output_package_token "IPC source doctests keld-ipc" doctest_packages keld-ipc "$ipc_doctest"
+expect_output_package_token "IPC source doctests its library dependent keld-cli" doctest_packages keld-cli "$ipc_doctest"
+expect_output_package_absent "IPC source does not doctest bin-only keld-host" doctest_packages keld-host "$ipc_doctest"
+expect_package_token "IPC source still tests keld-host" keld-host "$ipc_doctest"
+expect_exact_output "CLI source doctests keld-cli alone" doctest_packages keld-cli "$cli_source"
+expect_exact_output "reader-doc PR doctests its reader" doctest_packages keld-cli "$reader_doc_pr"
+# Negative controls: a bin-only package inside the selection is dropped, and a
+# no-Rust diff selects no doctest. (Every crates/* path also reaches keld-cli
+# through the registry edge, so the all-bin-only case uses the fake metadata
+# repository below, whose packages have no library target.)
+host_source="$(result_for_paths crates/keld-host/src/main.rs)"
+expect_exact_output "keld-host change still tests keld-cli and keld-host" packages "keld-cli keld-host" "$host_source"
+expect_exact_output "keld-host change doctests only the library keld-cli" doctest_packages keld-cli "$host_source"
+expect_exact_output "docs-only PR skips the doctest lane" doctest false "$docs_only_pr"
+expect_empty_output "docs-only PR doctests nothing" doctest_packages "$docs_only_pr"
+# Fallbacks doctest every library package.
+for selection in "$unknown_codeql" "$workflow_codeql"; do
+    expect_exact_output "fallback selects the doctest lane" doctest true "$selection"
+    expect_exact_output "fallback doctests every library package" doctest_packages \
+        "keld-cli keld-compat keld-core keld-guard keld-ipc keld-native keld-pack keld-runtime keld-update keld-wv" "$selection"
+done
+
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
 expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
 
@@ -558,6 +599,8 @@ fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\
 expect_flags "pull-request base/head classifies the actual diff" "$fake_runtime_flags" "$pr_result"
 expect_package_token "pull-request base/head selects changed package" keld-runtime "$pr_result"
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
+expect_exact_output "Rust selection without a library target selects no doctest" doctest false "$pr_result"
+expect_empty_output "Rust selection without a library target doctests nothing" doctest_packages "$pr_result"
 
 # A backslash is a legal Unix filename byte, not a path separator. On Unix,
 # prove ingestion preserves an embedded backslash. Windows cannot create this

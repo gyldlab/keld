@@ -34,14 +34,15 @@ require_routed_result() {
     esac
 }
 
-# Argument layout (30): 1 change router; 2-10 core job results; 11-18 lane
+# Argument layout (32): 1 change router; 2-10 core job results; 11-18 lane
 # router outputs; 19-21 CodeQL rust, javascript-typescript and actions job
 # results; 22-24 their router outputs; 25 dependency review; 26 workspace
 # contracts job result; 27 its router output; 28 the triggering event name;
-# 29 the router's rust_documentation_only output; 30 its check_os output.
+# 29 the router's rust_documentation_only output; 30 its check_os output;
+# 31 doctest job result; 32 its router output.
 check_results() {
-    if [[ "$#" -ne 30 ]]; then
-        fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, the workspace contracts result and router output, the event name, and the rust_documentation_only and check_os router outputs, got $#; restore the required job's complete needs and applicability handoff."
+    if [[ "$#" -ne 32 ]]; then
+        fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, the workspace contracts result and router output, the event name, the rust_documentation_only and check_os router outputs, and the doctest result and router output, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
 
@@ -75,6 +76,12 @@ check_results() {
     require_routed_result "workspace path and process contracts" "${26}" "${27}" || return 1
     require_push_codeql "${28}" "${22}" "${23}" "${24}" || return 1
     require_check_os "${11}" "${29}" "${30}" || return 1
+    # Doctests are a Rust lane (#632): selected only within a Rust selection.
+    if [[ "${32}" == true && "${11}" != true ]]; then
+        fail "doctests were selected without a Rust selection; the router selects them only for Rust packages with a library target."
+        return 1
+    fi
+    require_routed_result "doctests" "${31}" "${32}" || return 1
 }
 
 # A push to main must analyse every CodeQL language; this does not trust the
@@ -148,6 +155,10 @@ normalize_self_test_args() {
     # selection, if any, ran on every OS.
     if [[ "${#args[@]}" -eq 27 ]]; then
         args=("${args[@]}" pull_request false "$ALL_CHECK_OS")
+    fi
+    # Rows before the doctest lane had no such job: it is skipped.
+    if [[ "${#args[@]}" -eq 30 ]]; then
+        args=("${args[@]}" skipped false)
     fi
     normalized_args=("${args[@]}")
 }
@@ -297,6 +308,31 @@ push_and_check_os_self_test() {
     echo "ok: push CodeQL selection and check OS list are checked"
 }
 
+doctest_self_test() {
+    # Rust selected (fmt and check succeed) with every other lane skipped.
+    local -a rust_row=(success success success skipped skipped skipped skipped success skipped skipped
+        true false false false false false false false
+        skipped skipped skipped false false false success skipped false pull_request false "$ALL_CHECK_OS")
+    expect_pass "selected doctests succeed" "${rust_row[@]}" success true
+    expect_pass "a Rust selection without a library package skips doctests" "${rust_row[@]}" skipped false
+    # Negative controls for the two rows above.
+    expect_fail "selected doctests cannot be skipped" "${rust_row[@]}" skipped true
+    expect_fail "unselected doctests must not run" "${rust_row[@]}" success false
+    local result
+    for result in failure cancelled missing ''; do
+        expect_fail "selected doctests '$result' are not evidence" "${rust_row[@]}" "$result" true
+    done
+    expect_fail "invalid doctest applicability is not evidence" "${rust_row[@]}" skipped missing
+    # Doctests are a Rust lane: they cannot be selected without Rust.
+    expect_fail "doctests selected without Rust are not evidence" \
+        "${docs_only_prefix[@]}" skipped skipped skipped false false false success skipped false \
+        pull_request false "$ALL_CHECK_OS" success true
+    if check_results "${rust_row[@]}" success >/dev/null 2>&1; then
+        fail "missing doctest route handoff was accepted"
+    fi
+    echo "ok: doctest applicability is checked"
+}
+
 self_test() {
     expect_pass "all applicable jobs succeed" \
         success success success success success success success success success \
@@ -365,6 +401,7 @@ self_test() {
     codeql_self_test
     workspace_self_test
     push_and_check_os_self_test
+    doctest_self_test
 
     echo "ci-required contract tests ok"
 }
