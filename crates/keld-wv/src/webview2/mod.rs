@@ -2362,7 +2362,7 @@ impl Drop for BrowserExitWake {
         // INVALID_HANDLE_VALUE blocks until an in-flight callback has
         // returned, and this is never called from the callback thread.
         // Contract:
-        // https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-unregisterwaitex
+        // https://learn.microsoft.com/windows/win32/api/threadpoollegacyapiset/nf-threadpoollegacyapiset-unregisterwaitex
         if unsafe { UnregisterWaitEx(self.wait, Some(INVALID_HANDLE_VALUE)) }.is_ok() {
             // SAFETY: the box was leaked by `register`; after the blocking
             // unregistration no callback can observe it, so it is reclaimed
