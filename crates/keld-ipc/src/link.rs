@@ -1452,6 +1452,59 @@ mod tests {
         assert!(err.to_string().contains("KELD-IPC-001"), "{err}");
     }
 
+    /// GH-528 (#636 follow-up): after the peer's half-close, this side's
+    /// `shutdown_app_link` still sends its FIN, so the peer reads EOF while
+    /// this side's descriptors stay open. XNU's `soshutdownlock_final`
+    /// returns `ENOTCONN` for `SHUT_RDWR` once the read half is shut and
+    /// skips the write half (apple-oss-distributions/xnu `f6217f89`,
+    /// `bsd/kern/uipc_socket.c`), so the write half goes first. The probes
+    /// are nonblocking reads, so the result does not depend on a timeout.
+    /// *Negative control:* `shutdown(Both)` leaves the peer at `WouldBlock`
+    /// and returns `ENOTCONN`.
+    #[test]
+    #[cfg(unix)]
+    fn shutdown_app_link_after_peer_half_close_still_sends_eof() {
+        use std::io::Read as _;
+
+        let (host, peer) = connected_pair();
+        let mut byte = [0_u8; 1];
+        peer.shutdown(Shutdown::Write).expect("peer half-close");
+        assert_eq!((&host).read(&mut byte).expect("host reads EOF"), 0);
+        let shutdown = host.shutdown_app_link();
+        peer.set_nonblocking(true).expect("nonblocking probe");
+        let probe = (&peer).read(&mut byte);
+        assert!(
+            matches!(probe, Ok(0)),
+            "the peer reads this side's EOF while its descriptor is open: {probe:?}"
+        );
+        shutdown.expect("an already-shut read half is success");
+        host.shutdown_app_link()
+            .expect("a second shutdown is idempotent");
+    }
+
+    /// The write-then-read order keeps the read half: a silent peer still
+    /// gets EOF, and another clone of this side reads EOF too, so a local
+    /// reader is released without the peer's help.
+    #[test]
+    #[cfg(unix)]
+    fn shutdown_app_link_shuts_both_halves_for_a_silent_peer() {
+        use std::io::Read as _;
+
+        let (host, peer) = connected_pair();
+        let local = host.try_clone().expect("local reader clone");
+        host.shutdown_app_link().expect("shutdown both halves");
+        let mut byte = [0_u8; 1];
+        peer.set_nonblocking(true).expect("nonblocking peer probe");
+        assert_eq!((&peer).read(&mut byte).expect("peer reads EOF"), 0);
+        local
+            .set_nonblocking(true)
+            .expect("nonblocking local probe");
+        assert_eq!(
+            (&local).read(&mut byte).expect("a local clone reads EOF"),
+            0
+        );
+    }
+
     #[test]
     fn interruptible_read_stops_on_flag_without_peer_close() {
         // Win32 clone-shutdown does not wake a local blocking read

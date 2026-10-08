@@ -7966,6 +7966,67 @@ mod tests {
         t.router.shutdown().expect("router shutdown after Quit");
     }
 
+    /// GH-528 (#636 follow-up): a role that half-closes after its Quit REPLY
+    /// reads EOF from the host's link close itself, before the guardian is
+    /// asked to stop it. The Quit tail sends the guardian `Shutdown` only
+    /// after the link close (KEL-139 AC6), and the test does not acknowledge
+    /// it until after the probe, so neither a kill nor the host dropping its
+    /// link handles can have produced this EOF. The probe is a nonblocking
+    /// read, so the result does not depend on a timeout. *Negative control:*
+    /// `shutdown(Both)` in `shutdown_app_link` is `ENOTCONN` after the
+    /// half-close on macOS and sends no FIN, so the probe reads `WouldBlock`.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
+        use std::io::Read as _;
+
+        let (t, mut client) = guarded_test_router();
+        write_quit_call(&mut client, 80);
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
+        assert_eq!(
+            (quit.kind, quit.channel, quit.corr),
+            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(80))
+        );
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("the role ends the link after the Quit REPLY");
+
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the Quit tail reached the guardian after the link close")
+        else {
+            panic!("unexpected guardian command after the Quit REPLY");
+        };
+        client.set_nonblocking(true).expect("nonblocking probe");
+        let mut byte = [0_u8; 1];
+        let probe = client.read(&mut byte);
+        assert!(
+            matches!(probe, Ok(0)),
+            "the role reads the host's EOF before the guardian stops it: {probe:?}"
+        );
+        client.set_nonblocking(false).expect("blocking link");
+
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        t.router.shutdown().expect("router shutdown after Quit");
+    }
+
     /// GH-528 T2 (gate review of #636, L2): a peer that stops reading cannot
     /// hold a retirement, and its generation lock, for the writer's deadline.
     /// The host-to-role direction is full before retirement and nothing reads
