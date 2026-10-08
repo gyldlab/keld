@@ -557,7 +557,8 @@ fn quit_closes_the_link_right_after_the_reply() {
     let (quit, quit_payload) = read_call(&mut stream);
     assert_eq!(quit.channel, LIFECYCLE_CHANNEL, "{quit:?}");
     assert_eq!(quit_payload, [0x00], "LifecycleRequest::Quit");
-    host_reply(&mut stream, quit, b"quit-reply");
+    // `LifecycleResponse::Quit`: the one REPLY the Quit accepts.
+    host_reply(&mut stream, quit, &[0x00]);
     let after_reply = read_until_link_loss(&mut stream);
     assert!(
         after_reply.is_empty(),
@@ -576,11 +577,40 @@ fn quit_closes_the_link_right_after_the_reply() {
     expect_report(
         &output,
         &[
-            ("quit", "quit-reply"),
+            ("quit", "returned"),
             (
                 "order",
                 "quit:returned,pending:KELD-IPC-022,end:KELD-IPC-022",
             ),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// Fable review of #643: a Worker wedged while it holds `KICK` cannot leave
+/// a closed link's promises unsettled or keep the role alive. After
+/// `close()`, the pending call rejects with `KELD-IPC-022` and `onEnd` fires
+/// within four event-loop tasks (a state check, not a duration), and the
+/// role exits once the Worker is terminated `APP_LINK_IO_DEADLINE_MS` after
+/// the link finalized. *Negative control:* `close()` requesting dispatch by
+/// `KICK`'s compare-and-exchange leaves the pending call and `onEnd` unsettled
+/// (`settled-after-close` is empty).
+#[test]
+fn close_settles_a_link_whose_worker_wedged_holding_kick() {
+    let (mut stream, role) = start("wedged-kick");
+    long_reads(&stream);
+    read_call_named(&mut stream, "pending");
+    host_event(&mut stream, 0, 8);
+    let _ = read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            (
+                "settled-after-close",
+                "pending:KELD-IPC-022,end:KELD-IPC-022",
+            ),
+            ("worker-ended", "true"),
             ("done", "true"),
         ],
     );

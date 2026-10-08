@@ -307,10 +307,10 @@ fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
         AppWindowCommand::Quit
     );
     let report = role.finish();
-    let expected = hex_of(&encode(&LifecycleResponse::Quit).expect("encode Quit response"));
+    // The role accepted the real `LifecycleResponse::Quit` REPLY.
     assert_eq!(
-        report_value(&report, "quit-hex"),
-        Some(expected.as_str()),
+        report_value(&report, "quit"),
+        Some("returned"),
         "{report:?}"
     );
     assert_eq!(report_value(&report, "end-code"), Some("KELD-IPC-022"));
