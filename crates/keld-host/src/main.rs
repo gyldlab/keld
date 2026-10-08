@@ -97,11 +97,17 @@ fn main() {
         process::exit(1);
     }
 
+    // The capability is kept until the host exits; nothing closes its handle
+    // (KEL-53 §4 "Candidate release after commit"). S6c adds the one
+    // `release_for_exit` call on the committed `PerUserDirect` exit path.
     #[cfg(windows)]
-    if let Err(error) = keld_runtime::windows_job::install_host_death_job() {
-        eprintln!("{error}");
-        process::exit(1);
-    }
+    let _host_death_job = match keld_runtime::windows_job::install_host_death_job() {
+        Ok(host_death_job) => host_death_job,
+        Err(error) => {
+            eprintln!("{error}");
+            process::exit(1);
+        }
+    };
 
     if let Err(error) = keld_core::prepare_webview_process() {
         eprintln!("{error}");

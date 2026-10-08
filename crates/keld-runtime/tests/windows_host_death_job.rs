@@ -35,7 +35,20 @@ const PROCESS_WAIT_MS: u32 = 10_000;
 
 #[test]
 fn abnormal_host_death_reaps_direct_child_and_descendant_then_relaunches() {
-    let mut host = spawn_helper("host");
+    abnormal_host_death_reaps_the_enrolled_tree("host");
+}
+
+/// KEL-53 §7 row "8, 9 (candidate release)", r9: the host drops its
+/// `WindowsHostDeathJob` capability before any child exists. The Job handle stays
+/// open (the host neither dies at the drop nor loses its tree), so an abnormal
+/// host death still reaps the enrolled tree through the kernel's close.
+#[test]
+fn dropping_the_host_death_capability_never_closes_the_job() {
+    abnormal_host_death_reaps_the_enrolled_tree("host-dropped-capability");
+}
+
+fn abnormal_host_death_reaps_the_enrolled_tree(host_role: &str) {
+    let mut host = spawn_helper(host_role);
     let stdout = host.stdout.take().expect("host stdout pipe");
     let mut lines = BufReader::new(stdout).lines();
 
@@ -48,6 +61,13 @@ fn abnormal_host_death_reaps_direct_child_and_descendant_then_relaunches() {
         observation.contains("assigned=true") && observation.contains("inheritable=false"),
         "Job assignment and non-inheritance must be observed: {observation}"
     );
+    if host_role == "host-dropped-capability" {
+        assert_eq!(
+            next_prefixed_line(&mut lines, "CAPABILITY_DROPPED"),
+            "CAPABILITY_DROPPED",
+            "the host must survive dropping its capability"
+        );
+    }
 
     let direct_pid = parse_pid(&next_prefixed_line(&mut lines, "DIRECT "), "DIRECT");
     let descendant_pid = parse_pid(&next_prefixed_line(&mut lines, "DESCENDANT "), "DESCENDANT");
@@ -1338,7 +1358,8 @@ fn launcher_process_death_closes_the_attempt_job_and_reaps_its_tree() {
 #[ignore = "private subprocess entry point"]
 fn windows_job_process_helper() {
     match env::var(HELPER_ENV).as_deref() {
-        Ok("host") => run_host_helper(),
+        Ok("host") => run_host_helper(false),
+        Ok("host-dropped-capability") => run_host_helper(true),
         Ok("attempt-host") => run_host_attempt_helper(),
         Ok("launcher") => run_launcher_helper(),
         Ok("direct") => run_direct_helper(),
@@ -2164,7 +2185,10 @@ fn run_host_attempt_helper() {
             std::process::exit(73);
         }
     };
-    println!("ATTEMPT inner_job={}", inner.current_process_assigned);
+    println!(
+        "ATTEMPT inner_job={}",
+        inner.observation().current_process_assigned
+    );
     io::stdout().flush().expect("flush inner Job observation");
 
     println!("APP_RESOURCE_STARTED");
@@ -2183,8 +2207,9 @@ fn run_host_attempt_helper() {
     std::thread::park();
 }
 
-fn run_host_helper() {
-    let observation = install_host_death_job().expect("install host-death Job");
+fn run_host_helper(drop_capability: bool) {
+    let host_death_job = install_host_death_job().expect("install host-death Job");
+    let observation = host_death_job.observation();
     println!(
         "JOB limits=0x{:08x} nested={} assigned={} inheritable={}",
         observation.limit_flags,
@@ -2193,6 +2218,14 @@ fn run_host_helper() {
         observation.handle_inheritable
     );
     io::stdout().flush().expect("flush Job observation");
+    if drop_capability {
+        // KEL-53 §7 row "8, 9 (candidate release)", r9: dropping the capability
+        // never closes the handle. If it did, kill-on-close would end this host
+        // here, before any child record below reaches the test.
+        drop(host_death_job);
+        println!("CAPABILITY_DROPPED");
+        io::stdout().flush().expect("flush capability drop witness");
+    }
 
     let mut direct = spawn_helper("direct");
     let direct_stdout = direct.stdout.take().expect("direct stdout pipe");
@@ -2222,8 +2255,8 @@ fn run_descendant_helper() {
 }
 
 fn run_relaunch_helper() {
-    let observation = install_host_death_job().expect("install Job after prior host death");
-    assert!(observation.current_process_assigned);
+    let host_death_job = install_host_death_job().expect("install Job after prior host death");
+    assert!(host_death_job.observation().current_process_assigned);
 
     let status = Command::new("cmd.exe")
         .args(["/d", "/c", "exit 0"])
