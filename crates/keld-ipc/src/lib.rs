@@ -6,7 +6,8 @@
 //! Design constraints (do not violate without a spec change):
 //! - Hot paths are allocation-free state machines; no async runtime here.
 //! - Frames are little-endian, fixed 16-byte header, versioned at handshake.
-//! - Channel names never travel per-call; they resolve to `ChannelId` handles.
+//! - Channel names never travel per-call; they resolve to `ChannelId` handles
+//!   allocated by the one [`channel_table`].
 
 use std::io::ErrorKind;
 use std::time::Duration;
@@ -16,6 +17,7 @@ pub mod attempt;
 #[cfg(any(unix, windows))]
 pub mod bootstrap;
 pub mod call_error;
+pub mod channel_table;
 pub mod codec;
 pub mod echo;
 pub mod frame;

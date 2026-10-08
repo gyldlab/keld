@@ -92,6 +92,84 @@ function requiredAction(steps: Mapping[], name: string, action: string, expected
   return step;
 }
 
+/**
+ * The `timeout-minutes` every step whose `run` script invokes apt must set
+ * (#624): above the slowest observed successful apt step (642 s), far below
+ * the hangs that ran to the 45-minute job timeout. A shorter bound turned a
+ * slow but progressing mirror download into a failure.
+ */
+export const aptStepTimeoutMinutes = 15;
+const aptInvocation = /\bapt(-get)?\b/;
+
+/**
+ * A step whose `run` script mentions `apt` or `apt-get` must bound itself with
+ * exactly `aptStepTimeoutMinutes`, and its job must allow longer, so that the
+ * step bound (not the job timeout) is what ends a hung Ubuntu mirror. Only the
+ * parsed `run` string counts (never the step name); local actions and scripts
+ * the step calls are outside this check.
+ */
+function checkAptStepTimeout(step: Mapping, job: Mapping, label: string): void {
+  if (typeof step.run !== "string" || !aptInvocation.test(step.run)) return;
+  if (scalar(step["timeout-minutes"]) !== String(aptStepTimeoutMinutes)) {
+    fail(`${label} runs apt without step timeout-minutes: ${aptStepTimeoutMinutes}; a hung Ubuntu mirror must fail the step, and a shorter bound fails slow but healthy downloads. Do not retry or continue on error.`);
+  }
+  const jobMinutes = scalar(job["timeout-minutes"]);
+  if (jobMinutes !== undefined && !(/^[1-9][0-9]*$/.test(jobMinutes) && Number(jobMinutes) > aptStepTimeoutMinutes)) {
+    fail(`${label} runs apt in a job whose timeout-minutes (${jobMinutes}) does not exceed the ${aptStepTimeoutMinutes}-minute apt step bound; raise the job timeout so the step bound is the one that applies.`);
+  }
+}
+
+/** The CodeQL languages, each analysed by its own job `codeql-<language>`. */
+export const codeqlLanguages = ["rust", "javascript-typescript", "actions"] as const;
+
+/**
+ * One language's job condition: its router output (tools/ci_changes.sh), or a
+ * push whose router job did not succeed and so published no outputs. The push
+ * clause keeps main's baseline when the router fails; it never overrides a
+ * router that ran.
+ */
+export function codeqlRoute(language: string): string {
+  const output = `needs.changes.outputs.codeql_${language.replaceAll("-", "_")}`;
+  return `\${{ !cancelled() && (${output} == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}`;
+}
+
+/**
+ * One job per language, because a job-level `if` cannot read `matrix` (#624).
+ * Each job keeps its upload category, minimal permissions and blocking analysis,
+ * and is gated only on its own router output. No other job may run CodeQL, so a
+ * successful job cannot stand in for a missing or duplicated category.
+ */
+function checkCodeqlJobs(jobs: Mapping, stepsByJob: Map<string, Mapping[]>): void {
+  const owners = new Set<string>(codeqlLanguages.map(language => `codeql-${language}`));
+  for (const [jobName, steps] of stepsByJob) {
+    if (owners.has(jobName)) continue;
+    if (steps.some(step => typeof step.uses === "string" && actionName(step.uses).startsWith("github/codeql-action/"))) {
+      fail(`jobs.${jobName} runs CodeQL outside the per-language jobs; restore one codeql-<language> job per scan category.`);
+    }
+  }
+  for (const language of codeqlLanguages) {
+    const jobName = `codeql-${language}`;
+    const steps = stepsByJob.get(jobName);
+    if (!steps) fail(`CodeQL job ${jobName} must exist; rust, javascript-typescript and actions each need their scan category.`);
+    const job = mapping(jobs[jobName], `jobs.${jobName}`);
+    inputsMatch(mapping(job.permissions, "CodeQL job permissions"), {
+      contents: "read", "security-events": "write",
+    }, "CodeQL job permissions");
+    if (Object.hasOwn(job, "strategy")) fail(`CodeQL job ${jobName} must not set strategy; one job analyses exactly one language.`);
+    const needs = Array.isArray(job.needs) && job.needs.length === 1 ? job.needs[0] : job.needs;
+    if (needs !== "changes" || job.if !== codeqlRoute(language)) {
+      fail(`CodeQL job ${jobName} must need changes and run only on \`${codeqlRoute(language)}\`; the router owns push and fallback selection.`);
+    }
+    const init = requiredAction(steps, "Initialize CodeQL", "github/codeql-action/init", {
+      languages: language, "build-mode": "none",
+    });
+    const analyze = requiredAction(steps, "Analyze and upload CodeQL results", "github/codeql-action/analyze", {
+      category: `/language:${language}`, upload: "always", "skip-queries": "false", "wait-for-processing": "true",
+    });
+    if (steps.indexOf(init) >= steps.indexOf(analyze)) fail("CodeQL initialization must precede analysis.");
+  }
+}
+
 /** Validate security effects over parsed workflow objects, never YAML line shapes. */
 export function checkWorkflowSecurity(source: string): void {
   if (Buffer.byteLength(source) > 1024 * 1024) fail("workflow exceeds the 1 MiB parsing budget.");
@@ -117,6 +195,7 @@ export function checkWorkflowSecurity(source: string): void {
       if (uses === Object.hasOwn(step, "run")) fail(`${label} must contain exactly one action or executable run string.`);
       if (!uses) {
         if (typeof step.run !== "string" || !step.run.trim()) fail(`${label}.run must be a nonempty string.`);
+        checkAptStepTimeout(step, job, `${label} (${typeof step.name === "string" ? step.name : "unnamed"})`);
         continue;
       }
       const action = actionRef(step.uses, label);
@@ -131,29 +210,9 @@ export function checkWorkflowSecurity(source: string): void {
     }
   }
   if (checkouts === 0) fail("workflow must contain its audited checkout steps.");
-  const codeql = stepsByJob.get("codeql");
+  checkCodeqlJobs(jobs, stepsByJob);
   const dependencies = stepsByJob.get("dependency-review");
-  if (!codeql || !dependencies) fail("CodeQL and dependency-review jobs must exist.");
-  const codeqlJob = mapping(jobs.codeql, "jobs.codeql");
-  inputsMatch(mapping(codeqlJob.permissions, "CodeQL job permissions"), {
-    contents: "read", "security-events": "write",
-  }, "CodeQL job permissions");
-  const strategy = mapping(codeqlJob.strategy, "CodeQL strategy");
-  const matrix = mapping(strategy.matrix, "CodeQL matrix");
-  exactKeys(matrix, ["include"], "CodeQL matrix");
-  const expectedLanguages = ["rust", "javascript-typescript", "actions"];
-  const languages = Array.isArray(matrix.include)
-    ? matrix.include.map(row => mapping(row, "CodeQL matrix row").language) : [];
-  if (languages.length !== expectedLanguages.length || !expectedLanguages.every(language => languages.includes(language))) {
-    fail("CodeQL matrix must include rust, javascript-typescript and actions exactly once; restore all scan categories.");
-  }
-  const init = requiredAction(codeql, "Initialize CodeQL", "github/codeql-action/init", {
-    languages: "${{ matrix.language }}", "build-mode": "none",
-  });
-  const analyze = requiredAction(codeql, "Analyze and upload CodeQL results", "github/codeql-action/analyze", {
-    category: "/language:${{ matrix.language }}", upload: "always", "skip-queries": "false", "wait-for-processing": "true",
-  });
-  if (codeql.indexOf(init) >= codeql.indexOf(analyze)) fail("CodeQL initialization must precede analysis.");
+  if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const review = requiredAction(dependencies, "Review dependency vulnerabilities", "actions/dependency-review-action", {
     "base-ref": baseRef, "head-ref": headRef, "fail-on-severity": "low",
     "fail-on-scopes": "runtime, development, unknown", "vulnerability-check": "true",

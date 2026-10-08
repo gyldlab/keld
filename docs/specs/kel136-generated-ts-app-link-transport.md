@@ -50,8 +50,8 @@ already required by KEL-133 criterion 10's later consumer.
 6. Given N unread one-byte socket chunks of an incomplete frame, when the reader
    buffers them, then `pendingChunkCount() === N` (not one merged prefix).
 7. Given the canonical TSV path, when Bun and Rust suites run, then they load that
-   one file (digest `375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746`)
-   and no second `receiver-semantics-v0.tsv` exists.
+   one file (digest `0cebb6e00c15a03028c6a29c725eb0e607ff66ee1cae04e227d18b9e49d0213e`
+   since the GH-527 §4.9 rows) and no second `receiver-semantics-v0.tsv` exists.
 8. Given `tsc --strict` and the committed Bun 1.4.2 / TypeScript 7.0.2 lockfile,
    when `just typescript` / the CI Bun lane run, then they pass and public sources
    contain no `any`. A new package lockfile MUST copy `@keld/electron`'s resolved

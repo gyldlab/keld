@@ -1,6 +1,6 @@
 # Spec: worker-owned single-link blocking host CALL transport for Bun roles
 Status: approved
-Linear: GH-527 (#517) · Owner: @0monish · Updated: 2026-10-07
+Linear: GH-527 (#517) · Owner: @0monish · Updated: 2026-10-08
 
 ## 1. Goal & non-goals
 
@@ -106,9 +106,14 @@ negative control: the one mutation that MUST make the test fail.
    `KELD-IPC-022` at the close; a host-written `ERR` on the echo channel closes the
    link with `KELD-IPC-005`, so that call also throws `KELD-IPC-022`. *Negative
    control:* a host that closes without the `ERR` on the lifecycle call makes the test
-   observe `KELD-IPC-022`; a Worker that selects `reply_waiter` for an echo call admits
-   the echo `ERR` and returns `KELD-IPC-023`, so the echo case fails. A client that maps
-   every EOF to `KELD-IPC-023` fails criterion 5.
+   observe `KELD-IPC-022`; a Worker whose echo reply policy admits `ERR` (for example
+   the host-side `primary_echo_reply_waiter` shape, REPLY and `ERR`, selected for an
+   echo call) admits the echo `ERR` and returns `KELD-IPC-023`, so the echo case fails.
+   Selecting `reply_waiter` for an echo call is no longer this control: since #528 T1
+   it refuses the echo channel with `KELD-IPC-005` (§4.7), so that selection fails
+   closed and the call throws `KELD-IPC-022`, which the echo case cannot tell apart from
+   the correct behaviour. A client that maps every EOF to `KELD-IPC-023` fails
+   criterion 5.
 7. **Quit.** (a) Given a parked blocking `Quit`, when the host accepts it, then the
    call returns the host's real `LifecycleResponse::Quit` bytes and the link closes
    afterwards. (b) Given another blocking call still pending when the host's Quit
@@ -122,14 +127,15 @@ negative control: the one mutation that MUST make the test fail.
    handler (a test-only uncaught error). A test counter shows main's liveness branch
    never ran: the exit handler's `STATE` compare-and-exchange woke it. *Control:*
    removing that compare-and-exchange leaves the wake to the liveness branch, so the
-   counter is 1 and the arm fails. (b) *Abrupt termination:* before main parks, the
-   test posts a test-only message that makes the Worker call `process.exit` N ms
-   after it reads `BLOCKING` as 1. `self.close()` is not an arm-(b) trigger: §4.5
+   counter is 1 and the arm fails. (b) *Abrupt termination:* the Worker is spawned
+   with test-only fault data that makes it call `process.exit` N ms after it writes
+   the blocking CALL, so `BLOCKING` is nonzero. `self.close()` is not an arm-(b) trigger: §4.5
    classes it as an orderly exit, whose handler runs. Main parks, then observes
    `KELD-IPC-025`. A test counter MUST show the Worker's exit handler did not run, so
    the wake comes from the liveness branch; a termination path that runs the exit
-   handler does not satisfy (b). The message handler exists only in the test build;
-   the production Worker has no such message. (c) *Wedge:* a test-only hook stops the
+   handler does not satisfy (b). Only the test-only `openWorkerLinkForTest`, under
+   `KELD_KIPC_TEST_HOOKS=1`, accepts fault data; the production Worker has no such
+   message or option. (c) *Wedge:* a test-only hook stops the
    Worker's event loop. *Control for (b) and (c):* removing the liveness check
    (§4.5) makes the call fail with `KELD-IPC-006` at its deadline, so the code
    assertion fails (#418 risk 1).
@@ -280,11 +286,11 @@ negative control: the one mutation that MUST make the test fail.
     `2 * WORKER_LIVENESS_WINDOW_MS / WORKER_HEARTBEAT_INTERVAL_MS`. *Negative
     control:* removing the post-claim bound (§4.5) leaves main parked while the
     heartbeat advances, so the watchdog reaches its limit and the test fails. In the
-    throw arm, with a 30 s deadline, the call throws `KELD-IPC-025` within
-    `WORKER_LIVENESS_WINDOW_MS` of the throw, and a test counter shows main's
-    post-claim branch never ran. *Second negative control:* removing the Worker's own
-    25 record on a throw (§4.5 step 2) leaves the wake to the post-claim bound after
-    the deadline, so the timing and counter assertions fail.
+    throw arm, with a 30 s deadline, the call throws `KELD-IPC-025`, and test counters
+    show that main's post-claim branch never ran and its deadline compare-and-exchange
+    never failed (§7 asserts no duration). *Second negative control:* removing the
+    Worker's own 25 record on a throw (§4.5 step 2) leaves the wake to the post-claim
+    bound after the deadline, so the counter assertions fail.
 27. **Asynchronous replies and host CALLs are dispatched on main (§4.6).** Given two
     pending `call()`s, `c1` on the lifecycle channel (its reply waiter admits `ERR`,
     §4.7; an `ERR` on the echo channel closes the link, criterion 6) and `c2` on the
@@ -363,7 +369,10 @@ Reuse:
 
 - kept: `FrameReader`, `WriteQueue`, `DrainSignal`, `connectKipcSocket`,
   `validateReceivedHeader`, `decodeCallError` and `errorFromErrFrame` from
-  `transport.ts`. The KEL-133 validator, `write_call_error`, `CallError`, the consumed
+  `transport.ts`. `FrameReader` gains `end(err)`, which `connectKipcSocket`'s close
+  handler calls: a peer close still returns the complete frames already buffered, in
+  order, before reads fail, so criterion 5 does not depend on Bun draining
+  microtasks between a socket's data and close callbacks (#528 T1). The KEL-133 validator, `write_call_error`, `CallError`, the consumed
   bootstrap locator, `FrameKind::Grant = 9` and KEL-75's crash and revoke paths;
 - reused codes: `KELD-IPC-005` (session-contract violations) and `KELD-IPC-006` (an
   expired deadline, as in KEL-133 criterion 8);
@@ -488,11 +497,14 @@ and updates this table in the same PR.
 | `KELD-IPC-023` | `keld-ipc` (host writes it with `write_call_error`) | the host retired this role generation before the call's handler finished | role generation retired before this call completed | The role instance is being replaced or stopped. Do not retry here; the successor generation reissues the work after its own `Ready`. |
 | `KELD-IPC-024` | `keld-ipc` (host writes it with `write_call_error`) | the host accepted `Quit` and its drain ended with this call still pending | session ended by an accepted Quit before this call completed | The application is quitting. Do not issue new work; finish only the shutdown path. |
 | `KELD-IPC-025` | `@keld/kipc` | the transport Worker exited, or its heartbeat stopped for `WORKER_LIVENESS_WINDOW_MS`, while the role is open | transport Worker dead or unresponsive; the role's link is lost | The role has no link and cannot reconnect. Report the crash. The host restarts the role per its policy; check the role log for the Worker's last error. |
-| `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound (with the credit lane, its share of them, §4.7), or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, reduce the host event rate toward this role, or enable the credit lane (T4). Retained events were delivered in order. |
+| `KELD-IPC-026` | `@keld/kipc` | a frame did not fit the ring's byte or record bound (with the credit lane, its share of them, §4.7), or a blocking REPLY or `ERR` payload was larger than `replyBytes` | parked ring or reply slot full; the link was closed rather than drop a frame | Raise `ringBytes`, `ringRecords` or `replyBytes` at `WorkerLink.open`, or reduce the host event rate toward this role. Retained events were delivered in order. (T4 adds "or enable the credit lane" to the registry heading when it lands.) |
 | `KELD-IPC-027` | `@keld/kipc` | a call was pending, or was issued, after the Worker processed an `abandon` that exceeded `MAX_ABANDONED_CALLS` (the expiring call itself throws `KELD-IPC-006`) | too many unanswered calls; the link was closed rather than track another abandoned id | The host is not answering this role's calls. Check the host log for the stalled handler; raise call deadlines only if the host is slow rather than stuck. The role's link is gone and cannot reconnect. |
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
-an invalid `receive` table (§4.5), a second in-flight
+an invalid `receive` table (§4.5), an outbound frame on channel 0, a listener or state
+applier on a channel that `receive.eventChannels` does not name, a `callBlocking` from
+any state applier (in the wake drain or a dispatch task, so no fact is re-applied), an
+`ERR` whose payload is not a `CallError` (it closes the link), a second in-flight
 blocking call, an invalid deadline, an unsolicited correlation id, a malformed `GRANT`,
 an applier that throws, or a host CALL whose call handler is missing or fails (§4.6).
 A `KELD-IPC-005` raised by an API call before any write is thrown to that caller. A
@@ -602,7 +614,12 @@ export class WorkerLink {
    returns or throws.
 
 Link termination. Every side that ends the link does so with one
-`Atomics.compareExchange(ctrl, STATE, 0, code)`, then bumps `SEQ` and notifies. Only
+`Atomics.compareExchange(ctrl, STATE, 0, code)`, then bumps `SEQ` and notifies. A
+parked main that sees `STATE` (or records 25 itself) loads `REPLY_READY` once more
+before it throws: the Worker publishes a claimed reply before it records any code, so a
+reply visible then arrived first and is returned (#528 T1 review). Frames main posted
+before it recorded a code are still written in post order; the `close` main posts
+after its own record ends the socket, and no inbound frame is retained after it. Only
 the first succeeds, so the recorded code never changes and the Worker and main cannot
 disagree about it. The Worker records 22 (EOF, I/O error or a link-closing
 `KELD-IPC-005`), 25 (its own orderly exit, or a fault after a claim), 26 (overflow) or 27 (abandoned cap); main
@@ -631,7 +648,12 @@ Worker liveness. This is the mechanism #418 risk 1 requires:
 
 - *Orderly exit* (an uncaught error, `self.close()`, or the transport closing): the
   Worker's exit handler records 25 (or 22 when the transport closed first) through
-  the `STATE` compare-and-exchange. The parked caller wakes at once.
+  the `STATE` compare-and-exchange. The parked caller wakes at once. FACT (#528 T1,
+  Bun 1.4.2, macOS arm64): a `node:worker_threads` Worker has no `self.close()`, so
+  calling it is an uncaught error, and `process.exit` in a Worker runs that Worker's
+  `process.on("exit")` listeners. The exit handler is therefore the Worker's
+  `uncaughtException` and `unhandledRejection` handler; no `exit` listener is
+  registered, so `process.exit` stays the abrupt arm (b) of criterion 8.
 - *Abrupt death or a wedge*: the Worker bumps `HEARTBEAT` on a
   `WORKER_HEARTBEAT_INTERVAL_MS` timer and after each frame it handles. A parked main
   wakes at least once per heartbeat interval and throws `KELD-IPC-025` once the
@@ -696,10 +718,23 @@ each record by its kind (criterion 27):
 - Asynchronous REPLY or `ERR`: main looks up `header.corr` among its own unresolved
   `call()`s, the set the correlation counter skips (§4.5). A match is removed, and its
   Promise resolves with the REPLY payload or rejects with `errorFromErrFrame` for an
-  `ERR`. With no match, main already rejected that call at its deadline, and the
-  record is discarded. The correlation id selects the Promise, never arrival order.
-  A `call()` deadline is a main-thread timer: on expiry main removes the entry,
-  rejects with `KELD-IPC-006` and posts `abandon(id)`, as `callBlocking` does.
+  `ERR`. With no match, main already rejected that call at its deadline. Main decides
+  an expiry only after dispatching every record retained by then (rule below), so this
+  record arrived after the decision and is discarded. The correlation id selects the Promise, never arrival order.
+  A `call()` deadline is a main-thread timer. When it fires, main first runs the
+  dispatch step (step 2) over the retained ring records, in issue order, exactly as
+  the dispatch task would. Only if the call is still unresolved after that step, and
+  `STATE` is still 0, does main remove the entry, reject with `KELD-IPC-006` and post
+  `abandon(id)`, as `callBlocking` does. When `STATE` is not 0 the link has ended:
+  the dispatch task that every end path requests rejects the call with the recorded
+  code instead (falsifier: such a call rejects with `KELD-IPC-006`). Rationale (#528 T1, owner decision): timers cannot run while
+  main is parked, and the order in which the event loop then runs an overdue timer
+  and the dispatch task is unspecified (Bun 1.4.2 happened to dispatch first). A
+  reply retained before the expiry decision is the call's answer whichever ran
+  first. `abandon` is still sent only on an actual expiry, and listener order is
+  unchanged: it is the same dispatch step, after resume. *Falsifier:* a reply
+  retained before the expiry decision is reported as `KELD-IPC-006`, the
+  failing-first case of `expiry_during_park_keeps_a_retained_reply` at `17a480bc`.
 - Host CALL: main runs the handler that `setCallHandler` set for `header.channel` with
   the payload. When its Promise fulfils, main posts the returned kind and payload to
   the Worker. The Worker writes them with the CALL's channel and correlation id through
@@ -771,7 +806,10 @@ test lands with #528.
   `lifecycle_event_receiver()` keep their current public signatures; both delegate to
   the constructors above with the lifecycle channel.
 
-  *Fallback if #613 is not approved:* this spec stands on its own. `reply_waiter` and
+  *Fallback (retired):* #613 was approved and X05-T4 (#631) moved both constructors
+  to `&'static ChannelEntry`; `event_receiver` admits by
+  `ReceiveClass::carries_host_events`. The text below records the interim shape #528
+  T1 shipped with. *Fallback if #613 is not approved:* this spec stands on its own. `reply_waiter` and
   `event_receiver` take today's `ChannelId` and still return
   `Result<ReceivePolicy, IpcError>`, and `WorkerLink` uses the current hand-held
   channel constants: echo = 1 (`ECHO_CHANNEL`) and lifecycle = 3
@@ -780,7 +818,11 @@ test lands with #528.
   `keld-ipc` tests), so it reaches `WorkerLink` only as the role's
   `privilegedCallReceiver(channel)` argument, and this spec adds no constant for it.
   Lifecycle is the only channel with host EVENTs today, so under the fallback
-  `event_receiver` refuses every other channel with `KELD-IPC-005`. The now-public `reply_waiter` MUST carry a doc comment stating its kinds,
+  `event_receiver` refuses every other channel with `KELD-IPC-005`. `reply_waiter`
+  refuses channel 0, which carries only `HELLO`, and the echo channel, whose caller
+  waiter stays KEL-133 row 4's REPLY-only `echo_reply_waiter`, both with
+  `KELD-IPC-005`; a Worker that selected it for an echo call therefore fails closed
+  (#528 T1). The now-public `reply_waiter` MUST carry a doc comment stating its kinds,
   its correlation rule and the KEL-133 row it serves.
 
   A frame with no selected policy is validated against a policy that admits no kind,
@@ -1016,7 +1058,7 @@ not.
 
 | Criterion | Test |
 |---|---|
-| 1 | Bun `worker-link.test.ts` against a Rust fixture host that uses `keld_ipc::link::write_frame` with `APP_LINK_IO_DEADLINE`; failing first in #528 |
+| 1 | the Rust fixture host `crates/keld-ipc/tests/worker_link.rs`, which uses `keld_ipc::link::write_frame` with `APP_LINK_IO_DEADLINE` and drives the Bun role `packages/@keld/kipc/test/worker-link-role.ts`; failing first in #528. The host spawns the role because the CI Bun lane has no Rust toolchain while every cargo test runner has Bun. Cases that need no host are in `packages/@keld/kipc/src/worker-link.test.ts` |
 | 2, 3, 5, 10, 12–14 | the same harness, one case per wake path; counts and sequence asserted exactly |
 | 4 | the same harness with a test applier and listener recording a global step log; the expected log is `applier*, return, continuation, listener*` |
 | 6, 7 | `keld-core` router tests (retire, Quit drain) plus a Bun end-to-end case |
@@ -1025,14 +1067,14 @@ not.
 | 15 | Rust `receiver_corpus.rs` and Bun `corpus.test.ts` on the one TSV |
 | 16 | `cargo nextest run -p keld-cli -- error_registry` |
 | 17 | T4 version-2 and version-3 mixed `HELLO` and credit runs |
-| 18 | the criterion-1 harness with a small ring, a full-size reply and a claim-stall hook; the credit case in T4 |
+| 18 | the criterion-1 harness with a small ring, a full-size reply and a claim-stall hook; the credit case in T4. A claim-first hook holds main's deadline compare-and-exchange until the Worker sets a `CLAIMED` test word, so the stall arm does not depend on the host round trip beating its 200 ms deadline; a variant with a 2 s host reply delay proves it |
 | 19 | the same harness with a listener hook that holds the dispatch task until `W_RECS` advances; an idle-transition assertion hook |
 | 20 | the same harness with a hook that holds Worker message handling until `BLOCKING` is nonzero, recording the host's read order and the ring counters |
 | 21 | the same harness with a host that writes each listed frame; a Bun table test of the §4.7 selection |
 | 22 | the same harness with a host that never replies, `MAX_ABANDONED_CALLS + 1` expiries, then late replies |
 | 23, 24 | T4 Rust host tests with a scripted Worker peer for over-window and pre-`HELLO` `GRANT`s |
-| 25 | Bun `open` cases for 3 MiB and 4 MiB rings, plus a counter-start hook at `2^32 - 64` with a blocking reply after the wrap |
-| 26 | claim-then-skip-publish and claim-step-throw hooks with a heartbeat-counting watchdog thread |
+| 25 | a Bun `open` case for a 3 MiB ring; the 4 MiB open and a counter-start hook at `2^32 - 64` with a blocking reply after the wrap in the criterion-1 harness, because an open needs a host and a realm opens once |
+| 26 | claim-then-skip-publish and claim-step-throw hooks with a heartbeat-counting watchdog thread; the same claim-first hook as criterion 18 for skip-publish, counters (post-claim, deadline and liveness branches) for the throw arm, and a 2 s host-delay variant of each |
 | 27 | the criterion-1 harness with a host that answers two `call()`s out of order and writes an echo CALL during a park, recording a step log and the host's read frames |
 | 28 | T4 harness with credit enabled, a small ring and a host that fills the uncredited share with lifecycle EVENTs |
 | 29 | T4 Bun `open` cases with credit enabled and two credited channels, `ringRecords` 3 and 8 |
@@ -1046,11 +1088,15 @@ path is marked in T5.
 ## 8. Review gates triggered
 
 unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
-`WorkerReceiveTable`, `WorkerCallReceiver`, `WorkerCallReply`, `setCallHandler`, `replyWaiter(channel, corr)`,
-`eventReceiver(channel)`, the `replyBytes` option, the constants); `keld-ipc`'s
+`WorkerLinkOptions`, `WorkerReceiveTable`, `WorkerCallReceiver`, `WorkerCallReply`, `setCallHandler`, `replyWaiter(channel, corr)`,
+`eventReceiver(channel)`, the `replyBytes` option, the constants; from #528 T1 also
+`selectInboundPolicy` with `InboundTable`, `PendingCallEntry` and `InboundAction`,
+`WORKER_LINK_CONTROL`, `FrameReader.end`, and the test-only `openWorkerLinkForTest`,
+`WorkerLinkTestHooks`, `WorkerBlockingFault` and `WORKER_LINK_TEST_WORDS`); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
-`ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (today's
-`ChannelId` under the §4.7 fallback) and returning `Result<ReceivePolicy, IpcError>`,
+`ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (#528 T1
+shipped the §4.7 fallback's `ChannelId`; X05-T4, #631, retired it) and returning
+`Result<ReceivePolicy, IpcError>`,
 with `lifecycle_reply_waiter` and `lifecycle_event_receiver` unchanged; and the new `CallError` codes.
 permission model: none (no capability, manifest or mount change). dependency addition: none. **wire protocol**: new receiver
 corpus rows, the host `ERR` on retire and Quit, the Worker as the link endpoint, and
@@ -1088,6 +1134,10 @@ the `WriteQueue` promise chain are as unbounded as today's main-thread `WriteQue
    F06-T7 measure the real rate before any change.
 2. After `KELD-IPC-025`, if `terminate()` does not close a wedged Worker's socket,
    should the transport also end the role process so the host's crash path runs?
+   FACT (#528 T1, Bun 1.4.2, macOS arm64): `terminate()` of a Worker wedged in
+   `Atomics.wait` closes its socket and the host observes link loss (criterion 8c);
+   a busy-loop wedge behaved the same in a scratch probe that is not a committed test.
+   Linux and Windows stay UNKNOWN until T5.
    Recommendation: yes. Exit the role process right after surfacing the error, since a
    role without a link cannot recover in place.
 3. Confirm `MAX_ABANDONED_CALLS = 256`. Recommendation: keep it; a host that leaves

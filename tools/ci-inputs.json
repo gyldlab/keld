@@ -26,7 +26,9 @@
     ".config/*",
     ".cargo/*",
     ".githooks/*",
-    ".gitignore"
+    ".gitignore",
+    ".gitleaks.toml",
+    ".gitleaksignore"
   ],
   "consumers": [
     {
@@ -42,6 +44,17 @@
         "packages/*",
         "tools/*.rs",
         "tools/*.ts",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        "clippy.toml",
+        ".cargo/*",
+        ".config/nextest.toml",
+        "crates/*",
+        "crates/keld-compat/fixtures/lifecycle-corpus/report.md"
+      ],
+      "documentation_inputs": [
         "llms-full.txt",
         "docs/onboarding/README.md",
         "docs/onboarding/04-wire-formats-and-contracts.md",
@@ -56,18 +69,9 @@
         "docs/engineering/decisions.md",
         "docs/engineering/keld-error-codes.md",
         "docs/engineering/budget-scoreboard.md",
-        "docs/engineering/compat-scoreboard.md",
-        "Cargo.toml",
-        "Cargo.lock",
-        "rust-toolchain.toml",
-        "rustfmt.toml",
-        "clippy.toml",
-        ".cargo/*",
-        ".config/nextest.toml",
-        "crates/*",
-        "crates/keld-compat/fixtures/lifecycle-corpus/report.md"
+        "docs/engineering/compat-scoreboard.md"
       ],
-      "contract": "Rust external reads include the CLI recursive tools registry scan, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant.",
+      "contract": "Rust external reads include the CLI recursive tools registry scan, the CLI GH-508 channel-id and capability-literal scan of every crate source tree, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant. documentation_inputs are read only as text by keld-cli: docs_search embeds llms-full.txt behind keld_cli::mcp, which no reverse dependent calls (keld-host tests use keld_cli::boot, create and dev only), and the registry and doctor tests are keld-cli's own. A diff whose only matching paths are documentation_inputs therefore selects keld-cli without Cargo reverse dependents (#624). A reverse dependent that starts reading one of these documents, or calling keld_cli::mcp, must move that document into inputs in the same change.",
       "reader_set": "rust-readers"
     },
     {
@@ -84,9 +88,11 @@
         "crates/keld-ipc/src/lib.rs",
         "crates/keld-ipc/src/frame.rs",
         "crates/keld-ipc/src/echo.rs",
-        "crates/keld-ipc/src/lifecycle.rs"
+        "crates/keld-ipc/src/lifecycle.rs",
+        "crates/keld-ipc/src/channel_table.rs",
+        "crates/keld-wv/src/wkwebview/macos_bridge.rs"
       ],
-      "contract": "Bun reads IPC constants and CLI templates, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. Source-reader drift invalidates exclusions.",
+      "contract": "Bun reads IPC constants and CLI templates, generates and drift-checks the channel-table region from crates/keld-ipc/src/channel_table.rs, scans production TypeScript and the macOS bridge's injected scripts for channel-id literals, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. Source-reader drift invalidates exclusions.",
       "reader_set": "bun-readers"
     },
     {
@@ -152,6 +158,7 @@
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
         "crates/keld-runtime/tests/windows_primary_generation.rs",
@@ -163,6 +170,8 @@
         "crates/keld-update/src/windows_baseline/tests/support.rs",
         "crates/keld-update/src/records/tests.rs",
         "crates/keld-updater-helper/tests/lint_config.rs",
+        "crates/keld-cli/tests/channel_table_scan.rs",
+        "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
       "contract": "",
@@ -244,9 +253,11 @@
         ".codex/*",
         ".agents/*",
         "AGENTS.md",
-        "*/AGENTS.md"
+        "*/AGENTS.md",
+        "crates/keld-ipc/channel_allocations.txt",
+        "crates/keld-ipc/src/channel_table.rs"
       ],
-      "contract": "",
+      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does.",
       "reader_set": "policy-readers"
     },
     {
@@ -310,6 +321,7 @@
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
         "crates/keld-runtime/tests/windows_primary_generation.rs",
@@ -321,16 +333,18 @@
         "crates/keld-update/src/windows_baseline/tests/support.rs",
         "crates/keld-update/src/records/tests.rs",
         "crates/keld-updater-helper/tests/lint_config.rs",
+        "crates/keld-cli/tests/channel_table_scan.rs",
+        "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "11f45255e6731272db6fea341b1940fdd853051d03b0745e8fa0cc423eee9ef7"
+      "sha256": "73939b035c4e85564f88b909f88df08cc940abb37e6e1e4b61426899f8b3951f"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "fc4aa808cf42a3a95e46248e3cc5e920b9154ed7abf89e05e3b0926af56d6d00"
+      "sha256": "1a9a1c32899d2ec69aec796f47de661e03b14122ef6b95a009ee2b935a648999"
     },
     "policy-readers": {
       "patterns": [
@@ -340,7 +354,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "d22b39c38ec658ccd4123d3fb7a10274c4e820d4278b1a11b468947b39df3319"
+      "sha256": "516b58f7616417d4cbd65261841af7510c63887b88a81a33687344a386345df8"
     },
     "audit-readers": {
       "patterns": [
@@ -386,7 +400,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "9f0a760c1b15c9a901b4e6a565e1b01cc0b215bbb0c82c23572ef2c1ca4e48f5",
+    "membership_sha256": "7d7e7c4e94c2a72a8999a5bf11c2d728ac46b82dcff040f45132b65186425413",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
@@ -404,11 +418,16 @@
       "crates/keld-compat/fixtures/lifecycle-corpus/*"
     ],
     "keld-update": [
-      "crates/keld-pack/tests/fixtures/windows-v0-content.tar",
-      "docs/specs/kel53-full-package-activation.md"
+      "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
     ],
     "keld-updater-helper": [
       "clippy.toml"
     ]
-  }
+  },
+  "rust_package_documentation_inputs": {
+    "keld-update": [
+      "docs/specs/kel53-full-package-activation.md"
+    ]
+  },
+  "rust_package_documentation_contract": "Each listed document is read only as text by its package's own #[cfg(test)] code (keld-update: include_str! in src/records/tests.rs), so no reverse dependent compiles or reads it. A diff whose only matching paths are these documents selects that package without Cargo reverse dependents (#624); any other input of the same package keeps the expansion."
 }

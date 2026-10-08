@@ -44,7 +44,8 @@ fn policies() -> [ReceivePolicy; 9] {
         ReceivePolicy::lifecycle_receiver(),
         ReceivePolicy::lifecycle_event_receiver(),
         ReceivePolicy::lifecycle_reply_waiter(CorrelationId(7)),
-        ReceivePolicy::privileged_call_receiver(ChannelId(2)),
+        ReceivePolicy::privileged_call_receiver(&keld_ipc::channel_table::FS)
+            .expect("the fs entry is a guarded CALL channel"),
     ]
 }
 

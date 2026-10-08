@@ -26,6 +26,22 @@ const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
+/// GH-508 committed kipc channel allocation baseline (append-only).
+const CHANNEL_ALLOCATIONS: &str = "crates/keld-ipc/channel_allocations.txt";
+/// Comparison base, resolved the way `tools/ci_changes.sh local` resolves it.
+const CHANNEL_ALLOCATIONS_BASE_ENV: &str = "KELD_CI_BASE_REF";
+const CHANNEL_ALLOCATIONS_DEFAULT_BASE: &str = "origin/main";
+/// The hosted step that runs the append-only rule, and the base it binds.
+const CHANNEL_ALLOCATIONS_STEP: &str = "Check this checkout";
+const CHANNEL_ALLOCATIONS_STEP_IF: &str = "needs.changes.outputs.hygiene == 'true'";
+const CHANNEL_ALLOCATIONS_STEP_ENV: &[(&str, &str)] = &[(
+    CHANNEL_ALLOCATIONS_BASE_ENV,
+    "${{ github.event.pull_request.base.sha || github.event.before }}",
+)];
+const CHANNEL_ALLOCATIONS_STEP_COMMANDS: &[&str] = &[
+    "rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene",
+    "target/ci-hygiene/ci-hygiene check .",
+];
 const MERMAID_IMAGE_DIGEST: &str =
     "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf";
 
@@ -1391,6 +1407,134 @@ fn check_check_job_if_avoids_matrix(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The router owns the `check` OS list (#624): every Rust selection gets all
+/// three OSes except one reached only through documentation reads. A literal
+/// list here would silently ignore that decision in either direction.
+const CHECK_OS_MATRIX: &str = "os: ${{ fromJSON(needs.changes.outputs.check_os) }}";
+
+/// A job's `strategy.matrix.os` lines (indent 8, before `steps:`); never text
+/// elsewhere in the job, such as an `env` value or a `run` script.
+fn workflow_job_matrix_os_lines(text: &str, job: &str) -> Vec<String> {
+    let block = workflow_job_block(text, job).unwrap_or_default();
+    block
+        .lines()
+        .filter_map(yaml_content)
+        .take_while(|(_, content)| *content != "steps:")
+        .filter(|(indent, content)| *indent == 8 && content.starts_with("os:"))
+        .map(|(_, content)| content.to_owned())
+        .collect()
+}
+
+fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
+    let os_lines = workflow_job_matrix_os_lines(text, "check");
+    if os_lines != [CHECK_OS_MATRIX] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must take its OS matrix from the router as exactly `{CHECK_OS_MATRIX}`; got `{}`. The router decides when documentation-only reads run on Windows alone.",
+            os_lines.join("`, `")
+        ));
+    }
+    Ok(())
+}
+
+const DOCTEST_JOB: &str = "doctest";
+const DOCTEST_STEP: &str = "cargo test --doc";
+
+/// nextest does not run doctests, so this lane does (#632): on one OS, gated
+/// on its router output, over the router's library-package selection, with
+/// an empty selection refused rather than passing as a no-op loop.
+fn check_doctest_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, DOCTEST_JOB) else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `{DOCTEST_JOB}` job. nextest skips doctests; restore the routed `cargo test --doc` lane."
+        ));
+    };
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.doctest == 'true'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.doctest == 'true'`; the router owns which packages have doctests to run, and without the dependency the job cannot read its outputs."
+        ));
+    }
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("macos-latest")
+        || block.lines().filter_map(yaml_content).any(|(_, content)| content.starts_with("strategy:"))
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run once on `runs-on: macos-latest` without a matrix; that OS links no WebKitGTK, so the lane has no network apt step."
+        ));
+    }
+    let env_ok = workflow_named_step_mapping(&block, DOCTEST_STEP, "env").is_some_and(|entries| {
+        entries
+            == [(
+                "KELD_CI_DOCTEST_PACKAGES".to_owned(),
+                "${{ needs.changes.outputs.doctest_packages }}".to_owned(),
+            )]
+    });
+    if !env_ok
+        || workflow_named_step_direct_keys(&block, DOCTEST_STEP).unwrap_or_default() != ["shell", "env", "run"]
+        || workflow_named_step_direct_value(&block, DOCTEST_STEP, "shell").as_deref() != Some("bash")
+        || workflow_named_step_shell_commands(&block, DOCTEST_STEP).unwrap_or_default()
+            != [
+                "if [ -z \"$KELD_CI_DOCTEST_PACKAGES\" ]; then",
+                "echo \"::error::doctest lane ran with no package; check the router's doctest_packages output\"",
+                "exit 1",
+                "fi",
+                "for package in $KELD_CI_DOCTEST_PACKAGES; do",
+                "cargo test -p \"$package\" --doc",
+                "done",
+            ]
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run `{DOCTEST_STEP}` with only `shell: bash`, `env: KELD_CI_DOCTEST_PACKAGES: ${{{{ needs.changes.outputs.doctest_packages }}}}` and the exact empty-selection guard plus `cargo test -p \"$package\" --doc` loop, without wrappers or exit suppression."
+        ));
+    }
+    Ok(())
+}
+
+const WORKSPACE_JOB: &str = "workspace-contracts";
+const WORKSPACE_STEP: &str = "Local workspace path and process contracts";
+
+/// The workspace tool's OS-specific path and process contracts run in their own
+/// three-OS job, selected only by its router output (#624).
+fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, WORKSPACE_JOB) else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `{WORKSPACE_JOB}` job. Restore the three-OS workspace path and process contracts."
+        ));
+    };
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
+        ));
+    }
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
+        ));
+    }
+    if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != ["os: [ubuntu-latest, macos-latest, windows-latest]"] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run on `os: [ubuntu-latest, macos-latest, windows-latest]`; its path and process contracts differ per OS."
+        ));
+    }
+    if workflow_named_step_direct_keys(&block, WORKSPACE_STEP).unwrap_or_default() != ["shell", "run"]
+        || workflow_named_step_shell_commands(&block, WORKSPACE_STEP).unwrap_or_default()
+            != [
+                "if [ \"${{ matrix.os }}\" = windows-latest ]; then",
+                "python -B tools/test_workspace.py",
+                "else",
+                "python3 -B tools/test_workspace.py",
+                "fi",
+            ]
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run `{WORKSPACE_STEP}` unconditionally with only `shell` and `run`, executing tools/test_workspace.py on every OS."
+        ));
+    }
+    Ok(())
+}
+
 fn check_fuzz_workspace_step(text: &str) -> Result<(), String> {
     let Some(check_job) = workflow_job_block(text, "check") else {
         return Err(format!(
@@ -1701,8 +1845,12 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "secrets",
         "hygiene",
         "mermaid",
-        "codeql",
+        "codeql-rust",
+        "codeql-javascript-typescript",
+        "codeql-actions",
         "dependency-review",
+        "workspace-contracts",
+        "doctest",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1733,11 +1881,47 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
         ("KELD_ROUTE_MERMAID", "${{ needs.changes.outputs.mermaid }}"),
-        ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+        (
+            "KELD_RESULT_CODEQL_RUST",
+            "${{ needs['codeql-rust'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs['codeql-javascript-typescript'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_ACTIONS",
+            "${{ needs['codeql-actions'].result }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_RUST",
+            "${{ needs.changes.outputs.codeql_rust }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+            "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+        ),
+        (
+            "KELD_ROUTE_CODEQL_ACTIONS",
+            "${{ needs.changes.outputs.codeql_actions }}",
+        ),
         (
             "KELD_RESULT_DEPENDENCY_REVIEW",
             "${{ needs['dependency-review'].result }}",
         ),
+        (
+            "KELD_RESULT_WORKSPACE",
+            "${{ needs['workspace-contracts'].result }}",
+        ),
+        ("KELD_ROUTE_WORKSPACE", "${{ needs.changes.outputs.workspace }}"),
+        ("KELD_EVENT_NAME", "${{ github.event_name }}"),
+        (
+            "KELD_ROUTE_RUST_DOCUMENTATION_ONLY",
+            "${{ needs.changes.outputs.rust_documentation_only }}",
+        ),
+        ("KELD_ROUTE_CHECK_OS", "${{ needs.changes.outputs.check_os }}"),
+        ("KELD_RESULT_DOCTEST", "${{ needs.doctest.result }}"),
+        ("KELD_ROUTE_DOCTEST", "${{ needs.changes.outputs.doctest }}"),
     ] {
         if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
             |entries| {
@@ -1760,7 +1944,14 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
         "\"$KELD_ROUTE_DOCS\" \"$KELD_ROUTE_MERMAID\" ",
-        "\"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
+        "\"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_RESULT_CODEQL_ACTIONS\" ",
+        "\"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" ",
+        "\"$KELD_ROUTE_CODEQL_ACTIONS\" ",
+        "\"$KELD_RESULT_DEPENDENCY_REVIEW\" ",
+        "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" ",
+        "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" ",
+        "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1770,7 +1961,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 20-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 32-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -1941,6 +2132,61 @@ fn check_gitleaks_scan_step(text: &str) -> Result<(), String> {
     {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` gitleaks `{step}` must run the exact scoped scan: resolve both pull-request SHAs to local commits, scan push history at HEAD, refuse other events, and pass the range with --log-opts. An unscoped, empty or unresolvable range lets the secrets gate pass without scanning the change."
+        ));
+    }
+    Ok(())
+}
+
+/// GH-508: the step that runs `ci-hygiene check` binds the comparison base the
+/// append-only rule needs: the PR base, or on push the previous tip. Without it
+/// a push to main would compare the baseline with itself.
+fn check_channel_allocations_step(text: &str) -> Result<(), String> {
+    let step = CHANNEL_ALLOCATIONS_STEP;
+    let Some(hygiene) = workflow_job_block(text, "hygiene") else {
+        return Err(format!("CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for `{step}`."));
+    };
+    let count = workflow_direct_named_step_count(&hygiene, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `hygiene.steps`.")
+    })?;
+    let expected_keys = ["if".to_owned(), "env".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its `if`, `env` and `run` keys; a custom shell or continue-on-error can erase the append-only channel allocation rule."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "if").as_deref()
+        != Some(CHANNEL_ALLOCATIONS_STEP_IF)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run exactly when the router selects hygiene (`if: {CHANNEL_ALLOCATIONS_STEP_IF}`)."
+        ));
+    }
+    let expected_env: Vec<(String, String)> = CHANNEL_ALLOCATIONS_STEP_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    if workflow_named_step_mapping(&hygiene, step, "env").as_deref() != Some(expected_env.as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly `{CHANNEL_ALLOCATIONS_BASE_ENV}: ${{{{ github.event.pull_request.base.sha || github.event.before }}}}` so {CHANNEL_ALLOCATIONS} is compared with the PR base or the previous push tip, never with itself."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline `run` block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(CHANNEL_ALLOCATIONS_STEP_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must compile and run `ci-hygiene check .` exactly, without wrappers or exit suppression."
         ));
     }
     Ok(())
@@ -2606,12 +2852,16 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_mermaid_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
+    check_check_job_os_matrix(&text)?;
+    check_workspace_contracts_job(&text)?;
+    check_doctest_job(&text)?;
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
     check_linux_media_guard_step(&text)?;
     check_required_job(&text)?;
     check_gitleaks_scan_step(&text)?;
+    check_channel_allocations_step(&text)?;
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
     check_windows_media_acceptance_step(&text)?;
@@ -2709,6 +2959,127 @@ fn check(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// GH-508 spec criterion 3a: the baseline at the merge base must be an exact
+/// line prefix of the current baseline. `None` means the file is absent there.
+fn check_allocations_prefix(
+    base: Option<&str>,
+    current: Option<&str>,
+    merge_base: &str,
+) -> Result<(), String> {
+    let Some(base) = base else {
+        return Ok(());
+    };
+    let Some(current) = current else {
+        return Err(format!(
+            "CI-HYGIENE: {CHANNEL_ALLOCATIONS} was removed, but it exists at merge base \
+             {merge_base}. Restore it: kipc channel ids are append-only \
+             (docs/specs/gh508-kipc-channel-table.md §4.4)."
+        ));
+    };
+    let mut current_lines = current.lines();
+    for (index, expected) in base.lines().enumerate() {
+        if current_lines.next() != Some(expected) {
+            return Err(format!(
+                "CI-HYGIENE: {CHANNEL_ALLOCATIONS} line {} `{expected}` at merge base \
+                 {merge_base} was changed, reordered or removed. Restore every existing \
+                 line and append new allocations at the end; ids are never renumbered or \
+                 reused (docs/specs/gh508-kipc-channel-table.md §4.4).",
+                index + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| {
+            format!("CI-HYGIENE: cannot run git for {CHANNEL_ALLOCATIONS}: {error}. Install git and rerun just hygiene.")
+        })
+}
+
+/// Resolves the merge base of `base_ref` and `HEAD`, failing closed when the
+/// base is unavailable instead of passing without a comparison.
+fn allocations_merge_base(root: &Path, base_ref: &str) -> Result<String, String> {
+    let unresolved = |detail: &str| {
+        format!(
+            "CI-HYGIENE: cannot resolve the {CHANNEL_ALLOCATIONS} comparison base `{base_ref}` \
+             ({detail}). Run `git fetch origin main`, or set {CHANNEL_ALLOCATIONS_BASE_ENV} to an \
+             available commit, then rerun just hygiene; the append-only check never passes \
+             without a base."
+        )
+    };
+    if base_ref.is_empty() || base_ref.bytes().all(|byte| byte == b'0') {
+        return Err(unresolved(
+            "empty or all-zero; a first push has no comparison base",
+        ));
+    }
+    let verify = git_output(
+        root,
+        &["rev-parse", "--verify", "--quiet", &format!("{base_ref}^{{commit}}")],
+    )?;
+    if !verify.status.success() {
+        return Err(unresolved("not a commit in this repository"));
+    }
+    let merge_base = git_output(root, &["merge-base", base_ref, "HEAD"])?;
+    if !merge_base.status.success() {
+        return Err(unresolved("no merge base with HEAD"));
+    }
+    let sha = String::from_utf8_lossy(&merge_base.stdout).trim().to_owned();
+    if sha.is_empty() {
+        return Err(unresolved("empty merge base"));
+    }
+    Ok(sha)
+}
+
+/// The baseline file at `merge_base`, or `None` when that commit lacks it.
+fn allocations_at(root: &Path, merge_base: &str) -> Result<Option<String>, String> {
+    let listed = git_output(
+        root,
+        &["ls-tree", "--name-only", merge_base, "--", CHANNEL_ALLOCATIONS],
+    )?;
+    if !listed.status.success() {
+        return Err(format!(
+            "CI-HYGIENE: cannot list {CHANNEL_ALLOCATIONS} at merge base {merge_base}: {}",
+            String::from_utf8_lossy(&listed.stderr).trim()
+        ));
+    }
+    if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
+        return Ok(None);
+    }
+    let shown = git_output(root, &["show", &format!("{merge_base}:{CHANNEL_ALLOCATIONS}")])?;
+    if !shown.status.success() {
+        return Err(format!(
+            "CI-HYGIENE: cannot read {CHANNEL_ALLOCATIONS} at merge base {merge_base}: {}",
+            String::from_utf8_lossy(&shown.stderr).trim()
+        ));
+    }
+    String::from_utf8(shown.stdout).map(Some).map_err(|_| {
+        format!("CI-HYGIENE: {CHANNEL_ALLOCATIONS} at merge base {merge_base} is not UTF-8.")
+    })
+}
+
+/// GH-508 criterion 3a: the committed channel allocation baseline only grows.
+fn check_channel_allocations_append_only(root: &Path, base_ref: &str) -> Result<(), String> {
+    let merge_base = allocations_merge_base(root, base_ref)?;
+    let base = allocations_at(root, &merge_base)?;
+    let current = match fs::read_to_string(root.join(CHANNEL_ALLOCATIONS)) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "CI-HYGIENE: cannot read {CHANNEL_ALLOCATIONS}: {error}."
+            ));
+        }
+    };
+    check_allocations_prefix(base.as_deref(), current.as_deref(), &merge_base)
+}
+
 fn run_cli() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or_else(|| {
@@ -2738,7 +3109,9 @@ fn run_cli() -> Result<(), String> {
                     "CI-HYGIENE: workflow semantic check failed ({status}); restore the reported security contract before rerunning."
                 ));
             }
-            Ok(())
+            let base_ref = env::var(CHANNEL_ALLOCATIONS_BASE_ENV)
+                .unwrap_or_else(|_| CHANNEL_ALLOCATIONS_DEFAULT_BASE.to_owned());
+            check_channel_allocations_append_only(&root, &base_ref)
         }
         _ => Err(format!(
             "CI-HYGIENE: unknown command `{command}`. Use `check` to verify KEL-39 files."
@@ -2882,6 +3255,9 @@ mod tests {
             "          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
             "          target/product-status/product-status check .",
             "  check:",
+            "    strategy:",
+            "      matrix:",
+            "        os: ${{ fromJSON(needs.changes.outputs.check_os) }}",
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
             "        with:",
@@ -2986,6 +3362,13 @@ mod tests {
             "          python3 -B tools/workspace.py check",
             "          python3 -B tools/test_workspace.py",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
+            "      - name: Check this checkout",
+            "        if: needs.changes.outputs.hygiene == 'true'",
+            "        env:",
+            "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}",
+            "        run: |",
+            "          rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene",
+            "          target/ci-hygiene/ci-hygiene check .",
             "      - run: rustc --edition=2024 --test tools/product_status.rs",
             "      - run: product-status check .",
             "      - name: Public audit registry contracts",
@@ -2996,6 +3379,39 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
+            "  doctest:",
+            "    runs-on: macos-latest",
+            "    needs: changes",
+            "    if: needs.changes.outputs.doctest == 'true'",
+            "    steps:",
+            "      - name: cargo test --doc",
+            "        shell: bash",
+            "        env:",
+            "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.doctest_packages }}",
+            "        run: |",
+            "          if [ -z \"$KELD_CI_DOCTEST_PACKAGES\" ]; then",
+            "            echo \"::error::doctest lane ran with no package; check the router's doctest_packages output\"",
+            "            exit 1",
+            "          fi",
+            "          for package in $KELD_CI_DOCTEST_PACKAGES; do",
+            "            cargo test -p \"$package\" --doc",
+            "          done",
+            "  workspace-contracts:",
+            "    runs-on: ${{ matrix.os }}",
+            "    needs: changes",
+            "    if: needs.changes.outputs.workspace == 'true'",
+            "    strategy:",
+            "      matrix:",
+            "        os: [ubuntu-latest, macos-latest, windows-latest]",
+            "    steps:",
+            "      - name: Local workspace path and process contracts",
+            "        shell: bash",
+            "        run: |",
+            "          if [ \"${{ matrix.os }}\" = windows-latest ]; then",
+            "            python -B tools/test_workspace.py",
+            "          else",
+            "            python3 -B tools/test_workspace.py",
+            "          fi",
             "  mermaid:",
             "    needs:",
             "      - changes",
@@ -3024,8 +3440,12 @@ mod tests {
             "      - secrets",
             "      - hygiene",
             "      - mermaid",
-            "      - codeql",
+            "      - codeql-rust",
+            "      - codeql-javascript-typescript",
+            "      - codeql-actions",
             "      - dependency-review",
+            "      - workspace-contracts",
+            "      - doctest",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -3050,8 +3470,20 @@ mod tests {
             "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
             "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
             "          KELD_ROUTE_MERMAID: ${{ needs.changes.outputs.mermaid }}",
-            "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
+            "          KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}",
+            "          KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}",
+            "          KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}",
+            "          KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}",
+            "          KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}",
+            "          KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}",
             "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
+            "          KELD_RESULT_WORKSPACE: ${{ needs['workspace-contracts'].result }}",
+            "          KELD_ROUTE_WORKSPACE: ${{ needs.changes.outputs.workspace }}",
+            "          KELD_EVENT_NAME: ${{ github.event_name }}",
+            "          KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}",
+            "          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}",
+            "          KELD_RESULT_DOCTEST: ${{ needs.doctest.result }}",
+            "          KELD_ROUTE_DOCTEST: ${{ needs.changes.outputs.doctest }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -3063,7 +3495,14 @@ mod tests {
             "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
             "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
             "            \"$KELD_ROUTE_MERMAID\" \\",
-            "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
+            "            \"$KELD_RESULT_CODEQL_RUST\" \"$KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
+            "            \"$KELD_RESULT_CODEQL_ACTIONS\" \\",
+            "            \"$KELD_ROUTE_CODEQL_RUST\" \"$KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT\" \\",
+            "            \"$KELD_ROUTE_CODEQL_ACTIONS\" \\",
+            "            \"$KELD_RESULT_DEPENDENCY_REVIEW\" \\",
+            "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" \\",
+            "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" \\",
+            "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\"",
             "",
         ]
         .join("\n")
@@ -3683,12 +4122,19 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("20-argument"), "{error}");
+        assert!(error.contains("32-argument"), "{error}");
     }
 
     #[test]
     fn required_result_must_observe_security_jobs() {
-        for job in ["codeql", "dependency-review"] {
+        for job in [
+            "codeql-rust",
+            "codeql-javascript-typescript",
+            "codeql-actions",
+            "dependency-review",
+            "workspace-contracts",
+            "doctest",
+        ] {
             let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
             let error = check_required_job(&workflow).expect_err("missing security job must fail");
             assert!(error.contains(job), "{error}");
@@ -3698,7 +4144,30 @@ mod tests {
     #[test]
     fn required_result_must_receive_security_results_without_spoofing() {
         for (key, expression) in [
-            ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+            (
+                "KELD_RESULT_CODEQL_RUST",
+                "${{ needs['codeql-rust'].result }}",
+            ),
+            (
+                "KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT",
+                "${{ needs['codeql-javascript-typescript'].result }}",
+            ),
+            (
+                "KELD_RESULT_CODEQL_ACTIONS",
+                "${{ needs['codeql-actions'].result }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_RUST",
+                "${{ needs.changes.outputs.codeql_rust }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT",
+                "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+            ),
+            (
+                "KELD_ROUTE_CODEQL_ACTIONS",
+                "${{ needs.changes.outputs.codeql_actions }}",
+            ),
             (
                 "KELD_RESULT_DEPENDENCY_REVIEW",
                 "${{ needs['dependency-review'].result }}",
@@ -3711,7 +4180,128 @@ mod tests {
             let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
             let error =
                 check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("20-argument"), "{error}");
+            assert!(error.contains("32-argument"), "{error}");
+        }
+    }
+
+    #[test]
+    fn check_job_os_matrix_comes_only_from_the_router() {
+        let router = "        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n";
+        assert!(valid_workflow().contains(router));
+        check_check_job_os_matrix(&valid_workflow()).expect("router-owned OS matrix passes");
+        for (replacement, label) in [
+            ("        os: [ubuntu-latest, macos-latest, windows-latest]\n", "literal list"),
+            ("        os: [ubuntu-latest]\n", "literal single OS"),
+            ("        os: ${{ fromJSON(needs.changes.outputs.packages) }}\n", "other output"),
+            ("", "missing matrix"),
+            (
+                "        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n        os: [windows-latest]\n",
+                "duplicate key",
+            ),
+        ] {
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(router, replacement, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("check_os"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn doctest_job_is_routed_single_os_and_executed() {
+        check_doctest_job(&valid_workflow()).expect("fixture doctest job passes");
+        for (old, new, label) in [
+            (
+                "    if: needs.changes.outputs.doctest == 'true'\n",
+                "    if: needs.changes.outputs.rust == 'true'\n",
+                "gated on another output",
+            ),
+            ("    if: needs.changes.outputs.doctest == 'true'\n", "", "ungated"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: ubuntu-latest\n    needs: changes\n", "Ubuntu runner needs GTK apt"),
+            (
+                "    if: needs.changes.outputs.doctest == 'true'\n    steps:\n      - name: cargo test --doc\n",
+                "    if: needs.changes.outputs.doctest == 'true'\n    strategy:\n      matrix:\n        os: [macos-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "matrix",
+            ),
+            (
+                "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.doctest_packages }}\n",
+                "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.packages }}\n",
+                "unfiltered package list includes bin-only packages",
+            ),
+            (
+                "            cargo test -p \"$package\" --doc\n",
+                "            cargo test -p \"$package\" --doc || true\n",
+                "suppressed failure",
+            ),
+            (
+                "            exit 1\n          fi\n          for package in $KELD_CI_DOCTEST_PACKAGES",
+                "            exit 0\n          fi\n          for package in $KELD_CI_DOCTEST_PACKAGES",
+                "empty selection passes",
+            ),
+            (
+                "      - name: cargo test --doc\n        shell: bash\n",
+                "      - name: cargo test --doc\n        if: false\n        shell: bash\n",
+                "skipped step",
+            ),
+            ("  doctest:\n", "  doctests:\n", "renamed job"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n", "missing router dependency"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n    needs: fmt\n", "wrong dependency"),
+        ] {
+            assert!(valid_workflow().contains(old), "{label}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("doctest"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn workspace_contracts_job_is_routed_cross_os_and_executed() {
+        check_workspace_contracts_job(&valid_workflow()).expect("fixture workspace job passes");
+        for (old, new, label) in [
+            (
+                "    if: needs.changes.outputs.workspace == 'true'\n",
+                "    if: needs.changes.outputs.rust == 'true'\n",
+                "gated on another output",
+            ),
+            ("    if: needs.changes.outputs.workspace == 'true'\n", "", "ungated"),
+            (
+                "        os: [ubuntu-latest, macos-latest, windows-latest]\n    steps:\n      - name: Local workspace",
+                "        os: [ubuntu-latest]\n    steps:\n      - name: Local workspace",
+                "single OS",
+            ),
+            (
+                "      - name: Local workspace path and process contracts\n        shell: bash\n",
+                "      - name: Local workspace path and process contracts\n        if: false\n        shell: bash\n",
+                "skipped step",
+            ),
+            (
+                "            python3 -B tools/test_workspace.py\n",
+                "            echo python3 -B tools/test_workspace.py\n",
+                "echoed command",
+            ),
+            ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
+            ("    runs-on: ${{ matrix.os }}\n    needs: changes\n", "    runs-on: ${{ matrix.os }}\n", "missing router dependency"),
+            (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
+                "    runs-on: ubuntu-latest\n    needs: changes\n",
+                "fixed runner",
+            ),
+            (
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
+                "    needs: changes\n",
+                "missing runner",
+            ),
+            (
+                "    if: needs.changes.outputs.workspace == 'true'\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n",
+                "    if: needs.changes.outputs.workspace == 'true'\n    env:\n      NOTE: 'os: [ubuntu-latest, macos-latest, windows-latest]'\n    strategy:\n      matrix:\n        os: [ubuntu-latest]\n",
+                "single-OS matrix with the three-OS text elsewhere",
+            ),
+        ] {
+            assert!(valid_workflow().contains(old), "{label}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("workspace-contracts"), "{label}: {error}");
         }
     }
 
@@ -4151,8 +4741,8 @@ mod tests {
         temp.write(
             WORKFLOW,
             &valid_workflow().replacen(
-                "  check:\n    steps:",
-                "  check:\n    if: needs.changes.outputs.rust == 'true' && matrix.os != 'ubuntu-latest'\n    steps:",
+                "  check:\n    strategy:",
+                "  check:\n    if: needs.changes.outputs.rust == 'true' && matrix.os != 'ubuntu-latest'\n    strategy:",
                 1,
             ),
         );
@@ -4287,7 +4877,7 @@ mod tests {
     #[test]
     fn bun_step_pins_accept_named_actions_and_ignore_job_strategy() {
         let workflow = valid_workflow()
-            .replace("  check:\n    steps:", "  check:\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n    steps:")
+            .replace("    strategy:\n      matrix:\n        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n", "    strategy:\n      fail-fast: false\n      matrix:\n        os: ${{ fromJSON(needs.changes.outputs.check_os) }}\n")
             .replace("      - uses: oven-sh/setup-bun@", "      - name: install Bun\n        uses: oven-sh/setup-bun@");
         let temp = complete_fixture();
         temp.write(WORKFLOW, &workflow);
@@ -5730,6 +6320,136 @@ foreach ($item in $items) {
         fs::remove_file(bug).expect("remove bug template");
         let error = check(temp.path()).expect_err("config-only issue templates must fail");
         assert!(error.contains("ISSUE_TEMPLATE"), "{error}");
+    }
+
+    #[test]
+    fn channel_allocations_step_must_bind_the_comparison_base() {
+        let workflow = valid_workflow();
+        let env_line = "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}\n";
+        assert!(workflow.contains(env_line), "fixture binds the base");
+        check_channel_allocations_step(&workflow).expect("fixture step passes");
+        let mutations = [
+            ("removed env", workflow.replacen(&format!("        env:\n{env_line}"), "", 1), "only its `if`, `env` and `run`"),
+            (
+                "PR base only",
+                workflow.replacen(" || github.event.before", "", 1),
+                "never with itself",
+            ),
+            (
+                "default base",
+                workflow.replacen("${{ github.event.pull_request.base.sha || github.event.before }}", "origin/main", 1),
+                "never with itself",
+            ),
+            (
+                "always-run step",
+                workflow.replacen(
+                    "      - name: Check this checkout\n        if: needs.changes.outputs.hygiene == 'true'",
+                    "      - name: Check this checkout\n        if: always()",
+                    1,
+                ),
+                "exactly when the router selects hygiene",
+            ),
+            (
+                "suppressed exit",
+                workflow.replacen("          target/ci-hygiene/ci-hygiene check .", "          target/ci-hygiene/ci-hygiene check . || true", 1),
+                "without wrappers",
+            ),
+            ("missing step", workflow.replacen("      - name: Check this checkout\n", "      - name: Check another checkout\n", 1), "exactly one"),
+        ];
+        for (label, mutated, needle) in mutations {
+            assert_ne!(mutated, workflow, "{label}: mutation applied");
+            let error = check_channel_allocations_step(&mutated).expect_err(label);
+            assert!(error.contains(needle), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn channel_allocations_prefix_rule_admits_only_appends() {
+        let base = "echo 1\nfs 2\nlifecycle 3\n";
+        check_allocations_prefix(Some(base), Some(base), "b").expect("unchanged passes");
+        check_allocations_prefix(Some(base), Some("echo 1\nfs 2\nlifecycle 3\nprobe 4\n"), "b")
+            .expect("an append passes");
+        check_allocations_prefix(None, Some(base), "b").expect("introducing the file passes");
+        check_allocations_prefix(None, None, "b").expect("no file anywhere passes");
+        // Negative controls (spec criterion 3a): a both-sides renumber the
+        // in-crate table check cannot see, a deleted line, a reorder, removal.
+        for (current, line) in [
+            ("echo 1\nfs 4\nlifecycle 3\n", 2),
+            ("echo 1\nlifecycle 3\n", 2),
+            ("fs 2\necho 1\nlifecycle 3\n", 1),
+            ("echo 1\nfs 2\n", 3),
+        ] {
+            let error = check_allocations_prefix(Some(base), Some(current), "b")
+                .expect_err("only appends are admitted");
+            assert!(error.contains(&format!("line {line} ")), "{error}");
+            assert!(error.contains("append-only") || error.contains("append new"), "{error}");
+        }
+        let removed = check_allocations_prefix(Some(base), None, "b").expect_err("removal fails");
+        assert!(removed.contains("was removed"), "{removed}");
+    }
+
+    fn git_fixture(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid"])
+            .args(["-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("run git fixture command");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn channel_allocations_rule_reads_the_merge_base_and_fails_closed() {
+        let temp = TempDir::new();
+        let root = temp.path();
+        git_fixture(root, &["init", "--quiet"]);
+        temp.write("README.md", "fixture\n");
+        git_fixture(root, &["add", "README.md"]);
+        git_fixture(root, &["commit", "--quiet", "-m", "before the baseline"]);
+        git_fixture(root, &["branch", "before"]);
+        // The PR that introduces the file passes against a base without it.
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nfs 2\nlifecycle 3\n");
+        check_channel_allocations_append_only(root, "before").expect("introduction passes");
+
+        git_fixture(root, &["add", CHANNEL_ALLOCATIONS]);
+        git_fixture(root, &["commit", "--quiet", "-m", "baseline"]);
+        git_fixture(root, &["branch", "base"]);
+        git_fixture(root, &["checkout", "--quiet", "-b", "feature"]);
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nfs 2\nlifecycle 3\nprobe 4\n");
+        check_channel_allocations_append_only(root, "base").expect("an append passes");
+
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nfs 4\nlifecycle 3\n");
+        let renumbered = check_channel_allocations_append_only(root, "base")
+            .expect_err("a renumber in the baseline fails against the merge base");
+        assert!(renumbered.contains("line 2 `fs 2`"), "{renumbered}");
+
+        // A base that moved on after the fork still compares at the fork point.
+        git_fixture(root, &["checkout", "--quiet", "base"]);
+        temp.write("README.md", "main moved\n");
+        git_fixture(root, &["commit", "--quiet", "-am", "main moved"]);
+        git_fixture(root, &["checkout", "--quiet", "feature"]);
+        temp.write(CHANNEL_ALLOCATIONS, "echo 1\nlifecycle 3\n");
+        let deleted = check_channel_allocations_append_only(root, "base")
+            .expect_err("a deleted line fails");
+        assert!(deleted.contains("line 2 `fs 2`"), "{deleted}");
+
+        let unresolved = check_channel_allocations_append_only(root, "no-such-base")
+            .expect_err("an unresolvable base fails closed");
+        assert!(unresolved.contains("cannot resolve"), "{unresolved}");
+        assert!(unresolved.contains("never passes"), "{unresolved}");
+        for absent in ["", "0000000000000000000000000000000000000000"] {
+            let error = check_channel_allocations_append_only(root, absent)
+                .expect_err("an empty or first-push base fails closed");
+            assert!(error.contains("all-zero"), "{error}");
+        }
     }
 
     #[test]

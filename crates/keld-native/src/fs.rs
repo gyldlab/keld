@@ -22,6 +22,7 @@ use keld_guard::{
     validate_fs_component,
 };
 use keld_ipc::ReceivePolicy;
+use keld_ipc::channel_table;
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{ChannelId, FrameKind};
 use keld_ipc::guard_dispatch::dispatch_privileged;
@@ -29,12 +30,13 @@ use keld_ipc::link::{handshake_server, read_validated_frame, write_frame};
 use keld_ipc::{IpcError, SessionToken};
 use serde::{Deserialize, Serialize};
 
-/// Capability id for a scoped read.
-pub const FS_READ_CAPABILITY: &str = "fs.read";
-/// Capability id for a scoped write.
-pub const FS_WRITE_CAPABILITY: &str = "fs.write";
-/// kipc channel carrying [`FsRequest`]/[`FsResponse`] calls.
-pub const FS_CHANNEL: ChannelId = ChannelId(2);
+/// Capability id for a scoped read (`keld_guard::capability::FS_READ`).
+pub const FS_READ_CAPABILITY: &str = keld_guard::capability::FS_READ;
+/// Capability id for a scoped write (`keld_guard::capability::FS_WRITE`).
+pub const FS_WRITE_CAPABILITY: &str = keld_guard::capability::FS_WRITE;
+/// kipc channel carrying [`FsRequest`]/[`FsResponse`] calls: the
+/// `keld_ipc::channel_table::FS` entry.
+pub const FS_CHANNEL: ChannelId = channel_table::FS.id();
 
 /// Maximum accepted UTF-8 request path length.
 pub const MAX_FS_PATH_BYTES: usize = 4 * 1024;
@@ -1423,7 +1425,7 @@ pub fn serve_fs_session<S: Read + Write>(
     cancelled: &AtomicBool,
 ) -> Result<(), IpcError> {
     handshake_server(stream, token)?;
-    let policy = ReceivePolicy::privileged_call_receiver(FS_CHANNEL);
+    let policy = ReceivePolicy::privileged_call_receiver(&channel_table::FS)?;
     loop {
         let (header, payload) = match read_validated_frame(stream, &policy) {
             Ok(frame) => frame,
@@ -1472,6 +1474,25 @@ mod tests {
 
     fn test_now() -> Instant {
         TEST_NOW.with(|now| now.get().expect("test clock initialized"))
+    }
+
+    /// GH-508 criteria 11 and 15: the fs channel id is the table entry and the
+    /// capability ids are the `keld-guard` names, not local copies; the wire id
+    /// and manifest vocabulary keep their values.
+    #[test]
+    fn fs_channel_and_capabilities_derive_from_their_owners() {
+        assert_eq!(FS_CHANNEL, channel_table::FS.id());
+        assert_eq!(FS_CHANNEL.0, 2);
+        assert_eq!(FS_READ_CAPABILITY, keld_guard::capability::FS_READ);
+        assert_eq!(FS_WRITE_CAPABILITY, keld_guard::capability::FS_WRITE);
+        assert_eq!(
+            (FS_READ_CAPABILITY, FS_WRITE_CAPABILITY),
+            ("fs.read", "fs.write")
+        );
+        assert_eq!(
+            channel_table::FS.authority(),
+            channel_table::Authority::Guarded(&[FS_READ_CAPABILITY, FS_WRITE_CAPABILITY])
+        );
     }
 
     fn set_test_now(now: Instant) {

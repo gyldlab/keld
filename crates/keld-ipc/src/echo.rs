@@ -6,8 +6,8 @@ use crate::IpcError;
 use crate::codec::{decode, encode};
 use crate::frame::ChannelId;
 
-/// Channel handle for the echo command (resolved at handshake in later versions).
-pub const ECHO_CHANNEL: ChannelId = ChannelId(1);
+/// Channel handle for the echo command: the [`crate::channel_table::ECHO`] entry.
+pub const ECHO_CHANNEL: ChannelId = crate::channel_table::ECHO.id();
 
 /// Echo request payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

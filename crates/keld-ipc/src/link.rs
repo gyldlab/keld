@@ -9,6 +9,7 @@ use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::channel_table::{ChannelEntry, HANDSHAKE_CHANNEL};
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use crate::receive::{
     AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_primary_app_header,
@@ -406,8 +407,9 @@ pub fn read_primary_app_frame_interruptible<S: Read>(
 
 /// Interruptible primary app-link reader with one host-selected privileged CALL channel.
 ///
-/// The trusted channel is selected by the host before any frame bytes are inspected.
-/// A matching CALL is validated through `ReceivePolicy::privileged_call_receiver`
+/// The trusted channel table entry is selected by the host before any frame bytes are
+/// inspected; a raw id cannot select it. A matching CALL is validated through
+/// `ReceivePolicy::privileged_call_receiver`, which admits only a `GuardedCall` entry,
 /// before payload allocation. When `pending_privileged_call` reports outstanding
 /// trusted host state, another CALL on that channel is rejected as unexpected
 /// session state before its payload is allocated or read. All other primary-session
@@ -420,17 +422,17 @@ pub fn read_primary_app_frame_interruptible_with_privileged_call<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
     pending_echo_reply: impl Fn() -> Option<CorrelationId>,
-    privileged_call_channel: ChannelId,
+    privileged_call: &'static ChannelEntry,
     pending_privileged_call: impl Fn() -> bool,
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
     read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
         let validated = validate_primary_app_header_with_privileged_call(
             pending_echo_reply(),
-            Some(privileged_call_channel),
+            Some(privileged_call),
             header,
         )?;
         if header.kind == FrameKind::Call
-            && header.channel == privileged_call_channel
+            && header.channel == privileged_call.id()
             && pending_privileged_call()
         {
             return Err(IpcError::Protocol {
@@ -604,7 +606,7 @@ pub fn write_frame<S: Write>(
     stream: &mut S,
     kind: FrameKind,
     flags: u16,
-    channel: crate::frame::ChannelId,
+    channel: ChannelId,
     corr: crate::frame::CorrelationId,
     payload: &[u8],
 ) -> Result<(), IpcError> {
@@ -630,7 +632,7 @@ fn write_hello<S: Write>(stream: &mut S, token: &SessionToken) -> Result<(), Ipc
         stream,
         FrameKind::Hello,
         0,
-        ChannelId(0),
+        HANDSHAKE_CHANNEL,
         CorrelationId(0),
         token.as_bytes(),
     )
@@ -1692,7 +1694,7 @@ mod validated_read_tests {
             &mut cursor,
             &stop,
             || None,
-            ChannelId(2),
+            &crate::channel_table::FS,
             || false,
         )
         .expect("first privileged CALL admits")
@@ -1701,7 +1703,7 @@ mod validated_read_tests {
             &mut cursor,
             &stop,
             || None,
-            ChannelId(2),
+            &crate::channel_table::FS,
             || true,
         )
         .expect_err("second outstanding privileged CALL must fail");

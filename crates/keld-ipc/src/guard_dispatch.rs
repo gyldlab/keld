@@ -12,8 +12,8 @@
 //! (`crate::session::serve_echo_session` stays ungated).
 
 use keld_guard::{
-    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate, json_pointer_for,
-    validate_fs_component,
+    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, capability, evaluate,
+    json_pointer_for, validate_fs_component,
 };
 
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
@@ -71,7 +71,7 @@ pub fn dispatch_privileged<T>(
 }
 
 fn filesystem_dispatch_path_is_valid(operation: &str, path: &str) -> bool {
-    if !matches!(operation, "fs.read" | "fs.write") {
+    if !matches!(operation, capability::FS_READ | capability::FS_WRITE) {
         return true;
     }
     if path.is_empty() || path.contains(['\0', '\\']) {
