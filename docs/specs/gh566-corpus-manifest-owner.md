@@ -538,10 +538,10 @@ inside the 44.3.0 corpus.
 *Storage*, as gh532 rule 2 places it:
 
 - The snapshot path is `crates/keld-compat/fixtures/doc-snapshots/<electron_commit>/<page path>`.
-  That is one store, `SNAPSHOT_ROOT`, which every v1 corpus reads. A page that two
-  corpora cite at one pin is committed once, and no corpus directory holds its own
-  `doc-snapshots/` copy: `snapshot_store_census` rejects one with `FixtureCensus`
-  (amended by gh445 (#445), A5).
+  That is one store, `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/`, which every v1 corpus reads. A
+  page that two corpora cite at one pin is committed once, and no corpus directory holds
+  its own `doc-snapshots/` copy: `snapshot_store_census` rejects one with
+  `CorpusLocalSnapshot`, naming every offending directory (amended by gh445 (#445), A5).
 - Its bytes are the raw upstream bytes from
   `https://raw.githubusercontent.com/electron/electron/<commit>/<page path>`, verified by
   the reviewer command in gh532 rule 2.
