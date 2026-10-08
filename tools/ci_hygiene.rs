@@ -1396,15 +1396,21 @@ fn check_check_job_if_avoids_matrix(text: &str) -> Result<(), String> {
 /// list here would silently ignore that decision in either direction.
 const CHECK_OS_MATRIX: &str = "os: ${{ fromJSON(needs.changes.outputs.check_os) }}";
 
-fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
-    let block = workflow_job_block(text, "check").unwrap_or_default();
-    let os_lines: Vec<String> = block
+/// A job's `strategy.matrix.os` lines (indent 8, before `steps:`); never text
+/// elsewhere in the job, such as an `env` value or a `run` script.
+fn workflow_job_matrix_os_lines(text: &str, job: &str) -> Vec<String> {
+    let block = workflow_job_block(text, job).unwrap_or_default();
+    block
         .lines()
         .filter_map(yaml_content)
         .take_while(|(_, content)| *content != "steps:")
         .filter(|(indent, content)| *indent == 8 && content.starts_with("os:"))
         .map(|(_, content)| content.to_owned())
-        .collect();
+        .collect()
+}
+
+fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
+    let os_lines = workflow_job_matrix_os_lines(text, "check");
     if os_lines != [CHECK_OS_MATRIX] {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `check` must take its OS matrix from the router as exactly `{CHECK_OS_MATRIX}`; got `{}`. The router decides when documentation-only reads run on Ubuntu alone.",
@@ -1430,7 +1436,7 @@ fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
         ));
     }
-    if !uncommented_line_contains(&block, "os: [ubuntu-latest, macos-latest, windows-latest]") {
+    if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != ["os: [ubuntu-latest, macos-latest, windows-latest]"] {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run on `os: [ubuntu-latest, macos-latest, windows-latest]`; its path and process contracts differ per OS."
         ));
@@ -3923,6 +3929,11 @@ mod tests {
                 "echoed command",
             ),
             ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
+            (
+                "    if: needs.changes.outputs.workspace == 'true'\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n",
+                "    if: needs.changes.outputs.workspace == 'true'\n    env:\n      NOTE: 'os: [ubuntu-latest, macos-latest, windows-latest]'\n    strategy:\n      matrix:\n        os: [ubuntu-latest]\n",
+                "single-OS matrix with the three-OS text elsewhere",
+            ),
         ] {
             assert!(valid_workflow().contains(old), "{label}");
             let temp = complete_fixture();
