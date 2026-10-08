@@ -1468,3 +1468,31 @@ fn claim_first_hold_ends_in_025_when_the_worker_dies_before_its_claim() {
         ],
     );
 }
+
+/// §4.6: a `call()` still unanswered when the link ends rejects with the code
+/// `STATE` records (022 here), not `KELD-IPC-006`, even when its overdue
+/// deadline timer runs before the dispatch task (a hook withholds the dispatch).
+#[test]
+fn expiry_after_the_link_ended_rejects_with_the_recorded_code() {
+    let (mut stream, role) = start("expiry-after-close");
+    long_reads(&stream);
+    read_call_named(&mut stream, "early");
+    read_call_named(&mut stream, "long-park");
+    // Load shaping, not synchronization: keep the park past the async call's
+    // 200 ms deadline before the host closes without answering either call.
+    thread::sleep(Duration::from_millis(600));
+    stream
+        .shutdown(Shutdown::Both)
+        .expect("host closes the link");
+    drop(stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("park-code", "KELD-IPC-022"),
+            ("early-code", "KELD-IPC-022"),
+            ("early-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+}

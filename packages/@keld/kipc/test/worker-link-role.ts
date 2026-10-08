@@ -786,7 +786,18 @@ async function expiryDuringPark(): Promise<void> {
   await expectReject("early", early);
 }
 
+// §4.6: an async call() still unanswered when the link ends rejects with the
+// code STATE records, even when its overdue deadline timer runs before the
+// dispatch task (the hook withholds the dispatch).
+async function expiryAfterClose(): Promise<void> {
+  const { link } = await open({}, { deferDispatch: (run) => setTimeout(run, 0) });
+  const early = link.call(LIFECYCLE_CHANNEL, text("early"), 200);
+  expectThrow("park", () => link.callBlocking(ECHO_CHANNEL, text("long-park"), 30_000));
+  await expectReject("early", early);
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
+  "expiry-after-close": expiryAfterClose,
   "expiry-during-park": expiryDuringPark,
   "claim-first-worker-dies": claimFirstWorkerDies,
   "local-close": localClose,

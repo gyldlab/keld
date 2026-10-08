@@ -1884,6 +1884,10 @@ export class WorkerLink {
         // run the dispatch step first, exactly as the dispatch task would.
         this.#drainRing();
         if (this.#pending.get(corr)?.timer !== timer) return;
+        // The link already ended: every end path requests a dispatch task,
+        // whose finalize rejects this call with the code STATE records (§4.6),
+        // never 006, and no abandon goes to an ended Worker.
+        if (Atomics.load(this.#ctrl, STATE) !== 0) return;
         this.#pending.delete(corr);
         this.#post({ t: "abandon", corr });
         reject(linkError("KELD-IPC-006", `call deadline of ${deadlineMs} ms expired with no host reply`));
