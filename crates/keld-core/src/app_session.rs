@@ -7481,7 +7481,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     struct GuardedTestRouter {
         router: PrimaryRouter,
-        client: std::os::unix::net::UnixStream,
         snapshot: GuardSnapshot,
         allowed: PathBuf,
         taken: Receiver<()>,
@@ -7491,9 +7490,22 @@ mod tests {
         _temp: tempfile::TempDir,
     }
 
+    /// A guarded router over a socket pair, and the pair's client end.
     #[cfg(target_os = "macos")]
-    fn guarded_test_router() -> GuardedTestRouter {
+    fn guarded_test_router() -> (GuardedTestRouter, std::os::unix::net::UnixStream) {
         use keld_ipc::link::AppLinkDeadlines as _;
+
+        let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("guarded client deadlines");
+        (guarded_router(server), client)
+    }
+
+    /// A guarded router over `server`: a pair end, or a Bun role's
+    /// authenticated app link.
+    #[cfg(target_os = "macos")]
+    fn guarded_router(server: std::os::unix::net::UnixStream) -> GuardedTestRouter {
         use sha2::{Digest as _, Sha256};
 
         let temp = tempfile::tempdir().expect("guarded router root");
@@ -7518,10 +7530,6 @@ mod tests {
             taken: taken_tx,
             release: Mutex::new(release_rx),
         });
-        let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("guarded client deadlines");
         let (window_tx, window) = mpsc::channel();
         let (guardian_tx, guardian) = mpsc::channel();
         let router = PrimaryRouter::start_with_fs_test_gate(
@@ -7537,7 +7545,6 @@ mod tests {
         .expect("guarded test router");
         GuardedTestRouter {
             router,
-            client,
             snapshot,
             allowed,
             taken,
@@ -7547,6 +7554,11 @@ mod tests {
             _temp: temp,
         }
     }
+
+    /// GH-528 T2 end-to-end cases: a Bun `WorkerLink` role against this
+    /// router (`app_session/tests/worker_link_e2e.rs`).
+    #[cfg(target_os = "macos")]
+    mod worker_link_e2e;
 
     #[cfg(target_os = "macos")]
     fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target: &Path) {
@@ -7598,21 +7610,21 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
-        let mut t = guarded_test_router();
-        assert_echo_call(&mut t.client, 10, "answered before retire");
-        write_fs_call(&mut t.client, 11, &t.allowed.join("held.txt"));
+        let (t, mut client) = guarded_test_router();
+        assert_echo_call(&mut client, 10, "answered before retire");
+        write_fs_call(&mut client, 11, &t.allowed.join("held.txt"));
         t.taken
             .recv_timeout(Duration::from_secs(5))
             .expect("worker took the FS job");
         let (drain_tx, drain_rx) = mpsc::sync_channel(1);
         t.snapshot.fs.observe_next_drain_wait(drain_tx);
-        write_quit_call(&mut t.client, 12);
+        write_quit_call(&mut client, 12);
         drain_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("Quit waits in its FS drain");
 
         t.router.handle().retire_generation(1).expect("retire g1");
-        let frames = read_frames_until_eof(&mut t.client);
+        let frames = read_frames_until_eof(&mut client);
         let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> = frames
             .iter()
             .map(|(header, payload)| {
@@ -7654,18 +7666,18 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn quit_drain_answers_received_calls_with_024_and_runs_none() {
-        let mut t = guarded_test_router();
+        let (t, mut client) = guarded_test_router();
         let target = t.allowed.join("after-quit.txt");
         // All three frames are buffered before the host can finish the Quit:
         // its REPLY waits on the shutdown attribution acknowledged below.
-        write_quit_call(&mut t.client, 20);
-        write_fs_call(&mut t.client, 21, &target);
+        write_quit_call(&mut client, 20);
+        write_fs_call(&mut client, 21, &target);
         let echo = keld_ipc::echo::EchoRequest {
             message: "after quit".to_owned(),
             count: 22,
         };
         write_frame(
-            &mut t.client,
+            &mut client,
             FrameKind::Call,
             0,
             ECHO_CHANNEL,
@@ -7682,7 +7694,7 @@ mod tests {
             panic!("Quit skipped shutdown attribution");
         };
         prepare.send(Ok(())).expect("acknowledge attribution");
-        let (quit, quit_payload) = keld_ipc::link::read_frame(&mut t.client).expect("Quit REPLY");
+        let (quit, quit_payload) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
         assert_eq!(
             (quit.kind, quit.channel, quit.corr),
             (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(20))
@@ -7701,7 +7713,7 @@ mod tests {
         shutdown
             .send(Ok(()))
             .expect("acknowledge guardian shutdown");
-        let after = read_frames_until_eof(&mut t.client);
+        let after = read_frames_until_eof(&mut client);
         assert_eq!(after.len(), 1, "only the FS CALL is answered: {after:?}");
         let (header, payload) = &after[0];
         assert_eq!(

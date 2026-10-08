@@ -158,6 +158,7 @@
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-core/src/app_session/tests/worker_link_e2e.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
@@ -321,6 +322,7 @@
         "crates/keld-compat/tests/lifecycle_corpus.rs",
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
+        "crates/keld-core/src/app_session/tests/worker_link_e2e.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
@@ -337,14 +339,14 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "73939b035c4e85564f88b909f88df08cc940abb37e6e1e4b61426899f8b3951f"
+      "sha256": "84a3c7c29da048b30d9681a3630e84f78463eb259cf514a2a6b7348e21c1413e"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "1a9a1c32899d2ec69aec796f47de661e03b14122ef6b95a009ee2b935a648999"
+      "sha256": "8a87cb0f3840e1ffb8b172140cc563d83a5450e76f67c3c9c38a98f9ed37498a"
     },
     "policy-readers": {
       "patterns": [
@@ -400,7 +402,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "7d7e7c4e94c2a72a8999a5bf11c2d728ac46b82dcff040f45132b65186425413",
+    "membership_sha256": "32e44f3f5e2536c6ca4885ecacb7b8680330cf285e766ca8b8bbfb7fb9e9db4b",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
