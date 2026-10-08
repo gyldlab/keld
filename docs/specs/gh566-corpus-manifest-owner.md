@@ -350,6 +350,17 @@ prefix. It contains no `#[test]`.
   - review condition: a non-corpus consumer of execution admission, or a module over
     1,500 lines. In either case admission moves to its own support module.
 
+  T2 met the condition twice, and each time it moved a cohesive responsibility that
+  has its own invariant (amended in T2, #640):
+  - execution admission, to `tests/support/corpus_admission.rs`;
+  - the owner and fixture censuses (gh532 AC10, C2), to
+    `tests/support/corpus_census.rs`.
+
+  The owner keeps manifest parsing, the digest, the pin table, the cell rules, the
+  registry and record runs. Admission fails closed on a cell that maps no registered
+  target (`check_cells`). A new crossing of the condition moves another such
+  responsibility; it never splits one arbitrarily.
+
 Rejected alternatives:
 
 - A public `src/` module (gh532 §4.3).
@@ -871,10 +882,13 @@ negative input, rejected with `CensusViolation`, which names the rule and the fi
 
 C9 adds a sixth rule, for reports (D11).
 
-The census patterns, the fixture file names and the C2 fixture walk all live in the
-owner. Rules 1, 2 and 6 scan everything except the owner, and rule 3 counts inside it.
-Test files only call owner functions, and they build their synthetic negative inputs
-with `concat!`, so no scanned file carries a pattern.
+The census patterns and the C2 fixture walk live in `tests/support/corpus_census.rs`,
+split out under D1 (amended in T2, #640). The fixture file names live in the owner.
+Rules 1, 2 and 6 scan everything except the owner, so the census module is scanned too;
+it builds every pattern with `concat!`. Rule 3 counts inside the owner, and no
+`tests/support/` file may hold a test. Test files only call support functions, and
+they build their synthetic negative inputs with `concat!`, so no scanned file carries a
+pattern.
 
 *Falsifier:* any of the five rules, or C9's, accepts its own synthetic negative input.
 
@@ -1183,6 +1197,12 @@ Two consumer-specific notes:
     §5 file list. Nothing else in gh532 changes.
 - **Implement in (T2 and T3):**
   - `crates/keld-compat/tests/support/corpus_manifest.rs` (new);
+  - `crates/keld-compat/tests/support/corpus_admission.rs` (new in T2). It holds
+    execution admission, split from the owner under the D1 review condition, because
+    the owner passed 1,500 lines;
+  - `crates/keld-compat/tests/support/corpus_census.rs` (new in T2). It holds the
+    owner and fixture censuses, which were split for the same reason when the owner
+    crossed 1,500 lines again;
   - `crates/keld-compat/tests/corpus_registry/{main,registry,rules}.rs` (new);
   - `crates/keld-compat/tests/lifecycle_corpus.rs`;
   - `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
@@ -1195,7 +1215,10 @@ Two consumer-specific notes:
   - `crates/keld-compat/tests/electron_lifecycle.rs`;
   - `packages/@keld/electron/src/app.test.ts`;
   - `crates/keld-compat/src/` and `crates/keld-compat/Cargo.toml`;
-  - `.gitattributes`, `.editorconfig` and `tools/`;
+  - `.gitattributes`, `.editorconfig` and `tools/`. There is one exception:
+    `tools/ci-inputs.json` registers the support modules as Rust readers and rebinds
+    its digests. Its `rust_source_census` fails closed on any new crate file, so T2
+    needs this edit (amended in T2, #640);
   - any part of gh532 other than the A1–A4 passages named above.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)

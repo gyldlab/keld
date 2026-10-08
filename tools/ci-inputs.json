@@ -159,6 +159,9 @@
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
         "crates/keld-core/src/app_session/tests/worker_link_e2e.rs",
+        "crates/keld-compat/tests/support/corpus_manifest.rs",
+        "crates/keld-compat/tests/support/corpus_admission.rs",
+        "crates/keld-compat/tests/support/corpus_census.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
@@ -323,6 +326,9 @@
         "crates/keld-compat/tests/lifecycle_evidence_report.rs",
         "crates/keld-compat/tests/electron_lifecycle.rs",
         "crates/keld-core/src/app_session/tests/worker_link_e2e.rs",
+        "crates/keld-compat/tests/support/corpus_manifest.rs",
+        "crates/keld-compat/tests/support/corpus_admission.rs",
+        "crates/keld-compat/tests/support/corpus_census.rs",
         "crates/keld-ipc/tests/worker_link.rs",
         "crates/keld-runtime/src/unix_role_fixture.rs",
         "crates/keld-runtime/tests/windows_lpac_app_link.rs",
@@ -339,7 +345,7 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "d639f6eda29201dd4e46a4fd454d79b059f9c33471f6341aacd0d831eb381e83"
+      "sha256": "ed4a8c19b9423128b35b130e5b85e1bd1bbffb5e368c0bf12f7d54cc2e283df8"
     },
     "bun-readers": {
       "patterns": [
@@ -402,7 +408,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "32e44f3f5e2536c6ca4885ecacb7b8680330cf285e766ca8b8bbfb7fb9e9db4b",
+    "membership_sha256": "4e5bdae26a4245df8b7eacfad67a0d57cdeba67fb54f6fd0646d60132bd966fd",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {

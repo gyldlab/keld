@@ -4,34 +4,36 @@
 //! This file only binds the already-executed Candidate-A CI receipts to KEL-74
 //! records, scores each platform independently, and proves `report.md` is a
 //! deterministic view of those records.
+//!
+//! gh566 T2: the generic record rules (digest, pin revision, engine, result, label)
+//! and the scoring call live in the shared owner `support/corpus_manifest.rs`.
 
 #![allow(clippy::expect_used, clippy::panic)] // integration-test assertions and String writes
 
+#[path = "support/corpus_admission.rs"]
+mod corpus_admission;
+#[path = "support/corpus_manifest.rs"]
+mod corpus_manifest;
+
 use std::fmt::Write as _;
 
+use corpus_admission::{list_libtest, rust_case_listed};
+use corpus_manifest::{
+    Corpus, LIFECYCLE_V0, Run, V0_FROZEN, arch_token, host_platform, platform_token, sha256_uri,
+    verdict_token,
+};
 use keld_compat::evidence::{
-    Arch, AuthorityProfile, CivilDate, EvidenceRecord, OperationKind, Panel, Platform, Verdict,
-    parse_denominator, parse_evidence, score,
+    Arch, AuthorityProfile, EvidenceRecord, OperationKind, Panel, Platform, Scoreboard,
+    parse_evidence, score,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-const DENOMINATOR_JSON: &[u8] = include_bytes!("../fixtures/lifecycle-corpus/denominator.json");
 const REPORT_MD: &[u8] = include_bytes!("../fixtures/lifecycle-corpus/report.md");
 
-const CORPUS_SHA: &str = "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2";
 const PR_HEAD: &str = "fd3c875c59e3cb0b0530166b21013571afd05754";
 const TESTED_COMMIT: &str = "38db257ba2d1f377bd2e24f7bc871faca895c6d5";
-const ELECTRON_COMMIT: &str = "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2";
-const ENGINE_REVISION: &str =
-    "headless-lifecycle-conformance@38db257ba2d1f377bd2e24f7bc871faca895c6d5";
 const ACTIONS_RUN_ID: u64 = 35_015_086_640;
 const CI_REQUIRED_JOB_ID: u64 = 104_538_742_340;
-const AS_OF: CivilDate = CivilDate {
-    year: 2026,
-    month: 9,
-    day: 16,
-};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -166,9 +168,14 @@ const PUBLISHED: [PublishedPlatform; 3] = [
     },
 ];
 
-/// Returns the content-addressed evidence URI for immutable receipt bytes.
-fn sha256_uri(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+/// Loads the committed lifecycle corpus through the shared owner.
+fn corpus() -> Corpus {
+    Corpus::load(&LIFECYCLE_V0).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// The harness engine identity every lifecycle record carries.
+fn engine_revision() -> String {
+    format!("{}@{TESTED_COMMIT}", V0_FROZEN.engine_token)
 }
 
 /// Parses one committed lifecycle CI receipt with unknown fields rejected.
@@ -185,40 +192,32 @@ fn parse_records(platform: PublishedPlatform) -> Vec<EvidenceRecord> {
         .collect()
 }
 
-/// Maps the KEL-74 platform enum to the receipt's stable lowercase token.
-const fn platform_token(platform: Platform) -> &'static str {
-    match platform {
-        Platform::Macos => "macos",
-        Platform::Windows => "windows",
-        Platform::Linux => "linux",
-    }
+/// Validates one platform's records with the shared owner and returns its score.
+fn platform_board(corpus: &Corpus, published: PublishedPlatform) -> Scoreboard {
+    corpus
+        .validate_harness_run(&parse_records(published), V0_FROZEN.records_as_of)
+        .map_or_else(
+            |error| panic!("{} records: {error}", published.label),
+            Run::into_board,
+        )
 }
 
-/// Maps the KEL-74 architecture enum to the receipt's stable token.
-const fn arch_token(arch: Arch) -> &'static str {
-    match arch {
-        Arch::Aarch64 => "aarch64",
-        Arch::X86_64 => "x86_64",
-    }
+/// Validates and scores every published platform, in `PUBLISHED` order.
+fn published_boards(corpus: &Corpus) -> Vec<Scoreboard> {
+    PUBLISHED
+        .iter()
+        .map(|published| platform_board(corpus, *published))
+        .collect()
 }
 
-/// Maps an evidence verdict to the lowercase token rendered in `report.md`.
-const fn verdict_token(verdict: Verdict) -> &'static str {
-    match verdict {
-        Verdict::Pass => "pass",
-        Verdict::Fail => "fail",
-        Verdict::Unknown => "unknown",
-        Verdict::Waived => "waived",
-    }
-}
-
-/// Returns the required verdict for each frozen lifecycle operation.
-fn expected_verdict(operation_id: &str) -> Verdict {
-    match operation_id {
-        "app.when-ready.host-ready-gate" | "app.window-all-closed.policy" => Verdict::Pass,
-        "app.quit.return-contract" => Verdict::Fail,
-        other => panic!("unexpected lifecycle operation verdict: {other}"),
-    }
+/// gh566 C7: the one profile every board shares, rendered through `as_str`. `None`
+/// when any board has no single profile or two boards disagree.
+fn authority_line(boards: &[Scoreboard]) -> Option<&'static str> {
+    let first = boards.first()?.authority_profile()?;
+    boards
+        .iter()
+        .all(|board| board.authority_profile() == Some(first))
+        .then_some(first.as_str())
 }
 
 /// Explains the bounded compatibility meaning of one frozen lifecycle operation.
@@ -239,7 +238,16 @@ fn operation_meaning(operation_id: &str) -> &'static str {
 
 /// Renders the human-readable report from the same canonical evidence records.
 fn render_report() -> String {
-    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
+    let corpus = corpus();
+    render_report_from(&corpus, &published_boards(&corpus))
+        .expect("every published board shares one authority profile")
+}
+
+/// Renders the report over `boards`, one per `PUBLISHED` platform. `None` when the
+/// boards share no single authority profile (gh566 C7).
+fn render_report_from(corpus: &Corpus, boards: &[Scoreboard]) -> Option<String> {
+    let pin = corpus.pin();
+    let authority = authority_line(boards)?;
     let mut out = String::new();
 
     writeln!(out, "# Bounded Electron lifecycle evidence report").expect("String write");
@@ -250,10 +258,11 @@ fn render_report() -> String {
     )
     .expect("String write");
     writeln!(out).expect("String write");
-    writeln!(out, "- Corpus digest: `{CORPUS_SHA}`").expect("String write");
+    writeln!(out, "- Corpus digest: `{}`", corpus.digest()).expect("String write");
     writeln!(
         out,
-        "- Upstream oracle: Electron 44.3.0 @ `{ELECTRON_COMMIT}`"
+        "- Upstream oracle: Electron {} @ `{}`",
+        pin.version, pin.commit
     )
     .expect("String write");
     writeln!(out, "- PR source head: `{PR_HEAD}`").expect("String write");
@@ -269,12 +278,13 @@ fn render_report() -> String {
     .expect("String write");
     writeln!(
         out,
-        "- Authority profile: `legacy_sandbox_off` (the CI conformance harness is an ordinary test process, not a product strict-Bun session)"
+        "- Authority profile: `{authority}` (the CI conformance harness is an ordinary test process, not a product strict-Bun session)"
     )
     .expect("String write");
     writeln!(
         out,
-        "- Harness engine identity: `{ENGINE_REVISION}` (headless conformance identity; not WKWebView/WebView2/WebKitGTK)"
+        "- Harness engine identity: `{}` (headless conformance identity; not WKWebView/WebView2/WebKitGTK)",
+        engine_revision()
     )
     .expect("String write");
     writeln!(out).expect("String write");
@@ -287,11 +297,8 @@ fn render_report() -> String {
     .expect("String write");
     writeln!(out, "| --- | --- | ---: | ---: | ---: | --- |").expect("String write");
 
-    for published in PUBLISHED {
+    for (published, board) in PUBLISHED.iter().zip(boards) {
         let receipt = parse_receipt(published.receipt);
-        let records = parse_records(published);
-        let board =
-            score(&denominator, &records, AS_OF).expect("score published lifecycle platform");
         writeln!(
             out,
             "| {} {} | `{}` `{}` | {} passed / {} skipped | {}/{} | {} (`app.quit()` return contract) | `{}` |",
@@ -355,11 +362,11 @@ fn render_report() -> String {
     )
     .expect("String write");
 
-    out
+    Some(out)
 }
 
 /// Verifies one CI receipt is tied to the claimed runner, source, runtime, and corpus.
-fn assert_receipt(published: PublishedPlatform, receipt: &Receipt) {
+fn assert_receipt(corpus: &Corpus, published: PublishedPlatform, receipt: &Receipt) {
     assert_eq!(receipt.schema, "keld.lifecycle.ci-receipt/v1");
     assert_eq!(receipt.source.pull_request, 242);
     assert_eq!(receipt.source.pr_head, PR_HEAD);
@@ -404,10 +411,13 @@ fn assert_receipt(published: PublishedPlatform, receipt: &Receipt) {
         receipt.runtime.rust_commit,
         "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
     );
-    assert_eq!(receipt.corpus.id, "electron-lifecycle-v0");
-    assert_eq!(receipt.corpus.sha256, CORPUS_SHA);
-    assert_eq!(receipt.corpus.upstream_electron_version, "44.3.0");
-    assert_eq!(receipt.corpus.upstream_electron_commit, ELECTRON_COMMIT);
+    assert_eq!(receipt.corpus.id, corpus.id());
+    assert_eq!(receipt.corpus.sha256, corpus.digest());
+    assert_eq!(
+        receipt.corpus.upstream_electron_version,
+        corpus.pin().version
+    );
+    assert_eq!(receipt.corpus.upstream_electron_commit, corpus.pin().commit);
     assert_eq!(receipt.test.crate_name, "keld-compat");
     assert_eq!(receipt.test.passed, published.expected_tests);
     assert_eq!(receipt.test.skipped, 0);
@@ -437,43 +447,28 @@ fn assert_receipt(published: PublishedPlatform, receipt: &Receipt) {
     }
 }
 
-/// Verifies every evidence row is platform-bound, receipt-bound, and operation-correct.
-fn assert_records(published: PublishedPlatform, records: &[EvidenceRecord], receipt_uri: &str) {
-    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
-    assert_eq!(records.len(), denominator.cells().len());
+/// Verifies the lifecycle-only provenance of each row: platform, revisions and the
+/// receipt binding. The generic record rules are the owner's (`validate_harness_run`).
+fn assert_records(
+    corpus: &Corpus,
+    published: PublishedPlatform,
+    records: &[EvidenceRecord],
+    receipt_uri: &str,
+) {
+    assert_eq!(records.len(), corpus.cells().len());
 
     for record in records {
-        assert_eq!(record.artifact().sha256, CORPUS_SHA);
         assert_eq!(record.artifact().platform, published.platform);
         assert_eq!(record.artifact().arch, published.arch);
         assert_eq!(record.revisions().keld, TESTED_COMMIT);
         assert_eq!(record.revisions().bun, "1.4.2+744846f84");
-        assert_eq!(record.revisions().engine, ENGINE_REVISION);
-        assert_eq!(
-            record.authority_profile(),
-            AuthorityProfile::LegacySandboxOff
-        );
-        assert_eq!(record.operation().kind, OperationKind::PrimaryWorkflow);
-        assert_eq!(
-            record.operation().oracle.revision,
-            "electron-v44.3.0@07e460719c75b2ec5ee4893f7d2192ef31c7b8c2"
-        );
-        assert_eq!(
-            record.result(),
-            expected_verdict(&record.operation().id),
-            "{} has the wrong verdict for {}",
-            published.label,
-            record.operation().id
-        );
+        assert_eq!(record.revisions().engine, engine_revision());
         assert_eq!(record.evidence_uri(), receipt_uri);
-        assert!(record.waiver().is_none());
     }
 }
 
 /// Verifies each platform scores to the same bounded two-match/one-divergence shape.
-fn assert_platform_score(records: &[EvidenceRecord]) {
-    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
-    let board = score(&denominator, records, AS_OF).expect("score published lifecycle platform");
+fn assert_platform_score(board: &Scoreboard) {
     assert_eq!(board.panel(), Panel::Showcase);
     assert_eq!(board.denominator(), 3);
     assert_eq!(board.passed(), 2);
@@ -491,19 +486,19 @@ fn assert_platform_score(records: &[EvidenceRecord]) {
 /// Confirms all published platform evidence is schema-valid and provenance-bound.
 #[test]
 fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scoped() {
-    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
-    assert_eq!(denominator.panel(), Panel::Showcase);
-    assert_eq!(denominator.kind(), OperationKind::PrimaryWorkflow);
-    assert_eq!(denominator.corpus_sha256(), CORPUS_SHA);
+    let corpus = corpus();
+    assert_eq!(corpus.denominator().panel(), Panel::Showcase);
+    assert_eq!(corpus.denominator().kind(), OperationKind::PrimaryWorkflow);
+    assert_eq!(corpus.denominator().corpus_sha256(), corpus.digest());
 
     for published in PUBLISHED {
         let receipt = parse_receipt(published.receipt);
-        assert_receipt(published, &receipt);
+        assert_receipt(&corpus, published, &receipt);
 
         let receipt_uri = sha256_uri(published.receipt);
         let records = parse_records(published);
-        assert_records(published, &records, &receipt_uri);
-        assert_platform_score(&records);
+        assert_records(&corpus, published, &records, &receipt_uri);
+        assert_platform_score(&platform_board(&corpus, published));
     }
 }
 
@@ -525,7 +520,7 @@ fn lifecycle_report_is_a_deterministic_view_of_canonical_records() {
 /// Proves verdict or receipt-byte tampering changes the published evidence outcome.
 #[test]
 fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding() {
-    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
+    let corpus = corpus();
     let published = PUBLISHED[0];
     let mut records = parse_records(published);
 
@@ -534,7 +529,8 @@ fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding()
     assert_ne!(mutated, original, "negative control must mutate a pass");
     records[0] = parse_evidence(mutated.as_bytes()).expect("mutated evidence remains schema-valid");
 
-    let board = score(&denominator, &records, AS_OF).expect("score mutated records");
+    let board = score(corpus.denominator(), &records, V0_FROZEN.records_as_of)
+        .expect("score mutated records");
     assert_eq!(board.passed(), 1);
     assert_eq!(board.failed(), 2);
     assert_ne!(board.unweighted_percent(), Some(66));
@@ -547,4 +543,132 @@ fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding()
         expected_uri,
         "a changed receipt must not retain the committed evidence URI"
     );
+}
+
+/// gh566 C7: the report's authority line is the boards' one shared profile, rendered
+/// through `AuthorityProfile::as_str`, and the render refuses on any disagreement.
+#[test]
+fn report_authority_line_comes_from_the_board() {
+    let corpus = corpus();
+    let boards = published_boards(&corpus);
+    assert_eq!(
+        authority_line(&boards),
+        Some(AuthorityProfile::LegacySandboxOff.as_str())
+    );
+
+    let relabel = |bytes: &[u8]| {
+        let text = std::str::from_utf8(bytes).expect("evidence UTF-8");
+        let relabelled = text.replacen(
+            "\"authority_profile\": \"legacy_sandbox_off\"",
+            "\"authority_profile\": \"unverified\"",
+            1,
+        );
+        assert_ne!(relabelled, text, "negative control must relabel the record");
+        parse_evidence(relabelled.as_bytes()).expect("relabelled record stays schema-valid")
+    };
+    let published = PUBLISHED[0];
+    let scored = |records: &[EvidenceRecord]| {
+        score(corpus.denominator(), records, V0_FROZEN.records_as_of).expect("score board")
+    };
+
+    let mut mixed = parse_records(published);
+    mixed[0] = relabel(published.evidence[0]);
+    assert_eq!(
+        authority_line(&[scored(&mixed)]),
+        None,
+        "a board mixing two profiles must not render one"
+    );
+
+    let all_unverified: Vec<EvidenceRecord> = published
+        .evidence
+        .iter()
+        .map(|bytes| relabel(bytes))
+        .collect();
+    let line = authority_line(&[scored(&all_unverified)]);
+    assert_eq!(line, Some("unverified"));
+    assert_ne!(
+        line,
+        authority_line(&boards),
+        "the line follows the records"
+    );
+
+    let disagreeing = [boards[0].clone(), scored(&all_unverified)];
+    assert_eq!(
+        authority_line(&disagreeing),
+        None,
+        "two platform boards with different profiles must not render one line"
+    );
+
+    // The rendered report itself follows the boards: an all-`unverified` set renders
+    // `unverified` (not the committed bytes), and a disagreeing set renders nothing.
+    let unverified_boards: Vec<Scoreboard> = PUBLISHED
+        .iter()
+        .map(|platform| {
+            let relabelled: Vec<EvidenceRecord> = platform
+                .evidence
+                .iter()
+                .map(|bytes| relabel(bytes))
+                .collect();
+            scored(&relabelled)
+        })
+        .collect();
+    let rendered =
+        render_report_from(&corpus, &unverified_boards).expect("one shared profile renders");
+    assert!(rendered.contains("- Authority profile: `unverified` ("));
+    assert_ne!(rendered.as_bytes(), REPORT_MD);
+    let mut mixed_boards = boards.clone();
+    mixed_boards[1] = scored(&all_unverified);
+    assert!(render_report_from(&corpus, &mixed_boards).is_none());
+}
+
+/// gh566 C1: every case the host OS's published receipt maps is a live, non-ignored
+/// test of the named target, so the frozen receipts never name a vanished case.
+#[test]
+fn published_receipt_cases_remain_live_tests() {
+    let published = PUBLISHED
+        .iter()
+        .find(|published| published.platform == host_platform())
+        .expect("a published receipt for this host platform");
+    let receipt = parse_receipt(published.receipt);
+    let mut targets: Vec<&str> = receipt
+        .test
+        .mapped_cases
+        .iter()
+        .map(|case| case.split_once("::").expect("target::case").0)
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    assert!(!targets.is_empty(), "the receipt maps cases");
+    for target in targets {
+        let (list, ignored) = list_libtest(target).unwrap_or_else(|error| panic!("{error}"));
+        for case in &receipt.test.mapped_cases {
+            let Some(name) = case.strip_prefix(&format!("{target}::")) else {
+                continue;
+            };
+            assert!(
+                rust_case_listed(&list, &ignored, name),
+                "{} receipt maps {case}, which is not exactly one live, non-ignored test",
+                published.label
+            );
+        }
+    }
+}
+
+/// gh566 C1 negative controls: missing, duplicated, prefixed and ignored names are not live.
+#[test]
+fn rust_case_listed_rejects_missing_duplicated_prefixed_and_ignored_names() {
+    let live = "mapped: test\nother: test\n";
+    assert!(rust_case_listed(live, "", "mapped"));
+    for (list, ignored) in [
+        ("other: test\n", ""),
+        ("mapped: test\nmapped: test\n", ""),
+        ("module::mapped: test\n", ""),
+        ("mapped_extra: test\n", ""),
+        (live, "mapped: test\n"),
+    ] {
+        assert!(
+            !rust_case_listed(list, ignored, "mapped"),
+            "false admission: {list:?} / {ignored:?}"
+        );
+    }
 }
