@@ -3,9 +3,14 @@
 //! This is supervisor cleanup, not LPAC containment. The host installs one
 //! unnamed, non-inheritable Job before any Bun role exists. The host is a Job
 //! member, so later children inherit membership without a spawn/assignment
-//! race. The sole Job handle intentionally lives until process termination;
-//! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` then terminates the enrolled tree even
-//! when host destructors cannot run.
+//! race. The sole Job handle is held as the [`WindowsHostDeathJob`] capability,
+//! which nothing closes while the host runs, so it lives until process
+//! termination; `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` then terminates the
+//! enrolled tree even when host destructors cannot run. The one exception is a
+//! `PerUserDirect` exit after a committed update: the host clears the limit on
+//! its released attempt Job and, after a census of its own Job, on that Job
+//! (KEL-53 §4 "Candidate release after commit"), so the committed candidate
+//! outlives it.
 //!
 //! The module also holds the updater helper's System32-only DLL search and its
 //! elevated `runas` launch (KEL-53 §4 "Helper launch and self-anchor"), because
@@ -18,6 +23,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::io::{Read as _, Write as _};
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::windows::io::{
     AsHandle, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
@@ -35,8 +41,9 @@ use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild, nul_terminate
 
 use windows_sys::Win32::Foundation::{
     CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_CANCELLED,
-    ERROR_NOT_SAME_OBJECT, FILETIME, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
-    INVALID_HANDLE_VALUE, S_FALSE, S_OK, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_NOT_SAME_OBJECT, FILETIME,
+    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, S_FALSE, S_OK,
+    SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType, ReadFile,
@@ -50,9 +57,10 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
@@ -99,13 +107,31 @@ pub const WINDOWS_LAUNCH_GATE_ATTEMPT_JOB_V1: &str = "attempt-job-v1";
 /// A launcher retains this handle while its host attempt is live. Closing the last
 /// handle kills every enrolled process; orderly replacement uses
 /// [`Self::terminate_and_wait`] and observes the exact active-process count before
-/// releasing the handle.
+/// releasing the handle. A committed `PerUserDirect` candidate is instead released
+/// through [`Self::release_family`]; the two consume the Job, so one attempt is
+/// either terminated or released, never both (KEL-53 §4 "Candidate release after
+/// commit", *Rollback*).
 #[derive(Debug)]
 pub struct WindowsProcessJob {
     handle: OwnedHandle,
     host_assigned: bool,
     host_process_id: Option<u32>,
     host_process: Option<OwnedHandle>,
+}
+
+/// The attempt Job after [`WindowsProcessJob::release_family`] read its limits
+/// back as `0` (KEL-53 §4 "Candidate release after commit", *One clear
+/// primitive*).
+///
+/// It keeps the Job handle for membership queries only: the host-death census of
+/// [`WindowsHostDeathJob::release_for_exit`] asks `IsProcessInJob` against it to
+/// tell the released family from every other member of the host's own Job. It
+/// cannot terminate, assign or change limits through any method. Dropping it
+/// closes the handle, which ends no process: the Job no longer kills on close.
+#[derive(Debug)]
+#[must_use = "`WindowsHostDeathJob::release_for_exit` needs the released attempt"]
+pub struct WindowsReleasedAttempt {
+    handle: OwnedHandle,
 }
 
 /// Least-rights view of the exact attempt Job transferred to a lifecycle keeper.
@@ -1344,6 +1370,24 @@ fn process_signaled(process: HANDLE) -> io::Result<bool> {
     }
 }
 
+/// Reports whether one process is a member of one Job hierarchy, by the handles
+/// their owners retain through the call. A null `job` asks whether the process
+/// belongs to any Job.
+fn process_in_job(
+    process: HANDLE,
+    job: HANDLE,
+    phase: &'static str,
+) -> Result<bool, WindowsHostJobError> {
+    let mut in_job = 0;
+    // SAFETY: the callers retain both handles through this synchronous call,
+    // IsProcessInJob resolves them only through this process's handle table, and
+    // `in_job` is writable BOOL storage.
+    if unsafe { IsProcessInJob(process, job, &raw mut in_job) } == 0 {
+        return Err(WindowsHostJobError::new(phase));
+    }
+    Ok(in_job != 0)
+}
+
 /// Reports whether two handles name one kernel object.
 ///
 /// `CompareObjectHandles` requires no access right on either handle. Its
@@ -2161,21 +2205,42 @@ impl WindowsProcessJob {
         &self,
         process: impl Into<WindowsJobProcess<'a>>,
     ) -> Result<bool, WindowsHostJobError> {
-        let process = process.into();
-        let mut in_job = 0;
-        // SAFETY: the process's owner and this owner retain both handles, and
-        // `in_job` is writable BOOL storage.
-        if unsafe {
-            IsProcessInJob(
-                process.raw(),
-                self.handle.as_raw_handle().cast(),
-                &raw mut in_job,
-            )
-        } == 0
-        {
-            return Err(WindowsHostJobError::new("attempt Job membership query"));
+        process_in_job(
+            process.into().raw(),
+            self.handle.as_raw_handle().cast(),
+            "attempt Job membership query",
+        )
+    }
+
+    /// Clears kill-on-close on this exact attempt Job and returns the released
+    /// attempt (KEL-53 §4 "Candidate release after commit", *One clear primitive*
+    /// and *Order*, step 4).
+    ///
+    /// The `PerUserDirect` host calls it only after `complete()` returned `Ok`,
+    /// and the Machine-UAC helper after `health-accepted` is durable; the order is
+    /// the caller's. This consumes the Job, as [`Self::terminate_and_wait`] does,
+    /// so by type a rolled-back attempt is never released and a released attempt
+    /// is never terminated. The one clear strips exactly
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, the only limit the Job ever had, and
+    /// reads the flags back; anything other than `0` is "not released".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before any change if no direct host was admitted, and a
+    /// typed "not released" error if the limits were not exactly kill-on-close,
+    /// the clear is refused, or the read-back is not `0`. The Job drops with this
+    /// value on every error: if the limit still holds, that ends the family now
+    /// rather than at the host's exit, which is the same availability-only outcome.
+    pub fn release_family(self) -> Result<WindowsReleasedAttempt, WindowsHostJobError> {
+        if !self.host_assigned {
+            return Err(WindowsHostJobError::contract(
+                "attempt Job release",
+                "no host was admitted to this attempt Job",
+            ));
         }
-        Ok(in_job != 0)
+        clear_job_kill_on_close(self.handle.as_raw_handle().cast(), "attempt Job release")?;
+        let Self { handle, .. } = self;
+        Ok(WindowsReleasedAttempt { handle })
     }
 
     /// Returns the OS-reported number of live processes in this Job hierarchy.
@@ -2598,15 +2663,28 @@ fn wait_handle_until(
     deadline: Instant,
     phase: &'static str,
 ) -> Result<(), WindowsHostJobError> {
+    if wait_handle_bounded(handle, deadline, phase)? {
+        return Ok(());
+    }
+    Err(WindowsHostJobError::contract(
+        phase,
+        "timed out while waiting for process-family termination",
+    ))
+}
+
+/// Waits for one handle until it is signaled or the deadline passes, and reports
+/// which; a failed wait is the error.
+fn wait_handle_bounded(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    deadline: Instant,
+    phase: &'static str,
+) -> Result<bool, WindowsHostJobError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     let millis = finite_wait_millis(remaining);
     // SAFETY: the caller retains the live process or Job handle through this wait.
     match unsafe { WaitForSingleObject(handle, millis) } {
-        WAIT_OBJECT_0 => Ok(()),
-        WAIT_TIMEOUT => Err(WindowsHostJobError::contract(
-            phase,
-            "timed out while waiting for process-family termination",
-        )),
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
         _ => Err(WindowsHostJobError::new(phase)),
     }
 }
@@ -2671,6 +2749,13 @@ fn create_process_job() -> Result<OwnedHandle, WindowsHostJobError> {
 }
 
 fn query_job_limit_flags(raw_job: HANDLE) -> Result<u32, WindowsHostJobError> {
+    query_job_extended_limits(raw_job).map(|limits| limits.BasicLimitInformation.LimitFlags)
+}
+
+/// Reads one Keld-owned Job's complete extended limit record.
+fn query_job_extended_limits(
+    raw_job: HANDLE,
+) -> Result<JOBOBJECT_EXTENDED_LIMIT_INFORMATION, WindowsHostJobError> {
     let mut observed = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     let bytes = u32::try_from(std::mem::size_of_val(&observed)).map_err(|_| {
         WindowsHostJobError::contract("Job limit structure size", "structure exceeds u32")
@@ -2689,7 +2774,59 @@ fn query_job_limit_flags(raw_job: HANDLE) -> Result<u32, WindowsHostJobError> {
     {
         return Err(WindowsHostJobError::new("Job limit read-back"));
     }
-    Ok(observed.BasicLimitInformation.LimitFlags)
+    Ok(observed)
+}
+
+/// The one clear of `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` on a Keld-owned Job
+/// (KEL-53 §4 "Candidate release after commit", *One clear primitive*): query the
+/// extended limits, require exactly that flag, as [`create_process_job`] set it,
+/// strip it, set the limits, and read the flags back through
+/// [`query_job_limit_flags`]. Any read-back other than `0` is "not released".
+///
+/// Exactly two consuming entries call it: [`WindowsProcessJob::release_family`]
+/// on the exact attempt Job and [`WindowsHostDeathJob::release_for_exit`] on the
+/// host's own Job after the census. The Job keeps every other limit it had, which
+/// is none: `create_process_job` sets no other.
+fn clear_job_kill_on_close(
+    raw_job: HANDLE,
+    phase: &'static str,
+) -> Result<(), WindowsHostJobError> {
+    let mut limits = query_job_extended_limits(raw_job)?;
+    let flags = limits.BasicLimitInformation.LimitFlags;
+    if flags != JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE {
+        return Err(WindowsHostJobError::contract(
+            phase,
+            format!(
+                "Job limit flags are 0x{flags:08x}, not exactly KILL_ON_JOB_CLOSE; not released"
+            ),
+        ));
+    }
+    limits.BasicLimitInformation.LimitFlags = 0;
+    let bytes = u32::try_from(std::mem::size_of_val(&limits)).map_err(|_| {
+        WindowsHostJobError::contract("Job limit structure size", "structure exceeds u32")
+    })?;
+    // SAFETY: the caller owns the live Job handle; `limits` is live initialized
+    // storage of exactly `bytes`, the record the query above filled with only
+    // the flag stripped; the API copies it synchronously and retains no pointer.
+    if unsafe {
+        SetInformationJobObject(
+            raw_job,
+            JobObjectExtendedLimitInformation,
+            (&raw const limits).cast(),
+            bytes,
+        )
+    } == 0
+    {
+        return Err(WindowsHostJobError::new(phase));
+    }
+    let observed = query_job_limit_flags(raw_job)?;
+    if observed != 0 {
+        return Err(WindowsHostJobError::contract(
+            phase,
+            format!("Job limit flags read back 0x{observed:08x}, not 0; not released"),
+        ));
+    }
+    Ok(())
 }
 
 fn create_job_completion_port(raw_job: HANDLE) -> Result<OwnedHandle, WindowsHostJobError> {
@@ -2776,6 +2913,121 @@ fn query_job_active_processes(raw_job: HANDLE) -> Result<u32, WindowsHostJobErro
         return Err(WindowsHostJobError::new("attempt Job accounting query"));
     }
     Ok(accounting.ActiveProcesses)
+}
+
+/// Initial capacity, in process IDs, of one Job process-ID snapshot. A host, its
+/// Bun primary, its `WebView2` processes and a candidate family fit; a larger Job
+/// grows the buffer.
+const JOB_PROCESS_ID_LIST_INITIAL_IDS: usize = 32;
+/// IDs added beyond the reported count when a snapshot buffer grows, for members
+/// that join between the report and the next query.
+const JOB_PROCESS_ID_LIST_GROWTH_SLACK: usize = 16;
+/// Bound on buffer growth within one snapshot; a Job whose member count outruns
+/// it that often is refused rather than queried without end.
+const JOB_PROCESS_ID_LIST_GROWTH_LIMIT: u32 = 8;
+
+/// Lists the IDs of the live processes in one Job hierarchy: the process-ID
+/// lister of KEL-53 §5 (slice S6b3), which the host-death census uses and the
+/// Machine-UAC census of S12 reuses.
+///
+/// The list is a snapshot. A member can exit, and its ID be reused, after the
+/// call returns, so callers bind each ID to a process handle and check that
+/// process's Job membership before acting on it. A list shorter than the
+/// assigned count is retaken with a larger buffer.
+fn list_job_process_ids(
+    raw_job: HANDLE,
+    phase: &'static str,
+) -> Result<Vec<u32>, WindowsHostJobError> {
+    list_job_process_ids_from(raw_job, JOB_PROCESS_ID_LIST_INITIAL_IDS, phase)
+}
+
+/// [`list_job_process_ids`] from a caller-chosen initial capacity, so the growth
+/// path is reachable with a small Job.
+fn list_job_process_ids_from(
+    raw_job: HANDLE,
+    initial_ids: usize,
+    phase: &'static str,
+) -> Result<Vec<u32>, WindowsHostJobError> {
+    // The record is two u32 counts followed by the ULONG_PTR ID array, so a
+    // usize buffer holds it at the alignment it requires and the IDs start at a
+    // whole-word offset.
+    const HEADER_WORDS: usize =
+        std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+            / std::mem::size_of::<usize>();
+    const _: () = assert!(
+        std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+            % std::mem::size_of::<usize>()
+            == 0
+    );
+    let mut capacity = initial_ids.max(1);
+    for _ in 0..JOB_PROCESS_ID_LIST_GROWTH_LIMIT {
+        let mut buffer = vec![0_usize; HEADER_WORDS + capacity];
+        let bytes = u32::try_from(std::mem::size_of_val(buffer.as_slice())).map_err(|_| {
+            WindowsHostJobError::contract(phase, "process-ID list buffer exceeds u32")
+        })?;
+        // SAFETY: the caller retains the live Job handle; `buffer` is writable,
+        // usize-aligned storage of exactly `bytes`, which holds the record header
+        // and `capacity` IDs; the API writes within that size and retains no
+        // pointer.
+        let queried = unsafe {
+            QueryInformationJobObject(
+                raw_job,
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                std::ptr::null_mut(),
+            )
+        };
+        let short_buffer = if queried == 0 {
+            let source = io::Error::last_os_error();
+            if source.raw_os_error() != Some(ERROR_MORE_DATA.cast_signed()) {
+                return Err(WindowsHostJobError { phase, source });
+            }
+            true
+        } else {
+            false
+        };
+        // SAFETY: `buffer` starts with at least the record's size in initialized
+        // bytes at the alignment the record requires; the read copies the header
+        // out and keeps no pointer into the buffer.
+        let header = unsafe {
+            buffer
+                .as_ptr()
+                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+                .read()
+        };
+        let assigned = usize::try_from(header.NumberOfAssignedProcesses).map_err(|_| {
+            WindowsHostJobError::contract(phase, "assigned-process count exceeds usize")
+        })?;
+        let listed = usize::try_from(header.NumberOfProcessIdsInList).map_err(|_| {
+            WindowsHostJobError::contract(phase, "listed-process count exceeds usize")
+        })?;
+        if listed > capacity {
+            return Err(WindowsHostJobError::contract(
+                phase,
+                "the Job reported more process IDs than the snapshot buffer holds",
+            ));
+        }
+        if short_buffer || listed < assigned {
+            capacity = assigned
+                .max(capacity.saturating_mul(2))
+                .saturating_add(JOB_PROCESS_ID_LIST_GROWTH_SLACK);
+            continue;
+        }
+        return buffer
+            .iter()
+            .skip(HEADER_WORDS)
+            .take(listed)
+            .map(|&id| {
+                u32::try_from(id)
+                    .map_err(|_| WindowsHostJobError::contract(phase, "process ID exceeds u32"))
+            })
+            .collect();
+    }
+    Err(WindowsHostJobError::contract(
+        phase,
+        "the Job's process list outgrew the snapshot buffer at every retake",
+    ))
 }
 
 fn open_lifecycle_transfer_target(
@@ -3194,19 +3446,286 @@ impl std::error::Error for WindowsHostJobError {
     }
 }
 
+/// The host's own host-death Job, held as a capability (KEL-53 §4 "Candidate
+/// release after commit", *Handle ownership*; Architecture 06 §1).
+///
+/// Not `Clone`; no raw-handle accessor; the handle is `ManuallyDrop<OwnedHandle>`,
+/// so dropping or forgetting this value never closes it. Nothing closes the
+/// handle while the host is alive, which is the KEL-78/T3 invariant unchanged:
+/// the kernel closes it at process termination, orderly or abnormal, and
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` then reaps the enrolled tree. The one
+/// consuming operation, [`Self::release_for_exit`], clears that limit on a
+/// committed `PerUserDirect` exit, after the census, so the committed candidate
+/// outlives the host; it too leaves the handle open.
+///
+/// The capability yields no raw handle and cannot be duplicated in safe code:
+///
+/// ```compile_fail,E0277
+/// let job = keld_runtime::windows_job::install_host_death_job().expect("install");
+/// let _copy: keld_runtime::windows_job::WindowsHostDeathJob = Clone::clone(&job);
+/// ```
+///
+/// ```compile_fail,E0599
+/// use std::os::windows::io::AsRawHandle as _;
+/// let job = keld_runtime::windows_job::install_host_death_job().expect("install");
+/// let _raw = job.as_raw_handle();
+/// ```
+#[must_use = "the host keeps its host-death Job capability until it exits; `release_for_exit` is its one release"]
+pub struct WindowsHostDeathJob {
+    handle: ManuallyDrop<OwnedHandle>,
+    observation: WindowsHostJobObservation,
+}
+
+impl std::fmt::Debug for WindowsHostDeathJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The handle value stays out of every rendering: this type has no raw
+        // accessor, and a formatted number must not become one.
+        f.debug_struct("WindowsHostDeathJob")
+            .field("observation", &self.observation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WindowsHostDeathJob {
+    /// The facts verified when the Job was installed.
+    #[must_use]
+    pub const fn observation(&self) -> WindowsHostJobObservation {
+        self.observation
+    }
+
+    /// The census, then the host-death clear: steps 6 and 7 of the
+    /// `PerUserDirect` accept order (KEL-53 §4 "Candidate release after commit",
+    /// *Order* and *Census and policy*). Consumes the capability and never closes
+    /// the handle.
+    ///
+    /// It cannot be called without a released attempt, so the host's own Job is
+    /// never touched unless the attempt Job was released first. The census takes
+    /// snapshots of this Job's process IDs; skips the host; opens every other
+    /// member with query-limited, terminate and synchronize rights; classifies it
+    /// by `IsProcessInJob` against this Job (not in it: the ID was reused, so a
+    /// new snapshot) and then against the released attempt (in it: family);
+    /// terminates every member outside the family through the handle it opened,
+    /// waits for it, and takes a new snapshot, until a snapshot shows only the
+    /// host and the family or `deadline` passes. The family covers the candidate,
+    /// everything it starts and, by construction, its console host; outside it
+    /// are the host's Bun primary and any descendant it left, a `WebView2` process
+    /// past the `BrowserProcessExited` barrier, and a console host that a member
+    /// allocated: exactly what closing the Job at exit would end, moved before
+    /// the clear. The caller fixes `deadline` from its own reaping latencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed refusal, with the handle still open and the limit still
+    /// kill-on-close, when a snapshot cannot be taken, a member cannot be opened
+    /// for a reason other than having exited, a membership query fails, a member
+    /// outside the family is still in the Job at `deadline`, or the clear does
+    /// not read back `0`. The host then exits as today and the candidate ends
+    /// with it; every record is already committed, so the refusal is
+    /// availability-only.
+    pub fn release_for_exit(
+        self,
+        released: &WindowsReleasedAttempt,
+        deadline: Instant,
+    ) -> Result<WindowsExitCensus, WindowsHostJobError> {
+        self.release_for_exit_with(released, deadline, open_census_member)
+    }
+
+    /// [`Self::release_for_exit`] with the member opener as a parameter. Production
+    /// passes [`open_census_member`]; the straggler cell of the §7 row injects a
+    /// member whose termination is denied, and the census error-mapping cells
+    /// inject the two open failures.
+    fn release_for_exit_with(
+        self,
+        released: &WindowsReleasedAttempt,
+        deadline: Instant,
+        open_member: impl FnMut(u32) -> io::Result<OwnedHandle>,
+    ) -> Result<WindowsExitCensus, WindowsHostJobError> {
+        let raw_job = self.handle.as_raw_handle().cast();
+        let census = exit_census(
+            raw_job,
+            released.handle.as_raw_handle().cast(),
+            deadline,
+            open_member,
+        )?;
+        clear_job_kill_on_close(raw_job, "host-death Job release")?;
+        Ok(census)
+    }
+}
+
+/// Witness of one host-death census (KEL-53 §4 "Candidate release after
+/// commit", *Census and policy*): what the final clean snapshot showed and what
+/// the census did on the way there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsExitCensus {
+    /// Members of the released family in the final snapshot: processes in both
+    /// the host-death Job and the released attempt Job, the host excluded.
+    pub family: u32,
+    /// Members outside the family that the census terminated through the handles
+    /// it opened, over every snapshot. A member found already exited is not
+    /// counted; the next snapshot no longer lists it.
+    pub terminated: u32,
+    /// Snapshots of the host-death Job's process-ID list, the final clean one
+    /// included.
+    pub snapshots: u32,
+}
+
+/// The rights the census needs on one listed member: classification through
+/// `IsProcessInJob`, the exit wait and, outside the family, termination.
+const CENSUS_MEMBER_RIGHTS: u32 =
+    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE;
+/// Bound on one wait for a member whose termination was denied, before the
+/// next snapshot. The deadline refusal covers a member that never exits.
+const CENSUS_DENIED_MEMBER_WAIT: Duration = Duration::from_millis(25);
+
+/// Opens one member of the host-death Job by the ID a snapshot listed, with
+/// exactly the census rights. This is the census's only lookup of that reusable
+/// ID: it classifies, waits and terminates through the handle returned here.
+///
+/// An ID that names no process object fails with `ERROR_INVALID_PARAMETER`, the
+/// status the census reads as "exited after the snapshot". An exited member
+/// whose object another open handle still keeps alive opens like a live one;
+/// its handle is signaled, and the census classifies it as any other member.
+/// Which of the two an exited ID shows depends on handles other processes
+/// hold, so the census relies on both.
+fn open_census_member(process_id: u32) -> io::Result<OwnedHandle> {
+    // SAFETY: OpenProcess reads no caller memory; a numeric ID that names no
+    // process object makes it fail. A non-null result is one fresh owning
+    // handle, converted exactly once below.
+    let raw = unsafe { OpenProcess(CENSUS_MEMBER_RIGHTS, 0, process_id) };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is the fresh non-null owning handle returned above.
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+}
+
+/// The host-death census of [`WindowsHostDeathJob::release_for_exit`]. The
+/// Jobs' owners retain both handles through the call.
+fn exit_census(
+    host_death_job: HANDLE,
+    attempt_job: HANDLE,
+    deadline: Instant,
+    mut open_member: impl FnMut(u32) -> io::Result<OwnedHandle>,
+) -> Result<WindowsExitCensus, WindowsHostJobError> {
+    let own_process_id = std::process::id();
+    let mut terminated = 0_u32;
+    let mut snapshots = 0_u32;
+    loop {
+        snapshots = snapshots.saturating_add(1);
+        let listed = list_job_process_ids(host_death_job, "host-death census snapshot")?;
+        let mut family = 0_u32;
+        let mut clean = true;
+        let mut terminating = Vec::new();
+        let mut denied = Vec::new();
+        for process_id in listed {
+            if process_id == own_process_id {
+                continue;
+            }
+            let member = match open_member(process_id) {
+                Ok(member) => member,
+                Err(source)
+                    if source.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) =>
+                {
+                    // The member exited after the snapshot; the next one omits it.
+                    clean = false;
+                    continue;
+                }
+                Err(source) => {
+                    return Err(WindowsHostJobError {
+                        phase: "host-death census member open",
+                        source,
+                    });
+                }
+            };
+            let raw = member.as_raw_handle().cast();
+            if !process_in_job(raw, host_death_job, "host-death census Job membership")? {
+                // The listed ID was reused by a process outside the Job.
+                clean = false;
+                continue;
+            }
+            if process_in_job(raw, attempt_job, "host-death census family membership")? {
+                family = family.saturating_add(1);
+                continue;
+            }
+            clean = false;
+            if process_signaled(raw).map_err(|source| WindowsHostJobError {
+                phase: "host-death census member state query",
+                source,
+            })? {
+                // Already terminated; the list removes it on its own.
+                continue;
+            }
+            // SAFETY: `member` is the live handle this census opened with
+            // PROCESS_TERMINATE; the call reads no caller memory. The member is a
+            // process of the host's own Job outside the released family, which
+            // closing that Job at exit would terminate in the same way.
+            if unsafe { TerminateProcess(raw, 1) } == 0 {
+                // Denied, as for a protected process: it stays in the next
+                // snapshot and the deadline refusal covers it.
+                denied.push(member);
+                continue;
+            }
+            terminated = terminated.saturating_add(1);
+            terminating.push(member);
+        }
+        for member in &terminating {
+            wait_handle_until(
+                member.as_raw_handle().cast(),
+                deadline,
+                "host-death census member exit",
+            )?;
+        }
+        if clean {
+            return Ok(WindowsExitCensus {
+                family,
+                terminated,
+                snapshots,
+            });
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(WindowsHostJobError::contract(
+                "host-death census",
+                format!(
+                    "the deadline passed with a member outside the released family still in the \
+                     host-death Job after {snapshots} snapshot(s); not released"
+                ),
+            ));
+        }
+        if let Some(member) = denied.first() {
+            // A member the census could not terminate paces the next snapshot
+            // through a bounded wait on its own handle, in case it exits on its
+            // own; nothing here waits for a member that is already signaled.
+            let bound = now
+                .checked_add(CENSUS_DENIED_MEMBER_WAIT)
+                .map_or(deadline, |bound| bound.min(deadline));
+            wait_handle_bounded(
+                member.as_raw_handle().cast(),
+                bound,
+                "host-death census denied-member wait",
+            )?;
+        }
+    }
+}
+
 /// Installs the one process-lifetime Windows Job that reaps Bun descendants
-/// when the host dies abnormally.
+/// when the host dies abnormally, and returns it as the [`WindowsHostDeathJob`]
+/// capability.
 ///
 /// Call exactly once, before the first supervised child or listener is
 /// created. The unnamed Job grants no open-by-name path. Its handle is
-/// explicitly non-inheritable and intentionally retained by the OS until host
-/// termination; returning it would let a caller leak lifecycle ownership.
+/// explicitly non-inheritable and held in `ManuallyDrop` inside the returned
+/// capability, so no caller can close it and dropping the value changes
+/// nothing; the kernel closes it at host termination. The host keeps the
+/// capability until it exits and releases it only through
+/// [`WindowsHostDeathJob::release_for_exit`] on a committed `PerUserDirect`
+/// exit.
 ///
 /// # Errors
 ///
 /// Fails closed when Job creation/configuration, nested assignment, or exact
 /// flag/handle verification fails. No child may be spawned after an error.
-pub fn install_host_death_job() -> Result<WindowsHostJobObservation, WindowsHostJobError> {
+pub fn install_host_death_job() -> Result<WindowsHostDeathJob, WindowsHostJobError> {
     let mut outer_job = 0;
     // SAFETY: GetCurrentProcess returns a non-owning pseudo-handle valid for
     // this process lifetime; `outer_job` is live writable BOOL storage. A null
@@ -3245,8 +3764,10 @@ pub fn install_host_death_job() -> Result<WindowsHostJobObservation, WindowsHost
     // This is an intentional process-lifetime handle, not a recoverable leak:
     // closing it while the host is alive terminates the host and enrolled tree.
     // The kernel closes it on every abnormal or orderly process-termination path.
-    std::mem::forget(job);
-    Ok(observation)
+    Ok(WindowsHostDeathJob {
+        handle: ManuallyDrop::new(job),
+        observation,
+    })
 }
 
 /// Failure to restrict this process's DLL search to System32
@@ -3920,14 +4441,17 @@ mod tests {
     use super::*;
     use crate::windows_lpac::{WindowsLpacProfile, WindowsLpacStdio};
     use std::ffi::{OsStr, OsString};
+    use std::io::{BufRead as _, BufReader};
+    use std::net::{TcpListener, TcpStream};
+    use std::os::windows::process::CommandExt as _;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE};
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-    use windows_sys::Win32::System::Threading::PROCESS_CREATE_PROCESS;
+    use windows_sys::Win32::System::Threading::{DETACHED_PROCESS, PROCESS_CREATE_PROCESS};
 
     const HELPER_ENV: &str = "KELD_WINDOWS_JOB_ASSIGNMENT_HELPER";
     const QF1_HELPER_ENDPOINT_ENV: &str = "KELD_TEST_QF1_ENDPOINT";
@@ -4471,6 +4995,13 @@ mod tests {
         command.spawn().expect("spawn assignment-gate child")
     }
 
+    /// Spawns one parked occupant of this binary with no console. A console
+    /// child that inherits no console allocates one, and its console host
+    /// (`conhost.exe`) is a process Windows creates during the child's start,
+    /// after creation returns to the parent, that joins every Job the child is
+    /// in and outlives the child's own exit for a moment. `DETACHED_PROCESS`
+    /// inherits none and allocates none, so a Job a test assigns the occupant
+    /// to holds exactly what the test put there, on every runner.
     fn spawn_blocking_descendant() -> Child {
         let mut command = Command::new(std::env::current_exe().expect("current test executable"));
         command
@@ -4481,6 +5012,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(HELPER_ENV, "occupant")
+            .creation_flags(DETACHED_PROCESS)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -4496,6 +5028,1122 @@ mod tests {
             "unexpected private active-process helper entry"
         );
         std::thread::park();
+    }
+
+    // KEL-270 T4d S6b3: candidate release after commit (KEL-53 §4 "Candidate
+    // release after commit"; §7 row "8, 9 (candidate release)", the S6b3 cells).
+    // The host and the candidate are child processes of this test binary with
+    // real Jobs, handles and limits; the host-side cells live here because a
+    // host's own Job flags can be read only through a query duplicate that this
+    // module takes from the private handle. A released process has no standard
+    // handles, so every fixture reports over a loopback listener the test owns,
+    // and liveness after the old host's exit is a ping the candidate answers.
+
+    const RELEASE_MODE_ENV: &str = "KELD_TEST_RELEASE_MODE";
+    const RELEASE_REPORT_PORT_ENV: &str = "KELD_TEST_RELEASE_REPORT_PORT";
+    const RELEASE_GENERATION_ENV: &str = "KELD_TEST_RELEASE_GENERATION";
+    /// In-session updates of the chain cell: generation `n` releases `n + 1`.
+    const RELEASE_GENERATIONS: u32 = 10;
+    /// Kill switch for every bounded wait below; not synchronization.
+    const RELEASE_WAIT: Duration = Duration::from_secs(10);
+    /// The census deadline of the straggler cell: long enough for several
+    /// snapshots, short enough for the row.
+    const STRAGGLER_DEADLINE: Duration = Duration::from_millis(1500);
+    const PING: u8 = b'P';
+    const ACK: u8 = b'A';
+    /// The test's go-ahead to a host fixture: its handles are open, release now.
+    const GO: u8 = b'G';
+
+    /// A query-only duplicate of one Job handle, for independent flag read-backs.
+    fn job_query_duplicate(job: HANDLE) -> OwnedHandle {
+        let mut duplicate = std::ptr::null_mut();
+        // SAFETY: the source Job handle is retained by its owner through the
+        // call; the duplicate is non-inheritable and receives only query rights.
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    job,
+                    GetCurrentProcess(),
+                    &raw mut duplicate,
+                    JOB_OBJECT_QUERY,
+                    0,
+                    0,
+                )
+            },
+            0,
+            "duplicate a Job query handle: {}",
+            io::Error::last_os_error()
+        );
+        // SAFETY: successful DuplicateHandle returned one fresh owned handle.
+        unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) }
+    }
+
+    fn job_flags(query: &OwnedHandle) -> u32 {
+        query_job_limit_flags(query.as_raw_handle().cast()).expect("read Job limit flags back")
+    }
+
+    /// Opens one process as the census does but without `PROCESS_TERMINATE`: the
+    /// straggler seam of §7 r5, a member whose termination is denied and whose
+    /// handle therefore stays unsignaled.
+    fn open_without_terminate(process_id: u32) -> io::Result<OwnedHandle> {
+        // SAFETY: OpenProcess reads no caller memory; a non-null result is one
+        // fresh owning handle, converted exactly once.
+        let raw = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                process_id,
+            )
+        };
+        if raw.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `raw` is the fresh non-null owning handle returned above.
+        Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+    }
+
+    /// A test-observed process: the handle is the kernel's liveness oracle, and
+    /// a fixture still alive at drop is terminated as emergency cleanup only.
+    struct ObservedProcess {
+        handle: OwnedHandle,
+        pid: u32,
+    }
+
+    impl ObservedProcess {
+        fn open(pid: u32) -> Self {
+            // SAFETY: OpenProcess reads no caller memory; a non-null result is
+            // one fresh owning handle, converted exactly once.
+            let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+            assert!(
+                !raw.is_null(),
+                "open observed process {pid}: {}",
+                io::Error::last_os_error()
+            );
+            Self {
+                // SAFETY: `raw` is the fresh non-null owning handle returned above.
+                handle: unsafe { OwnedHandle::from_raw_handle(raw.cast()) },
+                pid,
+            }
+        }
+
+        fn raw(&self) -> HANDLE {
+            self.handle.as_raw_handle().cast()
+        }
+
+        fn exited_now(&self) -> bool {
+            process_signaled(self.raw()).expect("query observed process state")
+        }
+
+        fn assert_exited_within(&self, wait: Duration, description: &str) {
+            // SAFETY: the owned handle is live; the bound only kills a broken
+            // fixture and is not synchronization by sleeping.
+            let result = unsafe { WaitForSingleObject(self.raw(), finite_wait_millis(wait)) };
+            assert_eq!(
+                result, WAIT_OBJECT_0,
+                "{description} PID {} is still alive",
+                self.pid
+            );
+        }
+    }
+
+    impl Drop for ObservedProcess {
+        fn drop(&mut self) {
+            if !self.exited_now() {
+                // SAFETY: the owned handle has PROCESS_TERMINATE; this test-owned
+                // fixture has no state outside the test.
+                let _ = unsafe { TerminateProcess(self.raw(), 1) };
+            }
+        }
+    }
+
+    /// One line-oriented report connection from a fixture.
+    struct Report {
+        lines: std::io::Lines<BufReader<TcpStream>>,
+        stream: TcpStream,
+    }
+
+    impl Report {
+        fn accept(listener: &TcpListener) -> Self {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let listener = listener.try_clone().expect("clone the report listener");
+            std::thread::spawn(move || {
+                let _ = sender.send(listener.accept());
+            });
+            let (stream, _) = receiver
+                .recv_timeout(RELEASE_WAIT)
+                .expect("a fixture must connect its report within the kill switch")
+                .expect("accept a fixture report");
+            stream
+                .set_read_timeout(Some(RELEASE_WAIT))
+                .expect("bound report reads");
+            let reader = BufReader::new(stream.try_clone().expect("clone the report stream"));
+            Self {
+                lines: reader.lines(),
+                stream,
+            }
+        }
+
+        fn next(&mut self, prefix: &str) -> String {
+            self.lines
+                .find_map(|line| match line {
+                    Ok(line) if line.starts_with(prefix) => Some(Ok(line)),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .unwrap_or_else(|| panic!("report line starting with {prefix:?} missing"))
+                .unwrap_or_else(|error| panic!("read report line {prefix:?}: {error}"))
+        }
+
+        fn pid(&mut self, label: &str) -> u32 {
+            let line = self.next(&format!("{label} "));
+            line[label.len() + 1..]
+                .split(' ')
+                .next()
+                .and_then(|field| field.parse().ok())
+                .unwrap_or_else(|| panic!("parse {label} PID from {line:?}"))
+        }
+
+        /// Liveness after the old host's exit: the candidate answers a ping.
+        fn ping(&mut self) -> bool {
+            if self.stream.write_all(&[PING]).is_err() {
+                return false;
+            }
+            let mut answer = [0_u8; 1];
+            matches!(self.stream.read(&mut answer), Ok(1) if answer == [ACK])
+        }
+
+        /// Releases a host fixture blocked on the test's go-ahead: after its
+        /// `CANDIDATE` record, once every handle this test observes is open, and
+        /// in the refusal modes after its `FLAGS` record, once the test has
+        /// observed what holds only while that host is alive.
+        fn go(&mut self) {
+            self.stream.write_all(&[GO]).expect("send the go-ahead");
+        }
+    }
+
+    /// Blocks a host fixture until the test's go-ahead byte.
+    fn await_go(report: &mut TcpStream) {
+        let mut go = [0_u8; 1];
+        report.read_exact(&mut go).expect("the test's go-ahead");
+        assert_eq!(go, [GO], "unexpected go-ahead byte");
+    }
+
+    fn report_flags(line: &str, field: &str) -> u32 {
+        line.split(' ')
+            .find_map(|part| part.strip_prefix(&format!("{field}=0x")))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .unwrap_or_else(|| panic!("parse {field} flags from {line:?}"))
+    }
+
+    fn report_count(line: &str, field: &str) -> u32 {
+        line.split(' ')
+            .find_map(|part| part.strip_prefix(&format!("{field}=")))
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("parse {field} from {line:?}"))
+    }
+
+    fn fixture_args(fixture: &str) -> [OsString; 4] {
+        [
+            OsString::from("--exact"),
+            OsString::from(format!("windows_job::tests::{fixture}")),
+            OsString::from("--ignored"),
+            OsString::from("--nocapture"),
+        ]
+    }
+
+    /// Creates one fixture of this binary suspended under this token, with an
+    /// explicit environment and no inherited handle, as the `PerUserDirect`
+    /// candidate is created (KEL-53 §5).
+    fn spawn_suspended_fixture(
+        fixture: &str,
+        role: &str,
+        extra: &[(&str, String)],
+    ) -> WindowsSuspendedChild {
+        let exe = std::env::current_exe().expect("current test executable");
+        let mut environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR", "PATH"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+            .collect();
+        environment.push((OsString::from(HELPER_ENV), OsString::from(role)));
+        for (key, value) in extra {
+            environment.push((OsString::from(key), OsString::from(value)));
+        }
+        WindowsSuspendedChild::spawn_same_token(
+            &exe,
+            &fixture_args(fixture),
+            &environment,
+            exe.parent().expect("test executable directory"),
+        )
+        .expect("create the suspended fixture")
+    }
+
+    fn spawn_fixture(fixture: &str, role: &str, envs: &[(&str, String)], stdin: Stdio) -> Child {
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .args(fixture_args(fixture))
+            .env(HELPER_ENV, role)
+            .envs(envs.iter().map(|(key, value)| (key, value)))
+            .stdin(stdin)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        command.spawn().expect("spawn the fixture")
+    }
+
+    /// The Bun-primary stand-in of §7 r6: leaves a parked descendant in the
+    /// host-death Job and exits.
+    #[test]
+    #[ignore = "private subprocess entry point"]
+    fn exiting_primary_fixture() {
+        assert_eq!(
+            std::env::var(HELPER_ENV).as_deref(),
+            Ok("primary"),
+            "unexpected private exiting-primary fixture entry"
+        );
+        let descendant = spawn_blocking_descendant();
+        println!("DESCENDANT {}", descendant.id());
+        io::stdout().flush().expect("flush the descendant record");
+        std::process::exit(0);
+    }
+
+    /// The candidate stand-in: connects its report, optionally installs its own
+    /// host-death Job with a parked descendant (§7 r10), reports ready, and
+    /// answers pings until its report closes.
+    #[test]
+    #[ignore = "private subprocess entry point"]
+    fn release_candidate_fixture() {
+        assert_eq!(
+            std::env::var(HELPER_ENV).as_deref(),
+            Ok("candidate"),
+            "unexpected private candidate fixture entry"
+        );
+        let port: u16 = std::env::var(RELEASE_REPORT_PORT_ENV)
+            .expect("report port")
+            .parse()
+            .expect("numeric report port");
+        let mut report = TcpStream::connect(("127.0.0.1", port)).expect("connect the report");
+        let mut own_tree = None;
+        if std::env::var(RELEASE_MODE_ENV).as_deref() == Ok("nested-host") {
+            let own_job = install_host_death_job().expect("install the candidate's own Job");
+            let observation = own_job.observation();
+            let descendant = spawn_blocking_descendant();
+            writeln!(
+                report,
+                "CANDIDATE_JOB nested={} assigned={}",
+                observation.nested_under_existing_job, observation.current_process_assigned
+            )
+            .expect("report the candidate's Job");
+            writeln!(report, "CANDIDATE_DESCENDANT {}", descendant.id())
+                .expect("report the candidate's descendant");
+            own_tree = Some((own_job, descendant));
+        }
+        // Held until the exit below: the capability and the descendant's handle.
+        let _own_tree = own_tree;
+        writeln!(report, "CANDIDATE_READY {}", std::process::id()).expect("report ready");
+        report.flush().expect("flush the ready record");
+        let mut byte = [0_u8; 1];
+        loop {
+            match report.read(&mut byte) {
+                Ok(1) if byte == [PING] => report.write_all(&[ACK]).expect("answer the ping"),
+                _ => break,
+            }
+        }
+        // A graceful close: a socket closed by process termination is reset, and
+        // a reset discards what the test has not read yet.
+        let _ = report.shutdown(std::net::Shutdown::Both);
+        drop(report);
+        std::process::exit(0);
+    }
+
+    /// The host stand-in: installs its host-death Job, launches the candidate
+    /// suspended and assigned before its first instruction, then takes the §4
+    /// release path or one of the row's controls, reporting every flag read-back
+    /// over the test's listener. It exits through `process::exit`, as no
+    /// destructor may terminate a released candidate.
+    #[test]
+    #[ignore = "private subprocess entry point"]
+    #[allow(clippy::too_many_lines)] // one host fixture whose modes share launch and reporting
+    fn release_host_fixture() {
+        assert_eq!(
+            std::env::var(HELPER_ENV).as_deref(),
+            Ok("release-host"),
+            "unexpected private release-host fixture entry"
+        );
+        let mode = std::env::var(RELEASE_MODE_ENV).expect("release mode");
+        let port = std::env::var(RELEASE_REPORT_PORT_ENV).expect("report port");
+        let generation: u32 = std::env::var(RELEASE_GENERATION_ENV)
+            .ok()
+            .map_or(1, |value| value.parse().expect("numeric generation"));
+        if launcher_start_gate_requested() {
+            accept_host_start_v1().expect("accept the launcher's start gate");
+        }
+        let mut report = TcpStream::connect(("127.0.0.1", port.parse::<u16>().expect("port")))
+            .expect("connect the host report");
+        let host_job = install_host_death_job().expect("install the host-death Job");
+        let host_query = job_query_duplicate(host_job.handle.as_raw_handle().cast());
+        let observation = host_job.observation();
+        writeln!(
+            report,
+            "HOST generation={generation} pid={} nested={} assigned={}",
+            std::process::id(),
+            observation.nested_under_existing_job,
+            observation.current_process_assigned
+        )
+        .expect("report the host Job");
+
+        let mut straggler = None;
+        let mut reaped_primary = None;
+        match mode.as_str() {
+            "straggler" => {
+                let occupant = spawn_blocking_descendant();
+                writeln!(report, "STRAGGLER {}", occupant.id()).expect("report the straggler");
+                straggler = Some(occupant);
+            }
+            "bun-descendant" => {
+                let mut primary =
+                    spawn_fixture("exiting_primary_fixture", "primary", &[], Stdio::null());
+                let stdout = primary.stdout.take().expect("primary stdout");
+                let line = BufReader::new(stdout)
+                    .lines()
+                    .find_map(|line| line.ok().filter(|line| line.starts_with("DESCENDANT ")))
+                    .expect("the primary's descendant record");
+                let status = primary.wait().expect("wait for the exiting primary");
+                assert!(status.success(), "primary failed: {status}");
+                writeln!(report, "{line}").expect("report the descendant");
+                // The reaped primary's handle stays open, as a host's reaped Bun
+                // child handle does.
+                reaped_primary = Some(primary);
+            }
+            _ => {}
+        }
+
+        let mut attempt = WindowsProcessJob::create().expect("create the attempt Job");
+        let next_generation = generation + 1;
+        let child = match mode.as_str() {
+            "chain" if generation < RELEASE_GENERATIONS => spawn_suspended_fixture(
+                "release_host_fixture",
+                "release-host",
+                &[
+                    (RELEASE_MODE_ENV, mode.clone()),
+                    (RELEASE_REPORT_PORT_ENV, port.clone()),
+                    (RELEASE_GENERATION_ENV, next_generation.to_string()),
+                ],
+            ),
+            "nested-candidate" => spawn_suspended_fixture(
+                "release_candidate_fixture",
+                "candidate",
+                &[
+                    (RELEASE_MODE_ENV, "nested-host".to_owned()),
+                    (RELEASE_REPORT_PORT_ENV, port.clone()),
+                ],
+            ),
+            _ => spawn_suspended_fixture(
+                "release_candidate_fixture",
+                "candidate",
+                &[(RELEASE_REPORT_PORT_ENV, port.clone())],
+            ),
+        };
+        let mut launched = WindowsLaunchedProcess::record(child).expect("record the launch");
+        let membership = attempt
+            .assign_child(launched.child())
+            .expect("assign the candidate before its first instruction");
+        launched.resume(&membership).expect("resume the candidate");
+        // The §7 r3 device: a QUERY|TERMINATE duplicate of the attempt Job taken
+        // while it is live, which survives `terminate_and_wait` and `release_family`.
+        let attempt_query = attempt
+            .duplicate_lifecycle_keeper_handle()
+            .expect("duplicate the attempt Job for read-back");
+        writeln!(report, "CANDIDATE {}", launched.child().id()).expect("report the candidate");
+        // The test opens its handles on the records above, then releases this
+        // host, so every observation below the release is ordered after them.
+        await_go(&mut report);
+        let flags = |label: &str| {
+            format!(
+                "{label} attempt=0x{:08x} host=0x{:08x}",
+                job_flags(&attempt_query),
+                job_flags(&host_query)
+            )
+        };
+
+        match mode.as_str() {
+            "none" => {
+                // §7 r9: dropping the capability never closes the handle.
+                drop(host_job);
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
+            "attempt-only" => {
+                let _released = attempt.release_family().expect("release the attempt Job");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
+            "host-only" => {
+                clear_job_kill_on_close(host_job.handle.as_raw_handle().cast(), "test host clear")
+                    .expect("clear the host-death Job alone");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
+            "rollback" => {
+                attempt
+                    .terminate_and_wait(launched.child(), RELEASE_WAIT)
+                    .expect("roll the attempt back");
+                // The test reads the candidate's process object, and the Job
+                // accounting that `terminate_and_wait` proved zero is not that
+                // object's signal. Wait for the signal here, while this host is
+                // alive, so `ROLLED_BACK` reports a candidate already gone.
+                wait_handle_until(
+                    launched.child().process_handle().as_raw_handle().cast(),
+                    Instant::now() + RELEASE_WAIT,
+                    "test rollback candidate exit",
+                )
+                .expect("the rolled-back candidate's handle signals");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+                writeln!(report, "ROLLED_BACK").expect("report the rollback");
+            }
+            "straggler" => {
+                let released = attempt.release_family().expect("release the attempt Job");
+                let straggler_pid = straggler.as_ref().expect("straggler").id();
+                let deadline = Instant::now() + STRAGGLER_DEADLINE;
+                let refusal = host_job
+                    .release_for_exit_with(&released, deadline, |process_id| {
+                        if process_id == straggler_pid {
+                            open_without_terminate(process_id)
+                        } else {
+                            open_census_member(process_id)
+                        }
+                    })
+                    .expect_err("a straggler past the deadline must refuse the release");
+                writeln!(report, "REFUSED {refusal}").expect("report the refusal");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+                // The test observes the straggler alive after the refusal. The
+                // host-death Job still kills on close, so that holds only while
+                // this host is alive: wait for the go-ahead before the exit.
+                await_go(&mut report);
+            }
+            "exited-member" => {
+                // §4 *Census and policy*, "exited after the snapshot": the seam
+                // fails the candidate's first open with ERROR_INVALID_PARAMETER,
+                // the status of an ID whose process object is gone, and opens it
+                // as production does from the next snapshot on.
+                let released = attempt.release_family().expect("release the attempt Job");
+                let candidate_pid = launched.child().id();
+                let mut exited_once = false;
+                let census = host_job
+                    .release_for_exit_with(&released, Instant::now() + RELEASE_WAIT, |process_id| {
+                        if process_id == candidate_pid && !exited_once {
+                            exited_once = true;
+                            Err(io::Error::from_raw_os_error(
+                                ERROR_INVALID_PARAMETER.cast_signed(),
+                            ))
+                        } else {
+                            open_census_member(process_id)
+                        }
+                    })
+                    .expect("a member that exited after the snapshot must not refuse the release");
+                writeln!(
+                    report,
+                    "CENSUS family={} terminated={} snapshots={}",
+                    census.family, census.terminated, census.snapshots
+                )
+                .expect("report the census");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
+            "open-denied" => {
+                // §4 *Census and policy*, "any other open failure refuses": the
+                // seam fails the candidate's open with ERROR_ACCESS_DENIED, as the
+                // OS does for a protected process whose ID a snapshot listed.
+                let released = attempt.release_family().expect("release the attempt Job");
+                let candidate_pid = launched.child().id();
+                let refusal = host_job
+                    .release_for_exit_with(
+                        &released,
+                        Instant::now() + STRAGGLER_DEADLINE,
+                        |process_id| {
+                            if process_id == candidate_pid {
+                                Err(io::Error::from_raw_os_error(
+                                    ERROR_ACCESS_DENIED.cast_signed(),
+                                ))
+                            } else {
+                                open_census_member(process_id)
+                            }
+                        },
+                    )
+                    .expect_err("a member open denied for another reason must refuse the release");
+                writeln!(report, "REFUSED {refusal}").expect("report the refusal");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+                // The test observes the candidate alive after the refusal, which
+                // holds only while this host is alive: wait for the go-ahead.
+                await_go(&mut report);
+            }
+            _ => {
+                let released = attempt.release_family().expect("release the attempt Job");
+                writeln!(report, "{}", flags("RELEASED_ATTEMPT")).expect("report flags");
+                let census = host_job
+                    .release_for_exit(&released, Instant::now() + RELEASE_WAIT)
+                    .expect("release the host-death Job after the census");
+                writeln!(
+                    report,
+                    "CENSUS family={} terminated={} snapshots={}",
+                    census.family, census.terminated, census.snapshots
+                )
+                .expect("report the census");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+            }
+        }
+        report.flush().expect("flush the host report");
+        // A graceful close before the exit: a socket closed by process
+        // termination is reset, and a reset discards what the test has not read.
+        let _ = report.shutdown(std::net::Shutdown::Both);
+        drop(report);
+        drop(reaped_primary);
+        std::process::exit(0);
+    }
+
+    /// The test side of one host fixture: its listener, process and report.
+    struct ReleaseHost {
+        listener: TcpListener,
+        process: Child,
+        report: Report,
+        _start_writer: Option<std::process::ChildStdin>,
+    }
+
+    impl ReleaseHost {
+        /// Starts a host fixture in `mode`; `launcher` bounds it by an outer
+        /// attempt Job through the start gate before any application resource.
+        fn start(mode: &str, launcher: Option<&mut WindowsProcessJob>) -> Self {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the report listener");
+            let port = listener
+                .local_addr()
+                .expect("listener address")
+                .port()
+                .to_string();
+            let mut envs = vec![
+                (RELEASE_MODE_ENV, mode.to_owned()),
+                (RELEASE_REPORT_PORT_ENV, port),
+            ];
+            if launcher.is_some() {
+                envs.push((
+                    WINDOWS_LAUNCH_GATE_ENV,
+                    WINDOWS_LAUNCH_GATE_ATTEMPT_JOB_V1.to_owned(),
+                ));
+            }
+            let stdin = if launcher.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            };
+            let mut process = spawn_fixture("release_host_fixture", "release-host", &envs, stdin);
+            let mut start_writer = None;
+            if let Some(launcher) = launcher {
+                launcher
+                    .assign_child(&process)
+                    .expect("assign the host to the outer Job before its start");
+                let mut writer = process.stdin.take().expect("host start writer");
+                release_host_start_v1(&mut writer).expect("release the host start gate");
+                start_writer = Some(writer);
+            }
+            let report = Report::accept(&listener);
+            Self {
+                listener,
+                process,
+                report,
+                _start_writer: start_writer,
+            }
+        }
+
+        fn wait(&mut self) {
+            let status = self.process.wait().expect("wait for the host fixture");
+            assert!(status.success(), "host fixture failed: {status}");
+        }
+    }
+
+    impl Drop for ReleaseHost {
+        fn drop(&mut self) {
+            let _ = self.process.kill();
+        }
+    }
+
+    /// Runs one single-candidate mode to the host's `CANDIDATE` record and the
+    /// candidate's ready record.
+    fn start_release_cell(mode: &str) -> (ReleaseHost, ObservedProcess, Report) {
+        let mut host = ReleaseHost::start(mode, None);
+        let host_line = host.report.next("HOST ");
+        assert!(host_line.contains("assigned=true"), "{host_line}");
+        let candidate_pid = host.report.pid("CANDIDATE");
+        let candidate = ObservedProcess::open(candidate_pid);
+        let mut candidate_report = Report::accept(&host.listener);
+        assert_eq!(
+            candidate_report.pid("CANDIDATE_READY"),
+            candidate_pid,
+            "the ready record must come from the launched candidate"
+        );
+        host.report.go();
+        (host, candidate, candidate_report)
+    }
+
+    #[test]
+    fn released_candidate_survives_the_old_host_after_both_clears_read_back_zero() {
+        // §7 r1 (S6b3 cell): the §4 order in stand-in processes.
+        let (mut host, candidate, mut candidate_report) = start_release_cell("both");
+        let released = host.report.next("RELEASED_ATTEMPT ");
+        assert_eq!(report_flags(&released, "attempt"), 0, "{released}");
+        assert_eq!(
+            report_flags(&released, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "the host-death Job is untouched until the census: {released}"
+        );
+        let census = host.report.next("CENSUS ");
+        assert!(report_count(&census, "family") >= 1, "{census}");
+        assert!(report_count(&census, "snapshots") >= 1, "{census}");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the released candidate must answer after the old host exited"
+        );
+        assert!(
+            !candidate.exited_now(),
+            "the released candidate's handle is signaled"
+        );
+    }
+
+    #[test]
+    fn clearing_only_the_attempt_job_leaves_the_candidate_dying_with_the_host() {
+        // §7 r2, first control.
+        let (mut host, candidate, _report) = start_release_cell("attempt-only");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(
+            report_flags(&flags, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        host.wait();
+        candidate.assert_exited_within(RELEASE_WAIT, "candidate with only the attempt Job cleared");
+    }
+
+    #[test]
+    fn clearing_only_the_host_death_job_leaves_the_candidate_dying_with_the_host() {
+        // §7 r2, second control: the clear primitive on the host-death Job alone.
+        let (mut host, candidate, _report) = start_release_cell("host-only");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(
+            report_flags(&flags, "attempt"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        candidate.assert_exited_within(
+            RELEASE_WAIT,
+            "candidate with only the host-death Job cleared",
+        );
+    }
+
+    #[test]
+    fn clearing_neither_job_leaves_the_candidate_dying_with_the_host() {
+        // §7 r2, third control, and r9: the capability dropped first still
+        // reads back KILL_ON_JOB_CLOSE, so the drop closed nothing.
+        let (mut host, candidate, _report) = start_release_cell("none");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(
+            report_flags(&flags, "attempt"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        assert_eq!(
+            report_flags(&flags, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        host.wait();
+        candidate.assert_exited_within(RELEASE_WAIT, "candidate with neither Job cleared");
+    }
+
+    #[test]
+    fn rollback_consumes_the_attempt_job_so_nothing_is_cleared() {
+        // §7 r3: `terminate_and_wait` consumed the Job, so `release_family`
+        // cannot be called (by type); both Jobs read back KILL_ON_JOB_CLOSE
+        // through the keeper duplicate, and the family is gone before the host.
+        let (mut host, candidate, _report) = start_release_cell("rollback");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(
+            report_flags(&flags, "attempt"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        assert_eq!(
+            report_flags(&flags, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        assert_eq!(host.report.next("ROLLED_BACK"), "ROLLED_BACK");
+        // The host reported only after it waited for the candidate's exit
+        // signal, so the candidate is gone while the host is alive, not merely
+        // by the time the host's own exit is observed.
+        assert!(
+            candidate.exited_now(),
+            "the rolled-back candidate must be gone before the host exits"
+        );
+        host.wait();
+    }
+
+    #[test]
+    fn a_straggler_past_the_deadline_refuses_the_release_and_keeps_kill_on_close() {
+        // §7 r5 (S6b3 cell): a member outside the family whose termination is
+        // denied through the seam-injected handle; the host-death Job stays
+        // kill-on-close and ends the candidate and the straggler at the exit.
+        let mut host = ReleaseHost::start("straggler", None);
+        assert!(host.report.next("HOST ").contains("assigned=true"));
+        let straggler = ObservedProcess::open(host.report.pid("STRAGGLER"));
+        let candidate = ObservedProcess::open(host.report.pid("CANDIDATE"));
+        let mut candidate_report = Report::accept(&host.listener);
+        assert_eq!(candidate_report.pid("CANDIDATE_READY"), candidate.pid);
+        host.report.go();
+        let refusal = host.report.next("REFUSED ");
+        assert!(
+            refusal.contains("KELD-RUNTIME-014") && refusal.contains("not released"),
+            "{refusal}"
+        );
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(
+            report_flags(&flags, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        // Observed while the host waits for the go-ahead below: its Job still
+        // kills on close, so the straggler ends at the exit the go-ahead releases.
+        assert!(
+            !straggler.exited_now(),
+            "the straggler must outlive the refusal"
+        );
+        host.report.go();
+        host.wait();
+        candidate.assert_exited_within(RELEASE_WAIT, "candidate after a refused release");
+        straggler.assert_exited_within(RELEASE_WAIT, "straggler after the host exit");
+    }
+
+    #[test]
+    fn a_member_that_exited_after_the_snapshot_costs_a_snapshot_and_not_the_release() {
+        // §4 *Census and policy*, the open status the census reads as "exited
+        // after the snapshot", pinned through the opener seam so it does not
+        // depend on which handles other processes hold: the one injected
+        // ERROR_INVALID_PARAMETER for the candidate is another snapshot, not a
+        // refusal and not a termination; the release completes, both Jobs read
+        // back 0, and the candidate outlives the host.
+        let (mut host, candidate, mut candidate_report) = start_release_cell("exited-member");
+        let census = host.report.next("CENSUS ");
+        assert!(report_count(&census, "family") >= 1, "{census}");
+        assert_eq!(report_count(&census, "terminated"), 0, "{census}");
+        assert!(report_count(&census, "snapshots") >= 2, "{census}");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the candidate must survive a census that retook a snapshot"
+        );
+        assert!(
+            !candidate.exited_now(),
+            "the released candidate's handle is signaled"
+        );
+    }
+
+    #[test]
+    fn a_member_open_denied_for_another_reason_refuses_the_release_and_keeps_kill_on_close() {
+        // §4 *Census and policy*, "any other open failure refuses", pinned
+        // through the opener seam: the typed refusal names the member-open phase
+        // and carries the OS error unchanged, the host-death Job stays
+        // kill-on-close, nothing is terminated by the refusal, and the candidate
+        // ends with the host.
+        let (mut host, candidate, _report) = start_release_cell("open-denied");
+        let refusal = host.report.next("REFUSED ");
+        assert!(
+            refusal.contains("KELD-RUNTIME-014")
+                && refusal.contains("during host-death census member open: ")
+                && refusal.contains("(os error 5)"),
+            "{refusal}"
+        );
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(
+            report_flags(&flags, "host"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            "{flags}"
+        );
+        // Observed while the host waits for the go-ahead below: its Job still
+        // kills on close, so the candidate ends at the exit the go-ahead releases.
+        assert!(
+            !candidate.exited_now(),
+            "a refused open must not terminate the candidate"
+        );
+        host.report.go();
+        host.wait();
+        candidate.assert_exited_within(RELEASE_WAIT, "candidate after a refused member open");
+    }
+
+    #[test]
+    fn the_census_terminates_a_parked_descendant_outside_the_family_before_the_clear() {
+        // §7 r6: a descendant the exited Bun primary left in the host-death Job
+        // and not in the attempt Job is terminated through its own handle, which
+        // is signaled when the census reports, and the candidate survives.
+        let mut host = ReleaseHost::start("bun-descendant", None);
+        assert!(host.report.next("HOST ").contains("assigned=true"));
+        let descendant = ObservedProcess::open(host.report.pid("DESCENDANT"));
+        let candidate = ObservedProcess::open(host.report.pid("CANDIDATE"));
+        let mut candidate_report = Report::accept(&host.listener);
+        assert_eq!(candidate_report.pid("CANDIDATE_READY"), candidate.pid);
+        assert!(
+            !descendant.exited_now(),
+            "the descendant must be parked before the census"
+        );
+        host.report.go();
+        let census = host.report.next("CENSUS ");
+        assert_eq!(report_count(&census, "terminated"), 1, "{census}");
+        assert!(report_count(&census, "family") >= 1, "{census}");
+        assert!(report_count(&census, "snapshots") >= 2, "{census}");
+        assert!(
+            descendant.exited_now(),
+            "the census must have waited for the descendant it terminated"
+        );
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the candidate must survive the census and the host"
+        );
+    }
+
+    #[test]
+    fn the_released_candidate_installs_its_own_nested_job_that_reaps_its_tree() {
+        // §7 r10: the candidate's own host-death Job is nested, and its abnormal
+        // death after the old host is gone reaps its parked descendant.
+        let mut host = ReleaseHost::start("nested-candidate", None);
+        assert!(host.report.next("HOST ").contains("assigned=true"));
+        let candidate = ObservedProcess::open(host.report.pid("CANDIDATE"));
+        let mut candidate_report = Report::accept(&host.listener);
+        let own_job = candidate_report.next("CANDIDATE_JOB ");
+        assert!(
+            own_job.contains("nested=true") && own_job.contains("assigned=true"),
+            "{own_job}"
+        );
+        let descendant = ObservedProcess::open(candidate_report.pid("CANDIDATE_DESCENDANT"));
+        assert_eq!(candidate_report.pid("CANDIDATE_READY"), candidate.pid);
+        host.report.go();
+        let census = host.report.next("CENSUS ");
+        assert!(report_count(&census, "family") >= 2, "{census}");
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the candidate must survive the old host"
+        );
+        assert!(
+            !descendant.exited_now(),
+            "the candidate's descendant survives with it"
+        );
+        // SAFETY: the owned handle has PROCESS_TERMINATE; this is the row's
+        // abnormal death of the test-owned candidate.
+        assert_ne!(unsafe { TerminateProcess(candidate.raw(), 1) }, 0);
+        descendant.assert_exited_within(RELEASE_WAIT, "the released candidate's descendant");
+    }
+
+    #[test]
+    fn an_outer_job_still_bounds_the_released_candidate() {
+        // §7 r11, first half: a host bounded by an outer kill-on-close Job that
+        // the test holds releases its candidate; the candidate still ends when
+        // the test closes that outer Job.
+        let mut outer = WindowsProcessJob::create().expect("create the outer Job");
+        let mut host = ReleaseHost::start("both", Some(&mut outer));
+        assert!(host.report.next("HOST ").contains("nested=true"));
+        let candidate = ObservedProcess::open(host.report.pid("CANDIDATE"));
+        let mut candidate_report = Report::accept(&host.listener);
+        assert_eq!(candidate_report.pid("CANDIDATE_READY"), candidate.pid);
+        host.report.go();
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the candidate must outlive the host"
+        );
+        drop(outer);
+        candidate.assert_exited_within(RELEASE_WAIT, "candidate after the outer Job closed");
+    }
+
+    #[test]
+    fn ten_in_session_updates_each_release_the_next_generation() {
+        // §7 r11, second half, in stand-in processes: generation n releases
+        // n + 1, every assignment succeeds, and the last candidate is alive.
+        fn drain_generation(report: &mut Report, host_line: &str) -> u32 {
+            let generation = report_count(host_line, "generation");
+            assert!(host_line.contains("assigned=true"), "{host_line}");
+            if generation > 1 {
+                assert!(host_line.contains("nested=true"), "{host_line}");
+            }
+            let _candidate = report.pid("CANDIDATE");
+            report.go();
+            let census = report.next("CENSUS ");
+            assert!(report_count(&census, "family") >= 1, "{census}");
+            let flags = report.next("FLAGS ");
+            assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+            assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+            generation
+        }
+
+        let mut host = ReleaseHost::start("chain", None);
+        let first = host.report.next("HOST ");
+        let mut generations = vec![drain_generation(&mut host.report, &first)];
+        // Every later generation and the last candidate connect in turn; a
+        // generation's report ends when it exits.
+        let (mut candidate_report, candidate_pid) = loop {
+            let mut report = Report::accept(&host.listener);
+            let line = report.next("");
+            if line.starts_with("HOST ") {
+                generations.push(drain_generation(&mut report, &line));
+                continue;
+            }
+            let candidate_pid = line
+                .strip_prefix("CANDIDATE_READY ")
+                .and_then(|pid| pid.parse::<u32>().ok())
+                .unwrap_or_else(|| panic!("unexpected chain record {line:?}"));
+            break (report, candidate_pid);
+        };
+        let candidate = ObservedProcess::open(candidate_pid);
+        host.wait();
+        assert_eq!(
+            generations,
+            (1..=RELEASE_GENERATIONS).collect::<Vec<_>>(),
+            "every generation must release the next"
+        );
+        assert!(
+            candidate_report.ping(),
+            "the last candidate must be alive after ten releases"
+        );
+        drop(candidate);
+    }
+
+    #[test]
+    fn release_family_refuses_an_attempt_job_without_an_admitted_host() {
+        let attempt = WindowsProcessJob::create().expect("create the attempt Job");
+        let error = attempt
+            .release_family()
+            .expect_err("an attempt Job with no admitted host must not be released");
+        assert!(
+            error.to_string().contains("no host was admitted"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_clear_requires_exactly_kill_on_close_and_reads_back_zero() {
+        let job = create_process_job().expect("create a kill-on-close Job");
+        let raw = job.as_raw_handle().cast();
+        assert_eq!(
+            query_job_limit_flags(raw).expect("flags"),
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        );
+        clear_job_kill_on_close(raw, "test clear").expect("the one clear");
+        assert_eq!(query_job_limit_flags(raw).expect("flags"), 0);
+        let again = clear_job_kill_on_close(raw, "test clear")
+            .expect_err("a Job without the limit is not released");
+        assert!(again.to_string().contains("not released"), "{again}");
+    }
+
+    #[test]
+    fn the_process_id_lister_grows_from_a_short_buffer_to_the_full_list() {
+        // The Job's members are exactly the occupants: `spawn_blocking_descendant`
+        // creates them with no console, so no console host joins the Job behind
+        // the test's back. Its end is the kernel's own notice: the completion
+        // port is associated while the Job is empty, so the active-process-zero
+        // message cannot be lost, and the empty list is asserted only after Job
+        // accounting read zero, through the crate's `wait_for_active_zero`, with
+        // the deadline as a kill switch. When an exited member leaves the list
+        // relative to its handle's signal is the kernel's ordering, not this
+        // test's, so a list taken straight after `wait` proves nothing.
+        let job = WindowsProcessJob::create().expect("create a kill-on-close Job");
+        let raw = job.handle.as_raw_handle().cast();
+        let completion_port = create_job_completion_port(raw)
+            .expect("associate a completion port with the empty Job");
+        let mut occupants: Vec<Child> = (0..3).map(|_| spawn_blocking_descendant()).collect();
+        for occupant in &occupants {
+            // SAFETY: both handles are live; the occupant is a test-owned fixture
+            // assigned to a test-owned Job for the duration of this test.
+            assert_ne!(
+                unsafe { AssignProcessToJobObject(raw, occupant.as_raw_handle().cast()) },
+                0,
+                "assign an occupant: {}",
+                io::Error::last_os_error()
+            );
+        }
+        let mut expected: Vec<u32> = occupants.iter().map(Child::id).collect();
+        expected.sort_unstable();
+        for initial in [1, 2, JOB_PROCESS_ID_LIST_INITIAL_IDS] {
+            let mut listed =
+                list_job_process_ids_from(raw, initial, "test list").expect("list the Job");
+            listed.sort_unstable();
+            assert_eq!(listed, expected, "initial capacity {initial}");
+        }
+        for occupant in &mut occupants {
+            occupant.kill().expect("end an occupant");
+            occupant.wait().expect("reap an occupant");
+        }
+        job.wait_for_active_zero(&completion_port, Instant::now() + RELEASE_WAIT)
+            .expect("the Job reaches zero active processes once its occupants exited");
+        assert_eq!(
+            list_job_process_ids(raw, "test list").expect("list the empty Job"),
+            Vec::<u32>::new(),
+            "a Job at zero active processes lists no process"
+        );
+    }
+
+    #[test]
+    fn an_exited_process_id_opens_as_invalid_parameter_reused_or_signaled() {
+        // The open outcomes the census relies on for an ID that exited after the
+        // snapshot (KEL-53 §4 "Candidate release after commit", *Census and
+        // policy*). Which one an exited ID shows is not this process's choice: a
+        // process object outlives its process while any other handle to it is
+        // open, which a debugger, a runner monitor or a security product holds at
+        // will, and a released ID can be reused at once. So the pin is the whole
+        // contract, checked for every fresh process: `open_census_member` fails
+        // with exactly ERROR_INVALID_PARAMETER, or opens a reused ID, proven by a
+        // different creation time, or opens the lingering object, proven by the
+        // original creation time, and that handle is signaled. The fourth
+        // combination, the original creation time unsignaled, is a live process
+        // where `wait` reported an exit: the one the census must never see.
+        for _ in 0..8 {
+            let mut child = Command::new("cmd.exe")
+                .args(["/d", "/c", "exit 0"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn a short-lived process");
+            let pid = child.id();
+            let creation =
+                process_creation_time(child.as_raw_handle().cast(), "test").expect("creation time");
+            child.wait().expect("wait for the process");
+            drop(child);
+            match open_census_member(pid) {
+                Err(error) => assert_eq!(
+                    error.raw_os_error(),
+                    Some(ERROR_INVALID_PARAMETER.cast_signed()),
+                    "PID {pid} failed to open with another status: {error}"
+                ),
+                Ok(handle) => {
+                    let raw = handle.as_raw_handle().cast();
+                    let original =
+                        process_creation_time(raw, "test").expect("creation time") == creation;
+                    let signaled = process_signaled(raw).expect("state");
+                    assert!(
+                        !original || signaled,
+                        "PID {pid} opened with its original creation time and unsignaled: a live \
+                         process where `wait` reported an exit"
+                    );
+                }
+            }
+        }
     }
 
     // KEL-270 T4d S5: the connect-back claimant binding (KEL-53 §4 "Candidate
