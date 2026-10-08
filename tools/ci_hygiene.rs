@@ -1420,6 +1420,60 @@ fn check_check_job_os_matrix(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+const DOCTEST_JOB: &str = "doctest";
+const DOCTEST_STEP: &str = "cargo test --doc";
+
+/// nextest does not run doctests, so this lane does (#632): on one OS, gated
+/// on its router output, over the router's library-package selection, with
+/// an empty selection refused rather than passing as a no-op loop.
+fn check_doctest_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, DOCTEST_JOB) else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `{DOCTEST_JOB}` job. nextest skips doctests; restore the routed `cargo test --doc` lane."
+        ));
+    };
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.doctest == 'true'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.doctest == 'true'`; the router owns which packages have doctests to run, and without the dependency the job cannot read its outputs."
+        ));
+    }
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("macos-latest")
+        || block.lines().filter_map(yaml_content).any(|(_, content)| content.starts_with("strategy:"))
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run once on `runs-on: macos-latest` without a matrix; that OS links no WebKitGTK, so the lane has no network apt step."
+        ));
+    }
+    let env_ok = workflow_named_step_mapping(&block, DOCTEST_STEP, "env").is_some_and(|entries| {
+        entries
+            == [(
+                "KELD_CI_DOCTEST_PACKAGES".to_owned(),
+                "${{ needs.changes.outputs.doctest_packages }}".to_owned(),
+            )]
+    });
+    if !env_ok
+        || workflow_named_step_direct_keys(&block, DOCTEST_STEP).unwrap_or_default() != ["shell", "env", "run"]
+        || workflow_named_step_direct_value(&block, DOCTEST_STEP, "shell").as_deref() != Some("bash")
+        || workflow_named_step_shell_commands(&block, DOCTEST_STEP).unwrap_or_default()
+            != [
+                "if [ -z \"$KELD_CI_DOCTEST_PACKAGES\" ]; then",
+                "echo \"::error::doctest lane ran with no package; check the router's doctest_packages output\"",
+                "exit 1",
+                "fi",
+                "for package in $KELD_CI_DOCTEST_PACKAGES; do",
+                "cargo test -p \"$package\" --doc",
+                "done",
+            ]
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{DOCTEST_JOB}` must run `{DOCTEST_STEP}` with only `shell: bash`, `env: KELD_CI_DOCTEST_PACKAGES: ${{{{ needs.changes.outputs.doctest_packages }}}}` and the exact empty-selection guard plus `cargo test -p \"$package\" --doc` loop, without wrappers or exit suppression."
+        ));
+    }
+    Ok(())
+}
+
 const WORKSPACE_JOB: &str = "workspace-contracts";
 const WORKSPACE_STEP: &str = "Local workspace path and process contracts";
 
@@ -1436,9 +1490,11 @@ fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use `runs-on: ${{{{ matrix.os }}}}`; a fixed runner would run every matrix row on one OS."
         ));
     }
-    if workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'") {
+    if workflow_job_level_property(&block, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.workspace == 'true'")
+    {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must use job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
         ));
     }
     if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != ["os: [ubuntu-latest, macos-latest, windows-latest]"] {
@@ -1778,6 +1834,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "codeql-actions",
         "dependency-review",
         "workspace-contracts",
+        "doctest",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1847,6 +1904,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
             "${{ needs.changes.outputs.rust_documentation_only }}",
         ),
         ("KELD_ROUTE_CHECK_OS", "${{ needs.changes.outputs.check_os }}"),
+        ("KELD_RESULT_DOCTEST", "${{ needs.doctest.result }}"),
+        ("KELD_ROUTE_DOCTEST", "${{ needs.changes.outputs.doctest }}"),
     ] {
         if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
             |entries| {
@@ -1875,7 +1934,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_ROUTE_CODEQL_ACTIONS\" ",
         "\"$KELD_RESULT_DEPENDENCY_REVIEW\" ",
         "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" ",
-        "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\""
+        "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" ",
+        "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1885,7 +1945,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 30-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 32-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -2723,6 +2783,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_check_job_if_avoids_matrix(&text)?;
     check_check_job_os_matrix(&text)?;
     check_workspace_contracts_job(&text)?;
+    check_doctest_job(&text)?;
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
@@ -3116,8 +3177,26 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
+            "  doctest:",
+            "    runs-on: macos-latest",
+            "    needs: changes",
+            "    if: needs.changes.outputs.doctest == 'true'",
+            "    steps:",
+            "      - name: cargo test --doc",
+            "        shell: bash",
+            "        env:",
+            "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.doctest_packages }}",
+            "        run: |",
+            "          if [ -z \"$KELD_CI_DOCTEST_PACKAGES\" ]; then",
+            "            echo \"::error::doctest lane ran with no package; check the router's doctest_packages output\"",
+            "            exit 1",
+            "          fi",
+            "          for package in $KELD_CI_DOCTEST_PACKAGES; do",
+            "            cargo test -p \"$package\" --doc",
+            "          done",
             "  workspace-contracts:",
             "    runs-on: ${{ matrix.os }}",
+            "    needs: changes",
             "    if: needs.changes.outputs.workspace == 'true'",
             "    strategy:",
             "      matrix:",
@@ -3164,6 +3243,7 @@ mod tests {
             "      - codeql-actions",
             "      - dependency-review",
             "      - workspace-contracts",
+            "      - doctest",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -3200,6 +3280,8 @@ mod tests {
             "          KELD_EVENT_NAME: ${{ github.event_name }}",
             "          KELD_ROUTE_RUST_DOCUMENTATION_ONLY: ${{ needs.changes.outputs.rust_documentation_only }}",
             "          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}",
+            "          KELD_RESULT_DOCTEST: ${{ needs.doctest.result }}",
+            "          KELD_ROUTE_DOCTEST: ${{ needs.changes.outputs.doctest }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -3217,7 +3299,8 @@ mod tests {
             "            \"$KELD_ROUTE_CODEQL_ACTIONS\" \\",
             "            \"$KELD_RESULT_DEPENDENCY_REVIEW\" \\",
             "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" \\",
-            "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\"",
+            "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" \\",
+            "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\"",
             "",
         ]
         .join("\n")
@@ -3837,7 +3920,7 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("30-argument"), "{error}");
+        assert!(error.contains("32-argument"), "{error}");
     }
 
     #[test]
@@ -3848,6 +3931,7 @@ mod tests {
             "codeql-actions",
             "dependency-review",
             "workspace-contracts",
+            "doctest",
         ] {
             let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
             let error = check_required_job(&workflow).expect_err("missing security job must fail");
@@ -3894,7 +3978,7 @@ mod tests {
             let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
             let error =
                 check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("30-argument"), "{error}");
+            assert!(error.contains("32-argument"), "{error}");
         }
     }
 
@@ -3917,6 +4001,54 @@ mod tests {
             temp.write(WORKFLOW, &valid_workflow().replacen(router, replacement, 1));
             let error = check(temp.path()).expect_err(label);
             assert!(error.contains("check_os"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn doctest_job_is_routed_single_os_and_executed() {
+        check_doctest_job(&valid_workflow()).expect("fixture doctest job passes");
+        for (old, new, label) in [
+            (
+                "    if: needs.changes.outputs.doctest == 'true'\n",
+                "    if: needs.changes.outputs.rust == 'true'\n",
+                "gated on another output",
+            ),
+            ("    if: needs.changes.outputs.doctest == 'true'\n", "", "ungated"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: ubuntu-latest\n    needs: changes\n", "Ubuntu runner needs GTK apt"),
+            (
+                "    if: needs.changes.outputs.doctest == 'true'\n    steps:\n      - name: cargo test --doc\n",
+                "    if: needs.changes.outputs.doctest == 'true'\n    strategy:\n      matrix:\n        os: [macos-latest]\n    steps:\n      - name: cargo test --doc\n",
+                "matrix",
+            ),
+            (
+                "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.doctest_packages }}\n",
+                "          KELD_CI_DOCTEST_PACKAGES: ${{ needs.changes.outputs.packages }}\n",
+                "unfiltered package list includes bin-only packages",
+            ),
+            (
+                "            cargo test -p \"$package\" --doc\n",
+                "            cargo test -p \"$package\" --doc || true\n",
+                "suppressed failure",
+            ),
+            (
+                "            exit 1\n          fi\n          for package in $KELD_CI_DOCTEST_PACKAGES",
+                "            exit 0\n          fi\n          for package in $KELD_CI_DOCTEST_PACKAGES",
+                "empty selection passes",
+            ),
+            (
+                "      - name: cargo test --doc\n        shell: bash\n",
+                "      - name: cargo test --doc\n        if: false\n        shell: bash\n",
+                "skipped step",
+            ),
+            ("  doctest:\n", "  doctests:\n", "renamed job"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n", "missing router dependency"),
+            ("    runs-on: macos-latest\n    needs: changes\n", "    runs-on: macos-latest\n    needs: fmt\n", "wrong dependency"),
+        ] {
+            assert!(valid_workflow().contains(old), "{label}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("doctest"), "{label}: {error}");
         }
     }
 
@@ -3946,14 +4078,15 @@ mod tests {
                 "echoed command",
             ),
             ("  workspace-contracts:\n", "  workspace-contract:\n", "renamed job"),
+            ("    runs-on: ${{ matrix.os }}\n    needs: changes\n", "    runs-on: ${{ matrix.os }}\n", "missing router dependency"),
             (
-                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
-                "    runs-on: ubuntu-latest\n    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
+                "    runs-on: ubuntu-latest\n    needs: changes\n",
                 "fixed runner",
             ),
             (
-                "    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.workspace == 'true'\n",
-                "    if: needs.changes.outputs.workspace == 'true'\n",
+                "    runs-on: ${{ matrix.os }}\n    needs: changes\n",
+                "    needs: changes\n",
                 "missing runner",
             ),
             (

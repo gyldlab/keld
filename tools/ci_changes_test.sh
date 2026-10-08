@@ -23,7 +23,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os|rust_documentation_only)=)' <<<"$actual")"
+    actual="$(grep -Ev '^(local_|codeql_|(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages|workspace|check_os|rust_documentation_only|doctest|doctest_packages)=)' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -107,6 +107,21 @@ expect_output_package_token() {
     package_line="$(grep "^${output_name}=" <<<"$actual")"
     if ! grep -Eq "(^| )${token}( |$)" <<<"${package_line#"${output_name}"=}"; then
         echo "FAIL: $label: ${output_name} does not contain $token" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
+expect_output_package_absent() {
+    local label="$1"
+    local output_name="$2"
+    local token="$3"
+    local actual="$4"
+    local line
+    line="$(grep "^${output_name}=" <<<"$actual")"
+    if grep -Eq "(^| )${token}( |$)" <<<"${line#"${output_name}"=}"; then
+        echo "FAIL: $label: ${output_name} unexpectedly contains $token" >&2
         printf '%s\n' "$actual" >&2
         exit 1
     fi
@@ -351,6 +366,32 @@ expect_exact_output "TypeScript consumer change runs on every OS" check_os "$che
 expect_exact_output "workflow edit runs on every OS" check_os "$check_os_all" "$workflow_codeql"
 expect_exact_output "unknown path runs on every OS" check_os "$check_os_all" "$unknown_codeql"
 
+# #632: doctests run for exactly the selected packages that have a library
+# target; bin-only packages have none and `cargo test --doc` rejects them.
+ipc_doctest="$(result_for_paths crates/keld-ipc/src/codec.rs)"
+expect_exact_output "IPC source selects the doctest lane" doctest true "$ipc_doctest"
+expect_output_package_token "IPC source doctests keld-ipc" doctest_packages keld-ipc "$ipc_doctest"
+expect_output_package_token "IPC source doctests its library dependent keld-cli" doctest_packages keld-cli "$ipc_doctest"
+expect_output_package_absent "IPC source does not doctest bin-only keld-host" doctest_packages keld-host "$ipc_doctest"
+expect_package_token "IPC source still tests keld-host" keld-host "$ipc_doctest"
+expect_exact_output "CLI source doctests keld-cli alone" doctest_packages keld-cli "$cli_source"
+expect_exact_output "reader-doc PR doctests its reader" doctest_packages keld-cli "$reader_doc_pr"
+# Negative controls: a bin-only package inside the selection is dropped, and a
+# no-Rust diff selects no doctest. (Every crates/* path also reaches keld-cli
+# through the registry edge, so the all-bin-only case uses the fake metadata
+# repository below, whose packages have no library target.)
+host_source="$(result_for_paths crates/keld-host/src/main.rs)"
+expect_exact_output "keld-host change still tests keld-cli and keld-host" packages "keld-cli keld-host" "$host_source"
+expect_exact_output "keld-host change doctests only the library keld-cli" doctest_packages keld-cli "$host_source"
+expect_exact_output "docs-only PR skips the doctest lane" doctest false "$docs_only_pr"
+expect_empty_output "docs-only PR doctests nothing" doctest_packages "$docs_only_pr"
+# Fallbacks doctest every library package.
+for selection in "$unknown_codeql" "$workflow_codeql"; do
+    expect_exact_output "fallback selects the doctest lane" doctest true "$selection"
+    expect_exact_output "fallback doctests every library package" doctest_packages \
+        "keld-cli keld-compat keld-core keld-guard keld-ipc keld-native keld-pack keld-runtime keld-update keld-wv" "$selection"
+done
+
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
 expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
 
@@ -535,7 +576,7 @@ printf '%s\n' \
     '    ;;' \
     '  *) root="${root//\\/\\\\}" ;;' \
     'esac' \
-    'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[]}%s]}\\n" "$root" "$root" "$root" "$root" "$root" "$root" "$literal_package"' \
+    'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[],\\\"targets\\\":[{\\\"kind\\\":[\\\"lib\\\"]}]}%s]}\\n" "$root" "$root" "$root" "$root" "$root" "$root" "$literal_package"' \
     >"$temp_dir/fake-bin/cargo"
 chmod +x "$temp_dir/fake-bin/cargo"
 
@@ -558,6 +599,48 @@ fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\
 expect_flags "pull-request base/head classifies the actual diff" "$fake_runtime_flags" "$pr_result"
 expect_package_token "pull-request base/head selects changed package" keld-runtime "$pr_result"
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
+expect_exact_output "pull-request Rust change selects the doctest lane" doctest true "$pr_result"
+expect_exact_output "pull-request Rust change doctests its library package" doctest_packages keld-runtime "$pr_result"
+# Push mode: a Rust change selects doctests; the docs-only push below is the
+# negative control, and so is this push's own no-library case further down.
+push_rust_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$base_sha" GITHUB_SHA="$runtime_sha" "$router" github)"
+expect_exact_output "push Rust change selects the doctest lane" doctest true "$push_rust_result"
+expect_exact_output "push Rust change doctests its library package" doctest_packages keld-runtime "$push_rust_result"
+
+# Fail closed: a library-target read that fails must stop the router before it
+# publishes, even though github mode clears errexit inside its substitution.
+# Artifacts stay under the fixture's git-ignored target/ so later local-mode
+# cases still see a clean checkout.
+failing_jq_dir="$temp_dir/target/failing-jq"
+mkdir -p "$failing_jq_dir"
+printf '%s\n' '#!/usr/bin/env bash' \
+    'for arg in "$@"; do case "$arg" in *proc-macro*) exit 7 ;; esac; done' \
+    "exec \"$temp_dir/fake-bin/jq\" \"\$@\"" >"$failing_jq_dir/jq"
+chmod +x "$failing_jq_dir/jq"
+rm -f "$temp_dir/target/failed-library-output"
+if failed_library="$(cd "$temp_dir" && PATH="$failing_jq_dir:$temp_dir/fake-bin:$PATH" GITHUB_OUTPUT="$temp_dir/target/failed-library-output" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$base_sha" KELD_CI_HEAD_SHA="$runtime_sha" "$router" github 2>&1)"; then
+    echo "FAIL: a failed library-target read published a router selection" >&2
+    printf '%s\n' "$failed_library" >&2
+    exit 1
+fi
+if grep -q '^rust=' <<<"$failed_library" || [[ -e "$temp_dir/target/failed-library-output" ]]; then
+    echo "FAIL: a failed library-target read wrote router outputs" >&2
+    exit 1
+fi
+if ! grep -Fq "ci router: cannot list library packages from cargo metadata" <<<"$failed_library"; then
+    echo "FAIL: a failed library-target read did not report the fail-closed router error" >&2
+    printf '%s\n' "$failed_library" >&2
+    exit 1
+fi
+echo "ok: a failed library-target read fails the router before any output"
+# Negative control: the same invocation with a working jq publishes doctests.
+rm -f "$temp_dir/target/library-output"
+(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" GITHUB_OUTPUT="$temp_dir/target/library-output" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$base_sha" KELD_CI_HEAD_SHA="$runtime_sha" "$router" github >/dev/null)
+if ! grep -Fxq 'doctest=true' "$temp_dir/target/library-output"; then
+    echo "FAIL: the working library-target read did not publish the doctest selection" >&2
+    exit 1
+fi
+echo "ok: a working library-target read publishes the doctest selection"
 
 # A backslash is a legal Unix filename byte, not a path separator. On Unix,
 # prove ingestion preserves an embedded backslash. Windows cannot create this
@@ -586,6 +669,8 @@ git -C "$temp_dir" commit -qm docs
 docs_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$runtime_sha" GITHUB_SHA="$docs_sha" "$router" github)"
 expect_flags "push before/head classifies the actual diff" "$docs_only" "$push_result"
+expect_exact_output "docs-only push selects no doctest" doctest false "$push_result"
+expect_empty_output "docs-only push doctests nothing" doctest_packages "$push_result"
 expect_mermaid_flag "prose-only docs outside diagrams skip Mermaid" false "$push_result"
 expect_codeql "docs-only push still analyses every CodeQL language" "$codeql_all" "$push_result"
 # Negative control: the identical docs-only diff as a pull request skips CodeQL.
@@ -744,6 +829,10 @@ fixture_without_consumer="$(cd "$temp_dir" && printf '%s\0' "$fixture_path" | PA
 fake_fixture_without_consumer=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=false'
 expect_flags "unreferenced crate fixture does not invent a Bun consumer" "$fake_fixture_without_consumer" "$fixture_without_consumer"
 expect_empty_output "unreferenced crate fixture selects no Bun suite" ts_packages "$fixture_without_consumer"
+# A Rust selection whose packages (keld-ipc and its dependents here) have no
+# library target selects no doctest.
+expect_exact_output "Rust selection without a library target selects no doctest" doctest false "$fixture_without_consumer"
+expect_empty_output "Rust selection without a library target doctests nothing" doctest_packages "$fixture_without_consumer"
 
 # A Bun suite the Keld workspace does not own: this fixture proves the lane is
 # derived from the checked-out packages/ tree, not from a hard-coded path.
