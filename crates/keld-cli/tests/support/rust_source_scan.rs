@@ -266,16 +266,17 @@ pub struct Exclusions {
     pub lines: BTreeSet<usize>,
     /// Files a test-gated `mod <name>;` resolves to.
     pub files: BTreeSet<PathBuf>,
-    /// Every file an ungated `mod <name>;` may resolve to. A file that some
-    /// production declaration reaches is never excluded.
+    /// Every file an ungated `mod <name>;` may resolve to, over-approximated
+    /// (see [`declare`]). A file a production declaration reaches is never
+    /// excluded.
     pub declared: BTreeSet<PathBuf>,
-    /// An ungated `mod <name>;` this scanner cannot resolve (an unreadable
-    /// `#[path`, or nesting inside a `#[path]` inline module). Then no
-    /// out-of-line file anywhere is excluded, since any could be its target.
-    pub unresolved: bool,
-    /// Files that an `include!("...")` outside every test-only item pulls into
-    /// production code, resolved relative to the including file.
-    pub includes: BTreeSet<PathBuf>,
+    /// 0-based lines of ungated `mod <name>;` declarations this scanner cannot
+    /// resolve (an unreadable `#[path`, nesting inside a `#[path]` inline
+    /// module, or a path above the repository root): reported as hits.
+    pub unresolved: BTreeSet<usize>,
+    /// `(0-based line, file)` for each plain `include!("...")` outside every
+    /// test-only item, resolved relative to the including file.
+    pub includes: BTreeSet<(usize, PathBuf)>,
     /// 0-based lines of production `include!` calls this scanner cannot read.
     pub unreadable_includes: BTreeSet<usize>,
 }
@@ -425,17 +426,24 @@ fn single_line_item(code: &str) -> bool {
 
 /// Lexical `.`/`..` normalization for repository-relative paths.
 pub fn normalize(path: &Path) -> PathBuf {
+    normalize_within(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// [`normalize`], or `None` when a `..` climbs above the first component.
+fn normalize_within(path: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                out.pop();
+                if !out.pop() {
+                    return None;
+                }
             }
             other => out.push(other.as_os_str()),
         }
     }
-    out
+    Some(out)
 }
 
 /// Files a `mod <name>;` in `declaring`, nested in the inline modules `scope`,
@@ -541,26 +549,41 @@ fn inline_scopes(lines: &[&str], code: &[String]) -> Vec<Scope> {
     scopes
 }
 
-/// Records an ungated `mod <name>;` as production reach.
+/// Records an ungated `mod <name>;` on 0-based `line` as production reach.
+///
+/// Whether a file is mod-rs is not decidable from its name alone: rustc
+/// treats a `#[path]`-loaded file, a crate root other than `lib.rs`/`main.rs`
+/// (`src/bin/*.rs`, fuzz targets) and an `include!`d file as mod-rs. Reach is
+/// therefore recorded under both readings, which can only keep more files in
+/// the scan.
 fn declare(
     found: &mut Exclusions,
     declaring: &Path,
+    line: usize,
     name: &str,
     path: Option<&PathAttribute>,
     scope: &Scope,
 ) {
-    match path {
-        Some(PathAttribute::Unreadable) => found.unresolved = true,
-        _ if scope.pathed => found.unresolved = true,
-        Some(PathAttribute::Plain(value)) => found.declared.extend(resolve_module_file(
-            declaring,
-            name,
-            Some(value),
-            &scope.names,
-        )),
-        None => found
-            .declared
-            .extend(resolve_module_file(declaring, name, None, &scope.names)),
+    if scope.pathed || matches!(path, Some(PathAttribute::Unreadable)) {
+        found.unresolved.insert(line);
+        return;
+    }
+    let value = match path {
+        Some(PathAttribute::Plain(value)) => Some(value.as_str()),
+        _ => None,
+    };
+    let as_mod_rs = declaring.with_file_name("mod.rs");
+    for reading in [declaring, as_mod_rs.as_path()] {
+        for target in resolve_module_file(reading, name, value, &scope.names) {
+            match normalize_within(&target) {
+                Some(target) => {
+                    found.declared.insert(target);
+                }
+                None => {
+                    found.unresolved.insert(line);
+                }
+            }
+        }
     }
 }
 
@@ -582,9 +605,14 @@ fn production_includes(declaring: &Path, lines: &[&str], code: &[String], found:
                 .filter(|(value, tail)| !value.contains('\\') && tail.trim_start().starts_with(')'))
                 .map(|(value, _)| value);
             match literal {
-                Some(value) => {
-                    found.includes.insert(normalize(&directory.join(value)));
-                }
+                Some(value) => match normalize_within(&directory.join(value)) {
+                    Some(target) => {
+                        found.includes.insert((index, target));
+                    }
+                    None => {
+                        found.unreadable_includes.insert(index);
+                    }
+                },
                 None => {
                     found.unreadable_includes.insert(index);
                 }
@@ -606,7 +634,7 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
     while index < lines.len() {
         if single_line_attribute(lines[index], &lexed.code[index]).is_none() {
             if let Some((name, ";")) = module_declaration(lexed.code[index].trim()) {
-                declare(&mut found, declaring, name, None, &scopes[index]);
+                declare(&mut found, declaring, index, name, None, &scopes[index]);
             }
             index += 1;
             continue;
@@ -638,6 +666,7 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
                 declare(
                     &mut found,
                     declaring,
+                    item,
                     name,
                     path_value.as_ref(),
                     &scopes[item],
@@ -670,6 +699,10 @@ pub fn exclusions(declaring: &Path, text: &str, lexed: &Lexed) -> Exclusions {
                     index = item + 1;
                     continue;
                 }
+                // Not excluded, so its target stays scanned; a test-gated
+                // declaration is never production reach.
+                index = item + 1;
+                continue;
             }
         } else if single_line_item(code) {
             found.lines.extend(group_start..=item);
@@ -700,12 +733,13 @@ pub fn load_scan_inputs(root: &Path) -> Sources {
     let fuzz = root.join("crates/keld-ipc/fuzz/fuzz_targets");
     assert!(fuzz.is_dir(), "scan input {} is missing", fuzz.display());
     walk(root, &fuzz, &mut sources);
-    // A file that production code `include!`s is production, wherever it lives
-    // (even under `tests/`); load it until no new include appears.
+    // A file that production code declares or `include!`s is production,
+    // wherever it lives (even under `tests/`); load such files until none is
+    // missing.
     loop {
         let (_, production) = production_view(&sources);
         let missing: Vec<PathBuf> = production
-            .included
+            .reached
             .into_iter()
             .filter(|path| !sources.contains_key(path) && root.join(path).is_file())
             .collect();
@@ -745,14 +779,15 @@ fn walk(root: &Path, directory: &Path, sources: &mut Sources) {
     }
 }
 
-/// The remaining (non-test) view of every scanned file, after applying every
-/// file's exclusions. Files resolved from a test-gated `mod <name>;` vanish.
 /// Which inputs are production after every file's exclusions.
 struct Production {
     /// Excluded whole files.
     excluded: BTreeSet<PathBuf>,
-    /// Files a production `include!` pulls in.
-    included: BTreeSet<PathBuf>,
+    /// Files a production declaration or `include!` reaches.
+    reached: BTreeSet<PathBuf>,
+    /// Production `include!` sites whose plain target is not a scanned file:
+    /// `(file, 0-based line)`.
+    missing_includes: BTreeSet<(PathBuf, usize)>,
 }
 
 fn in_tests_directory(path: &Path) -> bool {
@@ -761,9 +796,10 @@ fn in_tests_directory(path: &Path) -> bool {
 }
 
 /// Lexes every input and decides which files are production. A file stays
-/// excluded only when a test-gated `mod` reaches it (or it sits under `tests/`)
-/// and no production declaration or production `include!` reaches it. Includes
-/// count only from production files, so this iterates to a fixpoint.
+/// excluded only when a test-gated `mod` reaches it, or it sits under
+/// `tests/`, and no production declaration or production `include!` reaches
+/// it. Reach counts only from production files, so this iterates to a
+/// fixpoint: each round can only shrink the excluded set.
 fn production_view(sources: &Sources) -> (BTreeMap<PathBuf, (Lexed, Exclusions)>, Production) {
     let mut lexed: BTreeMap<PathBuf, (Lexed, Exclusions)> = BTreeMap::new();
     for (path, text) in sources {
@@ -771,41 +807,57 @@ fn production_view(sources: &Sources) -> (BTreeMap<PathBuf, (Lexed, Exclusions)>
         let found = exclusions(path, text, &view);
         lexed.insert(path.clone(), (view, found));
     }
-    let declared: BTreeSet<PathBuf> = lexed
+    let gated: BTreeSet<PathBuf> = lexed
         .values()
-        .flat_map(|(_, found)| found.declared.iter().cloned())
+        .flat_map(|(_, found)| found.files.iter().cloned())
         .collect();
-    let unresolved = lexed.values().any(|(_, found)| found.unresolved);
-    let gated: BTreeSet<PathBuf> = if unresolved {
-        BTreeSet::new()
-    } else {
-        lexed
-            .values()
-            .flat_map(|(_, found)| found.files.iter().cloned())
-            .filter(|file| !declared.contains(file))
-            .collect()
-    };
-    let mut included = BTreeSet::new();
+    let mut reached = BTreeSet::new();
     loop {
         let excluded: BTreeSet<PathBuf> = lexed
             .keys()
             .filter(|path| {
-                (gated.contains(*path) || in_tests_directory(path)) && !included.contains(*path)
+                (gated.contains(*path) || in_tests_directory(path)) && !reached.contains(*path)
             })
             .cloned()
             .collect();
         let next: BTreeSet<PathBuf> = lexed
             .iter()
             .filter(|(path, _)| !excluded.contains(*path))
-            .flat_map(|(_, (_, found))| found.includes.iter().cloned())
+            .flat_map(|(_, (_, found))| {
+                found
+                    .declared
+                    .iter()
+                    .cloned()
+                    .chain(found.includes.iter().map(|(_, target)| target.clone()))
+            })
             .collect();
-        if next == included {
-            return (lexed, Production { excluded, included });
+        if next == reached {
+            let missing_includes = lexed
+                .iter()
+                .filter(|(path, _)| !excluded.contains(*path))
+                .flat_map(|(path, (_, found))| {
+                    found
+                        .includes
+                        .iter()
+                        .filter(|(_, target)| !lexed.contains_key(target))
+                        .map(|(line, _)| (path.clone(), *line))
+                })
+                .collect();
+            return (
+                lexed,
+                Production {
+                    excluded,
+                    reached,
+                    missing_includes,
+                },
+            );
         }
-        included = next;
+        reached = next;
     }
 }
 
+/// The remaining (non-test) view of every scanned file, after applying every
+/// file's exclusions. Excluded whole files vanish.
 pub fn remaining(sources: &Sources) -> BTreeMap<PathBuf, (String, Lexed, BTreeSet<usize>)> {
     let (lexed, production) = production_view(sources);
     let excluded_files = production.excluded;
@@ -919,20 +971,30 @@ pub fn channel_literal_hits(sources: &Sources, skip: &Path) -> Vec<Hit> {
     hits
 }
 
-/// Production `include!` sites whose argument this scanner cannot resolve:
-/// reported as hits, because the included code cannot be scanned.
+/// Production sites whose target this scanner cannot scan: an unresolvable
+/// `mod <name>;`, an `include!` it cannot read, or a plain `include!` whose
+/// file is absent from the input. Reported as hits, so the scan fails closed.
 pub fn unreadable_include_hits(sources: &Sources) -> Vec<Hit> {
     let (lexed, production) = production_view(sources);
-    lexed
+    let mut hits: Vec<Hit> = lexed
         .iter()
         .filter(|(path, _)| !production.excluded.contains(*path))
         .flat_map(|(path, (_, found))| {
-            found.unreadable_includes.iter().map(|line| Hit {
-                file: display(path),
-                line: line + 1,
-            })
+            found
+                .unreadable_includes
+                .iter()
+                .chain(found.unresolved.iter())
+                .map(|line| Hit {
+                    file: display(path),
+                    line: line + 1,
+                })
         })
-        .collect()
+        .collect();
+    hits.extend(production.missing_includes.iter().map(|(path, line)| Hit {
+        file: display(path),
+        line: line + 1,
+    }));
+    hits
 }
 
 /// Criterion 15: string literals equal to a `names` entry in the remaining
@@ -1082,7 +1144,8 @@ pub fn entry_constructor_is_private(table: &str) -> bool {
     declarations.len() == 1 && declarations[0].starts_with("const fn new(")
 }
 
-/// Files a production `include!` pulls in (they are scanned even under `tests/`).
+/// Files a production declaration or `include!` reaches (they are scanned
+/// even outside `crates/*/src`, for example under `tests/`).
 pub fn included_files(sources: &Sources) -> BTreeSet<PathBuf> {
-    production_view(sources).1.included
+    production_view(sources).1.reached
 }

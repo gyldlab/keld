@@ -131,6 +131,8 @@ export interface ChannelTableEntry {
   readonly name: string;
   /** Wire channel id. */
   readonly id: number;
+  /** `ReceiveClass` variant, e.g. `HostCall`. */
+  readonly receiveClass: string;
 }
 
 /** The parsed channel table in `CHANNEL_TABLE` order. */
@@ -138,6 +140,8 @@ export interface ChannelTable {
   /** `HANDSHAKE_CHANNEL`, reserved for `HELLO`. */
   readonly handshake: number;
   readonly entries: readonly ChannelTableEntry[];
+  /** `ReceiveClass` variants for which `carries_host_events` is true. */
+  readonly hostEventClasses: readonly string[];
 }
 
 interface SourceArgument {
@@ -245,7 +249,8 @@ function parseEntry(
       `authority must be Authority::HostInternal or Authority::Guarded(&[<keld_guard constant>, ...]), found ${authorityArg.text}`,
     );
   }
-  return { entry: { rustName, name: name[1], id: Number(idArg.text) }, consumed };
+  const receiveClass = classArg.text.slice("ReceiveClass::".length);
+  return { entry: { rustName, name: name[1], id: Number(idArg.text), receiveClass }, consumed };
 }
 
 function parseTableList(lines: readonly string[], start: number): { names: string[]; consumed: number } {
@@ -312,6 +317,7 @@ export function parseChannelTable(rustSource: string): ChannelTable {
   let handshake: number | undefined;
   const entries = new Map<string, ChannelTableEntry>();
   let listed: string[] | undefined;
+  let hostEventClasses: string[] | undefined;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (/^\s*\/\//.test(line)) continue;
@@ -320,6 +326,15 @@ export function parseChannelTable(rustSource: string): ChannelTable {
       if (!parsed || Number(parsed[1]) > 0xffff) channelFail(index + 1, `unsupported HANDSHAKE_CHANNEL: ${line.trim()}`);
       if (handshake !== undefined) channelFail(index + 1, "duplicate HANDSHAKE_CHANNEL");
       handshake = Number(parsed[1]);
+    } else if (line === "    pub const fn carries_host_events(self) -> bool {") {
+      // The Rust table owns which classes carry host EVENTs; read, never mirror.
+      const body = /^        matches!\(self, (Self::[A-Z][A-Za-z0-9]*(?: \| Self::[A-Z][A-Za-z0-9]*)*)\)$/.exec(lines[index + 1] ?? "");
+      if (!body || lines[index + 2] !== "    }") {
+        channelFail(index + 2, "carries_host_events must be one `matches!(self, Self::A | Self::B)` line");
+      }
+      if (hostEventClasses !== undefined) channelFail(index + 1, "duplicate carries_host_events");
+      hostEventClasses = body[1].split(" | ").map((variant) => variant.slice("Self::".length));
+      index += 2;
     } else if (line.startsWith("pub const CHANNEL_TABLE")) {
       if (listed !== undefined) channelFail(index + 1, "duplicate CHANNEL_TABLE");
       const table = parseTableList(lines, index);
@@ -335,6 +350,7 @@ export function parseChannelTable(rustSource: string): ChannelTable {
     }
   }
   if (handshake === undefined) fail("crates/keld-ipc/src/channel_table.rs: missing HANDSHAKE_CHANNEL");
+  if (hostEventClasses === undefined) fail("crates/keld-ipc/src/channel_table.rs: missing ReceiveClass::carries_host_events");
   if (listed === undefined) fail("crates/keld-ipc/src/channel_table.rs: missing CHANNEL_TABLE");
 
   const ordered: ChannelTableEntry[] = [];
@@ -356,7 +372,7 @@ export function parseChannelTable(rustSource: string): ChannelTable {
     if (constants.has(constant)) fail(`entry ${entry.name} would generate a duplicate ${constant}`);
     constants.add(constant);
   }
-  return { handshake, entries: ordered };
+  return { handshake, entries: ordered, hostEventClasses };
 }
 
 /** Renders the generated `transport.ts` region, markers included, without a trailing newline. */
@@ -372,6 +388,13 @@ export function renderChannelTableRegion(rustSource: string): string {
     lines.push(`/** Channel \`${entry.name}\` (\`keld_ipc::channel_table::${entry.rustName}\`). */`);
     lines.push(`export const ${channelConstantName(entry.name)} = ${entry.id};`);
   }
+  const eventChannels = table.entries
+    .filter((entry) => table.hostEventClasses.includes(entry.receiveClass))
+    .map((entry) => channelConstantName(entry.name));
+  lines.push(
+    "/** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */",
+    `export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([${eventChannels.join(", ")}]);`,
+  );
   lines.push(CHANNEL_REGION_END);
   return lines.join("\n");
 }

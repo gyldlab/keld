@@ -806,7 +806,10 @@ test lands with #528.
   `lifecycle_event_receiver()` keep their current public signatures; both delegate to
   the constructors above with the lifecycle channel.
 
-  *Fallback if #613 is not approved:* this spec stands on its own. `reply_waiter` and
+  *Fallback (retired):* #613 was approved and X05-T4 (#631) moved both constructors
+  to `&'static ChannelEntry`; `event_receiver` admits by
+  `ReceiveClass::carries_host_events`. The text below records the interim shape #528
+  T1 shipped with. *Fallback if #613 is not approved:* this spec stands on its own. `reply_waiter` and
   `event_receiver` take today's `ChannelId` and still return
   `Result<ReceivePolicy, IpcError>`, and `WorkerLink` uses the current hand-held
   channel constants: echo = 1 (`ECHO_CHANNEL`) and lifecycle = 3
@@ -1091,8 +1094,9 @@ unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
 `WORKER_LINK_CONTROL`, `FrameReader.end`, and the test-only `openWorkerLinkForTest`,
 `WorkerLinkTestHooks`, `WorkerBlockingFault` and `WORKER_LINK_TEST_WORDS`); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
-`ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (today's
-`ChannelId` under the §4.7 fallback) and returning `Result<ReceivePolicy, IpcError>`,
+`ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (#528 T1
+shipped the §4.7 fallback's `ChannelId`; X05-T4, #631, retired it) and returning
+`Result<ReceivePolicy, IpcError>`,
 with `lifecycle_reply_waiter` and `lifecycle_event_receiver` unchanged; and the new `CallError` codes.
 permission model: none (no capability, manifest or mount change). dependency addition: none. **wire protocol**: new receiver
 corpus rows, the host `ERR` on retire and Quit, the Worker as the link endpoint, and

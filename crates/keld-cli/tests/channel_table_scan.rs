@@ -96,20 +96,17 @@ fn scan_input_is_crate_sources_and_fuzz_targets_never_tests_directories() {
             "{required} must be scanned"
         );
     }
+    let reached = scan::included_files(&sources);
     for path in sources.keys() {
+        let spec_input = path.starts_with("crates/keld-ipc/fuzz/fuzz_targets")
+            || (path
+                .components()
+                .nth(2)
+                .is_some_and(|c| c.as_os_str() == "src")
+                && !path.components().any(|c| c.as_os_str() == "tests"));
         assert!(
-            path.starts_with("crates/keld-ipc/fuzz/fuzz_targets")
-                || path
-                    .components()
-                    .nth(2)
-                    .is_some_and(|c| c.as_os_str() == "src"),
-            "{} is outside crates/*/src and the fuzz targets",
-            path.display()
-        );
-        assert!(
-            !path.components().any(|c| c.as_os_str() == "tests")
-                || scan::included_files(&sources).contains(path),
-            "{} is inside a tests/ directory and no production `include!` reaches it",
+            spec_input || reached.contains(path),
+            "{} is neither a crates/*/src or fuzz-target input nor reached by production code",
             path.display()
         );
     }
@@ -611,6 +608,7 @@ fn nested_module_declarations_resolve_by_rust_module_rules() {
         hit_files(&pathed_inline),
         set(&["crates/x/src/a/t.rs", "crates/x/src/other/t.rs"])
     );
+    // An unresolvable production declaration is itself a hit at its line.
     let unresolved = synthetic(&[
         (
             "crates/x/src/lib.rs",
@@ -618,7 +616,13 @@ fn nested_module_declarations_resolve_by_rust_module_rules() {
         ),
         ("crates/x/src/t.rs", literal),
     ]);
-    assert_eq!(hit_files(&unresolved), set(&["crates/x/src/t.rs"]));
+    assert_eq!(
+        channel_hits(&unresolved),
+        vec![Hit {
+            file: "crates/x/src/lib.rs".to_owned(),
+            line: 2
+        }]
+    );
 }
 
 /// A file that production code `include!`s is production, even under `tests/`;
@@ -687,4 +691,114 @@ fn production_include_targets_are_scanned() {
     assert!(loaded.contains_key(Path::new("crates/x/tests/gen.rs")));
     assert!(!loaded.contains_key(Path::new("crates/x/tests/unrelated.rs")));
     assert_eq!(hit_files(&loaded), set(&["crates/x/tests/gen.rs"]));
+}
+
+/// rustc treats `#[path]`-loaded files, crate roots other than `lib.rs` and
+/// `main.rs`, and `include!`d files as mod-rs, so their nested `mod`
+/// declarations resolve beside the file; a production declaration into
+/// `tests/` is production too. None of these can be hidden by a gated alias.
+/// Each layout was confirmed against rustc's own module loading in review.
+#[test]
+fn declarations_from_path_bin_and_included_files_stay_production() {
+    let literal = "const X: ChannelId = ChannelId(1);\n";
+    let gated_util = "mod a {\n    #[cfg(test)]\n    mod util;\n}\n";
+    let path_root = format!("#[path = \"imp.rs\"]\nmod platform;\n{gated_util}");
+    let include_root = format!("mod g {{\n    include!(\"gen.rs\");\n}}\n{gated_util}");
+    let nested_a = "pub mod a {\n    pub mod util;\n}\n";
+    let cases = [
+        (
+            "#[path] file declares a nested module",
+            vec![
+                ("crates/x/src/lib.rs", path_root.as_str()),
+                ("crates/x/src/imp.rs", nested_a),
+                ("crates/x/src/a/util.rs", literal),
+            ],
+            "crates/x/src/a/util.rs",
+        ),
+        (
+            "included file declares a nested module",
+            vec![
+                ("crates/x/src/lib.rs", include_root.as_str()),
+                ("crates/x/src/gen.rs", nested_a),
+                ("crates/x/src/a/util.rs", literal),
+            ],
+            "crates/x/src/a/util.rs",
+        ),
+        (
+            "bin crate root declares a sibling module",
+            vec![
+                (
+                    "crates/x/src/lib.rs",
+                    "#[cfg(test)]\n#[path = \"bin/common.rs\"]\nmod common_alias;\n",
+                ),
+                ("crates/x/src/bin/tool.rs", "mod common;\nfn main() {}\n"),
+                ("crates/x/src/bin/common.rs", literal),
+            ],
+            "crates/x/src/bin/common.rs",
+        ),
+        (
+            "production #[path] into tests/",
+            vec![
+                (
+                    "crates/x/src/lib.rs",
+                    "#[path = \"../tests/support/gen.rs\"]\nmod gen;\n",
+                ),
+                ("crates/x/tests/support/gen.rs", literal),
+            ],
+            "crates/x/tests/support/gen.rs",
+        ),
+        (
+            "production module named tests",
+            vec![
+                ("crates/x/src/lib.rs", "pub mod tests;\n"),
+                ("crates/x/src/tests/mod.rs", literal),
+            ],
+            "crates/x/src/tests/mod.rs",
+        ),
+    ];
+    for (label, files, expected) in cases {
+        assert_eq!(hit_files(&synthetic(&files)), set(&[expected]), "{label}");
+    }
+}
+
+/// An `include!` whose target cannot be scanned fails closed at the call site:
+/// a missing file, or a path that climbs above the repository root. The loader
+/// follows production declarations as well as includes.
+#[test]
+fn unscannable_include_targets_are_hits() {
+    for (text, line) in [
+        ("mod g {\n    include!(\"absent.rs\");\n}\n", 2),
+        ("include!(\"../../../../outside.rs\");\n", 1),
+    ] {
+        let sources = synthetic(&[("crates/x/src/lib.rs", text)]);
+        assert_eq!(
+            channel_hits(&sources),
+            vec![Hit {
+                file: "crates/x/src/lib.rs".to_owned(),
+                line
+            }],
+            "{text}"
+        );
+    }
+
+    let root = tempfile::tempdir().expect("fixture root");
+    for (path, text) in [
+        (
+            "crates/x/src/lib.rs",
+            "mod generated {\n    include!(\"../tests/gen.rs\");\n}\n",
+        ),
+        ("crates/x/tests/gen.rs", "pub mod helper;\n"),
+        (
+            "crates/x/tests/helper.rs",
+            "const X: ChannelId = ChannelId(1);\n",
+        ),
+    ] {
+        let file = root.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("fixture dir");
+        std::fs::write(file, text).expect("fixture file");
+    }
+    std::fs::create_dir_all(root.path().join("crates/keld-ipc/fuzz/fuzz_targets"))
+        .expect("fuzz dir");
+    let loaded = scan::load_scan_inputs(root.path());
+    assert_eq!(hit_files(&loaded), set(&["crates/x/tests/helper.rs"]));
 }

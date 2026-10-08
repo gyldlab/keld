@@ -29,6 +29,27 @@
 //!     .expect("fs is a guarded CALL channel");
 //! assert_eq!(policy.channel, channel_table::FS.id());
 //! ```
+//!
+//! The same holds for the app-side reply waiter and event receiver:
+//!
+//! ```compile_fail
+//! use keld_ipc::{ChannelId, CorrelationId, ReceivePolicy};
+//! let _ = ReceivePolicy::reply_waiter(ChannelId(4), CorrelationId(7));
+//! ```
+//!
+//! ```compile_fail
+//! use keld_ipc::{ChannelId, ReceivePolicy};
+//! let _ = ReceivePolicy::event_receiver(ChannelId(4));
+//! ```
+//!
+//! ```
+//! use keld_ipc::{CorrelationId, ReceivePolicy, channel_table};
+//! let waiter = ReceivePolicy::reply_waiter(&channel_table::FS, CorrelationId(7))
+//!     .expect("fs replies carry a CallError ERR");
+//! let events = ReceivePolicy::event_receiver(&channel_table::LIFECYCLE)
+//!     .expect("lifecycle carries host EVENTs");
+//! assert_eq!((waiter.channel, events.channel), (channel_table::FS.id(), channel_table::LIFECYCLE.id()));
+//! ```
 
 use keld_guard::capability::{FS_READ, FS_WRITE};
 
@@ -52,6 +73,15 @@ pub enum ReceiveClass {
     /// App-to-host `CALL` routed through `guard_dispatch`, whose `ERR` is a
     /// `CallError` (row: privileged receiver).
     GuardedCall,
+}
+
+impl ReceiveClass {
+    /// Whether the host sends `EVENT`s to the app on a channel of this class,
+    /// so an app-side event receiver may name it (GH-527 §4.7).
+    #[must_use]
+    pub const fn carries_host_events(self) -> bool {
+        matches!(self, Self::HostCallWithEvents)
+    }
 }
 
 /// What authorizes a call on a channel.
@@ -663,17 +693,15 @@ mod tests {
         assert_eq!(*detail, "wrong channel for the session policy", "{label}");
     }
 
-    /// Criterion 10: a frame on unallocated id 4, otherwise exactly what each
-    /// live policy admits, is `KELD-IPC-005` from the header alone. The reader
-    /// rejects it with no payload bytes present, so nothing was read or
-    /// allocated for the payload.
-    #[test]
-    fn unallocated_channel_is_rejected_by_every_live_policy_before_payload() {
-        let unallocated = 4;
-        assert_eq!(entry(ChannelId(unallocated)), None);
+    /// Every live receive policy, with a header kind, correlation and length
+    /// that the policy admits on its own channel.
+    fn live_policies() -> Vec<(&'static str, ReceivePolicy, FrameKind, u32, u32)> {
         let corr = CorrelationId(7);
         let fs = ReceivePolicy::privileged_call_receiver(&FS).expect("fs policy");
-        let live = [
+        let fs_waiter = ReceivePolicy::reply_waiter(&FS, corr).expect("fs waiter");
+        let lifecycle_waiter = ReceivePolicy::reply_waiter(&LIFECYCLE, corr).expect("waiter");
+        let events = ReceivePolicy::event_receiver(&LIFECYCLE).expect("lifecycle events");
+        vec![
             (
                 "server-pre-auth-hello",
                 ReceivePolicy::server_pre_auth_hello(),
@@ -738,7 +766,27 @@ mod tests {
                 4,
             ),
             ("privileged-fs-receiver", fs, FrameKind::Call, 7, 4),
-        ];
+            ("reply-waiter:fs", fs_waiter, FrameKind::Reply, 7, 4),
+            (
+                "reply-waiter:lifecycle",
+                lifecycle_waiter,
+                FrameKind::Err,
+                7,
+                4,
+            ),
+            ("event-receiver:lifecycle", events, FrameKind::Event, 0, 4),
+        ]
+    }
+
+    /// Criterion 10: a frame on unallocated id 4, otherwise exactly what each
+    /// live policy admits, is `KELD-IPC-005` from the header alone. The reader
+    /// rejects it with no payload bytes present, so nothing was read or
+    /// allocated for the payload.
+    #[test]
+    fn unallocated_channel_is_rejected_by_every_live_policy_before_payload() {
+        let unallocated = 4;
+        assert_eq!(entry(ChannelId(unallocated)), None);
+        let live = live_policies();
         for (label, policy, kind, frame_corr, len) in live {
             // Prerequisite: the same header on the policy's own channel admits.
             validate_received_header(&policy, header(kind, policy.channel.0, frame_corr, len))
@@ -766,5 +814,50 @@ mod tests {
             &validate_primary_app_header_with_privileged_call(None, Some(&FS), call),
             "primary dispatch with the fs channel selected",
         );
+    }
+
+    /// GH-527 §4.7 under criterion 10: the app-side reply waiter and event
+    /// receiver exist only for table entries. Over every `u16` id, a policy
+    /// exists iff the id is allocated and its entry's class admits it; the
+    /// event receiver follows the class, never a channel compare.
+    #[test]
+    fn waiter_and_event_policies_exist_only_for_table_entries() {
+        let mut waiters = Vec::new();
+        let mut receivers = Vec::new();
+        for id in 0..=u16::MAX {
+            let Some(found) = entry(ChannelId(id)) else {
+                continue;
+            };
+            if let Ok(policy) = ReceivePolicy::reply_waiter(found, CorrelationId(7)) {
+                assert_eq!(policy.channel.0, id);
+                waiters.push(found.name());
+            }
+            if let Ok(policy) = ReceivePolicy::event_receiver(found) {
+                assert_eq!(policy.channel.0, id);
+                receivers.push(found.name());
+            }
+        }
+        assert_eq!(
+            waiters,
+            ["fs", "lifecycle"],
+            "echo keeps its REPLY-only waiter"
+        );
+        assert_eq!(receivers, ["lifecycle"]);
+        for unallocated in [0, 4, 9, u16::MAX] {
+            assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
+        }
+        assert!(ReceiveClass::HostCallWithEvents.carries_host_events());
+        assert!(!ReceiveClass::HostCall.carries_host_events());
+        assert!(!ReceiveClass::GuardedCall.carries_host_events());
+        let Err(IpcError::Protocol { detail }) = ReceivePolicy::event_receiver(&FS) else {
+            panic!("a guarded CALL entry carries no host EVENTs");
+        };
+        assert_eq!(detail, "channel carries no host EVENTs");
+        let Err(IpcError::Protocol { detail }) =
+            ReceivePolicy::reply_waiter(&ECHO, CorrelationId(7))
+        else {
+            panic!("echo keeps its REPLY-only waiter");
+        };
+        assert_eq!(detail, "echo replies use the REPLY-only echo reply waiter");
     }
 }

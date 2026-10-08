@@ -772,9 +772,12 @@ None. The five earlier questions were decided under the owner's delegation, reco
 
 ## 11. Implementation record (X05-T4, #597)
 
-T1 and T2 landed as one PR. Wire bytes, `PROTOCOL_VERSION` 2 and the corpus digest
-`375f50c4...` are unchanged; before the change the criterion 6 rule reported exactly the
-seven production hits listed there. Where the implementation differs from §4 and §5:
+T1 and T2 landed as one PR, rebased after GH-528 T1 (#628). Wire bytes and
+`PROTOCOL_VERSION` 2 are unchanged, and this PR leaves `receiver-semantics-v0.tsv`
+untouched: its digest is `375f50c4...` at the spec's base and `0cebb6e0...` after #628
+added its `reply-waiter` and `event-receiver` rows. Before the change the criterion 6
+rule reported exactly the seven production hits listed there (eight after #628, whose
+`reply_waiter` compared with `ChannelId(0)`). Where the implementation differs from §4 and §5:
 
 - **Public privileged reader.** `keld_ipc::link::read_primary_app_frame_interruptible_with_privileged_call`
   takes `&'static ChannelEntry` instead of `ChannelId`, beyond the `write_hello` edit §5
@@ -804,13 +807,15 @@ seven production hits listed there. Where the implementation differs from §4 an
   `HANDSHAKE_CHANNEL`. Not detected: `case 1:`, numeric object keys, and a constant whose
   name lacks `channel`. `packages/*/src` is read as every package directory under
   `packages/`, scoped or not.
-- **Fail-closed hardening beyond the text.** The Rust scan resolves every `mod x;`,
-  including those nested in inline modules and their `#[path]`, by Rust's module rules;
-  it never excludes a file an ungated declaration or a production `include!` reaches
-  (an `include!` target is production even under `tests/`); it excludes nothing out of
-  line when a production declaration is unresolvable (an unreadable `#[path`, a
-  `#[path]` inline module), and reports an unreadable production `include!` as a hit;
-  `\s` is Unicode whitespace. The generator admits one
+- **Fail-closed hardening beyond the text.** The Rust scan resolves `mod x;` through
+  enclosing inline modules and `#[path]` by Rust's module rules. Where mod-rs status is
+  not decidable from a file's name (a `#[path]`-loaded file, a non-`lib.rs`/`main.rs`
+  crate root, an `include!`d file), production reach is recorded under both readings.
+  A file a production declaration or production `include!` reaches is never excluded,
+  even under `tests/`, and the loader reads such files from disk. An unresolvable
+  production declaration (an unreadable `#[path`, a `#[path]` inline module, a path above
+  the root) and an unreadable or missing `include!` target are reported as hits; `\s` is
+  Unicode whitespace. The generator admits one
   `#[cfg(test)] mod tests {` as the file's last item, no other `cfg` gate and no block
   comment, so no entry can sit outside what it parses. Two checks run in CI beside the
   criterion 6 scan: no `ChannelEntry::new(` outside the table and a constructor without
@@ -836,6 +841,13 @@ seven production hits listed there. Where the implementation differs from §4 an
   PR base or, on push, the previous tip, pinned by a `ci-hygiene` contract and router
   cases with a negative control. Its CLI self-test copies the checkout into a git
   repository compared with its own `HEAD`.
+- **GH-528 constructors.** #628's public `ReceivePolicy::reply_waiter` and
+  `event_receiver` take `&'static ChannelEntry` (gh527 §4.7; its `ChannelId` fallback is
+  retired). `event_receiver` admits an entry whose class carries host `EVENT`s
+  (`ReceiveClass::carries_host_events`), not a lifecycle-id compare; `reply_waiter`
+  keeps the echo entry's REPLY-only refusal, and channel 0 has no entry. The generated
+  TypeScript region adds `HOST_EVENT_CHANNELS`, read from `carries_host_events`, which
+  `eventReceiver` uses; #628's `channel === 0` checks use `HANDSHAKE_CHANNEL`.
 - **Smaller choices.** The receive-policy constructors keep naming `ECHO_CHANNEL` and
   `LIFECYCLE_CHANNEL`, which are now the entries' ids. `TableDefect` has a hand-written
   `Display` with fix guidance but no `KELD-*` code, like `HeaderError`: the real table is

@@ -39,6 +39,8 @@ export const ECHO_CHANNEL = 1;
 export const FS_CHANNEL = 2;
 /** Channel `lifecycle` (`keld_ipc::channel_table::LIFECYCLE`). */
 export const LIFECYCLE_CHANNEL = 3;
+/** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
+export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([LIFECYCLE_CHANNEL]);
 // @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
 export const APP_LINK_IO_DEADLINE_MS = 5_000;
@@ -158,7 +160,7 @@ export function lifecycleReplyWaiter(corr: number): ReceivePolicy {
  * `echoReplyWaiter`, so both are `KELD-IPC-005`.
  */
 export function replyWaiter(channel: number, corr: number): ReceivePolicy {
-  if (channel === 0) {
+  if (channel === HANDSHAKE_CHANNEL) {
     throw kipcError("KELD-IPC-005", "channel 0 carries only HELLO");
   }
   if (channel === ECHO_CHANNEL) {
@@ -174,12 +176,12 @@ function eventReceiverOn(channel: number): ReceivePolicy {
 /**
  * Mirror of `keld_ipc::receive::ReceivePolicy::event_receiver` (GH-527 §4.7,
  * corpus `event-receiver:<channel>`): uncorrelated `EVENT`s on `channel` plus
- * the live `PING` probe. Lifecycle is the only channel with host EVENTs until
- * the channel table (#613) declares another, so any other channel is
+ * the live `PING` probe. Only a channel whose table class carries host EVENTs
+ * (the generated `HOST_EVENT_CHANNELS`) is admitted; any other channel is
  * `KELD-IPC-005`.
  */
 export function eventReceiver(channel: number): ReceivePolicy {
-  if (channel !== LIFECYCLE_CHANNEL) {
+  if (!HOST_EVENT_CHANNELS.includes(channel)) {
     throw kipcError("KELD-IPC-005", "channel carries no host EVENTs");
   }
   return eventReceiverOn(channel);
@@ -1370,7 +1372,7 @@ export interface PendingCallEntry {
 export type InboundAction = "ping" | "append" | "claim" | "discard";
 
 /** A policy that admits no kind: validating under it is the §4.7 "no match" `KELD-IPC-005`. */
-const NO_FRAME_POLICY: ReceivePolicy = { channel: 0, kinds: [], corr: { rule: "zero" } };
+const NO_FRAME_POLICY: ReceivePolicy = { channel: HANDSHAKE_CHANNEL, kinds: [], corr: { rule: "zero" } };
 
 /**
  * The GH-527 §4.7 per-frame selection: trusted state (the frame's kind and
@@ -1494,10 +1496,10 @@ function validateWorkerLinkOptions(options: WorkerLinkOptions): WorkerLinkConfig
   const seen = new Set<number>();
   const claim = (channel: number | undefined): void => {
     if (channel === undefined) return;
-    if (channel === 0 || seen.has(channel)) {
+    if (channel === HANDSHAKE_CHANNEL || seen.has(channel)) {
       throw linkError(
         "KELD-IPC-005",
-        `receive table names channel ${channel} ${channel === 0 ? "(reserved for HELLO)" : "twice"}`,
+        `receive table names channel ${channel} ${channel === HANDSHAKE_CHANNEL ? "(reserved for HELLO)" : "twice"}`,
       );
     }
     seen.add(channel);
@@ -1572,7 +1574,7 @@ function requireOutboundFrame(channel: number, payload: Uint8Array): void {
   if (typeof channel !== "number" || !Number.isInteger(channel) || channel < 0 || channel > 0xffff) {
     throw linkError("KELD-IPC-003", "frame channel must be an unsigned integer no greater than 65535");
   }
-  if (channel === 0) {
+  if (channel === HANDSHAKE_CHANNEL) {
     throw linkError("KELD-IPC-005", "channel 0 carries only HELLO");
   }
   if (!(payload instanceof Uint8Array)) {
@@ -2441,7 +2443,7 @@ class TransportWorker {
       const { endpoint, token } = parseAppLink(link);
       this.#socket = await connectKipcSocket(endpoint, this.#reader, this.#drain);
       this.#writes = new WriteQueue(this.#socket, this.#drain);
-      await withIoDeadline(this.#writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
+      await withIoDeadline(this.#writes.writeFrame(FrameKind.Hello, 0, HANDSHAKE_CHANNEL, 0, token));
       const hello = await withIoDeadline(this.#reader.readFrame());
       validateReceivedHeader(RECEIVE_POLICIES.clientAwaitHello, hello.header);
       if (!timingSafeEqual(hello.payload, token)) {

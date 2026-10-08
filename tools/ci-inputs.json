@@ -254,9 +254,10 @@
         ".agents/*",
         "AGENTS.md",
         "*/AGENTS.md",
-        "crates/keld-ipc/channel_allocations.txt"
+        "crates/keld-ipc/channel_allocations.txt",
+        "crates/keld-ipc/src/channel_table.rs"
       ],
-      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule).",
+      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does.",
       "reader_set": "policy-readers"
     },
     {
@@ -336,14 +337,14 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "6a17d73373c09b58443857c9dd1906833e21d2b7f34db82e101615a93ec209fa"
+      "sha256": "73939b035c4e85564f88b909f88df08cc940abb37e6e1e4b61426899f8b3951f"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "e2e42e20911f4ef416e7846aa2594bf2f8019d0cdd4702cdad2127755fbe4ab7"
+      "sha256": "2dc676de5a572c9ccfed3deedd7e3e2fbb9f9f7597aa72ff22e58646acbed12e"
     },
     "policy-readers": {
       "patterns": [

@@ -40,6 +40,8 @@ export const ECHO_CHANNEL = 1;
 export const FS_CHANNEL = 2;
 /** Channel \`lifecycle\` (\`keld_ipc::channel_table::LIFECYCLE\`). */
 export const LIFECYCLE_CHANNEL = 3;
+/** Channels whose receive class carries host \`EVENT\`s (\`ReceiveClass::carries_host_events\`). */
+export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([LIFECYCLE_CHANNEL]);
 // @generated-end channel-table`;
 
 function replaceOnce(text: string, from: string, to: string): string {
@@ -245,10 +247,11 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
     expect(parseChannelTable(tableSource)).toEqual({
       handshake: 0,
       entries: [
-        { rustName: "ECHO", name: "echo", id: 1 },
-        { rustName: "FS", name: "fs", id: 2 },
-        { rustName: "LIFECYCLE", name: "lifecycle", id: 3 },
+        { rustName: "ECHO", name: "echo", id: 1, receiveClass: "HostCall" },
+        { rustName: "FS", name: "fs", id: 2, receiveClass: "GuardedCall" },
+        { rustName: "LIFECYCLE", name: "lifecycle", id: 3, receiveClass: "HostCallWithEvents" },
       ],
+      hostEventClasses: ["HostCallWithEvents"],
     });
   });
 
@@ -279,6 +282,21 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
     const regenerated = replaceChannelTableRegion(transportSource, renderChannelTableRegion(fixture));
     expect(() => assertChannelTableRegionFresh(fixture, regenerated)).not.toThrow();
     expect(() => assertChannelTableRegionFresh(tableSource, regenerated)).toThrow("stale");
+  });
+
+  test("host EVENT channels follow the Rust class rule, never a TypeScript mirror", () => {
+    const rule = "        matches!(self, Self::HostCallWithEvents)\n";
+    const widened = replaceOnce(tableSource, rule, "        matches!(self, Self::HostCallWithEvents | Self::GuardedCall)\n");
+    expect(renderChannelTableRegion(widened)).toContain(
+      "export const HOST_EVENT_CHANNELS: readonly number[] = Object.freeze([FS_CHANNEL, LIFECYCLE_CHANNEL]);",
+    );
+    const narrowed = replaceOnce(tableSource, rule, "        matches!(self, Self::HostEvent)\n");
+    expect(renderChannelTableRegion(narrowed)).toContain("Object.freeze([]);");
+    expect(() => assertChannelTableRegionFresh(widened, transportSource)).toThrow("stale");
+    const computed = replaceOnce(tableSource, rule, "        self as u8 == 1\n");
+    expect(() => renderChannelTableRegion(computed)).toThrow("carries_host_events must be one");
+    const missing = replaceOnce(tableSource, "    pub const fn carries_host_events(self) -> bool {", "    pub const fn host_events(self) -> bool {");
+    expect(() => renderChannelTableRegion(missing)).toThrow("missing ReceiveClass::carries_host_events");
   });
 
   test("a missing, duplicated or inverted marker fails", () => {
