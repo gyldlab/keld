@@ -65,6 +65,8 @@ use keld_ipc::CallError;
 use keld_ipc::codec::{decode, encode};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use keld_ipc::link::read_quit_drain_frame;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::link::{
     AppLinkDeadlines, read_primary_app_frame_interruptible,
@@ -277,6 +279,8 @@ struct FsDispatchSession {
     drained: Condvar,
     #[cfg(all(test, target_os = "macos"))]
     drain_wait_observer: Mutex<Option<SyncSender<()>>>,
+    #[cfg(all(test, target_os = "macos"))]
+    terminal_write_hold: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -296,6 +300,8 @@ impl FsDispatchSession {
             drained: Condvar::new(),
             #[cfg(all(test, target_os = "macos"))]
             drain_wait_observer: Mutex::new(None),
+            #[cfg(all(test, target_os = "macos"))]
+            terminal_write_hold: Mutex::new(None),
         }
     }
 
@@ -389,6 +395,15 @@ impl FsDispatchSession {
         Ok(())
     }
 
+    /// The admitted, unanswered FS call of `attempt`, if any (GH-527 §4.9).
+    fn pending_call_for(&self, attempt: u32) -> Option<PendingFsCall> {
+        self.state.lock().ok().and_then(|state| {
+            state
+                .pending_call
+                .filter(|pending| pending.attempt == attempt)
+        })
+    }
+
     fn retire_pending_call_for_attempt(&self, attempt: u32) -> Result<(), HostAppError> {
         let mut state = self
             .state
@@ -435,6 +450,30 @@ impl FsDispatchSession {
             .drain_wait_observer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
+    }
+
+    /// Test hook: holds the next successful FS terminal write after it
+    /// releases the generation lock and before its lease drops, until the
+    /// test resumes it.
+    #[cfg(all(test, target_os = "macos"))]
+    fn hold_next_terminal_write(&self, written: SyncSender<()>, resume: Receiver<()>) {
+        *self
+            .terminal_write_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((written, resume));
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    fn hold_after_terminal_write(&self) {
+        let hold = self
+            .terminal_write_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((written, resume)) = hold {
+            let _ = written.send(());
+            let _ = resume.recv_timeout(Duration::from_secs(5));
+        }
     }
 
     fn drain(&self) -> Result<(), HostAppError> {
@@ -4489,7 +4528,13 @@ struct PrimaryRouterHandle {
     fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
+    #[cfg(all(test, target_os = "macos"))]
+    quit_drain_stall: Arc<Mutex<Option<QuitDrainStall>>>,
 }
+
+/// Test hook state for [`PrimaryRouterHandle::stall_next_quit_drain`].
+#[cfg(all(test, target_os = "macos"))]
+type QuitDrainStall = (SyncSender<Instant>, Receiver<()>);
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
@@ -4499,6 +4544,11 @@ struct ActivePrimaryGeneration {
     attempt: u32,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
+    /// Correlation id of this generation's accepted-but-unanswered `Quit`
+    /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
+    /// the generation lock, so retirement answers it at most once and never
+    /// after its real REPLY.
+    pending_quit: Option<CorrelationId>,
 }
 
 #[cfg(target_os = "macos")]
@@ -4799,6 +4849,125 @@ impl PrimaryRouterHandle {
         ])
     }
 
+    /// Answers `attempt`'s pending role calls on ERR-declaring channels with
+    /// `error` before its link closes (GH-527 §4.9, criterion 6): the admitted
+    /// FS call and a `Quit` still waiting in its FS drain. Echo calls are
+    /// answered synchronously by the reader and are never pending, so echo
+    /// keeps KEL-133's REPLY-only rule. The caller holds the generation lock,
+    /// which also orders this against an FS handler's own terminal write: a
+    /// real reply written first has already cleared its pending entry.
+    ///
+    /// Delivery is best effort by contract ([`write_best_effort_answers`]):
+    /// each write is bounded by [`HOST_ANSWER_BUDGET`], so a peer that stops
+    /// reading holds the generation lock for at most one budget, and a link
+    /// that cannot carry the ERR is lost. The role then observes the close as
+    /// `KELD-IPC-022`. The retirement outcome does not depend on it.
+    fn answer_pending_calls_locked(
+        &self,
+        current: &mut Option<ActivePrimaryGeneration>,
+        attempt: u32,
+        error: &CallError,
+    ) {
+        let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
+            return;
+        };
+        let fs_call = self
+            .fs
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .and_then(|fs| fs.pending_call_for(attempt));
+        let pending = [
+            fs_call.map(|call| (FS_CHANNEL, call.correlation)),
+            active
+                .pending_quit
+                .take()
+                .map(|corr| (LIFECYCLE_CHANNEL, corr)),
+        ];
+        write_best_effort_answers(&mut active.writer, pending.into_iter().flatten(), error);
+    }
+
+    /// After an accepted `Quit`'s real REPLY and its FS drain, answers each
+    /// CALL the peer wrote before it ended the link, on an ERR-declaring
+    /// channel, with `KELD-IPC-024`, and runs none of them (GH-527 §4.9,
+    /// criterion 7). An echo CALL gets no frame: KEL-133 keeps echo
+    /// REPLY-only. The host then closes the link as before, so KEL-139 AC6's
+    /// `reply -> quiesce/drain -> close` order holds.
+    ///
+    /// The drain ends on the peer's EOF; a `WorkerLink` ends its link after
+    /// the Quit REPLY (#528 T3). A frame that has already arrived is always
+    /// read and answered, however late the host runs. Only a liveness
+    /// backstop ends it otherwise: [`HOST_ANSWER_BUDGET`] without a byte,
+    /// checked only on an idle poll, for a peer that never ends the link, and
+    /// [`APP_LINK_IO_DEADLINE`] in total for one that never stops sending.
+    /// Each answer is one [`write_best_effort_answers`] write.
+    ///
+    /// It cannot fail: every way the drain ends leads to the same
+    /// host-initiated close, so the caller's link close and tail always run.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn answer_calls_after_quit(&self, attempt: u32, reader: &mut BootstrapStream) {
+        let started = Instant::now();
+        let (Some(idle_deadline), Some(hard_deadline)) = (
+            started.checked_add(HOST_ANSWER_BUDGET),
+            started.checked_add(APP_LINK_IO_DEADLINE),
+        ) else {
+            return;
+        };
+        #[cfg(all(test, target_os = "macos"))]
+        self.stall_quit_drain_for_test(idle_deadline);
+        let error = CallError::quit_drained();
+        let privileged_call = self.fs.is_some().then_some(&keld_ipc::channel_table::FS);
+        // The peer's EOF, a backstop deadline, and a frame the session does not
+        // admit all end the drain in that same close, so none of them is a
+        // fault of this accepted shutdown.
+        while let Ok(Some((header, _payload))) =
+            read_quit_drain_frame(reader, privileged_call, idle_deadline, hard_deadline)
+        {
+            let declares_err = header.channel() == LIFECYCLE_CHANNEL
+                || (privileged_call.is_some() && header.channel() == FS_CHANNEL);
+            if header.kind() != FrameKind::Call || !declares_err {
+                continue;
+            }
+            // A poisoned lock ends the drain; the caller's next acquisition
+            // for the link close reports it.
+            let Ok(mut current) = self.current.lock() else {
+                return;
+            };
+            let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
+                return;
+            };
+            if !write_best_effort_answers(
+                &mut active.writer,
+                [(header.channel(), header.corr())],
+                &error,
+            ) {
+                return;
+            }
+        }
+    }
+
+    /// Test hook: holds the next post-Quit drain after it fixes its deadlines,
+    /// reporting its idle deadline, until the test resumes it.
+    #[cfg(all(test, target_os = "macos"))]
+    fn stall_next_quit_drain(&self, stalled: SyncSender<Instant>, resume: Receiver<()>) {
+        *self
+            .quit_drain_stall
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((stalled, resume));
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    fn stall_quit_drain_for_test(&self, idle_deadline: Instant) {
+        let stall = self
+            .quit_drain_stall
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((stalled, resume)) = stall {
+            let _ = stalled.send(idle_deadline);
+            let _ = resume.recv_timeout(Duration::from_secs(5));
+        }
+    }
+
     fn has_outstanding_fs_call(&self, attempt: u32) -> bool {
         let _transition = self.shutdown.transition_guard();
         let Some(fs) = self.fs.as_ref().and_then(Weak::upgrade) else {
@@ -4873,6 +5042,12 @@ impl PrimaryRouterHandle {
             return Ok(());
         }
         let Err(primary) = write(&mut active.writer) else {
+            #[cfg(all(test, target_os = "macos"))]
+            {
+                drop(current);
+                drop(transition);
+                admitted.session.hold_after_terminal_write();
+            }
             return Ok(());
         };
 
@@ -4973,19 +5148,19 @@ impl PrimaryRouterHandle {
         attempt: u32,
         correlation: CorrelationId,
         reply: &[u8],
-        #[cfg(windows)] reader: &mut BootstrapStream,
+        reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
         {
             let transition = self.shutdown.transition_guard();
-            let current_guard = self.current.lock().map_err(|_| {
+            let mut current_guard = self.current.lock().map_err(|_| {
                 app_detail("primary session generation", "generation lock poisoned")
             })?;
-            if current_guard
-                .as_ref()
-                .is_none_or(|active| active.attempt != attempt)
-            {
+            let Some(active) = current_guard
+                .as_mut()
+                .filter(|active| active.attempt == attempt)
+            else {
                 return Ok(());
-            }
+            };
             if !self.shutdown.is_running() {
                 drop(current_guard);
                 drop(transition);
@@ -4995,6 +5170,9 @@ impl PrimaryRouterHandle {
                     Ok(())
                 };
             }
+            // Pending until its REPLY: a retirement during the FS drain below
+            // answers it with KELD-IPC-023 (GH-527 §4.9).
+            active.pending_quit = Some(correlation);
         }
 
         // This reader is paused in Quit, so no later FS Call can enter. Keep
@@ -5045,6 +5223,7 @@ impl PrimaryRouterHandle {
                 "current primary generation disappeared before the reply",
             )
         })?;
+        active.pending_quit = None;
         write_frame(
             &mut active.writer,
             FrameKind::Reply,
@@ -5056,6 +5235,8 @@ impl PrimaryRouterHandle {
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
         drop(current_guard);
         self.quiesce_and_drain_fs()?;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        self.answer_calls_after_quit(attempt, reader);
         let mut current_guard = self
             .current
             .lock()
@@ -5196,6 +5377,7 @@ impl PrimaryRouterHandle {
                 attempt,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
+                pending_quit: None,
             });
             drop(current);
             // Publication and retained replay are one transition with live
@@ -5247,6 +5429,11 @@ impl PrimaryRouterHandle {
             let mut current = self.current.lock().map_err(|_| {
                 app_detail("primary session generation", "generation lock poisoned")
             })?;
+            self.answer_pending_calls_locked(
+                &mut current,
+                attempt,
+                &CallError::generation_retired(),
+            );
             self.retire_current_generation_locked(
                 &mut current,
                 attempt,
@@ -5395,6 +5582,8 @@ impl PrimaryRouter {
             fs_worker_commands: None,
             guardian,
             window_commands,
+            #[cfg(all(test, target_os = "macos"))]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
         let router = Self::finish_start(
             handle,
@@ -5434,6 +5623,8 @@ impl PrimaryRouter {
             fs_worker_commands: None,
             guardian,
             window_commands,
+            #[cfg(all(test, target_os = "macos"))]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
         let router = Self::finish_start(
             handle,
@@ -5734,10 +5925,7 @@ fn read_primary_frames(
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-                        #[cfg(windows)]
                         handle.lifecycle_quit(attempt, header.corr(), &reply, reader)?;
-                        #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        handle.lifecycle_quit(attempt, header.corr(), &reply)?;
                         return Ok(());
                     }
                 }
@@ -5782,6 +5970,38 @@ fn read_primary_frames(
             }
         }
     }
+}
+
+/// The host's budget for one best-effort terminal answer (GH-527 §4.9): the
+/// write deadline of each `KELD-IPC-023` and `KELD-IPC-024` `ERR`, in place of
+/// the writer's [`APP_LINK_IO_DEADLINE`], and how long the post-Quit drain
+/// waits without a byte for a peer that never ends the link. One reader poll,
+/// so a peer that stops reading or never closes delays the close by at most
+/// this much plus one poll per step.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const HOST_ANSWER_BUDGET: Duration = APP_LINK_READER_POLL;
+
+/// Writes best-effort terminal `ERR` answers (`KELD-IPC-023` or
+/// `KELD-IPC-024`, GH-527 §4.9) on a link the caller closes next, each write
+/// bounded by [`HOST_ANSWER_BUDGET`]. Returns `false` once a write fails or
+/// times out: that link is lost, so no later answer is attempted, and the
+/// role observes the close as `KELD-IPC-022`. The writer's deadline is not
+/// restored, because the caller closes the link.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn write_best_effort_answers(
+    writer: &mut BootstrapStream,
+    answers: impl IntoIterator<Item = (keld_ipc::ChannelId, CorrelationId)>,
+    error: &CallError,
+) -> bool {
+    if writer
+        .set_app_link_write_deadline(Some(HOST_ANSWER_BUDGET))
+        .is_err()
+    {
+        return false;
+    }
+    answers
+        .into_iter()
+        .all(|(channel, corr)| keld_ipc::write_call_error(writer, channel, corr, error).is_ok())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -7082,6 +7302,7 @@ mod tests {
             attempt: 1,
             writer: server,
             reader_stop: Arc::clone(&reader_stop),
+            pending_quit: None,
         })));
         let (guardian_tx, guardian_rx) = mpsc::channel();
         let (window_tx, window_rx) = mpsc::channel();
@@ -7104,6 +7325,8 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
+            #[cfg(target_os = "macos")]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
 
         let pending = PendingFsCall {
@@ -7204,6 +7427,7 @@ mod tests {
             attempt: 1,
             writer: g1_server,
             reader_stop: Arc::clone(&reader_stop),
+            pending_quit: None,
         })));
         let (guardian_tx, guardian_rx) = mpsc::channel();
         let (window_tx, window_rx) = mpsc::channel();
@@ -7225,6 +7449,8 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
+            #[cfg(target_os = "macos")]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
         let router = PrimaryRouter {
             handle: handle.clone(),
@@ -7317,6 +7543,532 @@ mod tests {
         router
             .shutdown()
             .expect("recovery-ordering router shutdown");
+    }
+
+    /// One guarded primary router over a socket pair, with the FS worker held
+    /// by a test gate after it takes its job (GH-528 T2 router tests).
+    #[cfg(target_os = "macos")]
+    struct GuardedTestRouter {
+        router: PrimaryRouter,
+        snapshot: GuardSnapshot,
+        allowed: PathBuf,
+        taken: Receiver<()>,
+        release: Sender<()>,
+        window: Receiver<AppWindowCommand>,
+        guardian: Receiver<TestPrimaryOwnerCommand>,
+        _temp: tempfile::TempDir,
+    }
+
+    /// A guarded router over a socket pair, and the pair's client end.
+    #[cfg(target_os = "macos")]
+    fn guarded_test_router() -> (GuardedTestRouter, std::os::unix::net::UnixStream) {
+        use keld_ipc::link::AppLinkDeadlines as _;
+
+        let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("guarded client deadlines");
+        (guarded_router(server), client)
+    }
+
+    /// A guarded router over `server`: a pair end, or a Bun role's
+    /// authenticated app link.
+    #[cfg(target_os = "macos")]
+    fn guarded_router(server: std::os::unix::net::UnixStream) -> GuardedTestRouter {
+        use sha2::{Digest as _, Sha256};
+
+        let temp = tempfile::tempdir().expect("guarded router root");
+        let allowed = temp.path().join("allowed");
+        fs::create_dir(&allowed).expect("guarded router allowed root");
+        let scope = allowed.display().to_string().replace('\\', "/");
+        let manifest_text =
+            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
+        let manifest_path = temp.path().join(PERMISSIONS_FILE);
+        fs::write(&manifest_path, &manifest_text).expect("write guarded router manifest");
+        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
+        let verified = load_verified_manifest(
+            File::open(&manifest_path).expect("open guarded router manifest"),
+            manifest_path,
+            digest,
+        )
+        .expect("verify guarded router manifest");
+        let snapshot = GuardSnapshot::prepare(verified).expect("prepare guarded router broker");
+        let (taken_tx, taken) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::channel();
+        let gate = Arc::new(FsWorkerTestGate {
+            taken: taken_tx,
+            release: Mutex::new(release_rx),
+        });
+        let (window_tx, window) = mpsc::channel();
+        let (guardian_tx, guardian) = mpsc::channel();
+        let router = PrimaryRouter::start_with_fs_test_gate(
+            server,
+            window_tx,
+            PlatformPrimaryOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+            Some(snapshot.fs_weak()),
+            Some(gate),
+        )
+        .expect("guarded test router");
+        GuardedTestRouter {
+            router,
+            snapshot,
+            allowed,
+            taken,
+            release,
+            window,
+            guardian,
+            _temp: temp,
+        }
+    }
+
+    /// GH-528 T2 end-to-end cases: a Bun `WorkerLink` role against this
+    /// router (`app_session/tests/worker_link_e2e.rs`).
+    #[cfg(target_os = "macos")]
+    mod worker_link_e2e;
+
+    #[cfg(target_os = "macos")]
+    fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target: &Path) {
+        write_frame(
+            client,
+            FrameKind::Call,
+            0,
+            FS_CHANNEL,
+            CorrelationId(corr),
+            &encode(&FsRequest::Write {
+                path: target.display().to_string().replace('\\', "/"),
+                bytes: b"t2".to_vec(),
+            })
+            .expect("encode FS write"),
+        )
+        .expect("send FS write");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write_quit_call(client: &mut std::os::unix::net::UnixStream, corr: u32) {
+        write_frame(
+            client,
+            FrameKind::Call,
+            0,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(corr),
+            &encode(&LifecycleRequest::Quit).expect("encode Quit"),
+        )
+        .expect("send Quit");
+    }
+
+    /// Every frame the client reads before the link ends (EOF or reset).
+    #[cfg(target_os = "macos")]
+    fn read_frames_until_eof(
+        client: &mut std::os::unix::net::UnixStream,
+    ) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
+        let mut frames = Vec::new();
+        while let Ok(frame) = keld_ipc::link::read_frame(client) {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    /// GH-528 T2, spec gh527 criterion 6: retiring a generation answers its
+    /// pending calls on ERR-declaring channels with `KELD-IPC-023` before the
+    /// link closes. An admitted FS call held in its handler, and a Quit waiting
+    /// in its FS drain, are both pending; an echo call is answered at once and
+    /// never gets an ERR.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
+        let (t, mut client) = guarded_test_router();
+        assert_echo_call(&mut client, 10, "answered before retire");
+        write_fs_call(&mut client, 11, &t.allowed.join("held.txt"));
+        t.taken
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker took the FS job");
+        let (drain_tx, drain_rx) = mpsc::sync_channel(1);
+        t.snapshot.fs.observe_next_drain_wait(drain_tx);
+        write_quit_call(&mut client, 12);
+        drain_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit waits in its FS drain");
+
+        t.router.handle().retire_generation(1).expect("retire g1");
+        let frames = read_frames_until_eof(&mut client);
+        let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> = frames
+            .iter()
+            .map(|(header, payload)| {
+                let error: CallError = decode(payload).expect("retire answer is a CallError");
+                (header.kind, header.channel, header.corr, error.code)
+            })
+            .collect();
+        assert_eq!(
+            answers,
+            vec![
+                (
+                    FrameKind::Err,
+                    FS_CHANNEL,
+                    CorrelationId(11),
+                    "KELD-IPC-023".to_owned()
+                ),
+                (
+                    FrameKind::Err,
+                    LIFECYCLE_CHANNEL,
+                    CorrelationId(12),
+                    "KELD-IPC-023".to_owned()
+                ),
+            ],
+            "exactly the two pending calls are answered, then the link closes"
+        );
+
+        t.release.send(()).expect("release FS worker");
+        t.router.shutdown().expect("router shutdown after retire");
+        assert!(matches!(
+            t.guardian.try_recv(),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    /// GH-528 T2: a peer that stops reading cannot hold an accepted Quit open.
+    /// The client floods CALLs behind its Quit and never reads, so the host's
+    /// `KELD-IPC-024` answers fill both socket buffers. Each answer is one
+    /// best-effort write bounded by `HOST_ANSWER_BUDGET`, and the first that
+    /// times out ends the drain, so the Quit tail reaches its guardian
+    /// shutdown well before one writer deadline. The bound under test is
+    /// itself a time limit; the margin is one budget plus a poll (under 0.5 s)
+    /// against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write would
+    /// wait.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
+        let (t, client) = guarded_test_router();
+        let mut writer = client.try_clone().expect("flooding writer");
+        let target = t.allowed.join("never.txt");
+        let flood = std::thread::spawn(move || {
+            write_quit_call(&mut writer, 30);
+            for corr in 31..1_031 {
+                let frame = write_frame(
+                    &mut writer,
+                    FrameKind::Call,
+                    0,
+                    FS_CHANNEL,
+                    CorrelationId(corr),
+                    &encode(&FsRequest::Write {
+                        path: target.display().to_string().replace('\\', "/"),
+                        bytes: b"t2".to_vec(),
+                    })
+                    .expect("encode flooding FS write"),
+                );
+                // Writes stop once the host closes the link.
+                if frame.is_err() {
+                    break;
+                }
+            }
+        });
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let bound = APP_LINK_IO_DEADLINE
+            .checked_sub(Duration::from_secs(1))
+            .expect("writer deadline exceeds one second");
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(bound)
+            .expect("the Quit tail reached its shutdown before one writer deadline")
+        else {
+            panic!("unexpected guardian command after the Quit REPLY");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        drop(client);
+        flood.join().expect("flooding writer joins");
+        t.router.shutdown().expect("router shutdown after Quit");
+    }
+
+    /// GH-528 T2, spec gh527 criterion 7: after an accepted Quit's real REPLY
+    /// and its FS drain, a CALL already received on an ERR-declaring channel is
+    /// answered with `KELD-IPC-024` and never executed; an echo CALL gets no
+    /// frame (KEL-133 keeps echo REPLY-only). The host still closes the link.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_drain_answers_received_calls_with_024_and_runs_none() {
+        let (t, mut client) = guarded_test_router();
+        let target = t.allowed.join("after-quit.txt");
+        // All three frames are buffered before the host can finish the Quit:
+        // its REPLY waits on the shutdown attribution acknowledged below.
+        write_quit_call(&mut client, 20);
+        write_fs_call(&mut client, 21, &target);
+        let echo = keld_ipc::echo::EchoRequest {
+            message: "after quit".to_owned(),
+            count: 22,
+        };
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            ECHO_CHANNEL,
+            CorrelationId(22),
+            &encode(&echo).expect("encode echo"),
+        )
+        .expect("send echo after Quit");
+
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let (quit, quit_payload) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
+        assert_eq!(
+            (quit.kind, quit.channel, quit.corr),
+            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(20))
+        );
+        assert_eq!(
+            decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
+            LifecycleResponse::Quit
+        );
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("guardian shutdown")
+        else {
+            panic!("unexpected guardian command after the Quit REPLY");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        let after = read_frames_until_eof(&mut client);
+        assert_eq!(after.len(), 1, "only the FS CALL is answered: {after:?}");
+        let (header, payload) = &after[0];
+        assert_eq!(
+            (header.kind, header.channel, header.corr),
+            (FrameKind::Err, FS_CHANNEL, CorrelationId(21))
+        );
+        assert_eq!(
+            decode::<CallError>(payload).expect("024 CallError").code,
+            "KELD-IPC-024"
+        );
+        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        t.router.shutdown().expect("router shutdown after Quit");
+    }
+
+    /// GH-528 T2 (gate review of #636): the post-Quit drain ends on the peer's
+    /// EOF and never drops a CALL that has already arrived. Three FS CALLs are
+    /// buffered behind the Quit; the drain is then stalled, as by host
+    /// scheduling, until its idle window has passed, and only then does the
+    /// role end the link. Every buffered call still gets `KELD-IPC-024`, in
+    /// order, and none runs. *Negative control:* checking the idle deadline
+    /// before every read (as the earlier timer-window drain did) answers none
+    /// of them.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {
+        let (t, mut client) = guarded_test_router();
+        let (stalled_tx, stalled) = mpsc::sync_channel(1);
+        let (resume, resume_rx) = mpsc::channel();
+        t.router
+            .handle()
+            .stall_next_quit_drain(stalled_tx, resume_rx);
+        let target = t.allowed.join("stalled.txt");
+        write_quit_call(&mut client, 50);
+        for corr in 51..=53 {
+            write_fs_call(&mut client, corr, &target);
+        }
+        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit attribution")
+        else {
+            panic!("Quit skipped shutdown attribution");
+        };
+        prepare.send(Ok(())).expect("acknowledge attribution");
+        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
+        assert_eq!(
+            (quit.kind, quit.channel, quit.corr),
+            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(50))
+        );
+        let idle_deadline = stalled
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the drain fixed its deadlines and stalled");
+        // The stall must outlast the drain's idle window. This waits on the
+        // clock that is the precondition, not on another thread's progress.
+        thread::sleep(
+            idle_deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+        );
+        assert!(Instant::now() > idle_deadline);
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("the role ends the link after the Quit REPLY");
+        resume.send(()).expect("resume the stalled drain");
+
+        // The drain ends on that EOF and the Quit tail runs. The role's own
+        // EOF arrives once the host has dropped its link handles: on macOS a
+        // `shutdown(SHUT_RDWR)` after the peer's half-close is `ENOTCONN` and
+        // sends no FIN, so the tail is acknowledged before reading to EOF.
+        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+            .guardian
+            .recv_timeout(Duration::from_secs(5))
+            .expect("guardian shutdown after the drain")
+        else {
+            panic!("unexpected guardian command after the Quit drain");
+        };
+        shutdown
+            .send(Ok(()))
+            .expect("acknowledge guardian shutdown");
+        assert_eq!(
+            t.window
+                .recv_timeout(Duration::from_secs(5))
+                .expect("UI Quit"),
+            AppWindowCommand::Quit
+        );
+        let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
+            read_frames_until_eof(&mut client)
+                .iter()
+                .map(|(header, payload)| {
+                    let error: CallError = decode(payload).expect("drain answer is a CallError");
+                    (header.kind, header.channel, header.corr, error.code)
+                })
+                .collect();
+        let expected: Vec<_> = (51..=53)
+            .map(|corr| {
+                (
+                    FrameKind::Err,
+                    FS_CHANNEL,
+                    CorrelationId(corr),
+                    "KELD-IPC-024".to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            answers, expected,
+            "every CALL written before the role ended the link gets 024"
+        );
+        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
+        t.router.shutdown().expect("router shutdown after Quit");
+    }
+
+    /// GH-528 T2 (gate review of #636, L2): a peer that stops reading cannot
+    /// hold a retirement, and its generation lock, for the writer's deadline.
+    /// The host-to-role direction is full before retirement and nothing reads
+    /// it, so the `KELD-IPC-023` for the held FS call cannot be written. It is
+    /// written under `HOST_ANSWER_BUDGET`, its failure marks the link lost,
+    /// and retirement still succeeds and closes the link: the role reads the
+    /// bytes queued before retirement, then the close, and no `ERR` byte.
+    /// *Negative control:* leaving the writer's deadline in place fails the
+    /// deadline assertion (and holds the lock for `APP_LINK_IO_DEADLINE`).
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn retire_answers_are_bounded_when_the_peer_stops_reading() {
+        use std::io::{ErrorKind, Read as _, Write as _};
+
+        use keld_ipc::link::AppLinkDeadlines as _;
+
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().expect("pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("client deadlines");
+        server.set_nonblocking(true).expect("nonblocking fill");
+        let mut queued = 0_usize;
+        let chunk = [0_u8; 4096];
+        for size in [chunk.len(), 1] {
+            loop {
+                match (&server).write(&chunk[..size]) {
+                    Ok(written) => queued += written,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("fill the host-to-role direction: {error}"),
+                }
+            }
+        }
+        server.set_nonblocking(false).expect("blocking link");
+        let probe = server.try_clone().expect("deadline probe");
+        let t = guarded_router(server);
+        write_fs_call(&mut client, 70, &t.allowed.join("held.txt"));
+        t.taken
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker took the FS job");
+
+        t.router
+            .handle()
+            .retire_generation(1)
+            .expect("retirement succeeds although its ERR cannot be written");
+        assert_eq!(
+            probe.app_link_write_deadline().expect("write deadline"),
+            Some(HOST_ANSWER_BUDGET),
+            "the 023 write ran under the answer budget, not the writer's deadline"
+        );
+        let mut received = Vec::new();
+        client
+            .read_to_end(&mut received)
+            .expect("the role reads to the close");
+        assert_eq!(
+            received.len(),
+            queued,
+            "the role reads the bytes queued before retirement, then the close"
+        );
+
+        t.release.send(()).expect("release FS worker");
+        t.router.shutdown().expect("router shutdown after retire");
+    }
+
+    /// GH-528 T2 (gate review of #636, L4): a real reply written first wins.
+    /// The FS worker writes its real REPLY and is held after it releases the
+    /// generation lock, with its lease still alive; a retirement then runs and
+    /// sends no `KELD-IPC-023` for the answered call. *Negative control:*
+    /// removing the terminal write's `retire_pending_call` (so the lease drop
+    /// alone clears the pending call) makes this retirement send a 023 after
+    /// the REPLY.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn retire_after_a_real_reply_sends_no_023() {
+        let (t, mut client) = guarded_test_router();
+        let target = t.allowed.join("replied.txt");
+        let (written_tx, written) = mpsc::sync_channel(1);
+        let (resume, resume_rx) = mpsc::channel();
+        t.snapshot
+            .fs
+            .hold_next_terminal_write(written_tx, resume_rx);
+        write_fs_call(&mut client, 60, &target);
+        t.taken
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker took the FS job");
+        t.release.send(()).expect("release FS worker");
+        written
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the FS REPLY was written");
+        let (reply, _) = keld_ipc::link::read_frame(&mut client).expect("real FS REPLY");
+        assert_eq!(
+            (reply.kind, reply.channel, reply.corr),
+            (FrameKind::Reply, FS_CHANNEL, CorrelationId(60))
+        );
+
+        t.router.handle().retire_generation(1).expect("retire g1");
+        resume.send(()).expect("resume the FS worker");
+        let after = read_frames_until_eof(&mut client);
+        assert!(
+            after.is_empty(),
+            "an answered call gets no KELD-IPC-023: {after:?}"
+        );
+        assert!(target.exists(), "the answered FS write ran");
+        t.router.shutdown().expect("router shutdown after retire");
     }
 
     #[test]
@@ -7649,6 +8401,7 @@ mod tests {
                 attempt: 1,
                 writer: g1_server,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                pending_quit: None,
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             pending_echo: Arc::new(Mutex::new(None)),
@@ -7666,6 +8419,8 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
+            #[cfg(target_os = "macos")]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
         let router =
             PrimaryRouter::finish_start(handle, None).expect("successor drain router worker");
@@ -8618,8 +9373,11 @@ mod tests {
         handle.install_generation(2, g2_server).expect("install g2");
         assert_lifecycle_event(&mut g2_client, LifecycleEvent::Ready);
         assert_lifecycle_event(&mut g2_client, LifecycleEvent::LastWindowClosed);
+        // A stale Quit returns before it reads; the peerless reader is unused.
+        let (mut stale_reader, stale_peer) = UnixStream::pair().expect("stale Quit reader");
+        drop(stale_peer);
         handle
-            .lifecycle_quit(1, CorrelationId(72), &[0])
+            .lifecycle_quit(1, CorrelationId(72), &[0], &mut stale_reader)
             .expect("stale g1 Quit is ignored");
         assert!(
             handle.shutdown.is_running(),
@@ -8810,8 +9568,14 @@ mod tests {
         .expect("Quit race router");
         let handle = router.handle();
         let quit_handle = handle.clone();
-        let quit_thread =
-            std::thread::spawn(move || quit_handle.lifecycle_quit(1, CorrelationId(81), &[0]));
+        // The router's own reader serves the link; this direct Quit drains a
+        // peerless stream, so its post-REPLY drain ends at EOF at once.
+        let (mut quit_reader, quit_peer) =
+            std::os::unix::net::UnixStream::pair().expect("direct Quit reader");
+        drop(quit_peer);
+        let quit_thread = std::thread::spawn(move || {
+            quit_handle.lifecycle_quit(1, CorrelationId(81), &[0], &mut quit_reader)
+        });
         observed_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("Quit reached guardian owner");
@@ -9240,6 +10004,7 @@ mod tests {
                 attempt: 1,
                 writer: server,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                pending_quit: None,
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "macos")]
@@ -9259,6 +10024,8 @@ mod tests {
             fs_worker_commands: None,
             guardian: PlatformPrimaryOwnerHandle { command_tx },
             window_commands: window_tx,
+            #[cfg(target_os = "macos")]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
         (handle, client, command_rx)
     }
@@ -9460,6 +10227,7 @@ mod tests {
                             attempt: if case == "successor" { 3 } else { 1 },
                             writer,
                             reader_stop: Arc::new(AtomicBool::new(false)),
+                            pending_quit: None,
                         });
                     if case != "successor" {
                         failure.retired_after_failed_ready = None;
@@ -9641,6 +10409,7 @@ mod tests {
                 attempt: 1,
                 writer: server,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                pending_quit: None,
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "macos")]
@@ -9662,6 +10431,8 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
+            #[cfg(target_os = "macos")]
+            quit_drain_stall: Arc::new(Mutex::new(None)),
         };
         let error = handle
             .signal_ready()

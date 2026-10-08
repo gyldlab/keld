@@ -796,7 +796,45 @@ async function expiryAfterClose(): Promise<void> {
   await expectReject("early", early);
 }
 
+// GH-528 T2 end-to-end against the keld-core router. The host test passes the
+// call's channel and payload (the router's own FS constant and FsRequest
+// codec), so this fixture names no channel number of its own.
+function t2Call(): { channel: number; payload: Uint8Array } {
+  const channel = Number(process.env.KELD_T2_CHANNEL);
+  const hexText = process.env.KELD_T2_PAYLOAD_HEX ?? "";
+  const payload = Uint8Array.from(hexText.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+  return { channel, payload };
+}
+
+function hexOf(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Criteria 6 and 7(a): one blocking host CALL, then an echo CALL that the host
+// never answers after a retirement or an accepted Quit; the host's close ends it.
+async function t2BlockingCall(): Promise<void> {
+  const { link } = await open();
+  const { channel, payload } = t2Call();
+  try {
+    report("call-hex", hexOf(link.callBlocking(channel, payload, 30_000)));
+    report("call-returned", true);
+  } catch (err) {
+    report("call-code", codeOf(err));
+    report("call-returned", false);
+  }
+  await expectReject("after", link.call(ECHO_CHANNEL, text("after"), 10_000));
+}
+
+// Criterion 8 (host half): the transport Worker exits while main is parked.
+async function t2WorkerDies(): Promise<void> {
+  const { link } = await open({}, { onBlockingCall: { kind: "exit", delayMs: 50 } });
+  const { channel, payload } = t2Call();
+  expectThrow("call", () => link.callBlocking(channel, payload, 30_000));
+}
+
 const SCENARIOS: Record<string, () => Promise<void>> = {
+  "t2-blocking-call": t2BlockingCall,
+  "t2-worker-dies": t2WorkerDies,
   "expiry-after-close": expiryAfterClose,
   "expiry-during-park": expiryDuringPark,
   "claim-first-worker-dies": claimFirstWorkerDies,

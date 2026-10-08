@@ -400,9 +400,14 @@ pub fn read_primary_app_frame_interruptible<S: Read>(
     stop: &AtomicBool,
     pending_echo_reply: impl Fn() -> Option<CorrelationId>,
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
-        validate_primary_app_header(pending_echo_reply(), header)
-    })
+    read_frame_interruptible_validated_with(
+        stream,
+        stop,
+        None,
+        None,
+        APP_LINK_IO_DEADLINE,
+        |header| validate_primary_app_header(pending_echo_reply(), header),
+    )
 }
 
 /// Interruptible primary app-link reader with one host-selected privileged CALL channel.
@@ -425,22 +430,62 @@ pub fn read_primary_app_frame_interruptible_with_privileged_call<S: Read>(
     privileged_call: &'static ChannelEntry,
     pending_privileged_call: impl Fn() -> bool,
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
-        let validated = validate_primary_app_header_with_privileged_call(
-            pending_echo_reply(),
-            Some(privileged_call),
-            header,
-        )?;
-        if header.kind == FrameKind::Call
-            && header.channel == privileged_call.id()
-            && pending_privileged_call()
-        {
-            return Err(IpcError::Protocol {
-                detail: "privileged Call is already outstanding for this session",
-            });
-        }
-        Ok(validated)
-    })
+    read_frame_interruptible_validated_with(
+        stream,
+        stop,
+        None,
+        None,
+        APP_LINK_IO_DEADLINE,
+        |header| {
+            let validated = validate_primary_app_header_with_privileged_call(
+                pending_echo_reply(),
+                Some(privileged_call),
+                header,
+            )?;
+            if header.kind == FrameKind::Call
+                && header.channel == privileged_call.id()
+                && pending_privileged_call()
+            {
+                return Err(IpcError::Protocol {
+                    detail: "privileged Call is already outstanding for this session",
+                });
+            }
+            Ok(validated)
+        },
+    )
+}
+
+/// Host-side reader for the drain after an accepted `Quit` (GH-527 §4.9).
+///
+/// Validates like the primary app-link reader with no pending echo reply and,
+/// when `privileged_call` is set, that channel's CALL admitted (the session
+/// has quiesced, so no outstanding privileged call is tracked). Unlike the
+/// interruptible readers it never refuses a byte that has already arrived:
+/// `idle_deadline` is checked only when a receive poll finds no byte of a new
+/// frame, and then the read ends with `Ok(None)`. `hard_deadline` caps the
+/// whole read against a peer that never goes idle. A peer that ends the link
+/// is the usual [`IpcError::Io`] (`UnexpectedEof`).
+///
+/// # Errors
+///
+/// As [`read_primary_app_frame_interruptible`], plus [`IpcError::Timeout`]
+/// once `hard_deadline` passes or a started frame stalls past
+/// [`APP_LINK_IO_DEADLINE`].
+pub fn read_quit_drain_frame<S: Read>(
+    stream: &mut S,
+    privileged_call: Option<&'static ChannelEntry>,
+    idle_deadline: Instant,
+    hard_deadline: Instant,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    let never = AtomicBool::new(false);
+    read_frame_interruptible_validated_with(
+        stream,
+        &never,
+        Some(hard_deadline),
+        Some(idle_deadline),
+        APP_LINK_IO_DEADLINE,
+        |header| validate_primary_app_header_with_privileged_call(None, privileged_call, header),
+    )
 }
 
 /// [`read_validated_frame_interruptible`] additionally capped by an absolute
@@ -485,7 +530,7 @@ fn read_frame_interruptible_with_limits<S: Read>(
     stall_limit: Duration,
     policy: Option<&ReceivePolicy>,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_validated_with(stream, stop, deadline, stall_limit, |header| {
+    read_frame_interruptible_validated_with(stream, stop, deadline, None, stall_limit, |header| {
         if let Some(policy) = policy {
             // Semantic admission decision before payload allocation (kel133 AC1).
             validate_received_header(policy, header)?;
@@ -498,6 +543,7 @@ fn read_frame_interruptible_validated_with<S: Read, T>(
     stream: &mut S,
     stop: &AtomicBool,
     deadline: Option<Instant>,
+    idle_deadline: Option<Instant>,
     stall_limit: Duration,
     validate: impl Fn(FrameHeader) -> Result<T, IpcError>,
 ) -> Result<Option<(T, Vec<u8>)>, IpcError> {
@@ -508,6 +554,7 @@ fn read_frame_interruptible_validated_with<S: Read, T>(
         &mut header_bytes,
         stop,
         deadline,
+        idle_deadline,
         &mut stall_deadline,
         stall_limit,
     )? {
@@ -524,6 +571,7 @@ fn read_frame_interruptible_validated_with<S: Read, T>(
             &mut payload,
             stop,
             deadline,
+            None,
             &mut stall_deadline,
             stall_limit,
         )?
@@ -545,6 +593,7 @@ fn read_exact_interruptible<S: Read>(
     buf: &mut [u8],
     stop: &AtomicBool,
     deadline: Option<Instant>,
+    idle_deadline: Option<Instant>,
     stall_deadline: &mut Option<Instant>,
     stall_limit: Duration,
 ) -> Result<bool, IpcError> {
@@ -587,6 +636,15 @@ fn read_exact_interruptible<S: Read>(
             {
                 if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     return Err(IpcError::Timeout);
+                }
+                // An idle poll before any byte of a new frame is the only
+                // point the idle deadline ends a read; bytes that arrived are
+                // always read first.
+                if filled == 0
+                    && stall_deadline.is_none()
+                    && idle_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    return Ok(false);
                 }
             }
             Err(e) => return Err(e.into()),
@@ -1522,6 +1580,96 @@ mod tests {
             matches!(result, Ok(None)),
             "stop must return Ok(None), got {result:?}"
         );
+    }
+
+    /// GH-527 §4.9 (#528 T2): the Quit drain reader never drops a frame that
+    /// has already arrived, even when its idle deadline passed while the
+    /// host was not running. It ends on an idle poll, on the peer's EOF, or at
+    /// the hard cap.
+    #[test]
+    fn quit_drain_reader_reads_buffered_frames_after_its_idle_deadline() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        for corr in [7, 8] {
+            write_frame(
+                &mut writer,
+                FrameKind::Call,
+                0,
+                crate::channel_table::LIFECYCLE.id(),
+                CorrelationId(corr),
+                &[0],
+            )
+            .expect("buffered CALL");
+        }
+        let passed = Instant::now();
+        let far = passed + Duration::from_secs(30);
+        for corr in [7, 8] {
+            let (header, _) = read_quit_drain_frame(&mut reader, None, passed, far)
+                .expect("buffered frame")
+                .expect("a buffered frame is read after the idle deadline");
+            assert_eq!(header.corr(), CorrelationId(corr));
+        }
+        assert!(
+            matches!(
+                read_quit_drain_frame(&mut reader, None, passed, far),
+                Ok(None)
+            ),
+            "an idle poll past the idle deadline ends the drain"
+        );
+        drop(writer);
+        let eof = read_quit_drain_frame(&mut reader, None, far, far)
+            .expect_err("the peer ended the link");
+        assert!(matches!(eof, IpcError::Io(_)), "{eof}");
+    }
+
+    #[test]
+    fn quit_drain_reader_hard_deadline_and_privileged_admission() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let fs = &crate::channel_table::FS;
+        write_frame(
+            &mut writer,
+            FrameKind::Call,
+            0,
+            fs.id(),
+            CorrelationId(9),
+            &[1],
+        )
+        .expect("FS CALL");
+        let far = Instant::now() + Duration::from_secs(30);
+        let (header, _) = read_quit_drain_frame(&mut reader, Some(fs), far, far)
+            .expect("FS CALL admitted when the privileged entry is given")
+            .expect("frame");
+        assert_eq!(header.channel(), fs.id());
+        write_frame(
+            &mut writer,
+            FrameKind::Call,
+            0,
+            fs.id(),
+            CorrelationId(10),
+            &[1],
+        )
+        .expect("second FS CALL");
+        let refused = read_quit_drain_frame(&mut reader, None, far, far)
+            .expect_err("an FS CALL is refused without the privileged entry");
+        assert!(matches!(refused, IpcError::Protocol { .. }), "{refused}");
+        let (mut reader, mut writer) = connected_pair();
+        write_frame(
+            &mut writer,
+            FrameKind::Call,
+            0,
+            fs.id(),
+            CorrelationId(11),
+            &[1],
+        )
+        .expect("buffered FS CALL");
+        let capped = read_quit_drain_frame(&mut reader, Some(fs), far, Instant::now())
+            .expect_err("the hard deadline caps the whole drain");
+        assert!(matches!(capped, IpcError::Timeout), "{capped}");
     }
 
     #[test]

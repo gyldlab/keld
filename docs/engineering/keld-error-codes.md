@@ -159,6 +159,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: link closed before the host replied; no reply was received and the call's host effect is unknown
 - fix: Treat the call as not answered. The role's link is gone: check the host log for the close cause, and do not retry on this link, because it cannot reconnect.
 
+## KELD-IPC-023
+
+- crate: keld-ipc
+- message: role generation retired before this call completed
+- fix: The role instance is being replaced or stopped, and the call's host effect is unknown: its handler may have run. Do not replay it, here or from the successor generation, without an idempotency contract for that call.
+
+## KELD-IPC-024
+
+- crate: keld-ipc
+- message: session ended by an accepted Quit before this call completed
+- fix: The application is quitting. Do not issue new work; finish only the shutdown path.
+
 ## KELD-IPC-025
 
 - crate: @keld/kipc
