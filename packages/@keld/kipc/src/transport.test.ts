@@ -794,6 +794,31 @@ describe("deadline leftover I/O", () => {
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
   });
 
+  test("end() still returns complete buffered frames in order, then the close error", async () => {
+    const reader = new FrameReader();
+    const first = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0]));
+    const second = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([1]));
+    const partial = encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([2, 3])).subarray(0, 17);
+    const bytes = new Uint8Array(first.length + second.length + partial.length);
+    bytes.set(first, 0);
+    bytes.set(second, first.length);
+    bytes.set(partial, first.length + second.length);
+    reader.push(bytes);
+    reader.end(kipcError("KELD-IPC-001", "connection closed by peer"));
+    reader.push(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([9])));
+    expect((await reader.readFrame()).payload).toEqual(new Uint8Array([0]));
+    expect((await reader.readFrame()).payload).toEqual(new Uint8Array([1]));
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001: connection closed by peer");
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001: connection closed by peer");
+  });
+
+  test("end() with a parked read and nothing buffered rejects it at once", async () => {
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    reader.end(kipcError("KELD-IPC-001", "connection closed by peer"));
+    await expect(pending).rejects.toThrow("KELD-IPC-001");
+  });
+
   test("fail() then drain.fire() rejects the parked read and wakes writers", async () => {
     const reader = new FrameReader();
     const drain = new DrainSignal();

@@ -434,6 +434,7 @@ export class FrameReader {
   #pending: { resolve: (f: DecodedFrame) => void; reject: (e: Error) => void } | null = null;
   #closed = false;
   #closeError: Error | null = null;
+  #ending: Error | null = null;
   #frameDeadline: ReturnType<typeof setTimeout> | undefined;
 
   /** Unread buffered bytes. Independent of how many socket chunks carried them. */
@@ -451,7 +452,7 @@ export class FrameReader {
 
   push(chunk: Uint8Array): void {
     const arrivedAt = performance.now();
-    if (this.#closed || chunk.byteLength === 0) return;
+    if (this.#closed || this.#ending !== null || chunk.byteLength === 0) return;
     // Bun documents the callback value's type but not a retain-after-callback
     // lifetime. Own each queued chunk so a reused/mutated producer buffer
     // cannot rewrite a partially received frame after `push` returns.
@@ -476,6 +477,19 @@ export class FrameReader {
         ),
       );
     }
+  }
+
+  /**
+   * The peer closed the stream. Complete frames already buffered are still
+   * returned in arrival order; once none remains (a truncated frame included),
+   * reads fail with `err`. `fail` stays the abort path, which drops them.
+   */
+  end(err: Error): void {
+    if (this.#closed || this.#ending !== null) return;
+    this.#ending = err;
+    if (this.#pending === null) return;
+    this.#tryResolve();
+    if (this.#pending !== null && !this.#closed) this.fail(err);
   }
 
   fail(err: Error): void {
@@ -639,6 +653,7 @@ export class FrameReader {
       this.#pending = { resolve, reject };
       this.#ensureFrameDeadline();
       this.#tryResolve();
+      if (this.#pending !== null && this.#ending !== null && !this.#closed) this.fail(this.#ending);
     });
   }
 
@@ -660,6 +675,8 @@ export class FrameReader {
     const remaining = Math.max(0, startedAt + APP_LINK_IO_DEADLINE_MS - performance.now());
     this.#frameDeadline = setTimeout(() => {
       this.#frameDeadline = undefined;
+      // After end() no byte can arrive: the next read reports the close.
+      if (this.#ending !== null) return;
       let incompleteStartedAt: number | undefined;
       try {
         incompleteStartedAt = this.#incompleteFrameStartedAt();
@@ -966,7 +983,7 @@ export async function connectKipcSocket(
       drain.fire();
     },
     close(_socket: unknown) {
-      reader.fail(kipcError("KELD-IPC-001", "connection closed by peer"));
+      reader.end(kipcError("KELD-IPC-001", "connection closed by peer"));
       drain.fire();
     },
     connectError(_socket: unknown, err: Error) {
