@@ -407,23 +407,30 @@ jobs:
           fi
 
   # nextest does not run doctests (#632). The router selects the clippy/test
-  # packages that have a library target; one OS proves them, and macOS links no
-  # WebKitGTK, so the lane has no network apt step.
-  # Known limit: rustdoc compiles doctests for the host target only, so a
-  # doctest inside an item or module gated by cfg(windows), cfg(unix) for a
-  # non-macOS target, or cfg(target_os = ...) that excludes macOS never runs
-  # here. Today the only doctest (keld-ipc guard_dispatch.rs, compile_fail) is
-  # ungated. Falsifier: list doc-comment fences with
+  # packages that have a library target. rustdoc compiles doctests for the
+  # host target only, so a doctest inside an item or module gated by
+  # cfg(windows) runs only on a Windows host: macOS proves the ungated
+  # doctests (keld-ipc guard_dispatch.rs and channel_table.rs, compile_fail)
+  # and windows-latest the cfg(windows) ones (keld-update's activation entry
+  # points, compile_fail; KEL-53 §7 row "10, 17 (coordinator image)", KEL-270
+  # T4d S6b2). Neither OS links WebKitGTK, so the lane has no network apt step.
+  # Known limit: a doctest gated by cfg(unix) for a non-macOS target, or by
+  # cfg(target_os = ...) excluding both OSes, still never runs here.
+  # Falsifier: list doc-comment fences with
   #   rg -n '^\s*//[/!]\s*```(rust|compile_fail|no_run|should_panic)?\s*$' crates/*/src
-  # and check each hit's enclosing cfg; if any excludes macOS, add that OS to
-  # this job. A static check is not sound without evaluating cfg across the
-  # module tree, cfg_attr, #[path], include! and macro-generated docs.
+  # and check each hit's enclosing cfg; if any excludes both OSes, add that OS
+  # to this matrix. A static check is not sound without evaluating cfg across
+  # the module tree, cfg_attr, #[path], include! and macro-generated docs.
   doctest:
-    name: doctests (macos-latest)
-    runs-on: macos-latest
+    name: doctests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.doctest == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
