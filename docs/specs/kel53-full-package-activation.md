@@ -1203,6 +1203,36 @@ expected one: with a journal, its digest equals `helper_image_blake3`; without o
 located version is last-known-good for the recovery role and the selected current
 version for the activation role.
 
+*Running-image binding.* (KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`,
+2026-10-07, item 1, on the S9c review finding in Linear KEL-270 comment `c4921888`.)
+Today the helper and the installed host each verify the file that their `current_exe()`
+path opens (`crates/keld-updater-helper/src/helper.rs:70-93`;
+`crates/keld-core/src/app_session.rs:2360-2371`, `:2475-2497`), and the verifier refuses
+only a leaf reparse point (`crates/keld-guard/src/windows_authenticode.rs:207-235`), so
+a junction earlier in the path is followed. After the open the binding holds: the
+located tree's file must be the verified handle's file
+(`crates/keld-update/src/windows_baseline/locate.rs:265-281`). Before the open there may
+be a gap, inferred and not demonstrated: a different genuine image of the same publisher,
+started through a user-owned junction that is then retargeted at a protected version
+tree, would leave the in-tree file verified while other code runs. The single
+`keld-guard` Authenticode owner therefore binds the file that it opens and verifies to
+the running image: it compares that file object with the running process's NT image
+path, from `QueryFullProcessImageNameW` with `PROCESS_NAME_NATIVE` or from
+`GetMappedFileNameW` on the module base, and refuses a mismatch before it returns the
+verified image. The host and the helper verify their own image only through this
+binding; verifying another image, as the tests that check a built host do
+(`crates/keld-pack/tests/real_host_acceptance/coverage.rs:123`), keeps the path-only
+open. It covers both images, the KEL-254 installed host and this helper, and lands as
+slice S9d, before S10 and S11 add the helper's write path. A research spike in the
+nested research checkout comes first and answers whether `GetModuleFileNameW` and
+`current_exe()` keep or resolve a non-leaf junction, and whether a junction can be
+retargeted while an image beneath it is mapped; S9d fixes from its receipts which of the
+two sources it reads and how it compares the file object with that path. Until S9d
+lands, the possible gap stays open; it is not exploitable through the helper today,
+because both roles refuse after the anchor (*Interim*), no helper write path exists and
+an elevated launch needs administrator consent (comment `c4921888`). Whether the
+installed host's boot is exposed before S9d lands is unknown; S9d's receipts decide it.
+
 **Machine-UAC owner-loss retirement (PR #374 review, 2026-10-05: the owner chose a
 durable proof over a permanent typed halt or pointer-only rollback and delegated the
 mechanism; exact-content approval pending; qualified in T4d).** For `MachineUacDirect`,
@@ -1501,7 +1531,16 @@ bootstrap name (§6).
 
 *Order.* `keld-update` first mints the identities without writing anything, through the
 mint-then-journal seam that splits `WindowsExtractionRoot::begin_activation` and
-`resume_unlaunched` (§8). The owner then creates and holds the endpoint and reads its
+`resume_unlaunched` (§8). Those two entry points and `recover` take the attempt owner's
+`keld_guard::VerifiedWindowsImage` from its one Authenticode verification, never a
+bare file or a digest: `keld-update` derives the journaled `helper_image_blake3` from
+that image's file (`VerifiedWindowsImage::file`) with its single image-digest owner
+(`crates/keld-update/src/windows_baseline.rs:676`), which the helper's self-anchor and the
+claimant's candidate-boot read already use, so no caller computes or supplies the digest
+(KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 3;
+slice S6b2). Once slice S9d lands, that verification also binds the image's file to the
+running image ("Helper launch and self-anchor", *Running-image binding*). The owner then
+creates and holds the endpoint and reads its
 descriptor back, and only then is the durable record written that first reveals the
 name, with the owner's `owner_process_id` and `owner_creation_time`: `PublishPending` for
 a fresh attempt, or the re-mint record for a resumed owner. The endpoint is therefore
@@ -2215,6 +2254,25 @@ Implement in:
     into a durable `HealthAccepted` step and the completion after it, so that the owner
     sends `AK1` accepted exactly after the durable write (*Health sequence*), a breaking
     public API change (slice S6b; same coordination record);
+  - `WindowsExtractionRoot::begin_activation` (`windows_extraction.rs:557-561`),
+    `WindowsRecoveryInspection::recover` (`windows_baseline/activate.rs:603-606`) and
+    `resume_unlaunched` (`windows_baseline/activate.rs:645-647`) take the attempt owner's
+    `&keld_guard::VerifiedWindowsImage` instead of a raw
+    `coordinator_image_blake3: [u8; 32]`, so a caller can supply only an image that
+    passed `keld-guard` verification. Each public entry point delegates to one
+    crate-private function that takes that image's `&std::fs::File`
+    (`VerifiedWindowsImage::file`, `crates/keld-guard/src/windows_authenticode.rs:114`)
+    and derives the digest; the crate-internal transaction tests
+    (`crates/keld-update/src/windows_baseline/tests.rs:23`, under `#[cfg(test)]`) call
+    that private function with plain files, so `keld-guard` gains no test constructor
+    for its verified type, which a feature flag could expose to release builds through
+    Cargo feature unification. No production caller can compute that digest,
+    because the one image-digest owner, `image_blake3` (`windows_baseline.rs:676`), is
+    private to `keld-update`; `keld-update` now derives it from the handle, with the
+    derivation and the journaled bytes unchanged. A breaking public API change (slice
+    S6b2; KEL-270 owner decision `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07,
+    item 3, which names `begin_activation`; the two recovery entry points carry the same
+    raw digest and follow it, so that no caller computes one);
   - `next_activation_step` (`activation.rs`) gains the abandon intent of owner decision
     D1 (refined), behind a new public recovery-role entry point (slice S10). Under that
     intent only: `activation.rs:203` maps a published candidate at the prior floor to
@@ -2251,6 +2309,23 @@ Implement in:
     `keld-core` loses that allowance and calls the `keld-guard` owner over its existing
     edge, as the helper does; copying the verifier is forbidden. Both AGENTS.md files
     are amended;
+  - `keld-guard`, `src/windows_authenticode.rs` (slice S9d; KEL-270 owner decision
+    `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 1): the running-image
+    binding of "Helper launch and self-anchor" adds the source of the running image's NT
+    path that S9d selects, `QueryFullProcessImageNameW` with `PROCESS_NAME_NATIVE` on
+    the current process or `GetMappedFileNameW` on the module base, and any call that
+    its comparison with the opened file object needs. Each is named in `keld-guard`'s
+    D4 Authenticode rule by S9d's amendment. `QueryFullProcessImageNameW` needs only
+    `Win32_System_Threading`, which `keld-guard` already enables, and has two
+    module-private Win32-format call sites today
+    (`crates/keld-runtime/src/windows_job.rs:905`,
+    `crates/keld-core/src/app_session.rs:1280`); `keld-guard` depends on no `keld-*`
+    crate, so its call is not a duplicated shim. `GetMappedFileNameW` and its
+    `kernel32.dll` export `K32GetMappedFileNameW` both need
+    `Win32_System_ProcessStatus`, which the workspace pin lacks; the first links
+    `psapi.dll`, which the helper's import-table allowlist does not admit
+    (`crates/keld-updater-helper/tests/release_image.rs:19-26`), unless S9d calls the
+    second;
   - `keld-ipc`, `src/windows_named_pipe.rs`: an exact expected-ACE set instead of the
     one current-user ACE (the initiating user's SID for connect-back; the host's own
     SID plus BUILTIN Administrators for the bootstrap), the explicit Medium no-write-up
@@ -2357,8 +2432,8 @@ Must not touch in Slice A:
   resolves it from a fresh UAC prompt without ordinary host boot, writing nothing when
   revalidation or the process-family proof fails. The §7 rows for criteria 8, 17 and 20
   define the expected results. Implementation follows these dependency-ordered slices,
-  each one PR (S4 is two, S4a and S4b; S6 is four, S6a to S6d; S9 is three, S9a to S9c)
-  with its crates, gates and evidence:
+  each one PR (S4 is two, S4a and S4b; S6 is five, S6a, S6b, S6b2, S6c and S6d; S9 is
+  four, S9a to S9d) with its crates, gates and evidence:
   - S1, native qualification spike, in the nested research checkout only (no Keld
     code; no gate): `hProcess` and its rights from an elevated `runas` launch; the
     elevated helper opening the host process and its token after own-account and
@@ -2410,11 +2485,13 @@ Must not touch in Slice A:
     new `WindowsLaunchedProcess`, `WindowsClaimantRefusal`). Evidence: the
     process-object cells of the claimant-binding row at the binding; pipe, token,
     deadline and one-shot cells close in S6/S11.
-  - S6, `PerUserDirect` connect-back end to end, in four PRs. Coordination record
+  - S6, `PerUserDirect` connect-back end to end, in five PRs. Coordination record
     (Linear KEL-270 comment `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6
     splits into S6a to S6d; S6a and S6b are independent, S6c composes them, and S6d
-    composes the landed lifecycle keeper into S6c's coordinator. Until S6d lands, an
-    owner lost at any point after the candidate launch (`AwaitingHealth`,
+    composes the landed lifecycle keeper into S6c's coordinator. Owner decision (Linear
+    KEL-270 comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 3) adds
+    S6b2, which changes the coordinator input that S6c composes and lands before it.
+    Until S6d lands, an owner lost at any point after the candidate launch (`AwaitingHealth`,
     `HealthAccepted` or `RollbackPending`) leaves its journal pending; `recover` needs a
     retirement binding that only the keeper's `KELD-QF1` witness supplies once the owner
     is gone, so later startups refuse with `JournalBoundRecoveryRequired` and no
@@ -2472,10 +2549,28 @@ Must not touch in Slice A:
       the process-object cells of the claimant-binding row at the owner; a subprocess
       crash cut between the durable `HealthAccepted` step and completion (rows 6–7, 9);
       and the candidate's Job membership before its first instruction.
+    - S6b2, the verified coordinator image in `keld-update` (`windows_extraction.rs`,
+      `windows_baseline/activate.rs`). Owner decision (Linear KEL-270 comment
+      `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 3): `begin_activation`,
+      `recover` and `resume_unlaunched` take the attempt owner's `VerifiedWindowsImage`,
+      and `keld-update` derives `helper_image_blake3` from its file with its single
+      `image_blake3` owner; the tests reach one crate-private file-taking function, and
+      `keld-guard` gains no test constructor (§5). It is a slice of its own rather than part of S6c because
+      it changes only `keld-update`, a crate outside S6c's, under the public-API gate
+      alone, and because S10 and S11 call the same three entry points, so S6c's crates
+      stay `keld-core`, `keld-host` and the `keld-ipc` attempt module. It lands before S6c
+      and waits for no unlanded slice. Gates: public API (breaking: the three signatures);
+      unsafe, permission model, dependency and wire: none (the `keld-update ->
+      keld-guard` edge exists, and the journaled digest's derivation and bytes are
+      unchanged). Evidence: the "10, 17 (coordinator image)" row; the landed
+      activation, recovery and crash-cut tests pass through the crate-private
+      file-taking function in place of each raw digest.
     - S6c, the composition in `keld-core` and `keld-host`, and the measured G constant
       in the `keld-ipc` attempt module. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): the `PerUserDirect` host
-      coordinator; the `app_session.rs` candidate mode that defers both the
+      coordinator, which passes S6b2's entry points the `VerifiedWindowsImage`
+      from the host's one `keld-guard` verification of its own image (KEL-270 owner decision `740998f4`,
+      item 3); the `app_session.rs` candidate mode that defers both the
       recovery-gate arm and the terminal-revocation predicate to `AK1` accepted
       (*Health sequence*); `keld-host`'s rendezvous argument; and the measurement that
       fixes the margin G (approved: KEL-270 owner decision `eff8e2fb`, 2026-10-06),
@@ -2488,6 +2583,15 @@ Must not touch in Slice A:
       shape)" row for the candidate's rendezvous argument; row 20's typed `WriterActive`
       for every launch during an attempt that is not the accepted claimant; and the "8
       (health sequence)" row with the G measurement, except its owner-killed cell (S6d).
+      S6c keeps the host's boot `VerifiedWindowsImage` for that call; today
+      `validate_installed_current_exe` drops it on return
+      (`crates/keld-core/src/app_session.rs:2360-2372`). S6c also waits for the KEL-53
+      amendment that specifies item 2 of `740998f4`, the candidate's lifetime after
+      commit: the native qualification of option A (breakaway from the host-death Job)
+      failed its acceptance test, so the owner's rule selects option B, in which the
+      old host clears kill-on-close on its own host-death Job just before it exits,
+      after commit and after reaping its roles (Linear KEL-270 replies `559c07ac` and
+      `079b239d`, 2026-10-07); this spec does not yet specify B.
     - S6d, the `PerUserDirect` owner-loss composition in `keld-core` and the keeper's
       executable entry. Coordination record (Linear KEL-270 comment
       `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S6c's coordinator starts a
@@ -2518,9 +2622,11 @@ Must not touch in Slice A:
     payload read-back moves to its producers' slices: from `keld-host.exe` to KEL-254
     T3 Part B and from `keld-updater-helper.exe` to S9. T3 Part B reads the payload
     through `VerifiedWindowsImage::file`, the handle that verification pinned.
-  - S9, the updater helper, in three PRs. Coordination record (Linear KEL-270 comment
+  - S9, the updater helper, in four PRs. Coordination record (Linear KEL-270 comment
     `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07): S9 splits into S9a to S9c; S9a
-    and S9b are independent, and S9c composes them. The recovery role stays disabled
+    and S9b are independent, and S9c composes them. Owner decision (Linear KEL-270
+    comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item 1) adds S9d after
+    S9c. The recovery role stays disabled
     (`RecoveryDisabled`), and until S11 the activation role refuses after the
     self-anchor (*Interim*).
     - S9a, in `keld-pack`, `keld-update` and `keld-core`. Coordination record (Linear
@@ -2570,6 +2676,28 @@ Must not touch in Slice A:
       the "17 (helper launch and self-anchor)" row; the helper's recovery-role refusal in
       the "17 (recovery-required state)" row; and the activation role's pinned interim
       refusal.
+    - S9d, the running-image binding in `keld-guard` (`windows_authenticode.rs`) and its
+      two callers, the installed host's boot in `keld-core` (`app_session.rs`) and the
+      helper's self-anchor in `keld-updater-helper` (`helper.rs`). Owner decision
+      (Linear KEL-270 comment `740998f4-9a47-4527-9e1b-1adb10f4836e`, 2026-10-07, item
+      1, on finding `c4921888`): the single `keld-guard` verifier binds the file that it
+      opens and verifies to the running image ("Helper launch and self-anchor",
+      *Running-image binding*). It lands after S9c, whose helper is one of its callers,
+      and before S10 and S11, which add the helper's first write path. Its prerequisite
+      is the research spike that paragraph names, run in the nested research checkout
+      with no Keld code, and S9d cites the spike's receipts. If they show that neither
+      source names the running image's file, that the junction-retarget negative control
+      cannot be built, or that the binding would refuse a launch whose running image is the
+      located tree's verified file and that the path-only open admits today, S9d stops
+      for an owner decision. Gates: unsafe
+      (`keld-guard` amendment of its D4 Authenticode rule, §5), public API (the
+      verifier's running-image entry and its typed refusal, and both callers' switch to
+      it), permission model (the helper's self-anchor and the installed boot admit only
+      the running image); dependency: any `windows-sys` feature that S9d's selected source or
+      comparison adds, such as `Win32_System_ProcessStatus`, which gates both
+      `GetMappedFileNameW` and `K32GetMappedFileNameW` (§5); wire: none. Evidence: the "17
+      (running-image binding)" row; the landed KEL-135 rows, the leaf-reparse refusal
+      and the "17 (helper launch and self-anchor)" cells pass unchanged.
   - S10, the recovery-only role under D1 (refined): the abandon intent in
     `next_activation_step` with the five step-mapping changes and the `retirement_due`
     change listed in §5, and its public recovery-role entry point (`keld-update`), the
@@ -2624,6 +2752,7 @@ Must not touch in Slice A:
 | 2–4 | signed v0 fixtures, duplicate-member parser, equal-precedence build-metadata release pair, floor selection including equal-precedence/different-metadata and below-baseline replay, numeric mutations (`0`, `-1`, fraction, exponent, `2^53 - 1`, `2^53`), shorter/exact/longer compressed and decompressed byte counts, digest boundaries and complete ustar golden bytes; selecting a present delta fails Slice A |
 | 5, 13 | independent canonical Windows tar/policy goldens; producer-to-verifier size/hash agreement; missing/duplicate/changed policy refusal; a Windows package without exactly one root regular-file `keld-updater-helper.exe` (absent, a directory of that name, a case variant, a nested copy) refuses before output, and the verifier decides it after the content digest (T4d S9a); link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases and ancestor collisions reject before output; T3b separately tests extraction-order and filesystem reparse/rename substitution |
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
+| 10, 17 (coordinator image) | (KEL-270 owner decision `740998f4`, item 3; S6b2) `begin_activation` journals as `helper_image_blake3` the BLAKE3 of every byte of the verified image's file, equal to a digest that the test computes independently from that file's bytes; `recover` and `resume_unlaunched` accept the journaled image and refuse an image whose file bytes hash differently from it before any write, with the journal unchanged; the transaction tests drive the crate-private file-taking function, one operator cell passes a real `VerifiedWindowsImage` of a signed build through each public entry point, and a `compile_fail` doctest shows that a bare `&std::fs::File` does not satisfy them; a negative control that journals a constant in place of the derived digest fails this row; the landed crash cuts pass unchanged |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
 | 8 (claimant binding) | only the exact launched and retained process is accepted. Two separate observables cover a copy of the candidate image started during `AwaitingHealth`: a same-user Medium copy, like a second instance from the candidate tree that connects first, opens the endpoint, is refused by `CompareObjectHandles`, is disconnected and refuses with a typed `WriterActive`, after which the same pipe instance accepts the real candidate; an LPAC copy that a hostile role starts is denied at pipe open by the DACL and the label and never reaches `CompareObjectHandles`. A peer whose process ID equals the launched one but whose process object differs (seam-injected), a signaled launch handle, a wrong creation time, and a wrong TokenUser, `AuthenticationId`, integrity or elevation each refuse, as does a token from another session that otherwise matches (administrator-constructed); a connector that sends nothing is dropped at its per-connection deadline; refusals consume no one-shot and do not extend the health deadline; a failed `RevertToSelf` terminates the owner (seam-injected); the candidate's connected handle is non-inheritable and in no role's handle list |
 | 8 (endpoint squatting) | at every durable step a test reader of the journal finds the named endpoint already held; a name that exists when a fresh owner creates its endpoint (seam-injected, since the order makes it otherwise unobservable) refuses with `ProtectedStateUnchanged` and no protected write, and for a resumed owner leaves the journal unchanged; a second creation of a live owner's name fails; after owner death, a squatter that creates the name as the same user and one that creates it as a second ordinary user, including one whose process ID equals the journaled owner's (seam-injected), are refused by the claimant on descriptor owner, DACL, label, session or image before it sends anything, or on the journaled owner fields after acceptance; in `MachineUacDirect` a Medium process cannot create the endpoint with an `O:BA` owner; a squatting server receives only an identification-level token; descriptor readback rejects an extra ACE, `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`, a missing Medium no-write-up label, a wrong owner and remote-client admission; the observed default label of an unlabelled pipe that an elevated process creates is recorded; a v1 journal admits no claim |
@@ -2639,6 +2768,7 @@ Must not touch in Slice A:
 | 17 (helper crash after `health-accepted`) | after the limit is cleared and with the application still running, a helper crash leaves `health-accepted` durable: the next ordinary launch, including a second launch of the application, refuses with `MachineRecoveryRequired` and `RestartFirst` guidance (`RecoveryDisabled` before S12); nothing is written; the recovery role halts while the initiating session is live and finishes the commit only after the session query proves that it ended |
 | 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an `UpdateError::Baseline` refusal or merely no selection) and writes nothing; each `MachineRecoveryGuidance` variant's fix-guidance text matches its pinned bytes; the same states in `PerUserDirect` keep their landed recovery and repair; `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline` refusal; while S10's rows have not passed, the helper refuses the recovery role and the guidance is `RecoveryDisabled`; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
 | 17 (helper launch and self-anchor) | the host derives the helper path only from admitted provenance and records, and offers nothing without authenticated provenance; a `keld-updater-helper.exe` placed beside the host outside the tree, on `PATH` or in the current directory is never launched; a copy of the helper with planted DLLs in its own directory, one for every imported name and for the C runtime names, launched elevated on a clean VM, loads none of them and refuses on self-anchor; the helper's import table matches its allowlist; a DLL planted in the current directory or in a user-writable `PATH` entry is not loaded after `main`; the edge-set checks fail on an injected `keld-core` edge and on an injected Bun-spawn call; the helper refuses every role before the lease and any write when the recorded mode is `PerUserDirect`, `MachineSeamlessDirect` or managed, when it runs from a copy outside a protected version tree (including a forged tree layout in a user-writable directory), when its signer differs from the publisher scope, when its embedded payload is missing, duplicated or mismatched, or when its image digest is not the journaled one |
+| 17 (running-image binding) | (KEL-270 owner decision `740998f4`, item 1; S9d) for the helper and for the installed host separately: a genuine signed image of the same publisher that is not the located tree's file, started through a user-owned junction that is then retargeted at the protected version tree, is refused by the `keld-guard` running-image binding, the helper before its self-anchor, the lease and any write, and the host before any listener, child or window; a negative control that removes the binding lets the same launch pass the self-anchor or the installed boot, so the row detects the gap; a direct launch of the in-tree image passes; a launch whose running image is the located tree's verified file and that the path-only open admits today passes, and if the binding would refuse such a launch, S9d stops for an owner decision (§6) |
 | 17 (UAC operator evidence protocol) | every row that needs real UAC consent records the helper's process ID and creation time, before and after snapshots of provenance, floor, records, journal and the version census with descriptors, and the secure-desktop step (consent or credential prompt, and the approving account); evidence counts only under the default prompting policy on the secure desktop, and runs where policy elevates without prompting or UAC is turned off are not admitted as Machine-UAC evidence |
 | 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; elevated installer assigns Administrators owner only when TokenGroups has SE_GROUP_OWNER and not deny-only; exact protected owner/DACL read-back on ancestors and records; filtered medium token and second ordinary user are denied write/create/delete/rename/WRITE_DAC/WRITE_OWNER while read succeeds; SYSTEM/Admin writer controls succeed; at AfterStageCreate/BeforeFileFlush, the same account's filtered medium token cannot create/write/obtain WRITE_DAC on Machine-UAC stage objects; UAC denial, fake host, stale attempt, changed source bytes or fake endpoint cause zero protected publication; over-the-shoulder candidate remains in initiating ordinary token; live helper owns health/rollback; actual admitted Keld roles fail mutations |
 | 18 | mechanism-neutral seamless row: wrong host/role/image/token profile/install, fake endpoint, peer exit during acquisition, inherited/duplicated pipe-handle leak, stale/replayed attempt, simultaneous successors, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
@@ -2669,7 +2799,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `WindowsRecoveryInspection::recover` and `resume_unlaunched` so that minting and the
   first name-revealing record are separate calls, with its `WindowsMintedAttempt` and
   `WindowsJournaledAttempt` handles and its `AttemptOwner` and `InitiatingLogon`
-  inputs (named for the KEL-270 T4d S3 public-API review); Machine-UAC admission in
+  inputs (named for the KEL-270 T4d S3 public-API review), and whose coordinator input
+  is the owner's `VerifiedWindowsImage` rather than a raw digest (S6b2; KEL-270
+  owner decision `740998f4`, item 3); Machine-UAC admission in
   `load_windows_activation_write_snapshot` and `load_windows_recovery_inspection`,
   which today admit only `PerUserDirect` (`windows_baseline/load.rs:447-452`,
   `:657-672`, `:476-479`), through the existing
@@ -2681,7 +2813,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   the helper role entry points; the helper's self-anchor and helper-image derivation
   entry points and the signer rule that S9a moves into `keld-update`; the `keld-guard`
   Authenticode owner moved
-  under D4; the `keld-ipc` `attempt` module with its endpoint locator; the `keld-update`
+  under D4, and its running-image entry with its typed refusal (S9d; KEL-270 owner
+  decision `740998f4`, item 1); the `keld-ipc` `attempt` module with its endpoint
+  locator; the `keld-update`
   health-receipt digest that the candidate computes for `AB1` (approved: KEL-270 owner
   decision `eff8e2fb`, 2026-10-06), exposed only through the attempt and candidate-boot
   accessors; S6's other surfaces, which are the claimant provenance and candidate-boot
@@ -2696,7 +2830,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
 - permission model: yes — the install-mode protection profiles, UAC elevation and
   hostile-role denial decide who can mutate executable state, though no app grant is
   added. T4d adds the elevated helper principal, its recovery-only role and the
-  initiating-user-only connect-back DACL;
+  initiating-user-only connect-back DACL, and S9d admits only the running image to the
+  helper's self-anchor and the installed boot (KEL-270 owner decision `740998f4`,
+  item 1);
 - dependency addition: none in Slice A; yes for T4d — the new workspace member
   `crates/keld-updater-helper` with internal edges only to `keld-update`, `keld-ipc`,
   `keld-runtime` and `keld-guard`; the `windows-sys` features `Win32_UI_Shell` and
@@ -2707,7 +2843,9 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   `keld-pack` already lock. `Win32_Security_Authorization`, which the descriptor code
   uses, and the WinTrust and Cryptography features that the D4 move carries into
   `keld-guard` are already in the workspace `windows-sys` pin and are not new features.
-  No third-party crate is added to the workspace;
+  S9d adds to that pin any feature that its selected source or comparison needs, such
+  as `Win32_System_ProcessStatus` for `GetMappedFileNameW` or `K32GetMappedFileNameW`
+  (§5). No third-party crate is added to the workspace;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
   and canonical package content are narrowed and require exact independent review; any
   new host/coordinator authentication channel remains separately owned and gated. T4d is
