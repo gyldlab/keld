@@ -2031,8 +2031,9 @@ handles under the deadline and takes a new snapshot; it repeats until a snapshot
 only the host and family, or until the deadline. This is exactly what closing H at exit
 would do to those members, moved before the clear, and it is what makes the clear safe:
 after a clean snapshot no process outside the family exists in H that could start
-another. At the deadline it refuses: `release_for_exit` returns the typed refusal, the
-host exits with H still kill-on-close, the candidate dies with it, and the next launch
+another, other than the host, which starts nothing after the census. At the deadline
+it refuses: `release_for_exit` returns the typed refusal, the host exits with H still
+kill-on-close, the candidate dies with it, and the next launch
 boots the committed version, since every record is already committed; the refusal is
 availability-only. S6c measures the deadline from the reaping latencies its PR records
 and fixes it there. Rejected: comparing H's member count with A's (a member can leave
