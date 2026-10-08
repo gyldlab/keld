@@ -2802,7 +2802,11 @@ Must not touch in Slice A:
       `release_family`; S12 reuses the lister. It changes crash ownership and handle
       ownership, so it needs an architecture review. Gates: unsafe (`keld-runtime`
       amendment: the §5 scopes on listed calls, no new function names, and the
-      limit-change rule narrowed to this strip), public API (breaking:
+      limit-change rule narrowed to this strip; the amendment carries an explained
+      instruction-budget change for `crates/keld-runtime/AGENTS.md` under
+      `.agents/instructions.md`, with named independent review evidence as the S6b
+      and S9b rule above provides, because the file is at 1833 bytes against its
+      1856-byte cap in `.agents/instruction-budget.tsv`), public API (breaking:
       `install_host_death_job`'s return type; new: `WindowsHostDeathJob`,
       `release_for_exit`, `release_family`, `WindowsReleasedAttempt` and
       `WindowsExitCensus`); permission model, dependency and wire: none (every call
@@ -3057,7 +3061,11 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
   calls, adds no function name, narrows the rule that forbids Job limit changes to the
   exact kill-on-close strip with read-back, and retains the host-death Job handle in
   `ManuallyDrop` instead of forgetting it (KEL-270 owner decision `740998f4`, item 2;
-  coordinator decisions under the owner's delegation, 2026-10-08).
+  coordinator decisions under the owner's delegation, 2026-10-08); that amendment
+  carries an explained instruction-budget change for `crates/keld-runtime/AGENTS.md`
+  under `.agents/instructions.md`, with named independent review evidence as for S6b
+  and S9b, since the file is at 1833 bytes against its 1856-byte cap in
+  `.agents/instruction-budget.tsv`.
   The helper crate holds none. Elsewhere, conditional on each exact native/helper
   implementation;
 - public API: yes — canonical package contents, update admission and unsupported-cell
