@@ -212,7 +212,10 @@ manifest decoder.
   fs.read('~/Library/…'): add `$APPDATA/**` or change the call"). v0 `keld doctor`
   rejects unknown flags (`KELD-CLI-044`, exit 2); `--permissions` is not live.
 - `keld migrate` seeds the manifest from static analysis of Electron API usage
-  (dialog → fs read of chosen paths, autoUpdater → net to feed URL, etc.).
+  (dialog → fs read of chosen paths, etc.). It never seeds a network grant for updater
+  feeds: `autoUpdater` use maps to the host-owned updater (§5), because application
+  permissions cannot grant update authority and application roles cannot write updater
+  metadata (architecture 06). F09-T5 (#581) owns any future trigger capability.
 - CI mode (`keld build --frozen-permissions`) fails on any manifest drift — the
   lockfile discipline, applied to authority.
 

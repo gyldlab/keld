@@ -262,6 +262,15 @@ through that spec's ordered tasks.
 | `dock/taskbar` | badge, progress, bounce, jump lists, thumbbar | `app.dock`, `setProgressBar` |
 | `capture` (Tier 3) | window/screen capture via ScreenCaptureKit / Graphics.Capture / PipeWire | `desktopCapturer` |
 
+**Window ownership.** No keld-native broker owns the `window` row. keld-native depends
+only on ipc and guard, and native windows and webviews are UI-thread handles that
+keld-wv owns. The keld-core window registry owns window identity (the host-minted
+`WindowId` and `WindowGeneration`), the window-state events and the two-phase close
+state machine. It drives keld-wv's native handles through the UI-loop command and event
+queue. The app-link `window` channel carries these to the app process, and webview
+principals cannot reach it until KEL-102's per-window grants exist. The contract is
+`docs/specs/gh531-window-registry-close-state-machine.md` (GH-531, approved).
+
 Implementation notes: objc2/objc2-app-kit on macOS (no deprecated cocoa crate);
 windows-rs on Windows; gtk4 + ashpd (XDG portals — file dialogs, notifications,
 screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
