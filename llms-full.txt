@@ -7121,6 +7121,19 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object
    id must be the `blob`/`tree`/`raw` (or GitHub raw CDN) ref itself.
    `score` re-checks the URI; `/tmp/` is not a substring ban on https URLs.
+7. A report names a board's authority profile only through
+   `Scoreboard::authority_profile()`, rendered with `AuthorityProfile::as_str`,
+   which is the one variant-to-string map. The v1 vocabulary is `strict_bun`,
+   `sandboxed_addon_worker`, `legacy_sandbox_off`, `user_approved_tool_child` and
+   `unverified`, and the record `schema` stays `keld.compat.evidence/v1`.
+   `unverified` is a run without verified containment (the KEL-78 `unverified`
+   state). It is reported as `unverified` and is never strict or legacy evidence.
+   No report may promote it, relabel it, or merge it with another profile. The
+   accessor is `None` when contributing records disagree on profile. That board
+   already withholds the percentage and `complete` (rules 2 and 3), and a report
+   must not name any one record's profile for it. The claim (rule 4) names no
+   profile. Labelling rules per run are in
+   `docs/specs/gh532-first-proof-evidence-rules.md` rule 6.
 
 Until a product denominator is committed, this page stays a narrative API
 board (✔/▲/✘). Installer size/RSS stays on
