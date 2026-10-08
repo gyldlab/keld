@@ -762,9 +762,12 @@ this rule.
    on-disk mutations, plus the C1 rename. Each one fails its named test with the
    `CorpusError` variant listed here, and is then restored:
    - the one-byte manifest flip, which yields `DigestMismatch`;
-   - the 44.4.5 commit inside the 44.3.0 corpus, which yields `PinMismatch`. The run
-     also rewrites `denominator.json`'s `corpus_sha256` to the digest of the mutated
-     manifest, so it passes the digest gate (D2) and reaches the pin check;
+   - the 44.4.5 version inside the 44.3.0 corpus. One v0 cell's `oracle_id` prefix
+     becomes `electron-v44.4.5.`, which yields `PinMismatch`. The run also rewrites
+     `denominator.json`'s `corpus_sha256` to the digest of the mutated manifest, so it
+     passes the digest gate (D2) and reaches the pin check. Changing the manifest's
+     `upstream.electron_commit` instead is a different control, and it yields
+     `UnadmittedPin` (D4);
    - a mapped Bun test changed to `test.skip`, which yields `CaseNotAdmitted`;
    - the C1 rename, which makes `published_receipt_cases_remain_live_tests` fail and
      name the missing case.
@@ -839,8 +842,9 @@ negative input, rejected with `CensusViolation`, which names the rule and the fi
 3. Inside the owner, everything appears exactly once:
    - one `fn sha256_uri`;
    - one `Sha256::digest` call site;
-   - one deserialisation site per shape, written
-     `serde_json::from_slice::<ManifestV0>` and `serde_json::from_slice::<ManifestV1>`;
+   - one deserialisation site per shape that exists. T2 checks
+     `serde_json::from_slice::<ManifestV0>`. T3, which adds `ManifestV1`, extends the
+     rule to `serde_json::from_slice::<ManifestV1>`;
    - no `#[test]`.
 4. `src/lib.rs` declares exactly one public module, `pub mod evidence;`, with no other
    `pub mod` or `pub use` (gh532 §7). *Negative control:* a synthetic `lib.rs` that adds
@@ -1209,7 +1213,7 @@ the `corpus_registry` target.
 
 | Criterion | Test | Target | Task | Kind |
 |---|---|---|---|---|
-| gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`, covering D10 rules 1–5: tokens outside the owner, `Deserialize` manifest structs, exactly-one inside the owner, the `src/lib.rs` `pub mod` control, and the `sha2` kind via `cargo metadata`. Each rule has a synthetic negative input built with `concat!`. | registry | T2 | integration |
+| gh532 AC10 | `owner_census_finds_one_parser_and_one_digest_helper`, covering D10 rules 1–5: tokens outside the owner, `Deserialize` manifest structs, exactly-one inside the owner (the `ManifestV0` site in T2; T3 adds the `ManifestV1` site), the `src/lib.rs` `pub mod` control, and the `sha2` kind via `cargo metadata`. Each rule has a synthetic negative input built with `concat!`. | registry | T2, extended in T3 | integration |
 | gh532 AC11 | `lifecycle_corpus_fixture_bytes_match_origin_main`; `rules::v0_shape_rejects_new_ids_and_foreign_pins` | lifecycle_corpus, rules | T2 | integration |
 | C8 | `rules::denominator_must_match_manifest_cells_and_id`, which mutates the committed lifecycle denominator in memory | rules | T2 | integration |
 | gh532 AC2, AC7 and AC9 (v0), AC8 harness clause | `rules::harness_run_rejects_digest_revision_engine_and_label_mutations`, which mutates one committed record in memory | rules | T2 | integration |
@@ -1238,6 +1242,7 @@ asserts the exact `CorpusError` variant:
 |---|---|---|---|
 | One-byte flip (issue; gh532 AC7, AC11) | first `e` → `E` in the manifest | no; the digest is the target | `DigestMismatch` |
 | 44.4.5 inside the 44.3.0 corpus (issue; gh532 AC11) | one v0 `oracle_id` prefix → `electron-v44.4.5.` | yes | `PinMismatch` |
+| Unadmitted pin (gh532 AC1, AC11) | the manifest's `upstream.electron_commit` → `694f4585…` | yes | `UnadmittedPin` |
 | Record revision (gh532 AC2) | one record's revision → `…@694f4585…` | no; record only | `PinMismatch` |
 | New id in the v0 shape (gh532 AC11) | registration id `electron-lifecycle-v1` | no; bytes unchanged | `V0ShapeNotAdmitted` |
 | C8 missing, extra or renamed cell or id | edit the denominator only | no; manifest unchanged | `DenominatorMismatch` |
