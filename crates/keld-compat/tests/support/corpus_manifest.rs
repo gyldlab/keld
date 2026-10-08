@@ -59,9 +59,10 @@ impl Pin {
         format!("https://github.com/electron/electron/blob/{}/", self.commit)
     }
 
-    /// Directory of this pin's doc snapshots, relative to a fixture directory (gh532 rule 2).
+    /// Directory of this pin's doc snapshots, relative to [`SNAPSHOT_ROOT`] (gh532
+    /// rule 2; one store for every corpus, gh566 D5 as amended by gh445).
     pub fn snapshot_dir(self) -> String {
-        format!("doc-snapshots/{}/", self.commit)
+        format!("{SNAPSHOT_DIR}/{}/", self.commit)
     }
 }
 
@@ -292,6 +293,20 @@ pub const WINDOW_V1: Registration = Registration {
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
 pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1];
 
+/// Parent of the one doc-snapshot store, relative to `crates/keld-compat`. Every v1
+/// corpus reads its cited pages from `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/<commit>/<page>`
+/// ([`Pin::snapshot_dir`]), so a page cited by two corpora at one pin is committed once
+/// (gh566 D5 A5).
+pub const SNAPSHOT_ROOT: &str = "fixtures";
+/// Name of the snapshot store directory under [`SNAPSHOT_ROOT`] (gh532 rule 2).
+pub const SNAPSHOT_DIR: &str = "doc-snapshots";
+
+/// Workspace-relative path of a snapshot keyed by `rel` (`doc-snapshots/<commit>/<page>`).
+/// The one path builder: `Corpus::load` reads the bytes and runs both Git checks on it.
+pub fn snapshot_repo_path(rel: &str) -> String {
+    format!("crates/keld-compat/{SNAPSHOT_ROOT}/{rel}")
+}
+
 /// Fixed file names inside a fixture directory.
 pub const MANIFEST_FILE: &str = "corpus.json";
 const DENOMINATOR_FILE: &str = "denominator.json";
@@ -520,7 +535,7 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Joins a `/`-separated relative path one component at a time (Windows-safe).
-fn join_rel(base: &Path, rel: &str) -> PathBuf {
+pub fn join_rel(base: &Path, rel: &str) -> PathBuf {
     rel.split('/')
         .fold(base.to_path_buf(), |path, part| path.join(part))
 }
@@ -635,12 +650,12 @@ impl Corpus {
         ))
     }
 
-    /// Loads and validates a committed corpus. Snapshots are read from the fixture
-    /// directory, and each must be stored by Git byte-for-byte (D5).
+    /// Loads and validates a committed corpus. Snapshots are read from the one store
+    /// at [`SNAPSHOT_ROOT`], and each must be stored by Git byte-for-byte (D5).
     pub fn load(reg: &Registration) -> Result<Self, CorpusError> {
         let (manifest, denominator) = Self::fixture_bytes(reg)?;
-        let dir = join_rel(&crate_root(), reg.fixture_dir);
-        let reader = |rel: &str| fs::read(join_rel(&dir, rel));
+        let workspace = workspace_root();
+        let reader = |rel: &str| fs::read(join_rel(&workspace, &snapshot_repo_path(rel)));
         let corpus = Self::parse_with_snapshots(reg, &manifest, &denominator, &reader)?;
         let mut pages: Vec<String> = Vec::new();
         for cell in &corpus.cells {
@@ -653,9 +668,9 @@ impl Corpus {
         }
         for page in pages {
             let rel = format!("{}{page}", corpus.pin.snapshot_dir());
-            let repo_rel = format!("crates/keld-compat/{}/{rel}", reg.fixture_dir);
-            citation::check_normalisation(&repo_rel, &join_rel(&dir, &rel))?;
-            citation::check_checkout_attributes(&workspace_root(), &repo_rel)?;
+            let repo_rel = snapshot_repo_path(&rel);
+            citation::check_normalisation(&repo_rel, &join_rel(&workspace, &repo_rel))?;
+            citation::check_checkout_attributes(&workspace, &repo_rel)?;
         }
         Ok(corpus)
     }
@@ -673,7 +688,7 @@ impl Corpus {
     /// Validates manifest and denominator bytes in the D2 order: digest, parse and
     /// shape, pin, denominator agreement, cell rules and platforms, citations and
     /// snapshots, then registry and targets. `read_snapshot` is keyed by the path
-    /// relative to the fixture directory (D5).
+    /// relative to the snapshot store, [`SNAPSHOT_ROOT`] (D5).
     pub fn parse_with_snapshots(
         reg: &Registration,
         manifest: &[u8],

@@ -10,7 +10,8 @@ use super::v1_fixture::{
     COMMIT, PAGE, READY, SNAPSHOT, V0_COMMIT, V1, edit, manifest, parse_with, store,
 };
 use crate::corpus_manifest::{
-    CorpusError, check_checkout_attributes, check_normalisation, sha256_uri, workspace_root,
+    CorpusError, SNAPSHOT_DIR, check_checkout_attributes, check_normalisation, sha256_uri,
+    snapshot_repo_path, workspace_root,
 };
 
 /// gh532 AC16: a fabricated quote is rejected even with its own correct digest, and the
@@ -95,7 +96,7 @@ fn snapshot_would_be_normalised_rejects_crlf() {
     let dir =
         TempDir(std::env::temp_dir().join(format!("keld-compat-snapshot-{}", std::process::id())));
     fs::create_dir_all(&dir.0).expect("create temp dir");
-    let repo_rel = format!("crates/keld-compat/fixtures/example/doc-snapshots/{COMMIT}/{PAGE}");
+    let repo_rel = snapshot_repo_path(&format!("{SNAPSHOT_DIR}/{COMMIT}/{PAGE}"));
     for (label, bytes, normalised) in [
         ("crlf", &b"line one\r\nline two\r\n"[..], true),
         ("lf", &b"line one\nline two\n"[..], false),
@@ -120,7 +121,8 @@ fn snapshot_would_be_normalised_rejects_crlf() {
 /// controls run in a throwaway Git repository with one `.gitattributes` each.
 #[test]
 fn snapshot_checkout_attributes_reject_transforming_filters() {
-    let page = format!("crates/keld-compat/fixtures/example/doc-snapshots/{COMMIT}/{PAGE}");
+    // The repository's own attributes on the real store path (gh566 D5 A5).
+    let page = snapshot_repo_path(&format!("{SNAPSHOT_DIR}/{COMMIT}/{PAGE}"));
     check_checkout_attributes(&workspace_root(), &page)
         .unwrap_or_else(|error| panic!("the repository's own attributes: {error}"));
 

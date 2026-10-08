@@ -3,6 +3,13 @@
 Status: approved
 Linear: GH-566 (#517) · Owner: @0monish · Updated: 2026-10-08
 
+Amended by gh445 (#445): A5, the shared doc-snapshot store (§2, §3 C11, §4.2 D5, §4.4, §7,
+§10). Every v1 corpus reads its cited pages from one store, so a page that two corpora
+cite at one pin is committed once. Each changed passage says "A5". A5 is a delegated
+owner decision, recorded with its rejected alternatives and falsifiers in D5. It awaits
+the owner's exact-content approval in the #445 PR review, and it is not yet part of what
+the approval above approved.
+
 ## 1. Goal & non-goals
 
 The approved governing spec,
@@ -16,11 +23,13 @@ manifest.
 This spec decides how X01-T4 builds that owner and how it migrates the lifecycle tests
 onto it without changing a committed byte. It also decides how #445 and #448 add v1
 corpora. Each adds data, one registry entry and its own conformance tests. It adds no
-new parser, digest helper, validator or validator test target.
+new parser, digest helper, validator or validator test target. A5 (the shared snapshot
+store and its census) is an owner amendment that #445 carries; it is not a consumer
+addition.
 
 Observable outcome: gh532 AC1–AC12, AC16 and AC17 (as amended by A1), plus this spec's
-C1–C10, pass as tests in `crates/keld-compat/tests/`, each with its named negative
-control. And
+C1–C10 (and C11, added by A5), pass as tests in `crates/keld-compat/tests/`, each with
+its named negative control. And
 `git diff origin/main -- crates/keld-compat/fixtures/` is empty.
 
 Non-goals:
@@ -67,6 +76,10 @@ Non-goals:
     rule 8 cell shape (D13, C10).
   - **A3 — the §4.5 migration unit.** Three including targets instead of two (D8, §4.5).
   - **A4 — the §5 X01-T4 boundary.** One added test target (§5).
+- A later amendment, made by #445 rather than by this spec's PR: **A5 — the D5 snapshot
+  store.** It changes the gh532 rule 2 location sentence in place, and adds C11, its
+  census and a §7 row. gh532's header and the changed passage say "amended by gh445
+  (#445)".
 - [`kel74-compat-evidence-schema.md`](kel74-compat-evidence-schema.md) §4.1–§4.3: the
   record, the denominator and `score()`. This spec consumes them only through the public
   `parse_evidence`, `parse_denominator` and `score`.
@@ -214,6 +227,14 @@ criteria and controls map onto them as follows:
 
     *Positive control:* on an undeclared host, the cell is in the report's `unknown`
     list and admission passes.
+11. **C11 — One snapshot store (D5, A5).** Given `crates/keld-compat/fixtures/`, when the
+    store census runs, then no committed corpus directory holds its own `doc-snapshots/`
+    entry. Every cited page is read from `fixtures/doc-snapshots/<commit>/<page>`
+    through `snapshot_repo_path`, the one path that `Corpus::load` reads and runs both Git
+    checks on. *Negative control:* a corpus directory with its own `doc-snapshots/` is
+    rejected with `CorpusLocalSnapshot`, which names every offending directory. The
+    filesystem probe finds such a directory on a throwaway tree. A page filed only under
+    a corpus directory fails with `MissingSnapshotFile`.
 
 ## 4. Design
 
@@ -516,7 +537,11 @@ inside the 44.3.0 corpus.
 
 *Storage*, as gh532 rule 2 places it:
 
-- The snapshot path is `<fixture dir>/doc-snapshots/<electron_commit>/<page path>`.
+- The snapshot path is `crates/keld-compat/fixtures/doc-snapshots/<electron_commit>/<page path>`.
+  That is one store, `SNAPSHOT_ROOT`, which every v1 corpus reads. A page that two
+  corpora cite at one pin is committed once, and no corpus directory holds its own
+  `doc-snapshots/` copy: `snapshot_store_census` rejects one with `FixtureCensus`
+  (amended by gh445 (#445), A5).
 - Its bytes are the raw upstream bytes from
   `https://raw.githubusercontent.com/electron/electron/<commit>/<page path>`, verified by
   the reviewer command in gh532 rule 2.
@@ -524,9 +549,9 @@ inside the 44.3.0 corpus.
 
 *Verification* uses one read seam: `Corpus::parse` takes
 `read_snapshot: &dyn Fn(&str) -> io::Result<Vec<u8>>`, keyed by the path relative to the
-fixture directory.
+shared store (A5).
 
-- Committed corpora pass `std::fs::read` over the fixture directory. The path is joined
+- Committed corpora pass `std::fs::read` over the shared store. The path is joined
   one `/`-separated component at a time, which is safe on Windows.
 - gh532 AC16 cases pass an in-memory map (gh532 §5). `NotFound` maps to
   `MissingSnapshotFile`. Any other error is a typed I/O error and is never swallowed.
@@ -570,18 +595,28 @@ Rejected alternatives:
   satisfy this pin.
 - Fetching from the network in CI (gh532 §4.3).
 - A sidecar digest file per snapshot, which would be a second digest source.
-- Walking `doc-snapshots/` for stray files. A stray file satisfies no check, because the
-  lookup is keyed by the manifest commit and the cited page. YAGNI.
+- Walking the store for stray files. A stray file satisfies no check, because the lookup
+  is keyed by the manifest commit and the cited page. YAGNI. A5's census (C11) is
+  narrower: it checks only whether each corpus directory has its own `doc-snapshots/`
+  entry, by existence, and reads no bytes. A copy there is a second, divergent source
+  of a pinned page, not a stray file.
 - Verifying anchors, which would re-implement GitHub's heading slugs. The quote already
   binds the sentence to the page.
 - A copy of the whole docs tree.
+- A snapshot copy in each corpus directory, which was this rule before A5. #445 cites
+  `docs/api/app.md` at 694f4585, and #448's open PR #654 commits its own copy of the same
+  page, so it would be committed twice, and a re-pin would have to edit each copy. A
+  registration field that points one corpus at another corpus's directory is also
+  rejected, because it couples two corpora (A5).
 
 *Falsifiers:*
 
 - A fabricated quote with its correct `quote_sha256` passes.
 - A page filed only under `doc-snapshots/07e46071…/` satisfies a cell pinned at
   `694f4585`.
-- A `..` segment reads outside the fixture directory.
+- A `..` segment reads outside the snapshot store.
+- A page filed only under a corpus directory's `doc-snapshots/` satisfies a cell. It must
+  fail with `MissingSnapshotFile`, and the store census must reject the copy (A5).
 
 Two outcomes are known and fail closed:
 
@@ -1091,7 +1126,7 @@ impl Corpus {
     pub fn parse(reg: &Registration, manifest: &[u8], denominator: &[u8],
                  read_snapshot: &dyn Fn(&str) -> io::Result<Vec<u8>>)
                  -> Result<Self, CorpusError>;
-    /// Reads the fixture dir; adds the D5 `git hash-object` normalisation check.
+    /// Reads the fixture dir and the shared snapshot store (A5); adds the D5 Git checks.
     pub fn load(reg: &Registration) -> Result<Self, CorpusError>;
     /// The committed manifest and denominator bytes, for in-memory mutation controls.
     pub fn fixture_bytes(reg: &Registration) -> Result<(Vec<u8>, Vec<u8>), CorpusError>;
@@ -1147,17 +1182,21 @@ pub enum CorpusError {
 
 ### 4.4 Consumer interface (#445, #448, and later X02-T4)
 
-To add a v1 corpus, a consumer changes only data and one registry line:
+To add a v1 corpus, a consumer changes only data and one registry line. (#445 also
+carries the owner amendment A5; that is an owner change, not part of this interface.)
 
 1. **The fixture directory.** Add `crates/keld-compat/fixtures/<dir>/` containing:
    - `corpus.json`, in gh532's §4.2 example shape plus each cell's `platforms` (A2).
      #445's and #448's cells declare `["macos"]`;
    - `denominator.json` (KEL-74), whose `corpus_sha256` is the `sha256_uri` of the exact
      `corpus.json` bytes;
-   - `doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/<page path>`, the raw
-     upstream bytes of each cited page, with its digest in `doc_snapshots` and checked
-     by the gh532 rule 2 reviewer command;
    - optionally `evidence/*.json`, harness records only, until X02-T5 (C6).
+
+   Each cited page goes in the shared store, not in the fixture directory (amended by
+   gh445 (#445), A5): `crates/keld-compat/fixtures/doc-snapshots/694f45852a0f1726cd23bfd379854de489cccb65/<page path>`.
+   It holds the raw upstream bytes, its digest goes in `doc_snapshots`, and the gh532
+   rule 2 reviewer command checks it. A page that another corpus already committed at
+   the pin is reused, not copied.
 2. **The registry entry.** Append one `Registration` to `REGISTRY` in
    `tests/support/corpus_manifest.rs`. It names `Shape::V1`, the `platforms` its cells
    may declare, and the targets the corpus maps. Those targets are keld-compat libtest
@@ -1173,7 +1212,9 @@ no parser, digest helper, validator or validator test target. The `corpus_regist
 target validates, admits and runs the census over the new entry automatically, and the C2
 census fails if step 2 is missing. Concurrent consumers each
 append one line to `REGISTRY`, so the first PR to go green wins and the later ones
-rebase (`docs/agents/workflow.md` § Parallelism rules).
+rebase (`docs/agents/workflow.md` § Parallelism rules). A rebasing consumer also commits
+a cited page only when the store lacks it, and moves any copy of its own into the store
+(C11, A5).
 
 Error messages name the corpus, the cell, the rule and the fix. For example:
 `QuoteAbsent: cell app.when-ready.host-ready-gate cites docs/api/app.md; copy the quote byte-for-byte from doc-snapshots/694f…/docs/api/app.md`.
@@ -1314,6 +1355,7 @@ the `corpus_registry` target.
 | gh532 AC16 | `rules::snapshot_*` over an in-memory read seam, plus `rules::snapshot_would_be_normalised_rejects_crlf` (D5) over one temporary file | rules | T3 | integration |
 | C9 | `rules::report_census_rejects_reports_that_count_fails_themselves`: synthetic report sources that use `board.failed()` or a label are rejected, and a `FailSplit` source is accepted | rules | T3 | integration |
 | C10 | `rules::platforms_*`: empty, repeated, unknown and unregistered entries; `check_admission` with synthetic outputs for a declared host whose case is missing (`cfg`) or `(skip)`; the `unknown` list on an undeclared host; and a `pass` record for an undeclared platform | rules | T3 | integration |
+| C11 (A5) | `registry::doc_snapshots_live_in_one_store`: the census over committed corpus directories, `CorpusLocalSnapshot` naming one and every offender, and the filesystem probe on a throwaway tree | registry | #445 | integration |
 | gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, built from `PENDING_LABEL` and `DIVERGENCE_LABEL` so the C9 census passes on the test itself; then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
 | C4, C5 (v1 controls), C6 | `rules::duplicate_keys_*`, `rules::records_*_v1` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
@@ -1373,7 +1415,8 @@ instead of claiming a number.
 
 None. Every design point above is an owner-delegated decision, recorded with its
 rejected alternatives and its falsifier. The four gh532 amendments A1–A4 (§2) are part
-of what this spec's approval approves. Two gh532 draft decisions stay with gh532, not
+of what this spec's approval approves. A5 is not covered by that approval: it awaits the
+owner's exact-content approval in the #445 PR review (see the header). Two gh532 draft decisions stay with gh532, not
 here: §10 Q1 (citation kinds) and Q2 (the harness label). This spec implements each of
 them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant, which
 leaves the frozen v0 label unchanged.
