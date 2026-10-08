@@ -884,13 +884,18 @@ fn criterion18_oversize_blocking_reply_fails_closed_with_026() {
     );
 }
 
-/// Criterion 18: the Worker stalls between its claim and `REPLY_READY` past the
-/// deadline; once main's deadline compare-and-exchange fails, the call returns
-/// the real reply and never also throws `KELD-IPC-006`.
-#[test]
-fn criterion18_claimed_reply_wins_over_the_deadline() {
+/// Criterion 18 harness: the Worker stalls between its claim and `REPLY_READY`
+/// past the deadline; once main's deadline compare-and-exchange has failed, the
+/// call returns the real reply and never also throws `KELD-IPC-006`. A hook holds
+/// main's deadline branch until the Worker has claimed, so the result does not
+/// depend on the host round trip beating the 200 ms deadline.
+fn claim_stall(reply_delay: Duration) {
     let (mut stream, role) = start("claim-stall");
+    long_reads(&stream);
     let call = read_call_named(&mut stream, "stall");
+    // Artificial host delay (load shaping): the late-round-trip arm proves
+    // that no assertion depends on the deadline outrunning the reply.
+    thread::sleep(reply_delay);
     host_reply(&mut stream, call, b"stalled-reply");
     let output = role.finish();
     expect_report(
@@ -903,6 +908,19 @@ fn criterion18_claimed_reply_wins_over_the_deadline() {
             ("done", "true"),
         ],
     );
+}
+
+/// Criterion 18: the claimed reply wins over the deadline.
+#[test]
+fn criterion18_claimed_reply_wins_over_the_deadline() {
+    claim_stall(Duration::ZERO);
+}
+
+/// Criterion 18 under a late round trip: the host answers 2 s after the CALL,
+/// ten times the 200 ms deadline, and the outcome is unchanged.
+#[test]
+fn criterion18_claimed_reply_wins_when_the_round_trip_is_late() {
+    claim_stall(Duration::from_secs(2));
 }
 
 /// Criterion 19 harness: the second EVENT is appended while the dispatch task
@@ -1110,14 +1128,16 @@ fn criterion25_records_straddle_the_counter_wrap_in_order() {
     );
 }
 
-/// Criterion 26: the Worker claims the reply and skips the publish while its
-/// heartbeat keeps running; main's post-claim bound throws `KELD-IPC-025`
-/// before the watchdog counts `2 * window / interval` heartbeat advances.
-#[test]
-fn criterion26_claim_without_publish_is_bounded() {
+/// Criterion 26 harness: the Worker claims the reply and skips the publish while
+/// its heartbeat keeps running; main's post-claim bound throws `KELD-IPC-025`
+/// before the watchdog counts `2 * window / interval` heartbeat advances. The
+/// claim-first hook makes the claim precede the deadline at any round-trip speed.
+fn claim_skip_publish(reply_delay: Duration) {
     let (mut stream, role) = start("claim-skip-publish");
     long_reads(&stream);
     let call = read_call_named(&mut stream, "skip");
+    // Artificial host delay (load shaping), as in `claim_stall`.
+    thread::sleep(reply_delay);
     host_reply(&mut stream, call, b"never-published");
     read_until_link_loss(&mut stream);
     let output = role.finish();
@@ -1134,14 +1154,29 @@ fn criterion26_claim_without_publish_is_bounded() {
     );
 }
 
-/// Criterion 26: a throw inside the claim step makes the Worker record 25
-/// itself, so main wakes on `STATE`; its post-claim branch never ran and its
-/// 30 s deadline never expired.
+/// Criterion 26: a claim without a publish is bounded.
 #[test]
-fn criterion26_claim_step_throw_records_025() {
+fn criterion26_claim_without_publish_is_bounded() {
+    claim_skip_publish(Duration::ZERO);
+}
+
+/// Criterion 26 under a late round trip (2 s host delay, deadline 300 ms).
+#[test]
+fn criterion26_claim_without_publish_is_bounded_when_the_round_trip_is_late() {
+    claim_skip_publish(Duration::from_secs(2));
+}
+
+/// Criterion 26 harness: a throw inside the claim step makes the Worker record
+/// 25 itself, so main wakes on `STATE`: its post-claim branch, its liveness
+/// branch and its 30 s deadline never decided the outcome (counters, no
+/// duration). A late host round trip changes nothing; a Worker stall past the
+/// liveness window would, by design, because that is the liveness failure.
+fn claim_step_throw(reply_delay: Duration) {
     let (mut stream, role) = start("claim-throw");
     long_reads(&stream);
     let call = read_call_named(&mut stream, "claim-throw");
+    // Artificial host delay (load shaping), as in `claim_stall`.
+    thread::sleep(reply_delay);
     host_reply(&mut stream, call, b"claimed");
     read_until_link_loss(&mut stream);
     let output = role.finish();
@@ -1153,9 +1188,22 @@ fn criterion26_claim_step_throw_records_025() {
             ("state", "25"),
             ("post-claim-branch", "0"),
             ("deadline-cas-failed", "0"),
+            ("liveness-branch", "0"),
             ("done", "true"),
         ],
     );
+}
+
+/// Criterion 26: a claim-step throw records 025 from the Worker.
+#[test]
+fn criterion26_claim_step_throw_records_025() {
+    claim_step_throw(Duration::ZERO);
+}
+
+/// Criterion 26 throw arm under a late round trip (2 s host delay).
+#[test]
+fn criterion26_claim_step_throw_records_025_when_the_round_trip_is_late() {
+    claim_step_throw(Duration::from_secs(2));
 }
 
 /// Criterion 27: asynchronous replies are settled on main by correlation id,

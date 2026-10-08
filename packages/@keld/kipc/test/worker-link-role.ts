@@ -404,8 +404,27 @@ function callEnded(words: Int32Array): void {
   Atomics.notify(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED);
 }
 
+/**
+ * Holds main's deadline compare-and-exchange until the Worker has claimed the
+ * reply, so the post-claim path under test runs whatever the host round trip
+ * costs; no step depends on a 200 ms deadline outrunning that trip.
+ */
+function claimFirst(words: () => Int32Array): () => void {
+  return () => {
+    const w = words();
+    while (Atomics.load(w, WORKER_LINK_TEST_WORDS.CLAIMED) === 0) {
+      Atomics.wait(w, WORKER_LINK_TEST_WORDS.CLAIMED, 0, 60_000);
+    }
+  };
+}
+
 async function claimStall(): Promise<void> {
-  const { link, control, words } = await open({}, { claimFault: "stall-until-deadline-cas" });
+  let testWords: Int32Array = new Int32Array(new SharedArrayBuffer(4));
+  const { link, control, words } = await open(
+    {},
+    { claimFault: "stall-until-deadline-cas", beforeDeadlineCas: claimFirst(() => testWords) },
+  );
+  testWords = words;
   const watchdog = startWatchdog(control, words);
   expectThrow("call", () => link.callBlocking(ECHO_CHANNEL, text("stall"), 200));
   callEnded(words);
@@ -415,7 +434,12 @@ async function claimStall(): Promise<void> {
 
 // Criterion 26: no unbounded parked wait after a claim.
 async function claimSkipPublish(): Promise<void> {
-  const { link, control, words } = await open({}, { claimFault: "skip-publish" });
+  let testWords: Int32Array = new Int32Array(new SharedArrayBuffer(4));
+  const { link, control, words } = await open(
+    {},
+    { claimFault: "skip-publish", beforeDeadlineCas: claimFirst(() => testWords) },
+  );
+  testWords = words;
   const watchdog = startWatchdog(control, words);
   expectThrow("call", () => link.callBlocking(ECHO_CHANNEL, text("skip"), 300));
   callEnded(words);
@@ -430,6 +454,7 @@ async function claimThrow(): Promise<void> {
   report("state", word(control, WORKER_LINK_CONTROL.STATE));
   report("post-claim-branch", Atomics.load(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH));
   report("deadline-cas-failed", Atomics.load(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED));
+  report("liveness-branch", Atomics.load(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH));
 }
 
 // Criterion 19: no record is stranded in the ring; a throwing listener is isolated.

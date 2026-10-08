@@ -1592,7 +1592,8 @@ export const WORKER_LINK_TEST_WORDS = Object.freeze({
   WEDGE: 4,
   /** Free for the test's own synchronization. */
   TEST_0: 5,
-  TEST_1: 6,
+  /** The Worker's claim compare-and-exchange on `BLOCKING` succeeded (set to 1, notified). */
+  CLAIMED: 6,
   TEST_2: 7,
   LENGTH: 8,
 });
@@ -1623,6 +1624,12 @@ export interface WorkerLinkTestHooks {
    * first, an event-loop order the runtime does not specify (§4.6).
    */
   readonly deferDispatch?: (run: () => void) => void;
+  /**
+   * Runs in the park just before main's deadline compare-and-exchange on
+   * `BLOCKING`. Holding it until the Worker sets `CLAIMED` makes "the claim
+   * came first" a fact at any host round-trip speed (criteria 18 and 26).
+   */
+  readonly beforeDeadlineCas?: () => void;
   readonly onBlockingCall?: WorkerBlockingFault;
   /** Claim-step faults (criteria 18 and 26). */
   readonly claimFault?: "skip-publish" | "throw" | "stall-until-deadline-cas";
@@ -2026,12 +2033,13 @@ export class WorkerLink {
         return this.#endPark(corr);
       }
       if (claimedAt === undefined && now >= deadlineAt) {
+        this.#hooks?.beforeDeadlineCas?.();
         if (Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
           this.#post({ t: "abandon", corr });
           throw linkError("KELD-IPC-006", `blocking call deadline of ${deadlineMs} ms expired with no host reply`);
         }
         // The Worker already claimed the reply: wait for its publish, bounded.
-        claimedAt = now;
+        claimedAt = performance.now();
         if (words !== undefined) {
           Atomics.store(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 1);
           Atomics.notify(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED);
@@ -2495,6 +2503,10 @@ class TransportWorker {
     // A failed claim means main abandoned the call at its deadline: a late
     // reply, discarded whatever its size.
     if (Atomics.compareExchange(ctrl, BLOCKING, corr, 0) !== corr) return;
+    if (this.#words !== undefined) {
+      Atomics.store(this.#words, WORKER_LINK_TEST_WORDS.CLAIMED, 1);
+      Atomics.notify(this.#words, WORKER_LINK_TEST_WORDS.CLAIMED);
+    }
     if (frame.payload.byteLength > this.#replyBytes) {
       this.#end(
         STATE_OVERFLOW,
