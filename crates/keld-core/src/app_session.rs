@@ -277,7 +277,7 @@ struct FsDispatchSession {
     state: Mutex<FsDispatchState>,
     handler_transition: Mutex<()>,
     drained: Condvar,
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(test)]
     drain_wait_observer: Mutex<Option<SyncSender<()>>>,
     #[cfg(test)]
     terminal_write_hold: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
@@ -298,7 +298,7 @@ impl FsDispatchSession {
             }),
             handler_transition: Mutex::new(()),
             drained: Condvar::new(),
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(test)]
             drain_wait_observer: Mutex::new(None),
             #[cfg(test)]
             terminal_write_hold: Mutex::new(None),
@@ -444,7 +444,7 @@ impl FsDispatchSession {
         self.wait_for_handler_transition()
     }
 
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(test)]
     fn observe_next_drain_wait(&self, observer: SyncSender<()>) {
         *self
             .drain_wait_observer
@@ -482,7 +482,7 @@ impl FsDispatchSession {
             .lock()
             .map_err(|_| app_detail("filesystem drain", "in-flight lock poisoned"))?;
         while state.in_flight != 0 {
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(test)]
             if let Some(observer) = self
                 .drain_wait_observer
                 .lock()
@@ -7723,7 +7723,7 @@ mod tests {
         .expect("send FS write");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn write_quit_call(client: &mut BootstrapStream, corr: u32) {
         write_frame(
             client,
@@ -7754,15 +7754,15 @@ mod tests {
     /// in its FS drain, are both pending; an echo call is answered at once and
     /// never gets an ERR.
     ///
-    /// Unix only (#528 T5 finding, gh527 §10). This client is not reading when
-    /// the host retires. On Windows the host's close is `DisconnectNamedPipe`,
-    /// which discards a pipe's unread data, so both `KELD-IPC-023` answers are
-    /// written and then dropped, and the client reads only the close. A
-    /// `WorkerLink` role always has a read pending, so it still receives them
-    /// (`worker_link_e2e::bun_role_parked_on_fs_throws_023_when_the_host_retires`
-    /// runs on Windows too).
+    /// Windows states today's behaviour (#528 T5, finding W2 in gh527 §10).
+    /// The host's close there is `DisconnectNamedPipe`, which discards a
+    /// pipe's unread data. This client has no read pending until
+    /// `retire_generation` has returned, because the test thread is its only
+    /// reader. So both `KELD-IPC-023` answers are written, then discarded,
+    /// and the client reads only the close. The W2 fix flips this to the
+    /// Unix expectation.
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
         let (t, mut client) = guarded_test_router();
         assert_echo_call(&mut client, 10, "answered before retire");
@@ -7786,22 +7786,27 @@ mod tests {
                 (header.kind, header.channel, header.corr, error.code)
             })
             .collect();
-        assert_eq!(
-            answers,
+        let expected = if cfg!(windows) {
+            // W2: the answers were written and then discarded by the close.
+            Vec::new()
+        } else {
             vec![
                 (
                     FrameKind::Err,
                     FS_CHANNEL,
                     CorrelationId(11),
-                    "KELD-IPC-023".to_owned()
+                    "KELD-IPC-023".to_owned(),
                 ),
                 (
                     FrameKind::Err,
                     LIFECYCLE_CHANNEL,
                     CorrelationId(12),
-                    "KELD-IPC-023".to_owned()
+                    "KELD-IPC-023".to_owned(),
                 ),
-            ],
+            ]
+        };
+        assert_eq!(
+            answers, expected,
             "exactly the two pending calls are answered, then the link closes"
         );
 
@@ -7887,10 +7892,22 @@ mod tests {
     /// and its FS drain, a CALL already received on an ERR-declaring channel is
     /// answered with `KELD-IPC-024` and never executed; an echo CALL gets no
     /// frame (KEL-133 keeps echo REPLY-only). The host still closes the link.
-    /// Unix only (#528 T5): Windows has no post-Quit drain, so criterion 7
-    /// does not hold there today (gh527 §10, T5 finding).
+    ///
+    /// The client reads nothing until the guardian's `Shutdown`, which the
+    /// Quit tail sends only after it has closed the link. So what it reads
+    /// depends only on what the close keeps.
+    ///
+    /// Windows states today's behaviour (#528 T5, findings W1 and W2 in gh527
+    /// §10):
+    /// - W1: Windows has no post-Quit drain. Its tail reads the buffered FS
+    ///   CALL as a fault and closes, so no `KELD-IPC-024` is written.
+    /// - W2: its close is `DisconnectNamedPipe`, which also discards the unread
+    ///   Quit REPLY.
+    ///
+    /// So the client reads only the close. The FS CALL still never runs. The
+    /// W1/W2 fix flips this to the Unix expectation.
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn quit_drain_answers_received_calls_with_024_and_runs_none() {
         let (t, mut client) = guarded_test_router();
         let target = t.allowed.join("after-quit.txt");
@@ -7920,15 +7937,6 @@ mod tests {
             panic!("Quit skipped shutdown attribution");
         };
         prepare.send(Ok(())).expect("acknowledge attribution");
-        let (quit, quit_payload) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
-        assert_eq!(
-            (quit.kind, quit.channel, quit.corr),
-            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(20))
-        );
-        assert_eq!(
-            decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
-            LifecycleResponse::Quit
-        );
         let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
             .guardian
             .recv_timeout(Duration::from_secs(5))
@@ -7939,16 +7947,44 @@ mod tests {
         shutdown
             .send(Ok(()))
             .expect("acknowledge guardian shutdown");
-        let after = read_frames_until_eof(&mut client);
-        assert_eq!(after.len(), 1, "only the FS CALL is answered: {after:?}");
-        let (header, payload) = &after[0];
+        let frames: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
+            read_frames_until_eof(&mut client)
+                .iter()
+                .map(|(header, payload)| {
+                    let body = if header.kind == FrameKind::Reply {
+                        assert_eq!(
+                            decode::<LifecycleResponse>(payload).expect("Quit response"),
+                            LifecycleResponse::Quit
+                        );
+                        String::from("Quit")
+                    } else {
+                        decode::<CallError>(payload).expect("024 CallError").code
+                    };
+                    (header.kind, header.channel, header.corr, body)
+                })
+                .collect();
+        let expected = if cfg!(windows) {
+            // W1 wrote no 024; W2 discarded the unread REPLY at the close.
+            Vec::new()
+        } else {
+            vec![
+                (
+                    FrameKind::Reply,
+                    LIFECYCLE_CHANNEL,
+                    CorrelationId(20),
+                    String::from("Quit"),
+                ),
+                (
+                    FrameKind::Err,
+                    FS_CHANNEL,
+                    CorrelationId(21),
+                    String::from("KELD-IPC-024"),
+                ),
+            ]
+        };
         assert_eq!(
-            (header.kind, header.channel, header.corr),
-            (FrameKind::Err, FS_CHANNEL, CorrelationId(21))
-        );
-        assert_eq!(
-            decode::<CallError>(payload).expect("024 CallError").code,
-            "KELD-IPC-024"
+            frames, expected,
+            "the Quit REPLY, then only the FS CALL is answered"
         );
         assert!(!target.exists(), "a post-Quit FS CALL must not execute");
         assert_eq!(
