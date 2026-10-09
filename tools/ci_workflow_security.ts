@@ -246,6 +246,71 @@ function checkCodeqlJobs(jobs: Mapping, stepsByJob: Map<string, Mapping[]>): voi
   }
 }
 
+/**
+ * cargo-deny runs from the upstream release binary at this exact version, and only
+ * after `sha256sum -c` matches this SHA-256 (#676). The Docker-based
+ * EmbarkStudios/cargo-deny-action built its image from a Docker Hub base, whose
+ * anonymous pull limit failed the lane; a release binary pulls no image. cargo-deny
+ * still fetches the advisory database itself, from its default GitHub URL.
+ */
+export const cargoDenyVersion = "0.20.2";
+export const cargoDenyArchiveSha256 = "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f";
+export const cargoDenyInstallStep = `Install cargo-deny ${cargoDenyVersion}`;
+const cargoDenyInstallCommands = [
+  "set -euo pipefail",
+  `version=${cargoDenyVersion}`,
+  'release="cargo-deny-${version}-x86_64-unknown-linux-musl"',
+  'cd "$RUNNER_TEMP"',
+  'curl -fsSL -o "${release}.tar.gz" \\',
+  '"https://github.com/EmbarkStudios/cargo-deny/releases/download/${version}/${release}.tar.gz"',
+  `echo "${cargoDenyArchiveSha256}  \${release}.tar.gz" | sha256sum -c -`,
+  "mkdir cargo-deny",
+  'tar -xzf "${release}.tar.gz" -C cargo-deny --strip-components=1 "${release}/cargo-deny"',
+  "cargo-deny/cargo-deny --version",
+];
+const cargoDenyBinary = '"$RUNNER_TEMP/cargo-deny/cargo-deny"';
+/**
+ * The two policy runs, by absolute path to the verified binary so a `cargo-deny`
+ * earlier on PATH (a restored `~/.cargo/bin`, say) cannot stand in for it: the
+ * workspace against `deny.toml`, then the updater helper as the sole graph root
+ * against its own ban list (KEL-53 §4). The arguments are the ones the action ran.
+ */
+export const cargoDenyChecks = [
+  ["cargo-deny check", `${cargoDenyBinary} --log-level warn --manifest-path ./Cargo.toml --all-features check`],
+  ["Updater helper edge set (KEL-53 T4d S9c)", `${cargoDenyBinary} --log-level warn --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans`],
+] as const;
+/** The only actions the deny job may run, in order; none of them is a Docker action. */
+const cargoDenyJobActions = ["actions/checkout", "dtolnay/rust-toolchain", "swatinem/rust-cache"];
+
+function runLines(step: Mapping): string[] {
+  return typeof step.run === "string" ? step.run.trim().split(/\r?\n/).map(line => line.trim()) : [];
+}
+
+/** The deny job: one verified install, then both policy runs, unconditional and unwrapped. */
+function checkCargoDenyJob(stepsByJob: Map<string, Mapping[]>): void {
+  const steps = stepsByJob.get("deny");
+  if (!steps) fail("jobs.deny must exist; cargo-deny owns the Cargo advisory, ban, license and source policy.");
+  const actions = steps.filter(step => Object.hasOwn(step, "uses")).map(step => actionName(String(step.uses)));
+  if (JSON.stringify(actions) !== JSON.stringify(cargoDenyJobActions)) {
+    fail(`jobs.deny may use only ${cargoDenyJobActions.join(", ")}; cargo-deny runs from the checksum-verified release binary, never a Docker action such as EmbarkStudios/cargo-deny-action (#676).`);
+  }
+  const install = namedStep(steps, cargoDenyInstallStep);
+  exactKeys(install, ["name", "run"], cargoDenyInstallStep);
+  if (JSON.stringify(runLines(install)) !== JSON.stringify(cargoDenyInstallCommands)) {
+    fail(`${cargoDenyInstallStep} must download release ${cargoDenyVersion} from its GitHub release URL and pass \`sha256sum -c\` against ${cargoDenyArchiveSha256} before extracting it; an unpinned version, a missing or different checksum, or a wrapper is not admitted.`);
+  }
+  let previous = steps.indexOf(install);
+  for (const [name, command] of cargoDenyChecks) {
+    const check = namedStep(steps, name);
+    exactKeys(check, ["name", "run"], name);
+    if (JSON.stringify(runLines(check)) !== JSON.stringify([command])) {
+      fail(`${name} must run exactly \`${command}\`: the verified binary with the reviewed policy arguments, and no wrapper or suppression.`);
+    }
+    if (steps.indexOf(check) <= previous) fail(`jobs.deny must order ${cargoDenyInstallStep}, then ${cargoDenyChecks.map(([step]) => step).join(", then ")}.`);
+    previous = steps.indexOf(check);
+  }
+}
+
 /** The trigger names of a parsed workflow, whichever `on:` form it uses. */
 function workflowTriggers(workflow: Mapping): string[] {
   const on = workflow.on;
@@ -331,6 +396,7 @@ export function checkWorkflowSecurity(source: string): void {
   if (checkouts === 0) fail("workflow must contain its audited checkout steps.");
   checkCodeqlJobs(jobs, stepsByJob);
   checkWebkitgtkAptCache(jobs, stepsByJob);
+  checkCargoDenyJob(stepsByJob);
   const dependencies = stepsByJob.get("dependency-review");
   if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const review = requiredAction(dependencies, "Review dependency vulnerabilities", "actions/dependency-review-action", {

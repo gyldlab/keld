@@ -218,19 +218,6 @@ const RELEASE_HELPER_COMMANDS: &[&str] = &[
     "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
 ];
 
-/// KEL-53 §4: the updater helper's edge set, with the helper as the sole cargo-deny root.
-const HELPER_DENY_STEP: &str = "Updater helper edge set (KEL-53 T4d S9c)";
-const HELPER_DENY_ACTION: &str = "EmbarkStudios/cargo-deny-action@";
-const HELPER_DENY_WITH: &[(&str, &str)] = &[
-    ("manifest-path", "crates/keld-updater-helper/Cargo.toml"),
-    (
-        "arguments",
-        "--all-features --config crates/keld-updater-helper/deny.toml",
-    ),
-    ("command", "check"),
-    ("command-arguments", "bans"),
-];
-
 const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings",
     "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }",
@@ -2429,47 +2416,6 @@ fn check_release_updater_helper_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_updater_helper_deny_step(text: &str) -> Result<(), String> {
-    let step = HELPER_DENY_STEP;
-    let Some(deny_job) = workflow_job_block(text, "deny") else {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no `deny` job for `{step}`."
-        ));
-    };
-    let count = workflow_direct_named_step_count(&deny_job, step);
-    if count != 1 {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `deny` must contain exactly one `{step}` step; found {count}."
-        ));
-    }
-    let block = workflow_direct_named_step_block(&deny_job, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `deny.steps`.")
-    })?;
-    let expected_keys = ["uses", "with"].map(str::to_owned);
-    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `uses` and `with` keys."
-        ));
-    }
-    if !workflow_named_step_direct_value(&block, step, "uses")
-        .is_some_and(|uses| uses.starts_with(HELPER_DENY_ACTION))
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the pinned `{HELPER_DENY_ACTION}` action."
-        ));
-    }
-    let expected_with: Vec<(String, String)> = HELPER_DENY_WITH
-        .iter()
-        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-        .collect();
-    if workflow_named_step_mapping(&block, step, "with") != Some(expected_with) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must check `bans` with the helper as the sole root and its own `crates/keld-updater-helper/deny.toml`."
-        ));
-    }
-    Ok(())
-}
-
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -2904,7 +2850,6 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_product_status_windows_step(&text)?;
     check_windows_media_acceptance_step(&text)?;
     check_release_updater_helper_step(&text)?;
-    check_updater_helper_deny_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_doc_placeholders_step(&text)?;
     check_hello_command_step(&text)?;
@@ -3238,20 +3183,6 @@ mod tests {
         lines.join("\n")
     }
 
-    fn helper_deny_step() -> String {
-        let mut lines = vec![
-            format!("      - name: {HELPER_DENY_STEP}"),
-            "        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1".to_owned(),
-            "        with:".to_owned(),
-        ];
-        lines.extend(
-            HELPER_DENY_WITH
-                .iter()
-                .map(|(key, value)| format!("          {key}: {value}")),
-        );
-        lines.join("\n")
-    }
-
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
     fn gitleaks_scan_step() -> String {
         let mut lines = vec!["      - name: Scan".to_owned(), "        env:".to_owned()];
@@ -3361,10 +3292,10 @@ mod tests {
             "  deny:",
             "    if: needs.changes.outputs.deny == 'true'",
             "    steps:",
-            "      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1",
-            "        with:",
-            "          command: check",
-            &helper_deny_step(),
+            // The deny steps' contract is parsed by tools/ci_workflow_security.ts (#676).
+            "      - name: cargo-deny check",
+            "        run: |",
+            "          \"$RUNNER_TEMP/cargo-deny/cargo-deny\" --log-level warn --manifest-path ./Cargo.toml --all-features check",
             "  secrets:",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -5501,40 +5432,6 @@ mod tests {
             temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
             let error = check(temp.path()).expect_err("weakened release helper step must fail");
             assert!(error.contains("KEL-53 T4d S9c"), "{needle}: {error}");
-        }
-    }
-
-    #[test]
-    fn updater_helper_deny_step_is_unique_and_exact() {
-        let step = helper_deny_step();
-        let temp = complete_fixture();
-        temp.write(WORKFLOW, &valid_workflow().replacen(&step, "", 1));
-        let error = check(temp.path()).expect_err("missing helper deny step must fail");
-        assert!(error.contains("Updater helper edge set"), "{error}");
-
-        for (needle, replacement) in [
-            ("command-arguments: bans", "command-arguments: licenses"),
-            (
-                "arguments: --all-features --config crates/keld-updater-helper/deny.toml",
-                "arguments: --all-features",
-            ),
-            (
-                "manifest-path: crates/keld-updater-helper/Cargo.toml",
-                "manifest-path: ./Cargo.toml",
-            ),
-            (
-                "uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
-                "uses: example/deny@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
-            ),
-        ] {
-            let workflow = valid_workflow();
-            assert!(workflow.contains(needle), "fixture holds {needle}");
-            temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
-            let error = check(temp.path()).expect_err("weakened helper deny step must fail");
-            assert!(
-                error.contains("Updater helper edge set"),
-                "{needle}: {error}"
-            );
         }
     }
 

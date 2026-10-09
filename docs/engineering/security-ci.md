@@ -16,9 +16,9 @@ vulnerabilities.
 
 `ci-hygiene check` runs the parsed workflow security check through Bun, the same
 runtime already required by `just ci`. `tools/ci_workflow_security.ts` owns checkout
-and scanner semantics, and the 15-minute step timeout (inside a longer job timeout)
-on every `run` script that invokes `apt`/`apt-get`; the Rust checker retains the
-other hygiene contracts.
+and scanner semantics, the cargo-deny delivery contract, and the 15-minute step
+timeout (inside a longer job timeout) on every `run` script that invokes
+`apt`/`apt-get`; the Rust checker retains the other hygiene contracts.
 Each CodeQL language has its own job (`codeql-rust`, `codeql-javascript-typescript`,
 `codeql-actions`), because a job-level condition cannot read `matrix`. Each job must
 need the router, run only on its own router output, keep its `/language:<language>`
@@ -37,12 +37,29 @@ The selected parser controls run in CI against pinned Bun 1.4.2. See
 | CodeQL JavaScript/TypeScript | Repository JavaScript and TypeScript source on Ubuntu | No Bun/Node behavior or Electron conformance claim. |
 | CodeQL Actions | GitHub workflow source on Ubuntu | Does not audit organization settings, administrator bypasses or account access. |
 | Dependency review | GitHub's dependency comparison for exact base/head commits; new known vulnerabilities of every severity and scope block | Only manifests recognized by GitHub's dependency graph. No claim of complete `bun.lock` transitive coverage. Existing vulnerabilities and unknown advisories require separate review. |
-| cargo-deny | Cargo advisory, license and dependency policy in `deny.toml` | Cargo policy does not cover npm dependencies. |
+| cargo-deny | Cargo advisory, license and dependency policy in `deny.toml`, plus the updater helper's own ban list | Cargo policy does not cover npm dependencies. The live advisory database can change the result without a file diff. |
 | gitleaks | Pull request: that pull request's own commits (event `base.sha..head.sha`, both resolved). Push to `main`: `main`'s full history. Unmerged branches and tags are not scanned by CI; GitHub secret scanning (provider patterns, all branches) is their only coverage | Secret detection does not establish revocation of an exposed credential. Merge-commit conflict resolutions are not diffed. |
 
 gitleaks runs on every event. Its configuration (`.gitleaks.toml`) and fingerprint
 ignores (`.gitleaksignore`) have no other reader, so a change to either selects no
 other CI lane.
+
+cargo-deny runs from the upstream `x86_64-unknown-linux-musl` release archive at an
+exact version. The job downloads it from the cargo-deny GitHub release, and `sha256sum -c`
+must match the SHA-256 recorded in the workflow before the binary is extracted; both
+policy runs then invoke that binary by absolute path. The Docker-based
+`EmbarkStudios/cargo-deny-action` it replaces built its image from a Docker Hub base
+image, whose anonymous pull limit failed the lane (#676), and it downloaded cargo-deny
+without verifying it. The workflow-security check pins the version, the checksum, the
+step order and the exact policy arguments, refuses conditions and `continue-on-error`
+on these steps, and admits no other action in the job. cargo-deny fetches the RustSec
+advisory database itself, from its default `https://github.com/RustSec/advisory-db`.
+To bump it, change the version and SHA-256 in `.github/workflows/ci.yml` and
+`tools/ci_workflow_security.ts` together, after checking the new archive against the
+release's published digest.
+
+No CI step pulls from Docker Hub. The only container image CI uses is the Mermaid
+renderer, pulled from `ghcr.io` by immutable digest in `tools/mermaid_render_check.sh`.
 
 The Ubuntu WebKitGTK `.deb` set comes from a first-party `actions/cache` entry. Its key is
 the runner image (`ImageOS`, `ImageVersion`) plus the SHA256 of the job's exact package list
