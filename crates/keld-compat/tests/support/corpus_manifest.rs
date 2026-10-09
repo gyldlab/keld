@@ -276,8 +276,21 @@ pub const LIFECYCLE_V0: Registration = Registration {
     ],
 };
 
+/// The pinned v44.4.5 draw.io window-path cells (gh448, F02-T1). A macOS first proof:
+/// every cell declares `macos`, so other hosts list its cells `unknown` (gh566 D13).
+pub const WINDOW_V1: Registration = Registration {
+    corpus_id: "electron-window-v1",
+    fixture_dir: "fixtures/window-corpus",
+    shape: Shape::V1,
+    platforms: &[Platform::Macos],
+    targets: &[TestTarget {
+        path: "packages/@keld/electron/src/browser-window.test.ts",
+        runner: Runner::Bun,
+    }],
+};
+
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
-pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0];
+pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1];
 
 /// Fixed file names inside a fixture directory.
 pub const MANIFEST_FILE: &str = "corpus.json";
