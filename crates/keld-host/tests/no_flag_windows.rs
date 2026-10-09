@@ -201,7 +201,7 @@ fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
     }
     // Emergency process ownership only: normal cleanup is asserted before this
     // observer exits. Forced death can still retain its temporary stage files.
-    keld_runtime::windows_job::install_host_death_job()
+    let _host_death_job = keld_runtime::windows_job::install_host_death_job()
         .expect("install isolated observer death Job before descendants");
     if let Ok(port) = env::var("KELD_T4_CONSOLE_TIMEOUT_PORT") {
         run_console_timeout_fixture("observer", port.parse().expect("timeout fixture port"));
