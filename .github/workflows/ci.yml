@@ -91,6 +91,63 @@ jobs:
           KELD_CI_BEFORE_SHA: ${{ github.event.before || '' }}
         run: tools/ci_changes.sh github
 
+  repro-gh670:
+    name: EXPERIMENT gh670 (temporary, never merged)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reproduce the temp-repo cleanup race
+        run: |
+          git version
+          python3 - <<'PY'
+          import os, shutil, subprocess, sys, tempfile, time
+          from pathlib import Path
+          sys.path.insert(0, "tools")
+          import test_ci_local
+          def trial(disable, trace=False):
+              tmp = tempfile.mkdtemp(prefix="gh670-")
+              root = Path(tmp) / "r"
+              test_ci_local.tracked_snapshot(Path.cwd(), root)
+              steps = [("config", "user.name", "t"), ("config", "user.email", "t@x")]
+              if disable:
+                  steps += [("config", "gc.auto", "0"), ("config", "maintenance.auto", "false")]
+              env = dict(os.environ)
+              if trace:
+                  env["GIT_TRACE2_EVENT"] = str(Path(tmp).parent / "gh670-trace2.json")
+              for args in steps + [("add", "."), ("commit", "-qm", "bound source")]:
+                  subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, env=env)
+              if trace:
+                  print("after commit, .git:", sorted(os.listdir(root / ".git")))
+                  print("after commit, .git/objects:", sorted(os.listdir(root / ".git/objects"))[:8], "...")
+                  ps = subprocess.run(["ps", "-eo", "pid,etimes,args"], capture_output=True, text=True).stdout
+                  print("live git children:", [l for l in ps.splitlines() if "gh670-" in l or "maintenance" in l or " gc " in l or "repack" in l])
+                  time.sleep(5)
+                  print("5s later, .git:", sorted(os.listdir(root / ".git")))
+                  print("5s later, packs:", sorted(os.listdir(root / ".git/objects/pack")) if (root / ".git/objects/pack").exists() else None)
+              try:
+                  shutil.rmtree(tmp)
+                  return None
+              except OSError as error:
+                  left = sorted(os.listdir(root / ".git")) if (root / ".git").exists() else []
+                  time.sleep(10)
+                  shutil.rmtree(tmp)
+                  return f"{error} (left in .git: {left})"
+          print("trace, maintenance enabled:"); trial(False, trace=True)
+          ev = Path(tempfile.gettempdir()) / "gh670-trace2.json"
+          if ev.exists():
+              for line in ev.read_text().splitlines():
+                  if '"child_start"' in line or ('"region_enter"' in line and "maintenance" in line):
+                      print("  ", line[:300])
+          for disable in (False, True):
+              failures = [r for r in (trial(disable) for _ in range(40)) if r]
+              print(f"maintenance {'disabled' if disable else 'enabled'}: {len(failures)}/40 cleanup failures")
+              for r in failures[:3]:
+                  print("   ", r)
+          PY
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
