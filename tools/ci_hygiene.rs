@@ -903,33 +903,37 @@ fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
     false
 }
 
+/// The named step's whole block must carry exactly `run: <command>` and no
+/// `if` key at any position: a condition after `run:` skips the step just as
+/// one before it does (#650 review).
 fn workflow_has_unconditional_named_step(text: &str, step_name: &str, command: &str) -> bool {
     let expected_name = format!("- name: {step_name}");
     let expected_command = format!("run: {command}");
     let mut step_indent = None;
+    let mut found_command = false;
 
     for line in text.lines() {
         let Some((indent, content)) = yaml_content(line) else {
             continue;
         };
-        if content == expected_name {
-            step_indent = Some(indent);
-            continue;
-        }
         let Some(step) = step_indent else {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
             continue;
         };
         if indent <= step {
-            return false;
+            break;
         }
-        if content.starts_with("if:") || content.starts_with("- if:") {
-            return false;
-        }
-        if content == expected_command {
-            return true;
+        if indent == step + 2 {
+            if content == expected_command {
+                found_command = true;
+            } else if yaml_mapping_key(content).is_some_and(|(key, _)| key == "if") {
+                return false;
+            }
         }
     }
-    false
+    found_command
 }
 
 fn workflow_named_step_has_property(text: &str, step_name: &str, property: &str) -> bool {
@@ -4022,6 +4026,16 @@ mod tests {
                 "        run: tools/agents_md.sh\n",
                 "        run: echo tools/agents_md.sh\n",
                 "echoed agents-md",
+            ),
+            (
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n",
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n        if: ${{ false }}\n",
+                "condition after run",
+            ),
+            (
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n",
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n        \"if\": false\n",
+                "quoted condition after run",
             ),
         ] {
             assert!(valid_workflow().contains(old), "{label}");

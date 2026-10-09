@@ -36,17 +36,18 @@ if [[ "${1:-}" == test ]]; then
     printf 'rules\n' >"$temp/repo/crates/demo/AGENTS.md"
     expect "unsafe with a crate AGENTS.md passes" pass
     # Negative control: an unreadable crate directory is a grep error, not a
-    # clean scan. Skipped only when the runner reads it anyway (root).
+    # clean scan. A user who can still read a chmod 000 directory (root) cannot
+    # provoke that error, so only this control is skipped, with a note.
     fixture
     mkdir -p "$temp/repo/crates/locked/src"
     printf 'unsafe fn hidden() {}\n' >"$temp/repo/crates/locked/src/lib.rs"
     chmod 000 "$temp/repo/crates/locked"
     if [[ -r "$temp/repo/crates/locked" ]]; then
-        echo "agents-md self-test: cannot make a directory unreadable as this user; the grep-error case needs a non-root runner" >&2
-        exit 1
+        echo "note: skipped the unreadable-directory control: uid $(id -u) can read a chmod 000 directory, so grep cannot fail here; every other agents-md self-test ran."
+    else
+        expect "an unreadable crates/ directory fails instead of passing" fail
+        grep -q "grep failed" "$temp/out" || { cat "$temp/out" >&2; echo "agents-md self-test: grep error was not reported" >&2; exit 1; }
     fi
-    expect "an unreadable crates/ directory fails instead of passing" fail
-    grep -q "grep failed" "$temp/out" || { cat "$temp/out" >&2; echo "agents-md self-test: grep error was not reported" >&2; exit 1; }
     echo "agents-md self-tests ok"
     exit 0
 fi
