@@ -103,6 +103,18 @@ const ATOMIC_PROTOCOL_COMMANDS: &[&str] = &[
     "target/atomic-protocol/atomic-protocol check .",
 ];
 
+/// The doc-placeholders recipe pair, run by the hosted hygiene job (#650).
+const DOC_PLACEHOLDER_COMMANDS: &[&str] = &[
+    "mkdir -p target/doc-placeholders",
+    "rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test",
+    "target/doc-placeholders/doc-placeholders-test",
+    "rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders",
+    "target/doc-placeholders/doc-placeholders check .",
+];
+
+/// The `hygiene` recipe's hello-command regression, run by the hosted hygiene job (#650).
+const HELLO_COMMAND_COMMANDS: &[&str] = &["python3 -B tools/test_hello_command.py"];
+
 const AUDIT_DOC_COMMANDS: &[&str] = &[
     "python3 -B docs/audits/verify.py",
     "python3 -B docs/audits/test_verify.py",
@@ -891,33 +903,37 @@ fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
     false
 }
 
+/// The named step's whole block must carry exactly `run: <command>` and no
+/// `if` key at any position: a condition after `run:` skips the step just as
+/// one before it does (#650 review).
 fn workflow_has_unconditional_named_step(text: &str, step_name: &str, command: &str) -> bool {
     let expected_name = format!("- name: {step_name}");
     let expected_command = format!("run: {command}");
     let mut step_indent = None;
+    let mut found_command = false;
 
     for line in text.lines() {
         let Some((indent, content)) = yaml_content(line) else {
             continue;
         };
-        if content == expected_name {
-            step_indent = Some(indent);
-            continue;
-        }
         let Some(step) = step_indent else {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
             continue;
         };
         if indent <= step {
-            return false;
+            break;
         }
-        if content.starts_with("if:") || content.starts_with("- if:") {
-            return false;
-        }
-        if content == expected_command {
-            return true;
+        if indent == step + 2 {
+            if content == expected_command {
+                found_command = true;
+            } else if yaml_mapping_key(content).is_some_and(|(key, _)| key == "if") {
+                return false;
+            }
         }
     }
-    false
+    found_command
 }
 
 fn workflow_named_step_has_property(text: &str, step_name: &str, property: &str) -> bool {
@@ -1260,6 +1276,12 @@ fn check_change_router_job(text: &str) -> Result<(), String> {
         (
             "Classify changed-path ownership",
             "tools/ci_changes.sh github",
+        ),
+        // agents-md reads crates/*.rs as well as AGENTS and .agents files, so
+        // it runs in the always-created router job (#650).
+        (
+            "Agent instruction inventory (agents-md)",
+            "tools/agents_md.sh",
         ),
     ] {
         if !workflow_has_unconditional_named_step(&block, step_name, command) {
@@ -2043,6 +2065,17 @@ fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
         "Atomic problem-solving protocol contract",
         ATOMIC_PROTOCOL_COMMANDS,
     )
+}
+
+/// doc-placeholders runs whenever the hygiene job runs (docs or hygiene
+/// selected); every input it scans selects one of them (#650).
+fn check_doc_placeholders_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(text, "Documentation placeholder contracts", DOC_PLACEHOLDER_COMMANDS)
+}
+
+/// The hello-command regression reads the justfile and onboarding docs (#650).
+fn check_hello_command_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(text, "Hello command contract", HELLO_COMMAND_COMMANDS)
 }
 
 fn check_agent_context_step(text: &str) -> Result<(), String> {
@@ -2873,6 +2906,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_release_updater_helper_step(&text)?;
     check_updater_helper_deny_step(&text)?;
     check_atomic_protocol_step(&text)?;
+    check_doc_placeholders_step(&text)?;
+    check_hello_command_step(&text)?;
     check_agent_context_step(&text)?;
     check_public_audit_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
@@ -3252,6 +3287,8 @@ mod tests {
             "        run: tools/ci_changes_test.sh",
             "      - name: Classify changed-path ownership",
             "        run: tools/ci_changes.sh github",
+            "      - name: Agent instruction inventory (agents-md)",
+            "        run: tools/agents_md.sh",
             "      - name: Product status contract",
             "        run: |",
             "          mkdir -p target/product-status",
@@ -3348,6 +3385,16 @@ mod tests {
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
             "          bun-version: \"1.4.2\"",
+            "      - name: Documentation placeholder contracts",
+            "        run: |",
+            "          mkdir -p target/doc-placeholders",
+            "          rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test",
+            "          target/doc-placeholders/doc-placeholders-test",
+            "          rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders",
+            "          target/doc-placeholders/doc-placeholders check .",
+            "      - name: Hello command contract",
+            "        run: |",
+            "          python3 -B tools/test_hello_command.py",
             "      - name: Atomic problem-solving protocol contract",
             "        run: |",
             "          mkdir -p target/atomic-protocol",
@@ -3910,6 +3957,93 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("non-always required result must fail");
         assert!(error.contains("always"), "{error}");
+    }
+
+    #[test]
+    fn doc_placeholder_and_hello_steps_run_whenever_the_hygiene_job_runs() {
+        check_doc_placeholders_step(&valid_workflow()).expect("fixture placeholder step passes");
+        check_hello_command_step(&valid_workflow()).expect("fixture hello step passes");
+        for (old, new, label, needle) in [
+            (
+                "      - name: Documentation placeholder contracts\n",
+                "      - name: Removed placeholder step\n",
+                "missing placeholder step",
+                "Documentation placeholder contracts",
+            ),
+            (
+                "      - name: Documentation placeholder contracts\n        run:",
+                "      - name: Documentation placeholder contracts\n        if: needs.changes.outputs.rust == 'true'\n        run:",
+                "placeholder step gated off the docs lane",
+                "only its `run` key",
+            ),
+            (
+                "          target/doc-placeholders/doc-placeholders check .",
+                "          target/doc-placeholders/doc-placeholders check . || true",
+                "suppressed placeholder check",
+                "without wrappers",
+            ),
+            (
+                "          target/doc-placeholders/doc-placeholders-test\n",
+                "",
+                "placeholder self-tests dropped",
+                "without wrappers",
+            ),
+            (
+                "      - name: Hello command contract\n",
+                "      - name: Removed hello step\n",
+                "missing hello step",
+                "Hello command contract",
+            ),
+            (
+                "          python3 -B tools/test_hello_command.py\n",
+                "          echo python3 -B tools/test_hello_command.py\n",
+                "echoed hello contract",
+                "without wrappers",
+            ),
+        ] {
+            assert!(valid_workflow().contains(old), "{label}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains(needle), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn agents_md_runs_unconditionally_in_the_router_job() {
+        for (old, new, label) in [
+            (
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n",
+                "",
+                "missing agents-md step",
+            ),
+            (
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n",
+                "      - name: Agent instruction inventory (agents-md)\n        if: needs.changes.outputs.hygiene == 'true'\n        run: tools/agents_md.sh\n",
+                "agents-md gated off crates changes",
+            ),
+            (
+                "        run: tools/agents_md.sh\n",
+                "        run: echo tools/agents_md.sh\n",
+                "echoed agents-md",
+            ),
+            (
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n",
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n        if: ${{ false }}\n",
+                "condition after run",
+            ),
+            (
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n",
+                "      - name: Agent instruction inventory (agents-md)\n        run: tools/agents_md.sh\n        \"if\": false\n",
+                "quoted condition after run",
+            ),
+        ] {
+            assert!(valid_workflow().contains(old), "{label}");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(old, new, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("Agent instruction inventory"), "{label}: {error}");
+        }
     }
 
     #[test]
