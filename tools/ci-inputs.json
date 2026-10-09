@@ -183,7 +183,7 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "contract": "",
+      "contract": "TempRepositoryMaintenanceTests also scans every tracked .py, .sh, .rs and .ts file outside these inputs for a git init that leaves background maintenance on (#670). Those edits deliberately do not select this local gate, so a pure Rust edit stays selective (test_real_rust_content_edit_and_added_reader_have_distinct_scope); the hosted router job runs this suite on every event and enforces the census there.",
       "reader_set": "policy-readers"
     },
     {
@@ -371,14 +371,14 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "cb28c9dbfd3c0e1f1d5ce13e5d22825df76c53452ccc44d66e18c6ec49b3dd4a"
+      "sha256": "60cab715f679d3e814b840fa930f8ad187aa4ff2554d46ddfe6f9e40d7c8fb93"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "7f00c1aeb098cb5176c83fc3ae4c2070d2ac32f8059bdee632cb71c4d76b631e"
+      "sha256": "84b3933900ae6029f02b66a9206678da49bf90249fe59beee40d8d44f5f8216d"
     },
     "rustdoc-readers": {
       "patterns": [

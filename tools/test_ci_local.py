@@ -777,22 +777,33 @@ class ProductionConsumerTests(unittest.TestCase):
 # repository races its writes: #656's run 37986565916 failed `TemporaryDirectory`
 # cleanup with ENOTEMPTY on `.git` (#670).
 # `maintenance.auto=false` is the one switch every one of those callers reads
-# (prepare_auto_maintenance, run-command.c), so each repository a tools/ helper
-# creates sets it in its own config straight after `git init`. A repository
-# config, unlike a `-c` flag, also binds the git commands the code under test runs.
+# (prepare_auto_maintenance, run-command.c), so each repository a tracked
+# Python, shell, Rust or TypeScript file creates sets it in its own config
+# straight after `git init`. A repository config, unlike a `-c` flag, also binds
+# the git commands the code under test runs. Commits elsewhere run in one of
+# these repositories or in the real checkout, so the `git init` site is the census.
+# `gc.auto` stays unset because the switch also covers auto-gc. Checked against
+# the git v2.55.0 source: the only `gc --auto` is the maintenance `gc` task
+# (builtin/gc.c:1257-1263), and the only `maintenance run --auto` is spawned by
+# prepare_auto_maintenance (run-command.c:1956-1984), which returns first when
+# maintenance.auto is false. Its callers are am, commit, fetch, merge, rebase and
+# receive-pack. Git before 2.29 has no maintenance.auto and ran `gc --auto`
+# itself; ubuntu-latest has 2.55.0.
 QUOTED_GIT_INIT = re.compile(r"""["']init["']""")
 SHELL_GIT_INIT = re.compile(r"^\s*git\b.*\sinit(\s|$)")
 MAINTENANCE_OFF = re.compile(r"maintenance\.auto\W+false\b")
 MAINTENANCE_OFF_WINDOW = 4
+TEMP_REPOSITORY_SOURCES = ("*.py", "*.sh", "*.rs", "*.ts")
 
 
 def temp_repository_init_sites(root: Path) -> dict[str, bool]:
-    """Map each `git init` site in tracked tools/ files to whether it disables maintenance.
+    """Map each `git init` site in tracked source to whether it disables maintenance.
 
-    The setting must appear on the init line or within the next
-    MAINTENANCE_OFF_WINDOW lines, so it is the repository's next configuration step.
+    Source is every tracked .py, .sh, .rs and .ts file. The setting must appear on the
+    init line or within the next MAINTENANCE_OFF_WINDOW lines, so it is the
+    repository's next configuration step.
     """
-    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "tools"], cwd=root)
+    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", *TEMP_REPOSITORY_SOURCES], cwd=root)
     sites = {}
     for raw in tracked.split(b"\0"):
         if not raw:
@@ -802,7 +813,7 @@ def temp_repository_init_sites(root: Path) -> dict[str, bool]:
             lines = (root / relative).read_text(encoding="utf-8").splitlines()
         except UnicodeDecodeError as error:
             raise AssertionError(f"#670 census cannot read tracked {relative} as UTF-8 ({error}); "
-                                 "keep binary files out of tools/") from error
+                                 "a tracked source file must be text") from error
         for index, line in enumerate(lines):
             if QUOTED_GIT_INIT.search(line) or SHELL_GIT_INIT.search(line):
                 window = lines[index:index + 1 + MAINTENANCE_OFF_WINDOW]
@@ -811,7 +822,11 @@ def temp_repository_init_sites(root: Path) -> dict[str, bool]:
 
 
 class TempRepositoryMaintenanceTests(unittest.TestCase):
-    """#670: no throwaway repository may start detached background maintenance."""
+    """#670: no throwaway repository may start detached background maintenance.
+
+    The hosted router job runs this on every event. Locally, a source edit outside
+    the router self-test inputs does not select it (tools/ci-inputs.json contract).
+    """
 
     # Spelled in two parts because this file is itself in the census.
     VERB = "in" "it"
@@ -828,7 +843,7 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             return temp_repository_init_sites(root)
 
-    def test_every_tools_temp_repository_disables_background_maintenance(self):
+    def test_every_temp_repository_disables_background_maintenance(self):
         sites = temp_repository_init_sites(Path(__file__).resolve().parent.parent)
         self.assertEqual([site for site, disabled in sites.items() if not disabled], [],
                          "set `config maintenance.auto false` right after each `git init` (#670)")
@@ -837,7 +852,9 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
         for helper in ("tools/test_ci_local.py", "tools/ci_changes_test.sh", "tools/hooks_test.sh",
                        "tools/ci_hygiene.rs", "tools/mermaid_docs.rs", "tools/product_status.rs",
                        "tools/ci_workflow_security.test.ts", "tools/retained_fs_artifact_test.py",
-                       "tools/test_session_closeout.py", "tools/test_workspace.py"):
+                       "tools/test_session_closeout.py", "tools/test_workspace.py",
+                       "docs/audits/test_verify.py", "crates/keld-wv/tests/linux_media_checkout_test.sh",
+                       "crates/keld-compat/tests/corpus_registry/rules/v1_snapshots.rs"):
             self.assertIn(helper, helpers)
 
     def test_census_rejects_an_init_without_the_setting(self):
@@ -848,11 +865,16 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
             "tools/enabled.ts": 'git("{verb}");\ngit("config", "maintenance.auto", "true");\n',
             "tools/late.py": 'git("{verb}")\n' + "pass\n" * 4 + 'git("config", "maintenance.auto", "false")\n',
             "tools/wrong_key.sh": 'git {verb} -q\ngit config gc.auto 0\n',
-            "docs/outside.py": 'git("{verb}")\n',
+            # Outside tools/: a Python audit test and a Rust crate test are in the census.
+            "docs/audits/bare.py": 'subprocess.run(["git", "{verb}", "-q"], cwd=repo, check=True)\n',
+            "crates/x/tests/bare.rs": 'Command::new("git")\n    .args(["{verb}", "-q"])\n',
+            # Not a source extension: prose is not scanned.
+            "docs/notes.md": 'git {verb} -q\nrun `git("{verb}")`\n',
         })
         self.assertEqual(sites, {"tools/bare.py:1": False, "tools/bare.sh:1": False,
                                  "tools/bare.rs:1": False, "tools/enabled.ts:1": False,
-                                 "tools/late.py:1": False, "tools/wrong_key.sh:1": False})
+                                 "tools/late.py:1": False, "tools/wrong_key.sh:1": False,
+                                 "docs/audits/bare.py:1": False, "crates/x/tests/bare.rs:2": False})
 
     def test_census_accepts_each_supported_form(self):
         sites = self.census({
