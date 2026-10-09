@@ -735,11 +735,12 @@ fn criterion10_record_bound_overflow_fails_closed_with_026() {
 /// How the OS refuses is per OS (#528 T5):
 /// - Unix: the bootstrap listener unlinks its one-use socket path once it
 ///   has accepted, so the second connect fails at once with `ENOENT`.
-/// - Windows: the pipe's one instance is the connected first link, so the
-///   second `CreateFile` gets `ERROR_PIPE_BUSY`. Bun's named-pipe connect
-///   (libuv `uv_pipe_connect`) then waits in `WaitNamedPipeW` before it
-///   reports the refusal, so the host reads the role's next CALL with a
-///   long deadline.
+/// - Windows: the pipe's one instance is the connected first link, so no
+///   instance accepts a second client. Bun reports the refusal as
+///   `ECONNREFUSED`, observed on `windows-latest` after about 30 s, which
+///   matches libuv's `uv_pipe_connect` waiting in `WaitNamedPipeW` on a busy
+///   pipe (that last step is inferred from libuv's source, not observed). So
+///   the host reads the role's next CALL with a long deadline.
 #[test]
 fn criterion11_second_open_and_second_connect_are_refused() {
     let (mut stream, role) = start("second-link");
@@ -748,7 +749,7 @@ fn criterion11_second_open_and_second_connect_are_refused() {
     host_reply(&mut stream, call, b"first-link-up");
     let output = role.finish();
     let second_connect = if cfg!(windows) {
-        "refused:ETIMEDOUT"
+        "refused:ECONNREFUSED"
     } else {
         "refused:ENOENT"
     };

@@ -1283,6 +1283,14 @@ liveness test passes the code check whatever the wake latency, because a missing
 surfaces as `KELD-IPC-006`. Unix socket paths stay under 104 bytes. Each platform-only
 path is marked in T5.
 
+T5 (#528, amended by #666): `crates/keld-ipc/tests/worker_link.rs` runs on macOS, Linux
+and Windows against the platform's `BootstrapStream` (a Unix socket, or the KEL-101
+named pipe), and the host closes with the production `shutdown_app_link`. The keld-core
+router cases (criteria 6, 7 and the host half of 8) run on every OS on the shared
+`primary_test_stream_pair`, except the Unix cases recorded in §10. A real platform
+difference is a per-OS expectation that cites its OS fact, never a skip. The CI
+`ubuntu-latest` and `windows-latest` legs are the Linux and Windows evidence.
+
 ## 8. Review gates triggered
 
 unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
@@ -1341,10 +1349,57 @@ the `WriteQueue` promise chain are as unbounded as today's main-thread `WriteQue
    FACT (#528 T1, Bun 1.4.2, macOS arm64): `terminate()` of a Worker wedged in
    `Atomics.wait` closes its socket and the host observes link loss (criterion 8c);
    a busy-loop wedge behaved the same in a scratch probe that is not a committed test.
-   Linux and Windows stay UNKNOWN until T5.
+   T5 (#666): criterion 8c passes on `ubuntu-latest` and `windows-latest` too, so
+   `terminate()` closes the wedged Worker's link there as well.
    Recommendation: yes. Exit the role process right after surfacing the error, since a
    role without a link cannot recover in place.
 3. Confirm `MAX_ABANDONED_CALLS = 256`. Recommendation: keep it; a host that leaves
    that many calls unanswered is stuck, and criterion 22 proves the typed failure.
 4. Confirm the liveness constants (100 ms heartbeat, 1 s window). Recommendation:
    keep them. Criterion 9 falsifies the window if it is too tight under load.
+
+**T5 qualification record (#528 T5, #666, amended by #666).** CI's `ubuntu-latest`
+and `windows-latest` legs are the real hosts.
+
+| Criterion | Linux | Windows |
+|---|---|---|
+| 1–5, 8–10, 12–14, 18–20 (T1 harness) | pass | pass |
+| 6 (retire answers pending calls with `KELD-IPC-023`) | pass | holds for a reading role (the Bun end-to-end case passes); fails for a non-reading peer, finding W2 |
+| 7 (post-Quit calls get `KELD-IPC-024`, none run) | pass | does not hold, finding W1 |
+| 8, host half (Worker death fails the generation) | pass | pass |
+| 11 (second open and second connect refused) | pass (`ENOENT`) | pass (`ECONNREFUSED` after about 30 s) |
+
+The extra harness cases for criteria 21, 22 and 25–27 and the T3 cases also pass on
+both OSes.
+
+- **Finding W1 (criterion 7, Windows).** Windows has no post-Quit drain. After the
+  Quit REPLY, its tail waits for the peer's close, and any byte is a fault ("app sent
+  bytes after the terminal Quit reply", `await_windows_quit_peer_close_until`). So a
+  CALL the role wrote before it ended the link fails the tail instead of getting
+  `KELD-IPC-024`. Evidence: FACT from the source; the criterion 7 cases were not run on
+  Windows.
+  - *Proposed root-cause fix:* run `answer_calls_after_quit` and
+    `drain_calls_after_quit` on Windows, and delete the Windows peer-close wait.
+    `read_quit_drain_frame` is generic over `Read`, and the Windows stream already
+    has the `HOST_ANSWER_BUDGET` write deadline.
+  - *First check:* the criterion 7 router cases on `windows-latest`.
+- **Finding W2 (criterion 6, Windows).** The Windows host close (`shutdown_app_link`
+  calling `DisconnectNamedPipe`) discards a pipe's unread data, which Microsoft
+  documents for `DisconnectNamedPipe`. So `KELD-IPC-023` answers written just before
+  the close reach only a role that already has a read pending. A `WorkerLink` role
+  always has one, and the end-to-end case passes. A non-reading peer reads only the
+  close. Evidence: CI run 37984265844 on `windows-latest`. There, the non-reading
+  criterion 6 case read no frame before the close (`left: []`).
+  - *Proposed root-cause fix:* a terminal close that keeps written bytes. Either
+    flush the answers with a wait bounded by `HOST_ANSWER_BUDGET` before
+    `DisconnectNamedPipe`, or close the handle without disconnecting, if a Windows
+    probe shows that this keeps buffered data readable.
+  - *First check:* `retire_answers_pending_fs_and_quit_calls_with_023_before_close`
+    on Windows.
+- **Unix by OS fact.** `quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it`:
+  a named pipe has no half-close.
+- **Unknown on Windows.** `retire_answers_are_bounded_when_the_peer_stops_reading`: its
+  oracle counts the exact bytes a nonblocking Unix send buffer accepted, and the
+  standard library has no nonblocking named pipe. The bound is the same
+  `write_best_effort_answers` code on Windows, but there is no Windows evidence for
+  it.
