@@ -112,8 +112,10 @@ jobs:
               root = Path(tmp) / "r"
               test_ci_local.tracked_snapshot(Path.cwd(), root)
               steps = [("config", "user.name", "t"), ("config", "user.email", "t@x")]
-              if disable:
-                  steps += [("config", "gc.auto", "0"), ("config", "maintenance.auto", "false")]
+              # The shipped tracked_snapshot sets maintenance.auto=false itself (#670);
+              # the control re-enables it, so the shipped setting is the only variable.
+              if not disable:
+                  steps += [("config", "maintenance.auto", "true")]
               env = dict(os.environ)
               if trace:
                   env["GIT_TRACE2_EVENT"] = str(Path(tmp).parent / "gh670-trace2.json")
@@ -135,15 +137,10 @@ jobs:
                   time.sleep(10)
                   shutil.rmtree(tmp)
                   return f"{error} (left in .git: {left})"
-          print("trace, maintenance enabled:"); trial(False, trace=True)
-          ev = Path(tempfile.gettempdir()) / "gh670-trace2.json"
-          if ev.exists():
-              for line in ev.read_text().splitlines():
-                  if '"child_start"' in line or ('"region_enter"' in line and "maintenance" in line):
-                      print("  ", line[:300])
+          print("shipped snapshot config:", subprocess.run(["git", "config", "--get", "maintenance.auto"], cwd=(lambda d: (test_ci_local.tracked_snapshot(Path.cwd(), d, bind=False), d)[1])(Path(tempfile.mkdtemp(prefix="gh670-cfg-")) / "r"), capture_output=True, text=True).stdout.strip())
           for disable in (False, True):
               failures = [r for r in (trial(disable) for _ in range(40)) if r]
-              print(f"maintenance {'disabled' if disable else 'enabled'}: {len(failures)}/40 cleanup failures")
+              print(f"maintenance {'off (shipped tracked_snapshot only)' if disable else 'on (control)'}: {len(failures)}/40 cleanup failures")
               for r in failures[:3]:
                   print("   ", r)
           PY
