@@ -277,7 +277,7 @@ struct FsDispatchSession {
     state: Mutex<FsDispatchState>,
     handler_transition: Mutex<()>,
     drained: Condvar,
-    #[cfg(test)]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     drain_wait_observer: Mutex<Option<SyncSender<()>>>,
     #[cfg(test)]
     terminal_write_hold: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
@@ -298,7 +298,7 @@ impl FsDispatchSession {
             }),
             handler_transition: Mutex::new(()),
             drained: Condvar::new(),
-            #[cfg(test)]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
             drain_wait_observer: Mutex::new(None),
             #[cfg(test)]
             terminal_write_hold: Mutex::new(None),
@@ -444,7 +444,7 @@ impl FsDispatchSession {
         self.wait_for_handler_transition()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     fn observe_next_drain_wait(&self, observer: SyncSender<()>) {
         *self
             .drain_wait_observer
@@ -482,7 +482,7 @@ impl FsDispatchSession {
             .lock()
             .map_err(|_| app_detail("filesystem drain", "in-flight lock poisoned"))?;
         while state.in_flight != 0 {
-            #[cfg(test)]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
             if let Some(observer) = self
                 .drain_wait_observer
                 .lock()
@@ -7723,7 +7723,7 @@ mod tests {
         .expect("send FS write");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn write_quit_call(client: &mut BootstrapStream, corr: u32) {
         write_frame(
             client,
@@ -11080,7 +11080,7 @@ mod tests {
         assert!(error.to_string().contains("permission denied"), "{error}");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn assert_echo_call(client: &mut BootstrapStream, correlation: u32, message: &str) {
         use keld_ipc::codec::{decode, encode};
         use keld_ipc::echo::{EchoRequest, EchoResponse};
