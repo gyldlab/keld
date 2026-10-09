@@ -25,7 +25,7 @@ impl WorkerLinkRole {
     /// router on its authenticated link.
     fn start(
         scenario: &str,
-        channel: keld_ipc::ChannelId,
+        channel: &'static keld_ipc::channel_table::ChannelEntry,
         payload: &[u8],
     ) -> (Self, GuardedTestRouter) {
         use std::io::Read as _;
@@ -39,7 +39,7 @@ impl WorkerLinkRole {
             .arg(scenario)
             .env("KELD_APP_LINK", listener.app_link())
             .env("KELD_KIPC_TEST_HOOKS", "1")
-            .env("KELD_T2_CHANNEL", channel.0.to_string())
+            .env("KELD_T2_CHANNEL", channel.wire_id().to_string())
             .env("KELD_T2_PAYLOAD_HEX", hex_of(payload))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -166,8 +166,11 @@ fn bun_role_parked_on_fs_throws_023_when_the_host_retires() {
         let path = temp.path().join("unused.txt");
         (temp, path)
     };
-    let (role, t) =
-        WorkerLinkRole::start("t2-blocking-call", FS_CHANNEL, &fs_write_payload(&target));
+    let (role, t) = WorkerLinkRole::start(
+        "t2-blocking-call",
+        &keld_ipc::channel_table::FS,
+        &fs_write_payload(&target),
+    );
     t.taken
         .recv_timeout(Duration::from_secs(20))
         .expect("the role's FS call reached the held worker");
@@ -190,7 +193,11 @@ fn bun_role_parked_on_fs_throws_023_when_the_host_retires() {
 #[test]
 fn bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes() {
     let quit = encode(&LifecycleRequest::Quit).expect("encode Quit");
-    let (role, t) = WorkerLinkRole::start("t2-blocking-call", LIFECYCLE_CHANNEL, &quit);
+    let (role, t) = WorkerLinkRole::start(
+        "t2-blocking-call",
+        &keld_ipc::channel_table::LIFECYCLE,
+        &quit,
+    );
     let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
         .guardian
         .recv_timeout(Duration::from_secs(20))
@@ -239,7 +246,11 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
         let path = temp.path().join("unused.txt");
         (temp, path)
     };
-    let (role, t) = WorkerLinkRole::start("t2-worker-dies", FS_CHANNEL, &fs_write_payload(&target));
+    let (role, t) = WorkerLinkRole::start(
+        "t2-worker-dies",
+        &keld_ipc::channel_table::FS,
+        &fs_write_payload(&target),
+    );
     t.router.handle().signal_ready().expect("Ready");
     t.taken
         .recv_timeout(Duration::from_secs(20))
@@ -272,7 +283,8 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
 /// not close the link ends the drain at `IdleBackstop`.
 #[test]
 fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
-    let (role, t) = WorkerLinkRole::start("t3-quit-close", LIFECYCLE_CHANNEL, &[]);
+    let (role, t) =
+        WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
     let (end_tx, drain_end) = mpsc::sync_channel(1);
     t.router.handle().observe_next_quit_drain_end(end_tx);
     let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t

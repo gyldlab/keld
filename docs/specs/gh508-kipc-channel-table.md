@@ -824,9 +824,9 @@ rule reported exactly the seven production hits listed there (eight after #628, 
   11 and 12).
 - **Scans are defence in depth.** The criterion 6 and 7 scans cannot see every spelling
   of an id (a const alias, `ChannelId { 0: 1 }`, extra parentheses, a renamed import, a
-  macro, `header.channel.0 == 2`); the guarantee belongs to the type-level follow-up
-  issue #634, which makes `ChannelId` unforgeable outside `keld-ipc`, so production code
-  can obtain an id only from a table entry.
+  macro, `header.channel.0 == 2`). The guarantee belongs to the type: #634 makes
+  `ChannelId` unforgeable outside `keld-ipc` (last bullet), so production code can
+  obtain an id only from a table entry. Both scans stay.
 - **Executed evidence.** CI runs `cargo nextest`, which does not run doctests, so the
   criterion 1 and 10 compile-fail doctests (each paired with a compiling positive
   control) are local evidence (`cargo test -p keld-ipc --doc`). Stable rustdoc does not
@@ -858,5 +858,40 @@ rule reported exactly the seven production hits listed there (eight after #628, 
   `Display` with fix guidance but no `KELD-*` code, like `HeaderError`: the real table is
   checked at compile time, so it never surfaces at runtime. The test-only
   `AllocationDefect` also has `Malformed { line }` for a malformed baseline line.
-  `keld-core` passes `ECHO_CHANNEL.0` to the bridge, the same constant its second check
-  uses. `Authority` is `#[non_exhaustive]` (spec §4.5 expects a new variant).
+  `keld-core` passes the echo entry's wire id to the bridge, the same value its second
+  check uses (`channel_table::ECHO.wire_id()` since #634). `Authority` is `#[non_exhaustive]` (spec §4.5 expects a new variant).
+- **Type-level guarantee (#634).** `ChannelId`'s field is `pub(crate)`; the wire type,
+  its bytes and `PROTOCOL_VERSION` 2 are unchanged, and `receiver-semantics-v0.tsv` is
+  untouched. Outside `keld-ipc` an id comes only from a table entry (`ChannelEntry::id`,
+  or a constant derived from one such as `ECHO_CHANNEL` or `keld-native`'s `FS_CHANNEL`)
+  or from a header `keld-ipc` decoded. An id compares only with another id: `ChannelId`
+  has no public integer accessor, `PartialEq<u16>` or `From` conversion. The one public
+  integer is `ChannelEntry::wire_id`, read from an entry and never from a received id,
+  because the macOS renderer bridge takes its admitted channel as a `u16` (§4.6: no
+  `keld-wv` → `keld-ipc` edge). `compile_fail` doctests on `ChannelId` reject the tuple
+  and braced constructors, a const alias through a renamed import with extra
+  parentheses, a macro-built `static`, `header.channel.0 == 2`, `header.channel == 2`
+  and `u16::from(header.channel)`; a compiling twin builds the same shapes from an
+  entry, and #635's routed doctest lane runs them in CI. The criterion 10 doctests now
+  pass an entry's id (`channel_table::FS.id()`), so each fails only on the type
+  mismatch. Rustdoc does not check a `compile_fail` error code, so each snippet was also
+  built in an external crate to confirm it fails with exactly its one intended error.
+  Tests that need an unallocated id call `ChannelId::for_test`, present only with
+  keld-ipc's non-default `test-channel-ids` feature; `keld-core` and `keld-cli` enable it
+  from `[dev-dependencies]`, and `keld-ipc` enables it for its own integration tests and
+  doctests through a self dev-dependency, which `Cargo.lock` records as a `keld-ipc`
+  self-edge. Under the workspace's resolver 3 a dev-dependency feature reaches only
+  builds of test targets, never `cargo build`.
+  `crates/keld-cli/tests/channel_id_feature.rs` reads `cargo metadata --no-deps` and
+  fails when any workspace manifest enables it for a production build: a normal or
+  build dependency (inherited `[workspace.dependencies]` features included), a feature
+  forward (renamed or `?`), or a `keld-ipc` feature such as `default`; a named negative
+  control covers each. A production source that called `for_test` does not build
+  without the feature, which the release host build and the per-package rustdoc lane
+  leave off. Accepted residual: wire decode stays a constructor by design, so
+  `FrameHeader::decode` on bytes a caller built itself still yields any id
+  (`frame.rs`). Decode is the sanctioned wire source, and such an id is a received one:
+  every receive policy checks it, and it cannot select a privileged reader, because the
+  privileged receive policy and the privileged primary-link reader take
+  `&'static ChannelEntry`, never a `ChannelId`. *Falsifier:* a production caller that
+  needs a raw id from a received `ChannelId` (not from an entry).

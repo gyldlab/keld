@@ -1482,7 +1482,7 @@ mod tests {
     #[test]
     fn fs_channel_and_capabilities_derive_from_their_owners() {
         assert_eq!(FS_CHANNEL, channel_table::FS.id());
-        assert_eq!(FS_CHANNEL.0, 2);
+        assert_eq!(channel_table::FS.wire_id(), 2);
         assert_eq!(FS_READ_CAPABILITY, keld_guard::capability::FS_READ);
         assert_eq!(FS_WRITE_CAPABILITY, keld_guard::capability::FS_WRITE);
         assert_eq!(

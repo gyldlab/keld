@@ -14,6 +14,11 @@ authors.workspace = true
 # keld-update's `fuzzing` feature does for its journal decoder (KEL-270 comment
 # 136c2682). No product crate enables it.
 fuzzing = []
+# Non-product: `ChannelId::for_test`, the one constructor of an arbitrary channel id
+# outside this crate (#634). Test targets enable it from `[dev-dependencies]`;
+# keld-cli's channel_table_scan fails if any workspace manifest enables it for a
+# production build (a normal or build dependency, a feature forward, a default).
+test-channel-ids = []
 
 [dependencies]
 keld-guard = { workspace = true }
@@ -39,6 +44,8 @@ windows-sys = { workspace = true, features = ["Win32_System_IO"] }
 # both test suites"). Reuses the workspace-pinned sha2 already used by
 # keld-cli and keld-guard; dev-only, never on the hot path.
 sha2 = { workspace = true }
+# This crate's own integration tests and doctests forge unallocated ids (#634).
+keld-ipc = { workspace = true, features = ["test-channel-ids"] }
 
 [lints]
 workspace = true
