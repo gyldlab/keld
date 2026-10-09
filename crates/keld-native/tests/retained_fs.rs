@@ -1041,7 +1041,10 @@ fn windows_retained_root_blocks_replacement_until_broker_destruction() {
 struct OsFacts {
     len: u64,
     modified: std::time::SystemTime,
-    accessed: std::time::SystemTime,
+    /// `None` where the volume does not move atime on a read.
+    accessed: Option<std::time::SystemTime>,
+    /// `None` where the platform does not report a creation time.
+    created: Option<std::time::SystemTime>,
     #[cfg(unix)]
     inode: u64,
     #[cfg(unix)]
@@ -1049,14 +1052,15 @@ struct OsFacts {
 }
 
 impl OsFacts {
-    fn of(path: &Path) -> Self {
+    fn of(path: &Path, atime_observable: bool) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt as _;
         let metadata = std::fs::metadata(path).expect("stat sentinel");
         Self {
             len: metadata.len(),
             modified: metadata.modified().expect("mtime"),
-            accessed: metadata.accessed().expect("atime"),
+            accessed: atime_observable.then(|| metadata.accessed().expect("atime")),
+            created: metadata.created().ok(),
             #[cfg(unix)]
             inode: metadata.ino(),
             #[cfg(unix)]
@@ -1065,143 +1069,407 @@ impl OsFacts {
     }
 }
 
-/// Writes `bytes` and backdates the file so that atime is older than mtime.
-/// APFS and Linux `relatime` then move atime on the next read, which makes a
-/// read observable.
-fn seed_backdated(path: &Path, accessed: std::time::SystemTime, modified: std::time::SystemTime) {
-    std::fs::write(path, b"outside").expect("seed file outside the scope");
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .expect("open to backdate")
-        .set_times(
-            std::fs::FileTimes::new()
-                .set_accessed(accessed)
-                .set_modified(modified),
-        )
-        .expect("backdate times");
+/// A granted `<base>/scope` subtree (with `scope/sub`) and a backdated
+/// `<base>/sentinel` beside it, outside the grant.
+///
+/// The sentinel's atime is set strictly older than its mtime. APFS and Linux
+/// `relatime` then move atime on the next read, so a read becomes observable,
+/// which a twin control file read directly must show. Only Windows may leave
+/// atime unobservable. There the sentinel's no-read property rests on the
+/// dispatch-boundary error code alone (the guard refuses before any
+/// filesystem call), and length, mtime and creation time still bind writes.
+struct OutsideFixture {
+    base: PathBuf,
+    scope: PathBuf,
+    sentinel: PathBuf,
+    atime_observable: bool,
+    before: OsFacts,
 }
 
-/// The guarded dispatch boundary refused `requested` before the grant decision
-/// was used or the broker walked anything. `evaluate`'s own `..` rule and the
-/// broker's component walk are deeper layers, so a denial from either of them
-/// fails here.
-fn assert_refused_at_dispatch(
+impl OutsideFixture {
+    /// `prepare` runs after the files exist and before they are backdated, so
+    /// links and canonical-target checks it makes cannot move the baseline.
+    fn new(case: &str, prepare: impl FnOnce(&Self)) -> Self {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let base = owned_root(case);
+        let scope = base.join("scope");
+        std::fs::create_dir_all(scope.join("sub")).expect("granted scope");
+        let mut fixture = Self {
+            sentinel: base.join("sentinel"),
+            base,
+            scope,
+            atime_observable: false,
+            before: OsFacts {
+                len: 0,
+                modified: UNIX_EPOCH,
+                accessed: None,
+                created: None,
+                #[cfg(unix)]
+                inode: 0,
+                #[cfg(unix)]
+                changed: (0, 0),
+            },
+        };
+        let control = fixture.base.join("atime-control");
+        for file in [&fixture.sentinel, &control] {
+            std::fs::write(file, b"outside").expect("seed file outside the scope");
+        }
+        prepare(&fixture);
+        let accessed = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let modified = accessed + Duration::from_secs(100);
+        for file in [&fixture.sentinel, &control] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(file)
+                .expect("open to backdate")
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_accessed(accessed)
+                        .set_modified(modified),
+                )
+                .expect("backdate times");
+        }
+        std::fs::read(&control).expect("read the atime control directly");
+        fixture.atime_observable = std::fs::metadata(&control)
+            .expect("control metadata")
+            .accessed()
+            .expect("control atime")
+            != accessed;
+        assert!(
+            fixture.atime_observable || cfg!(windows),
+            "a direct read did not move atime on this Unix volume, so the no-read oracle would be vacuous"
+        );
+        fixture.before = OsFacts::of(&fixture.sentinel, fixture.atime_observable);
+        assert_eq!(
+            fixture.before.accessed,
+            fixture.atime_observable.then_some(accessed),
+            "fixture atime did not hold"
+        );
+        fixture
+    }
+
+    fn in_scope(&self, tail: &str) -> String {
+        format!("{}{tail}", spelling(&self.scope))
+    }
+
+    /// Nothing outside the scope changed: the sentinel's OS facts and the set
+    /// of names beside the scope.
+    fn assert_outside_untouched(&self, case: &str) {
+        let atime = if self.atime_observable {
+            "compared"
+        } else {
+            "unobservable on this volume, so no-read rests on the error code"
+        };
+        assert_eq!(
+            OsFacts::of(&self.sentinel, self.atime_observable),
+            self.before,
+            "{case}: the sentinel outside the scope was touched (atime {atime})"
+        );
+        let mut names: Vec<String> = std::fs::read_dir(&self.base)
+            .expect("list base")
+            .map(|entry| {
+                entry
+                    .expect("base entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["atime-control", "scope", "sentinel"],
+            "{case}: a name appeared outside the scope"
+        );
+    }
+
+    /// Checks the sentinel's bytes last (reading them moves atime) and cleans up.
+    fn finish(self) {
+        let bytes = std::fs::read(&self.sentinel).expect("observe sentinel bytes");
+        std::fs::remove_dir_all(&self.base).expect("cleanup owned root");
+        assert_eq!(bytes, b"outside");
+    }
+}
+
+/// Where the guarded path refuses a request.
+#[derive(Clone, Copy, Debug)]
+enum Refusal {
+    /// `dispatch_privileged`'s normalized-path gate, before the grant decision
+    /// is used or the broker walks anything (`KELD-GUARD002`).
+    Dispatch,
+    /// `evaluate`'s grant scope: a normalized path outside every grant
+    /// (`KELD-GUARD002`).
+    GrantScope,
+    /// A literal in-scope name that does not exist (`KELD-NATIVE-001`).
+    MissingInside,
+}
+
+fn assert_refused(
+    refusal: Refusal,
     operation: &str,
     result: Result<(), keld_native::fs::FsError>,
     requested: &str,
 ) {
-    let error = result.expect_err("`..` request must be denied");
-    assert_eq!(error.code(), "KELD-GUARD002", "{requested}: {error}");
+    use keld_guard::DenyReason;
+    use keld_native::fs::FsError;
+
+    let error = result.expect_err("a request that climbs out must be refused");
+    let refused = match refusal {
+        Refusal::Dispatch | Refusal::GrantScope => {
+            error.code() == "KELD-GUARD002"
+                && matches!(
+                    &error,
+                    FsError::Denied(DenyReason::OutOfScope {
+                        capability,
+                        scope,
+                        requested: denied,
+                        ..
+                    }) if capability == operation
+                        && denied == requested
+                        && (scope == "absolute normalized filesystem request")
+                            == matches!(refusal, Refusal::Dispatch)
+                )
+        }
+        Refusal::MissingInside => {
+            error.code() == "KELD-NATIVE-001"
+                && matches!(&error, FsError::Io(source) if source.kind() == std::io::ErrorKind::NotFound)
+        }
+    };
     assert!(
-        matches!(
-            &error,
-            keld_native::fs::FsError::Denied(keld_guard::DenyReason::OutOfScope {
-                capability,
-                scope,
-                requested: denied,
-                ..
-            }) if capability == operation
-                && scope == "absolute normalized filesystem request"
-                && denied == requested
-        ),
-        "{requested}: not refused at the dispatch boundary: {error:?}"
+        refused,
+        "{operation} {requested}: expected {refusal:?}, got {error:?}"
     );
 }
 
+fn canonical(path: &str) -> PathBuf {
+    std::fs::canonicalize(path).expect("the OS resolves the attack path")
+}
+
 /// #673: the OS-level `..` traversal proof that hosted CI runs. A request that
-/// climbs out of a granted subtree with a `..` segment is denied by
-/// `keld-guard` (`KELD-GUARD002`) for read, overwrite and create, and the
-/// sentinel beside the scope is untouched at the OS level. Its bytes, length
-/// and mtime are unchanged, and on Unix its inode and ctime too. Its atime is
-/// also unchanged wherever the volume makes a read observable: a twin control
-/// file read directly must move its atime, or a Unix run fails instead of
-/// passing vacuously. The ignored macOS device acceptance
+/// climbs out of a granted subtree with a `..` segment, and demonstrably names
+/// the sentinel beside it (its canonical path is the sentinel's), is refused
+/// at the dispatch boundary (`KELD-GUARD002`) for read, overwrite and create.
+/// Nothing outside the scope changes (see [`OutsideFixture`]), and the same
+/// broker still serves in-scope I/O. The ignored macOS device acceptance
 /// (`path-parent-component`) remains the zero-I/O counter proof.
 #[test]
 fn parent_component_inside_a_granted_scope_never_reaches_the_outside() {
-    use std::time::{Duration, UNIX_EPOCH};
-
-    let base = owned_root("parent-component");
-    let scope = base.join("scope");
-    std::fs::create_dir(&scope).expect("granted scope");
-    let sentinel = base.join("sentinel");
-    let control = base.join("atime-control");
-    let accessed = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-    let modified = accessed + Duration::from_secs(100);
-    seed_backdated(&sentinel, accessed, modified);
-    seed_backdated(&control, accessed, modified);
-    std::fs::read(&control).expect("read the atime control directly");
-    let atime_observable = std::fs::metadata(&control)
-        .expect("control metadata")
-        .accessed()
-        .expect("control atime")
-        != accessed;
-    #[cfg(unix)]
-    assert!(
-        atime_observable,
-        "a direct read did not move atime on this volume, so the sentinel's no-read oracle would be vacuous"
-    );
-    let before = OsFacts::of(&sentinel);
-
-    let verified = manifest(&scope);
+    let fixture = OutsideFixture::new("parent-component", |fixture| {
+        assert_eq!(
+            canonical(&fixture.in_scope("/../sentinel")),
+            canonical(&spelling(&fixture.sentinel)),
+            "the attack must name the sentinel"
+        );
+    });
+    let verified = manifest(&fixture.scope);
     let broker = FsBroker::prepare(&verified).expect("prepare broker");
     let cancelled = AtomicBool::new(false);
-    let climb = |leaf: &str| format!("{}/../{leaf}", spelling(&scope));
-    let read = broker.read(
-        &verified,
-        Principal::AppProcess,
-        &climb("sentinel"),
-        &cancelled,
-    );
-    let overwrite = broker.write(
-        &verified,
-        Principal::AppProcess,
-        &climb("sentinel"),
-        b"overwritten",
-        &cancelled,
-    );
-    let create = broker.write(
-        &verified,
-        Principal::AppProcess,
-        &climb("created"),
-        b"created",
-        &cancelled,
-    );
-    let after = OsFacts::of(&sentinel);
-    let created_outside = base.join("created").exists();
-    let inside = spelling(&scope.join("inside"));
+    let app = Principal::AppProcess;
+    let attack = fixture.in_scope("/../sentinel");
+    let create = fixture.in_scope("/../created");
+    let read = broker.read(&verified, app, &attack, &cancelled);
+    let overwrite = broker.write(&verified, app, &attack, b"overwritten", &cancelled);
+    let created = broker.write(&verified, app, &create, b"created", &cancelled);
+    fixture.assert_outside_untouched("parent-component");
+    let inside = fixture.in_scope("/inside");
     let live = broker
-        .write(
-            &verified,
-            Principal::AppProcess,
-            &inside,
-            b"inside",
-            &cancelled,
-        )
-        .and_then(|()| broker.read(&verified, Principal::AppProcess, &inside, &cancelled));
-    let sentinel_bytes = std::fs::read(&sentinel).expect("observe sentinel bytes");
+        .write(&verified, app, &inside, b"inside", &cancelled)
+        .and_then(|()| broker.read(&verified, app, &inside, &cancelled));
     drop(broker);
-    std::fs::remove_dir_all(&base).expect("cleanup owned root");
-    println!(
-        "parent-component: read={read:?}; overwrite={overwrite:?}; create={create:?}; \
-         atime_observable={atime_observable}"
-    );
 
-    assert_refused_at_dispatch("fs.read", read.map(|_| ()), &climb("sentinel"));
-    assert_refused_at_dispatch("fs.write", overwrite, &climb("sentinel"));
-    assert_refused_at_dispatch("fs.write", create, &climb("created"));
-    assert_eq!(before.accessed, accessed, "fixture atime did not hold");
-    if atime_observable {
-        assert_eq!(after, before, "the sentinel outside the scope was touched");
-    } else {
-        assert_eq!(
-            (after.len, after.modified),
-            (before.len, before.modified),
-            "the sentinel outside the scope was touched"
-        );
-    }
-    assert!(!created_outside, "a file was created outside the scope");
-    assert_eq!(sentinel_bytes, b"outside");
+    assert_refused(Refusal::Dispatch, "fs.read", read.map(|_| ()), &attack);
+    assert_refused(Refusal::Dispatch, "fs.write", overwrite, &attack);
+    assert_refused(Refusal::Dispatch, "fs.write", created, &create);
     assert_eq!(live.expect("in-scope write then read"), b"inside");
+    fixture.finish();
+}
+
+/// One attack form: name, request path, expected refusal, and (for forms the
+/// OS resolves) the name beside the scope it reaches (`""` is the base itself).
+type Climb = (&'static str, String, Refusal, Option<&'static str>);
+
+/// Every spelling of a climb out of the scope that the #673 review tried.
+fn climbing_spellings(fixture: &OutsideFixture) -> Vec<Climb> {
+    use Refusal::{Dispatch, GrantScope, MissingInside};
+
+    // Windows rejects a component ending in dot or space before dispatch; on
+    // Unix those are literal in-scope names that do not exist.
+    let trailing_dot_or_space = if cfg!(windows) {
+        Dispatch
+    } else {
+        MissingInside
+    };
+    let scope = |tail: &str| fixture.in_scope(tail);
+    let native = fixture.scope.display().to_string();
+    let without_root = spelling(&fixture.scope).trim_start_matches('/').to_owned();
+    vec![
+        ("parent", scope("/../sentinel"), Dispatch, Some("sentinel")),
+        (
+            "depth-2",
+            scope("/sub/../../sentinel"),
+            Dispatch,
+            Some("sentinel"),
+        ),
+        (
+            "dot-then-parent",
+            scope("/./../sentinel"),
+            Dispatch,
+            Some("sentinel"),
+        ),
+        (
+            "double-slash-parent",
+            scope("//../sentinel"),
+            Dispatch,
+            Some("sentinel"),
+        ),
+        ("trailing-parent", scope("/.."), Dispatch, Some("")),
+        ("trailing-depth-2", scope("/sub/../.."), Dispatch, Some("")),
+        (
+            "re-enter-then-escape",
+            scope("/../scope/../sentinel"),
+            Dispatch,
+            Some("sentinel"),
+        ),
+        ("backslash", scope("\\..\\sentinel"), Dispatch, None),
+        (
+            "slash-then-backslash",
+            scope("/..\\sentinel"),
+            Dispatch,
+            None,
+        ),
+        (
+            "verbatim-prefix",
+            format!("\\\\?\\{native}\\..\\sentinel"),
+            Dispatch,
+            None,
+        ),
+        (
+            "slash-verbatim-prefix",
+            format!("//?/{without_root}/../sentinel"),
+            Dispatch,
+            None,
+        ),
+        (
+            "percent-encoded",
+            scope("/%2e%2e/sentinel"),
+            MissingInside,
+            None,
+        ),
+        (
+            "absolute-outside",
+            spelling(&fixture.sentinel),
+            GrantScope,
+            Some("sentinel"),
+        ),
+        (
+            "trailing-space-parent",
+            scope("/.. /sentinel"),
+            trailing_dot_or_space,
+            None,
+        ),
+        (
+            "triple-dot",
+            scope("/.../sentinel"),
+            trailing_dot_or_space,
+            None,
+        ),
+    ]
+}
+
+/// #673 review: every climbing spelling is refused, for read and overwrite,
+/// with nothing outside the scope changed. On Unix each form the OS resolves
+/// is first shown to reach the sentinel or the directory holding it.
+#[test]
+fn every_climbing_spelling_is_refused_and_never_reaches_the_outside() {
+    let mut rows = Vec::new();
+    let fixture = OutsideFixture::new("climbing-spellings", |fixture| {
+        rows = climbing_spellings(fixture);
+        #[cfg(unix)]
+        for (case, path, _, target) in &rows {
+            if let Some(leaf) = target {
+                assert_eq!(
+                    canonical(path),
+                    canonical(&spelling(&fixture.base.join(leaf))),
+                    "{case}: the OS does not resolve the attack to its target"
+                );
+            }
+        }
+    });
+    assert_eq!(rows.len(), 15, "one row per reviewed attack form");
+    let verified = manifest(&fixture.scope);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let cancelled = AtomicBool::new(false);
+    let app = Principal::AppProcess;
+    for (case, path, refusal, _) in &rows {
+        let read = broker.read(&verified, app, path, &cancelled).map(|_| ());
+        let write = broker.write(&verified, app, path, b"overwritten", &cancelled);
+        fixture.assert_outside_untouched(case);
+        assert_refused(*refusal, "fs.read", read, path);
+        assert_refused(*refusal, "fs.write", write, path);
+    }
+    drop(broker);
+    fixture.finish();
+}
+
+#[cfg(unix)]
+fn dir_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
+    std::os::unix::fs::symlink(target, link).expect("create directory symlink");
+}
+
+#[cfg(windows)]
+fn dir_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
+    std::os::windows::fs::symlink_dir(target, link).expect("create directory symlink");
+}
+
+/// #673 review: relative links inside the scope that climb out are never
+/// followed. `up -> ../sentinel` and `updir -> ..` (each shown to resolve to
+/// the sentinel) are refused with `KELD-NATIVE-002` for read and overwrite,
+/// and nothing outside the scope changes. A permanent bypass fixture
+/// (`crates/keld-guard/AGENTS.md`).
+#[test]
+fn relative_links_that_climb_out_of_the_scope_are_never_followed() {
+    let up_target = if cfg!(windows) {
+        "..\\sentinel"
+    } else {
+        "../sentinel"
+    };
+    let fixture = OutsideFixture::new("climbing-links", |fixture| {
+        file_symlink(up_target, fixture.scope.join("up"));
+        dir_symlink("..", fixture.scope.join("updir"));
+        for tail in ["/up", "/updir/sentinel"] {
+            assert_eq!(
+                canonical(&fixture.in_scope(tail)),
+                canonical(&spelling(&fixture.sentinel)),
+                "{tail} must resolve to the sentinel"
+            );
+        }
+    });
+    let verified = manifest(&fixture.scope);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let cancelled = AtomicBool::new(false);
+    let app = Principal::AppProcess;
+    for tail in ["/up", "/updir/sentinel"] {
+        let path = fixture.in_scope(tail);
+        let read = broker.read(&verified, app, &path, &cancelled);
+        let write = broker.write(&verified, app, &path, b"overwritten", &cancelled);
+        fixture.assert_outside_untouched(tail);
+        for (operation, result) in [("fs.read", read.map(|_| ())), ("fs.write", write)] {
+            let error = result.expect_err("a climbing link must be refused");
+            // The walker's own escape rule refuses the link; its later
+            // empty-stack guard would also say KELD-NATIVE-002, so the
+            // detail pins which rule fired.
+            assert!(
+                matches!(
+                    &error,
+                    keld_native::fs::FsError::ResolvedOutOfScope { detail, .. }
+                        if detail == "relative link escaped above the retained root"
+                ),
+                "{operation} {tail}: expected the walker's escape refusal, got {error:?}"
+            );
+            assert_eq!(error.code(), "KELD-NATIVE-002", "{operation} {tail}");
+        }
+    }
+    drop(broker);
+    fixture.finish();
 }
