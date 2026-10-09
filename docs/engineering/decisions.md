@@ -122,7 +122,11 @@ disk — the first production capability to use it. Cross-platform by constructi
 (`std::fs::read`/`std::fs::write` are the same call on all three OSes), so this satisfies
 architecture 05 §3's "all three OS implementations" without per-platform code.
 `..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
-`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`),
+`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`,
+removed by b4634076. CI now runs only the `evaluate`-level `keld-guard` `tests/acl.rs` case
+`slash traversal`; the real-OS proof is the ignored macOS device acceptance
+`macos_retained_filesystem_acceptance_emitter`, case `path-parent-component`: `KELD-GUARD002`
+with zero traversal, open or content I/O),
 not re-implemented here. Verified end-to-end over a real kipc session
 (`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
 on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
@@ -245,8 +249,9 @@ prioritize (scheme-streaming as bulk IPC, principal identity per navigation, eng
 policy switching, `webContents`-grade control). The host is prebuilt, so wry's
 “works in any downstream cargo build” constraint does not apply.
 
-**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT; tao 0.35.3 is
-Apache-2.0. The MPL-2.0 crate in the graph is **`option-ext` 0.2.0**, reached
+**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT (crates.io `LICENSE.spdx`;
+GitHub's license API reports Apache-2.0 only); tao 0.35.3 is Apache-2.0. The MPL-2.0
+crate in the graph is **`option-ext` 0.2.0**, reached
 `keld-wv → wry → dirs → dirs-sys → option-ext` (`deny.toml`,
 [`third-party-licenses.md`](./third-party-licenses.md)). Do not
 describe wry as MPL.
