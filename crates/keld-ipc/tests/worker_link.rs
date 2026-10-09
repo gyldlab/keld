@@ -215,8 +215,15 @@ impl Drop for Role {
 
 /// Binds a fresh bootstrap listener, spawns the role, and authenticates it.
 fn start(scenario: &str) -> (BootstrapStream, Role) {
+    let (stream, role, _link) = start_with_link(scenario);
+    (stream, role)
+}
+
+/// [`start`], also returning the role's `KELD_APP_LINK`.
+fn start_with_link(scenario: &str) -> (BootstrapStream, Role, String) {
     let listener = BootstrapListener::bind().expect("bind bootstrap listener");
-    let role = Role::spawn(scenario, &listener.app_link());
+    let link = listener.app_link();
+    let role = Role::spawn(scenario, &link);
     let deadline = Instant::now() + Duration::from_secs(20);
     let stream = match listener
         .accept_authenticated_until(deadline, &IgnoreRejections)
@@ -232,7 +239,7 @@ fn start(scenario: &str) -> (BootstrapStream, Role) {
         stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE)),
         "host app-link deadlines",
     );
-    (stream, role)
+    (stream, role, link)
 }
 
 fn arm_b_payload(seq: u32) -> [u8; ARM_B_PAYLOAD_LEN] {
@@ -732,36 +739,56 @@ fn criterion10_record_bound_overflow_fails_closed_with_026() {
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.
 ///
-/// How the OS refuses is per OS (#528 T5):
+/// The role-visible code, `KELD-IPC-005` for the second `open`, is asserted
+/// on every OS. How the OS refuses the second connect is per OS (#528 T5):
 /// - Unix: the bootstrap listener unlinks its one-use socket path once it
-///   has accepted, so the second connect fails at once with `ENOENT`.
-/// - Windows: the pipe's one instance is the connected first link, so no
-///   instance accepts a second client. Bun reports the refusal as
-///   `ECONNREFUSED`, observed on `windows-latest` after about 30 s, which
-///   matches libuv's `uv_pipe_connect` waiting in `WaitNamedPipeW` on a busy
-///   pipe (that last step is inferred from libuv's source, not observed). So
-///   the host reads the role's next CALL with a long deadline.
+///   has accepted, so the role's second connect fails at once with `ENOENT`.
+/// - Windows: the pipe has one instance (`nMaxInstances` is 1), and that
+///   instance is the connected first link. So `CreateFileW` refuses any other
+///   client at once with `ERROR_PIPE_BUSY` (231). The host opens the pipe
+///   itself while the first link is up, and that refusal is the oracle. The
+///   role makes no raw second connect on Windows: Bun's connect to a busy
+///   pipe waits about 30 s (libuv's fixed `WaitNamedPipeW` wait) before it
+///   reports `ECONNREFUSED`, as `windows-latest` showed on #666.
 #[test]
 fn criterion11_second_open_and_second_connect_are_refused() {
-    let (mut stream, role) = start("second-link");
-    long_reads(&stream);
+    let scenario = if cfg!(windows) {
+        "second-open"
+    } else {
+        "second-link"
+    };
+    let (mut stream, role, link) = start_with_link(scenario);
+    #[cfg(windows)]
+    {
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let (endpoint, _) = keld_ipc::parse_app_link(&link).expect("parse the role's app link");
+        let refused = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(endpoint)
+            .expect_err("the consumed pipe must refuse a second client");
+        assert_eq!(refused.raw_os_error(), Some(ERROR_PIPE_BUSY), "{refused}");
+    }
+    #[cfg(not(windows))]
+    let _ = link;
     let call = read_call_named(&mut stream, "still-up");
     host_reply(&mut stream, call, b"first-link-up");
     let output = role.finish();
-    let second_connect = if cfg!(windows) {
-        "refused:ECONNREFUSED"
+    let mut expected = vec![
+        ("second-open", "KELD-IPC-005"),
+        ("first-link", "first-link-up"),
+        ("done", "true"),
+    ];
+    if cfg!(windows) {
+        assert!(
+            !output.report().contains_key("second-connect"),
+            "the Windows role makes no raw second connect: {}",
+            output.diagnostics()
+        );
     } else {
-        "refused:ENOENT"
-    };
-    expect_report(
-        &output,
-        &[
-            ("second-open", "KELD-IPC-005"),
-            ("second-connect", second_connect),
-            ("first-link", "first-link-up"),
-            ("done", "true"),
-        ],
-    );
+        expected.push(("second-connect", "refused:ENOENT"));
+    }
+    expect_report(&output, &expected);
 }
 
 /// Criterion 12: a REPLY for another live id never satisfies the blocking
