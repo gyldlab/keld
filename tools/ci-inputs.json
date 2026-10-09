@@ -179,6 +179,7 @@
         "crates/keld-update/src/records/tests.rs",
         "crates/keld-updater-helper/tests/lint_config.rs",
         "crates/keld-cli/tests/channel_table_scan.rs",
+        "crates/keld-cli/tests/channel_id_feature.rs",
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
@@ -349,10 +350,11 @@
         "crates/keld-update/src/records/tests.rs",
         "crates/keld-updater-helper/tests/lint_config.rs",
         "crates/keld-cli/tests/channel_table_scan.rs",
+        "crates/keld-cli/tests/channel_id_feature.rs",
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs"
       ],
-      "sha256": "3e174fc6aee7a85cd19550381d13599478fb9d687d048865ade81aae86873e74"
+      "sha256": "2cd170d010ef72746f25ba0e44ba7c459d3fb2b8ff6cf954e12196a0aaaaf595"
     },
     "bun-readers": {
       "patterns": [
@@ -386,7 +388,7 @@
         "rust-toolchain.toml",
         ".cargo/*"
       ],
-      "sha256": "120df73d67cf73dd640875ea2f8043cd9c4b95ce36f7670bba1dfc43541dc592"
+      "sha256": "f65bfe69d9add5c915b814c27a1606a3539ac70ce39e52b803448fff0a2586b4"
     },
     "dependency-command": {
       "patterns": [
@@ -415,7 +417,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "028aa226cbbcb61a9336bdc053f2a1fa3bdf4db86db3c1378d84e930858a1e7b",
+    "membership_sha256": "1d6b5e46c76889547b6bc99c440db40d157f36273f9a258de8119784dfd782a0",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {

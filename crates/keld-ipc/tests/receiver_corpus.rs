@@ -31,7 +31,7 @@ fn fixture_token() -> SessionToken {
 
 /// The table entry a corpus row's decimal wire id names.
 fn table_entry(id: &str) -> &'static keld_ipc::channel_table::ChannelEntry {
-    let id = ChannelId(id.parse().expect("channel id"));
+    let id = ChannelId::for_test(id.parse().expect("channel id"));
     keld_ipc::channel_table::entry(id).expect("corpus rows name an allocated channel id")
 }
 

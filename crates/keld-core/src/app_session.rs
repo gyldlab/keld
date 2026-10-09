@@ -1905,8 +1905,11 @@ fn run_app(
     WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     // The bridge admits exactly the host's echo entry (GH-508 §4.6); the
     // request loop below re-checks the same id before dispatch.
-    let renderer_endpoint =
-        RendererBridgeEndpoint::new(renderer_requests_tx, renderer_outcomes_rx, ECHO_CHANNEL.0);
+    let renderer_endpoint = RendererBridgeEndpoint::new(
+        renderer_requests_tx,
+        renderer_outcomes_rx,
+        keld_ipc::channel_table::ECHO.wire_id(),
+    );
     if let Err(source) =
         engine.create_app_with_renderer_bridge(&spec, window_events_tx.clone(), renderer_endpoint)
     {
@@ -3361,7 +3364,7 @@ fn start_renderer_dispatch(
                 let webview = request.webview();
                 let navigation = request.navigation();
                 let local_request = request.request();
-                if request.channel() != ECHO_CHANNEL.0 {
+                if request.channel() != keld_ipc::channel_table::ECHO.wire_id() {
                     if outcomes
                         .send(RendererBridgeOutcome::Error {
                             webview,
@@ -8350,7 +8353,7 @@ mod tests {
                 &mut client,
                 FrameKind::Ping,
                 0,
-                keld_ipc::ChannelId(99),
+                keld_ipc::ChannelId::for_test(99),
                 CorrelationId(base + 1),
                 &[],
             )
@@ -8370,7 +8373,7 @@ mod tests {
             let (ping, ping_payload) =
                 read_frame(&mut client).expect("Ping while FS worker is held");
             assert_eq!(ping.kind, FrameKind::Ping, "{case}");
-            assert_eq!(ping.channel, keld_ipc::ChannelId(99), "{case}");
+            assert_eq!(ping.channel, keld_ipc::ChannelId::for_test(99), "{case}");
             assert_eq!(ping.corr, CorrelationId(base + 1), "{case}");
             assert!(ping_payload.is_empty(), "{case}");
             assert!(
@@ -9886,14 +9889,14 @@ mod tests {
             &mut client,
             FrameKind::Ping,
             0,
-            keld_ipc::ChannelId(99),
+            keld_ipc::ChannelId::for_test(99),
             CorrelationId(0),
             &[],
         )
         .expect("write interleaved Ping");
         let (pong, pong_payload) = read_frame(&mut client).expect("read interleaved Ping");
         assert_eq!(pong.kind, FrameKind::Ping);
-        assert_eq!(pong.channel, keld_ipc::ChannelId(99));
+        assert_eq!(pong.channel, keld_ipc::ChannelId::for_test(99));
         assert_eq!(pong.corr, CorrelationId(0));
         assert!(pong_payload.is_empty());
 

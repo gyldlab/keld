@@ -17,7 +17,9 @@ use std::io::Cursor;
 
 use keld_ipc::link::read_validated_frame;
 use keld_ipc::receive::{ReceivePolicy, validate_received_header};
-use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind, HEADER_LEN, MAX_FRAME_LEN};
+use keld_ipc::{
+    ChannelId, CorrelationId, ECHO_CHANNEL, FrameHeader, FrameKind, HEADER_LEN, MAX_FRAME_LEN,
+};
 
 /// Deterministic LCG so the byte soup is reproducible in every matrix row
 /// with no rand dependency (numerical recipes constants).
@@ -89,7 +91,7 @@ fn retained_fuzz_input_valid_lifecycle_call_admits_on_the_primary_session() {
     let (validated, payload) =
         read_validated_frame(&mut cursor, &policy).expect("valid lifecycle CALL admits");
     assert_eq!(validated.kind(), FrameKind::Call);
-    assert_eq!(validated.channel(), ChannelId(3));
+    assert_eq!(validated.channel(), ChannelId::for_test(3));
     assert_eq!(validated.corr(), CorrelationId(2));
     assert_eq!(payload, [0x00]);
     assert_policy_invariants(&policy, &input);
@@ -173,7 +175,7 @@ fn every_truncation_of_a_valid_frame_fails_closed() {
     let mut frame = FrameHeader {
         kind: FrameKind::Call,
         flags: 0,
-        channel: ChannelId(1),
+        channel: ECHO_CHANNEL,
         corr: CorrelationId(7),
         len: u32::try_from(payload.len()).expect("len"),
     }
@@ -208,7 +210,7 @@ fn every_header_bit_flip_terminates_classified() {
     let base = FrameHeader {
         kind: FrameKind::Call,
         flags: 0,
-        channel: ChannelId(1),
+        channel: ECHO_CHANNEL,
         corr: CorrelationId(7),
         len: u32::try_from(payload.len()).expect("len"),
     }
@@ -244,7 +246,7 @@ fn forged_lengths_reject_at_the_cap_without_consuming_payload() {
         let bytes = FrameHeader {
             kind: FrameKind::Call,
             flags: 0,
-            channel: ChannelId(1),
+            channel: ECHO_CHANNEL,
             corr: CorrelationId(7),
             len: forged,
         }
