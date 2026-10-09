@@ -10,12 +10,13 @@ use std::path::Path;
 /// points that start a Bun child, an app role or another elevated helper through the
 /// shell, and the `std::process::Command` methods that start a process directly
 /// (KEL-53 §4, §7 "17 (helper launch and self-anchor)").
-const DISALLOWED_PROCESS_STARTS: [&str; 10] = [
+const DISALLOWED_PROCESS_STARTS: [&str; 11] = [
     "std::process::Command::spawn",
     "std::process::Command::output",
     "std::process::Command::status",
     "keld_runtime::Supervisor::start",
     "keld_runtime::Supervisor::start_with_stdout_markers",
+    "keld_runtime::Supervisor::start_with_stdout_markers_and_successor_gate",
     "keld_runtime::primary::PrimaryRoleSupervisor::start",
     "keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations",
     "keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated",
