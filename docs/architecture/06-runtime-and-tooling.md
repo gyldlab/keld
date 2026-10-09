@@ -429,7 +429,12 @@ them, reachable from `src/test-hooks.ts` under `KELD_KIPC_TEST_HOOKS=1`. The
 build path MUST keep the staged basename rule: the transport ships as its own file
 named `kipc-transport.ts` or `.js`. `WorkerLink.open` refuses a hashed chunk name, a
 transport that is the process entry (`bun build --compile` output included), and a
-call from inside a transport Worker.
+call from inside a transport Worker. A name is not identity, so it also refuses a file
+whose line-1 transport stamp is not the SHA-256 of the bytes after it (#653,
+`TRANSPORT_STAMP_PREFIX`). It checks this before the Worker exists, so a bundle named
+`transport.js` is never evaluated by a transport Worker. `bun run echo:generate`
+restamps the canonical file and `keld create` restamps the copy it writes; the future
+`keld build` MUST stamp the transport file it stages.
 The non-release boot compiler copies that sidecar
 into the owner-private stage when present so `keld dev` Bun can resolve it.
 Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,

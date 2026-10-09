@@ -1,5 +1,7 @@
 //! Embedded hello-world template (KEL-29).
 
+use sha2::{Digest, Sha256};
+
 /// Files written by `keld create`.
 #[derive(Debug)]
 pub struct TemplateFile {
@@ -17,15 +19,38 @@ pub const KIPC_RELEASE_DECLARATION: &str = "declare const KELD_KIPC_RELEASE: boo
 /// they stay only in the in-repo canonical file.
 pub const KIPC_RELEASE_DEFINITION: &str = "const KELD_KIPC_RELEASE: boolean | undefined = true;";
 
+/// The transport stamp's line prefix (#653). It mirrors `TRANSPORT_STAMP_PREFIX`
+/// in `packages/@keld/kipc/src/transport.ts`, which owns the format and the
+/// check; [`restamp_transport`] reproducing the canonical file's own stamp is
+/// the test that the two agree.
+pub const TRANSPORT_STAMP_PREFIX: &str = "// @keld/kipc-transport sha256:";
+
+/// Returns `source` behind a fresh transport stamp: its first line replaced
+/// (or, if it has no stamp, prefixed) by [`TRANSPORT_STAMP_PREFIX`] and the
+/// lowercase hex SHA-256 of every byte after that line.
+#[must_use]
+pub fn restamp_transport(source: &str) -> String {
+    let unstamped = match source.strip_prefix(TRANSPORT_STAMP_PREFIX) {
+        Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body),
+        None => source,
+    };
+    let digest = Sha256::digest(unstamped.as_bytes());
+    format!("{TRANSPORT_STAMP_PREFIX}{digest:x}\n{unstamped}")
+}
+
 impl TemplateFile {
     /// The file as `keld create` writes it for project `name`: `{{name}}`
     /// substituted, and the transport with [`KIPC_RELEASE_DEFINITION`] in
-    /// place of [`KIPC_RELEASE_DECLARATION`].
+    /// place of [`KIPC_RELEASE_DECLARATION`], restamped over its new bytes.
     #[must_use]
     pub fn render(&self, name: &str) -> String {
         let rendered = self.contents.replace("{{name}}", name);
         if self.path == "src/kipc-transport.ts" {
-            rendered.replacen(KIPC_RELEASE_DECLARATION, KIPC_RELEASE_DEFINITION, 1)
+            restamp_transport(&rendered.replacen(
+                KIPC_RELEASE_DECLARATION,
+                KIPC_RELEASE_DEFINITION,
+                1,
+            ))
         } else {
             rendered
         }
@@ -165,9 +190,59 @@ mod tests {
         );
         assert_eq!(rendered.matches(KIPC_RELEASE_DEFINITION).count(), 1);
         assert_eq!(
-            rendered.replacen(KIPC_RELEASE_DEFINITION, KIPC_RELEASE_DECLARATION, 1),
+            super::restamp_transport(&rendered.replacen(
+                KIPC_RELEASE_DEFINITION,
+                KIPC_RELEASE_DECLARATION,
+                1
+            )),
             file.contents,
-            "the release constant is the only change to the canonical transport"
+            "the release constant and its restamp are the only change to the canonical transport"
+        );
+    }
+
+    /// #653: the canonical transport is stamped by the TypeScript generator, and
+    /// this Rust restamp reproduces that exact stamp, so the two agree on the
+    /// format and the digest. A created transport is stamped over its own bytes.
+    #[test]
+    fn rust_restamp_matches_the_canonical_stamp_and_stamps_created_transports() {
+        use super::{TRANSPORT_STAMP_PREFIX, restamp_transport};
+        use sha2::{Digest, Sha256};
+
+        let canonical = include_str!("../../../packages/@keld/kipc/src/transport.ts");
+        assert!(
+            canonical.starts_with(TRANSPORT_STAMP_PREFIX),
+            "canonical transport is unstamped"
+        );
+        assert_eq!(
+            restamp_transport(canonical),
+            canonical,
+            "Rust and TypeScript stamps disagree"
+        );
+
+        let file = HELLO_TEMPLATE
+            .iter()
+            .find(|file| file.path == "src/kipc-transport.ts")
+            .expect("keld create must emit the canonical transport");
+        let rendered = file.render("demo");
+        let (line, body) = rendered.split_once('\n').expect("stamp line");
+        assert_eq!(
+            line,
+            format!(
+                "{TRANSPORT_STAMP_PREFIX}{:x}",
+                Sha256::digest(body.as_bytes())
+            ),
+            "created transport must be stamped over its own bytes"
+        );
+        assert_ne!(
+            rendered, canonical,
+            "the created transport differs, so its stamp must too"
+        );
+
+        let unstamped = canonical.split_once('\n').expect("stamp line").1;
+        assert_eq!(
+            restamp_transport(unstamped),
+            canonical,
+            "an unstamped source gains the stamp"
         );
     }
 
