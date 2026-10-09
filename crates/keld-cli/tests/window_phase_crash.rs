@@ -52,8 +52,14 @@
 //!
 //! This is the ticket's option (a), SURFACE. Option (b), RECOVER — minting a
 //! fresh link generation so the restarted child can re-handshake — is KEL-96
-//! AC5 and is human-gated; without it the restarted generation hangs, which is
-//! precisely the condition documented above.
+//! AC5 and is human-gated. Without it no successor can be served: the
+//! one-session listener consumed its locator when generation 1 authenticated,
+//! so a successor's connect fails at once (`ENOENT`, `KELD-IPC-001`). Such
+//! successors used to be provisioned anyway and crash-looped, so the breaker
+//! tripped whenever the caller's teardown came late (GH-674). The session now
+//! provisions none after its one admission, and
+//! `a_window_phase_death_provisions_no_successor_the_listener_cannot_admit`
+//! forces the late teardown.
 
 #![allow(
     clippy::expect_used,
@@ -65,16 +71,22 @@ use std::process::Command;
 
 use keld_cli::create::create_project;
 use keld_cli::dev::{run_dev_with_window, start_dev_session_with_stdout_markers};
+use keld_core::HostOwnedHelloSession;
 use std::time::{Duration, Instant};
 
 /// Stderr the fixture emits before it is killed, so the assertion that the
 /// captured tail reaches the developer has something real to find.
 const BREADCRUMB: &str = "kel105-app-stderr-breadcrumb";
 
+/// A stdout needle no generation prints (see [`await_supervision_end`]).
+const NEVER_PRINTED: &str = "gh674-no-generation-prints-this";
+
 /// Scaffolds the shipping template and prepends a pid breadcrumb.
 ///
 /// The app itself is left stock on purpose: a hand-written fixture would prove
-/// something about the fixture, not about the app `keld create` produces.
+/// something about the fixture, not about the app `keld create` produces. The
+/// returned generation path is written only by a generation that starts after
+/// the first one, so its absence proves no successor was provisioned.
 fn project_with_pid_breadcrumb(
     dir: &std::path::Path,
     name: &str,
@@ -123,14 +135,14 @@ fn window_phase_app_death_is_surfaced_not_reported_as_success() {
             "restart marker must be absent before the kill"
         );
         kill_process(pid);
+        // `kill -0` succeeds on a zombie, so a dead answer means the
+        // supervisor already reaped the child, and its reaping thread records
+        // the death before it reports a terminal outcome.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !matches!(
-            fs::read_to_string(&generation_path).as_deref(),
-            Ok("restarted")
-        ) {
+        while process_is_alive(pid) {
             assert!(
                 Instant::now() < deadline,
-                "supervisor did not record/restart the killed generation"
+                "supervisor did not reap the killed generation"
             );
             std::thread::yield_now();
         }
@@ -166,6 +178,68 @@ fn window_phase_app_death_is_surfaced_not_reported_as_success() {
         !process_is_alive(pid),
         "teardown must reap the app process; pid {pid} still live"
     );
+    assert!(
+        !generation_path.exists(),
+        "no successor may be provisioned once the one-session listener is consumed"
+    );
+}
+
+/// GH-674 regression: a window-phase death must not provision successors that
+/// the one-session listener can never admit.
+///
+/// Generation 1's authentication consumed the listener's locator, so a
+/// successor's connect fails at once (`KELD-IPC-001`, `ENOENT`). Before the
+/// fix the supervisor restarted it anyway: two such crashes after the kill
+/// tripped the breaker, so the verdict was `KELD-RUNTIME-002` whenever the
+/// caller's teardown came more than about 60 ms (Apple M4) after the first
+/// restart, and `KELD-RUNTIME-012` otherwise. Only the caller's timing decided.
+///
+/// This test forces the late teardown deterministically, without a sleep: it
+/// tears down only after supervision has ended on its own, the latest teardown
+/// there is. Before the fix that end is always the tripped breaker, so this
+/// test fails every run; the immediate teardown of the test above was its
+/// passing order. After the fix supervision stops at the one recorded crash.
+#[test]
+fn a_window_phase_death_provisions_no_successor_the_listener_cannot_admit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("g{}", std::process::id());
+    let (root, pid_path, generation_path) = project_with_pid_breadcrumb(dir.path(), &name);
+    let ready = format!("{name}: main process ready (IPC echo ok)");
+    let session =
+        start_dev_session_with_stdout_markers(&root, &[&ready]).expect("start host-owned session");
+    session
+        .wait_until_output_contains(&ready, Duration::from_secs(30))
+        .expect("the stock template must complete HELLO + CALL");
+    let pid: u32 = fs::read_to_string(&pid_path)
+        .expect("the app must record its pid before it reports ready")
+        .trim()
+        .parse()
+        .expect("pid breadcrumb must be a number");
+    kill_process(pid);
+
+    let ended = await_supervision_end(&session);
+    assert!(
+        ended.contains("KELD-RUNTIME-012") && !ended.contains("KELD-RUNTIME-002"),
+        "supervision must stop at the killed generation's recorded crash, not a \
+         crash loop of successors that cannot connect: {ended}"
+    );
+
+    let msg = session
+        .shutdown()
+        .expect_err("the app reported ready and then died")
+        .to_string();
+    assert!(msg.contains("KELD-CORE-033"), "{msg}");
+    assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+    assert!(
+        !msg.contains("KELD-RUNTIME-002"),
+        "a late teardown must not turn one death into a crash loop: {msg}"
+    );
+    assert!(msg.contains(BREADCRUMB), "{msg}");
+    assert!(
+        !generation_path.exists(),
+        "a successor was provisioned for a consumed one-session listener"
+    );
+    assert!(!process_is_alive(pid), "pid {pid} still live");
 }
 
 /// Guard: the fix must not make every run a failure.
@@ -291,8 +365,8 @@ fn crash_recovered_before_ready_still_reports_success() {
 /// re-recorded the baseline, a crash that happened after the app was live would
 /// be counted as already-recovered and the run would report success.
 ///
-/// The fixture's restarted generation parks instead of crashing, so exactly one
-/// crash occurs and the supervisor's terminal outcome stays `Stopped` — only the
+/// Exactly one crash occurs: the one-session listener admits no successor
+/// (GH-674), so the supervisor's terminal outcome stays `Stopped` and only the
 /// ledger can dissent. That is what makes this falsify the baseline rule itself
 /// rather than the crash-loop breaker.
 #[test]
@@ -301,27 +375,22 @@ fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
     let name = format!("b{}", std::process::id());
     let root = create_project(dir.path(), &name).expect("create");
     let pid_path = root.join("kel105-app.pid");
-    let gen_path = root.join("kel105-generation");
     let main = root.join("src/main.ts");
     let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
     let pid_lit = pid_path.display().to_string();
-    let gen_lit = gen_path.display().to_string();
     fs::write(
         &main,
         format!(
-            "import {{ existsSync as kel105Exists, writeFileSync as kel105Write }} from \"node:fs\";\n\
-             const kel105Restarted = kel105Exists({gen_lit:?});\n\
-             kel105Write({gen_lit:?}, \"1\");\n\
+            "import {{ writeFileSync as kel105Write }} from \"node:fs\";\n\
              kel105Write({pid_lit:?}, String(process.pid));\n\
-             if (kel105Restarted) {{ console.log(\"kel105-generation-2\"); await new Promise(() => {{}}); }}\n\
              {scaffolded}"
         ),
     )
-    .expect("write generation-aware fixture");
+    .expect("write pid-recording fixture");
 
     let ready = format!("{name}: main process ready (IPC echo ok)");
-    let session = start_dev_session_with_stdout_markers(&root, &[&ready, "kel105-generation-2"])
-        .expect("start host-owned session");
+    let session =
+        start_dev_session_with_stdout_markers(&root, &[&ready]).expect("start host-owned session");
     session
         .wait_until_output_contains(&ready, Duration::from_secs(30))
         .expect("the stock template must complete HELLO + CALL");
@@ -333,12 +402,10 @@ fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
         .expect("pid breadcrumb must be a number");
     kill_process(pid);
 
-    // Await the restart rather than polling process state: the supervisor
-    // records the crash before it spawns the next generation, so seeing this
-    // marker proves the ledger already counted it.
-    session
-        .wait_until_output_contains("kel105-generation-2", Duration::from_secs(30))
-        .expect("the supervisor must restart the killed app");
+    // Await supervision's own end rather than polling process state: the
+    // supervisor records the crash before it reports that end, so returning
+    // proves the ledger already counted it.
+    await_supervision_end(&session);
 
     // The trigger: this marker is already in buffered stdout, so the wait
     // returns at once — and must not re-baseline the ledger.
@@ -364,16 +431,13 @@ fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
 ///
 /// The fixture is the shipping template with only its lifecycle-wait line changed, so
 /// generation 1 does a real HELLO + CALL and prints the real ready line before
-/// dying. Generation 2 parks *before* the handshake, so exactly one crash
-/// occurs and the supervisor's terminal outcome stays `Stopped` — otherwise the
-/// breaker would trip and the run would fail for an unrelated reason.
+/// dying. The one-session listener admits no successor (GH-674), so exactly
+/// one crash occurs and the supervisor's terminal outcome stays `Stopped`.
 #[test]
 fn an_app_that_dies_after_reporting_ready_fails_the_run() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("d{}", std::process::id());
     let root = create_project(dir.path(), &name).expect("create");
-    let gen_path = root.join("kel105-generation");
-    let gen_lit = gen_path.display().to_string();
     let main = root.join("src/main.ts");
     let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
     let lifecycle_wait = "    await windowsClosed;";
@@ -381,29 +445,22 @@ fn an_app_that_dies_after_reporting_ready_fails_the_run() {
         scaffolded.contains(lifecycle_wait),
         "template shape changed; this fixture edits its lifecycle-wait line"
     );
-    let body = scaffolded.replace(lifecycle_wait, "    process.exit(1);");
     fs::write(
         &main,
-        format!(
-            "import {{ existsSync as kel105Exists, writeFileSync as kel105Write }} from \"node:fs\";\n\
-             const kel105Restarted = kel105Exists({gen_lit:?});\n\
-             kel105Write({gen_lit:?}, \"1\");\n\
-             if (kel105Restarted) {{ console.log(\"kel105-generation-2\"); await new Promise(() => {{}}); }}\n\
-             {body}"
-        ),
+        scaffolded.replace(lifecycle_wait, "    process.exit(1);"),
     )
     .expect("write die-after-ready fixture");
 
     let ready = format!("{name}: main process ready (IPC echo ok)");
-    let session = start_dev_session_with_stdout_markers(&root, &[&ready, "kel105-generation-2"])
-        .expect("start host-owned session");
+    let session =
+        start_dev_session_with_stdout_markers(&root, &[&ready]).expect("start host-owned session");
 
-    // Await generation 2 WITHOUT `wait_until_output_contains`: that call is the
-    // thing under test, and using it here would record the baseline early and
-    // hide the defect. Seeing generation 2's marker proves generation 1 crashed
-    // *and* that the supervisor already recorded it, because `record_crash`
-    // runs before the restart is spawned.
-    await_stdout(&session, "kel105-generation-2", Duration::from_secs(30));
+    // Await supervision's end WITHOUT waiting on the ready marker: that wait is
+    // the thing under test, and running it here would record the baseline
+    // early and hide the defect. The end proves generation 1 crashed *and*
+    // that the supervisor already recorded it, because the ledger write
+    // precedes the terminal event.
+    await_supervision_end(&session);
 
     // Now the host looks for the ready marker for the first time — exactly the
     // ordering the product hits when an app dies immediately after reporting
@@ -420,25 +477,25 @@ fn an_app_that_dies_after_reporting_ready_fails_the_run() {
     assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
 }
 
-/// Awaits a needle in captured stdout with a deadline, without going through
-/// `wait_until_output_contains`.
+/// Blocks until supervision ends on its own and returns how the session
+/// reported that end.
 ///
-/// Deliberately not the production helper: the test above needs to observe the
-/// app's progress *before* the host records its readiness baseline, and the
-/// production helper records it.
-fn await_stdout(session: &keld_core::HostOwnedHelloSession, needle: &str, timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if session.output().stdout.contains(needle) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "never saw {needle:?} in stdout within {timeout:?}; captured: {}",
-            session.output().stdout
-        );
-        std::thread::yield_now();
-    }
+/// `wait_until_output_contains` returns before its deadline only on a matched
+/// needle or a terminal supervisor event. No generation prints
+/// [`NEVER_PRINTED`], so only the terminal event can end this wait, and an
+/// unmatched needle records no readiness baseline. The supervisor writes the
+/// ledger before it sends that event, so the crash that ended supervision is
+/// already counted when this returns. The deadline is only a kill switch.
+fn await_supervision_end(session: &HostOwnedHelloSession) -> String {
+    let ended = session
+        .wait_until_output_contains(NEVER_PRINTED, Duration::from_secs(30))
+        .expect_err("no generation prints this needle")
+        .to_string();
+    assert!(
+        !ended.contains("KELD-CORE-032") && !ended.contains("KELD-CORE-034"),
+        "supervision did not end on its own: {ended}"
+    );
+    ended
 }
 
 fn project_with_main_rewrite(
