@@ -7753,8 +7753,16 @@ mod tests {
     /// link closes. An admitted FS call held in its handler, and a Quit waiting
     /// in its FS drain, are both pending; an echo call is answered at once and
     /// never gets an ERR.
+    ///
+    /// Unix only (#528 T5 finding, gh527 §10). This client is not reading when
+    /// the host retires. On Windows the host's close is `DisconnectNamedPipe`,
+    /// which discards a pipe's unread data, so both `KELD-IPC-023` answers are
+    /// written and then dropped, and the client reads only the close. A
+    /// `WorkerLink` role always has a read pending, so it still receives them
+    /// (`worker_link_e2e::bun_role_parked_on_fs_throws_023_when_the_host_retires`
+    /// runs on Windows too).
     #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
         let (t, mut client) = guarded_test_router();
         assert_echo_call(&mut client, 10, "answered before retire");
