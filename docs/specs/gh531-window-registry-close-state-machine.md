@@ -185,9 +185,11 @@ fail. "Owner" is the implementing ticket.
     same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
     registry after Ready is written makes this first `Create` fail with the registry's
     not-ready error. Owner: F02-T2.
-    *Before Ready (amended by #657).* Given a facade boot whose first Ready write has
-    not happened, when the role sends `Create` or any other window call, then it gets
-    `KELD-CORE-040` and no native window is created. The registry leaves its not-ready
+    *Before Ready (amended by #657).* `Subscribe` to `window` is accepted before Ready.
+    Given a facade boot whose first Ready write has not happened, when a role whose
+    link is subscribed to `window` sends `Create` or any other window call, then it gets
+    `KELD-CORE-040` and no native window is created (an unsubscribed link gets
+    `KELD-CORE-045`, which is checked first). The registry leaves its not-ready
     state immediately before the first Ready is written, in the same router
     transition (gh446 D4). *NC:*
     marking the registry ready when it is constructed serves that `Create`. Owner:
@@ -221,8 +223,12 @@ fail. "Owner" is the implementing ticket.
     entry (`Authority::HostInternal`, #613 criterion 16). Window events for a window are
     written only to the app link of that window's `owner_role_generation`, which is
     always a `primary` role declared in KEL-75, and only after that link subscribed with
-    the X05-T2 `lifecycle` `Subscribe` call. The facade subscribes before its first
-    `Create`. `SubscribeRefused` applies, and changes no state, when the link's role is
+    the X05-T2 `lifecycle` `Subscribe` call. The facade subscribes when its link binds
+    (at `LifecycleLink` construction over `WorkerLink.open`), before any user code can
+    call `new BrowserWindow`, so a successor's windows transfer as soon as its link is up
+    (amended by #657). A raw (non-facade) role that never subscribes leaves transferred
+    windows in the recovery gap until session end, and a native close stays held there
+    (T2). That is a recorded limitation owned by F02-T3 (#450). `SubscribeRefused` applies, and changes no state, when the link's role is
     not the declared `primary` (`RoleNotAdmitted`), when the host has no window entry
     (`UnknownChannel`, a peer newer than its host), or for the reasons #613 defines.
     *NC 1:* broadcasting to every connected role fails, because a second authenticated
@@ -756,12 +762,13 @@ Host registry, per window:
 | `Destroyed` | tombstone; pair retired for the session | none |
 
 Per-window registry state is `(WindowGeneration, WebviewId, owner_role_generation,
-state, last close_seq)`. `Create` admission mints a new entry in `Opening` with
+state, last close_seq, adoptable)` (`adoptable` amended by #657). `Create` admission mints a new entry in `Opening` with
 `owner_role_generation` set to the calling link's RoleInstance generation.
 
 **Subscription before the table (amended by #657).** A `window` CALL from a link not
 subscribed to `window` is refused `KELD-CORE-045` before any other check and changes no
-state (criterion 46). A supervised restart starts unsubscribed (gh508 c16), so a
+state (criterion 46). `Subscribe` itself is accepted before Ready; the not-ready check
+(`KELD-CORE-040`, criterion 14) applies only to subscribed links. A supervised restart starts unsubscribed (gh508 c16), so a
 successor's transfer has one point, its `Subscribe`.
 
 **Adoption before the table (amended by #657).** A `Create` from the owner while one or
