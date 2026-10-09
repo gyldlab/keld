@@ -245,10 +245,17 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
-  locator is gone. A supervised app child that dies and is restarted therefore
-  cannot re-enter the session: its `connect` fails at the OS
-  (`ErrorKind::NotFound`, asserted by `authenticated_bind_unlinks_stale_locator`),
-  not at the handshake. `keld dev` does not paper over that. It reports the death
+  locator is gone. A successor of a supervised app child that dies after
+  authenticating therefore cannot re-enter the session: its `connect` would fail
+  at the OS (`ErrorKind::NotFound`, asserted by
+  `authenticated_bind_unlinks_stale_locator`), not at the handshake. The session
+  therefore provisions no crash successor once its one admission is used
+  (GH-674): `HostOwnedHelloSession` gates the supervisor's successor boundary on
+  the echo server's single accept, so a crash before authentication still
+  restarts (KEL-70 AC1/AC3) and a crash after it ends supervision with the crash
+  in the ledger. Before GH-674 those successors were restarted, failed to
+  connect, and tripped the crash-loop breaker whenever teardown came late.
+  `keld dev` does not paper over the death. It reports it
   rather than pretending the app is alive: teardown reads the supervisor's
   `CrashLedger`, which records unrequested self-termination independently of exit
   status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
