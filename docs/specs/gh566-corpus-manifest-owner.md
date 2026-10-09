@@ -408,7 +408,7 @@ Rejected alternatives:
 - Normalising CRLF in the test. That passes on bytes that differ from the committed blob.
 - The KEL-77 length-framed set digest. It exists for sets of several files. v1 binds each
   snapshot through its `doc_snapshots` digest inside the manifest bytes (gh532 rule 2),
-  so the framing pitfall recorded at `docs/agents/learnings.md:118` does not apply.
+  so the framing pitfall recorded in learnings 2026-08-19 [runtime] KEL-77 corpus digest does not apply.
 - A `-text` attribute now. F6 shows that LF blobs already round-trip, and a CRLF page
   fails closed instead (D5).
 
