@@ -1035,3 +1035,173 @@ fn windows_retained_root_blocks_replacement_until_broker_destruction() {
     std::fs::remove_dir_all(&moved).expect("broker destruction releases root deletion");
     std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
 }
+
+/// OS facts about a file that a read, write, rename or chmod would move.
+#[derive(Debug, PartialEq, Eq)]
+struct OsFacts {
+    len: u64,
+    modified: std::time::SystemTime,
+    accessed: std::time::SystemTime,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+impl OsFacts {
+    fn of(path: &Path) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(path).expect("stat sentinel");
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().expect("mtime"),
+            accessed: metadata.accessed().expect("atime"),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+/// Writes `bytes` and backdates the file so that atime is older than mtime.
+/// APFS and Linux `relatime` then move atime on the next read, which makes a
+/// read observable.
+fn seed_backdated(path: &Path, accessed: std::time::SystemTime, modified: std::time::SystemTime) {
+    std::fs::write(path, b"outside").expect("seed file outside the scope");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open to backdate")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(accessed)
+                .set_modified(modified),
+        )
+        .expect("backdate times");
+}
+
+/// The guarded dispatch boundary refused `requested` before the grant decision
+/// was used or the broker walked anything. `evaluate`'s own `..` rule and the
+/// broker's component walk are deeper layers, so a denial from either of them
+/// fails here.
+fn assert_refused_at_dispatch(
+    operation: &str,
+    result: Result<(), keld_native::fs::FsError>,
+    requested: &str,
+) {
+    let error = result.expect_err("`..` request must be denied");
+    assert_eq!(error.code(), "KELD-GUARD002", "{requested}: {error}");
+    assert!(
+        matches!(
+            &error,
+            keld_native::fs::FsError::Denied(keld_guard::DenyReason::OutOfScope {
+                capability,
+                scope,
+                requested: denied,
+                ..
+            }) if capability == operation
+                && scope == "absolute normalized filesystem request"
+                && denied == requested
+        ),
+        "{requested}: not refused at the dispatch boundary: {error:?}"
+    );
+}
+
+/// #673: the OS-level `..` traversal proof that hosted CI runs. A request that
+/// climbs out of a granted subtree with a `..` segment is denied by
+/// `keld-guard` (`KELD-GUARD002`) for read, overwrite and create, and the
+/// sentinel beside the scope is untouched at the OS level. Its bytes, length
+/// and mtime are unchanged, and on Unix its inode and ctime too. Its atime is
+/// also unchanged wherever the volume makes a read observable: a twin control
+/// file read directly must move its atime, or a Unix run fails instead of
+/// passing vacuously. The ignored macOS device acceptance
+/// (`path-parent-component`) remains the zero-I/O counter proof.
+#[test]
+fn parent_component_inside_a_granted_scope_never_reaches_the_outside() {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let base = owned_root("parent-component");
+    let scope = base.join("scope");
+    std::fs::create_dir(&scope).expect("granted scope");
+    let sentinel = base.join("sentinel");
+    let control = base.join("atime-control");
+    let accessed = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    let modified = accessed + Duration::from_secs(100);
+    seed_backdated(&sentinel, accessed, modified);
+    seed_backdated(&control, accessed, modified);
+    std::fs::read(&control).expect("read the atime control directly");
+    let atime_observable = std::fs::metadata(&control)
+        .expect("control metadata")
+        .accessed()
+        .expect("control atime")
+        != accessed;
+    #[cfg(unix)]
+    assert!(
+        atime_observable,
+        "a direct read did not move atime on this volume, so the sentinel's no-read oracle would be vacuous"
+    );
+    let before = OsFacts::of(&sentinel);
+
+    let verified = manifest(&scope);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let cancelled = AtomicBool::new(false);
+    let climb = |leaf: &str| format!("{}/../{leaf}", spelling(&scope));
+    let read = broker.read(
+        &verified,
+        Principal::AppProcess,
+        &climb("sentinel"),
+        &cancelled,
+    );
+    let overwrite = broker.write(
+        &verified,
+        Principal::AppProcess,
+        &climb("sentinel"),
+        b"overwritten",
+        &cancelled,
+    );
+    let create = broker.write(
+        &verified,
+        Principal::AppProcess,
+        &climb("created"),
+        b"created",
+        &cancelled,
+    );
+    let after = OsFacts::of(&sentinel);
+    let created_outside = base.join("created").exists();
+    let inside = spelling(&scope.join("inside"));
+    let live = broker
+        .write(
+            &verified,
+            Principal::AppProcess,
+            &inside,
+            b"inside",
+            &cancelled,
+        )
+        .and_then(|()| broker.read(&verified, Principal::AppProcess, &inside, &cancelled));
+    let sentinel_bytes = std::fs::read(&sentinel).expect("observe sentinel bytes");
+    drop(broker);
+    std::fs::remove_dir_all(&base).expect("cleanup owned root");
+    println!(
+        "parent-component: read={read:?}; overwrite={overwrite:?}; create={create:?}; \
+         atime_observable={atime_observable}"
+    );
+
+    assert_refused_at_dispatch("fs.read", read.map(|_| ()), &climb("sentinel"));
+    assert_refused_at_dispatch("fs.write", overwrite, &climb("sentinel"));
+    assert_refused_at_dispatch("fs.write", create, &climb("created"));
+    assert_eq!(before.accessed, accessed, "fixture atime did not hold");
+    if atime_observable {
+        assert_eq!(after, before, "the sentinel outside the scope was touched");
+    } else {
+        assert_eq!(
+            (after.len, after.modified),
+            (before.len, before.modified),
+            "the sentinel outside the scope was touched"
+        );
+    }
+    assert!(!created_outside, "a file was created outside the scope");
+    assert_eq!(sentinel_bytes, b"outside");
+    assert_eq!(live.expect("in-scope write then read"), b"inside");
+}

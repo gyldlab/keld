@@ -123,10 +123,12 @@ disk — the first production capability to use it. Cross-platform by constructi
 architecture 05 §3's "all three OS implementations" without per-platform code.
 `..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
 `..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`,
-removed by b4634076. CI now runs only the `evaluate`-level `keld-guard` `tests/acl.rs` case
-`slash traversal`; the real-OS proof is the ignored macOS device acceptance
-`macos_retained_filesystem_acceptance_emitter`, case `path-parent-component`: `KELD-GUARD002`
-with zero traversal, open or content I/O),
+removed by b4634076. Since #673, CI runs the real-OS proof on macOS, Linux and Windows:
+`crates/keld-native/tests/retained_fs.rs`
+`parent_component_inside_a_granted_scope_never_reaches_the_outside` asserts `KELD-GUARD002`
+from the dispatch boundary and an untouched sentinel outside the scope. The `evaluate`-level
+`keld-guard` `tests/acl.rs` case `slash traversal` and the ignored macOS device acceptance
+(`path-parent-component`, zero traversal/open/content I/O counters) remain),
 not re-implemented here. Verified end-to-end over a real kipc session
 (`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
 on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
