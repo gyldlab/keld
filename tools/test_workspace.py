@@ -25,6 +25,7 @@ class WorkspaceTests(unittest.TestCase):
         self.root = Path(temporary.name) / "primary with spaces"
         self.root.mkdir()
         self.git("init", "-b", "main")
+        self.git("config", "maintenance.auto", "false")  # no detached repack racing cleanup (#670)
         self.git("config", "user.name", "Workspace tests")
         self.git("config", "user.email", "workspace@example.invalid")
         (self.root / ".gitignore").write_text("/.keld-work/\n/target/\n", encoding="utf-8")
@@ -320,6 +321,7 @@ class WorkspaceTests(unittest.TestCase):
     def test_bare_repository_and_symlink_root_refuse(self):
         bare = self.root.parent / "bare"
         self.git("init", "--bare", str(bare))
+        self.git("config", "maintenance.auto", "false", cwd=bare)
         self.cli("root", cwd=bare, ok=False)
         outside = self.root.parent / "outside"
         outside.mkdir()

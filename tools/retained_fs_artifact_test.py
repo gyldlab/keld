@@ -27,6 +27,7 @@ class ArtifactTests(unittest.TestCase):
                            "GIT_COMMITTER_NAME": "Keld test",
                            "GIT_COMMITTER_EMAIL": "test@invalid.example"}
         cls.git("init", "--quiet")
+        cls.git("config", "maintenance.auto", "false")  # no detached repack racing cleanup (#670)
         payload = b'{"schema":"keld.kel130-retained-filesystem-decisions/v1","fixture":true}'
         spec = b"# Synthetic contract fixture\n" + payload + b"\n"
         (cls.repo / "spec.md").write_bytes(spec)

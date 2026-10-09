@@ -12,6 +12,8 @@ fixture="$(mktemp -d "${TMPDIR:-/tmp}/keld-hooks-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
 git -C "$fixture" init -q -b main
+# No detached `git maintenance` child may outlive a command and race cleanup (#670).
+git -C "$fixture" config maintenance.auto false
 
 empty_hooks="$fixture/empty-hooks"
 mkdir -p "$empty_hooks"
