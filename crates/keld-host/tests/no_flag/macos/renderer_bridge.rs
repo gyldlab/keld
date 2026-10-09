@@ -13,35 +13,92 @@ use std::thread;
 
 const TITLE: &str = "KEL142 Renderer Bridge Acceptance";
 const RESPONSE_PATH: &str = "/KEL142_RENDERED_renderer-click_42";
+/// Requested by the page right after its click listener is installed.
+const ARMED_PATH: &str = "/KEL142_ARMED";
 const BEACON_GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
+/// Posts one real HID click at the host window's centre, but only once that
+/// window is what the click hits. The desktop is shared with every other
+/// process in the login session, including a second worktree's `no_flag_macos`
+/// run, which the in-run nextest test group cannot serialise (GH-652). Such a
+/// process can open and activate a window over the same default frame. A
+/// click posted then lands in that window, and on an inactive host window
+/// `AppKit` spends the mouse-down on activation (wry's `acceptsFirstMouse:` is
+/// NO), so no DOM event is fired either way.
+///
+/// The click therefore waits for two observable states, both bounded by the
+/// deadline argument: the host is the active application, which is tracked
+/// from `NSWorkspace` activation notifications on a blocking run loop, and a
+/// fresh front-to-back census shows the host window as the topmost
+/// normal-layer window at the click point. A deadline failure names the
+/// application or window that holds the click point.
 const CLICK_SCRIPT: &str = r#"
+import AppKit
 import CoreGraphics
 import Foundation
-let pid = Int(CommandLine.arguments[1])!
+let pid = pid_t(CommandLine.arguments[1])!
 let title = CommandLine.arguments[2]
-let deadline = Date().addingTimeInterval(10)
+let deadline = Date().addingTimeInterval(TimeInterval(CommandLine.arguments[3])!)
+final class Active { var pid: pid_t = -1; var name = "none" }
+let active = Active()
+let workspace = NSWorkspace.shared
+// Register before the first read, so an activation in between is still delivered.
+let observer = workspace.notificationCenter.addObserver(
+  forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil
+) { note in
+  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+  active.pid = app?.processIdentifier ?? -1
+  active.name = app?.localizedName ?? "unknown"
+  // A handled notification is not a run-loop source, so the wait below
+  // would otherwise sleep until its deadline instead of re-checking now.
+  CFRunLoopStop(CFRunLoopGetMain())
+}
+active.pid = workspace.frontmostApplication?.processIdentifier ?? -1
+active.name = workspace.frontmostApplication?.localizedName ?? "none"
+func census() -> [[String: Any]] {
+  CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+    as! [[String: Any]]
+}
+func int(_ row: [String: Any], _ key: CFString) -> Int { (row[key as String] as? NSNumber)?.intValue ?? -1 }
+func frame(_ row: [String: Any]) -> CGRect {
+  var rect = CGRect.zero
+  precondition(CGRectMakeWithDictionaryRepresentation(row[kCGWindowBounds as String] as! CFDictionary, &rect))
+  return rect
+}
+func hostWindow(_ rows: [[String: Any]]) -> [String: Any]? {
+  rows.first { int($0, kCGWindowOwnerPID) == Int(pid) && $0[kCGWindowName as String] as? String == title && int($0, kCGWindowLayer) == 0 }
+}
+func describe(_ row: [String: Any]?) -> String {
+  guard let row else { return "none" }
+  return "pid=\(int(row, kCGWindowOwnerPID)) owner=\((row[kCGWindowOwnerName as String] as? String) ?? "?") title=\((row[kCGWindowName as String] as? String) ?? "?")"
+}
+while hostWindow(census()) == nil {
+  if Date() >= deadline { print("NOT_PRESENTED pid=\(pid) title=\(title)"); exit(3) }
+  sched_yield()
+}
+var hit: [String: Any]? = nil
 while true {
-  let rows = CGWindowListCopyWindowInfo(
-    [.optionOnScreenOnly, .excludeDesktopElements],
-    kCGNullWindowID
-  ) as! [[String: Any]]
-  if let row = rows.first(where: {
-    ($0[kCGWindowOwnerPID as String] as? NSNumber)?.intValue == pid &&
-    $0[kCGWindowName as String] as? String == title &&
-    ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
-  }) {
-    let bounds = row[kCGWindowBounds as String] as! CFDictionary
-    var rect = CGRect.zero
-    precondition(CGRectMakeWithDictionaryRepresentation(bounds, &rect))
-    let point = CGPoint(x: rect.midX, y: rect.midY)
-    CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
-    CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
-    usleep(30_000)
-    CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
-    print("CLICKED window=\((row[kCGWindowNumber as String] as! NSNumber).uint32Value) x=\(point.x) y=\(point.y)")
-    exit(0)
+  // Blocks until a workspace notification arrives or the deadline passes.
+  while active.pid != pid && Date() < deadline {
+    _ = RunLoop.main.run(mode: .default, before: deadline)
   }
-  if Date() >= deadline { exit(3) }
+  let rows = census()
+  if active.pid == pid, let row = hostWindow(rows) {
+    let point = CGPoint(x: frame(row).midX, y: frame(row).midY)
+    hit = rows.first { int($0, kCGWindowLayer) == 0 && (($0[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 && frame($0).contains(point) }
+    if let hit, int(hit, kCGWindowNumber) == int(row, kCGWindowNumber) {
+      CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+      CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+      usleep(30_000)
+      CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+      print("CLICKED window=\(int(row, kCGWindowNumber)) x=\(point.x) y=\(point.y) active=\(active.pid)")
+      exit(0)
+    }
+  }
+  if Date() >= deadline {
+    print("CLICK_TARGET_NOT_HOST active_pid=\(active.pid) active_name=\(active.name) hit=\(describe(hit)) host=\(describe(hostWindow(rows)))")
+    exit(3)
+  }
+  // Active but not yet the hit target: the next window-server census decides.
   sched_yield()
 }
 "#;
@@ -129,6 +186,10 @@ go.addEventListener("click", async () => {{
     encodeURIComponent(response.message) + "_" + response.count;
   result.append(pixel);
 }}, {{ once: true }});
+// GH-652: an on-screen window does not mean this document has run. The
+// harness posts its OS click only after this request reports the listener.
+const armed = new Image();
+armed.src = "http://127.0.0.1:{port}{ARMED_PATH}";
 </script>
 </body>
 </html>
@@ -212,37 +273,68 @@ if (!result.success) {
 await Bun.write(out, result.outputs[0]);
 "#;
 
+/// Serves exactly the page's two requests, in arrival order: the armed
+/// listener report, then the rendered Echo response.
 fn spawn_render_beacon() -> (u16, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind KEL-142 render beacon");
     let port = listener.local_addr().expect("render beacon address").port();
     let (tx, rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept KEL-142 render beacon");
-        stream
-            .set_read_timeout(Some(EVENT_DEADLINE))
-            .expect("render beacon deadline");
-        let mut request = Vec::new();
-        let mut chunk = [0_u8; 512];
-        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-            let read = stream.read(&mut chunk).expect("read render beacon");
-            assert_ne!(read, 0, "renderer beacon closed before headers");
-            request.extend_from_slice(&chunk[..read]);
-            assert!(
-                request.len() <= 8192,
-                "renderer beacon headers are unbounded"
-            );
+        for _ in 0..2 {
+            serve_beacon_request(&listener, &tx);
         }
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            BEACON_GIF.len()
-        );
-        stream
-            .write_all(header.as_bytes())
-            .expect("beacon response header");
-        stream.write_all(BEACON_GIF).expect("beacon response gif");
-        tx.send(request).expect("report render beacon");
     });
     (port, rx, handle)
+}
+
+fn serve_beacon_request(listener: &TcpListener, tx: &mpsc::Sender<Vec<u8>>) {
+    let (mut stream, _) = listener.accept().expect("accept KEL-142 render beacon");
+    stream
+        .set_read_timeout(Some(EVENT_DEADLINE))
+        .expect("render beacon deadline");
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 512];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = stream.read(&mut chunk).expect("read render beacon");
+        assert_ne!(read, 0, "renderer beacon closed before headers");
+        request.extend_from_slice(&chunk[..read]);
+        assert!(
+            request.len() <= 8192,
+            "renderer beacon headers are unbounded"
+        );
+    }
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        BEACON_GIF.len()
+    );
+    stream
+        .write_all(header.as_bytes())
+        .expect("beacon response header");
+    stream.write_all(BEACON_GIF).expect("beacon response gif");
+    tx.send(request).expect("report render beacon");
+}
+
+/// Waits for the page's armed report; the window can be on screen before it.
+fn expect_armed(beacon_rx: &mpsc::Receiver<Vec<u8>>) {
+    let armed = beacon_rx
+        .recv_timeout(EVENT_DEADLINE)
+        .expect("renderer never reported its click listener armed");
+    let armed = String::from_utf8_lossy(&armed);
+    assert!(
+        armed.starts_with(&format!("GET {ARMED_PATH} ")),
+        "unexpected armed beacon: {armed}"
+    );
+}
+
+/// Runs [`CLICK_SCRIPT`] for the host window; its stdout is the input evidence.
+fn post_host_click(host_pid: u32) -> std::process::Output {
+    let click = Command::new("/usr/bin/xcrun")
+        .args(["swift", "-e", CLICK_SCRIPT, &host_pid.to_string(), TITLE])
+        .arg(EVENT_DEADLINE.as_secs().to_string())
+        .output()
+        .expect("post real CoreGraphics pointer input");
+    assert!(click.status.success(), "OS-visible click failed: {click:?}");
+    click
 }
 
 #[test]
@@ -286,16 +378,17 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
     let host_pid = host.id();
     let windows = observer.expect_initial(host_pid, "kel142-renderer-bridge");
     assert_eq!(windows.len(), 1, "one host-owned WKWebView window");
-
-    let click = Command::new("/usr/bin/xcrun")
-        .args(["swift", "-e", CLICK_SCRIPT, &host_pid.to_string(), TITLE])
-        .output()
-        .expect("post real CoreGraphics pointer input");
-    assert!(click.status.success(), "OS-visible click failed: {click:?}");
+    expect_armed(&beacon_rx);
+    let click = post_host_click(host_pid);
 
     let request = beacon_rx
         .recv_timeout(EVENT_DEADLINE)
-        .expect("typed Echo response was not rendered into the beacon image");
+        .unwrap_or_else(|error| {
+            panic!(
+                "typed Echo response was not rendered into the beacon image: {error:?}; click={}",
+                String::from_utf8_lossy(&click.stdout).trim()
+            )
+        });
     let request = String::from_utf8_lossy(&request);
     assert!(
         request.starts_with(&format!("GET {RESPONSE_PATH} ")),
