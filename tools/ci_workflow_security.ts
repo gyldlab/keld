@@ -279,35 +279,48 @@ export const cargoDenyChecks = [
   ["cargo-deny check", `${cargoDenyBinary} --log-level warn --manifest-path ./Cargo.toml --all-features check`],
   ["Updater helper edge set (KEL-53 T4d S9c)", `${cargoDenyBinary} --log-level warn --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans`],
 ] as const;
-/** The only actions the deny job may run, in order; none of them is a Docker action. */
-const cargoDenyJobActions = ["actions/checkout", "dtolnay/rust-toolchain", "swatinem/rust-cache"];
+/**
+ * The deny job's exact steps, in order: three setup actions (none of them a Docker
+ * action), the verified install, then both policy runs. No other step may sit between
+ * the install and the runs, where it could replace the verified binary.
+ */
+const cargoDenyJobSequence = [
+  "actions/checkout", "dtolnay/rust-toolchain", "swatinem/rust-cache",
+  cargoDenyInstallStep, ...cargoDenyChecks.map(([name]) => name),
+];
+/** Job keys that can change what the verified binary runs (`BASH_ENV`, a default shell) or pull an image. */
+const cargoDenyForbiddenJobKeys = ["env", "defaults", "container", "services"];
 
 function runLines(step: Mapping): string[] {
   return typeof step.run === "string" ? step.run.trim().split(/\r?\n/).map(line => line.trim()) : [];
 }
 
 /** The deny job: one verified install, then both policy runs, unconditional and unwrapped. */
-function checkCargoDenyJob(stepsByJob: Map<string, Mapping[]>): void {
+function checkCargoDenyJob(jobs: Mapping, stepsByJob: Map<string, Mapping[]>): void {
   const steps = stepsByJob.get("deny");
   if (!steps) fail("jobs.deny must exist; cargo-deny owns the Cargo advisory, ban, license and source policy.");
-  const actions = steps.filter(step => Object.hasOwn(step, "uses")).map(step => actionName(String(step.uses)));
-  if (JSON.stringify(actions) !== JSON.stringify(cargoDenyJobActions)) {
-    fail(`jobs.deny may use only ${cargoDenyJobActions.join(", ")}; cargo-deny runs from the checksum-verified release binary, never a Docker action such as EmbarkStudios/cargo-deny-action (#676).`);
+  const job = mapping(jobs.deny, "jobs.deny");
+  const forbidden = cargoDenyForbiddenJobKeys.filter(key => Object.hasOwn(job, key));
+  if (forbidden.length) {
+    fail(`jobs.deny must not set ${forbidden.join(", ")}: job environment or defaults (BASH_ENV, a shell) can change what the verified binary runs, and a container or service pulls an image.`);
   }
-  const install = namedStep(steps, cargoDenyInstallStep);
-  exactKeys(install, ["name", "run"], cargoDenyInstallStep);
-  if (JSON.stringify(runLines(install)) !== JSON.stringify(cargoDenyInstallCommands)) {
+  const sequence = steps.map(step => Object.hasOwn(step, "uses") ? actionName(String(step.uses)) : String(step.name));
+  if (JSON.stringify(sequence) !== JSON.stringify(cargoDenyJobSequence)) {
+    fail(`jobs.deny must run exactly ${cargoDenyJobSequence.join(", ")}, in that order: no Docker action such as EmbarkStudios/cargo-deny-action (#676), and no other step that could replace the verified binary before it runs.`);
+  }
+  inputsMatch(mapping(steps[0]!.with, "jobs.deny checkout.with"), { "persist-credentials": "false" },
+    "jobs.deny checkout (the policy reads the event's own tree)");
+  const [install, ...checks] = steps.slice(3);
+  exactKeys(install!, ["name", "run"], cargoDenyInstallStep);
+  if (JSON.stringify(runLines(install!)) !== JSON.stringify(cargoDenyInstallCommands)) {
     fail(`${cargoDenyInstallStep} must download release ${cargoDenyVersion} from its GitHub release URL and pass \`sha256sum -c\` against ${cargoDenyArchiveSha256} before extracting it; an unpinned version, a missing or different checksum, or a wrapper is not admitted.`);
   }
-  let previous = steps.indexOf(install);
-  for (const [name, command] of cargoDenyChecks) {
-    const check = namedStep(steps, name);
+  for (const [index, [name, command]] of cargoDenyChecks.entries()) {
+    const check = checks[index]!;
     exactKeys(check, ["name", "run"], name);
     if (JSON.stringify(runLines(check)) !== JSON.stringify([command])) {
       fail(`${name} must run exactly \`${command}\`: the verified binary with the reviewed policy arguments, and no wrapper or suppression.`);
     }
-    if (steps.indexOf(check) <= previous) fail(`jobs.deny must order ${cargoDenyInstallStep}, then ${cargoDenyChecks.map(([step]) => step).join(", then ")}.`);
-    previous = steps.indexOf(check);
   }
 }
 
@@ -396,7 +409,7 @@ export function checkWorkflowSecurity(source: string): void {
   if (checkouts === 0) fail("workflow must contain its audited checkout steps.");
   checkCodeqlJobs(jobs, stepsByJob);
   checkWebkitgtkAptCache(jobs, stepsByJob);
-  checkCargoDenyJob(stepsByJob);
+  checkCargoDenyJob(jobs, stepsByJob);
   const dependencies = stepsByJob.get("dependency-review");
   if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const review = requiredAction(dependencies, "Review dependency vulnerabilities", "actions/dependency-review-action", {

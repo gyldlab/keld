@@ -246,17 +246,17 @@ test("cargo-deny steps cannot continue on error, be conditioned, removed, duplic
     }
     const removed = fixture();
     removed.jobs.deny!.steps = removed.jobs.deny!.steps.filter(candidate => candidate.name !== name);
-    expect(() => check(removed), `${name} removed`).toThrow(`${name} must occur exactly once`);
+    expect(() => check(removed), `${name} removed`).toThrow("jobs.deny must run exactly");
     const duplicated = fixture();
     duplicated.jobs.deny!.steps.push({ ...step(duplicated, "deny", name) });
-    expect(() => check(duplicated), `${name} duplicated`).toThrow(`${name} must occur exactly once`);
+    expect(() => check(duplicated), `${name} duplicated`).toThrow("jobs.deny must run exactly");
   }
   const reordered = fixture();
   const steps = reordered.jobs.deny!.steps;
   const install = steps.findIndex(candidate => candidate.name === cargoDenyInstallStep);
   const [moved] = steps.splice(install, 1);
   steps.push(moved!);
-  expect(() => check(reordered)).toThrow(`jobs.deny must order ${cargoDenyInstallStep}`);
+  expect(() => check(reordered)).toThrow("jobs.deny must run exactly");
 });
 
 test("cargo-deny runs the verified binary with the reviewed policy arguments", () => {
@@ -284,11 +284,38 @@ test("the deny job admits no Docker action, including the former cargo-deny-acti
     const f = fixture();
     const steps = f.jobs.deny!.steps;
     steps.splice(steps.findIndex(candidate => candidate.name === cargoDenyMain), 0, { uses, with: { command: "check" } });
-    expect(() => check(f), uses).toThrow("jobs.deny may use only");
+    expect(() => check(f), uses).toThrow("jobs.deny must run exactly");
   }
   const missing = fixture();
   delete missing.jobs.deny;
   expect(() => check(missing)).toThrow("jobs.deny must exist");
+});
+
+test("nothing in the deny job can replace or redirect the verified binary", () => {
+  // An unnamed or named step between install and check could overwrite the binary.
+  for (const inserted of [
+    { run: `printf '#!/bin/sh\\nexit 0\\n' > "$RUNNER_TEMP/cargo-deny/cargo-deny"\n` },
+    { name: "Refresh cargo-deny", run: "cargo install cargo-deny --locked\n" },
+  ]) {
+    const f = fixture();
+    const steps = f.jobs.deny!.steps;
+    steps.splice(steps.findIndex(candidate => candidate.name === cargoDenyMain), 0, inserted);
+    expect(() => check(f), JSON.stringify(inserted)).toThrow("jobs.deny must run exactly");
+  }
+  for (const [key, value] of [
+    ["env", { BASH_ENV: "./tools/noop.sh" }],
+    ["defaults", { run: { shell: "bash --noprofile --norc {0} || true" } }],
+    ["container", "rust:1.97.1"],
+    ["services", { registry: { image: "registry:2" } }],
+  ] as const) {
+    const f = fixture();
+    (f.jobs.deny as Record<string, unknown>)[key] = value;
+    expect(() => check(f), key).toThrow(`jobs.deny must not set ${key}`);
+  }
+  // The policy must read the event's own tree, not another ref.
+  const ref = fixture();
+  (ref.jobs.deny!.steps[0]!.with as Step).ref = "main";
+  expect(() => check(ref)).toThrow("jobs.deny checkout");
 });
 
 for (const style of ["block", "flow", "alias"] as const) {

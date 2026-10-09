@@ -50,9 +50,12 @@ must match the SHA-256 recorded in the workflow before the binary is extracted; 
 policy runs then invoke that binary by absolute path. The Docker-based
 `EmbarkStudios/cargo-deny-action` it replaces built its image from a Docker Hub base
 image, whose anonymous pull limit failed the lane (#676), and it downloaded cargo-deny
-without verifying it. The workflow-security check pins the version, the checksum, the
-step order and the exact policy arguments, refuses conditions and `continue-on-error`
-on these steps, and admits no other action in the job. cargo-deny fetches the RustSec
+without verifying it. The workflow-security check pins the version, the checksum and
+the exact policy arguments. It also pins the job's exact step sequence, so no other
+action and no step that could replace the binary between install and use is admitted.
+It refuses conditions, `continue-on-error` and custom shells on these steps, job-level
+`env`, `defaults`, `container` and `services`, and a checkout of any other ref. A
+workflow-level `env` remains outside this job contract. cargo-deny fetches the RustSec
 advisory database itself, from its default `https://github.com/RustSec/advisory-db`.
 To bump it, change the version and SHA-256 in `.github/workflows/ci.yml` and
 `tools/ci_workflow_security.ts` together, after checking the new archive against the
