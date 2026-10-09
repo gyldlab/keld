@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:99dffbb3f2c766b5f79bde1656c098db911428018ded6c54d6a8b30c10b9d9a0
+// @keld/kipc-transport sha256:994beb63f821bda9c4394e2faae39cfcb5ea4ddd7da4d464c7a53b90a3173964
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -1627,6 +1627,12 @@ export interface WorkerLinkTestHooks {
   readonly wedgeHoldingKick?: boolean;
   /** Runs when the transport Worker exits. */
   readonly onWorkerExit?: (code: number) => void;
+  /**
+   * Runs after the stamp check passed and before the transport Worker is
+   * spawned (#653). Removing the module's file here proves that the Worker's
+   * self-entry loads that file itself, past the check that already read it.
+   */
+  readonly beforeWorkerSpawn?: () => void;
 }
 
 interface WorkerHookData {
@@ -1954,6 +1960,7 @@ export class WorkerLink {
               wedgeHoldingKick: hooks.wedgeHoldingKick,
             },
     };
+    if (typeof KELD_KIPC_RELEASE === "undefined") hooks?.beforeWorkerSpawn?.();
     const worker = new Worker(new URL(import.meta.url), { workerData: boot, transferList: [port2] });
     const link = new WorkerLink(sab, config, worker, port1, hooks);
     return new Promise((resolve, reject) => {

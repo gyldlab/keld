@@ -1181,6 +1181,13 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
       - In `transport-stamp.test.ts`: the canonical stamp; one changed byte and
         malformed stamps; a transpiled transport-only build refused unstamped and
         accepted restamped; and a restamped bundle stopped by the in-Worker check.
+      - In `transport-stamp.test.ts`, the two reads told apart (each the other's
+        negative control): a copy removed before `open` fails the stamp read with
+        005 and spawns no Worker, and a copy removed by the test-only
+        `beforeWorkerSpawn` hook, after the stamp check passed, fails only the
+        Worker's self-entry with 025. The Linux strict pair in
+        `linux_strict_boundary.rs` keeps that 025 self-entry proof under the
+        strict profile.
       - In `worker-link.test.ts`:
         - **The NC.** An app bundle named `transport.js` is refused, and an
           evaluation counter shows that main's import was the bundle's only
@@ -1286,7 +1293,10 @@ unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
 `WorkerLinkTestHooks`, `WorkerBlockingFault` and `WORKER_LINK_TEST_WORDS`; from #528 T3
 `WorkerLink.onEnd` and `quitAndCloseLink`, with `openWorkerLinkForTest` moved to the
 in-repo `src/test-hooks.ts` and `DirectedReader`, `MAX_PARKED_FRAMES` and
-`CLIENT_AWAIT_HELLO` removed); `keld-ipc`'s
+`CLIENT_AWAIT_HELLO` removed; from #653 `TRANSPORT_STAMP_PREFIX`, `stampTransport` and
+`verifyTransportStamp`, the test-only `WorkerLinkTestHooks.beforeWorkerSpawn`, and
+`WorkerLink.open`'s refusal of an unstamped file, with keld-cli's
+`TRANSPORT_STAMP_PREFIX` and `restamp_transport` (amended by #653)); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
 `ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (#528 T1
 shipped the §4.7 fallback's `ChannelId`; X05-T4, #631, retired it) and returning

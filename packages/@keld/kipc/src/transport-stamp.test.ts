@@ -116,7 +116,8 @@ describe("a transpiled transport-only build", () => {
 test("a deliberately restamped app bundle cannot open a nested link from its transport Worker", async () => {
   const outcome = await runLayout({
     closeOnOpen: true,
-    ready: (out) => out.includes("main-open="),
+    // Both markers: the Worker's nested open and main's own open settle independently.
+    ready: (out) => out.includes("main-open=") && out.includes("worker-open="),
     async write(dir: string): Promise<string> {
       const entry = join(dir, "entry.ts");
       await Bun.write(entry, countedOpenAndReport);
@@ -131,3 +132,63 @@ test("a deliberately restamped app bundle cannot open a nested link from its tra
   expect(outcome.evals).toBe(2);
   expect(transportPath).toContain("transport.ts");
 }, 30_000);
+
+// The stamp check reads the module's file, and the Worker's self-entry then
+// loads that file again. These two runs tell the reads apart, each the other's
+// negative control: a copy removed before `open` fails the stamp read (005,
+// no Worker), and a copy removed after the check passed but before the Worker
+// spawned fails only the Worker's own load (025, the Worker died before HELLO).
+describe("the stamp read and the Worker's self-entry are separate reads of the transport file", () => {
+  const seamCall =
+    "const seam = globalThis[Symbol.for(\"keld.kipc.worker-link-test-seam/v1\")];\n" +
+    "const words = new Int32Array(new SharedArrayBuffer(4 * WORKER_LINK_TEST_WORDS.LENGTH));\n";
+  const report =
+    '  () => console.log("main-open=opened"),\n' +
+    '  (err) => console.log(`main-open=${isCallError(err) ? err.code : "untyped"}`),\n' +
+    ");\n";
+  const options = "{ link: process.env.KELD_APP_LINK, receive: { eventChannels: [3], callReceivers: [] } }";
+
+  function stagedCopy(entry: string) {
+    return {
+      closeOnOpen: true,
+      env: { KELD_KIPC_TEST_HOOKS: "1" },
+      ready: (out: string) => out.includes("main-open="),
+      async write(dir: string): Promise<string> {
+        await Bun.write(join(dir, "kipc-transport.ts"), canonical);
+        await Bun.write(join(dir, "main.js"), entry);
+        return "main.js";
+      },
+    };
+  }
+
+  const prelude =
+    'import { rmSync } from "node:fs";\n' +
+    'import { join } from "node:path";\n' +
+    'const copy = join(import.meta.dir, "kipc-transport.ts");\n' +
+    "const { WORKER_LINK_TEST_WORDS, WorkerLink, isCallError } = await import(copy);\n";
+
+  test("a copy removed after the stamp check fails only the Worker's self-entry (025)", async () => {
+    const outcome = await runLayout(
+      stagedCopy(
+        prelude +
+          seamCall +
+          `seam(${options}, { words, beforeWorkerSpawn: () => { rmSync(copy); console.log("removed=after-stamp"); } }).then(\n` +
+          report,
+      ),
+    );
+    expect({ stdout: outcome.stdout.trim(), connections: outcome.connections }).toEqual({
+      stdout: "removed=after-stamp\nmain-open=KELD-IPC-025",
+      connections: 0,
+    });
+  }, 30_000);
+
+  test("a copy removed before open fails the stamp read (005) and no Worker is spawned", async () => {
+    const outcome = await runLayout(
+      stagedCopy(prelude + "rmSync(copy);\n" + `WorkerLink.open(${options}).then(\n` + report),
+    );
+    expect({ stdout: outcome.stdout.trim(), connections: outcome.connections }).toEqual({
+      stdout: "main-open=KELD-IPC-005",
+      connections: 0,
+    });
+  }, 30_000);
+});

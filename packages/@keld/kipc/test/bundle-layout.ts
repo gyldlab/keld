@@ -26,6 +26,8 @@ export interface BundleLayout {
   ready: (stdout: string) => boolean;
   /** End each accepted socket at once, so a Worker that connects fails fast instead of waiting for HELLO. */
   closeOnOpen?: boolean;
+  /** Extra environment for the run, such as `KELD_KIPC_TEST_HOOKS`. */
+  env?: Record<string, string>;
 }
 
 // Runs one app layout in a fresh directory with a live listener and an
@@ -50,7 +52,7 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
   try {
     const runner = await layout.write(dir);
     proc = Bun.spawn(["bun", join(dir, runner)], {
-      env: { ...process.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}`, KELD_TEST_EVALS: evalsPath },
+      env: { ...process.env, ...layout.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}`, KELD_TEST_EVALS: evalsPath },
       stdout: "pipe",
       stderr: "pipe",
     });
