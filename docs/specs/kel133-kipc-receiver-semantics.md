@@ -179,16 +179,18 @@ T1 may refine names, but it must preserve this ownership shape:
 /// `allow_ping` admits the live v0 liveness probe where it is a positive
 /// vector, and `also_channel` exists only for the one multiplexed primary
 /// session (rows 3+5 below). Construction outside `keld-ipc` goes through
-/// named constructors (`#[non_exhaustive]`).
+/// named constructors (`#[non_exhaustive]`). The fields are private (#633):
+/// consumers read them through same-named `const` accessors (`policy.kinds()`)
+/// and cannot widen a policy they hold.
 pub struct ReceivePolicy {
-    pub direction: Direction,
-    pub phase: SessionPhase,
-    pub channel: ChannelId,
-    pub payload: PayloadMode,
-    pub expected_corr: ExpectedCorrelation,
-    pub kinds: AllowedKinds,
-    pub allow_ping: bool,
-    pub also_channel: Option<ChannelId>,
+    direction: Direction,
+    phase: SessionPhase,
+    channel: ChannelId,
+    payload: PayloadMode,
+    expected_corr: ExpectedCorrelation,
+    kinds: AllowedKinds,
+    allow_ping: bool,
+    also_channel: Option<ChannelId>,
 }
 
 /// Header whose reserved fields are valid for the selected policy.
