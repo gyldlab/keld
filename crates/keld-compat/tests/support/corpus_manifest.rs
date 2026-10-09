@@ -307,6 +307,12 @@ pub fn snapshot_repo_path(rel: &str) -> String {
     format!("crates/keld-compat/{SNAPSHOT_ROOT}/{rel}")
 }
 
+/// The owner's store reader: the bytes of the snapshot keyed by `rel`, read only from the
+/// one store under `workspace` (gh566 D5 A5). A corpus-local copy is never consulted.
+pub fn read_store_snapshot(workspace: &Path, rel: &str) -> std::io::Result<Vec<u8>> {
+    fs::read(join_rel(workspace, &snapshot_repo_path(rel)))
+}
+
 /// Fixed file names inside a fixture directory.
 pub const MANIFEST_FILE: &str = "corpus.json";
 const DENOMINATOR_FILE: &str = "denominator.json";
@@ -655,7 +661,7 @@ impl Corpus {
     pub fn load(reg: &Registration) -> Result<Self, CorpusError> {
         let (manifest, denominator) = Self::fixture_bytes(reg)?;
         let workspace = workspace_root();
-        let reader = |rel: &str| fs::read(join_rel(&workspace, &snapshot_repo_path(rel)));
+        let reader = |rel: &str| read_store_snapshot(&workspace, rel);
         let corpus = Self::parse_with_snapshots(reg, &manifest, &denominator, &reader)?;
         let mut pages: Vec<String> = Vec::new();
         for cell in &corpus.cells {

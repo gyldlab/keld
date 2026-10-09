@@ -1,17 +1,19 @@
 //! Snapshot rules over an in-memory store (gh532 AC16, rule 2 order; gh566 D5), plus the
-//! Git normalisation check over one temporary file.
+//! Git normalisation check over one temporary file and the owner's store reader over a
+//! temporary tree (gh566 C11, A5).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use super::v1_fixture::{
-    COMMIT, PAGE, READY, SNAPSHOT, V0_COMMIT, V1, edit, manifest, parse_with, store,
+    COMMIT, PAGE, READY, SNAPSHOT, V0_COMMIT, V1, bytes, denominator, edit, manifest, parse_with,
+    store,
 };
 use crate::corpus_manifest::{
-    CorpusError, SNAPSHOT_DIR, check_checkout_attributes, check_normalisation, sha256_uri,
-    snapshot_repo_path, workspace_root,
+    Corpus, CorpusError, SNAPSHOT_DIR, check_checkout_attributes, check_normalisation, join_rel,
+    read_store_snapshot, sha256_uri, snapshot_repo_path, workspace_root,
 };
 
 /// gh532 AC16: a fabricated quote is rejected even with its own correct digest, and the
@@ -87,6 +89,41 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// gh566 C11 (A5): the owner's store reader reads a cited page only from the shared
+/// store. A page filed only under a corpus directory's `doc-snapshots/` is never read,
+/// so its citation fails with `MissingSnapshotFile`. The same bytes in the store parse.
+#[test]
+fn corpus_local_page_is_not_read_by_the_store_reader() {
+    let root = TempDir(
+        std::env::temp_dir().join(format!("keld-compat-store-reader-{}", std::process::id())),
+    );
+    let rel = format!("{SNAPSHOT_DIR}/{COMMIT}/{PAGE}");
+    let base = manifest();
+    let manifest_bytes = bytes(&base);
+    let denominator_bytes = denominator(&manifest_bytes, &base);
+    let parse_from = |workspace: &Path| {
+        Corpus::parse_with_snapshots(&V1, &manifest_bytes, &denominator_bytes, &|key: &str| {
+            read_store_snapshot(workspace, key)
+        })
+    };
+
+    let local = join_rel(
+        &root.0,
+        &format!("crates/keld-compat/{}/{rel}", V1.fixture_dir),
+    );
+    fs::create_dir_all(local.parent().expect("corpus-local parent")).expect("create local dir");
+    fs::write(&local, SNAPSHOT).expect("write corpus-local page");
+    match parse_from(&root.0) {
+        Err(CorpusError::MissingSnapshotFile { page, .. }) => assert_eq!(page, PAGE),
+        other => panic!("a corpus-local page must not satisfy a citation: {other:?}"),
+    }
+
+    let stored = join_rel(&root.0, &snapshot_repo_path(&rel));
+    fs::create_dir_all(stored.parent().expect("store parent")).expect("create store dir");
+    fs::write(&stored, SNAPSHOT).expect("write store page");
+    parse_from(&root.0).unwrap_or_else(|error| panic!("the store page must parse: {error}"));
 }
 
 /// gh566 D5: Git must store a snapshot byte-for-byte. CRLF bytes would be normalised on

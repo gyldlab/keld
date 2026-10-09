@@ -5,10 +5,9 @@ Linear: GH-566 (#517) · Owner: @0monish · Updated: 2026-10-08
 
 Amended by #659: A5, the shared doc-snapshot store (§2, §3 C11, §4.2 D5, §4.4, §7,
 §10). Every v1 corpus reads its cited pages from one store, so a page that two corpora
-cite at one pin is committed once. Each changed passage says "A5". A5 is a delegated
-owner decision, recorded with its rejected alternatives and falsifiers in D5. It awaits
-the owner's exact-content approval in the #659 PR review, and it is not yet part of what
-the approval above approved.
+cite at one pin is committed once. Each changed passage says "A5". A5 is recorded
+with its rejected alternatives and falsifiers in D5. A5 approved by the orchestrator under
+the repository owner's delegation (2026-10-09).
 
 ## 1. Goal & non-goals
 
@@ -1354,7 +1353,7 @@ the `corpus_registry` target.
 | gh532 AC16 | `rules::snapshot_*` over an in-memory read seam, plus `rules::snapshot_would_be_normalised_rejects_crlf` (D5) over one temporary file | rules | T3 | integration |
 | C9 | `rules::report_census_rejects_reports_that_count_fails_themselves`: synthetic report sources that use `board.failed()` or a label are rejected, and a `FailSplit` source is accepted | rules | T3 | integration |
 | C10 | `rules::platforms_*`: empty, repeated, unknown and unregistered entries; `check_admission` with synthetic outputs for a declared host whose case is missing (`cfg`) or `(skip)`; the `unknown` list on an undeclared host; and a `pass` record for an undeclared platform | rules | T3 | integration |
-| C11 (A5) | `registry::doc_snapshots_live_in_one_store`: the census over committed corpus directories, `CorpusLocalSnapshot` naming one and every offender, and the filesystem probe on a throwaway tree | registry | #659 | integration |
+| C11 (A5) | `registry::doc_snapshots_live_in_one_store`: the census over committed corpus directories, `CorpusLocalSnapshot` naming one and every offender, and the filesystem probe on a throwaway tree. `rules::v1_snapshots::corpus_local_page_is_not_read_by_the_store_reader`: through the owner's store reader, a page filed only under a corpus directory fails with `MissingSnapshotFile`, and the same bytes in the store parse | registry, rules | #659 | integration |
 | gh532 AC17 | `rules::fail_split_counts_pending_apart_from_divergence`: the exact two-line `Display`, built from `PENDING_LABEL` and `DIVERGENCE_LABEL` so the C9 census passes on the test itself; then the lumped-renderer mutation and the pending-as-divergence mutation | rules | T3 | integration |
 | C4, C5 (v1 controls), C6 | `rules::duplicate_keys_*`, `rules::records_*_v1` (including two cells that share an `operation_id`), `rules::product_records_need_receipt` | rules | T3 | integration |
 
@@ -1414,8 +1413,8 @@ instead of claiming a number.
 
 None. Every design point above is an owner-delegated decision, recorded with its
 rejected alternatives and its falsifier. The four gh532 amendments A1–A4 (§2) are part
-of what this spec's approval approves. A5 is not covered by that approval: it awaits the
-owner's exact-content approval in the #659 PR review (see the header). Two gh532 draft decisions stay with gh532, not
+of what this spec's approval approves. A5 approved by the orchestrator under the repository
+owner's delegation (2026-10-09); see the header. Two gh532 draft decisions stay with gh532, not
 here: §10 Q1 (citation kinds) and Q2 (the harness label). This spec implements each of
 them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant, which
 leaves the frozen v0 label unchanged.
