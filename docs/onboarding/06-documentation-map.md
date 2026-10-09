@@ -17,8 +17,7 @@
 | **Engineering narrative** | What we chose, why, what we rejected, and what is not next. **Not** RFC 2119 — [`AGENTS.md`](../../AGENTS.md) still binds. Onboarding pointer for “why.” | [`docs/engineering/decisions.md`](../engineering/decisions.md) |
 | **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), other [`docs/engineering/`](../engineering/) audits, and historical Linear comments |
 
-Two rules that follow directly from that table, both from
-[`docs/agents/learnings.md`](../agents/learnings.md) and [`AGENTS.md`](../../AGENTS.md):
+Two rules that follow directly from that table:
 
 - **Never cite `docs/research/inputs/external/` in your work.** Those are raw external
   research exports. Canonical `docs/research/library/` notes are exploratory evidence, not
@@ -148,8 +147,8 @@ captured input, and nine `twiter*.md` files are
 digests of practitioner discourse (the Rust tooling wave, Bun's Rust rewrite, the desktop
 framework conversation, agentic-engineering practitioners, AX leaders).
 
-**These are inputs, not sources.** The rule is explicit in
-[`docs/agents/learnings.md`](../agents/learnings.md): never cite raw external inputs directly —
+**These are inputs, not sources.** The rule is the first one under
+[The tiers, up front](#the-tiers-up-front): never cite raw external inputs directly —
 cite the polished numbered doc that consumed it.
 
 `45-P1.md` through `45-P20.md` are another source packet, now grouped under
