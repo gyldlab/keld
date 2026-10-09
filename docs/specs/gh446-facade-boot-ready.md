@@ -133,7 +133,7 @@ The names below are proposed.
     - it calls the host terminal function exactly once (a test double).
 
     *NC:* an unbounded `recv()` never returns. The test detects this with a bounded join on the coordinator thread's result channel, never a sleep.
-16. **Window calls before Ready (an edge F02-T2 must satisfy).** Given a facade boot whose first `Ready` write has not happened, when the role sends `Create` or any other window call, then the reply is `KELD-CORE-040` and no native window is created. *NC:* marking the registry ready when it is constructed serves that `Create`. This spec decides the rule (D4). Its test lands with the first window call, in F02-T2 (gh531 criterion 14 "Before Ready", amended by #657).
+16. **Window calls before Ready (an edge F02-T2 must satisfy).** `Subscribe` to `window` is accepted before Ready (gh531 "Subscription before the table"). Given a facade boot whose first `Ready` write has not happened, when a role whose link is subscribed to `window` sends `Create` or any other window call, then the reply is `KELD-CORE-040` and no native window is created. An unsubscribed link gets `KELD-CORE-045` instead, because that check runs first. *NC:* marking the registry ready when it is constructed serves that `Create`. This spec decides the rule (D4). Its test lands with the first window call, in F02-T2 (gh531 criterion 14 "Before Ready", amended by #657).
 
 ## 4. Design
 
