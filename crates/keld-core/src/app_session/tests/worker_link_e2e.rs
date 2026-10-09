@@ -345,7 +345,8 @@ fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
 #[test]
 #[cfg(windows)]
 fn bun_role_closes_on_the_quit_reply_and_windows_awaits_its_close() {
-    let (role, t) = WorkerLinkRole::start("t3-quit-close", LIFECYCLE_CHANNEL, &[]);
+    let (role, t) =
+        WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
     let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
         .guardian
         .recv_timeout(Duration::from_secs(20))
