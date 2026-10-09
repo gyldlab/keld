@@ -277,9 +277,9 @@ struct FsDispatchSession {
     state: Mutex<FsDispatchState>,
     handler_transition: Mutex<()>,
     drained: Condvar,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     drain_wait_observer: Mutex<Option<SyncSender<()>>>,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     terminal_write_hold: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
 }
 
@@ -298,9 +298,9 @@ impl FsDispatchSession {
             }),
             handler_transition: Mutex::new(()),
             drained: Condvar::new(),
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             drain_wait_observer: Mutex::new(None),
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             terminal_write_hold: Mutex::new(None),
         }
     }
@@ -444,7 +444,7 @@ impl FsDispatchSession {
         self.wait_for_handler_transition()
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     fn observe_next_drain_wait(&self, observer: SyncSender<()>) {
         *self
             .drain_wait_observer
@@ -455,7 +455,7 @@ impl FsDispatchSession {
     /// Test hook: holds the next successful FS terminal write after it
     /// releases the generation lock and before its lease drops, until the
     /// test resumes it.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     fn hold_next_terminal_write(&self, written: SyncSender<()>, resume: Receiver<()>) {
         *self
             .terminal_write_hold
@@ -463,7 +463,7 @@ impl FsDispatchSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((written, resume));
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     fn hold_after_terminal_write(&self) {
         let hold = self
             .terminal_write_hold
@@ -482,7 +482,7 @@ impl FsDispatchSession {
             .lock()
             .map_err(|_| app_detail("filesystem drain", "in-flight lock poisoned"))?;
         while state.in_flight != 0 {
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             if let Some(observer) = self
                 .drain_wait_observer
                 .lock()
@@ -521,13 +521,13 @@ enum FsWorkerCommand {
     Stop,
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
 struct FsWorkerTestGate {
     taken: SyncSender<()>,
     release: Mutex<Receiver<()>>,
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
 impl FsWorkerTestGate {
     fn wait_after_take(&self) -> Result<(), HostAppError> {
         self.taken
@@ -4531,13 +4531,13 @@ struct PrimaryRouterHandle {
     fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     quit_drain_hooks: Arc<Mutex<QuitDrainTestHooks>>,
 }
 
 /// Test hooks for the post-Quit drain: [`PrimaryRouterHandle::stall_next_quit_drain`]
 /// and [`PrimaryRouterHandle::observe_next_quit_drain_end`].
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 #[derive(Default)]
 struct QuitDrainTestHooks {
     stall: Option<(SyncSender<()>, Receiver<()>)>,
@@ -4939,14 +4939,14 @@ impl PrimaryRouterHandle {
         ) else {
             return;
         };
-        #[cfg(all(test, target_os = "macos"))]
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
         let idle_deadline = self
             .stall_quit_drain_for_test(started)
             .unwrap_or(idle_deadline);
         let end = self.drain_calls_after_quit(attempt, reader, idle_deadline, hard_deadline);
-        #[cfg(all(test, target_os = "macos"))]
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
         self.report_quit_drain_end(end);
-        #[cfg(not(all(test, target_os = "macos")))]
+        #[cfg(not(all(test, any(target_os = "macos", target_os = "linux"))))]
         let _ = end;
     }
 
@@ -5002,7 +5002,7 @@ impl PrimaryRouterHandle {
     }
 
     /// Test hook: reports how the next post-Quit drain ended.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     fn observe_next_quit_drain_end(&self, end: SyncSender<QuitDrainEnd>) {
         self.quit_drain_hooks
             .lock()
@@ -5010,7 +5010,7 @@ impl PrimaryRouterHandle {
             .end = Some(end);
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     fn report_quit_drain_end(&self, end: QuitDrainEnd) {
         let observer = self
             .quit_drain_hooks
@@ -5026,7 +5026,7 @@ impl PrimaryRouterHandle {
     /// Test hook: holds the next post-Quit drain before its first read until
     /// the test resumes it, then gives it an idle deadline that has already
     /// passed, as a host stall longer than its idle backstop would.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     fn stall_next_quit_drain(&self, stalled: SyncSender<()>, resume: Receiver<()>) {
         self.quit_drain_hooks
             .lock()
@@ -5036,7 +5036,7 @@ impl PrimaryRouterHandle {
 
     /// Returns the injected idle deadline (`started`, already passed) when
     /// the hook is armed.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     fn stall_quit_drain_for_test(&self, started: Instant) -> Option<Instant> {
         let (stalled, resume) = self
             .quit_drain_hooks
@@ -5123,7 +5123,7 @@ impl PrimaryRouterHandle {
             return Ok(());
         }
         let Err(primary) = write(&mut active.writer) else {
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             {
                 drop(current);
                 drop(transition);
@@ -5566,9 +5566,7 @@ struct FsWorker {
 impl FsWorker {
     fn start(
         handle: &mut PrimaryRouterHandle,
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-            Arc<FsWorkerTestGate>,
-        >,
+        #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
     ) -> Result<Self, HostAppError> {
         let (commands, receiver) = mpsc::sync_channel(1);
         let worker_handle = handle.clone();
@@ -5579,7 +5577,7 @@ impl FsWorker {
                 let result = run_fs_worker(
                     &receiver,
                     &worker_handle,
-                    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+                    #[cfg(test)]
                     test_gate.as_deref(),
                 );
                 if result.is_err() {
@@ -5634,7 +5632,7 @@ impl PrimaryRouter {
         Self::start_with_fs_test_gate(stream, window_commands, guardian, shutdown, fs, None)
     }
 
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(test)]
     fn start_with_fs_test_gate(
         stream: BootstrapStream,
         window_commands: Sender<AppWindowCommand>,
@@ -5663,12 +5661,12 @@ impl PrimaryRouter {
             fs_worker_commands: None,
             guardian,
             window_commands,
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
             quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
             handle,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(test)]
             fs_worker_test_gate,
         )?;
         router.handle.install_generation(1, stream)?;
@@ -5704,12 +5702,12 @@ impl PrimaryRouter {
             fs_worker_commands: None,
             guardian,
             window_commands,
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
             quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
             handle,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(test)]
             None,
         )?;
         router.handle.install_generation(attempt, stream)?;
@@ -5718,14 +5716,12 @@ impl PrimaryRouter {
 
     fn finish_start(
         mut handle: PrimaryRouterHandle,
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-            Arc<FsWorkerTestGate>,
-        >,
+        #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
     ) -> Result<Self, HostAppError> {
         let fs_worker = if handle.fs.is_some() {
             Some(FsWorker::start(
                 &mut handle,
-                #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+                #[cfg(test)]
                 test_gate,
             )?)
         } else {
@@ -5816,9 +5812,7 @@ fn prepare_fs_work(
 fn run_fs_worker(
     receiver: &Receiver<FsWorkerCommand>,
     handle: &PrimaryRouterHandle,
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-        &FsWorkerTestGate,
-    >,
+    #[cfg(test)] test_gate: Option<&FsWorkerTestGate>,
 ) -> Result<(), HostAppError> {
     while let Ok(command) = receiver.recv() {
         let FsWorkerCommand::Work(work) = command else {
@@ -5832,7 +5826,7 @@ fn run_fs_worker(
             cancellation,
         } = work;
         let outcome = admitted.handle_with(|| {
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(test)]
             if let Some(gate) = test_gate {
                 gate.wait_after_take()?;
             }
@@ -7406,7 +7400,7 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             quit_drain_hooks: Arc::default(),
         };
 
@@ -7530,7 +7524,7 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             quit_drain_hooks: Arc::default(),
         };
         let router = PrimaryRouter {
@@ -7627,8 +7621,9 @@ mod tests {
     }
 
     /// One guarded primary router over a socket pair, with the FS worker held
-    /// by a test gate after it takes its job (GH-528 T2 router tests).
-    #[cfg(target_os = "macos")]
+    /// by a test gate after it takes its job (GH-528 T2 router tests; T5 runs
+    /// them on every OS with a router).
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     struct GuardedTestRouter {
         router: PrimaryRouter,
         snapshot: GuardSnapshot,
@@ -7640,12 +7635,13 @@ mod tests {
         _temp: tempfile::TempDir,
     }
 
-    /// A guarded router over a socket pair, and the pair's client end.
-    #[cfg(target_os = "macos")]
-    fn guarded_test_router() -> (GuardedTestRouter, std::os::unix::net::UnixStream) {
+    /// A guarded router over a connected link pair (a Unix socket pair, or an
+    /// authenticated named-pipe pair on Windows), and the pair's client end.
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn guarded_test_router() -> (GuardedTestRouter, BootstrapStream) {
         use keld_ipc::link::AppLinkDeadlines as _;
 
-        let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
+        let (server, client) = primary_test_stream_pair();
         client
             .set_app_link_deadlines(Some(Duration::from_secs(5)))
             .expect("guarded client deadlines");
@@ -7654,8 +7650,8 @@ mod tests {
 
     /// A guarded router over `server`: a pair end, or a Bun role's
     /// authenticated app link.
-    #[cfg(target_os = "macos")]
-    fn guarded_router(server: std::os::unix::net::UnixStream) -> GuardedTestRouter {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn guarded_router(server: BootstrapStream) -> GuardedTestRouter {
         use sha2::{Digest as _, Sha256};
 
         let temp = tempfile::tempdir().expect("guarded router root");
@@ -7707,11 +7703,11 @@ mod tests {
 
     /// GH-528 T2 end-to-end cases: a Bun `WorkerLink` role against this
     /// router (`app_session/tests/worker_link_e2e.rs`).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     mod worker_link_e2e;
 
-    #[cfg(target_os = "macos")]
-    fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target: &Path) {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn write_fs_call(client: &mut BootstrapStream, corr: u32, target: &Path) {
         write_frame(
             client,
             FrameKind::Call,
@@ -7727,8 +7723,8 @@ mod tests {
         .expect("send FS write");
     }
 
-    #[cfg(target_os = "macos")]
-    fn write_quit_call(client: &mut std::os::unix::net::UnixStream, corr: u32) {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn write_quit_call(client: &mut BootstrapStream, corr: u32) {
         write_frame(
             client,
             FrameKind::Call,
@@ -7741,9 +7737,9 @@ mod tests {
     }
 
     /// Every frame the client reads before the link ends (EOF or reset).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn read_frames_until_eof(
-        client: &mut std::os::unix::net::UnixStream,
+        client: &mut BootstrapStream,
     ) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
         let mut frames = Vec::new();
         while let Ok(frame) = keld_ipc::link::read_frame(client) {
@@ -7758,7 +7754,7 @@ mod tests {
     /// in its FS drain, are both pending; an echo call is answered at once and
     /// never gets an ERR.
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
         let (t, mut client) = guarded_test_router();
         assert_echo_call(&mut client, 10, "answered before retire");
@@ -7818,8 +7814,10 @@ mod tests {
     /// itself a time limit; the margin is one budget plus a poll (under 0.5 s)
     /// against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write would
     /// wait.
+    /// Unix only (#528 T5): Windows has no post-Quit drain, so criterion 7
+    /// does not hold there today (gh527 §10, T5 finding).
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
         let (t, client) = guarded_test_router();
         let mut writer = client.try_clone().expect("flooding writer");
@@ -7881,8 +7879,10 @@ mod tests {
     /// and its FS drain, a CALL already received on an ERR-declaring channel is
     /// answered with `KELD-IPC-024` and never executed; an echo CALL gets no
     /// frame (KEL-133 keeps echo REPLY-only). The host still closes the link.
+    /// Unix only (#528 T5): Windows has no post-Quit drain, so criterion 7
+    /// does not hold there today (gh527 §10, T5 finding).
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn quit_drain_answers_received_calls_with_024_and_runs_none() {
         let (t, mut client) = guarded_test_router();
         let target = t.allowed.join("after-quit.txt");
@@ -7961,8 +7961,11 @@ mod tests {
     /// order, and none runs. *Negative control:* checking the idle deadline
     /// before every read (as the earlier timer-window drain did) answers none
     /// of them.
+    /// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
+    /// finding), and this case also half-closes the client, which a named
+    /// pipe cannot do.
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {
         let (t, mut client) = guarded_test_router();
         let (stalled_tx, stalled) = mpsc::sync_channel(1);
@@ -8049,8 +8052,11 @@ mod tests {
     /// read, so the result does not depend on a timeout. *Negative control:*
     /// `shutdown(Both)` in `shutdown_app_link` is `ENOTCONN` after the
     /// half-close on macOS and sends no FIN, so the probe reads `WouldBlock`.
+    /// Unix only (#528 T5), an OS fact: a Windows named pipe has no
+    /// half-close, because closing a pipe handle ends both directions, so a
+    /// half-closed role cannot exist there.
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
         use std::io::Read as _;
 
@@ -8110,8 +8116,10 @@ mod tests {
     /// the role has closed, so the answer's failure is certain. *Negative
     /// control:* a failed answer that propagates as a session error sends the
     /// UI `Fatal` instead of `Quit`.
+    /// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
+    /// finding).
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
         let (t, mut client) = guarded_test_router();
         let (stalled_tx, stalled) = mpsc::sync_channel(1);
@@ -8179,8 +8187,13 @@ mod tests {
     /// bytes queued before retirement, then the close, and no `ERR` byte.
     /// *Negative control:* leaving the writer's deadline in place fails the
     /// deadline assertion (and holds the lock for `APP_LINK_IO_DEADLINE`).
+    /// Unix only (#528 T5): the oracle counts the exact bytes a nonblocking
+    /// Unix send buffer accepted, and the standard library has no nonblocking
+    /// named pipe to fill. The bound itself is the same
+    /// `write_best_effort_answers` code on Windows; its Windows evidence is
+    /// recorded as unknown (gh527 §10).
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn retire_answers_are_bounded_when_the_peer_stops_reading() {
         use std::io::{ErrorKind, Read as _, Write as _};
 
@@ -8241,7 +8254,7 @@ mod tests {
     /// alone clears the pending call) makes this retirement send a 023 after
     /// the REPLY.
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn retire_after_a_real_reply_sends_no_023() {
         let (t, mut client) = guarded_test_router();
         let target = t.allowed.join("replied.txt");
@@ -8623,7 +8636,7 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             quit_drain_hooks: Arc::default(),
         };
         let router =
@@ -10228,7 +10241,7 @@ mod tests {
             fs_worker_commands: None,
             guardian: PlatformPrimaryOwnerHandle { command_tx },
             window_commands: window_tx,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             quit_drain_hooks: Arc::default(),
         };
         (handle, client, command_rx)
@@ -10635,7 +10648,7 @@ mod tests {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             quit_drain_hooks: Arc::default(),
         };
         let error = handle
@@ -11059,12 +11072,8 @@ mod tests {
         assert!(error.to_string().contains("permission denied"), "{error}");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn assert_echo_call(
-        client: &mut std::os::unix::net::UnixStream,
-        correlation: u32,
-        message: &str,
-    ) {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn assert_echo_call(client: &mut BootstrapStream, correlation: u32, message: &str) {
         use keld_ipc::codec::{decode, encode};
         use keld_ipc::echo::{EchoRequest, EchoResponse};
         use keld_ipc::link::read_frame;

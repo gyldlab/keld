@@ -731,17 +731,32 @@ fn criterion10_record_bound_overflow_fails_closed_with_026() {
 /// Criterion 11: a second `open` in the realm is `KELD-IPC-005` before any
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.
+///
+/// How the OS refuses is per OS (#528 T5):
+/// - Unix: the bootstrap listener unlinks its one-use socket path once it
+///   has accepted, so the second connect fails at once with `ENOENT`.
+/// - Windows: the pipe's one instance is the connected first link, so the
+///   second `CreateFile` gets `ERROR_PIPE_BUSY`. Bun's named-pipe connect
+///   (libuv `uv_pipe_connect`) then waits in `WaitNamedPipeW` before it
+///   reports the refusal, so the host reads the role's next CALL with a
+///   long deadline.
 #[test]
 fn criterion11_second_open_and_second_connect_are_refused() {
     let (mut stream, role) = start("second-link");
+    long_reads(&stream);
     let call = read_call_named(&mut stream, "still-up");
     host_reply(&mut stream, call, b"first-link-up");
     let output = role.finish();
+    let second_connect = if cfg!(windows) {
+        "refused:ETIMEDOUT"
+    } else {
+        "refused:ENOENT"
+    };
     expect_report(
         &output,
         &[
             ("second-open", "KELD-IPC-005"),
-            ("second-connect", "refused:ENOENT"),
+            ("second-connect", second_connect),
             ("first-link", "first-link-up"),
             ("done", "true"),
         ],
