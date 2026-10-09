@@ -26,11 +26,13 @@ const BEACON_GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\x
 /// NO), so no DOM event is fired either way.
 ///
 /// The click therefore waits for two observable states, both bounded by the
-/// deadline argument: the host is the active application, which is tracked
-/// from `NSWorkspace` activation notifications on a blocking run loop, and a
-/// fresh front-to-back census shows the host window as the topmost
-/// normal-layer window at the click point. A deadline failure names the
-/// application or window that holds the click point.
+/// deadline argument. First, the host is the active application. That state
+/// comes from `NSWorkspace` activation notifications, delivered on the main
+/// queue: every queued notification is drained before each check, and the
+/// wait blocks on the run loop until the next one arrives. Second, a fresh
+/// front-to-back census shows the host window as the topmost normal-layer
+/// window at the click point. A deadline failure names the active
+/// application and the window at the click point.
 const CLICK_SCRIPT: &str = r#"
 import AppKit
 import CoreGraphics
@@ -43,17 +45,21 @@ let active = Active()
 let workspace = NSWorkspace.shared
 // Register before the first read, so an activation in between is still delivered.
 let observer = workspace.notificationCenter.addObserver(
-  forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil
+  forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
 ) { note in
   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
   active.pid = app?.processIdentifier ?? -1
   active.name = app?.localizedName ?? "unknown"
-  // A handled notification is not a run-loop source, so the wait below
-  // would otherwise sleep until its deadline instead of re-checking now.
+  // Ends the run-loop pass that delivered it, so a blocked wait re-checks now.
   CFRunLoopStop(CFRunLoopGetMain())
 }
 active.pid = workspace.frontmostApplication?.processIdentifier ?? -1
 active.name = workspace.frontmostApplication?.localizedName ?? "none"
+// Zero-timeout passes until one delivers nothing, so `active` is current.
+func drainActivations() {
+  var result: CFRunLoopRunResult
+  repeat { result = CFRunLoopRunInMode(.defaultMode, 0, true) } while result == .handledSource || result == .stopped
+}
 func census() -> [[String: Any]] {
   CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
     as! [[String: Any]]
@@ -67,25 +73,37 @@ func frame(_ row: [String: Any]) -> CGRect {
 func hostWindow(_ rows: [[String: Any]]) -> [String: Any]? {
   rows.first { int($0, kCGWindowOwnerPID) == Int(pid) && $0[kCGWindowName as String] as? String == title && int($0, kCGWindowLayer) == 0 }
 }
+func hitAt(_ point: CGPoint, _ rows: [[String: Any]]) -> [String: Any]? {
+  rows.first { int($0, kCGWindowLayer) == 0 && (($0[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 && frame($0).contains(point) }
+}
 func describe(_ row: [String: Any]?) -> String {
   guard let row else { return "none" }
   return "pid=\(int(row, kCGWindowOwnerPID)) owner=\((row[kCGWindowOwnerName as String] as? String) ?? "?") title=\((row[kCGWindowName as String] as? String) ?? "?")"
+}
+func failAtDeadline() -> Never {
+  drainActivations()
+  let rows = census()
+  let host = hostWindow(rows)
+  let hit = host.flatMap { hitAt(CGPoint(x: frame($0).midX, y: frame($0).midY), rows) }
+  print("CLICK_TARGET_NOT_HOST active_pid=\(active.pid) active_name=\(active.name) hit=\(describe(hit)) host=\(describe(host))")
+  exit(3)
 }
 while hostWindow(census()) == nil {
   if Date() >= deadline { print("NOT_PRESENTED pid=\(pid) title=\(title)"); exit(3) }
   sched_yield()
 }
-var hit: [String: Any]? = nil
 while true {
-  // Blocks until a workspace notification arrives or the deadline passes.
-  while active.pid != pid && Date() < deadline {
-    _ = RunLoop.main.run(mode: .default, before: deadline)
+  drainActivations()
+  if active.pid != pid {
+    if Date() >= deadline { failAtDeadline() }
+    // Blocks until the next activation notification or the deadline.
+    _ = CFRunLoopRunInMode(.defaultMode, deadline.timeIntervalSinceNow, true)
+    continue
   }
   let rows = census()
-  if active.pid == pid, let row = hostWindow(rows) {
+  if let row = hostWindow(rows) {
     let point = CGPoint(x: frame(row).midX, y: frame(row).midY)
-    hit = rows.first { int($0, kCGWindowLayer) == 0 && (($0[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 && frame($0).contains(point) }
-    if let hit, int(hit, kCGWindowNumber) == int(row, kCGWindowNumber) {
+    if let hit = hitAt(point, rows), int(hit, kCGWindowNumber) == int(row, kCGWindowNumber) {
       CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
       CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
       usleep(30_000)
@@ -94,10 +112,7 @@ while true {
       exit(0)
     }
   }
-  if Date() >= deadline {
-    print("CLICK_TARGET_NOT_HOST active_pid=\(active.pid) active_name=\(active.name) hit=\(describe(hit)) host=\(describe(hostWindow(rows)))")
-    exit(3)
-  }
+  if Date() >= deadline { failAtDeadline() }
   // Active but not yet the hit target: the next window-server census decides.
   sched_yield()
 }
