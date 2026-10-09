@@ -831,8 +831,10 @@ rule reported exactly the seven production hits listed there (eight after #628, 
   criterion 1 and 10 compile-fail doctests (each paired with a compiling positive
   control) are local evidence (`cargo test -p keld-ipc --doc`). Stable rustdoc does not
   check a `compile_fail` error code, so none is given. Criterion 10's guarantee is that
-  `privileged_call_receiver` builds no policy for a non-guarded entry; `ReceivePolicy`'s
-  fields stay public (KEL-133), so a caller can still edit a policy it already holds.
+  `privileged_call_receiver` builds no policy for a non-guarded entry. Since #633,
+  `ReceivePolicy`'s fields are private (read through `const` accessors), so a caller
+  cannot edit a policy it already holds either; a `compile_fail` doctest per field on
+  `ReceivePolicy` proves it.
 - **Hygiene rule wiring.** `ci-hygiene check` runs the append-only rule after the
   workflow semantic check; the resolved base is `KELD_CI_BASE_REF` or `origin/main`, and
   the comparison point is its merge base with `HEAD`; an empty or all-zero base fails
