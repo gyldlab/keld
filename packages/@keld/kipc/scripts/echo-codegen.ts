@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { TRANSPORT_STAMP_PREFIX, stampTransport, verifyTransportStamp } from "../src/transport.ts";
+
 const STRUCT_NAMES = ["EchoRequest", "EchoResponse"] as const;
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const rustSourcePath = resolve(repositoryRoot, "crates/keld-ipc/src/echo.rs");
@@ -433,11 +435,27 @@ export function assertChannelTableRegionFresh(rustSource: string, transportSourc
   }
 }
 
+/** `transportSource` without its stamp line (#653); unchanged when it has none. */
+export function unstampedTransport(transportSource: string): string {
+  return transportSource.startsWith(TRANSPORT_STAMP_PREFIX)
+    ? transportSource.slice(transportSource.indexOf("\n") + 1)
+    : transportSource;
+}
+
+/** The transport with a fresh channel-table region, restamped over its final bytes. */
+export function regenerateTransport(rustSource: string, transportSource: string): string {
+  const region = renderChannelTableRegion(rustSource);
+  return stampTransport(replaceChannelTableRegion(unstampedTransport(transportSource), region));
+}
+
 function generate(): void {
   const generated = currentGeneratedBytes();
   for (const path of generatedPaths) writeFileSync(path, generated, "utf8");
-  const region = renderChannelTableRegion(readFileSync(channelTableSourcePath, "utf8"));
-  writeFileSync(transportPath, replaceChannelTableRegion(readFileSync(transportPath, "utf8"), region), "utf8");
+  const regenerated = regenerateTransport(
+    readFileSync(channelTableSourcePath, "utf8"),
+    readFileSync(transportPath, "utf8"),
+  );
+  writeFileSync(transportPath, regenerated, "utf8");
 }
 
 function check(): void {
@@ -455,6 +473,11 @@ function check(): void {
     readFileSync(channelTableSourcePath, "utf8"),
     readFileSync(transportPath, "utf8"),
   );
+  try {
+    verifyTransportStamp(readFileSync(transportPath), "packages/@keld/kipc/src/transport.ts");
+  } catch (error) {
+    fail(`transport stamp is stale; run bun run echo:generate (${error instanceof Error ? error.message : String(error)})`);
+  }
 }
 
 if (import.meta.main) {

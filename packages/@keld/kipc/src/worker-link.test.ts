@@ -42,8 +42,14 @@ import {
   type WorkerLinkOptions,
 } from "./transport.ts";
 import { openWorkerLinkForTest } from "./test-hooks.ts";
-
-const TOKEN_HEX = "ab".repeat(32);
+import {
+  TOKEN_HEX,
+  bundleLayout,
+  countedOpenAndReport,
+  openAndReport,
+  runLayout,
+  transportPath,
+} from "../test/bundle-layout.ts";
 
 function header(kind: number, channel: number, corr: number, len = 4): FrameHeader {
   return { kind, flags: 0, channel, corr, len };
@@ -217,88 +223,60 @@ describe("WorkerLink.open refuses a transport bundled into an app entry (GH-527 
 });
 
 describe("WorkerLink.open refuses a bundle whatever its name (#643 review)", () => {
-  // Builds `entry` (TypeScript source) into one bundle file named `name` in a
-  // fresh directory with a live listener, runs `runner` (relative to that
-  // directory) with Bun, and returns its stdout once `ready` holds (or it exits).
-  async function runBundle(
-    name: string,
-    entrySource: string,
-    runner: string,
-    ready: (stdout: string) => boolean,
-  ): Promise<{ stdout: string; connections: number }> {
-    const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
-    const path = join(dir, "s.sock");
-    let connections = 0;
-    const listener = Bun.listen({
-      unix: path,
-      socket: {
-        open() {
-          connections += 1;
-        },
-        data() {},
-      },
-    });
-    let proc: ReturnType<typeof Bun.spawn> | undefined;
-    try {
-      const entry = join(dir, "entry.ts");
-      await Bun.write(entry, entrySource);
-      const built = await Bun.build({ entrypoints: [entry], target: "bun", format: "esm" });
-      expect(built.success).toBe(true);
-      await Bun.write(join(dir, name), built.outputs[0]!);
-      await Bun.write(join(dir, "main.js"), `import "./${name}";\n`);
-      proc = Bun.spawn(["bun", join(dir, runner)], {
-        env: { ...process.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}` },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      let stdout = "";
-      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-      const decoder = new TextDecoder();
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        stdout += decoder.decode(chunk.value, { stream: true });
-        if (ready(stdout)) break;
-      }
-      return { stdout, connections };
-    } finally {
-      proc?.kill();
-      listener.stop(true);
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
-  const transportPath = JSON.stringify(join(import.meta.dir, "transport.ts"));
-  const openAndReport =
-    `import { isMainThread } from "node:worker_threads";\n` +
-    `import { WorkerLink, isCallError } from ${transportPath};\n` +
-    "WorkerLink.open({ link: process.env.KELD_APP_LINK!, receive: { eventChannels: [3], callReceivers: [] } }).then(\n" +
-    '  () => console.log(`${isMainThread ? "main" : "worker"}-open=opened`),\n' +
-    '  (err) => console.log(`${isMainThread ? "main" : "worker"}-open=${isCallError(err) ? err.code : "untyped"}`),\n' +
-    ");\n";
-
   test("a bundle run as the process entry is refused, even when named kipc-transport.js", async () => {
-    const { stdout, connections } = await runBundle(
-      "kipc-transport.js",
-      openAndReport,
-      "kipc-transport.js",
-      (out) => out.includes("main-open="),
+    const { stdout, connections } = await runLayout(
+      bundleLayout("kipc-transport.js", openAndReport, "kipc-transport.js", (out) => out.includes("main-open=")),
     );
     expect(stdout.trim()).toBe("main-open=KELD-IPC-005");
     expect(connections).toBe(0);
   }, 30_000);
+});
 
-  test("a transport Worker that evaluates bundled app code cannot open a nested link", async () => {
-    // `main.js` imports the bundle `transport.js`, so the name and entry checks
-    // pass in main; the Worker then evaluates the whole bundle, app code too.
-    const { stdout, connections } = await runBundle(
-      "transport.js",
-      openAndReport,
-      "main.js",
-      (out) => out.includes("worker-open="),
-    );
-    expect(stdout).toContain("worker-open=KELD-IPC-005");
-    expect(connections).toBeLessThanOrEqual(1);
+describe("no transport Worker evaluates a module that is not the stamped transport (#653)", () => {
+  // `main.js` imports the bundle `transport.js`: its name, the entry check and
+  // the in-Worker check all pass in main, and before #653 the Worker then
+  // evaluated the whole bundle, app code too. The counter makes that visible:
+  // main's own import is one evaluation, and any transport Worker adds another.
+  test("an app bundle named transport.js is refused before any transport Worker evaluates it", async () => {
+    const run = await runLayout({
+      ...bundleLayout("transport.js", countedOpenAndReport, "main.js", (out) => out.includes("main-open=")),
+      closeOnOpen: true,
+    });
+    expect({ stdout: run.stdout.trim(), evals: run.evals, connections: run.connections }).toEqual({
+      stdout: "main-open=KELD-IPC-005",
+      evals: 1,
+      connections: 0,
+    });
+  }, 30_000);
+
+  // A build that splits the transport into a shared chunk gives it a hashed
+  // name, which the staged basename rule refuses (gh527 §4.13: `keld build`
+  // keeps the transport its own staged file).
+  test("a split build that puts the transport in a shared chunk is refused", async () => {
+    const run = await runLayout({
+      closeOnOpen: true,
+      ready: (out) => out.includes("main-open="),
+      async write(dir: string): Promise<string> {
+        await Bun.write(join(dir, "a.ts"), countedOpenAndReport);
+        await Bun.write(join(dir, "b.ts"), `import { WorkerLink } from ${transportPath};\nconsole.log(typeof WorkerLink);\n`);
+        const built = await Bun.build({
+          entrypoints: [join(dir, "a.ts"), join(dir, "b.ts")],
+          target: "bun",
+          format: "esm",
+          splitting: true,
+          outdir: join(dir, "out"),
+        });
+        expect(built.success).toBe(true);
+        const chunks = built.outputs.filter((output) => output.kind === "chunk");
+        expect(chunks.length).toBeGreaterThan(0);
+        return "out/a.js";
+      },
+    });
+    expect({ stdout: run.stdout.trim(), evals: run.evals, connections: run.connections }).toEqual({
+      stdout: "main-open=KELD-IPC-005",
+      evals: 1,
+      connections: 0,
+    });
   }, 30_000);
 });
 
