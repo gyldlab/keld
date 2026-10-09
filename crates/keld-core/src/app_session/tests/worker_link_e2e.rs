@@ -161,6 +161,13 @@ fn report_value<'a>(
 /// Criterion 6 end to end: a Bun role parked in `callBlocking` on the FS
 /// channel, with the host's FS worker holding that call, throws
 /// `KELD-IPC-023` when the host retires the generation; the link is gone.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes the 023 and then calls `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable in this case proves that, so its green Windows runs are not
+/// evidence for criterion 6.
 #[test]
 fn bun_role_parked_on_fs_throws_023_when_the_host_retires() {
     let (_temp_target, target) = {

@@ -495,6 +495,12 @@ fn criterion4_facts_apply_before_return_and_listeners_run_after_continuation() {
 
 /// Criterion 5: a host close without an `ERR` throws `KELD-IPC-022`, returns no
 /// value, and the records that preceded the close are still delivered in order.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes and then closes with `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable here proves that, so its green Windows runs are not evidence.
 #[test]
 fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     let (mut stream, role) = start("close-wake");
@@ -525,6 +531,12 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
 /// throwing one is isolated (reported once as uncaught) without stopping the
 /// others. *Negative control:* notifying before the ring is drained puts
 /// `end:` ahead of the events.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes and then closes with `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable here proves that, so its green Windows runs are not evidence.
 #[test]
 fn on_end_reports_the_close_after_retained_records() {
     let (mut stream, role) = start("on-end");
@@ -1490,6 +1502,12 @@ fn criterion27_host_call_without_a_handler_closes_the_link() {
 /// closes; a test hook holds main between its `REPLY_READY` and `STATE` loads
 /// until the Worker has published and recorded the close. The real reply
 /// returns and the slot is emptied, never `KELD-IPC-022`.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes and then closes with `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable here proves that, so its green Windows runs are not evidence.
 #[test]
 fn review_reply_published_before_the_close_wins() {
     let (mut stream, role) = start("reply-then-close");
