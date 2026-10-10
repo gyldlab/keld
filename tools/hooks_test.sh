@@ -2,10 +2,17 @@
 set -euo pipefail
 
 source_root="$(git rev-parse --show-toplevel)"
+# The hooks under test (and the legacy negative control) execute `just`, so the
+# real executable is required; a missing one is a failure, never a skip (#650).
+if ! command -v just >/dev/null 2>&1; then
+  echo "HOOKS-TEST: the \`just\` executable is not installed. Install just and rerun \`just hooks-test\`; this test is local-only until CI pins a just (dependency-gate decision, not taken)." >&2
+  exit 1
+fi
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/keld-hooks-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
 git -C "$fixture" init -q -b main
+
 empty_hooks="$fixture/empty-hooks"
 mkdir -p "$empty_hooks"
 git -C "$fixture" config core.hooksPath "$empty_hooks"
@@ -54,7 +61,7 @@ git -C "$fixture" switch -q main
 
 (
   cd "$fixture"
-  just hooks-install
+  "$source_root/tools/hooks_install.sh"
 )
 git -C "$fixture" switch attack >"$fixture/checkout.out" 2>&1
 

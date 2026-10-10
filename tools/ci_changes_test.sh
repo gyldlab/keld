@@ -15,6 +15,7 @@ trap cleanup EXIT
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
 "$repo_root/tools/ci_webkitgtk_apt.sh" test
+"$repo_root/tools/agents_md.sh" test
 
 result_for_paths() {
     printf '%s\0' "$@" | "$router" classify
@@ -342,6 +343,28 @@ expect_codeql "unknown path selects every CodeQL language" "$codeql_all" "$unkno
 for input in tools/ci_changes.sh tools/ci_required.sh tools/ci_inputs.py tools/ci-inputs.json; do
     expect_codeql "router owner $input selects every CodeQL language" "$codeql_all" "$(result_for_paths "$input")"
 done
+
+# #650: doc-placeholders scans docs/, .agents/, llms.txt, llms-full.txt,
+# AGENTS.md and README.md (tools/doc_placeholders.rs SCANNED_DIRS/FILES), and
+# runs in the hygiene job, which runs whenever docs or hygiene is selected. Each
+# scanned input must reach that job; the test-hello contract's onboarding docs too.
+for input in docs/specs/gh566-corpus-manifest-owner.md .agents/ci.md llms.txt llms-full.txt AGENTS.md README.md \
+    docs/onboarding/03-api-and-cli-surface.md justfile; do
+    placeholder_input="$(result_for_paths "$input")"
+    if ! grep -Fxq docs=true <<<"$placeholder_input" && ! grep -Fxq hygiene=true <<<"$placeholder_input"; then
+        echo "FAIL: $input does not reach the hygiene job (docs or hygiene)" >&2
+        printf '%s\n' "$placeholder_input" >&2
+        exit 1
+    fi
+    echo "ok: $input reaches the hygiene job's placeholder and hello contracts"
+done
+# Negative control: a Rust source change selects neither docs nor hygiene, so
+# the hygiene job (and its placeholder step) is not selected for it.
+rust_source_only="$(result_for_paths crates/keld-ipc/src/codec.rs)"
+expect_exact_output "Rust source alone skips the docs lane" docs false "$rust_source_only"
+expect_exact_output "Rust source alone skips the hygiene lane" hygiene false "$rust_source_only"
+# The placeholder checker itself is an unknown tools input: every lane runs.
+expect_flags "doc-placeholders checker edit selects every lane" "$all_true" "$(result_for_paths tools/doc_placeholders.rs)"
 
 # #630: an all-workspace fallback (router, workflow or ci-inputs.json edits)
 # builds and tests every package on Ubuntu, installing WebKitGTK; it never
@@ -993,4 +1016,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests

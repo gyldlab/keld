@@ -122,7 +122,11 @@ disk — the first production capability to use it. Cross-platform by constructi
 (`std::fs::read`/`std::fs::write` are the same call on all three OSes), so this satisfies
 architecture 05 §3's "all three OS implementations" without per-platform code.
 `..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
-`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`),
+`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`,
+removed by b4634076. CI now runs only the `evaluate`-level `keld-guard` `tests/acl.rs` case
+`slash traversal`; the real-OS proof is the ignored macOS device acceptance
+`macos_retained_filesystem_acceptance_emitter`, case `path-parent-component`: `KELD-GUARD002`
+with zero traversal, open or content I/O),
 not re-implemented here. Verified end-to-end over a real kipc session
 (`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
 on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
@@ -245,10 +249,11 @@ prioritize (scheme-streaming as bulk IPC, principal identity per navigation, eng
 policy switching, `webContents`-grade control). The host is prebuilt, so wry's
 “works in any downstream cargo build” constraint does not apply.
 
-**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT; tao 0.35.3 is
-Apache-2.0. The MPL-2.0 crate in the graph is **`option-ext` 0.2.0**, reached
+**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT (crates.io `LICENSE.spdx`;
+GitHub's license API reports Apache-2.0 only); tao 0.35.3 is Apache-2.0. The MPL-2.0
+crate in the graph is **`option-ext` 0.2.0**, reached
 `keld-wv → wry → dirs → dirs-sys → option-ext` (`deny.toml`,
-[`third-party-licenses.md`](./third-party-licenses.md), learnings 2026-08-13). Do not
+[`third-party-licenses.md`](./third-party-licenses.md)). Do not
 describe wry as MPL.
 
 **Update (2026-08-17, KEL-28 follow-up): the `build_gtk` container was itself
@@ -260,7 +265,7 @@ already fills that slot with its own vertical `gtk::Box`
 (`WindowExtUnix::default_vbox`). GTK logged "Attempting to add a widget...
 but as a GtkBin subclass a GtkApplicationWindow can only contain one widget
 at a time" and the webview never actually attached to the window — confirmed
-live under Xvfb (log capture, `docs/agents/learnings.md`). Every real wry
+live under Xvfb (log capture, KEL-28 follow-up). Every real wry
 example (`examples/simple.rs`, `examples/multiwindow.rs`, ...) passes
 `window.default_vbox().unwrap()` to `build_gtk`; the `gtk_window()` form only
 appears in wry's simplified top-of-crate-doc snippet, which is for the
@@ -283,7 +288,7 @@ job, builds `keld-host`, launches `--hello`, and polls `xdotool search`
 blind sleep. A local dry-run in WSL surfaced a real bug in the *test script
 itself*: a `trap '... || true' EXIT` clobbers `$?`, so a genuinely failing
 smoke test would have reported success to CI — fixed by capturing the exit
-code before cleanup and re-exiting with it explicitly (`docs/agents/learnings.md`).
+code before cleanup and re-exiting with it explicitly (local WSL dry-run).
 
 **Next.** Keep macOS and Linux on wry+tao. Rewrite a backend to objc2/webkit6-gtk4
 when that backend needs a wry-missing hook (as happened for Windows, KEL-65), or
@@ -342,7 +347,7 @@ Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
 profile: `.config/nextest.toml`, deliberately empty — the mandated gate MUST NOT
 retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
-(learnings 2026-07-08).
+([`Cargo.toml`](../../Cargo.toml) `[workspace.lints]`).
 
 **Chose — local mirror of CI (`justfile`).** The `ci` entry names its executable
 `ci-inventory` in the justfile; that recipe and its groups own the local gate inventory
@@ -572,7 +577,7 @@ hygiene check fails if `/.github/` is ignored (`tools/ci_hygiene.rs`).
 |---|---|
 | `.github/workflows/ci.yml` | rustfmt; clippy + nextest + rustdoc on ubuntu/macOS/windows (`fail-fast: false`); MSRV from `cargo metadata`; cargo-deny; gitleaks; CODEOWNERS/template hygiene |
 | Action pins | Full 40-char SHAs; tag in the trailing comment (`tools/ci_hygiene.rs` rejects unpinned `uses:`) |
-| Gitleaks | OSS CLI 8.30.1 tarball + `sha256sum -c` (`551f6fc8…`). **Not** `gitleaks/gitleaks-action` (that Action needs `GITLEAKS_LICENSE` on org repos; learnings 2026-08-13) |
+| Gitleaks | OSS CLI 8.30.1 tarball + `sha256sum -c` (`551f6fc8…`). **Not** `gitleaks/gitleaks-action` (that Action needs `GITLEAKS_LICENSE` on org repos, per the gitleaks-action README) |
 | `.github/CODEOWNERS` | `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` / `.github/` / `keld-guard` / `keld-ipc`. Owners are named users until `@gyldlab/keld-maintainers` exists (file header: unknown teams make CODEOWNERS a no-op) |
 | `.github/PULL_REQUEST_TEMPLATE.md` | Summary, spec refs, the five review gates, gate commands, platforms, perf |
 | `.github/ISSUE_TEMPLATE/` | bug.yml, feature.yml, config.yml (Linear link for implementation work) |

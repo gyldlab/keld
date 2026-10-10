@@ -802,7 +802,7 @@ fn created_template_quits_after_last_window_closed_on_the_same_link() {
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
 
-        let ping_channel = ChannelId(91);
+        let ping_channel = ChannelId::for_test(91);
         let ping_corr = CorrelationId(0x185);
         write_frame(
             &mut stream,

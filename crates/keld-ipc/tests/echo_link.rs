@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use keld_ipc::channel_table::HANDSHAKE_CHANNEL;
 use keld_ipc::codec::encode;
 use keld_ipc::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use keld_ipc::link::{handshake_client, handshake_server, read_frame, write_frame};
@@ -135,7 +136,7 @@ fn handshake_protocol_version_mismatch_is_ipc_002() {
     let mut hello = FrameHeader {
         kind: FrameKind::Hello,
         flags: 0,
-        channel: ChannelId(0),
+        channel: HANDSHAKE_CHANNEL,
         corr: CorrelationId(0),
         len: 0,
     }
@@ -164,7 +165,7 @@ fn call_on_unknown_channel_is_ipc_005() {
         &mut client,
         FrameKind::Call,
         0,
-        ChannelId(99),
+        ChannelId::for_test(99),
         CorrelationId(1),
         &[],
     )
@@ -209,7 +210,7 @@ fn echo_call_rejects_reply_on_wrong_channel() {
             &mut server,
             FrameKind::Reply,
             0,
-            ChannelId(99),
+            ChannelId::for_test(99),
             header.corr,
             &payload,
         )?;
@@ -272,7 +273,7 @@ fn empty_hello_is_rejected_before_echo_dispatch() {
         &mut client,
         FrameKind::Hello,
         0,
-        ChannelId(0),
+        HANDSHAKE_CHANNEL,
         CorrelationId(0),
         &[],
     )
@@ -304,7 +305,7 @@ fn hello_frame_bytes_are_pinned() {
     let bytes = FrameHeader {
         kind: FrameKind::Hello,
         flags: 0,
-        channel: ChannelId(0),
+        channel: HANDSHAKE_CHANNEL,
         corr: CorrelationId(0),
         len: 0,
     }
@@ -339,7 +340,7 @@ fn hello_token_payload_len_is_pinned() {
     let bytes = FrameHeader {
         kind: FrameKind::Hello,
         flags: 0,
-        channel: ChannelId(0),
+        channel: HANDSHAKE_CHANNEL,
         corr: CorrelationId(0),
         len: 32,
     }
@@ -522,7 +523,7 @@ fn hostile_authenticated_frames_close_with_005_and_zero_reply_bytes() {
             &mut client,
             kind,
             flags,
-            ChannelId(channel),
+            ChannelId::for_test(channel),
             CorrelationId(corr),
             &payload,
         );
@@ -579,7 +580,7 @@ fn trailing_payload_bytes_close_with_003_and_zero_reply_bytes() {
         &mut client,
         FrameKind::Call,
         0,
-        ChannelId(1),
+        ECHO_CHANNEL,
         CorrelationId(9),
         &payload,
     )

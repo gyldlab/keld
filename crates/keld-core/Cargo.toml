@@ -45,6 +45,8 @@ tempfile = { workspace = true }
 # Enables only KEL-135 fault injection in the signed core test fixture; this
 # feature is absent from the normal release dependency above.
 keld-wv = { workspace = true, features = ["profile-test-hooks"] }
+# Unit tests send PINGs on an unallocated channel id (#634: `ChannelId::for_test`).
+keld-ipc = { workspace = true, features = ["test-channel-ids"] }
 
 [lints]
 workspace = true

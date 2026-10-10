@@ -1594,6 +1594,7 @@ dependencies = [
  "blake3",
  "getrandom 0.4.3",
  "keld-guard",
+ "keld-ipc",
  "postcard",
  "serde",
  "sha2 0.10.9",

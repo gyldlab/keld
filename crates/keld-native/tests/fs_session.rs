@@ -107,17 +107,14 @@ fn call_fs(
 /// zero-effect oracle, independent of the guard and of the reply path.
 #[test]
 fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
-    let cases: [(&str, u16, u16, u32); 4] = [
-        ("corr zero", 0, FS_CHANNEL.0, 0),
-        ("flag raw", keld_ipc::frame::FLAG_RAW, FS_CHANNEL.0, 5),
-        ("unknown flag", 1 << 2, FS_CHANNEL.0, 5),
-        ("echo channel", 0, 1, 5),
+    let cases: [(&str, u16, keld_ipc::ChannelId, u32); 4] = [
+        ("corr zero", 0, FS_CHANNEL, 0),
+        ("flag raw", keld_ipc::frame::FLAG_RAW, FS_CHANNEL, 5),
+        ("unknown flag", 1 << 2, FS_CHANNEL, 5),
+        ("echo channel", 0, keld_ipc::ECHO_CHANNEL, 5),
     ];
     for (case, flags, channel, corr) in cases {
-        let dir = temp_dir(&format!(
-            "hostile-{}",
-            corr + u32::from(flags) + u32::from(channel)
-        ));
+        let dir = temp_dir(&format!("hostile-{}", case.replace(' ', "-")));
         let file = scope_path(&dir.join("must-not-exist.txt"));
         let manifest = manifest_for(&dir);
         let (mut client, mut server) = connected_pair();
@@ -144,7 +141,7 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
             &mut client,
             FrameKind::Call,
             flags,
-            keld_ipc::ChannelId(channel),
+            channel,
             CorrelationId(corr),
             &payload,
         );

@@ -26,6 +26,7 @@ const HOOK_NAMES = [
   "counterStart",
   "wedgeHoldingKick",
   "onWorkerExit",
+  "beforeWorkerSpawn",
   "KELD_KIPC_TEST_HOOKS",
   "worker-link-test-seam",
 ];

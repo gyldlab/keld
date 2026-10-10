@@ -113,28 +113,93 @@ impl AllowedKinds {
 /// channel/correlation echoed by the receiver); it exists because `PING` is a
 /// positive pre-KEL-133 vector on the echo, lifecycle, and primary sessions
 /// and criterion 11 forbids changing accepted valid bytes.
+///
+/// A built policy cannot be widened (#633). Its fields are private, so code
+/// outside `keld-ipc` reads them through the accessors below and assigns none:
+///
+/// ```compile_fail
+/// let mut policy = keld_ipc::ReceivePolicy::echo_receiver();
+/// policy.also_channel = Some(keld_ipc::LIFECYCLE_CHANNEL);
+/// ```
+///
+/// ```compile_fail
+/// let mut policy = keld_ipc::ReceivePolicy::echo_receiver();
+/// policy.channel = keld_ipc::LIFECYCLE_CHANNEL;
+/// ```
+///
+/// ```compile_fail
+/// use keld_ipc::receive::AllowedKinds;
+/// let mut policy = keld_ipc::ReceivePolicy::echo_receiver();
+/// policy.kinds = AllowedKinds::only(keld_ipc::FrameKind::Event);
+/// ```
+///
+/// ```compile_fail
+/// let mut policy = keld_ipc::ReceivePolicy::server_pre_auth_hello();
+/// policy.allow_ping = true;
+/// ```
+///
+/// ```compile_fail
+/// use keld_ipc::receive::ExpectedCorrelation;
+/// let mut policy = keld_ipc::ReceivePolicy::echo_receiver();
+/// policy.expected_corr = ExpectedCorrelation::Zero;
+/// ```
+///
+/// ```compile_fail
+/// use keld_ipc::receive::PayloadMode;
+/// let mut policy = keld_ipc::ReceivePolicy::server_pre_auth_hello();
+/// policy.payload = PayloadMode::Codec;
+/// ```
+///
+/// ```compile_fail
+/// use keld_ipc::receive::SessionPhase;
+/// let mut policy = keld_ipc::ReceivePolicy::server_pre_auth_hello();
+/// policy.phase = SessionPhase::Authenticated;
+/// ```
+///
+/// ```compile_fail
+/// use keld_ipc::receive::Direction;
+/// let mut policy = keld_ipc::ReceivePolicy::server_pre_auth_hello();
+/// policy.direction = Direction::FromServer;
+/// ```
+///
+/// Reading builds:
+///
+/// ```
+/// use keld_ipc::receive::{Direction, ExpectedCorrelation, PayloadMode, SessionPhase};
+/// use keld_ipc::{ECHO_CHANNEL, FrameKind, ReceivePolicy};
+/// let policy = ReceivePolicy::echo_receiver();
+/// assert_eq!(policy.direction(), Direction::FromClient);
+/// assert_eq!(policy.phase(), SessionPhase::Authenticated);
+/// assert_eq!(policy.channel(), ECHO_CHANNEL);
+/// assert_eq!(policy.payload(), PayloadMode::Codec);
+/// assert_eq!(policy.expected_corr(), ExpectedCorrelation::NonZero);
+/// assert!(policy.kinds().contains(FrameKind::Call));
+/// assert!(!policy.kinds().contains(FrameKind::Event));
+/// assert!(policy.allow_ping());
+/// assert_eq!(policy.also_channel(), None);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive] // consumers select a named constructor; ad-hoc policies are the drift this owner deletes
 pub struct ReceivePolicy {
     /// Which peer frames are expected from.
-    pub direction: Direction,
+    direction: Direction,
     /// Authentication phase of the receiver.
-    pub phase: SessionPhase,
+    phase: SessionPhase,
     /// Declared channel for the structured kinds in `kinds`.
-    pub channel: ChannelId,
+    channel: ChannelId,
     /// Payload rule for the structured kinds in `kinds`.
-    pub payload: PayloadMode,
+    payload: PayloadMode,
     /// Correlation rule for the structured kinds in `kinds`.
-    pub expected_corr: ExpectedCorrelation,
+    expected_corr: ExpectedCorrelation,
     /// Structured frame kinds this policy admits.
-    pub kinds: AllowedKinds,
+    kinds: AllowedKinds,
     /// Whether the v0 `PING` liveness probe is admissible on this session.
-    pub allow_ping: bool,
+    allow_ping: bool,
     /// Second declared channel for the one live multiplexed session (the
     /// primary app link carries spec-table rows 3 and 5 — echo and lifecycle
     /// `CALL`s — on a single stream). `None` everywhere else; a third channel
     /// is a new spec row, not a longer list.
-    pub also_channel: Option<ChannelId>,
+    also_channel: Option<ChannelId>,
 }
 
 /// [`crate::token::SESSION_TOKEN_LEN`] as the wire `u32` declared length.
@@ -151,6 +216,55 @@ const SESSION_TOKEN_WIRE_LEN: u32 = {
 const STRUCTURED_FLAGS_MASK: u16 = 0;
 
 impl ReceivePolicy {
+    /// Which peer frames are expected from.
+    #[must_use]
+    pub const fn direction(&self) -> Direction {
+        self.direction
+    }
+
+    /// Authentication phase of the receiver.
+    #[must_use]
+    pub const fn phase(&self) -> SessionPhase {
+        self.phase
+    }
+
+    /// Declared channel for the structured kinds in [`Self::kinds`].
+    #[must_use]
+    pub const fn channel(&self) -> ChannelId {
+        self.channel
+    }
+
+    /// Payload rule for the structured kinds in [`Self::kinds`].
+    #[must_use]
+    pub const fn payload(&self) -> PayloadMode {
+        self.payload
+    }
+
+    /// Correlation rule for the structured kinds in [`Self::kinds`].
+    #[must_use]
+    pub const fn expected_corr(&self) -> ExpectedCorrelation {
+        self.expected_corr
+    }
+
+    /// Structured frame kinds this policy admits.
+    #[must_use]
+    pub const fn kinds(&self) -> AllowedKinds {
+        self.kinds
+    }
+
+    /// Whether the v0 `PING` liveness probe is admissible on this session.
+    #[must_use]
+    pub const fn allow_ping(&self) -> bool {
+        self.allow_ping
+    }
+
+    /// Second declared channel, on the one live multiplexed session only (the
+    /// primary app link); `None` on every other policy.
+    #[must_use]
+    pub const fn also_channel(&self) -> Option<ChannelId> {
+        self.also_channel
+    }
+
     /// Server admission state: expect the client's `HELLO` (spec table row 1).
     #[must_use]
     pub const fn server_pre_auth_hello() -> Self {
