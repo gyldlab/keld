@@ -41,6 +41,10 @@ windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
+# #528 T5: the guarded router tests digest their permissions manifest on every
+# OS. `sha2` is already in each OS's build graph (keld-guard, keld-ipc), and is
+# a normal dependency only on macOS above.
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 # Enables only KEL-135 fault injection in the signed core test fixture; this
 # feature is absent from the normal release dependency above.

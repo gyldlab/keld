@@ -12,14 +12,17 @@
 //! load generation. Every wait is on an observable (a frame, a role line, a
 //! process exit) with a kill-switch bound, and no assertion is a duration.
 //!
-//! macOS only: T1 is the first proof (spec §6). T5 qualifies Linux and Windows.
-#![cfg(target_os = "macos")]
+//! Every OS with an app link (spec §6 T5): macOS, Linux and Windows run the
+//! same cases against the platform's `BootstrapStream` (a Unix socket, or the
+//! KEL-101 named pipe on Windows). The host closes a link the way the
+//! production router does, with `AppLinkDeadlines::shutdown_app_link`. A real
+//! platform difference is an explicit per-OS expectation that cites its OS
+//! fact, never a skip.
+#![cfg(any(unix, windows))]
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -30,8 +33,9 @@ use keld_ipc::frame::FLAG_RAW;
 use keld_ipc::link::{read_frame, write_frame};
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, AppLinkDeadlines, BootstrapAdmission, BootstrapListener,
-    BootstrapRejection, BootstrapRejectionObserver, CallError, ChannelId, CorrelationId,
-    ECHO_CHANNEL, FrameHeader, FrameKind, IpcError, LIFECYCLE_CHANNEL, write_call_error,
+    BootstrapRejection, BootstrapRejectionObserver, BootstrapStream, CallError, ChannelId,
+    CorrelationId, ECHO_CHANNEL, FrameHeader, FrameKind, IpcError, LIFECYCLE_CHANNEL,
+    write_call_error,
 };
 
 /// #418 arm-B load: a 10,000-EVENT burst, then 1,000 EVENTs at 100 per second.
@@ -210,9 +214,16 @@ impl Drop for Role {
 }
 
 /// Binds a fresh bootstrap listener, spawns the role, and authenticates it.
-fn start(scenario: &str) -> (UnixStream, Role) {
+fn start(scenario: &str) -> (BootstrapStream, Role) {
+    let (stream, role, _link) = start_with_link(scenario);
+    (stream, role)
+}
+
+/// [`start`], also returning the role's `KELD_APP_LINK`.
+fn start_with_link(scenario: &str) -> (BootstrapStream, Role, String) {
     let listener = BootstrapListener::bind().expect("bind bootstrap listener");
-    let role = Role::spawn(scenario, &listener.app_link());
+    let link = listener.app_link();
+    let role = Role::spawn(scenario, &link);
     let deadline = Instant::now() + Duration::from_secs(20);
     let stream = match listener
         .accept_authenticated_until(deadline, &IgnoreRejections)
@@ -228,7 +239,7 @@ fn start(scenario: &str) -> (UnixStream, Role) {
         stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE)),
         "host app-link deadlines",
     );
-    (stream, role)
+    (stream, role, link)
 }
 
 fn arm_b_payload(seq: u32) -> [u8; ARM_B_PAYLOAD_LEN] {
@@ -246,7 +257,7 @@ struct WriteOutcome {
 /// Writes the arm-B EVENT load on `channel`, then `reply` for `corr`, through
 /// the real writer. Stops at the first writer error.
 fn write_arm_b_load(
-    stream: &mut UnixStream,
+    stream: &mut BootstrapStream,
     channel: ChannelId,
     corr: CorrelationId,
     reply: &[u8],
@@ -295,7 +306,7 @@ fn write_arm_b_load(
 }
 
 /// Reads the role's next frame and requires it to be a CALL.
-fn read_call(stream: &mut UnixStream) -> (FrameHeader, Vec<u8>) {
+fn read_call(stream: &mut BootstrapStream) -> (FrameHeader, Vec<u8>) {
     let (header, payload) = read_frame(stream).expect("read the role's CALL");
     assert_eq!(
         header.kind,
@@ -307,14 +318,14 @@ fn read_call(stream: &mut UnixStream) -> (FrameHeader, Vec<u8>) {
 }
 
 /// Reads the role's next CALL and requires its payload text.
-fn read_call_named(stream: &mut UnixStream, name: &str) -> FrameHeader {
+fn read_call_named(stream: &mut BootstrapStream, name: &str) -> FrameHeader {
     let (header, payload) = read_call(stream);
     assert_eq!(String::from_utf8_lossy(&payload), name, "{header:?}");
     header
 }
 
 /// Reads the role's next EVENT on the lifecycle channel and requires its text.
-fn read_role_event(stream: &mut UnixStream, name: &str) {
+fn read_role_event(stream: &mut BootstrapStream, name: &str) {
     let (header, payload) = read_frame(stream).expect("read the role's EVENT");
     assert_eq!(header.kind, FrameKind::Event, "{header:?}");
     assert_eq!(header.channel, LIFECYCLE_CHANNEL, "{header:?}");
@@ -322,7 +333,7 @@ fn read_role_event(stream: &mut UnixStream, name: &str) {
 }
 
 fn host_write(
-    stream: &mut UnixStream,
+    stream: &mut BootstrapStream,
     kind: FrameKind,
     channel: ChannelId,
     corr: CorrelationId,
@@ -331,7 +342,7 @@ fn host_write(
     write_frame(stream, kind, 0, channel, corr, payload).expect("host write");
 }
 
-fn host_reply(stream: &mut UnixStream, call: FrameHeader, payload: &[u8]) {
+fn host_reply(stream: &mut BootstrapStream, call: FrameHeader, payload: &[u8]) {
     host_write(stream, FrameKind::Reply, call.channel, call.corr, payload);
 }
 
@@ -344,7 +355,7 @@ fn seq_payload(seq: u32, len: usize) -> Vec<u8> {
     payload
 }
 
-fn host_event(stream: &mut UnixStream, seq: u32, len: usize) {
+fn host_event(stream: &mut BootstrapStream, seq: u32, len: usize) {
     host_write(
         stream,
         FrameKind::Event,
@@ -356,7 +367,7 @@ fn host_event(stream: &mut UnixStream, seq: u32, len: usize) {
 
 /// Lets the host wait for the role across quiet phases; writes keep
 /// `APP_LINK_IO_DEADLINE`, so criterion 1's writer contract is unchanged.
-fn long_reads(stream: &UnixStream) {
+fn long_reads(stream: &BootstrapStream) {
     peer_fact(
         stream.set_app_link_read_deadline(Some(Duration::from_mins(1))),
         "host read deadline",
@@ -377,7 +388,7 @@ fn peer_fact(result: std::io::Result<()>, what: &str) {
 
 /// Reads until the link is lost; returns the frames read first. Link loss is
 /// EOF or a reset, which `read_frame` reports as `KELD-IPC-001`.
-fn read_until_link_loss(stream: &mut UnixStream) -> Vec<(FrameHeader, Vec<u8>)> {
+fn read_until_link_loss(stream: &mut BootstrapStream) -> Vec<(FrameHeader, Vec<u8>)> {
     let mut frames = Vec::new();
     loop {
         match read_frame(stream) {
@@ -484,6 +495,12 @@ fn criterion4_facts_apply_before_return_and_listeners_run_after_continuation() {
 
 /// Criterion 5: a host close without an `ERR` throws `KELD-IPC-022`, returns no
 /// value, and the records that preceded the close are still delivered in order.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes and then closes with `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable here proves that, so its green Windows runs are not evidence.
 #[test]
 fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     let (mut stream, role) = start("close-wake");
@@ -491,9 +508,7 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     for seq in 0..3 {
         host_event(&mut stream, seq, 8);
     }
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -516,6 +531,12 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
 /// throwing one is isolated (reported once as uncaught) without stopping the
 /// others. *Negative control:* notifying before the ring is drained puts
 /// `end:` ahead of the events.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes and then closes with `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable here proves that, so its green Windows runs are not evidence.
 #[test]
 fn on_end_reports_the_close_after_retained_records() {
     let (mut stream, role) = start("on-end");
@@ -524,9 +545,7 @@ fn on_end_reports_the_close_after_retained_records() {
     for seq in 0..2 {
         host_event(&mut stream, seq, 8);
     }
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -731,21 +750,57 @@ fn criterion10_record_bound_overflow_fails_closed_with_026() {
 /// Criterion 11: a second `open` in the realm is `KELD-IPC-005` before any
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.
+///
+/// The role-visible code, `KELD-IPC-005` for the second `open`, is asserted
+/// on every OS. How the OS refuses the second connect is per OS (#528 T5):
+/// - Unix: the bootstrap listener unlinks its one-use socket path once it
+///   has accepted, so the role's second connect fails at once with `ENOENT`.
+/// - Windows: the pipe has one instance (`nMaxInstances` is 1), and that
+///   instance is the connected first link. So `CreateFileW` refuses any other
+///   client at once with `ERROR_PIPE_BUSY` (231). The host opens the pipe
+///   itself while the first link is up, and that refusal is the oracle. The
+///   role makes no raw second connect on Windows: Bun's connect to a busy
+///   pipe waits about 30 s (libuv's fixed `WaitNamedPipeW` wait) before it
+///   reports `ECONNREFUSED`, as `windows-latest` showed on #666.
 #[test]
 fn criterion11_second_open_and_second_connect_are_refused() {
-    let (mut stream, role) = start("second-link");
+    let scenario = if cfg!(windows) {
+        "second-open"
+    } else {
+        "second-link"
+    };
+    let (mut stream, role, link) = start_with_link(scenario);
+    #[cfg(windows)]
+    {
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let (endpoint, _) = keld_ipc::parse_app_link(&link).expect("parse the role's app link");
+        let refused = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(endpoint)
+            .expect_err("the consumed pipe must refuse a second client");
+        assert_eq!(refused.raw_os_error(), Some(ERROR_PIPE_BUSY), "{refused}");
+    }
+    #[cfg(not(windows))]
+    let _ = link;
     let call = read_call_named(&mut stream, "still-up");
     host_reply(&mut stream, call, b"first-link-up");
     let output = role.finish();
-    expect_report(
-        &output,
-        &[
-            ("second-open", "KELD-IPC-005"),
-            ("second-connect", "refused:ENOENT"),
-            ("first-link", "first-link-up"),
-            ("done", "true"),
-        ],
-    );
+    let mut expected = vec![
+        ("second-open", "KELD-IPC-005"),
+        ("first-link", "first-link-up"),
+        ("done", "true"),
+    ];
+    if cfg!(windows) {
+        assert!(
+            !output.report().contains_key("second-connect"),
+            "the Windows role makes no raw second connect: {}",
+            output.diagnostics()
+        );
+    } else {
+        expected.push(("second-connect", "refused:ENOENT"));
+    }
+    expect_report(&output, &expected);
 }
 
 /// Criterion 12: a REPLY for another live id never satisfies the blocking
@@ -836,7 +891,7 @@ fn criterion13_every_call_needs_a_finite_deadline() {
 /// Criteria 14 and 21 harness: one inbound frame the selected policy rejects.
 /// The link closes before any append; the parked call throws 022 whose detail
 /// names the KELD-IPC-005 cause; no listener, waiter or applier sees it.
-fn inbound_violation(write_bad: impl FnOnce(&mut UnixStream, FrameHeader)) {
+fn inbound_violation(write_bad: impl FnOnce(&mut BootstrapStream, FrameHeader)) {
     let (mut stream, role) = start("inbound-violation");
     long_reads(&stream);
     let call = read_call_named(&mut stream, "violation");
@@ -1447,14 +1502,18 @@ fn criterion27_host_call_without_a_handler_closes_the_link() {
 /// closes; a test hook holds main between its `REPLY_READY` and `STATE` loads
 /// until the Worker has published and recorded the close. The real reply
 /// returns and the slot is emptied, never `KELD-IPC-022`.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes and then closes with `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable here proves that, so its green Windows runs are not evidence.
 #[test]
 fn review_reply_published_before_the_close_wins() {
     let (mut stream, role) = start("reply-then-close");
     let call = read_call_named(&mut stream, "reply-then-close");
     host_reply(&mut stream, call, b"real-reply");
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -1604,9 +1663,7 @@ fn expiry_after_the_link_ended_rejects_with_the_recorded_code() {
     // Load shaping, not synchronization: keep the park past the async call's
     // 200 ms deadline before the host closes without answering either call.
     thread::sleep(Duration::from_millis(600));
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(

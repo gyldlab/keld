@@ -2,8 +2,10 @@
 //! host half of 8; the T3 Quit-then-close rule): a Bun role running the
 //! GH-527 `WorkerLink` fixture
 //! (`packages/@keld/kipc/test/worker-link-role.ts`) against the guarded
-//! primary router on a real authenticated app link. macOS only, like the T1
-//! harness; T5 qualifies Linux and Windows.
+//! primary router on a real authenticated app link. Every OS with a router
+//! runs them (#528 T5). Windows has no post-Quit drain (`await_windows_quit_peer_close`
+//! is its Quit tail), so the drain-end case is a Unix expectation and Windows
+//! states its own (gh527 §10, T5 finding).
 
 use super::*;
 
@@ -159,6 +161,13 @@ fn report_value<'a>(
 /// Criterion 6 end to end: a Bun role parked in `callBlocking` on the FS
 /// channel, with the host's FS worker holding that call, throws
 /// `KELD-IPC-023` when the host retires the generation; the link is gone.
+///
+/// Windows: inherited from W2, unproven until W2 is fixed (#528 T5, gh527
+/// §10). The host writes the 023 and then calls `DisconnectNamedPipe`, which
+/// discards unread pipe data. The pass therefore rests on the inference that
+/// the transport Worker already has a read pending when the host disconnects.
+/// No observable in this case proves that, so its green Windows runs are not
+/// evidence for criterion 6.
 #[test]
 fn bun_role_parked_on_fs_throws_023_when_the_host_retires() {
     let (_temp_target, target) = {
@@ -282,6 +291,7 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
 /// reports the close as `KELD-IPC-022`. *Negative control:* a Quit that does
 /// not close the link ends the drain at `IdleBackstop`.
 #[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     let (role, t) =
         WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
@@ -320,6 +330,53 @@ fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     );
     let report = role.finish();
     // The role accepted the real `LifecycleResponse::Quit` REPLY.
+    assert_eq!(
+        report_value(&report, "quit"),
+        Some("returned"),
+        "{report:?}"
+    );
+    assert_eq!(report_value(&report, "end-code"), Some("KELD-IPC-022"));
+    t.router.shutdown().expect("router shutdown after Quit");
+}
+
+/// The Windows half of the case above (#528 T5). Windows has no post-Quit
+/// drain: after the real `LifecycleResponse::Quit` REPLY, its Quit tail waits
+/// for the role to close the link and treats any byte as a fault
+/// (`await_windows_quit_peer_close_until`). A role that closes on the REPLY
+/// therefore ends that wait at its close, the tail asks the owner to shut
+/// down, and the UI quits. The role's `onEnd` reports `KELD-IPC-022`.
+/// *Negative control:* a peer that never closes holds the wait to its
+/// deadline instead (`quit_peer_close_wait_is_bounded_for_a_non_closing_client`).
+/// A CALL written after the REPLY would fail this tail, not get `KELD-IPC-024`:
+/// that is the gh527 criterion 7 finding for Windows (gh527 §10).
+#[test]
+#[cfg(windows)]
+fn bun_role_closes_on_the_quit_reply_and_windows_awaits_its_close() {
+    let (role, t) =
+        WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
+    let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+        .guardian
+        .recv_timeout(Duration::from_secs(20))
+        .expect("Quit attribution")
+    else {
+        panic!("Quit skipped shutdown attribution");
+    };
+    prepare.send(Ok(())).expect("acknowledge attribution");
+    let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+        .guardian
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the Quit tail reaches the owner after the role's close")
+    else {
+        panic!("unexpected owner command after the Quit REPLY");
+    };
+    shutdown.send(Ok(())).expect("acknowledge owner shutdown");
+    assert_eq!(
+        t.window
+            .recv_timeout(Duration::from_secs(5))
+            .expect("UI Quit"),
+        AppWindowCommand::Quit
+    );
+    let report = role.finish();
     assert_eq!(
         report_value(&report, "quit"),
         Some("returned"),
