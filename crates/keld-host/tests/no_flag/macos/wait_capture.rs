@@ -118,7 +118,7 @@ fn wait_fixture() {
     .wait_host();
     assert!(output.status.success());
     assert_eq!(output.stdout, b"FOLLOWUP");
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     fs::write(root.join("passed"), b"passed").expect("completed regression witness");
 }
 

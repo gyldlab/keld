@@ -198,7 +198,7 @@ impl ShippingDevCycle {
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO2");
         beacon.assert_exact();
         assert_eq!(presentation.expect_initial(cycle.host_pid, name).len(), 1);
-        assert!(native_windows(cli_pid, TITLE).is_empty());
+        assert_eq!(native_windows(cli_pid, TITLE), [] as [u32; 0]);
         assert!(
             !unix_sockets_not_inherited_from_harness(cycle.host_pid).is_empty(),
             "host owns no Unix app-link descriptor of its own"
@@ -383,7 +383,7 @@ impl ShippingDevCycle {
         await_process_gone(self.guardian_pid);
         await_process_gone(self.bun_pid);
         await_process_gone(self.descendant_pid);
-        assert!(native_windows(self.host_pid, TITLE).is_empty());
+        assert_eq!(native_windows(self.host_pid, TITLE), [] as [u32; 0]);
         self.group_gone = true;
     }
 }

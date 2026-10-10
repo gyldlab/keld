@@ -242,7 +242,7 @@ impl RecoveryCycle {
             await_process_gone(current.descendant_pid);
             await_process_gone(current.guardian_pid);
         }
-        assert!(native_windows(self.host_pid, TITLE).is_empty());
+        assert_eq!(native_windows(self.host_pid, TITLE), [] as [u32; 0]);
         self.process_groups.clear();
     }
 }

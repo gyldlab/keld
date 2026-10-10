@@ -117,8 +117,8 @@ fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
         !stderr.contains("KELD-RUNTIME-002"),
         "pre-Ready crash restarted to breaker: {stderr}"
     );
-    assert!(native_windows(host_pid, TITLE).is_empty());
-    assert!(session_dirs_for(host_pid).is_empty());
+    assert_eq!(native_windows(host_pid, TITLE), [] as [u32; 0]);
+    assert_eq!(session_dirs_for(host_pid), [] as [std::path::PathBuf; 0]);
     let attempts = fs::read_dir(fixture.root.path())
         .expect("list pre-Ready attempts")
         .filter_map(Result::ok)

@@ -43,7 +43,7 @@ fn doctor_json_emits_findings_array_matching_library() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let value: Value = serde_json::from_str(stdout.trim()).expect("parse doctor json");
     let arr = value.as_array().expect("top-level array");
-    assert!(!arr.is_empty());
+    assert_ne!(arr.len(), 0);
     for item in arr {
         assert!(item.get("label").and_then(Value::as_str).is_some());
         assert!(item.get("ok").and_then(Value::as_bool).is_some());
@@ -304,7 +304,7 @@ fn mcp_doctor_matches_cli_json_over_stdio() {
     let findings = result["structuredContent"]
         .as_array()
         .expect("findings array");
-    assert!(!findings.is_empty());
+    assert_ne!(findings.len(), 0);
     for finding in findings {
         assert!(finding["label"].is_string(), "{finding}");
         assert!(finding["ok"].is_boolean(), "{finding}");
