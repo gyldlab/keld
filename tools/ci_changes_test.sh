@@ -616,6 +616,8 @@ echo "ok: cargo metadata derives current keld-host closure"
 
 cd "$repo_root"
 git -C "$temp_dir" init -q
+# No detached `git maintenance` child may outlive a command and race cleanup (#670).
+git -C "$temp_dir" config maintenance.auto false
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
 mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin" "$temp_dir/tools"
@@ -1016,4 +1018,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests

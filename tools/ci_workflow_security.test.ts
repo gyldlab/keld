@@ -363,6 +363,8 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
         ...args,
       ]);
     expect(git("init", "--quiet").exitCode).toBe(0);
+    // No detached `git maintenance` repack may outlive the commit and race cleanup (#670).
+    expect(git("config", "maintenance.auto", "false").exitCode).toBe(0);
     expect(git("add", "-A").exitCode).toBe(0);
     expect(git("commit", "--quiet", "--no-verify", "-m", "fixture").exitCode).toBe(0);
     const binary = join(temporary, process.platform === "win32" ? "ci-hygiene.exe" : "ci-hygiene");

@@ -5758,14 +5758,7 @@ mod tests {
         let temp = TempDir::new();
         let checkout = temp.path().join("checkout with spaces");
         fs::create_dir_all(checkout.join("tools")).expect("fixture checkout");
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(&checkout)
-                .status()
-                .expect("initialize fixture")
-                .success()
-        );
+        init_fixture_repository(&checkout);
         fs::write(
             checkout.join("README.md"),
             "The word Mermaid is not a diagram.\n",
@@ -5834,14 +5827,7 @@ mod tests {
         fs::create_dir(&checkout).expect("checkout directory");
         fs::create_dir(&external).expect("external directory");
         symlink(&external, checkout.join("target")).expect("escaping target symlink");
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(&checkout)
-                .status()
-                .expect("initialize fixture")
-                .success()
-        );
+        init_fixture_repository(&checkout);
         fs::write(
             checkout.join("diagram.md"),
             "```mermaid\nflowchart LR\naccTitle: Renderer test\naccDescr: A fixture diagram for renderer cleanup tests.\nA --> B\n```\n",
@@ -5963,14 +5949,7 @@ foreach ($item in $items) {
 
         let checkout = temp.path().join("checkout");
         fs::create_dir(&checkout).expect("checkout directory");
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(&checkout)
-                .status()
-                .expect("initialize fixture")
-                .success()
-        );
+        init_fixture_repository(&checkout);
         fs::write(
             checkout.join("diagram.md"),
             "```mermaid\nflowchart LR\naccTitle: Renderer test\naccDescr: A fixture diagram for renderer cleanup tests.\nA --> B\n```\n",
@@ -6576,11 +6555,18 @@ foreach ($item in $items) {
         assert!(status.success(), "git {args:?}");
     }
 
+    /// `git init` for a throwaway fixture with automatic maintenance off, so no
+    /// detached `git maintenance` repack outlives a command and races cleanup (#670).
+    fn init_fixture_repository(root: &Path) {
+        git_fixture(root, &["init", "--quiet"]);
+        git_fixture(root, &["config", "maintenance.auto", "false"]);
+    }
+
     #[test]
     fn channel_allocations_rule_reads_the_merge_base_and_fails_closed() {
         let temp = TempDir::new();
         let root = temp.path();
-        git_fixture(root, &["init", "--quiet"]);
+        init_fixture_repository(root);
         temp.write("README.md", "fixture\n");
         git_fixture(root, &["add", "README.md"]);
         git_fixture(root, &["commit", "--quiet", "-m", "before the baseline"]);

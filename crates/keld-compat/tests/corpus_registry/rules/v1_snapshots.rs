@@ -128,12 +128,18 @@ fn snapshot_checkout_attributes_reject_transforming_filters() {
         std::env::temp_dir().join(format!("keld-compat-attributes-{}", std::process::id())),
     );
     fs::create_dir_all(&dir.0).expect("create temp repo");
-    let init = std::process::Command::new("git")
-        .args(["-c", "init.defaultBranch=main", "init", "-q"])
-        .current_dir(&dir.0)
-        .status()
-        .expect("run git init");
-    assert!(init.success(), "git init");
+    // No detached `git maintenance` child may race the temp-repo cleanup (#670).
+    for args in [
+        &["-c", "init.defaultBranch=main", "init", "-q"][..],
+        &["config", "maintenance.auto", "false"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&dir.0)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?}");
+    }
     for (attributes, rejected) in [
         ("*.md eol=crlf\n", Some("eol")),
         ("* text=auto\n*.md !eol\n", Some("eol")),
