@@ -109,15 +109,9 @@ impl std::error::Error for ProjectOwnershipError {}
 pub(crate) fn ensure_current_principal_owns(path: &Path) -> Result<(), ProjectOwnershipError> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt as _;
-
         let metadata = fs::metadata(path)
             .map_err(|source| ProjectOwnershipError::inspection(path.to_owned(), source))?;
-        let invoking_uid = rustix::process::geteuid().as_raw();
-        if metadata.uid() != invoking_uid {
-            return Err(ProjectOwnershipError::foreign(path.to_owned()));
-        }
-        Ok(())
+        ensure_unix_metadata_owned_by(path, &metadata, rustix::process::geteuid().as_raw())
     }
     #[cfg(windows)]
     {
@@ -141,6 +135,20 @@ pub(crate) fn ensure_current_principal_owns(path: &Path) -> Result<(), ProjectOw
             "this platform has no implemented project-owner identity check",
         ))
     }
+}
+
+#[cfg(unix)]
+fn ensure_unix_metadata_owned_by(
+    path: &Path,
+    metadata: &fs::Metadata,
+    invoking_uid: u32,
+) -> Result<(), ProjectOwnershipError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if metadata.uid() != invoking_uid {
+        return Err(ProjectOwnershipError::foreign(path.to_owned()));
+    }
+    Ok(())
 }
 
 /// Failure while compiling the non-release boot stage.
@@ -204,6 +212,103 @@ impl Drop for StageGuard {
             self.launch_guards.clear();
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+}
+
+/// Owns the selected project directory and fixed policy leaf until capture ends.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct ProjectPermissionsSource {
+    root: File,
+    policy: Option<File>,
+    display_path: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl ProjectPermissionsSource {
+    fn open(project_root: &Path) -> Result<Self, BootCompileError> {
+        let invoking_uid = rustix::process::geteuid().as_raw();
+        Self::open_with_owner_check(project_root, |path, metadata| {
+            ensure_unix_metadata_owned_by(path, metadata, invoking_uid)
+        })
+    }
+
+    fn open_with_owner_check<F>(
+        project_root: &Path,
+        mut owner_check: F,
+    ) -> Result<Self, BootCompileError>
+    where
+        F: FnMut(&Path, &fs::Metadata) -> Result<(), ProjectOwnershipError>,
+    {
+        use rustix::fs::{Mode, OFlags, open, openat};
+
+        let root = File::from(
+            open(
+                project_root,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|source| {
+                BootCompileError::new("permissions source root", source.to_string())
+            })?,
+        );
+        let root_metadata = root.metadata().map_err(|source| {
+            BootCompileError::new("permissions source root", source.to_string())
+        })?;
+        if !root_metadata.is_dir() {
+            return Err(BootCompileError::new(
+                "permissions source root",
+                "selected root is not a directory",
+            ));
+        }
+        owner_check(project_root, &root_metadata)?;
+        let display_path = project_root.join(PERMISSIONS_FILE);
+        // Open the leaf itself without following links. NONBLOCK prevents a
+        // FIFO from waiting for a writer before retained-metadata validation.
+        let policy = match openat(
+            &root,
+            PERMISSIONS_FILE,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => Some(File::from(fd)),
+            Err(source) if source == rustix::io::Errno::NOENT => None,
+            Err(source) => {
+                return Err(BootCompileError::new(
+                    "permissions source",
+                    source.to_string(),
+                ));
+            }
+        };
+        if let Some(file) = &policy {
+            let metadata = file.metadata().map_err(|source| {
+                BootCompileError::new("permissions source", source.to_string())
+            })?;
+            if !metadata.is_file() {
+                return Err(BootCompileError::new(
+                    "permissions source",
+                    "selected source is not a regular file",
+                ));
+            }
+            owner_check(&display_path, &metadata)?;
+        }
+        Ok(Self {
+            root,
+            policy,
+            display_path,
+        })
+    }
+
+    fn capture(self) -> Result<Vec<u8>, BootCompileError> {
+        let result = match self.policy {
+            Some(file) => keld_guard::read_manifest_bytes(file, &self.display_path)
+                .map_err(|source| BootCompileError::new("permissions source", source.to_string())),
+            None => Ok(PERMISSIONS_BYTES.to_vec()),
+        };
+        // Keep the selected directory object alive through the entire read,
+        // including a bounded-read failure, then release both source handles.
+        drop(self.root);
+        result
     }
 }
 
@@ -370,13 +475,19 @@ where
             return Err(BootCompileError::new("kipc transport", source.to_string()));
         }
     }
+    #[cfg(target_os = "macos")]
+    let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
+    #[cfg(target_os = "macos")]
+    let permissions_bytes = permissions_snapshot.as_slice();
+    #[cfg(not(target_os = "macos"))]
+    let permissions_bytes = PERMISSIONS_BYTES;
     write_new_file(
         &root.join(PERMISSIONS_FILE),
-        PERMISSIONS_BYTES,
+        permissions_bytes,
         0o400,
         "permissions",
     )?;
-    let digest = Sha256::digest(PERMISSIONS_BYTES);
+    let digest = Sha256::digest(permissions_bytes);
     let descriptor = serde_json::to_vec(&serde_json::json!({
         "schema": 1,
         "name": name,
@@ -854,7 +965,7 @@ mod tests {
 
     use super::*;
 
-    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    pub(super) fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let temp = tempfile::tempdir().expect("temp root");
         let project = temp.path().join("project");
         fs::create_dir_all(project.join("src")).expect("project src");
@@ -1004,6 +1115,19 @@ mod tests {
         assert_ne!(first.root(), second.root());
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_project_policy_does_not_change_historical_staged_policy() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(project.join(PERMISSIONS_FILE), b"explicit project bytes\n")
+            .expect("unselected Linux project policy");
+        let stage = stage_dev_boot(&project, &source_host).expect("unchanged Linux stage");
+        assert_eq!(
+            fs::read(stage.root().join(PERMISSIONS_FILE)).expect("fixed Linux policy"),
+            b"{}\n"
+        );
+    }
+
     #[test]
     fn stage_dev_boot_refuses_a_foreign_owned_project_root() {
         let (_temp, project, source_host) = fixture();
@@ -1107,3 +1231,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::expect_used, clippy::panic)]
+// test fixture failures are assertion oracles, as in the sibling unit-test module
+mod permissions_tests;

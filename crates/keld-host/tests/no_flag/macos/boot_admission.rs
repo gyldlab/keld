@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 #[test]
 fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing() {
@@ -96,6 +96,7 @@ fn every_invalid_boot_class_fails_before_transient_window_listener_or_bun() {
             invalid.name(),
             invalid.expected_code(),
             None,
+            false,
         );
     }
 }
@@ -117,6 +118,7 @@ fn every_invalid_policy_class_fails_before_transient_window_listener_or_bun() {
             invalid.name(),
             invalid.expected_code(),
             None,
+            false,
         );
     }
 }
@@ -134,6 +136,7 @@ fn retained_policy_read_failure_is_guard004_and_resource_free() {
         "retained-read-failure",
         "KELD-GUARD004",
         Some(&fault),
+        false,
     );
     assert!(
         fault.marker.exists(),
@@ -141,14 +144,15 @@ fn retained_policy_read_failure_is_guard004_and_resource_free() {
     );
 }
 
-fn assert_invalid_stage_is_resource_free(
+pub(crate) fn assert_invalid_stage_is_resource_free(
     stage: &keld_cli::boot::DevBootStage,
     watcher: &NativeAbsenceWatcher,
     control_path: &Path,
     case: &str,
     expected_code: &str,
     read_fault: Option<&PolicyReadFault>,
-) {
+    dev_lease: bool,
+) -> Output {
     let listener = UnixListener::bind(control_path).expect("bind invalid control observer");
     listener
         .set_nonblocking(true)
@@ -173,7 +177,17 @@ fn assert_invalid_stage_is_resource_free(
         .env("KELD_T1B_CONTROL", control_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command.spawn().expect("start suspended invalid host");
+    if dev_lease {
+        command
+            .env("KELD_DEV_LEASE", "stdin-v1")
+            .stdin(Stdio::piped());
+    } else {
+        command.env_remove("KELD_DEV_LEASE");
+    }
+    let mut child = command.spawn().expect("start suspended invalid host");
+    // Retain the valid lease writer until the real host has exited. Legacy
+    // callers still select the lease-less invalid-stage path above.
+    let _dev_lease = child.stdin.take();
     let host_pid = child.id();
     await_process_state(host_pid, 'T');
     let native = watcher.spawn(host_pid);
@@ -205,7 +219,7 @@ fn assert_invalid_stage_is_resource_free(
         observations, "READY\nDONE\n",
         "{case}: transient resource: {observations}"
     );
-    let stderr = String::from_utf8(output.stderr).expect("typed stderr UTF-8");
+    let stderr = std::str::from_utf8(&output.stderr).expect("typed stderr UTF-8");
     assert!(stderr.contains(expected_code), "{case}: {stderr}");
     assert!(
         stderr.contains("[startup-resource-attempts listener=0 child=0 window=0]"),
@@ -227,4 +241,5 @@ fn assert_invalid_stage_is_resource_free(
         "{case}: app-link directory remains"
     );
     let _ = fs::remove_file(control_path);
+    output
 }

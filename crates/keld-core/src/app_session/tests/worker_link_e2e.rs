@@ -4,6 +4,10 @@
 //! (`packages/@keld/kipc/test/worker-link-role.ts`) against the guarded
 //! primary router on a real authenticated app link. macOS only, like the T1
 //! harness; T5 qualifies Linux and Windows.
+//!
+//! KEL-140 owns the added public-index retirement consumer. Keep it with this
+//! existing authenticated router/process owner; review the module's layout
+//! trigger at KEL-140 acceptance rather than duplicate that owner in another harness.
 
 use super::*;
 
@@ -28,20 +32,47 @@ impl WorkerLinkRole {
         channel: &'static keld_ipc::channel_table::ChannelEntry,
         payload: &[u8],
     ) -> (Self, GuardedTestRouter) {
-        use std::io::Read as _;
         use std::process::{Command, Stdio};
 
         let listener = keld_ipc::BootstrapListener::bind().expect("bind role listener");
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../packages/@keld/kipc/test/worker-link-role.ts");
-        let mut child = Command::new("bun")
+        let mut command = Command::new("bun");
+        command
             .arg(script)
             .arg(scenario)
             .env("KELD_APP_LINK", listener.app_link())
             .env("KELD_KIPC_TEST_HOOKS", "1")
             .env("KELD_T2_CHANNEL", channel.wire_id().to_string())
             .env("KELD_T2_PAYLOAD_HEX", hex_of(payload))
-            .stdin(Stdio::null())
+            .stdin(Stdio::null());
+        Self::spawn_authenticated(&listener, command)
+    }
+
+    /// Uses the same custody and authenticated router for a public-index caller.
+    fn start_public_fs() -> (Self, GuardedTestRouter) {
+        use std::process::{Command, Stdio};
+
+        let listener = keld_ipc::BootstrapListener::bind().expect("bind public FS role listener");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/app_session/tests/fixtures/public_fs_role.ts");
+        let mut command = Command::new("bun");
+        command
+            .arg(script)
+            .env("KELD_APP_LINK", listener.app_link())
+            .env_remove("KELD_KIPC_TEST_HOOKS")
+            .stdin(Stdio::piped());
+        Self::spawn_authenticated(&listener, command)
+    }
+
+    fn spawn_authenticated(
+        listener: &keld_ipc::BootstrapListener,
+        mut command: std::process::Command,
+    ) -> (Self, GuardedTestRouter) {
+        use std::io::Read as _;
+        use std::process::Stdio;
+
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -92,12 +123,18 @@ impl WorkerLinkRole {
             status.success(),
             "role failed: {status:?}\n{stdout}\n{stderr}"
         );
-        stdout
+        let mut report = std::collections::BTreeMap::new();
+        for (key, value) in stdout
             .lines()
             .filter_map(|line| line.strip_prefix("KELD_WL "))
             .filter_map(|rest| rest.split_once('='))
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            .collect()
+        {
+            assert!(
+                report.insert(key.to_owned(), value.to_owned()).is_none(),
+                "duplicate role report key `{key}`: {stdout}"
+            );
+        }
+        report
     }
 
     /// Joins whichever output readers remain; each runs to its pipe's EOF.
@@ -327,4 +364,126 @@ fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     );
     assert_eq!(report_value(&report, "end-code"), Some("KELD-IPC-022"));
     t.router.shutdown().expect("router shutdown after Quit");
+}
+
+/// These fields describe one public Promise handler, not wire/native cardinality.
+fn assert_public_retirement_report(report: &std::collections::BTreeMap<String, String>) {
+    assert_eq!(
+        [
+            report_value(report, "call-code"),
+            report_value(report, "call-returned"),
+            report_value(report, "settlements"),
+            report_value(report, "after-code"),
+        ],
+        [
+            Some("KELD-IPC-023"),
+            Some("false"),
+            Some("1"),
+            Some("KELD-IPC-022")
+        ],
+        "{report:?}"
+    );
+}
+
+/// KEL-140 AC7 consumer: a public async FS caller sees the real retirement ERR.
+/// The admitted pre-native lease and sentinel are observed separately from rejection.
+/// `settlements` counts this public Promise handler, not wire ERRs or native syscalls.
+#[test]
+fn public_fs_write_preserves_retirement_error_until_owner_lease_drains() {
+    use std::io::Write as _;
+
+    let (mut role, t) = WorkerLinkRole::start_public_fs();
+    let target = t.allowed.join("public-retire.txt");
+    let late_target = t.allowed.join("public-after-retire.txt");
+    fs::write(&target, b"unchanged").expect("seed independent native sentinel");
+    let control = serde_json::json!({
+        "target": target,
+        "lateTarget": late_target,
+    });
+    let mut input = role
+        .child
+        .as_mut()
+        .expect("owned public caller")
+        .stdin
+        .take()
+        .expect("private fixture control pipe");
+    writeln!(input, "{control}").expect("supply owned target paths");
+    drop(input);
+    t.router.handle().signal_ready().expect("real router Ready");
+    t.taken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("public fs.write reached the owning held worker");
+    assert_eq!(fs::read(&target).expect("held sentinel"), b"unchanged");
+    assert_eq!(
+        t.snapshot.fs.state.lock().expect("held FS state").in_flight,
+        1,
+        "the owner's held lease must exist before retirement"
+    );
+
+    t.router
+        .handle()
+        .retire_generation(1)
+        .expect("retire public caller generation");
+    let report = role.finish();
+    assert_public_retirement_report(&report);
+    assert_eq!(
+        t.snapshot
+            .fs
+            .state
+            .lock()
+            .expect("retired held FS state")
+            .in_flight,
+        1,
+        "the public rejection must not masquerade as native lease drain"
+    );
+    assert_eq!(
+        fs::read(&target).expect("pre-release sentinel"),
+        b"unchanged"
+    );
+    assert!(
+        matches!(
+            fs::symlink_metadata(&late_target),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ),
+        "later public call entered the old native owner"
+    );
+
+    t.release
+        .send(())
+        .expect("release the original held FS worker");
+    t.snapshot
+        .fs
+        .drain()
+        .expect("observe actual owner lease drain");
+    assert_eq!(
+        t.snapshot
+            .fs
+            .state
+            .lock()
+            .expect("drained FS state")
+            .in_flight,
+        0
+    );
+    t.router
+        .shutdown()
+        .expect("router shutdown after owner drain");
+    // Joining the owner's readers and worker fences late entry/effect checks.
+    assert!(
+        matches!(
+            t.taken.try_recv(),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected)
+        ),
+        "post-retirement public call entered the worker again"
+    );
+    assert_eq!(
+        fs::read(&target).expect("post-owner-join sentinel"),
+        b"unchanged"
+    );
+    assert!(
+        matches!(
+            fs::symlink_metadata(&late_target),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ),
+        "post-retirement target acquired an effect after owner join"
+    );
 }

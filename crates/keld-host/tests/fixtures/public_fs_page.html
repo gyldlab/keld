@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8"><title>KEL140 Public FS Acceptance</title>
+<style>html,body{margin:0;width:100%;height:100%;background:#111;color:#eee}#go{position:fixed;inset:0;border:0;background:#163;color:white;font:28px system-ui}#result{font:18px system-ui;padding:24px}</style>
+</head><body><button id="go">Write, read and verify scope denial</button><pre id="result"></pre>
+<script>
+"use strict";
+const base = "http://127.0.0.1:__PORT__";
+const nonce = () => Array.from(crypto.getRandomValues(new Uint32Array(4)),
+  value => value.toString(16).padStart(8, "0")).join("");
+const documentNonce = nonce();
+const javascriptToken = nonce();
+const initial = { bridge: typeof window.keld?.invoke === "function",
+  frozen: Object.isFrozen(window.keld),
+  nativeHidden: window.webkit?.messageHandlers?.__keld_wv_link_v1 === undefined };
+const requests = [];
+const outcomes = [];
+function encodeRequest(message, count) {
+  const bytes = new TextEncoder().encode(message);
+  if (bytes.length >= 128 || count >= 128) throw new Error("bounded sample request encoding");
+  const payload = new Uint8Array([bytes.length, ...bytes, count]);
+  if (payload.length > 4096) throw new Error("sample request exceeds renderer budget");
+  return payload;
+}
+function decodeResponse(bytes, expectedCount) {
+  // This sample admits at most a two-byte string length and a one-byte count.
+  let offset = 1;
+  let length = bytes[0];
+  if (length >= 128) {
+    if (bytes.length < 3 || bytes[1] >= 128) throw new Error("sample response length encoding");
+    length = (length & 127) | (bytes[1] << 7);
+    offset = 2;
+  }
+  if (bytes.length > 4096 || bytes.length !== offset + length + 1 ||
+      bytes[offset + length] !== expectedCount) throw new Error("sample response bounds/count");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(offset, offset + length)));
+}
+async function report(phase, extra) {
+  const value = { phase, documentNonce, javascriptToken, initial, requests, outcomes, ...extra };
+  result.textContent = JSON.stringify(value);
+  const response = await fetch(base + "/observe", { method: "POST",
+    headers: { "Content-Type": "text/plain" }, body: JSON.stringify(value) });
+  if (!response.ok) throw new Error("public FS page observation refused");
+}
+go.addEventListener("click", async event => {
+  try {
+    await report("page-click-start", { trusted: event.isTrusted });
+    for (const [index, action] of ["roundtrip", "deny", "unknown"].entries()) {
+      const request = { action, nonce: nonce(), count: index + 1 };
+      requests.push(request);
+      const payload = encodeRequest(JSON.stringify({ action, nonce: request.nonce }), request.count);
+      try {
+        const outcome = decodeResponse(await window.keld.invoke(1, payload), request.count);
+        outcomes.push({ action, outcome });
+      } catch (error) {
+        outcomes.push({ action, error: error.message, code: error.code ?? null });
+      }
+    }
+    await report("page-result", { trusted: event.isTrusted });
+    go.remove();
+  } catch (error) { await report("error", { error: String(error) }); }
+}, { once: true });
+// The parent sees this only after the actual listener is installed.
+report("page-ready", { button: go.id }).catch(error => { result.textContent = String(error); });
+</script></body></html>

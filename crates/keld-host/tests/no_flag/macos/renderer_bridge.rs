@@ -14,7 +14,7 @@ use std::thread;
 const TITLE: &str = "KEL142 Renderer Bridge Acceptance";
 const RESPONSE_PATH: &str = "/KEL142_RENDERED_renderer-click_42";
 const BEACON_GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
-const CLICK_SCRIPT: &str = r#"
+pub(crate) const CLICK_SCRIPT: &str = r#"
 import CoreGraphics
 import Foundation
 let pid = Int(CommandLine.arguments[1])!
@@ -137,18 +137,14 @@ go.addEventListener("click", async () => {{
 }
 
 fn bundle_api_entry(project: &Path, repo: &Path) {
-    let source = project.join("src/kel142-entry.ts");
-    let output = project.join("src/main.ts");
     let api = serde_json::to_string(
         &repo
             .join("packages/@keld/api/src/index.ts")
             .to_string_lossy(),
     )
     .expect("API import path JSON");
-    fs::write(
-        &source,
-        format!(
-            r#"import {{ app, channels, echoChannel }} from {api};
+    let entry = format!(
+        r#"import {{ app, channels, echoChannel }} from {api};
 let handlerCalls = 0;
 channels.handle(echoChannel, async (request) => {{
   handlerCalls += 1;
@@ -159,13 +155,25 @@ await app.whenReady();
 console.error("KELD_KEL142_BUN_READY");
 await new Promise(() => {{}});
 "#
-        ),
-    )
-    .expect("write KEL-142 API entry");
+    );
+    bundle_public_api_entry(project, repo, "kel142", &entry);
+}
+
+/// Uses the established public-index app composition and external transport.
+/// Callers provide complete source, including their public `@keld/api` import.
+pub(crate) fn bundle_public_api_entry(
+    project: &Path,
+    repo: &Path,
+    fixture_name: &str,
+    entry: &str,
+) {
+    let source = project.join(format!("src/{fixture_name}-entry.ts"));
+    let output = project.join("src/main.ts");
+    fs::write(&source, entry).expect("write public API fixture entry");
     // GH-527 §4.2: the transport is the transport Worker's entry, so it stays
     // its own staged file (`src/kipc-transport.ts`, which the dev stage copies
     // beside `src/main.ts`); the bundle imports it rather than inlining it.
-    let build = project.join("kel142-build.ts");
+    let build = project.join(format!("{fixture_name}-build.ts"));
     fs::write(&build, KIPC_SIDECAR_BUILD).expect("write KEL-142 bundle script");
     let result = Command::new("bun")
         .arg(&build)

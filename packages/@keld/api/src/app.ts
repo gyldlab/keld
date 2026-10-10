@@ -157,3 +157,10 @@ export const app: AppLifecycle = {
     return sendQuit();
   },
 };
+
+/** Package-private FS invocation; public exports expose only typed read/write. */
+export async function invokeFs(payload: Uint8Array): Promise<Uint8Array> {
+  await app.whenReady();
+  const link = await ensureLink();
+  return link.callFs(payload);
+}

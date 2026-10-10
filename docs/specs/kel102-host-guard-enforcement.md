@@ -286,12 +286,19 @@ benchmark if its context representation changes allocations or lock behavior.
    a deliberate all-denied policy; a missing file is a startup error, not a
    blank policy.
 
-For v0 development, `keld create` / the project fixture must provide the
-explicit `{}` file. The KEL-96 boot compiler stages the app into its private
-per-launch directory; the no-flag host selects that executable's canonical
-parent and never receives a manifest pathname from the CLI or child. The
-destination signed release path applies the boot-artifact content-digest check
-to the same fixed file.
+For historical v0 development and current Windows/Linux staging, the project
+fixture provides the explicit `{}` file. The approved macOS
+[KEL-140 producer amendment](kel140-macos-public-filesystem.md#45-exact-macos-policy-source-amendment--reuse)
+selects an explicit fixed project-root policy through retained owner-checked
+no-follow handles, or stages the same exact historical all-denied bytes when
+that project file is absent. One bounded captured buffer supplies both stage
+bytes and descriptor digest; unsafe present input cannot fall back. This is a
+producer input clause, not a CLI parser, grant, or policy decision. The KEL-96
+boot compiler stages the app into its private per-launch directory; the no-flag
+host selects that executable's canonical parent and never receives a manifest
+pathname from the CLI or child. Missing/invalid staged policy remains startup
+failure before app resources. The destination signed release path applies the
+boot-artifact content-digest check to the same fixed file.
 
 ### Verified-loader and host-session public API
 
