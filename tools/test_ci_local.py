@@ -564,6 +564,51 @@ class ProductionConsumerTests(unittest.TestCase):
                              {package["name"] for package in metadata["packages"]},
                              "owned inputs must not narrow a shared workspace obligation")
 
+    def test_native_fs_inputs_select_bun_with_fresh_bindings_and_exact_edges(self):
+        source = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix="keld-ci-native-fs-readers-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            fixture = "crates/keld-native/tests/fixtures/fs-payload-v0.tsv"
+            if not (root / fixture).exists():
+                # The CI edge can precede the feature artifact; contents are not a codec oracle here.
+                (root / fixture).parent.mkdir(parents=True, exist_ok=True)
+                (root / fixture).write_text("# native FS semantic fixture routing control\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-f", fixture], cwd=root, check=True, capture_output=True)
+            # Bind only this disposable fixture's tracked membership/readers. No drift may mask an edge.
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci_inputs.rebind(root), 0)
+            self.assertEqual(ci_inputs.stale(root), [])
+            contract_path = root / "tools/ci-inputs.json"
+            original_contract = contract_path.read_bytes()
+            cases = (("crates/keld-native/src/fs.rs", True), (fixture, True),
+                     ("crates/keld-native/src/lib.rs", False))
+            for leaf, expected in cases:
+                with self.subTest(input=leaf):
+                    path = root / leaf
+                    original_input = path.read_bytes()
+                    path.write_bytes(original_input + b"\n// route content mutation\n")
+                    try:
+                        self.assertEqual(ci_inputs.stale(root), [], "input content is not reader drift")
+                        selected = ci_inputs.classify(root, [leaf])
+                        self.assertFalse(selected["input_all"], selected)
+                        for output in ("input_ts", "local_typescript"):
+                            self.assertEqual(selected[output], expected, (leaf, output, selected))
+                        if expected:
+                            contract = ci_inputs.load(root)
+                            consumer = next(item for item in contract["consumers"]
+                                            if item["owner"] == "Bun package readers")
+                            consumer["inputs"].remove(leaf)
+                            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+                            self.assertEqual(ci_inputs.stale(root), [], "the policy artifact cannot hash itself")
+                            omitted = ci_inputs.classify(root, [leaf])
+                            self.assertFalse(omitted["input_all"], omitted)
+                            for output in ("input_ts", "local_typescript"):
+                                self.assertFalse(omitted[output], (leaf, output, omitted))
+                    finally:
+                        path.write_bytes(original_input)
+                        contract_path.write_bytes(original_contract)
+
     def test_real_rust_content_edit_and_added_reader_have_distinct_scope(self):
         source = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(prefix="keld-ci-rust-census-") as temporary:

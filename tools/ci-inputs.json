@@ -91,9 +91,11 @@
         "crates/keld-ipc/src/echo.rs",
         "crates/keld-ipc/src/lifecycle.rs",
         "crates/keld-ipc/src/channel_table.rs",
+        "crates/keld-native/src/fs.rs",
+        "crates/keld-native/tests/fixtures/fs-payload-v0.tsv",
         "crates/keld-wv/src/wkwebview/macos_bridge.rs"
       ],
-      "contract": "Bun reads IPC constants and CLI templates, generates and drift-checks the channel-table region from crates/keld-ipc/src/channel_table.rs, scans production TypeScript and the macOS bridge's injected scripts for channel-id literals, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. Source-reader drift invalidates exclusions.",
+      "contract": "Bun reads IPC constants and CLI templates, generates and drift-checks the channel-table region from crates/keld-ipc/src/channel_table.rs, scans production TypeScript and the macOS bridge's injected scripts for channel-id literals, echo declaration ownership scans every production .ts under crates and packages, and transport tests census every public-tree filename ending receiver-semantics-v0.tsv. The bounded native FS generator/check reads crates/keld-native/src/fs.rs, and its semantic tests read crates/keld-native/tests/fixtures/fs-payload-v0.tsv. Source-reader drift invalidates exclusions.",
       "reader_set": "bun-readers"
     },
     {
@@ -371,7 +373,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "ccc535627e9669cd474fe315ce07f55f5e7d6b6e1ebacabd58967b5ebdefc602"
+      "sha256": "d8aa425c81276a672f300b722a17bc5485913db9c1e711fc6620bfaab28e2a0c"
     },
     "audit-readers": {
       "patterns": [
