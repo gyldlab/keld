@@ -637,18 +637,30 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check
+      # #676: the upstream release binary, checksum-verified, replaces the Docker
+      # cargo-deny-action whose image build pulled anonymously from Docker Hub. The
+      # advisory database still comes from cargo-deny's default GitHub URL. Bump the
+      # version and SHA-256 together with tools/ci_workflow_security.ts.
+      - name: Install cargo-deny 0.20.2
+        run: |
+          set -euo pipefail
+          version=0.20.2
+          release="cargo-deny-${version}-x86_64-unknown-linux-musl"
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o "${release}.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${version}/${release}.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  ${release}.tar.gz" | sha256sum -c -
+          mkdir cargo-deny
+          tar -xzf "${release}.tar.gz" -C cargo-deny --strip-components=1 "${release}/cargo-deny"
+          cargo-deny/cargo-deny --version
+      - name: cargo-deny check
+        run: |
+          "$RUNNER_TEMP/cargo-deny/cargo-deny" --log-level warn --manifest-path ./Cargo.toml --all-features check
       # KEL-53 §4: the elevated updater helper's edge set, with the helper as the sole
       # graph root and the ban list its own deny.toml owns.
       - name: Updater helper edge set (KEL-53 T4d S9c)
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          manifest-path: crates/keld-updater-helper/Cargo.toml
-          arguments: --all-features --config crates/keld-updater-helper/deny.toml
-          command: check
-          command-arguments: bans
+        run: |
+          "$RUNNER_TEMP/cargo-deny/cargo-deny" --log-level warn --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans
 
   secrets:
     name: gitleaks

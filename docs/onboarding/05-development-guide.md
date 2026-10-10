@@ -185,16 +185,17 @@ job count and trigger details. Its stable responsibilities are:
 | `rustfmt` | ubuntu | `cargo fmt --all --check` |
 | `clippy + test` | ubuntu **and** macos **and** windows, `fail-fast: false` | `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo nextest run --workspace --profile ci`; plus `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS: -D warnings` on ubuntu only |
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
-| `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |
+| `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml`, from the checksum-pinned cargo-deny 0.20.2 release binary (no Docker image) |
 | `gitleaks` | ubuntu | checksum-pinned OSS CLI 8.30.1 (`gitleaks detect`), not the org-licensed GitHub Action |
 | `CODEOWNERS + docs contracts` / `Mermaid` | ubuntu | hygiene validates workflow and renderer contracts; generated llms/audit checks use the docs route; the separate Mermaid job tests/renders all diagrams only when the Mermaid router selects it |
 
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
 other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions
-are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`,
-`EmbarkStudios/cargo-deny-action`). The toolchain action requires `with: toolchain: 1.97.1`;
-it does not auto-read `rust-toolchain.toml` (that file is for local rustup). CI does not
-use an unpinned `cargo` on a random runner image.
+are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`);
+the gitleaks and cargo-deny CLIs are release downloads pinned by SHA-256. The toolchain
+action requires `with: toolchain: 1.97.1`; it does not auto-read `rust-toolchain.toml`
+(that file is for local rustup). CI does not use an unpinned `cargo` on a random runner
+image.
 
 ---
 
