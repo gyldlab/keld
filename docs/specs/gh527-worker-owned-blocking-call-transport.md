@@ -1131,14 +1131,69 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     `src/test-hooks.ts`, and `src/release-build.test.ts` proves a release build
     (`KELD_KIPC_RELEASE` defined `true`, syntax minification) names no hook.
   - The transport is never bundled into an app entry. `WorkerLink.open` refuses
-    with `KELD-IPC-005` in three cases, each with a test and a negative control:
+    with `KELD-IPC-005` in four cases, each with a test and a negative control:
     - it runs inside a transport Worker, because a bundle carrying app code would
       recurse;
     - the transport module is the process entry (`Bun.main`), whatever its name;
-    - it runs from a file other than `transport.ts` or `kipc-transport.ts`.
+    - it runs from a file other than `transport.ts` or `kipc-transport.ts`;
+    - its file is not stamped over its own bytes (#653, below).
 
     A build path (`keld build`) MUST keep that staged basename rule: no hashed chunk
-    names and no `bun build --compile`.
+    names and no `bun build --compile`. It MUST also stamp the transport file it
+    stages (#653). `keld build` is not built yet (KEL-19), so no stamping code exists
+    for it.
+  - **Transport identity: the stamp (#653).** A transport Worker evaluates only the
+    stamped canonical transport. The name checks above cannot ensure that: a bundle
+    named `transport.js` that `main.js` imports passes all three, and before #653 the
+    Worker's self-entry then evaluated that whole bundle, app code included.
+    - **The stamp.** Line 1 of every file a transport Worker may evaluate is
+      `TRANSPORT_STAMP_PREFIX` (`// @keld/kipc-transport sha256:`), followed by the
+      lowercase hex SHA-256 of exactly the bytes after that line.
+      - Owner: `transport.ts`. Its `stampTransport` writes the stamp, and its
+        `verifyTransportStamp` checks it.
+      - `bun run echo:generate` restamps the canonical file after every edit, and
+        `echo:check` fails on a stale stamp.
+      - `keld create` restamps the copy it writes, because it swaps in the release
+        constant (`restamp_transport` in `crates/keld-cli/src/template.rs`). A Rust
+        test pins that restamping the canonical file reproduces its TypeScript-made
+        stamp.
+    - **The check.** `WorkerLink.open` reads its own module's bytes through the
+      module loader: a Bun text import of `import.meta.url`, the reader the Worker's
+      self-entry uses, not the Node filesystem module, which KEL-71 keeps out of the
+      scaffold. It verifies the stamp before the Worker exists, so a non-canonical
+      file is refused before any transport Worker evaluates any of it. The Worker's
+      self-entry is unchanged (§4.2).
+    - **Why it holds.** A rename cannot forge it. A bundle cannot carry it by
+      accident, because the stamp binds the stamped file's exact bytes, and a bundle's
+      bytes differ even when the transport is its only module.
+    - **What it does not cover.** The stamp binds bytes, not intent: a file someone
+      restamps on purpose passes. The in-Worker check above still stops such a
+      bundle from opening a nested link. The check reads the file, and the Worker then
+      loads it again, so a same-principal swap between the two reads is not covered.
+      That gains no authority.
+    - *Rejected:* a structural check that the module exports only the transport
+      surface. Its falsifier holds: a bundle that re-exports exactly that surface but
+      also carries another module's top-level code passes, and the Worker would
+      evaluate that code.
+    - *Falsifier:* a `Bun.build` output, in any layout, that passes
+      `verifyTransportStamp` without a deliberate restamp.
+    - *Tests:*
+      - In `transport-stamp.test.ts`: the canonical stamp; one changed byte and
+        malformed stamps; a transpiled transport-only build refused unstamped and
+        accepted restamped; and a restamped bundle stopped by the in-Worker check.
+      - In `transport-stamp.test.ts`, the two reads told apart (each the other's
+        negative control): a copy removed before `open` fails the stamp read with
+        005 and spawns no Worker, and a copy removed by the test-only
+        `beforeWorkerSpawn` hook, after the stamp check passed, fails only the
+        Worker's self-entry with 025. The Linux strict pair in
+        `linux_strict_boundary.rs` keeps that 025 self-entry proof under the
+        strict profile.
+      - In `worker-link.test.ts`:
+        - **The NC.** An app bundle named `transport.js` is refused, and an
+          evaluation counter shows that main's import was the bundle's only
+          evaluation (1, where the pre-#653 code reached 2).
+        - **A split build.** One that puts the transport in a hashed chunk is
+          refused. (amended by #653)
   - `keld create` writes each app's transport with `KELD_KIPC_RELEASE` defined, so no
     created app can reach the test hooks.
 - `@keld/electron`-visible behaviour changes in T3 (recorded in arch 04 and the
@@ -1238,7 +1293,10 @@ unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
 `WorkerLinkTestHooks`, `WorkerBlockingFault` and `WORKER_LINK_TEST_WORDS`; from #528 T3
 `WorkerLink.onEnd` and `quitAndCloseLink`, with `openWorkerLinkForTest` moved to the
 in-repo `src/test-hooks.ts` and `DirectedReader`, `MAX_PARKED_FRAMES` and
-`CLIENT_AWAIT_HELLO` removed); `keld-ipc`'s
+`CLIENT_AWAIT_HELLO` removed; from #653 `TRANSPORT_STAMP_PREFIX`, `stampTransport` and
+`verifyTransportStamp`, the test-only `WorkerLinkTestHooks.beforeWorkerSpawn`, and
+`WorkerLink.open`'s refusal of an unstamped file, with keld-cli's
+`TRANSPORT_STAMP_PREFIX` and `restamp_transport` (amended by #653)); `keld-ipc`'s
 `ReceivePolicy::reply_waiter` made public with a doc comment, and its new
 `ReceivePolicy::event_receiver`, both taking #613's `&'static ChannelEntry` (#528 T1
 shipped the §4.7 fallback's `ChannelId`; X05-T4, #631, retired it) and returning

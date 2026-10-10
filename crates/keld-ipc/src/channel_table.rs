@@ -15,31 +15,32 @@
 //!
 //! A channel id is a routing selector, not authority. [`Authority`] declares
 //! what authorizes a call; `keld-guard` still evaluates every guarded request.
-//! A receive policy for a privileged channel is built from an entry, never
-//! from a raw id:
+//! Outside this crate an id itself comes only from an entry (#634, see
+//! [`ChannelId`]). A receive policy for a privileged channel is built from the
+//! entry, never from an id:
 //!
 //! ```compile_fail
-//! use keld_ipc::{ChannelId, ReceivePolicy};
-//! let _ = ReceivePolicy::privileged_call_receiver(ChannelId(4));
+//! use keld_ipc::{ReceivePolicy, channel_table};
+//! let _ = ReceivePolicy::privileged_call_receiver(channel_table::FS.id());
 //! ```
 //!
 //! ```
 //! use keld_ipc::{ReceivePolicy, channel_table};
 //! let policy = ReceivePolicy::privileged_call_receiver(&channel_table::FS)
 //!     .expect("fs is a guarded CALL channel");
-//! assert_eq!(policy.channel, channel_table::FS.id());
+//! assert_eq!(policy.channel(), channel_table::FS.id());
 //! ```
 //!
 //! The same holds for the app-side reply waiter and event receiver:
 //!
 //! ```compile_fail
-//! use keld_ipc::{ChannelId, CorrelationId, ReceivePolicy};
-//! let _ = ReceivePolicy::reply_waiter(ChannelId(4), CorrelationId(7));
+//! use keld_ipc::{CorrelationId, ReceivePolicy, channel_table};
+//! let _ = ReceivePolicy::reply_waiter(channel_table::FS.id(), CorrelationId(7));
 //! ```
 //!
 //! ```compile_fail
-//! use keld_ipc::{ChannelId, ReceivePolicy};
-//! let _ = ReceivePolicy::event_receiver(ChannelId(4));
+//! use keld_ipc::{ReceivePolicy, channel_table};
+//! let _ = ReceivePolicy::event_receiver(channel_table::LIFECYCLE.id());
 //! ```
 //!
 //! ```
@@ -48,7 +49,7 @@
 //!     .expect("fs replies carry a CallError ERR");
 //! let events = ReceivePolicy::event_receiver(&channel_table::LIFECYCLE)
 //!     .expect("lifecycle carries host EVENTs");
-//! assert_eq!((waiter.channel, events.channel), (channel_table::FS.id(), channel_table::LIFECYCLE.id()));
+//! assert_eq!((waiter.channel(), events.channel()), (channel_table::FS.id(), channel_table::LIFECYCLE.id()));
 //! ```
 
 use keld_guard::capability::{FS_READ, FS_WRITE};
@@ -115,7 +116,7 @@ pub enum Authority {
 /// use keld_ipc::channel_table::{Authority, ChannelEntry, ECHO, ReceiveClass};
 /// const ENTRY: ChannelEntry = ECHO;
 /// assert_eq!(ENTRY.name(), "echo");
-/// assert_eq!(ENTRY.id().0, 1);
+/// assert_eq!(ENTRY.wire_id(), 1);
 /// assert_eq!(ENTRY.class(), ReceiveClass::HostCall);
 /// assert_eq!(ENTRY.authority(), Authority::HostInternal);
 /// ```
@@ -147,6 +148,15 @@ impl ChannelEntry {
     #[must_use]
     pub const fn id(&self) -> ChannelId {
         self.id
+    }
+
+    /// The id's wire value, for a carrier that cannot depend on `keld-ipc`:
+    /// `keld-wv`'s macOS renderer bridge takes its admitted channel as a `u16`
+    /// (spec §4.6). A [`ChannelId`] exposes no integer, so an id read from a
+    /// frame is compared with an entry's [`Self::id`], never with a number.
+    #[must_use]
+    pub const fn wire_id(&self) -> u16 {
+        self.id.0
     }
 
     /// Receive-policy family that may name this channel.
@@ -663,7 +673,7 @@ mod tests {
     fn privileged_policy_requires_a_guarded_call_entry() {
         let fs =
             ReceivePolicy::privileged_call_receiver(&FS).expect("fs is a guarded CALL channel");
-        assert_eq!(fs.channel, FS.id());
+        assert_eq!(fs.channel(), FS.id());
         for host_internal in [&ECHO, &LIFECYCLE] {
             let Err(IpcError::Protocol { detail }) =
                 ReceivePolicy::privileged_call_receiver(host_internal)
@@ -789,7 +799,7 @@ mod tests {
         let live = live_policies();
         for (label, policy, kind, frame_corr, len) in live {
             // Prerequisite: the same header on the policy's own channel admits.
-            validate_received_header(&policy, header(kind, policy.channel.0, frame_corr, len))
+            validate_received_header(&policy, header(kind, policy.channel().0, frame_corr, len))
                 .unwrap_or_else(|error| panic!("{label}: own-channel control rejected: {error}"));
             assert_wrong_channel(
                 &validate_received_header(&policy, header(kind, unallocated, frame_corr, len)),
@@ -829,11 +839,11 @@ mod tests {
                 continue;
             };
             if let Ok(policy) = ReceivePolicy::reply_waiter(found, CorrelationId(7)) {
-                assert_eq!(policy.channel.0, id);
+                assert_eq!(policy.channel().0, id);
                 waiters.push(found.name());
             }
             if let Ok(policy) = ReceivePolicy::event_receiver(found) {
-                assert_eq!(policy.channel.0, id);
+                assert_eq!(policy.channel().0, id);
                 receivers.push(found.name());
             }
         }

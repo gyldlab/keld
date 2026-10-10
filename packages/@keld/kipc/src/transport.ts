@@ -1,3 +1,4 @@
+// @keld/kipc-transport sha256:994beb63f821bda9c4394e2faae39cfcb5ea4ddd7da4d464c7a53b90a3173964
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -10,6 +11,10 @@
  *
  * GH-527 `WorkerLink` (end of file) moves the role's link into a transport
  * Worker whose entry is this same file; see that section for its contract.
+ *
+ * Line 1 is the transport stamp (#653): `bun run echo:generate` rewrites it after
+ * any edit, and `keld create` restamps the copy it writes. `WorkerLink.open`
+ * refuses a file whose stamp does not match its bytes.
  */
 
 import {
@@ -1622,6 +1627,12 @@ export interface WorkerLinkTestHooks {
   readonly wedgeHoldingKick?: boolean;
   /** Runs when the transport Worker exits. */
   readonly onWorkerExit?: (code: number) => void;
+  /**
+   * Runs after the stamp check passed and before the transport Worker is
+   * spawned (#653). Removing the module's file here proves that the Worker's
+   * self-entry loads that file itself, past the check that already read it.
+   */
+  readonly beforeWorkerSpawn?: () => void;
 }
 
 interface WorkerHookData {
@@ -1643,7 +1654,69 @@ const WORKER_LINK_MARKER = "keld-kipc-worker-link/v1";
  */
 const TRANSPORT_FILE = /^(?:kipc-)?transport\.(?:ts|js|mjs)$/;
 
-function requireStagedTransport(): void {
+/**
+ * The first line of every file a transport Worker may evaluate (#653, GH-527
+ * §4.13): this prefix, then the lowercase hex SHA-256 of exactly the bytes after
+ * that line. A name proves nothing, because a bundle can be named `transport.js`.
+ * A bundle cannot carry a valid stamp by accident, because its bytes are not the
+ * stamped bytes; anything that stages the transport stamps what it writes.
+ */
+export const TRANSPORT_STAMP_PREFIX = "// @keld/kipc-transport sha256:";
+
+const STAMP_DIGEST = /^[0-9a-f]{64}$/;
+
+function sha256Hex(bytes: string | Uint8Array): string {
+  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+}
+
+/** Returns `unstamped`, the whole file after its stamp line, behind that stamp line. */
+export function stampTransport(unstamped: string): string {
+  return `${TRANSPORT_STAMP_PREFIX}${sha256Hex(unstamped)}\n${unstamped}`;
+}
+
+/**
+ * Throws `KELD-IPC-005` unless `source` starts with a stamp line whose digest is
+ * the SHA-256 of exactly the bytes after that line. `file` names it in the error.
+ */
+export function verifyTransportStamp(source: Uint8Array, file: string): void {
+  const newline = source.indexOf(0x0a);
+  const line = newline < 0 ? "" : new TextDecoder().decode(source.subarray(0, newline));
+  const digest = line.startsWith(TRANSPORT_STAMP_PREFIX) ? line.slice(TRANSPORT_STAMP_PREFIX.length) : "";
+  if (!STAMP_DIGEST.test(digest) || digest !== sha256Hex(source.subarray(newline + 1))) {
+    throw linkError(
+      "KELD-IPC-005",
+      `the kipc transport file \`${file}\` is not the stamped canonical transport (line 1 must be ` +
+        `\`${TRANSPORT_STAMP_PREFIX}<sha256 of the rest of the file>\`), so the transport Worker would evaluate ` +
+        "foreign code: a bundle, an edited copy, or a stale stamp. Write the transport with `keld create` (or run " +
+        "`bun run echo:generate` in the Keld repo), stage it as its own file, and never bundle it",
+    );
+  }
+}
+
+/**
+ * Checks this module's own file stamp before any transport Worker can evaluate
+ * that file (#653). The bytes come from the module loader (a text import of this
+ * module's own URL), the same reader the Worker's self-entry uses, not from the
+ * Node filesystem module, which a scaffolded app never imports (KEL-71).
+ */
+async function requireStampedTransportFile(file: string): Promise<void> {
+  let text: string;
+  try {
+    const own = (await import(import.meta.url, { with: { type: "text" } })) as { default: unknown };
+    if (typeof own.default !== "string") throw new TypeError("the text import returned no string");
+    text = own.default;
+  } catch (err) {
+    throw linkError(
+      "KELD-IPC-005",
+      `the kipc transport cannot read its own file \`${file}\` to check its stamp (${uncodedText(err)}), and the ` +
+        "transport Worker would evaluate that file. Stage the transport as a readable file beside the entry",
+    );
+  }
+  verifyTransportStamp(new TextEncoder().encode(text), file);
+}
+
+/** The staged file's name; `WorkerLink.open` then checks its stamp (#653). */
+function requireStagedTransport(): string {
   // A transport Worker evaluating this module again (a bundle that carries app
   // code) must never open a link of its own: that would recurse.
   if (isWorkerLinkBoot(workerData)) {
@@ -1670,6 +1743,7 @@ function requireStagedTransport(): void {
         "it into the app entry",
     );
   }
+  return file;
 }
 
 interface WorkerLinkBoot {
@@ -1848,7 +1922,10 @@ export class WorkerLink {
     hooks: WorkerLinkTestHooks | undefined,
   ): Promise<WorkerLink> {
     const config = validateWorkerLinkOptions(options);
-    requireStagedTransport();
+    // The name is not identity: a bundle named transport.js passes every check
+    // in requireStagedTransport, so the file's bytes must be the stamped
+    // transport before the Worker that would evaluate them exists (#653).
+    await requireStampedTransportFile(requireStagedTransport());
     if (workerLinkOpened) {
       throw linkError(
         "KELD-IPC-005",
@@ -1883,6 +1960,7 @@ export class WorkerLink {
               wedgeHoldingKick: hooks.wedgeHoldingKick,
             },
     };
+    if (typeof KELD_KIPC_RELEASE === "undefined") hooks?.beforeWorkerSpawn?.();
     const worker = new Worker(new URL(import.meta.url), { workerData: boot, transferList: [port2] });
     const link = new WorkerLink(sab, config, worker, port1, hooks);
     return new Promise((resolve, reject) => {

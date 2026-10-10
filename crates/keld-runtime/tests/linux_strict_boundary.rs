@@ -572,13 +572,43 @@ console.log("KELD_LINUX_WORKER quit=ok");
 process.exit(0);
 "#;
 
-/// The negative-control entry. Main imports a copy of the transport from the
-/// writable role root, then removes that copy before it opens the link, so
-/// main's import succeeds and only the Worker's self-entry, which reloads
-/// the module's own file, can fail.
+/// The self-entry negative-control entry. Main imports a copy of the transport
+/// from the writable role root and opens the link through the test seam, whose
+/// `beforeWorkerSpawn` hook removes that copy after `WorkerLink.open`'s stamp
+/// check has read it and before the Worker spawns (#653). Main's import and the
+/// stamp check succeed, so only the Worker's self-entry, which reloads the
+/// module's own file, can fail.
 const WORKER_LINK_NC_ENTRY: &str = r#"import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 // A fresh directory: Bun's resolver does not see a file created at run time
 // in a directory it already listed.
+mkdirSync("/app/nc");
+copyFileSync("/code/kipc-transport.ts", "/app/nc/kipc-transport.ts");
+const { WORKER_LINK_TEST_WORDS, isCallError } = await import("/app/nc/kipc-transport.ts");
+console.log(`KELD_LINUX_WORKER transport-module=${import.meta.resolve("/app/nc/kipc-transport.ts")}`);
+const seam = globalThis[Symbol.for("keld.kipc.worker-link-test-seam/v1")];
+const words = new Int32Array(new SharedArrayBuffer(4 * WORKER_LINK_TEST_WORDS.LENGTH));
+try {
+  await seam(
+    { link: process.env.KELD_APP_LINK!, receive: { eventChannels: [3], callReceivers: [] } },
+    {
+      words,
+      beforeWorkerSpawn: () => {
+        rmSync("/app/nc/kipc-transport.ts");
+        console.log("KELD_LINUX_WORKER removed=after-stamp");
+      },
+    },
+  );
+  console.log("KELD_LINUX_WORKER nc-open=opened");
+} catch (err) {
+  console.log(`KELD_LINUX_WORKER nc-open=${isCallError(err) ? err.code : "untyped"}`);
+}
+process.exit(0);
+"#;
+
+/// The stamp-read entry (#653): the same copy, removed before `WorkerLink.open`,
+/// so the stamp check cannot read the module's file and refuses before any
+/// Worker exists.
+const WORKER_LINK_MISSING_ENTRY: &str = r#"import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 mkdirSync("/app/nc");
 copyFileSync("/code/kipc-transport.ts", "/app/nc/kipc-transport.ts");
 const { WorkerLink, isCallError } = await import("/app/nc/kipc-transport.ts");
@@ -604,6 +634,7 @@ fn start_worker_link_role(
     role: &tempfile::TempDir,
     staged: &tempfile::TempDir,
     entry: &str,
+    test_hooks: bool,
 ) -> keld_runtime::primary::PrimaryRoleSupervisor {
     use keld_runtime::primary::{PrimaryRoleConfig, PrimaryRoleSupervisor};
 
@@ -622,12 +653,16 @@ fn start_worker_link_role(
             Path::new("/code/kipc-transport.ts"),
         )
         .expect("strict transport mount");
+    let mut config = PrimaryRoleConfig::new(&bun)
+        .arg("run")
+        .arg("/code/main.ts")
+        .env("HOME", "/app")
+        .env("TMPDIR", "/tmp");
+    if test_hooks {
+        config = config.env("KELD_KIPC_TEST_HOOKS", "1");
+    }
     PrimaryRoleSupervisor::start_with_bound_generations(
-        PrimaryRoleConfig::new(&bun)
-            .arg("run")
-            .arg("/code/main.ts")
-            .env("HOME", "/app")
-            .env("TMPDIR", "/tmp")
+        config
             .restart_policy(keld_runtime::RestartPolicy {
                 max_crashes: 1,
                 window_secs: 30,
@@ -653,7 +688,7 @@ fn worker_link_self_entry_runs_from_the_two_staged_files() {
 
     let role = owner_private_tempdir();
     let staged = owner_private_tempdir();
-    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_ENTRY);
+    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_ENTRY, false);
     let Some(bound) = supervisor.recv_bound_generation(Duration::from_secs(30)) else {
         supervisor.shutdown();
         let output = supervisor.output();
@@ -737,17 +772,20 @@ fn worker_link_self_entry_runs_from_the_two_staged_files() {
 }
 
 /// Negative control for the self-entry proof, failing at the Worker's
-/// self-entry rather than at main's import: with the same two mounts, main
-/// imports a copy of the transport from the role root and removes it before
-/// `WorkerLink.open`. Main's import succeeds, the Worker cannot reload its
-/// entry, `open` rejects with `KELD-IPC-025` (the transport Worker died
-/// before HELLO), and the role never authenticates. So the passing case's
-/// Worker did load `/code/kipc-transport.ts` itself.
+/// self-entry rather than at main's import or the stamp check: with the same
+/// two mounts, main imports a copy of the transport from the role root, the
+/// stamp check reads that copy and passes, and the test seam's
+/// `beforeWorkerSpawn` hook removes the copy before the Worker spawns (#653).
+/// The Worker cannot reload its entry, `open` rejects with `KELD-IPC-025` (the
+/// transport Worker died before HELLO), and the role never authenticates. So
+/// the passing case's Worker did load `/code/kipc-transport.ts` itself.
+/// *Negative control:* `worker_link_role_missing_its_transport_file_at_open_is_refused_before_the_worker`,
+/// whose removal before the stamp check gets 005, not 025.
 #[test]
 fn worker_link_role_without_the_transport_mount_never_connects() {
     let role = owner_private_tempdir();
     let staged = owner_private_tempdir();
-    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_NC_ENTRY);
+    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_NC_ENTRY, true);
     let outcome = supervisor.wait_for_outcome();
     let output = supervisor.output();
     assert!(
@@ -762,10 +800,36 @@ fn worker_link_role_without_the_transport_mount_never_connects() {
         output.stdout
     );
     assert!(
+        output.stdout.contains(
+            "KELD_LINUX_WORKER removed=after-stamp\nKELD_LINUX_WORKER nc-open=KELD-IPC-025"
+        ),
+        "the stamp check passed and only the Worker's self-entry failed: {}\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
+/// #653: the stamp check is a read of its own: the same copy removed before
+/// `WorkerLink.open` is refused with `KELD-IPC-005` by the stamp check, before
+/// any Worker exists, and the role never authenticates. *Negative control:*
+/// `worker_link_role_without_the_transport_mount_never_connects`, whose
+/// removal after the stamp check gets 025, not 005.
+#[test]
+fn worker_link_role_missing_its_transport_file_at_open_is_refused_before_the_worker() {
+    let role = owner_private_tempdir();
+    let staged = owner_private_tempdir();
+    let supervisor = start_worker_link_role(&role, &staged, WORKER_LINK_MISSING_ENTRY, false);
+    let outcome = supervisor.wait_for_outcome();
+    let output = supervisor.output();
+    assert!(
+        supervisor.try_recv_bound_generation().is_none(),
+        "a refused open must never authenticate: {outcome:?}"
+    );
+    assert!(
         output
             .stdout
-            .contains("KELD_LINUX_WORKER nc-open=KELD-IPC-025"),
-        "the Worker's self-entry failed: {}\n{}",
+            .contains("KELD_LINUX_WORKER nc-open=KELD-IPC-005"),
+        "the stamp check refused the missing file: {}\n{}",
         output.stdout,
         output.stderr
     );

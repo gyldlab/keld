@@ -374,7 +374,9 @@ class FreshnessGateTests(unittest.TestCase):
         self.assertEqual((root / "tools/ci-inputs.json").read_bytes(), before)
 
 
-class ExecutorTests(unittest.TestCase):
+class SelectionTests(unittest.TestCase):
+    """Selection admission is pure Python, so these run in hosted CI (#650)."""
+
     def route(self, **overrides):
         data = {"local_contract": "v1", "local_default": "true",
                 "local_fmt-check": "true", "local_clippy": "true", "local_test": "true",
@@ -399,6 +401,15 @@ class ExecutorTests(unittest.TestCase):
             self.assertFalse(selected[gate])
             missing = "\n".join(line for line in self.route().splitlines() if not line.startswith("local_" + gate + "="))
             self.assertTrue(ci_local.selection(missing, ["fmt-check", "clippy", "test"])[gate])
+
+class ExecutorTests(SelectionTests):
+    """Inventory and execution drive real recipes through the `just` executable
+    (tools/ci_local.py inventory/execute), so these stay local-only: hosted
+    runners do not install `just` (#650). Inherits SelectionTests' helpers; the
+    selection cases are skipped here because SelectionTests runs them.
+    """
+    test_unknown_gate_runs_and_malformed_gate_fails = None
+    test_unrelated_rust_gates_need_explicit_false_not_missing_output = None
 
     def test_real_just_inventory_preserves_bodyful_prerequisites_and_order(self):
         with tempfile.TemporaryDirectory(prefix="keld-ci-inventory-") as temporary:

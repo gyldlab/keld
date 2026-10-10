@@ -31,7 +31,7 @@ fn fixture_token() -> SessionToken {
 
 /// The table entry a corpus row's decimal wire id names.
 fn table_entry(id: &str) -> &'static keld_ipc::channel_table::ChannelEntry {
-    let id = ChannelId(id.parse().expect("channel id"));
+    let id = ChannelId::for_test(id.parse().expect("channel id"));
     keld_ipc::channel_table::entry(id).expect("corpus rows name an allocated channel id")
 }
 
@@ -191,7 +191,7 @@ fn every_frame_row_reproduces_its_expected_code() {
         // The link_action column is derived from the policy phase and the
         // outcome, never free text: admit iff ok; pre-auth rejections may
         // reaccept; authenticated rejections close.
-        let expected_action = match (&outcome, policy.phase) {
+        let expected_action = match (&outcome, policy.phase()) {
             (Ok(()), _) => "admit",
             (Err(_), keld_ipc::receive::SessionPhase::PreAuth) => "close-reaccept",
             (Err(_), keld_ipc::receive::SessionPhase::Authenticated) => "close",

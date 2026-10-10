@@ -895,7 +895,7 @@ fn criterion21_undeclared_event_channel_closes() {
         host_write(
             stream,
             FrameKind::Event,
-            ChannelId(2),
+            keld_ipc::channel_table::FS.id(),
             CorrelationId(0),
             b"x",
         );
@@ -1127,7 +1127,7 @@ fn criterion21_admitted_frames_and_ping_echo() {
     host_write(
         &mut stream,
         FrameKind::Ping,
-        ChannelId(42),
+        ChannelId::for_test(42),
         CorrelationId(9),
         &[],
     );
@@ -1142,7 +1142,10 @@ fn criterion21_admitted_frames_and_ping_echo() {
         }
     }
     let (ping, ping_payload) = ping.expect("PING echo");
-    assert_eq!((ping.channel, ping.corr), (ChannelId(42), CorrelationId(9)));
+    assert_eq!(
+        (ping.channel, ping.corr),
+        (ChannelId::for_test(42), CorrelationId(9))
+    );
     assert!(ping_payload.is_empty());
     let (answer, answer_payload) = answer.expect("echo CALL answer");
     assert_eq!(

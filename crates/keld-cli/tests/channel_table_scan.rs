@@ -515,8 +515,8 @@ fn bridge_admitted_id_is_never_a_positional_literal() {
     for (file, from, to) in [
         (
             session,
-            "renderer_outcomes_rx, ECHO_CHANNEL.0)",
-            "renderer_outcomes_rx, 1)",
+            "renderer_outcomes_rx,\n        keld_ipc::channel_table::ECHO.wire_id(),",
+            "renderer_outcomes_rx,\n        1,",
         ),
         (
             bridge,

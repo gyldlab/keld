@@ -77,6 +77,11 @@ jobs:
           target/product-status/product-status check .
       - name: Router contract tests
         run: tools/ci_changes_test.sh
+      # The agent playbook router and unsafe-coverage inventory reads crates/*.rs
+      # as well as AGENTS and .agents files, so it runs here, where every diff
+      # reaches it (#650; it was local-only before).
+      - name: Agent instruction inventory (agents-md)
+        run: tools/agents_md.sh
       - name: Classify changed-path ownership
         id: classify
         env:
@@ -714,6 +719,22 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.2"
+      # doc-placeholders scans docs/, .agents/, llms.txt, llms-full.txt, AGENTS.md
+      # and README.md, every one of which selects this job; it runs whenever the
+      # job does (#650; #639 merged an unknown `{A}` placeholder that only the
+      # local gate caught).
+      - name: Documentation placeholder contracts
+        run: |
+          mkdir -p target/doc-placeholders
+          rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test
+          target/doc-placeholders/doc-placeholders-test
+          rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders
+          target/doc-placeholders/doc-placeholders check .
+      # The `hygiene` recipe's hello-command regression reads the justfile and
+      # two onboarding docs, both of which select this job (#650).
+      - name: Hello command contract
+        run: |
+          python3 -B tools/test_hello_command.py
       - name: Atomic problem-solving protocol contract
         run: |
           mkdir -p target/atomic-protocol
