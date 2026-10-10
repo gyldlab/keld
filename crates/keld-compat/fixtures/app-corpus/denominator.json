@@ -1,0 +1,53 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-app-v1",
+  "corpus_sha256": "sha256:56956b043913c70564d8013c1c13688ef751134a834be0f815e1777e141df8d8",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "app.ready.emitted-once",
+      "oracle_id": "electron-v44.4.5.app.event-ready-emitted-once"
+    },
+    {
+      "operation_id": "app.when-ready.is-ready-agreement",
+      "oracle_id": "electron-v44.4.5.app.when-ready-is-ready-agreement"
+    },
+    {
+      "operation_id": "app.get-path.user-data-default",
+      "oracle_id": "electron-v44.4.5.app.get-path-user-data-default"
+    },
+    {
+      "operation_id": "app.get-version.loaded-app",
+      "oracle_id": "electron-v44.4.5.app.get-version"
+    },
+    {
+      "operation_id": "app.get-name.package-name",
+      "oracle_id": "electron-v44.4.5.app.get-name"
+    },
+    {
+      "operation_id": "app.name.property",
+      "oracle_id": "electron-v44.4.5.app.name-property"
+    },
+    {
+      "operation_id": "app.get-app-path.app-directory",
+      "oracle_id": "electron-v44.4.5.app.get-app-path"
+    },
+    {
+      "operation_id": "app.get-locale.after-ready",
+      "oracle_id": "electron-v44.4.5.app.get-locale"
+    },
+    {
+      "operation_id": "app.is-packaged.dev-false",
+      "oracle_id": "electron-v44.4.5.app.is-packaged"
+    },
+    {
+      "operation_id": "app.request-single-instance-lock.primary-verdict",
+      "oracle_id": "electron-v44.4.5.app.request-single-instance-lock"
+    },
+    {
+      "operation_id": "app.has-single-instance-lock.holder",
+      "oracle_id": "electron-v44.4.5.app.has-single-instance-lock"
+    }
+  ]
+}
