@@ -718,6 +718,10 @@ fn cancellation_snapshot_and_request_shape_precede_effects() {
 
 #[test]
 fn directories_are_rejected_without_content_io_and_control_still_passes() {
+    // Reserve a bounded pathname for the Unix socket independently of TMPDIR.
+    #[cfg(unix)]
+    let root = owned_root_under(Path::new("/tmp"), "directory");
+    #[cfg(not(unix))]
     let root = owned_root("directory");
     let directory = root.join("not-a-file");
     std::fs::create_dir(&directory).expect("directory target");
