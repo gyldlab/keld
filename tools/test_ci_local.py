@@ -609,6 +609,49 @@ class ProductionConsumerTests(unittest.TestCase):
                         path.write_bytes(original_input)
                         contract_path.write_bytes(original_contract)
 
+    def test_future_public_fs_reader_byte_drift_requires_exact_registration(self):
+        source = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix="keld-ci-future-fs-reader-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            self.assertEqual(ci_inputs.stale(root), [], "an absent future pattern keeps existing readers valid")
+            reader = "crates/keld-host/tests/no_flag/macos/public_fs/project.rs"
+            path = root / reader
+            path.parent.mkdir(parents=True, exist_ok=True)
+            original = b"// prospective public API composition reader\n"
+            changed = original + b"// reviewed reader content changed\n"
+            path.write_bytes(original)
+            subprocess.run(["git", "add", "-f", reader], cwd=root, check=True, capture_output=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci_inputs.rebind(root), 0)
+            self.assertEqual(ci_inputs.stale(root), [])
+            census_patterns = ci_inputs.load(root)["rust_source_census"]["patterns"]
+            membership = ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns)
+
+            path.write_bytes(changed)
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                self.assertEqual(ci_inputs.check(root), 1, "registered reader byte drift must reject freshness")
+            self.assertIn("CI-INPUTS-STALE", error.getvalue())
+            self.assertIn("rust-readers", error.getvalue())
+            self.assertEqual(ci_inputs.stale(root), ["rust-readers"])
+            self.assertEqual(ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns), membership)
+
+            # Removing only the reader declaration falsifies the same direct freshness predicate.
+            # Bind the isolated control first so stale hashes or census cannot supply the rejection.
+            path.write_bytes(original)
+            contract = ci_inputs.load(root)
+            contract["reader_sets"]["rust-readers"]["patterns"].remove(reader)
+            (root / "tools/ci-inputs.json").write_text(json.dumps(contract), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci_inputs.rebind(root), 0)
+            self.assertEqual(ci_inputs.stale(root), [])
+            path.write_bytes(changed)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci_inputs.check(root), 0, "omitting the exact reader hides its byte drift")
+            self.assertEqual(ci_inputs.stale(root), [])
+            self.assertEqual(ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns), membership)
+
     def test_real_rust_content_edit_and_added_reader_have_distinct_scope(self):
         source = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(prefix="keld-ci-rust-census-") as temporary:

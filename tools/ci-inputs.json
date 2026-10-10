@@ -72,7 +72,7 @@
         "docs/engineering/budget-scoreboard.md",
         "docs/engineering/compat-scoreboard.md"
       ],
-      "contract": "Rust external reads include the CLI recursive tools registry scan, the CLI GH-508 channel-id and capability-literal scan of every crate source tree, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant. documentation_inputs are read only as text by keld-cli: docs_search embeds llms-full.txt behind keld_cli::mcp, which no reverse dependent calls (keld-host tests use keld_cli::boot, create and dev only), and the registry and doctor tests are keld-cli's own. A diff whose only matching paths are documentation_inputs therefore selects keld-cli without Cargo reverse dependents (#624). A reverse dependent that starts reading one of these documents, or calling keld_cli::mcp, must move that document into inputs in the same change.",
+      "contract": "Rust external reads include the CLI recursive tools registry scan, the CLI GH-508 channel-id and capability-literal scan of every crate source tree, the generated docs_search corpus and its reviewed source inventory, security docs assertions, and crate-local reports. The native public_fs/project.rs composition reader consumes the public API index through the existing bundle owner and is registered before its feature source lands. Reader-source drift invalidates this recorded scope. Agents still run full format, clippy and workspace tests before completion; ordinary invocation routing selects these gates only when relevant. documentation_inputs are read only as text by keld-cli: docs_search embeds llms-full.txt behind keld_cli::mcp, which no reverse dependent calls (keld-host tests use keld_cli::boot, create and dev only), and the registry and doctor tests are keld-cli's own. A diff whose only matching paths are documentation_inputs therefore selects keld-cli without Cargo reverse dependents (#624). A reverse dependent that starts reading one of these documents, or calling keld_cli::mcp, must move that document into inputs in the same change.",
       "reader_set": "rust-readers"
     },
     {
@@ -354,7 +354,8 @@
         "crates/keld-cli/tests/channel_table_scan.rs",
         "crates/keld-cli/tests/channel_id_feature.rs",
         "crates/keld-cli/tests/support/rust_source_scan.rs",
-        "tools/llms_docs.rs"
+        "tools/llms_docs.rs",
+        "crates/keld-host/tests/no_flag/macos/public_fs/project.rs"
       ],
       "sha256": "2cd170d010ef72746f25ba0e44ba7c459d3fb2b8ff6cf954e12196a0aaaaf595"
     },
@@ -373,7 +374,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "d8aa425c81276a672f300b722a17bc5485913db9c1e711fc6620bfaab28e2a0c"
+      "sha256": "2a3e94eaa424e1dc94d0293f187c4357688f8071bc2e3221d8ebbf02015d9c32"
     },
     "audit-readers": {
       "patterns": [
