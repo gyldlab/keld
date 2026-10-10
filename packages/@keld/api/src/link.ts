@@ -38,6 +38,7 @@ import { resolveEchoCall } from "./echo-call.ts";
 import {
   APP_LINK_IO_DEADLINE_MS,
   ECHO_CHANNEL,
+  FS_CHANNEL,
   LIFECYCLE_CHANNEL,
   WorkerLink,
   kipcError,
@@ -138,6 +139,14 @@ export class LifecycleLink {
     this.#closed = true;
     this.#quitPromise = quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
     return this.#quitPromise;
+  }
+
+  /** Package-private outbound FS call, admitted only while this session is open. */
+  callFs(payload: Uint8Array): Promise<Uint8Array> {
+    if (this.#closed || this.#quitPromise !== undefined) {
+      return Promise.reject(this.#dead ?? kipcError("KELD-IPC-001", "session is closed"));
+    }
+    return this.#link.call(FS_CHANNEL, payload, APP_LINK_IO_DEADLINE_MS);
   }
 
   close(): void {

@@ -312,3 +312,170 @@ fn deny_over_the_wire_leaves_no_file_and_carries_the_typed_reason() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+fn vector_hex(value: &str) -> Vec<u8> {
+    if value == "-" {
+        return Vec::new();
+    }
+    assert_eq!(value.len() % 2, 0, "even hex width");
+    (0..value.len())
+        .step_by(2)
+        .map(|offset| u8::from_str_radix(&value[offset..offset + 2], 16).expect("fixture hex"))
+        .collect()
+}
+
+fn assert_native_fs_semantic_vector(
+    name: &str,
+    direction: &str,
+    variant: &str,
+    path: &str,
+    content: &[u8],
+    wire: &[u8],
+) -> Result<(), &'static str> {
+    match (direction, variant) {
+        ("request", "Read") => {
+            let value = FsRequest::Read {
+                path: path.to_owned(),
+            };
+            assert_eq!(
+                keld_ipc::codec::encode(&value).expect("encode Read"),
+                wire,
+                "{name}"
+            );
+            let FsRequest::Read { path: decoded } = decode(wire).expect("decode Read") else {
+                return Err("request variant changed");
+            };
+            assert_eq!(decoded, path, "{name}");
+        }
+        ("request", "Write") => {
+            let value = FsRequest::Write {
+                path: path.to_owned(),
+                bytes: content.to_vec(),
+            };
+            assert_eq!(
+                keld_ipc::codec::encode(&value).expect("encode Write"),
+                wire,
+                "{name}"
+            );
+            let FsRequest::Write {
+                path: decoded,
+                bytes,
+            } = decode(wire).expect("decode Write")
+            else {
+                return Err("request variant changed");
+            };
+            assert_eq!(decoded, path, "{name}");
+            assert_eq!(bytes, content, "{name}");
+        }
+        ("response", "Read") => {
+            let value = FsResponse::Read {
+                bytes: content.to_vec(),
+            };
+            assert_eq!(
+                keld_ipc::codec::encode(&value).expect("encode Read result"),
+                wire,
+                "{name}"
+            );
+            let FsResponse::Read { bytes } = decode(wire).expect("decode Read result") else {
+                return Err("response variant changed");
+            };
+            assert_eq!(bytes, content, "{name}");
+        }
+        ("response", "Write") => {
+            assert_eq!(
+                keld_ipc::codec::encode(&FsResponse::Write).expect("encode Write result"),
+                wire,
+                "{name}"
+            );
+            assert!(
+                matches!(
+                    decode::<FsResponse>(wire).expect("decode Write result"),
+                    FsResponse::Write
+                ),
+                "{name}"
+            );
+        }
+        _ => return Err("unsupported semantic vector"),
+    }
+    Ok(())
+}
+
+/// KEL-140 AC2: immutable semantic bytes are shared with generated TypeScript.
+/// Variant or field reordering must fail this oracle rather than updating it.
+#[test]
+fn native_fs_payloads_match_shared_semantic_vectors_and_decode_strictly() {
+    let fixture = include_str!("fixtures/fs-payload-v0.tsv");
+    let mut names = Vec::new();
+    for row in fixture
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
+        let fields: Vec<_> = row.split('\t').collect();
+        assert_eq!(fields.len(), 6, "{row}");
+        let [name, direction, variant, path, content, wire] = fields.as_slice() else {
+            panic!("six-column fixture");
+        };
+        names.push(*name);
+        let content = vector_hex(content);
+        let wire = vector_hex(wire);
+        assert_native_fs_semantic_vector(name, direction, variant, path, &content, &wire)
+            .expect(name);
+        for end in 0..wire.len() {
+            let rejected = if *direction == "request" {
+                decode::<FsRequest>(&wire[..end]).expect_err("truncated request")
+            } else {
+                decode::<FsResponse>(&wire[..end]).expect_err("truncated response")
+            };
+            assert!(
+                matches!(rejected, IpcError::Codec(_)),
+                "{name}, prefix {end}: {rejected}"
+            );
+        }
+        let mut trailing = wire;
+        trailing.push(0);
+        let rejected = if *direction == "request" {
+            decode::<FsRequest>(&trailing).expect_err("trailing request")
+        } else {
+            decode::<FsResponse>(&trailing).expect_err("trailing response")
+        };
+        assert!(matches!(rejected, IpcError::Codec(_)), "{name}: {rejected}");
+    }
+    assert_eq!(
+        names,
+        [
+            "read-path",
+            "read-unicode",
+            "write-empty",
+            "write-binary",
+            "write-unicode",
+            "write-long",
+            "read-empty-result",
+            "read-binary-result",
+            "read-unicode-result",
+            "read-long-result",
+            "write-result"
+        ]
+    );
+}
+
+#[test]
+fn native_fs_payload_codec_rejects_unknown_variants_and_malformed_lengths_or_utf8() {
+    for wire in [&[2][..], &[0x80][..], &[0xff, 0xff, 0xff, 0xff, 0x10][..]] {
+        assert!(
+            matches!(decode::<FsRequest>(wire), Err(IpcError::Codec(_))),
+            "request {wire:?}"
+        );
+        assert!(
+            matches!(decode::<FsResponse>(wire), Err(IpcError::Codec(_))),
+            "response {wire:?}"
+        );
+    }
+    assert!(
+        matches!(decode::<FsRequest>(&[0, 1, 0xff]), Err(IpcError::Codec(_))),
+        "invalid UTF-8 path"
+    );
+    assert!(
+        matches!(decode::<FsResponse>(&[0, 5, 0]), Err(IpcError::Codec(_))),
+        "claimed vector exceeds payload"
+    );
+}

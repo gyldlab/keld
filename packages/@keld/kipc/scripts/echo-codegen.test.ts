@@ -3,7 +3,10 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { relative, resolve } from "node:path";
 
-import { assertEchoArtifactFresh, renderEchoDeclarations } from "./echo-codegen.ts";
+import { assertEchoArtifactFresh, assertFsArtifactFresh, renderEchoDeclarations, renderFsBinding } from "./echo-codegen.ts";
+import { decodeFsResponse, encodeFsRequest, type FsRequest } from "../../api/src/fs.generated.ts";
+import { MAX_FRAME_LEN } from "../src/transport.ts";
+import { pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const echoSource = readFileSync(
@@ -283,6 +286,185 @@ describe("echo declaration generator", () => {
       expect(mutation.exitCode).not.toBe(0);
       expect(mutationOutput).toContain("echo.generated.ts");
       expect(mutationOutput).not.toContain("KELD-CLI-010");
+    });
+  });
+});
+
+
+const fsSource = readFileSync(resolve(repositoryRoot, "crates/keld-native/src/fs.rs"), "utf8");
+const fsGeneratedPath = resolve(repositoryRoot, "packages/@keld/api/src/fs.generated.ts");
+interface FsFixtureVector {
+  name: string;
+  direction: "request" | "response";
+  variant: "Read" | "Write";
+  path: string;
+  content: Uint8Array;
+  wire: Uint8Array;
+}
+
+const fsVectors = readFileSync(resolve(repositoryRoot, "crates/keld-native/tests/fixtures/fs-payload-v0.tsv"), "utf8")
+  .split("\n").filter((line) => line.length !== 0 && !line.startsWith("#"))
+  .map((line): FsFixtureVector => {
+    const fields = line.split("\t");
+    if (fields.length !== 6) throw new Error(`invalid FS fixture row: ${line}`);
+    const [name, direction, variant, path, content, wire] = fields;
+    if (direction !== "request" && direction !== "response") throw new Error(`invalid FS fixture direction: ${direction}`);
+    if (variant !== "Read" && variant !== "Write") throw new Error(`invalid FS fixture variant: ${variant}`);
+    const fromHex = (value: string): Uint8Array => value === "-" ? new Uint8Array() : new Uint8Array(Buffer.from(value, "hex"));
+    return { name, direction, variant, path, content: fromHex(content), wire: fromHex(wire) };
+  });
+
+async function withFsBinding(source: string, run: (binding: typeof import("../../api/src/fs.generated.ts")) => void): Promise<void> {
+  const directory = mkdtempSync(resolve(tmpdir(), "keld-fs-codegen-"));
+  try {
+    const path = resolve(directory, "fs.generated.ts");
+    writeFileSync(path, renderFsBinding(source).replace(
+      'from "../../kipc/src/transport.ts"', `from "${pathToFileURL(transportPath).href}"`,
+    ));
+    const binding = await import(pathToFileURL(path).href) as typeof import("../../api/src/fs.generated.ts");
+    run(binding);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
+function semanticRequest(vector: (typeof fsVectors)[number]): FsRequest {
+  if (vector.variant === "Read") return { variant: "Read", path: vector.path };
+  if (vector.variant === "Write") return { variant: "Write", path: vector.path, bytes: vector.content };
+  throw new Error(`unknown request vector ${vector.name}`);
+}
+
+describe("bounded native filesystem binding", () => {
+  test("Rust enums own deterministic checked-in binding and stale bytes fail", () => {
+    const artifact = readFileSync(fsGeneratedPath);
+    expect(renderFsBinding(fsSource)).toBe(renderFsBinding(fsSource));
+    expect(() => assertFsArtifactFresh(fsSource, artifact)).not.toThrow();
+    expect(() => assertFsArtifactFresh(fsSource, Buffer.concat([artifact, Buffer.from("// edit\n")]))).toThrow("stale");
+    const changed = fsSource.replace("pub enum FsRequest {", "pub enum MissingFsRequest {");
+    expect(() => assertFsArtifactFresh(changed, artifact)).toThrow("FsRequest");
+    const reordered = fsSource.replace(
+      "        path: String,\n        /// Bounded content bytes.\n        bytes: Vec<u8>,",
+      "        bytes: Vec<u8>,\n        path: String,",
+    );
+    expect(() => assertFsArtifactFresh(reordered, artifact)).toThrow("stale");
+  });
+
+  test("admitted grammar rejects serde, discriminants, tuple/private/generic and unknown shapes", () => {
+    const mutations = [
+      fsSource.replace("pub enum FsRequest {", "enum FsRequest {"),
+      fsSource.replace("pub enum FsRequest {", "pub(crate) enum FsRequest {"),
+      fsSource.replace("pub enum FsRequest {", "pub enum FsRequest<T> {"),
+      fsSource.replace("pub enum FsRequest {", '#[serde(tag = "kind")]\npub enum FsRequest {'),
+      fsSource.replace("pub enum FsRequest {", '#[serde(\n    tag = "kind"\n)]\npub enum FsRequest {'),
+      fsSource.replace("pub enum FsRequest {", '#[cfg(unix)]\npub enum FsRequest {'),
+      fsSource.replace("pub enum FsRequest {", '#[repr(u8)]\npub enum FsRequest {'),
+      fsSource.replace("    Write,", '    #[serde(rename = "write")]\n    Write,'),
+      fsSource.replace("    Write,", "    Write = 3,"),
+      fsSource.replace("    Write,", "    Write(String),"),
+      fsSource.replace("        bytes: Vec<u8>,", "        bytes: Vec<u16>,"),
+      fsSource.replace("        bytes: Vec<u8>,", "        pub bytes: Vec<u8>,"),
+      fsSource.replace("        bytes: Vec<u8>,", '        #[serde(skip)]\n        bytes: Vec<u8>,'),
+      fsSource.replace("        path: String,", "        other: String,"),
+      fsSource.replace("        path: String,", "        path: String,\n        path: String,"),
+      fsSource.replace("    Write,", "    Other,"),
+      `${fsSource}\n${fsSource}`,
+      `#![cfg(unix)]\n${fsSource}`,
+    ];
+    for (const source of mutations) expect(() => renderFsBinding(source)).toThrow(/echo codegen:/);
+  });
+
+  test("shared Rust semantic fixtures pin both requests and responses, including Unicode and multibyte lengths", () => {
+    expect(fsVectors.map((vector) => vector.name)).toEqual([
+      "read-path", "read-unicode", "write-empty", "write-binary", "write-unicode", "write-long",
+      "read-empty-result", "read-binary-result", "read-unicode-result", "read-long-result", "write-result",
+    ]);
+    for (const vector of fsVectors) {
+      if (vector.direction === "request") {
+        expect(encodeFsRequest(semanticRequest(vector)), vector.name).toEqual(vector.wire);
+      } else {
+        const result = decodeFsResponse(vector.wire);
+        expect(result.variant, vector.name).toBe(vector.variant);
+        if (result.variant === "Read") expect(result.bytes, vector.name).toEqual(vector.content);
+        for (let end = 0; end < vector.wire.byteLength; end += 1) {
+          expect(() => decodeFsResponse(vector.wire.subarray(0, end)), `${vector.name} prefix ${end}`).toThrow("KELD-IPC-003");
+        }
+        expect(() => decodeFsResponse(new Uint8Array([...vector.wire, 0])), vector.name).toThrow("KELD-IPC-003");
+      }
+    }
+  });
+
+  test("invalid inputs, unknown variants, malformed lengths and trailing bytes use the local codec failure", () => {
+    for (const payload of [[], [2], [0x80], [0xff, 0xff, 0xff, 0xff, 0x10], [0, 5, 0], [1, 0]]) {
+      expect(() => decodeFsResponse(new Uint8Array(payload))).toThrow("KELD-IPC-003");
+    }
+    expect(() => decodeFsResponse(null as unknown as Uint8Array)).toThrow("KELD-IPC-003");
+    for (const request of [
+      null,
+      { variant: "Other", path: "/p" },
+      { variant: "Read", path: 42 },
+      { variant: "Read", path: "\ud800" },
+      { variant: "Read", path: "\udc00" },
+      { variant: "Write", path: "/p", bytes: [1, 2] },
+    ]) expect(() => encodeFsRequest(request as unknown as FsRequest)).toThrow("KELD-IPC-003");
+  });
+
+  test("request bytes are snapshotted and response bytes never alias transport payload", () => {
+    const backing = new Uint8Array([9, 0, 0xff, 0x41, 8]);
+    const payload = encodeFsRequest({ variant: "Write", path: "/p", bytes: backing.subarray(1, 4) });
+    backing.fill(7);
+    expect(payload).toEqual(new Uint8Array([1, 2, 0x2f, 0x70, 3, 0, 0xff, 0x41]));
+    for (const wire of [new Uint8Array([0, 3, 0, 0xff, 0x41]), Buffer.from([0, 3, 0, 0xff, 0x41])]) {
+      // Buffer is a valid Uint8Array subclass whose slice aliases its backing memory.
+      // Mutating both directions proves ownership, independent of the decoder's copy API.
+      const result = decodeFsResponse(wire);
+      expect(result.variant).toBe("Read");
+      if (result.variant !== "Read") throw new Error("Read vector changed");
+      expect(result.bytes.constructor).toBe(Uint8Array);
+      wire[2] = 99;
+      expect(result.bytes).toEqual(new Uint8Array([0, 0xff, 0x41]));
+      result.bytes[1] = 8;
+      expect(Array.from(wire)).toEqual([0, 3, 99, 0xff, 0x41]);
+    }
+  });
+
+  test("only the existing frame bound is enforced locally; native-sized overflow remains admissible", () => {
+    // Native owns 8 MiB validation; a native ceiling+one still fits the 16 MiB frame.
+    const bytes = new Uint8Array(8 * 1024 * 1024 + 1);
+    expect(encodeFsRequest({ variant: "Write", path: "/p", bytes }).byteLength).toBeGreaterThan(bytes.byteLength);
+    expect(() => encodeFsRequest({ variant: "Write", path: "/p", bytes: new Uint8Array(MAX_FRAME_LEN) })).toThrow("KELD-IPC-003");
+  });
+
+  test("Rust variant/field order mutations cannot match the independent semantic vector oracle", async () => {
+    const body = /pub enum FsRequest \{([\s\S]*?)\n\}/.exec(fsSource)?.[1];
+    if (!body) throw new Error("native request enum absent");
+    const read = /    Read \{[\s\S]*?    \},/.exec(body)?.[0];
+    const write = /    Write \{[\s\S]*?    \},/.exec(body)?.[0];
+    if (!read || !write) throw new Error("native request variants absent");
+    const swapped = fsSource.replace(body, body.replace(read, "__READ__").replace(write, read).replace("__READ__", write));
+    await withFsBinding(swapped, (binding) => {
+      const vector = fsVectors.find((candidate) => candidate.name === "read-path");
+      if (!vector) throw new Error("read-path vector absent");
+      expect(binding.encodeFsRequest(semanticRequest(vector))).not.toEqual(vector.wire);
+    });
+    const fieldOrder = fsSource.replace(
+      "        path: String,\n        /// Bounded content bytes.\n        bytes: Vec<u8>,",
+      "        bytes: Vec<u8>,\n        path: String,",
+    );
+    expect(fieldOrder).not.toBe(fsSource);
+    await withFsBinding(fieldOrder, (binding) => {
+      const vector = fsVectors.find((candidate) => candidate.name === "write-binary");
+      if (!vector) throw new Error("write-binary vector absent");
+      expect(binding.encodeFsRequest(semanticRequest(vector))).not.toEqual(vector.wire);
+    });
+    const responseBody = /pub enum FsResponse \{([\s\S]*?)\n\}/.exec(fsSource)?.[1];
+    if (!responseBody) throw new Error("native response enum absent");
+    const readResponse = /    Read \{[\s\S]*?    \},/.exec(responseBody)?.[0];
+    if (!readResponse) throw new Error("Read response absent");
+    const swappedResponse = responseBody.replace(readResponse, "__READ_RESPONSE__").replace("    Write,", readResponse).replace("__READ_RESPONSE__", "    Write,");
+    await withFsBinding(fsSource.replace(responseBody, swappedResponse), (binding) => {
+      const vector = fsVectors.find((candidate) => candidate.name === "read-binary-result");
+      if (!vector) throw new Error("read result vector absent");
+      expect(() => binding.decodeFsResponse(vector.wire)).toThrow("KELD-IPC-003");
     });
   });
 });
