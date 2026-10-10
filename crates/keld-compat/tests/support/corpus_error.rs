@@ -6,7 +6,7 @@ use std::fmt;
 
 use keld_compat::evidence::EvidenceError;
 
-use super::{OWNER_PATH, V0_FROZEN_CORPUS_ID};
+use super::{OWNER_PATH, SNAPSHOT_DIR, SNAPSHOT_ROOT, V0_FROZEN_CORPUS_ID};
 
 /// Typed rejection. Each `Display` names the corpus, the cell, the rule and the fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +105,8 @@ pub enum CorpusError {
     },
     /// Committed fixtures and the registry disagree, or frozen bytes drifted.
     FixtureCensus { detail: String },
+    /// Corpus directories that hold their own `doc-snapshots/` copy (gh566 D5 A5).
+    CorpusLocalSnapshot { dirs: Vec<String> },
     /// A v1 manifest names another schema (gh566 D3).
     UnknownSchema { corpus_id: String, schema: String },
     /// `artifact_digest` is not the one v1 meaning, `manifest_bytes` (gh532 rule 5).
@@ -329,6 +331,11 @@ impl fmt::Display for CorpusError {
                 f,
                 "fixture census: {detail}. Register every committed corpus once in REGISTRY (gh566 C2)."
             ),
+            Self::CorpusLocalSnapshot { dirs } => write!(
+                f,
+                "corpus directories with their own {SNAPSHOT_DIR}/: {} (gh566 D5 A5). Cited pages live once in crates/keld-compat/{SNAPSHOT_ROOT}/{SNAPSHOT_DIR}/<commit>/<page>: move each page there, or delete it when the store already holds the same bytes.",
+                dirs.join(", ")
+            ),
             Self::UnknownSchema { corpus_id, schema } => write!(
                 f,
                 "{corpus_id}: schema {schema} is not keld.compat.corpus/v1 (gh566 D3)."
@@ -393,7 +400,7 @@ impl fmt::Display for CorpusError {
                 path,
             } => write!(
                 f,
-                "{corpus_id}: {page} has no snapshot at {path} (gh532 AC16). Commit the raw upstream page under the pinned commit."
+                "{corpus_id}: {page} has no snapshot at crates/keld-compat/{SNAPSHOT_ROOT}/{path} (gh532 AC16, gh566 D5 A5). Commit the raw upstream page there once, under the pinned commit; every corpus reads that one store."
             ),
             Self::SnapshotDigestMismatch {
                 corpus_id,
