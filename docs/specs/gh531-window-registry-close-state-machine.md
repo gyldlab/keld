@@ -185,6 +185,15 @@ fail. "Owner" is the implementing ticket.
     same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
     registry after Ready is written makes this first `Create` fail with the registry's
     not-ready error. Owner: F02-T2.
+    *Before Ready (amended by #657).* `Subscribe` to `window` is accepted before Ready.
+    Given a facade boot whose first Ready write has not happened, when a role whose
+    link is subscribed to `window` sends `Create` or any other window call, then it gets
+    `KELD-CORE-040` and no native window is created (an unsubscribed link gets
+    `KELD-CORE-045`, which is checked first). The registry leaves its not-ready
+    state immediately before the first Ready is written, in the same router
+    transition (gh446 D4). *NC:*
+    marking the registry ready when it is constructed serves that `Create`. Owner:
+    F02-T2 (the first window call).
 15. **Renderer boots unchanged.** Given a renderer-declared (non-facade) boot, the
     existing KEL-96 macOS close and `LastWindowClosed` tests pass unchanged, and no
     window-channel frame is written. *NC:* routing the host-created initial window
@@ -214,8 +223,12 @@ fail. "Owner" is the implementing ticket.
     entry (`Authority::HostInternal`, #613 criterion 16). Window events for a window are
     written only to the app link of that window's `owner_role_generation`, which is
     always a `primary` role declared in KEL-75, and only after that link subscribed with
-    the X05-T2 `lifecycle` `Subscribe` call. The facade subscribes before its first
-    `Create`. `SubscribeRefused` applies, and changes no state, when the link's role is
+    the X05-T2 `lifecycle` `Subscribe` call. The facade subscribes when its link binds
+    (at `LifecycleLink` construction over `WorkerLink.open`), before any user code can
+    call `new BrowserWindow`, so a successor's windows transfer as soon as its link is up
+    (amended by #657). A raw (non-facade) role that never subscribes leaves transferred
+    windows in the recovery gap until session end, and a native close stays held there
+    (T2). That is a recorded limitation owned by F02-T3 (#450). `SubscribeRefused` applies, and changes no state, when the link's role is
     not the declared `primary` (`RoleNotAdmitted`), when the host has no window entry
     (`UnknownChannel`, a peer newer than its host), or for the reasons #613 defines.
     *NC 1:* broadcasting to every connected role fails, because a second authenticated
@@ -418,6 +431,16 @@ fail. "Owner" is the implementing ticket.
     *NC:* reverting the paragraph leaves §3 attributing windows to the keld-native
     surface, and spec review fails. Owner: this spec.
 
+### (i) Adoption after role loss (D6; amended by #657)
+
+46. **A successor `Create` adopts before it builds.** Given successor g2 subscribed,
+    windows 1 and 3 adoptable, 2 claimed by a setter: three `Create`s answer
+    `Adopted 1`, `Adopted 3`, `Created 4`, and the fake UI port builds exactly one
+    window. A `Create` before `Subscribe` answers `ERR 045`, builds nothing. *NC:*
+    deleting the adoption arm builds on the first `Create`; deleting the 045 check
+    builds before Subscribe. *Falsifier:* any sequence building a window while an
+    adoptable one exists. Owner: F02-T2.
+
 ## 4. Design
 
 ### 4.0 First-principles and reuse decision
@@ -594,6 +617,9 @@ pub enum WindowResponse {
     ReplyApplied,                        // 5
     ReplyStale,                          // 6; plus one host diagnostic
     Destroyed,                           // 7; written after the Destroyed EVENT
+    Adopted { window: WindowRef },       // 8; a successor Create adopted a transferred window
+                                         //    (D6 scope, criterion 46): no EVENT, no state change
+                                         //    (amended by #657)
 }
 ```
 
@@ -602,6 +628,8 @@ next free numbers. FACT (2026-10-07): `origin/main`'s registry ends at
 `KELD-CORE-037`, and no open PR's diff adds a higher `KELD-CORE-*` code (#609 and #287
 only cite `KELD-CORE-037`). The implementing PR re-checks main and open PRs before it
 registers each code in `docs/engineering/keld-error-codes.md` with a fix sentence.
+`KELD-CORE-044` is gh446's. FACT (2026-10-08): `KELD-CORE-045` is unused on
+`origin/main` `3107ec88` and in every open PR's diff (amended by #657).
 
 | Code | Meaning | Registered by |
 |---|---|---|
@@ -610,7 +638,8 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 | `KELD-CORE-040` | registry not ready | F02-T2 |
 | `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
 | `KELD-CORE-042` | window calls unsupported on this platform (Windows/Linux, F02-T12) | F02-T2 |
-| `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T3 |
+| `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T2 (T1 carries admission check 2; amended by #657) |
+| `KELD-CORE-045` | `window` CALL on a link not subscribed to `window` | F02-T2 (amended by #657) |
  The facade's own
 "Object has been destroyed" and triage errors are `KELD-COMPAT-*`.
 
@@ -662,10 +691,12 @@ This spec consumes F01-T2's rule (#446) and adds no adoption shim.
   the registry, no window-channel frame is written, and its `CloseRequested` keeps
   today's teardown and `LastWindowClosed` behaviour (criterion 15).
 - The close path is selected per boot kind, not per window: in one session every
-  window takes one path. Temporary adapter: the legacy teardown arm. Its owner is
-  F01-T2. Removal condition: F01-T2 decision (b) ("whether renderer-declared boots keep
-  `CreateInitialWindow` before Ready"). If those boots move onto the registry, the
-  legacy arm is deleted in that change.
+  window takes one path. The legacy teardown arm is the schema-1 close path, not a
+  temporary adapter. F01-T2 decision (b) keeps `CreateInitialWindow` before Ready for
+  renderer-declared boots (gh446 D2), so the arm stays. Owner: KEL-96, whose §4.5
+  defines schema-1 close and `LastWindowClosed`. Removal condition: an approved spec
+  that registers the schema-1 initial window in this registry or retires schema 1; the
+  arm is deleted in that change. (amended by #657)
 - Ready meaning per RoleInstance generation is F01-T2's. Successor roles (D6, §4.i):
   a retired generation's windows stay alive, and ownership transfers explicitly to the
   recovered successor of the same declared role, which receives a state replay
@@ -731,8 +762,23 @@ Host registry, per window:
 | `Destroyed` | tombstone; pair retired for the session | none |
 
 Per-window registry state is `(WindowGeneration, WebviewId, owner_role_generation,
-state, last close_seq)`. `Create` admission mints a new entry in `Opening` with
+state, last close_seq, adoptable)` (`adoptable` amended by #657). `Create` admission mints a new entry in `Opening` with
 `owner_role_generation` set to the calling link's RoleInstance generation.
+
+**Subscription before the table (amended by #657).** A `window` CALL from a link not
+subscribed to `window` is refused `KELD-CORE-045` before any other check and changes no
+state (criterion 46). `Subscribe` itself is accepted before Ready; the not-ready check
+(`KELD-CORE-040`, criterion 14) applies only to subscribed links. A supervised restart starts unsubscribed (gh508 c16), so a
+successor's transfer has one point, its `Subscribe`.
+
+**Adoption before the table (amended by #657).** A `Create` from the owner while one or
+more of its windows are `adoptable` mints nothing. It answers `REPLY Adopted { window }`
+for the lowest-`WindowId` adoptable window, writes no EVENT, and clears that window's
+`adoptable` mark. It is not an input of the transition table, so the 76 rows below are
+unchanged. The every-pair enumeration test also asserts that an adopting `Create`
+leaves every window's state unchanged. `adoptable` is set for each `Open` window
+transferred at `Subscribe`, and it is also cleared by the owner's first
+window-addressed CALL naming that window and by `Destroyed`.
 
 **Admission before the table.** Every app call that names a window passes two checks,
 in order, before the transition table: (1) the pair resolves to an entry with the same
@@ -1093,6 +1139,14 @@ reversible, and each names the observation that reopens it.
   from an approved contract. *Falsifier:* KEL-143 or F02-T11 shows that a successor
   cannot safely adopt a window it did not create (for example, renderer state that
   cannot be re-bound).
+  *Scope (2026-10-08; D6 unchanged).* The registry owns adoption. Per link: `window`
+  CALLs before `Subscribe` are refused `KELD-CORE-045` (criterion 46). Per window:
+  `adoptable` is set at transfer and cleared by adoption, by the owner's first
+  window-addressed CALL, or by `Destroyed`. A `Create` adopts the lowest-`WindowId`
+  adoptable window owned by the caller, answering `Adopted { window }` with no EVENT
+  and no state change; otherwise it creates. The constructor returns the replayed
+  object. The app owns navigation of adopted windows. *Falsifier and NCs:* criterion
+  46. (amended by #657)
 - **D5. Channel id.** F02-T2 appends the window-state channel entry under #508's rule
   (draft PR #613). This spec fixes no number. *Falsifier:* #613's approved rule
   assigns ids by a mechanism other than an appended table entry.
@@ -1265,8 +1319,8 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   variants. The primary router writes window frames.
 - Generated contracts: the X05-T4 constant for the channel id.
 - Persisted state: none.
-- Temporary adapter: the legacy teardown arm for renderer-declared boots (owner
-  F01-T2; removal condition in §4.c).
+- Temporary adapter: none. The legacy teardown arm is the permanent schema-1 close
+  path (owner KEL-96; removal condition in §4.c; amended by #657).
 - Permanent compat facade: `@keld/electron` `BrowserWindow`.
 
 ## 5. Boundaries
@@ -1294,9 +1348,18 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 - Must not touch: the `WebEngine` trait; frame layout, `PROTOCOL_VERSION`, `HELLO`;
   `keld-guard` evaluation; keld-runtime's `RoleRegistry`; the Windows and Linux
   backends beyond exhaustive-match arms; the workspace `Cargo.toml` (no dependency).
-- Adoption (D6): no KEL-139 amendment; AC5 holds for every boot mode. The transfer and
-  replay in the keld-core registry, the `Created.pending_close` field and its vector,
-  and the facade's replay handling in `@keld/electron` are in this slice's T2.
+- PROPOSED, awaiting the repository owner's exact-content approval (#657): "Adoption
+  (D6): no KEL-139 amendment. AC5's same-window half holds in every boot mode; its
+  same-document half holds where the host owns navigation (schema 1) and, in facade
+  boots, until the recovered main navigates." *Falsifier:* `NativeWindowObserver`
+  shows a new window identity after facade recovery. Until approved, the replaced
+  sentence "Adoption (D6): no KEL-139 amendment; AC5 holds for every boot mode."
+  stands.
+- Re-slice (amended by #657): the D6 transfer, the `Created` replay at `Subscribe`
+  without `pending_close`, `adoptable`, criterion 46, `WindowResponse::Adopted`,
+  `KELD-CORE-045`, and the constructor returning the replayed object are in this
+  slice's T1. The `Created.pending_close` field and its vector, and closes
+  during the recovery gap, are in T2.
 - Architecture sentences changed in this PR
   (`docs/architecture/05-webview-and-native.md` §3, after the module table): one new
   paragraph, "**Window ownership.**", stating that (1) no keld-native broker owns the
@@ -1315,21 +1378,30 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   with pinned byte tests, the `app_session.rs` handler and per-link subscription
   state, the `LifecycleSession` refusal, and their criterion 20 tests; the keld-core
   registry with T1, T2, T11 and T12, `owner_role_generation` and the admission checks;
-  the reserved `KELD-CORE-038` to `042`; `Create` (blocking via #528)
+  the reserved `KELD-CORE-038` to `043` and `045`; `Create` (blocking via #528)
   and the state events; the mirror primitive; getters, setters, `id`, `getAllWindows`
   in creation order, `getFocusedWindow`; `browser-window-created` and
   `web-contents-created` emitted once per window by the constructor after `Create`
   returns (their mutual order is cited from v44.4.5 source in that PR); the retired
   and forged pair errors; the lib.rs and product-status drift fix; the 03 sentence.
   Interim: a native close in a facade boot still tears down at once and writes
-  `Destroyed` (no veto yet), so criterion 4 is exercisable. Criteria 1–14, 16–17, 19–20,
-  41–44.
+  `Destroyed` (no veto yet), so criterion 4 is exercisable. Role loss (amended by
+  #657): the D6 transfer and `Created` replay at `Subscribe` (criterion 30 without
+  `pending_close`); `adoptable`; criterion 46; `WindowResponse::Adopted`;
+  `KELD-CORE-045`; the constructor returning the replayed object, with
+  `browser-window-created` and `web-contents-created` once, at adoption; the ▲ cell
+  `app.window.adopted-survivor`. Criteria 1–14, 16–17,
+  19–20, 41–44 and 46, and criterion 30 without `pending_close`.
 - [ ] T2 = F02-T3 (#450). T3–T10; `RequestClose`, `CloseReply`, `Destroy` (blocking);
   facade `'close'`, `close()`, `destroy()`, both tombstones, `'closed'`; common-modes
   delivery; removal of T1's interim teardown; the full transition table with its
-  every-pair unit test; `KELD-CORE-043`; the D6 adoption (ownership transfer, the
-  `Created` replay with `pending_close`, the recovery gap). Criteria 15, 18, 21–33.
-- [ ] T3 = F02-T4 (#455). The triage table. Criteria 36–40.
+  every-pair unit test; the `Created.pending_close` field and closes
+  during the recovery gap (the transfer, replay and adoption are T1's; amended by
+  #657). Criteria 15, 18, 21–33.
+- [ ] T3 = F02-T4 (#455). The triage table. Criteria 36–40. Adoption matching (amended
+  by #657): a successor `Create` adopts the lowest-`WindowId` adoptable window whose
+  triaged renderer-authority options equal the request's; if none matches, it creates.
+  There is no refusal code.
 - F01-T3 (#451) owns criteria 34–35 and the `before-quit` half of 33. They are listed
   here only as consumed contracts.
 
@@ -1337,7 +1409,7 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 
 | Criteria | Test | Kind |
 |---|---|---|
-| 2–6, 21, 25–27, 30, 31, 33 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 76 (state, input) rows of §4.e | unit |
+| 2–6, 21, 25–27, 30, 31, 33, 46 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 76 (state, input) rows of §4.e and asserts that an adopting `Create` changes no window's state | unit |
 | 20 | `lifecycle.rs` pinned `Subscribe` bytes; `app_session.rs` link tests for an unsubscribed primary, a subscribed primary and a refused `app-bound` role | unit, integration |
 | 8, 10, 11 | the golden-vector file replayed by `cargo test -p keld-ipc` and `bun test`; existing vectors and the KEL-133 corpus unmodified | unit, cross-language |
 | 9, 43 | the X05-T4 drift check and table validation | unit |
