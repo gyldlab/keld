@@ -682,13 +682,17 @@ impl GenerationLease for NoLease {
     }
 }
 
-struct CommandPreparer<F> {
+struct CommandPreparer<F, G> {
     factory: F,
+    /// Answers, at the supervisor's one post-revocation boundary, whether a
+    /// crash successor could still be served (GH-674).
+    successor_gate: G,
 }
 
-impl<F> ChildPreparer for CommandPreparer<F>
+impl<F, G> ChildPreparer for CommandPreparer<F, G>
 where
     F: FnMut() -> Command + Send + 'static,
+    G: FnMut() -> bool + Send + 'static,
 {
     type Lease = NoLease;
 
@@ -697,6 +701,14 @@ where
             command: (self.factory)().into(),
             lease: NoLease,
         })
+    }
+
+    fn allow_restart(
+        &mut self,
+        _shutdown: &AtomicBool,
+        _accepted_shutdown: &AtomicBool,
+    ) -> Result<bool, RuntimeError> {
+        Ok((self.successor_gate)())
     }
 }
 
@@ -865,15 +877,46 @@ impl Supervisor {
     pub fn start_with_stdout_markers<F>(
         policy: RestartPolicy,
         markers: &[&str],
-        mut command_factory: F,
+        command_factory: F,
     ) -> Result<Self, RuntimeError>
     where
         F: FnMut() -> Command + Send + 'static,
+    {
+        Self::start_with_stdout_markers_and_successor_gate(policy, markers, command_factory, || {
+            true
+        })
+    }
+
+    /// Starts supervision whose crash successors are provisioned only while
+    /// `successor_gate` returns `true`.
+    ///
+    /// The gate runs at the supervisor's one post-revocation boundary, after a
+    /// crash is recorded in the [`CrashLedger`] and its backoff has elapsed,
+    /// and before the successor's command is built. `false` ends supervision
+    /// with [`SupervisorOutcome::Stopped`]: the crash stays in the ledger, no
+    /// successor is spawned, and the breaker counts no crash the host could
+    /// never have served. A caller whose endpoint admits one session uses it to
+    /// stop restarting once that session is consumed (GH-674). Restart backoff,
+    /// the crash-loop breaker and shutdown are unchanged; this adds no second
+    /// restart loop.
+    ///
+    /// # Errors
+    /// Same as [`Self::start_with_stdout_markers`].
+    pub fn start_with_stdout_markers_and_successor_gate<F, G>(
+        policy: RestartPolicy,
+        markers: &[&str],
+        mut command_factory: F,
+        successor_gate: G,
+    ) -> Result<Self, RuntimeError>
+    where
+        F: FnMut() -> Command + Send + 'static,
+        G: FnMut() -> bool + Send + 'static,
     {
         Self::start_prepared_with_capture(
             policy,
             CommandPreparer {
                 factory: move || command_factory(),
+                successor_gate,
             },
             CaptureState::new(markers)?,
         )
@@ -5475,6 +5518,56 @@ mod tests {
         let out = sup.output();
         assert!(out.stdout.contains("out-marker"), "{out:?}");
         assert!(out.stderr.contains("err-marker"), "{out:?}");
+    }
+
+    /// GH-674: the successor gate is consulted once per crash, after the
+    /// ledger records it and before the successor's command is built, and a
+    /// closed gate ends supervision as `Stopped` instead of restarting.
+    ///
+    /// The gate opens for the first crash and closes for the second, so the
+    /// oracle tells both arms apart: two commands built, two crashes recorded,
+    /// and `Stopped` although the policy would allow a third attempt. A gate
+    /// the supervisor ignored builds a third command and trips the breaker
+    /// (the always-open case is `crash_loop_breaker_trips_after_max_crashes`).
+    #[test]
+    fn a_closed_successor_gate_stops_supervision_after_the_recorded_crash() {
+        let built = Arc::new(AtomicU32::new(0));
+        let consulted = Arc::new(AtomicU32::new(0));
+        let built_by_factory = Arc::clone(&built);
+        let consulted_by_gate = Arc::clone(&consulted);
+        let sup = Supervisor::start_with_stdout_markers_and_successor_gate(
+            RestartPolicy {
+                max_crashes: 3,
+                window_secs: 60,
+            },
+            &[],
+            move || {
+                built_by_factory.fetch_add(1, Ordering::SeqCst);
+                shell_command(&joined_steps(&["echo gated-crash 1>&2", "exit 3"]))
+            },
+            move || consulted_by_gate.fetch_add(1, Ordering::SeqCst) == 0,
+        )
+        .expect("first spawn must succeed");
+
+        match sup.wait_for_outcome() {
+            SupervisorOutcome::Stopped => {}
+            other => panic!("a closed successor gate must stop supervision, got {other:?}"),
+        }
+        assert_eq!(built.load(Ordering::SeqCst), 2, "commands built");
+        assert_eq!(consulted.load(Ordering::SeqCst), 2, "gate consultations");
+        let ledger = sup.crash_ledger();
+        assert_eq!(ledger.count, 2, "both crashes stay recorded");
+        match ledger.last {
+            Some(RuntimeError::ChildCrashed {
+                exit_code,
+                stderr_tail,
+                ..
+            }) => {
+                assert_eq!(exit_code, Some(3));
+                assert!(stderr_tail.contains("gated-crash"), "{stderr_tail}");
+            }
+            other => panic!("expected the recorded crash, got {other:?}"),
+        }
     }
 
     #[test]
