@@ -946,9 +946,9 @@ classify_stream() {
         contract_options+=(--paths-only)
     fi
     if [[ ${#changed_files[@]} -gt 0 ]]; then
-        apply_consumer_contract "${contract_options[@]}" < <(printf '%s\0' "${changed_files[@]}")
+        apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} < <(printf '%s\0' "${changed_files[@]}")
     else
-        apply_consumer_contract "${contract_options[@]}" </dev/null
+        apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} </dev/null
     fi
     finalize_selection
     if [[ "$mode" == worktree && "$markdown_changed" != "$TRUE" ]]; then
