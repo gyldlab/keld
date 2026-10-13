@@ -406,6 +406,57 @@ fn run_dev_echo_bun_nonzero_without_connect_does_not_hang() {
 }
 
 #[test]
+fn run_dev_echo_names_a_crash_after_admission_instead_of_restarting_into_a_consumed_link() {
+    // GH-674: once a generation authenticates, the one-session listener has
+    // consumed its locator, so a successor's connect fails at once
+    // (`KELD-IPC-001`, ENOENT). A crash after the echo but before the marker
+    // used to restart into that dead link until the breaker reported
+    // `KELD-RUNTIME-002` over the successors' connect errors. The session now
+    // provisions no successor and names the crash that happened. The echo
+    // REPLY is written after the listener's admission is recorded, so this
+    // ordering holds without any timing assumption.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("t{}admitted", std::process::id());
+    let root = create_project(dir.path(), &name).expect("create");
+    fs::write(
+        root.join("src/main.ts"),
+        concat!(
+            include_str!("../templates/hello/src/kipc.ts"),
+            r#"
+import { existsSync, writeFileSync } from "node:fs";
+
+if (existsSync("./.generation-1")) writeFileSync("./.successor-started", "1");
+writeFileSync("./.generation-1", "1");
+
+const link = process.env.KELD_APP_LINK;
+if (!link) {
+  console.error("KELD-CLI-010: KELD_APP_LINK is unset");
+  process.exit(1);
+}
+await echoRoundtrip(link, { message: "keld", count: 1 });
+console.error("gh674-crash-after-admission");
+process.exit(9);
+"#
+        ),
+    )
+    .expect("overwrite main with a crash-after-admission script");
+
+    let err = run_dev_echo(&root).expect_err("a crash before the ready marker must fail the run");
+    let msg = err.to_string();
+    assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+    assert!(msg.contains("exited 9"), "{msg}");
+    assert!(msg.contains("gh674-crash-after-admission"), "{msg}");
+    assert!(
+        !msg.contains("KELD-RUNTIME-002") && !msg.contains("KELD-IPC-001"),
+        "the diagnostic must name the crash, not successors that could not connect: {msg}"
+    );
+    assert!(
+        !root.join(".successor-started").exists(),
+        "a successor was provisioned for a consumed one-session listener"
+    );
+}
+
+#[test]
 fn keld_doctor_unknown_flags_exit_2_without_running_checks() {
     let dir = tempfile::tempdir().expect("tempdir");
     create_project(dir.path(), "hello").expect("create");

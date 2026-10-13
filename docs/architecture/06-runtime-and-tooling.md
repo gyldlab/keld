@@ -384,12 +384,17 @@ breaker terminal. The windowless echo path has completed its observable work aft
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
 self-termination; non-zero and terminal lifecycle failures still fail.
 
-Whether the breaker also trips depends on how the restarted generation fails, which
-is not something the host should have to predict. In the retained legacy diagnostic
-run, restarted children cannot re-enter the session at all — the v0 echo listener admits exactly
-one authenticated session (`crates/keld-core/src/echo_link.rs`) and their `connect`
-failed outright — so they crashed fast enough to trip the breaker. The ledger makes
-the verdict independent of that timing.
+Whether the breaker also trips must not depend on how fast restarted generations
+fail or on when the caller tears down. In the retained legacy diagnostic run,
+restarted children cannot re-enter the session at all: the v0 echo listener admits
+exactly one authenticated session (`crates/keld-core/src/echo_link.rs`), and a
+successor's `connect` fails outright. Such successors used to be provisioned anyway,
+so two of them tripped the breaker whenever teardown came late, and the nested code
+was `002` or `012` by timing alone (GH-674). The session therefore provisions no
+successor after its one admission. The supervisor's one successor gate
+(`Supervisor::start_with_stdout_markers_and_successor_gate`, at its existing
+post-revocation boundary) stops supervision at the recorded crash, and the ledger
+decides the verdict.
 
 A crash the supervisor *recovered* from before the app reported ready stays a
 success (KEL-70 AC1/AC3). Separating the two cases cannot be done by counting
