@@ -10,7 +10,7 @@ use crate::support::{
         StrictGeneration, wait_child, wait_for_strict_generation, wait_process_identity_gone,
     },
     project::{DARK_BG, PRODUCT_TITLE, ProductFixture},
-    renderer::serve_renderer_beacon,
+    renderer::{expect_renderer_beacon, spawn_renderer_beacon},
 };
 use std::{
     fs,
@@ -19,8 +19,6 @@ use std::{
     os::unix::net::UnixListener,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc,
-    thread,
     time::Instant,
 };
 
@@ -38,8 +36,7 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
         .local_addr()
         .expect("recovery beacon")
         .port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -61,9 +58,7 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
         .expect("launch recovery host");
     let host_pid = host.id();
     let (mut g1_reader, mut g1_writer, g1, g1_link) = accept_generation(&listener, &mut host);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("initial renderer beacon");
+    expect_renderer_beacon(beacon, "initial renderer beacon");
     expect_ready_and_echoes(&mut g1_reader);
     g1_writer
         .write_all(b"CRASH\n")
@@ -100,7 +95,6 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
     assert!(status.success(), "recovery host exited with {status}");
     wait_process_identity_gone(&g2.bun, Instant::now() + PRODUCT_DEADLINE);
     wait_process_identity_gone(&g2.descendant, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("recovery beacon thread");
 }
 
 fn accept_generation(
