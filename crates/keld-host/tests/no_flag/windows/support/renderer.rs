@@ -117,7 +117,10 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
             }
         }
         let remaining = deadline
-            .map(|deadline| renderer_beacon_remaining(deadline, now()))
+            .map(|deadline| {
+                renderer_beacon_remaining(deadline, now())
+                    .map_err(|error| format!("{error}; phase=intake_wait"))
+            })
             .transpose()?;
 
         let mut index = 0;
@@ -143,7 +146,10 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
                         format!("set renderer beacon reply stream blocking: {error}")
                     })?;
                     let write_timeout = deadline
-                        .map(|deadline| renderer_beacon_remaining(deadline, now()))
+                        .map(|deadline| {
+                            renderer_beacon_remaining(deadline, now())
+                                .map_err(|error| format!("{error}; phase=reply_write"))
+                        })
                         .transpose()?
                         .unwrap_or(PRODUCT_DEADLINE);
                     matched
