@@ -11,6 +11,14 @@ mod host_liveness;
 
 mod generation_wire;
 
+mod host_control;
+#[cfg(test)]
+use self::host_control::interrupted_successor_preparation;
+pub(crate) use self::host_control::is_owned_preparation_interruption;
+use self::host_control::{
+    GenerationControlPeer, control_exchange, control_exchange_with_cancellation,
+};
+
 use self::generation_wire::{
     CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED, CONTROL_REGISTERED,
     CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED, GenerationControlReader,
@@ -143,11 +151,6 @@ fn lock_recovery(state: &Mutex<RecoveryState>) -> std::sync::MutexGuard<'_, Reco
     state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-struct GenerationControlPeer {
-    stream: std::os::unix::net::UnixStream,
-    reader: GenerationControlReader,
 }
 
 /// Private argv discriminator for the KEL-96 supervised guardian re-exec.
@@ -2298,112 +2301,6 @@ fn runtime_io_kind(error: &RuntimeError) -> Option<io::ErrorKind> {
         | RuntimeError::ChildCrashed { .. }
         | RuntimeError::GuardianExited { .. } => None,
     }
-}
-
-fn control_exchange(
-    control: &Arc<Mutex<GenerationControlPeer>>,
-    request: &GenerationControlRecord,
-    expected_kind: u8,
-    expected_attempt: u32,
-) -> Result<GenerationControlRecord, RuntimeError> {
-    control_exchange_with_cancellation(control, request, expected_kind, expected_attempt, None)
-}
-
-fn control_exchange_with_cancellation(
-    control: &Arc<Mutex<GenerationControlPeer>>,
-    request: &GenerationControlRecord,
-    expected_kind: u8,
-    expected_attempt: u32,
-    cancellation: Option<(&AtomicBool, &AtomicBool)>,
-) -> Result<GenerationControlRecord, RuntimeError> {
-    let mut control = match control.lock() {
-        Ok(control) => control,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let GenerationControlPeer { stream, reader } = &mut *control;
-    write_generation_control(stream, request)?;
-    let native_wait = request.kind == CONTROL_PREPARE && request.attempt > 1;
-    let deadline = (!native_wait).then(|| Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE);
-    let response = loop {
-        if native_wait
-            && reader.filled == 0
-            && let Some((cancelled, host_unavailable)) = cancellation
-        {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(interrupted_successor_preparation(expected_attempt));
-            }
-            if host_unavailable.load(Ordering::Acquire) {
-                return Err(lifecycle_error(
-                    "macOS guardian generation control transition",
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "host-liveness observation failed",
-                    ),
-                ));
-            }
-        }
-        if let Some(response) = reader.poll(stream)? {
-            break response;
-        }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(lifecycle_error(
-                "macOS guardian generation control transition",
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "host did not acknowledge the generation transition before the deadline",
-                ),
-            ));
-        }
-    };
-    if response.kind != expected_kind || response.attempt != expected_attempt {
-        return Err(lifecycle_error(
-            "macOS guardian generation control transition",
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "expected kind {expected_kind} attempt {expected_attempt}, received kind {} attempt {}",
-                    response.kind, response.attempt
-                ),
-            ),
-        ));
-    }
-    validate_control_response(request, &response)?;
-    Ok(response)
-}
-
-#[derive(Debug)]
-struct OwnedPreparationInterruption {
-    attempt: u32,
-}
-
-impl std::fmt::Display for OwnedPreparationInterruption {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "owned shutdown interrupted successor attempt {}",
-            self.attempt
-        )
-    }
-}
-
-impl std::error::Error for OwnedPreparationInterruption {}
-
-fn interrupted_successor_preparation(attempt: u32) -> RuntimeError {
-    lifecycle_error(
-        "macOS guardian generation control transition",
-        io::Error::new(
-            io::ErrorKind::Interrupted,
-            OwnedPreparationInterruption { attempt },
-        ),
-    )
-}
-
-/// Recognizes only this preparer's private interruption for the exact attempt.
-pub(crate) fn is_owned_preparation_interruption(error: &RuntimeError, attempt: u32) -> bool {
-    matches!(error, RuntimeError::Lifecycle { source, .. }
-        if source.get_ref()
-            .and_then(|source| source.downcast_ref::<OwnedPreparationInterruption>())
-            .is_some_and(|marker| marker.attempt == attempt && attempt > 1))
 }
 
 fn fail_before_child(
