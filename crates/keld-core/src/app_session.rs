@@ -13,6 +13,20 @@ use self::boot_contract::decode_digest;
 use self::boot_contract::{boot_error, parse_boot_bytes, target_error};
 
 #[cfg(target_os = "macos")]
+mod macos_profile_selection;
+#[cfg(all(test, target_os = "macos"))]
+use self::macos_profile_selection::MacValidatedAppIdentity;
+#[cfg(target_os = "macos")]
+use self::macos_profile_selection::macos_profile_selection;
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+use self::macos_profile_selection::verified_macos_app_identity;
+#[cfg(all(
+    target_os = "macos",
+    any(test, all(feature = "profile-test-hooks", debug_assertions))
+))]
+use self::macos_profile_selection::{macos_identity_error, select_macos_profile_mode_with};
+
+#[cfg(target_os = "macos")]
 mod auth_router;
 #[cfg(target_os = "macos")]
 use auth_router::{AuthSession, AuthWork, AuthWorker};
@@ -66,10 +80,6 @@ use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use nix::sys::stat::{SFlag, fstat};
 
-#[cfg(target_os = "macos")]
-use crate::macos_profile_identity::verified_current_process_signing_info;
-#[cfg(target_os = "macos")]
-use getrandom::fill as fill_os_random;
 #[cfg(test)]
 use keld_guard::ManifestError;
 use keld_guard::Principal;
@@ -115,8 +125,10 @@ use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent, RoleOwner,
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
 #[cfg(target_os = "linux")]
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
-#[cfg(target_os = "macos")]
-use keld_wv::profile::EphemeralProfile;
+#[cfg(windows)]
+use keld_wv::ProfileIdentity;
+#[cfg(any(windows, all(test, target_os = "macos")))]
+use keld_wv::WebProfileSelection;
 #[cfg(target_os = "linux")]
 use keld_wv::webkitgtk::WebKitGtkEngine;
 #[cfg(windows)]
@@ -130,10 +142,6 @@ use keld_wv::wkwebview::{
 use keld_wv::{AppWindowCommand, AppWindowEvent};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
-#[cfg(any(target_os = "macos", windows))]
-use keld_wv::{ProfileIdentity, WebProfileSelection};
-#[cfg(target_os = "macos")]
-use sha2::{Digest as _, Sha256};
 #[cfg(all(test, windows))]
 use windows_sys::Win32::Foundation::GetHandleInformation;
 #[cfg(windows)]
@@ -2549,113 +2557,6 @@ fn run_app(
         }
     })
     .map_err(HostRunFailure::from)
-}
-
-#[cfg(target_os = "macos")]
-const MACOS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.macos/v1\0";
-
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-struct MacValidatedAppIdentity {
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    team_identifier: Box<str>,
-    publisher_scope: [u8; 32],
-    signing_identifier: Box<str>,
-    profile_identity: ProfileIdentity,
-}
-
-#[cfg(target_os = "macos")]
-impl MacValidatedAppIdentity {
-    fn from_verified_parts(
-        team_identifier: &str,
-        signing_identifier: &str,
-    ) -> Result<Self, HostAppError> {
-        if team_identifier.len() != 10
-            || !team_identifier
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-        {
-            return Err(macos_identity_error(
-                "the validated code signature has no canonical 10-character Team Identifier",
-            ));
-        }
-        let mut publisher_hasher = Sha256::new();
-        publisher_hasher.update(MACOS_PUBLISHER_SCOPE_DOMAIN);
-        publisher_hasher.update(team_identifier.as_bytes());
-        let publisher_digest = publisher_hasher.finalize();
-        let mut publisher_scope = [0_u8; 32];
-        publisher_scope.copy_from_slice(&publisher_digest);
-        let profile_identity = ProfileIdentity::from_host_verified_parts(
-            publisher_scope,
-            signing_identifier,
-        )
-        .map_err(|source| {
-            macos_identity_error(format!(
-                "the validated code-signing identifier is not a canonical Keld app id: {source}"
-            ))
-        })?;
-        Ok(Self {
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            team_identifier: team_identifier.into(),
-            publisher_scope,
-            signing_identifier: signing_identifier.into(),
-            profile_identity,
-        })
-    }
-
-    fn into_profile_selection(self) -> Result<WebProfileSelection, HostAppError> {
-        debug_assert_eq!(
-            ProfileIdentity::from_host_verified_parts(
-                self.publisher_scope,
-                &self.signing_identifier,
-            ),
-            Ok(self.profile_identity)
-        );
-        WebProfileSelection::persistent(Some(self.profile_identity))
-            .map_err(|source| macos_identity_error(source.to_string()))
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn select_macos_profile_mode_with(
-    has_authenticated_dev_lease: bool,
-    release_identity: impl FnOnce() -> Result<MacValidatedAppIdentity, HostAppError>,
-) -> Result<WebProfileSelection, HostAppError> {
-    if has_authenticated_dev_lease {
-        let mut launch_nonce = [0_u8; 32];
-        fill_os_random(&mut launch_nonce)
-            .map_err(|source| macos_identity_error(format!("host randomness failed: {source}")))?;
-        let profile = EphemeralProfile::from_host_random(launch_nonce)
-            .map_err(|source| macos_identity_error(source.to_string()))?;
-        return Ok(WebProfileSelection::ephemeral_dev(profile));
-    }
-    release_identity()?.into_profile_selection()
-}
-
-#[cfg(target_os = "macos")]
-fn macos_profile_selection(
-    dev_lease: Option<&DevHostLease>,
-) -> Result<WebProfileSelection, HostAppError> {
-    select_macos_profile_mode_with(dev_lease.is_some(), verified_macos_app_identity)
-}
-
-#[cfg(target_os = "macos")]
-fn verified_macos_app_identity() -> Result<MacValidatedAppIdentity, HostAppError> {
-    let signing_info = verified_current_process_signing_info().map_err(macos_identity_error)?;
-    MacValidatedAppIdentity::from_verified_parts(
-        &signing_info.team_identifier,
-        &signing_info.signing_identifier,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn macos_identity_error(detail: impl Into<String>) -> HostAppError {
-    HostAppError::new(
-        "KELD-WV-009",
-        "macOS authenticated app identity",
-        detail,
-        "Launch a validly signed macOS app with a canonical signed identifier, or use `keld dev` for a fresh nonpersistent profile.",
-    )
 }
 
 /// Reports only facts read from this process after successful Security.framework validation.
