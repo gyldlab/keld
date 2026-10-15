@@ -481,7 +481,7 @@ mod tests {
     fn webview2_installs_popup_denial_before_guard_witness() {
         // Source ordering is a regression tripwire, not live COM-installation proof.
         // KEL-168's Windows popup probe supplies that independent OS observable.
-        let backend = include_str!("webview2/mod.rs");
+        let backend = include_str!("webview2/guarded_navigation.rs");
         let installer = backend
             .split_once("fn install_guarded_media_permissions(")
             .expect("Windows guard installer exists")
@@ -492,6 +492,22 @@ mod tests {
         assert!(
             installer.contains("webview.add_NewWindowRequested("),
             "KEL-65 direct COM must deny popups before GuardInstalled: otherwise a new WebView2 escapes the guard and lifecycle registry"
+        );
+        // The parent engine must reconcile saved permissions and register both
+        // live guards before first navigation can consume the witness.
+        let engine = include_str!("webview2/mod.rs");
+        let saved = engine
+            .find("reconcile_saved_media_permissions(&view.webview)?")
+            .expect("saved media permission reconciliation exists");
+        let guard = engine
+            .find("let guard = install_guarded_media_permissions(")
+            .expect("engine installs the live permission guard");
+        let initial = engine
+            .find("navigate_initial(&guard, &spec.initial)?")
+            .expect("first navigation consumes the installed guard");
+        assert!(
+            saved < guard && guard < initial,
+            "saved permission denial and live popup/media guards must precede initial navigation"
         );
     }
 
