@@ -77,6 +77,22 @@ jobs:
           target/product-status/product-status check .
       - name: Router contract tests
         run: tools/ci_changes_test.sh
+      # Enforce explicit dependencies only for newly introduced Rust test imports.
+      # No legacy-only rejection or privileged pull_request_target execution.
+      - name: Test module import ownership
+        env:
+          KELD_IMPORT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          KELD_IMPORT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          KELD_IMPORT_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python3 -B tools/test_test_import_guard.py
+          if [[ "$KELD_IMPORT_EVENT" == 'push' && "$KELD_IMPORT_BASE_SHA" =~ ^0+$ ]]; then
+            echo 'test-imports: initial push has no before commit; PR gate remains enforced'
+            exit 0
+          fi
+          python3 -B tools/test_import_guard.py --repo . \
+            --base "$KELD_IMPORT_BASE_SHA" --head "$KELD_IMPORT_HEAD_SHA"
       # The agent playbook router and unsafe-coverage inventory reads crates/*.rs
       # as well as AGENTS and .agents files, so it runs here, where every diff
       # reaches it (#650; it was local-only before).
@@ -90,6 +106,33 @@ jobs:
           KELD_CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           KELD_CI_BEFORE_SHA: ${{ github.event.before || '' }}
         run: tools/ci_changes.sh github
+      # Advisory only; proposals are not enforced and no second checkout is needed.
+      - name: Source budget proposals (report only)
+        env:
+          KELD_BUDGET_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          KELD_BUDGET_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/source-budget
+          if [[ ! "$KELD_BUDGET_BASE_SHA" =~ ^[0-9a-f]{40,64}$ ]] || ! git cat-file -e "${KELD_BUDGET_BASE_SHA}^{commit}" 2>/dev/null; then
+            echo 'source-budget: comparison base unavailable; proposals not assessed'
+            echo '### Source budgets (advisory)' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Comparison base unavailable; no hard cap is enforced.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ ! "$KELD_BUDGET_HEAD_SHA" =~ ^[0-9a-f]{40,64}$ ]] || ! git cat-file -e "${KELD_BUDGET_HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo 'source-budget: Git head unavailable' >&2
+            exit 1
+          fi
+          python3 -B tools/source_budget_report.py --repo . \
+            --base "$KELD_BUDGET_BASE_SHA" --head "$KELD_BUDGET_HEAD_SHA" \
+            --policy candidate --output target/source-budget/report.json \
+            | tee target/source-budget/brief.json
+          echo '### Source budget simulation (no hard limits active)' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No file is rejected for exceeding proposed caps.' >> "$GITHUB_STEP_SUMMARY"
+          echo '~~~json' >> "$GITHUB_STEP_SUMMARY"
+          cat target/source-budget/brief.json >> "$GITHUB_STEP_SUMMARY"
+          echo '~~~' >> "$GITHUB_STEP_SUMMARY"
 
   fmt:
     name: rustfmt
