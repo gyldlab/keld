@@ -2,6 +2,11 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
+mod error;
+pub use self::error::HostAppError;
+#[cfg(all(test, any(target_os = "macos", windows)))]
+use self::error::startup_resource_snapshot;
+
 #[cfg(all(test, windows))]
 use self::boot_contract::decode_digest;
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
@@ -65,11 +70,13 @@ use nix::sys::stat::{SFlag, fstat};
 use crate::macos_profile_identity::verified_current_process_signing_info;
 #[cfg(target_os = "macos")]
 use getrandom::fill as fill_os_random;
+#[cfg(test)]
+use keld_guard::ManifestError;
+use keld_guard::Principal;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::VerifiedManifest;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::load_verified_manifest;
-use keld_guard::{ManifestError, Principal};
 #[cfg(windows)]
 use keld_guard::{VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeImage};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1307,146 +1314,6 @@ struct RetainedMacSession {
     _renderer: RendererDispatch,
     _commands: Sender<AppWindowCommand>,
     guard: Option<GuardSnapshot>,
-}
-
-/// Typed no-flag host boot/session failure.
-pub struct HostAppError {
-    code: &'static str,
-    phase: &'static str,
-    detail: String,
-    fix: &'static str,
-    resources: StartupResourceSnapshot,
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    manifest_source: Option<Box<ManifestError>>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct StartupResourceSnapshot {
-    listener: u32,
-    child: u32,
-    window: u32,
-}
-
-impl HostAppError {
-    fn new(
-        code: &'static str,
-        phase: &'static str,
-        detail: impl Into<String>,
-        fix: &'static str,
-    ) -> Self {
-        Self {
-            code,
-            phase,
-            detail: detail.into(),
-            fix,
-            resources: startup_resource_snapshot(),
-            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-            manifest_source: None,
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn manifest(source: ManifestError) -> Self {
-        let code = source.code();
-        let detail = source.to_string();
-        Self {
-            code,
-            phase: "permissions manifest preflight",
-            detail,
-            fix: "Apply the keld-guard correction above, rebuild the staged boot artifact, and relaunch.",
-            resources: startup_resource_snapshot(),
-            manifest_source: Some(Box::new(source)),
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn fs_prepare(source: &FsPrepareError) -> Self {
-        Self::new(
-            source.code(),
-            "filesystem broker preflight",
-            source.to_string(),
-            "Correct the filesystem scopes in keld.permissions.jsonc, rebuild the staged boot artifact, and relaunch.",
-        )
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn io(code: &'static str, phase: &'static str, source: &io::Error, fix: &'static str) -> Self {
-        Self::new(code, phase, source.to_string(), fix)
-    }
-
-    /// Stable registered diagnostic code.
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        self.code
-    }
-}
-
-impl fmt::Display for HostAppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: no-flag host failed during {} — {}. {} \
-             [startup-resource-attempts listener={} child={} window={}]",
-            self.code,
-            self.phase,
-            self.detail,
-            self.fix,
-            self.resources.listener,
-            self.resources.child,
-            self.resources.window,
-        )
-    }
-}
-
-impl fmt::Debug for HostAppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostAppError")
-            .field("code", &self.code)
-            .field("phase", &self.phase)
-            .field("detail", &self.detail)
-            .field("resources", &self.resources)
-            .field("manifest_source", &{
-                #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-                {
-                    self.manifest_source.as_ref()
-                }
-                #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-                {
-                    Option::<&ManifestError>::None
-                }
-            })
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::error::Error for HostAppError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        {
-            self.manifest_source
-                .as_ref()
-                .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-        {
-            None
-        }
-    }
-}
-
-fn startup_resource_snapshot() -> StartupResourceSnapshot {
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        StartupResourceSnapshot {
-            listener: LISTENER_ATTEMPTS.load(Ordering::Acquire),
-            child: CHILD_ATTEMPTS.load(Ordering::Acquire),
-            window: WINDOW_ATTEMPTS.load(Ordering::Acquire),
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        StartupResourceSnapshot::default()
-    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
