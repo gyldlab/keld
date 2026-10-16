@@ -1,0 +1,708 @@
+{
+  "accounted_rows": 1114,
+  "audit_date": "2026-10-16",
+  "category_counts": {
+    "A": 15,
+    "B": 177,
+    "C": 361,
+    "D": 92,
+    "E": 115,
+    "F": 354
+  },
+  "distributions": {
+    "A": {
+      "counted_text_files": 15,
+      "files": 15,
+      "p50_lines": 126.0,
+      "p75_lines": 373.5,
+      "p90_lines": 1685.6,
+      "p95_lines": 3356.1,
+      "p99_lines": 5140.8,
+      "total_blob_bytes": 398563,
+      "total_lines": 10129
+    },
+    "B": {
+      "counted_text_files": 177,
+      "files": 177,
+      "p50_lines": 288.0,
+      "p75_lines": 695.0,
+      "p90_lines": 1286.4,
+      "p95_lines": 1898.0,
+      "p99_lines": 5024.6,
+      "total_blob_bytes": 4159931,
+      "total_lines": 107467
+    },
+    "C": {
+      "counted_text_files": 361,
+      "files": 361,
+      "p50_lines": 247.0,
+      "p75_lines": 395.0,
+      "p90_lines": 751.0,
+      "p95_lines": 1022.0,
+      "p99_lines": 1941.4,
+      "total_blob_bytes": 4900052,
+      "total_lines": 125824
+    },
+    "D": {
+      "counted_text_files": 92,
+      "files": 92,
+      "p50_lines": 43.5,
+      "p75_lines": 266.5,
+      "p90_lines": 556.2,
+      "p95_lines": 1115.7,
+      "p99_lines": 2808.5,
+      "total_blob_bytes": 1009887,
+      "total_lines": 22701
+    },
+    "E": {
+      "counted_text_files": 115,
+      "files": 115,
+      "p50_lines": 193.0,
+      "p75_lines": 489.5,
+      "p90_lines": 912.0,
+      "p95_lines": 1364.3,
+      "p99_lines": 1763.0,
+      "total_blob_bytes": 3084578,
+      "total_lines": 43208
+    },
+    "F": {
+      "counted_text_files": 0,
+      "files": 354,
+      "p50_lines": 0.0,
+      "p75_lines": 0.0,
+      "p90_lines": 0.0,
+      "p95_lines": 0.0,
+      "p99_lines": 0.0,
+      "total_blob_bytes": 1445756,
+      "total_lines": 0
+    }
+  },
+  "history_since": "2026-09-15",
+  "independent_validation": {
+    "method": "bytes.splitlines(keepends=True) vs explicit newline arithmetic",
+    "mismatches": 0,
+    "samples": 46
+  },
+  "limitations": [
+    "File size is not architectural failure or proof of coupling.",
+    "Inline-test tail percentages are NOT exact test share.",
+    "Agent navigation/read-set and semantic ownership require manual evidence.",
+    "Test discovery or native behavior not exercised by static census.",
+    "Proposed hard-stop counts are grandfathering estimates; no gates approved."
+  ],
+  "methodology": {
+    "bytes": "raw Git blob bytes, not working tree disk encoding",
+    "classification": "deterministic path/mode/UTF-8 rules in tools/source_census.py",
+    "inline_tests": "low-confidence tail proxy: physical lines from first anchored #[cfg(test)] to EOF; not AST or exact test code",
+    "percentiles": "linear interpolation, index (n-1)*p/100",
+    "physical_lines": "CRLF one break; CR/LF each one break; nonempty final unterminated line counted",
+    "population": "every tracked path in pinned git ls-tree -r -z, including F exclusions",
+    "source_of_truth": "pinned Git blob IDs; excludes untracked user files"
+  },
+  "pinned_commit": "16eaccbbc7f5d95f8daad6b432baa7d033426b65",
+  "proposed_impacts": [
+    {
+      "category": "A",
+      "files": 15,
+      "hard_over_bytes": 2,
+      "hard_over_lines": 3,
+      "proposal": "candidate",
+      "review_over_bytes": 4,
+      "review_over_lines": 3,
+      "union_existing_grandfathered": 3
+    },
+    {
+      "category": "B",
+      "files": 177,
+      "hard_over_bytes": 12,
+      "hard_over_lines": 22,
+      "proposal": "candidate",
+      "review_over_bytes": 25,
+      "review_over_lines": 42,
+      "union_existing_grandfathered": 22
+    },
+    {
+      "category": "C",
+      "files": 361,
+      "hard_over_bytes": 14,
+      "hard_over_lines": 20,
+      "proposal": "candidate",
+      "review_over_bytes": 92,
+      "review_over_lines": 95,
+      "union_existing_grandfathered": 22
+    },
+    {
+      "category": "D",
+      "files": 92,
+      "hard_over_bytes": 3,
+      "hard_over_lines": 3,
+      "proposal": "candidate",
+      "review_over_bytes": 4,
+      "review_over_lines": 7,
+      "union_existing_grandfathered": 3
+    },
+    {
+      "category": "E",
+      "files": 115,
+      "hard_over_bytes": 2,
+      "hard_over_lines": 0,
+      "proposal": "candidate",
+      "review_over_bytes": 11,
+      "review_over_lines": 0,
+      "union_existing_grandfathered": 2
+    },
+    {
+      "category": "A",
+      "files": 15,
+      "hard_over_bytes": 2,
+      "hard_over_lines": 2,
+      "proposal": "roomier",
+      "review_over_bytes": 4,
+      "review_over_lines": 3,
+      "union_existing_grandfathered": 2
+    },
+    {
+      "category": "B",
+      "files": 177,
+      "hard_over_bytes": 8,
+      "hard_over_lines": 12,
+      "proposal": "roomier",
+      "review_over_bytes": 25,
+      "review_over_lines": 42,
+      "union_existing_grandfathered": 12
+    },
+    {
+      "category": "C",
+      "files": 361,
+      "hard_over_bytes": 4,
+      "hard_over_lines": 10,
+      "proposal": "roomier",
+      "review_over_bytes": 92,
+      "review_over_lines": 95,
+      "union_existing_grandfathered": 10
+    },
+    {
+      "category": "D",
+      "files": 92,
+      "hard_over_bytes": 1,
+      "hard_over_lines": 3,
+      "proposal": "roomier",
+      "review_over_bytes": 4,
+      "review_over_lines": 7,
+      "union_existing_grandfathered": 3
+    },
+    {
+      "category": "E",
+      "files": 115,
+      "hard_over_bytes": 1,
+      "hard_over_lines": 0,
+      "proposal": "roomier",
+      "review_over_bytes": 11,
+      "review_over_lines": 0,
+      "union_existing_grandfathered": 1
+    }
+  ],
+  "recent_change_ranking": [
+    {
+      "category": "D",
+      "commit_touches": 121,
+      "path": "tools/ci-inputs.json",
+      "physical_lines": 457
+    },
+    {
+      "category": "B",
+      "commit_touches": 53,
+      "path": "crates/keld-core/src/app_session.rs",
+      "physical_lines": 8145
+    },
+    {
+      "category": "D",
+      "commit_touches": 44,
+      "path": "docs/engineering/product-status.tsv",
+      "physical_lines": 31
+    },
+    {
+      "category": "B",
+      "commit_touches": 33,
+      "path": "crates/keld-wv/src/webview2/mod.rs",
+      "physical_lines": 4243
+    },
+    {
+      "category": "D",
+      "commit_touches": 27,
+      "path": "tools/ci_hygiene.rs",
+      "physical_lines": 2785
+    },
+    {
+      "category": "D",
+      "commit_touches": 26,
+      "path": ".github/workflows/ci.yml",
+      "physical_lines": 1072
+    },
+    {
+      "category": "B",
+      "commit_touches": 22,
+      "path": "crates/keld-native/src/fs.rs",
+      "physical_lines": 2435
+    },
+    {
+      "category": "C",
+      "commit_touches": 22,
+      "path": "crates/keld-host/tests/no_flag_windows.rs",
+      "physical_lines": 346
+    },
+    {
+      "category": "A",
+      "commit_touches": 20,
+      "path": "crates/keld-guard/src/lib.rs",
+      "physical_lines": 2400
+    },
+    {
+      "category": "A",
+      "commit_touches": 20,
+      "path": "crates/keld-update/src/lib.rs",
+      "physical_lines": 126
+    },
+    {
+      "category": "B",
+      "commit_touches": 18,
+      "path": "crates/keld-runtime/src/windows_job.rs",
+      "physical_lines": 5780
+    },
+    {
+      "category": "B",
+      "commit_touches": 18,
+      "path": "crates/keld-runtime/src/macos_guardian.rs",
+      "physical_lines": 437
+    },
+    {
+      "category": "B",
+      "commit_touches": 16,
+      "path": "crates/keld-wv/src/profile.rs",
+      "physical_lines": 993
+    },
+    {
+      "category": "C",
+      "commit_touches": 16,
+      "path": "crates/keld-update/src/windows_baseline/tests.rs",
+      "physical_lines": 55
+    },
+    {
+      "category": "B",
+      "commit_touches": 15,
+      "path": "crates/keld-ipc/src/link.rs",
+      "physical_lines": 1865
+    },
+    {
+      "category": "B",
+      "commit_touches": 15,
+      "path": "crates/keld-update/src/windows_baseline.rs",
+      "physical_lines": 859
+    },
+    {
+      "category": "B",
+      "commit_touches": 14,
+      "path": "crates/keld-wv/src/webview2/media_acceptance.rs",
+      "physical_lines": 2137
+    },
+    {
+      "category": "C",
+      "commit_touches": 14,
+      "path": "crates/keld-update/src/tests.rs",
+      "physical_lines": 1420
+    },
+    {
+      "category": "C",
+      "commit_touches": 14,
+      "path": "crates/keld-native/tests/retained_fs.rs",
+      "physical_lines": 1041
+    },
+    {
+      "category": "C",
+      "commit_touches": 14,
+      "path": "tools/ci_changes_test.sh",
+      "physical_lines": 1022
+    }
+  ],
+  "schema": "keld.source-census/v1",
+  "top_authored_code": [
+    {
+      "bytes": 319838,
+      "category": "B",
+      "first_test_module_line": null,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.9899,
+      "module_tail_ratio": null,
+      "path": "crates/keld-core/src/app_session.rs",
+      "physical_lines": 8145
+    },
+    {
+      "bytes": 246682,
+      "category": "B",
+      "first_test_module_line": 3517,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.9931,
+      "module_tail_ratio": 0.3917,
+      "path": "crates/keld-runtime/src/windows_job.rs",
+      "physical_lines": 5780
+    },
+    {
+      "bytes": 219167,
+      "category": "A",
+      "first_test_module_line": 2383,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.8878,
+      "module_tail_ratio": 0.5737,
+      "path": "crates/keld-runtime/src/lib.rs",
+      "physical_lines": 5587
+    },
+    {
+      "bytes": 186842,
+      "category": "B",
+      "first_test_module_line": 166,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.9764,
+      "module_tail_ratio": 0.9655,
+      "path": "crates/keld-ipc/src/bootstrap.rs",
+      "physical_lines": 4786
+    },
+    {
+      "bytes": 176028,
+      "category": "B",
+      "first_test_module_line": 3439,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.9809,
+      "module_tail_ratio": 0.1897,
+      "path": "crates/keld-wv/src/webview2/mod.rs",
+      "physical_lines": 4243
+    },
+    {
+      "bytes": 148728,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "tools/ci_hygiene_tests.rs",
+      "physical_lines": 3651
+    },
+    {
+      "bytes": 106917,
+      "category": "D",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "tools/product_status.rs",
+      "physical_lines": 3046
+    },
+    {
+      "bytes": 111196,
+      "category": "B",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "physical_lines": 2942
+    },
+    {
+      "bytes": 131298,
+      "category": "D",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "tools/ci_hygiene.rs",
+      "physical_lines": 2785
+    },
+    {
+      "bytes": 88377,
+      "category": "B",
+      "first_test_module_line": 1497,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.4563,
+      "module_tail_ratio": 0.3856,
+      "path": "crates/keld-native/src/fs.rs",
+      "physical_lines": 2435
+    },
+    {
+      "bytes": 95620,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-runtime/tests/windows_host_death_job.rs",
+      "physical_lines": 2409
+    },
+    {
+      "bytes": 93800,
+      "category": "A",
+      "first_test_module_line": 1296,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.4608,
+      "module_tail_ratio": 0.4604,
+      "path": "crates/keld-guard/src/lib.rs",
+      "physical_lines": 2400
+    },
+    {
+      "bytes": 92580,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-update/src/windows_baseline/tests/transaction.rs",
+      "physical_lines": 2365
+    },
+    {
+      "bytes": 88227,
+      "category": "B",
+      "first_test_module_line": 986,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.5395,
+      "module_tail_ratio": 0.5391,
+      "path": "crates/keld-wv/src/webview2/media_acceptance.rs",
+      "physical_lines": 2137
+    },
+    {
+      "bytes": 84225,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-update/src/windows_baseline/tests/writer.rs",
+      "physical_lines": 2128
+    },
+    {
+      "bytes": 86639,
+      "category": "B",
+      "first_test_module_line": 1983,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.0629,
+      "module_tail_ratio": 0.0624,
+      "path": "crates/keld-wv/src/wkwebview/macos_profile.rs",
+      "physical_lines": 2114
+    },
+    {
+      "bytes": 87552,
+      "category": "D",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "tools/atomic_protocol.rs",
+      "physical_lines": 2062
+    },
+    {
+      "bytes": 73844,
+      "category": "B",
+      "first_test_module_line": 1860,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.9912,
+      "module_tail_ratio": 0.0408,
+      "path": "crates/keld-ipc/src/windows_named_pipe.rs",
+      "physical_lines": 1938
+    },
+    {
+      "bytes": 77987,
+      "category": "B",
+      "first_test_module_line": 1811,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.5466,
+      "module_tail_ratio": 0.0413,
+      "path": "crates/keld-update/src/windows_baseline/load.rs",
+      "physical_lines": 1888
+    },
+    {
+      "bytes": 71202,
+      "category": "B",
+      "first_test_module_line": 1041,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.9979,
+      "module_tail_ratio": 0.4424,
+      "path": "crates/keld-ipc/src/link.rs",
+      "physical_lines": 1865
+    },
+    {
+      "bytes": 62099,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-native/tests/macos/retained_fs_acceptance.rs",
+      "physical_lines": 1817
+    },
+    {
+      "bytes": 71660,
+      "category": "B",
+      "first_test_module_line": 918,
+      "inline_test_flag": true,
+      "inline_test_tail_ratio": 0.4531,
+      "module_tail_ratio": 0.4519,
+      "path": "crates/keld-update/src/windows_fs.rs",
+      "physical_lines": 1673
+    },
+    {
+      "bytes": 56512,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-ipc/tests/worker_link.rs",
+      "physical_lines": 1621
+    },
+    {
+      "bytes": 58034,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-host/tests/no_flag/macos/public_fs.rs",
+      "physical_lines": 1601
+    },
+    {
+      "bytes": 52369,
+      "category": "C",
+      "first_test_module_line": null,
+      "inline_test_flag": false,
+      "inline_test_tail_ratio": null,
+      "module_tail_ratio": null,
+      "path": "crates/keld-runtime/tests/window_bound_contract.rs",
+      "physical_lines": 1596
+    }
+  ],
+  "top_inline_test_proxies": [
+    {
+      "inline_test_tail_lines": 8063,
+      "inline_test_tail_ratio": 0.9899,
+      "path": "crates/keld-core/src/app_session.rs"
+    },
+    {
+      "inline_test_tail_lines": 5740,
+      "inline_test_tail_ratio": 0.9931,
+      "path": "crates/keld-runtime/src/windows_job.rs"
+    },
+    {
+      "inline_test_tail_lines": 4960,
+      "inline_test_tail_ratio": 0.8878,
+      "path": "crates/keld-runtime/src/lib.rs"
+    },
+    {
+      "inline_test_tail_lines": 4673,
+      "inline_test_tail_ratio": 0.9764,
+      "path": "crates/keld-ipc/src/bootstrap.rs"
+    },
+    {
+      "inline_test_tail_lines": 4162,
+      "inline_test_tail_ratio": 0.9809,
+      "path": "crates/keld-wv/src/webview2/mod.rs"
+    },
+    {
+      "inline_test_tail_lines": 1921,
+      "inline_test_tail_ratio": 0.9912,
+      "path": "crates/keld-ipc/src/windows_named_pipe.rs"
+    },
+    {
+      "inline_test_tail_lines": 1861,
+      "inline_test_tail_ratio": 0.9979,
+      "path": "crates/keld-ipc/src/link.rs"
+    },
+    {
+      "inline_test_tail_lines": 1398,
+      "inline_test_tail_ratio": 0.8792,
+      "path": "crates/keld-runtime/src/role.rs"
+    },
+    {
+      "inline_test_tail_lines": 1246,
+      "inline_test_tail_ratio": 0.9811,
+      "path": "crates/keld-guard/src/windows_machine/uac_token.rs"
+    },
+    {
+      "inline_test_tail_lines": 1153,
+      "inline_test_tail_ratio": 0.5395,
+      "path": "crates/keld-wv/src/webview2/media_acceptance.rs"
+    },
+    {
+      "inline_test_tail_lines": 1142,
+      "inline_test_tail_ratio": 0.8014,
+      "path": "crates/keld-native/src/auth/controller.rs"
+    },
+    {
+      "inline_test_tail_lines": 1111,
+      "inline_test_tail_ratio": 0.4563,
+      "path": "crates/keld-native/src/fs.rs"
+    },
+    {
+      "inline_test_tail_lines": 1106,
+      "inline_test_tail_ratio": 0.4608,
+      "path": "crates/keld-guard/src/lib.rs"
+    },
+    {
+      "inline_test_tail_lines": 1032,
+      "inline_test_tail_ratio": 0.5466,
+      "path": "crates/keld-update/src/windows_baseline/load.rs"
+    },
+    {
+      "inline_test_tail_lines": 964,
+      "inline_test_tail_ratio": 0.9918,
+      "path": "crates/keld-runtime/src/virtual_port.rs"
+    },
+    {
+      "inline_test_tail_lines": 917,
+      "inline_test_tail_ratio": 0.9235,
+      "path": "crates/keld-wv/src/profile.rs"
+    },
+    {
+      "inline_test_tail_lines": 865,
+      "inline_test_tail_ratio": 0.8547,
+      "path": "crates/keld-update/src/windows_extraction.rs"
+    },
+    {
+      "inline_test_tail_lines": 839,
+      "inline_test_tail_ratio": 0.6648,
+      "path": "crates/keld-native/src/auth/primitives.rs"
+    },
+    {
+      "inline_test_tail_lines": 830,
+      "inline_test_tail_ratio": 0.9662,
+      "path": "crates/keld-update/src/windows_baseline.rs"
+    },
+    {
+      "inline_test_tail_lines": 764,
+      "inline_test_tail_ratio": 0.9757,
+      "path": "crates/keld-ipc/src/attempt/channel.rs"
+    },
+    {
+      "inline_test_tail_lines": 758,
+      "inline_test_tail_ratio": 0.4531,
+      "path": "crates/keld-update/src/windows_fs.rs"
+    },
+    {
+      "inline_test_tail_lines": 652,
+      "inline_test_tail_ratio": 0.4503,
+      "path": "crates/keld-update/src/windows_baseline/activate.rs"
+    },
+    {
+      "inline_test_tail_lines": 628,
+      "inline_test_tail_ratio": 0.5981,
+      "path": "crates/keld-ipc/src/attempt/records.rs"
+    },
+    {
+      "inline_test_tail_lines": 625,
+      "inline_test_tail_ratio": 0.6999,
+      "path": "crates/keld-runtime/src/registry.rs"
+    },
+    {
+      "inline_test_tail_lines": 594,
+      "inline_test_tail_ratio": 0.7453,
+      "path": "crates/keld-native/src/auth/macos_http.rs"
+    }
+  ],
+  "tracked_manifest_entries": 1114
+}
