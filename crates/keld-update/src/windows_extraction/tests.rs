@@ -5,7 +5,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Cursor;
-use std::os::windows::fs::{OpenOptionsExt as _, symlink_dir};
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,7 @@ use crate::{
 };
 
 mod readback_integrity;
+mod root_admission;
 mod source_admission;
 mod stage_refusals;
 
@@ -107,32 +108,6 @@ fn logical_uac_admission_cannot_open_a_protected_stage_without_writer_authority(
             .count(),
         0,
         "refusal precedes any protected stage creation"
-    );
-}
-
-#[test]
-fn owner_private_root_refuses_install_profile_and_topology_substitution() {
-    let fixture = Fixture::new();
-    let install = fixture.temp.path().join("unprotected-install");
-    let update = install.join("updates");
-    fs::create_dir(&install).expect("ordinary inherited install fixture");
-    fs::create_dir(&update).expect("ordinary inherited update fixture");
-    fs::create_dir(update.join("versions")).expect("ordinary inherited versions fixture");
-
-    let mut identity = fixture.identity.clone();
-    identity.install_root = install;
-    identity.update_root = update.clone();
-    let admitted = admitted_for(identity.clone(), &signing_key(), "1.0.0");
-    assert!(
-        admitted.open_windows_extraction_root().is_err(),
-        "matching topology cannot compensate for a missing owner-private install profile"
-    );
-
-    identity.update_root = fixture.temp.path().join("sibling-updates");
-    let admitted = admitted_for(identity, &signing_key(), "1.0.0");
-    assert!(
-        admitted.open_windows_extraction_root().is_err(),
-        "a sibling update root cannot substitute for the trusted direct child"
     );
 }
 
@@ -470,34 +445,6 @@ fn signed_golden_extracts_only_incomplete_stage_with_exact_bytes() {
 }
 
 #[test]
-fn tilde_in_existing_update_root_preserves_authenticated_extraction() {
-    let mut fixture = Fixture::new();
-    let renamed = fixture.identity.install_root.join("updates~stable");
-    fs::rename(&fixture.identity.update_root, &renamed)
-        .expect("rename preserves protected directory descriptors");
-    fixture.identity.update_root = renamed;
-    let source = fixture.source(GOLDEN_TAR);
-    let receipt = fixture.receipt(GOLDEN_TAR);
-    let mut root = fixture
-        .admitted("1.0.0")
-        .open_windows_extraction_root()
-        .expect("existing filesystem roots permit a literal tilde");
-    let stage = root
-        .extract(&receipt, &source)
-        .expect("authenticated extraction beneath existing tilde root");
-    let stage_path = fixture.versions().join(stage.name());
-    assert_eq!(
-        fs::read(stage_path.join("content.tar")).expect("exact retained content"),
-        GOLDEN_TAR
-    );
-    assert_eq!(
-        fs::read(stage_path.join("tree/nest/one")).expect("extracted payload"),
-        b"!"
-    );
-    assert!(!stage_path.join(".complete").exists());
-}
-
-#[test]
 fn tilde_archive_member_still_refuses_before_stage_creation() {
     let fixture = Fixture::new();
     let mut content = Vec::new();
@@ -590,69 +537,6 @@ fn expect_extraction(error: UpdateError, expected_incomplete: bool) -> Option<St
         }
         other => panic!("expected typed extraction failure, got {other:?}"),
     }
-}
-
-#[test]
-fn missing_or_noncanonical_protected_root_refuses_without_creating_stage() {
-    let missing = Fixture::new();
-    fs::remove_dir(missing.versions()).expect("remove unused versions root");
-    let error = missing
-        .admitted("1.0.0")
-        .open_windows_extraction_root()
-        .expect_err("missing versions accepted");
-    expect_extraction(error, false);
-
-    let permissive = Fixture::new();
-    fs::remove_dir(permissive.versions()).expect("remove protected versions root");
-    fs::create_dir(permissive.versions()).expect("ordinary inherited versions ACL");
-    let error = permissive
-        .admitted("1.0.0")
-        .open_windows_extraction_root()
-        .expect_err("permissive versions accepted");
-    expect_extraction(error, false);
-    assert_empty_versions(&permissive.versions());
-
-    let permissive = Fixture::new();
-    fs::remove_dir(permissive.versions()).expect("remove protected versions root");
-    fs::remove_dir(&permissive.identity.update_root).expect("remove protected update root");
-    fs::create_dir(&permissive.identity.update_root).expect("ordinary inherited update ACL");
-    fs::create_dir(permissive.versions()).expect("ordinary inherited versions ACL");
-    let error = permissive
-        .admitted("1.0.0")
-        .open_windows_extraction_root()
-        .expect_err("permissive update root accepted");
-    expect_extraction(error, false);
-    assert_empty_versions(&permissive.versions());
-}
-
-#[test]
-fn reparse_update_or_versions_root_refuses_before_stage_creation() {
-    let versions_link = Fixture::new();
-    let target = versions_link.temp.path().join("other-versions");
-    fs::create_dir(&target).expect("reparse target");
-    fs::remove_dir(versions_link.versions()).expect("replace versions with link");
-    symlink_dir(&target, versions_link.versions())
-        .expect("real Windows directory reparse fixture requires symlink privilege");
-    let error = versions_link
-        .admitted("1.0.0")
-        .open_windows_extraction_root()
-        .expect_err("reparse versions root accepted");
-    expect_extraction(error, false);
-    assert_empty_versions(&target);
-
-    let update_link = Fixture::new();
-    let target = update_link.temp.path().join("other-update");
-    fs::create_dir(&target).expect("reparse target");
-    fs::remove_dir(update_link.versions()).expect("empty protected update root");
-    fs::remove_dir(&update_link.identity.update_root).expect("replace update with link");
-    symlink_dir(&target, &update_link.identity.update_root)
-        .expect("real Windows directory reparse fixture requires symlink privilege");
-    let error = update_link
-        .admitted("1.0.0")
-        .open_windows_extraction_root()
-        .expect_err("reparse update root accepted");
-    expect_extraction(error, false);
-    assert_empty_versions(&target);
 }
 
 struct Mapping(windows_sys::Win32::Foundation::HANDLE);
