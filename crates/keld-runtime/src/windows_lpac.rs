@@ -51,6 +51,9 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
 
+mod launch_encoding;
+use launch_encoding::{encode_command_line, encode_environment};
+
 const ERROR_SUCCESS: u32 = 0;
 const STILL_ACTIVE: u32 = 259;
 
@@ -1117,93 +1120,6 @@ fn deduplicate_handles(handles: &mut Vec<HANDLE>) -> Result<(), WindowsLpacError
         ));
     }
     Ok(())
-}
-
-fn encode_command_line(program: &OsStr, args: &[OsString]) -> Result<Vec<u16>, WindowsLpacError> {
-    let mut encoded = Vec::new();
-    append_quoted_arg(&mut encoded, program)?;
-    for arg in args {
-        encoded.push(u16::from(b' '));
-        append_quoted_arg(&mut encoded, arg)?;
-    }
-    encoded.push(0);
-    Ok(encoded)
-}
-
-fn append_quoted_arg(output: &mut Vec<u16>, arg: &OsStr) -> Result<(), WindowsLpacError> {
-    let units: Vec<u16> = arg.encode_wide().collect();
-    if units.contains(&0) {
-        return Err(WindowsLpacError::contract(
-            "command-line encoding",
-            "argument contains NUL",
-        ));
-    }
-    let needs_quotes =
-        units.is_empty() || units.iter().any(|unit| matches!(*unit, 0x20 | 0x09 | 0x22));
-    if !needs_quotes {
-        output.extend(units);
-        return Ok(());
-    }
-
-    output.push(u16::from(b'"'));
-    let mut slashes = 0_usize;
-    for unit in units {
-        if unit == u16::from(b'\\') {
-            slashes += 1;
-            continue;
-        }
-        if unit == u16::from(b'"') {
-            output.extend(std::iter::repeat_n(u16::from(b'\\'), slashes * 2 + 1));
-        } else {
-            output.extend(std::iter::repeat_n(u16::from(b'\\'), slashes));
-        }
-        slashes = 0;
-        output.push(unit);
-    }
-    output.extend(std::iter::repeat_n(u16::from(b'\\'), slashes * 2));
-    output.push(u16::from(b'"'));
-    Ok(())
-}
-
-fn encode_environment(environment: &[(OsString, OsString)]) -> Result<Vec<u16>, WindowsLpacError> {
-    let mut ordered = Vec::with_capacity(environment.len());
-    let mut keys = BTreeSet::new();
-    for (key, value) in environment {
-        let key_units: Vec<u16> = key.encode_wide().collect();
-        let value_units: Vec<u16> = value.encode_wide().collect();
-        if key_units.is_empty()
-            || key_units.contains(&0)
-            || key_units.contains(&u16::from(b'='))
-            || value_units.contains(&0)
-        {
-            return Err(WindowsLpacError::contract(
-                "environment encoding",
-                "key is empty/contains '=' or key/value contains NUL",
-            ));
-        }
-        let folded = key.to_string_lossy().to_uppercase();
-        if !keys.insert(folded.clone()) {
-            return Err(WindowsLpacError::contract(
-                "environment encoding",
-                format!("duplicate case-insensitive key {folded}"),
-            ));
-        }
-        ordered.push((folded, key_units, value_units));
-    }
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut encoded = Vec::new();
-    for (_, key, value) in ordered {
-        encoded.extend(key);
-        encoded.push(u16::from(b'='));
-        encoded.extend(value);
-        encoded.push(0);
-    }
-    encoded.push(0);
-    if environment.is_empty() {
-        encoded.push(0);
-    }
-    Ok(encoded)
 }
 
 fn wide_nul(value: &OsStr, phase: &'static str) -> Result<Vec<u16>, WindowsLpacError> {
