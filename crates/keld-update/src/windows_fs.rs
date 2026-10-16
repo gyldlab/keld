@@ -24,9 +24,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO_EX, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO,
-    FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
+    FILE_DISPOSITION_INFO_EX, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY,
+    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE,
@@ -36,6 +36,11 @@ use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::WindowsProgramming::{DRIVE_FIXED, FILE_CREATED};
+
+// Pure parsing is a separate private owner; all Win32 and unsafe filesystem
+// operations remain in this file as required by keld-update/AGENTS.md.
+mod directory_entries;
+use directory_entries::{DirectoryChild, parse_directory_entries};
 
 const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
 const VOLUME_GUID_ROOT_UNITS: usize = 49;
@@ -782,13 +787,6 @@ fn entry_kind(file: &File) -> io::Result<EntryKind> {
     })
 }
 
-/// One child listed from a directory handle: its exact name and listed attributes.
-#[derive(Debug, PartialEq, Eq)]
-struct DirectoryChild {
-    name: Vec<u16>,
-    attributes: u32,
-}
-
 /// Bytes requested per enumeration call; a multiple of eight keeps the buffer aligned.
 const DIRECTORY_BUFFER_WORDS: usize = 8 * 1024;
 
@@ -824,67 +822,6 @@ fn directory_children(directory: &File) -> io::Result<Vec<DirectoryChild>> {
         let bytes: Vec<u8> = buffer.iter().flat_map(|word| word.to_ne_bytes()).collect();
         children.extend(parse_directory_entries(&bytes)?);
         class = FileIdBothDirectoryInfo;
-    }
-}
-
-/// Parses a filled `FILE_ID_BOTH_DIR_INFO` chain, checking every offset and length
-/// against the buffer and requiring each record to contain its own name before its
-/// successor. `.` and `..` are omitted; any other name must be one component.
-fn parse_directory_entries(bytes: &[u8]) -> io::Result<Vec<DirectoryChild>> {
-    let malformed = || io::Error::other("malformed directory enumeration record");
-    let read_u32 = |offset: usize| -> io::Result<u32> {
-        let end = offset.checked_add(4).ok_or_else(malformed)?;
-        let field = bytes.get(offset..end).ok_or_else(malformed)?;
-        Ok(u32::from_ne_bytes(
-            field.try_into().map_err(|_| malformed())?,
-        ))
-    };
-    let field = |entry: usize, at: usize| entry.checked_add(at).ok_or_else(malformed);
-    let name_offset = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
-    let mut children = Vec::new();
-    let mut entry = 0_usize;
-    loop {
-        let next = read_u32(field(
-            entry,
-            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, NextEntryOffset),
-        )?)?;
-        let attributes = read_u32(field(
-            entry,
-            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileAttributes),
-        )?)?;
-        let name_bytes = read_u32(field(
-            entry,
-            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength),
-        )?)?;
-        let start = field(entry, name_offset)?;
-        let length = usize::try_from(name_bytes).map_err(|_| malformed())?;
-        let end = start.checked_add(length).ok_or_else(malformed)?;
-        let raw = bytes.get(start..end).ok_or_else(malformed)?;
-        if length % 2 != 0 {
-            return Err(malformed());
-        }
-        let name: Vec<u16> = raw
-            .chunks_exact(2)
-            .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
-            .collect();
-        if name != [u16::from(b'.')] && name != [u16::from(b'.'), u16::from(b'.')] {
-            if name.is_empty()
-                || name
-                    .iter()
-                    .any(|unit| matches!(*unit, 0 | 0x2f | 0x3a | 0x5c))
-            {
-                return Err(io::Error::other("directory entry is not one component"));
-            }
-            children.push(DirectoryChild { name, attributes });
-        }
-        if next == 0 {
-            return Ok(children);
-        }
-        let step = usize::try_from(next).map_err(|_| malformed())?;
-        if step < name_offset.checked_add(length).ok_or_else(malformed)? {
-            return Err(malformed());
-        }
-        entry = entry.checked_add(step).ok_or_else(malformed)?;
     }
 }
 
@@ -1041,6 +978,28 @@ mod tests {
         for bad in ["a\\b", "a/b", "a:b", "a\u{0}b"] {
             assert!(parse_directory_entries(&chain(&[bad])).is_err(), "{bad}");
         }
+    }
+
+    /// The returned kernel attributes control whether deletion treats a child
+    /// as a real directory or a reparse link. Literal bytes are the independent
+    /// oracle: even a name that decodes cleanly must retain both flags.
+    #[test]
+    fn directory_entry_parser_keeps_reparse_and_directory_attribute_bits() {
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+
+        let expected = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        let mut record = directory_record(0, 2, &[u16::from(b'x')]);
+        let at = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileAttributes);
+        record[at..at + 4].copy_from_slice(&expected.to_ne_bytes());
+        let entries = parse_directory_entries(&record).expect("valid directory record");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, vec![u16::from(b'x')]);
+        assert_eq!(
+            entries[0].attributes, expected,
+            "preserve directory and reparse flags"
+        );
     }
 
     #[test]
