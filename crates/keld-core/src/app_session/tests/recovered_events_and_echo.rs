@@ -120,7 +120,7 @@ fn revoke_racing_accepted_quit_does_not_join_on_the_guardian_owner() {
 }
 
 #[cfg(any(target_os = "linux", windows))]
-use DirectPrimaryOwnerCommand as TestPrimaryOwnerCommand;
+use super::DirectPrimaryOwnerCommand as TestPrimaryOwnerCommand;
 #[cfg(target_os = "macos")]
 use GuardianOwnerCommand as TestPrimaryOwnerCommand;
 
