@@ -179,6 +179,7 @@
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_extraction/tests/readback_integrity.rs",
+        "crates/keld-update/src/windows_extraction/tests/source_admission.rs",
         "crates/keld-update/src/windows_extraction/tests/stage_refusals.rs",
         "crates/keld-update/src/windows_baseline/tests/support.rs",
         "crates/keld-update/src/records/tests.rs",
@@ -352,6 +353,7 @@
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_extraction/tests/readback_integrity.rs",
+        "crates/keld-update/src/windows_extraction/tests/source_admission.rs",
         "crates/keld-update/src/windows_extraction/tests/stage_refusals.rs",
         "crates/keld-update/src/windows_baseline/tests/support.rs",
         "crates/keld-update/src/records/tests.rs",
@@ -363,7 +365,7 @@
         "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
         "crates/keld-host/tests/no_flag/macos/public_fs.rs"
       ],
-      "sha256": "1fc3fc007be77c14f7b0395bb60bf9705ba0f7fc40bcf553d862788cb59771c6"
+      "sha256": "ae36e315a4f01751730ba4f533b0229409c85cd8aa1d1edc0ddf0518985282cd"
     },
     "bun-readers": {
       "patterns": [
@@ -426,7 +428,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "0ec116b1d2224209c3b48a4f1d8f41f6e049422363bfb57c6546c7924e20f10a",
+    "membership_sha256": "5c247f7513bcf00c82ce3e395e245bf41265153295e59e64676dfd347b2c0105",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
