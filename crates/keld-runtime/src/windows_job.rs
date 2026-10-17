@@ -74,6 +74,12 @@ const LIFECYCLE_ATTEMPT_HANDOFF_LEN: usize = 8 + 1 + 32 + 32 + 8 + 8;
 const LIFECYCLE_ATTEMPT_ACK_LEN: usize = 8 + 32 + 32 + 4;
 const LIFECYCLE_QUERY_HANDOFF_LEN: usize = 8 + 1 + 32 + 32 + 8;
 
+mod lifecycle_frames;
+use lifecycle_frames::{
+    encode_lifecycle_attempt_ack, encode_lifecycle_attempt_handoff, encode_lifecycle_query_handoff,
+    encode_lifecycle_query_receipt,
+};
+
 /// Result of the cleanup helper's private launcher pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsCleanupReleaseSignal {
@@ -2781,70 +2787,11 @@ fn open_lifecycle_transfer_target(
     }
 }
 
-fn encode_lifecycle_attempt_handoff(
-    binding: WindowsLifecycleBinding,
-    remote_job: usize,
-    remote_lease: usize,
-) -> Result<[u8; LIFECYCLE_ATTEMPT_HANDOFF_LEN], WindowsHostJobError> {
-    let remote_job = u64::try_from(remote_job).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle attempt handoff record",
-            "remote Job handle exceeds the wire integer width",
-        )
-    })?;
-    let remote_lease = u64::try_from(remote_lease).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle attempt handoff record",
-            "remote lease handle exceeds the wire integer width",
-        )
-    })?;
-    let mut record = [0_u8; LIFECYCLE_ATTEMPT_HANDOFF_LEN];
-    record[..8].copy_from_slice(b"KELD-HO1");
-    record[8] = WindowsLifecyclePurpose::CoordinatorToKeeper as u8;
-    record[9..41].copy_from_slice(binding.attempt_id());
-    record[41..73].copy_from_slice(binding.lifecycle_channel_id());
-    record[73..81].copy_from_slice(&remote_job.to_le_bytes());
-    record[81..89].copy_from_slice(&remote_lease.to_le_bytes());
-    Ok(record)
-}
-
 fn terminate_incomplete_lifecycle_keeper(reason: &str) -> ! {
     eprintln!(
         "KELD-RUNTIME-014: malformed or incomplete one-shot keeper handoff ({reason}); terminating so unknown remote handles close"
     );
     std::process::abort();
-}
-
-fn encode_lifecycle_query_handoff(
-    binding: WindowsLifecycleBinding,
-    remote_query: usize,
-) -> Result<[u8; LIFECYCLE_QUERY_HANDOFF_LEN], WindowsHostJobError> {
-    let remote_query = u64::try_from(remote_query).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle successor query offer",
-            "remote query handle exceeds the wire integer width",
-        )
-    })?;
-    let mut record = [0_u8; LIFECYCLE_QUERY_HANDOFF_LEN];
-    record[..8].copy_from_slice(b"KELD-QO1");
-    record[8] = WindowsLifecyclePurpose::KeeperToSuccessor as u8;
-    record[9..41].copy_from_slice(binding.attempt_id());
-    record[41..73].copy_from_slice(binding.lifecycle_channel_id());
-    record[73..81].copy_from_slice(&remote_query.to_le_bytes());
-    Ok(record)
-}
-
-fn encode_lifecycle_query_receipt(
-    magic: [u8; 8],
-    binding: WindowsLifecycleBinding,
-    active_processes: u32,
-) -> [u8; LIFECYCLE_ATTEMPT_ACK_LEN] {
-    let mut receipt = [0_u8; LIFECYCLE_ATTEMPT_ACK_LEN];
-    receipt[..8].copy_from_slice(&magic);
-    receipt[8..40].copy_from_slice(binding.attempt_id());
-    receipt[40..72].copy_from_slice(binding.lifecycle_channel_id());
-    receipt[72..76].copy_from_slice(&active_processes.to_le_bytes());
-    receipt
 }
 
 fn terminate_lifecycle_transfer_target(
@@ -3010,18 +2957,6 @@ fn attenuate_keeper_activation_lease(
         ));
     }
     Ok(reduced)
-}
-
-fn encode_lifecycle_attempt_ack(
-    binding: WindowsLifecycleBinding,
-    active_processes: u32,
-) -> [u8; LIFECYCLE_ATTEMPT_ACK_LEN] {
-    let mut acknowledgement = [0_u8; LIFECYCLE_ATTEMPT_ACK_LEN];
-    acknowledgement[..8].copy_from_slice(b"KELD-HR1");
-    acknowledgement[8..40].copy_from_slice(binding.attempt_id());
-    acknowledgement[40..72].copy_from_slice(binding.lifecycle_channel_id());
-    acknowledgement[72..76].copy_from_slice(&active_processes.to_le_bytes());
-    acknowledgement
 }
 
 fn process_token_facts(
