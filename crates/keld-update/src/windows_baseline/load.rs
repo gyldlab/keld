@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 
 use cap_fs_ext::{DirExt as _, MetadataExt as _};
 use cap_std::fs::{Dir, File};
@@ -17,7 +17,7 @@ use crate::DirectInstallMode;
 use crate::UpdateVerifier;
 use crate::activation::{ProcessFamilyObservation, RecoverySnapshot, recovery_decision};
 use crate::records::{self, PointerKind};
-use crate::{ArchiveEntryKind, ProvenanceObservation, UpdateError};
+use crate::{ProvenanceObservation, UpdateError};
 
 /// Loads coherent protected initial-baseline metadata without a writable handle.
 ///
@@ -1633,6 +1633,9 @@ pub(super) fn validate_initial_version(roots: &Roots) -> Result<VersionPins, Upd
     validate_version_contents(roots, read_baseline_completion(roots)?)
 }
 
+mod version_contents;
+use version_contents::validate_version_contents;
+
 fn read_baseline_completion(roots: &Roots) -> Result<BaselineCompletion, UpdateError> {
     read_version_completion(roots, &roots.trust.installation.baseline)
 }
@@ -1672,102 +1675,6 @@ fn read_version_completion(
         content,
         marker: complete,
         record: complete_record,
-    })
-}
-
-fn validate_version_contents(
-    roots: &Roots,
-    completion: BaselineCompletion,
-) -> Result<VersionPins, UpdateError> {
-    let BaselineCompletion {
-        version,
-        tree,
-        mut content,
-        marker: complete,
-        record: complete_record,
-    } = completion;
-    let expected = crate::full::ContentIdentity {
-        identity: complete_record.artifact.clone(),
-        content_size: complete_record.content_size,
-        content_blake3: complete_record.artifact.content_blake3,
-    };
-    let validated = crate::archive::parse_content_archive(
-        &expected,
-        &mut content,
-        keld_guard::validate_windows_package_paths,
-    )?;
-    let mut directories = vec![version, tree];
-    let mut files = vec![complete];
-    let mut parents = BTreeMap::from([(String::new(), 1_usize)]);
-    let mut children: BTreeMap<String, Vec<String>> = BTreeMap::from([(String::new(), Vec::new())]);
-    for entry in validated.entries() {
-        let (parent_name, leaf) = entry.name().rsplit_once('/').unwrap_or(("", entry.name()));
-        let index = *parents
-            .get(parent_name)
-            .ok_or_else(|| error("tree order", "validated parent absent"))?;
-        children
-            .entry(parent_name.to_owned())
-            .or_default()
-            .push(leaf.to_owned());
-        let parent = &directories[index];
-        match entry.kind() {
-            ArchiveEntryKind::Directory => {
-                let directory = open_directory(parent, leaf, roots.profile())?;
-                parents.insert(entry.name().to_owned(), directories.len());
-                children.entry(entry.name().to_owned()).or_default();
-                directories.push(directory);
-            }
-            ArchiveEntryKind::File => {
-                let mut file = open_machine_file(parent, leaf, roots.profile())
-                    .map_err(|cause| error("tree file", cause))?;
-                if file
-                    .metadata()
-                    .map_err(|cause| error("tree metadata", cause))?
-                    .len()
-                    != entry.size()
-                {
-                    return Err(error(
-                        "tree bytes",
-                        "member length differs from authenticated archive",
-                    ));
-                }
-                content
-                    .seek(SeekFrom::Start(entry.data_offset()))
-                    .map_err(|cause| error("archive member seek", cause))?;
-                let mut remaining = entry.size();
-                let mut actual = [0_u8; 16 * 1024];
-                let mut wanted = [0_u8; 16 * 1024];
-                while remaining != 0 {
-                    let size = usize::try_from(remaining.min(actual.len() as u64))
-                        .map_err(|cause| error("member size", cause))?;
-                    file.read_exact(&mut actual[..size])
-                        .map_err(|cause| error("tree readback", cause))?;
-                    content
-                        .read_exact(&mut wanted[..size])
-                        .map_err(|cause| error("archive readback", cause))?;
-                    if actual[..size] != wanted[..size] {
-                        return Err(error(
-                            "tree bytes",
-                            "member differs from authenticated archive",
-                        ));
-                    }
-                    remaining -= size as u64;
-                }
-                files.push(file);
-            }
-        }
-    }
-    for (name, index) in parents {
-        let wanted = children
-            .get(&name)
-            .ok_or_else(|| error("tree census", "directory census absent"))?;
-        let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
-        exact_entries(&directories[index], &wanted).map_err(|cause| error("tree census", cause))?;
-    }
-    files.push(content);
-    Ok(VersionPins {
-        _directories: directories,
-        files,
     })
 }
 
