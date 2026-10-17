@@ -745,6 +745,47 @@ mod tests {
         }
     }
 
+    /// A trusted foreign executable with an embedded Authenticode signature passes
+    /// OS trust but cannot mint a Keld app identity. Windows system binaries commonly
+    /// use catalog signatures instead, which this file-handle verifier rejects.
+    #[test]
+    fn trusted_windows_program_without_keld_app_id_is_refused_after_trust() {
+        let executable = std::env::var_os("KELD_TEST_FOREIGN_AUTHENTICODE_CARRIER").map_or_else(
+            || {
+                PathBuf::from(
+                    std::env::var_os("ProgramFiles").expect("native Windows provides ProgramFiles"),
+                )
+                .join("Git/cmd/git.exe")
+            },
+            PathBuf::from,
+        );
+        assert!(
+            executable.is_file(),
+            "provide a trusted third-party embedded-signed executable: {}",
+            executable.display()
+        );
+
+        for attempt in 0..2 {
+            let image = WindowsAuthenticodeImage::open(&executable)
+                .expect("open the installed, embedded-signed third-party image");
+            let error = image.verify().expect_err(
+                "a trusted third-party-signed executable cannot become a Keld application",
+            );
+            assert!(
+                matches!(
+                    error.detail(),
+                    "the verified Authenticode signature has no Keld app-id description"
+                        | "the verified signature has no authenticated Keld app-id attribute"
+                ),
+                "attempt {attempt}: expected a post-trust Keld app-id refusal, got {error}"
+            );
+            assert!(
+                error.close_failure().is_none(),
+                "attempt {attempt}: post-trust refusal reported a CLOSE failure: {error}"
+            );
+        }
+    }
+
     #[test]
     fn current_test_executable_is_rejected_by_win_verify_trust() {
         let executable = std::env::current_exe().expect("the running test executable path");
