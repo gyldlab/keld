@@ -4,13 +4,14 @@
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::sys::stat::{SFlag, fstat};
 
 use super::{
-    SUPERVISED_ORDERLY_ACK, SUPERVISED_ORDERLY_SHUTDOWN, SUPERVISED_QUIT_ACCEPTED,
-    SUPERVISED_QUIT_ACK, Supervisor, lifecycle_error, nix_io_error,
+    GENERATION_CONTROL_POLL, SUPERVISED_ORDERLY_ACK, SUPERVISED_ORDERLY_SHUTDOWN,
+    SUPERVISED_QUIT_ACCEPTED, SUPERVISED_QUIT_ACK, Supervisor, lifecycle_error, nix_io_error,
 };
 use crate::RuntimeError;
 
@@ -261,5 +262,186 @@ pub(super) fn observe_guarded_liveness(
                 })?;
             Ok(false)
         }
+    }
+}
+
+/// The only successful early-shutdown acknowledgment is an actual
+/// authenticated host S followed by bounded EOF. Sharing this owner keeps
+/// the ordinary pre-generation and failed-initial-preparation paths identical.
+fn acknowledge_pre_generation_orderly_shutdown(
+    liveness: &mut impl Read,
+    acknowledgment: &mut impl Write,
+) -> Result<(), RuntimeError> {
+    acknowledgment
+        .write_all(&SUPERVISED_ORDERLY_ACK)
+        .and_then(|()| acknowledgment.flush())
+        .map_err(|source| {
+            lifecycle_error(
+                "macOS guardian pre-generation orderly acknowledgment",
+                source,
+            )
+        })?;
+    let deadline = std::time::Instant::now() + super::GUARDIAN_SHUTDOWN_DEADLINE;
+    loop {
+        match poll_host_liveness(liveness)? {
+            HostLiveness::Dead => return Ok(()),
+            HostLiveness::Live if std::time::Instant::now() < deadline => {
+                thread::yield_now();
+            }
+            HostLiveness::Live => {
+                return Err(lifecycle_error(
+                    "macOS guardian pre-generation host EOF deadline",
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "host retained liveness after acknowledged initial shutdown",
+                    ),
+                ));
+            }
+            _ => {
+                return Err(lifecycle_error(
+                    "macOS guardian pre-generation shutdown protocol",
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "duplicate or conflicting host shutdown control",
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// A host may authenticate KGC1 and immediately request orderly shutdown
+/// before the Guardian has created its first Supervisor. Consume that exact
+/// host-only S byte before calling `start_prepared`: otherwise an intentional
+/// recovery denial can abort PREPARE and suppress KSA. No Bun generation
+/// exists on this path; no app-link or group authority is minted.
+pub(super) fn observe_pre_generation_shutdown(
+    liveness: &mut (impl Read + AsFd),
+    acknowledgment: &mut impl Write,
+) -> Result<bool, RuntimeError> {
+    set_liveness_nonblocking(liveness, true)?;
+    match poll_host_liveness(liveness)? {
+        HostLiveness::Live => Ok(false),
+        HostLiveness::Dead => Ok(true),
+        HostLiveness::OrderlyShutdown => {
+            acknowledge_pre_generation_orderly_shutdown(liveness, acknowledgment)?;
+            Ok(true)
+        }
+        HostLiveness::QuitAccepted => Err(lifecycle_error(
+            "macOS guardian pre-generation shutdown protocol",
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "accepted Quit before the first authorized role generation",
+            ),
+        )),
+    }
+}
+
+/// Startup can fail after the last liveness probe and before the first
+/// authorized process was spawned. An authenticated host may have sent S
+/// concurrently with its permanent recovery denial. Accept only that exact
+/// host request, never a bare EOF or a failed generation-control exchange as
+/// evidence of orderly shutdown. The caller retains its original startup
+/// error whenever no valid S was seen.
+pub(super) fn observe_failed_initial_preparation_shutdown(
+    liveness: &mut (impl Read + AsFd),
+    acknowledgment: &mut impl Write,
+) -> Result<bool, RuntimeError> {
+    set_liveness_nonblocking(liveness, true)?;
+    match poll_host_liveness(liveness)? {
+        HostLiveness::OrderlyShutdown => {
+            acknowledge_pre_generation_orderly_shutdown(liveness, acknowledgment)?;
+            Ok(true)
+        }
+        HostLiveness::Live | HostLiveness::Dead => Ok(false),
+        HostLiveness::QuitAccepted => Err(lifecycle_error(
+            "macOS guardian pre-generation shutdown protocol",
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "accepted Quit before the first authorized role generation",
+            ),
+        )),
+    }
+}
+
+pub(super) fn await_guarded_primary_liveness(
+    liveness: &mut (impl Read + AsFd),
+    supervisor: &Supervisor,
+    quit_ack: &mut impl Write,
+    host_unavailable: &AtomicBool,
+    preparation_cancelled: &AtomicBool,
+) -> (Result<(), RuntimeError>, bool, bool) {
+    let mut liveness_result = Ok(());
+    let mut quit_accepted = false;
+    let mut orderly_requested = false;
+    let mut host_dead = false;
+    loop {
+        match observe_guarded_liveness(
+            liveness,
+            supervisor,
+            &mut quit_accepted,
+            &mut orderly_requested,
+            quit_ack,
+            preparation_cancelled,
+        ) {
+            Ok(true) => {
+                host_dead = true;
+                if !quit_accepted && !orderly_requested {
+                    host_unavailable.store(true, Ordering::Release);
+                }
+                supervisor.shutdown();
+                break;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                liveness_result = Err(error);
+                // A liveness fault interrupts a pending read as a fatal error,
+                // never as the privately attributed stop marker.
+                host_unavailable.store(true, Ordering::Release);
+                supervisor.shutdown();
+                break;
+            }
+        }
+        match supervisor.recv_event(GENERATION_CONTROL_POLL) {
+            Some(crate::SupervisorEvent::Stopped) if quit_accepted => {
+                // Supervisor stop does not terminate this persistent guardian.
+                // Core may still own real native retirement before host EOF.
+                if let Err(error) = set_liveness_nonblocking(liveness, false) {
+                    liveness_result = Err(error);
+                    break;
+                }
+            }
+            Some(
+                crate::SupervisorEvent::RespawnFailed
+                | crate::SupervisorEvent::Failed { .. }
+                | crate::SupervisorEvent::CrashLoopTripped
+                | crate::SupervisorEvent::Stopped,
+            ) => break,
+            None => thread::yield_now(),
+            Some(_) => {}
+        }
+    }
+
+    (liveness_result, quit_accepted, host_dead)
+}
+
+pub(super) fn require_close_on_exec(writer: &impl AsFd) -> Result<(), RuntimeError> {
+    let raw = fcntl(writer.as_fd(), FcntlArg::F_GETFD).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian host-liveness writer flags",
+            nix_io_error(source),
+        )
+    })?;
+    let flags = FdFlag::from_bits_truncate(raw);
+    if flags.contains(FdFlag::FD_CLOEXEC) {
+        Ok(())
+    } else {
+        Err(lifecycle_error(
+            "macOS guardian host-liveness writer validation",
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "host-liveness writer is inheritable; require FD_CLOEXEC",
+            ),
+        ))
     }
 }

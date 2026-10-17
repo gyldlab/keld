@@ -15,7 +15,6 @@ use super::process_image::process_image_path;
 use super::project::file_digest;
 use crate::renderer_bridge::bundle_public_api_entry;
 use crate::support::EVENT_DEADLINE;
-use crate::support::control::wait_child_output;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::lease_descriptors::lsof_all;
 use crate::support::native_window::{
@@ -24,6 +23,10 @@ use crate::support::native_window::{
 use crate::support::process::{
     ProcessExitObserver, await_process_gone, parent_process, process_group, session_dirs_for,
 };
+
+#[path = "actual_auth_app/quit_diagnostics.rs"]
+mod quit_diagnostics;
+use quit_diagnostics::wait_for_auth_cli_quit;
 
 type SmokeResult<T> = Result<T, Box<dyn Error>>;
 const TITLE: &str = "Keld Auth Smoke";
@@ -424,6 +427,7 @@ fn assert_product_cleanup(
     host: u32,
     host_image: &Path,
     session_dir: &Path,
+    observe_native_windows: bool,
 ) -> SmokeResult<()> {
     require(
         exits[0].success() && exits[1].success() && exits[2].success(),
@@ -432,7 +436,9 @@ fn assert_product_cleanup(
     for target in targets {
         await_process_gone(target);
     }
-    await_no_native_windows(host, TITLE);
+    if observe_native_windows {
+        await_no_native_windows(host, TITLE);
+    }
     require(
         !host_image.parent().ok_or("stage root")?.exists(),
         "stock CLI left dev-stage root after public Quit",
@@ -516,17 +522,31 @@ fn verify_call_before_quit(
     })
 }
 
+/// Require the complete native process-parent chain before any signal, lease
+/// ownership, or successful public Quit witness is attributed to this case.
+fn observed_auth_family(app_ready: &Value, cli_pid: u32) -> SmokeResult<[u32; 4]> {
+    let bun = pid(app_ready, "pid")?;
+    let descendant = pid(app_ready, "descendantPid")?;
+    let guardian = parent_process(bun);
+    let host = parent_process(guardian);
+    require(
+        parent_process(host) == cli_pid && parent_process(descendant) == bun,
+        "kernel process lineage must be CLI -> Host -> guardian -> Bun -> held tail",
+    )?;
+    Ok([host, guardian, bun, descendant])
+}
+
 fn run_case(
     parent: &Path,
     repo: &Path,
     cli: &Path,
     host_source: &Path,
-    census: &Path,
+    census: Option<&Path>,
     case: &Case,
 ) -> SmokeResult<Value> {
     let mut observation = Observation::bind();
     let project = Project::prepare(parent, repo, case, observation.port)?;
-    let mut window = NativeWindowObserver::arm_for_title(census, TITLE);
+    let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
     let stdout = fs::File::create(project.root.join("cli.stdout"))?;
     let stderr = fs::File::create(project.root.join("cli.stderr"))?;
     fs::write(
@@ -554,18 +574,13 @@ fn run_case(
         }))?,
     )?;
     let (app_ready, page_ready, result, journal) = await_phases(&observation, &project.root, case)?;
-    let bun = pid(&app_ready, "pid")?;
-    let descendant = pid(&app_ready, "descendantPid")?;
-    let guardian = parent_process(bun);
-    let host = parent_process(guardian);
-    require(
-        parent_process(host) == cli_pid && parent_process(descendant) == bun,
-        "kernel process lineage must be CLI -> Host -> guardian -> Bun -> held tail",
-    )?;
+    let [host, guardian, bun, descendant] = observed_auth_family(&app_ready, cli_pid)?;
     cleanup.record_authenticated_groups(process_group(host), process_group(bun));
     let host_image = process_image_path(host);
     let boot = project.verify_stock_stage(&host_image, host_source, case)?;
-    let windows = window.expect_initial(host, "actual public auth stock Host window");
+    let windows = window.as_mut().map_or_else(Vec::new, |window| {
+        window.expect_initial(host, "actual public auth stock Host window")
+    });
     let endpoint = PathBuf::from(
         app_ready["endpoint"]
             .as_str()
@@ -589,7 +604,13 @@ fn run_case(
     let descendant_exit = ProcessExitObserver::arm(descendant);
     observation.quit.send(())?;
     let cli_child = cleanup.cli.take().ok_or("missing retained CLI owner")?;
-    let output = wait_child_output(cli_child, EVENT_DEADLINE);
+    let output = wait_for_auth_cli_quit(
+        cli_child,
+        &observation,
+        &project.root,
+        case,
+        [host, guardian, bun, descendant],
+    );
     require(
         output.status.success(),
         format!(
@@ -609,6 +630,7 @@ fn run_case(
         host,
         &host_image,
         &session_dir,
+        census.is_some(),
     )?;
     let active_terminal =
         await_active_begin_terminal(&observation, case, bun, active_listener.is_some())?;
@@ -646,7 +668,7 @@ fn actual_public_auth_negative_smoke_and_public_quit() -> SmokeResult<()> {
     let census = compile_native_window_census(&root);
     let mut receipts = Vec::new();
     for case in &CASES {
-        receipts.push(run_case(&root, repo, &cli, &host, &census, case)?);
+        receipts.push(run_case(&root, repo, &cli, &host, Some(&census), case)?);
     }
     let receipt = json!({"sourceEpoch":"Root build/source receipt required", "cliSha256":file_digest(&cli), "hostSha256":file_digest(&host),
         "cases":receipts,"parked":"registered real provider browser/PKCE/token success; negative smoke is not feature completion"});
@@ -675,11 +697,40 @@ fn actual_public_auth_pending_begin_public_quit() -> SmokeResult<()> {
         .keep();
     eprintln!("KELD_KEL89_ACTIVE_BEGIN_QUIT_PROJECT {}", root.display());
     let census = compile_native_window_census(&root);
-    let receipt = run_case(&root, repo, &cli, &host, &census, &ACTIVE_BEGIN_QUIT)?;
+    let receipt = run_case(&root, repo, &cli, &host, Some(&census), &ACTIVE_BEGIN_QUIT)?;
     fs::write(
         root.join("active-begin-quit-receipt.json"),
         serde_json::to_vec_pretty(&receipt)?,
     )?;
+    Ok(())
+}
+
+#[test]
+fn consecutive_actual_public_auth_negative_quits_reap_real_hosts_without_graphics_capture()
+-> SmokeResult<()> {
+    // A native diagnostic for the hosted second-launch Quit timeout. Keep the
+    // stock CLI, host, Guardian, Bun, policy, API, observer and OS exit oracles
+    // unchanged; omit only CoreGraphics, unavailable on the local Mac.
+    // The original GUI selector above remains required for hosted acceptance.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("workspace root")?;
+    let host = PathBuf::from(env!("CARGO_BIN_EXE_keld-host"));
+    let cli = host.parent().ok_or("host installation root")?.join("keld");
+    require(
+        cli.is_file() && host.is_file(),
+        "shipping CLI and Host must exist",
+    )?;
+    let owned = tempfile::Builder::new()
+        .prefix("kel89-quit-no-graphics-")
+        .tempdir_in("/tmp")?;
+    // Preserve the original four-case order. In hosted failure evidence, the
+    // first case retires and the second timed out; the same observer/CLI path
+    // must stay reusable for the two later negative cases as well.
+    for case in &CASES {
+        let _ = run_case(owned.path(), repo, &cli, &host, None, case)?;
+    }
     Ok(())
 }
 
