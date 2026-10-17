@@ -1174,6 +1174,53 @@ fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename()
 }
 
 #[test]
+fn referenced_case_alias_admission_skips_pinned_tree_and_admits_real_orphan() {
+    use cap_fs_ext::DirExt as _;
+
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("retirement case guard fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0-rc.1");
+    let orphan = legacy_orphan(&trust, "3.0.0");
+    let before = observe(&trust);
+
+    // Exercise the retirement admission owner directly: the higher-level exact-name
+    // census rejects case aliases before this guard can observe them.
+    let roots = super::super::open_roots(&trust, false).expect("protected roots");
+    let _lease = super::super::open_activation_lease(&roots.update, roots.profile(), true)
+        .expect("hold the exclusive writer lease");
+    let _pinned = roots
+        .versions
+        .open_dir_nofollow("2.0.0-rc.1")
+        .expect("retain the referenced current version");
+    let current = crate::records::decode_pointer(
+        PointerKind::Current,
+        &std::fs::read(trust.installation.update_root.join("current"))
+            .expect("read protected current pointer"),
+    )
+    .expect("decode current pointer");
+    assert_eq!(current.version, "2.0.0-rc.1");
+
+    let referenced = names(&["1.0.0", "2.0.0-RC.1"]);
+    assert!(
+        !referenced.contains(&current.version),
+        "the alias differs in case"
+    );
+    let admitted = super::super::activate::admit_unreferenced_versions(&roots, &referenced)
+        .expect("admit only the genuine orphan");
+    assert_eq!(
+        admitted,
+        vec![orphan.version],
+        "the case-alias referenced tree must never be admitted for retirement"
+    );
+    assert_eq!(
+        observe(&trust),
+        before,
+        "admission must not mutate protected state"
+    );
+}
+
+#[test]
 fn the_unjournaled_repair_never_retires_a_case_variant_of_a_referenced_tree() {
     let fixture = tempfile::tempdir().expect("case variant fixture");
     let trust = seed_per_user_baseline(fixture.path());
