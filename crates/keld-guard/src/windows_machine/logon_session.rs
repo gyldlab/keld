@@ -201,26 +201,10 @@ pub fn require_windows_logon_session_ended(
     )
 }
 
-/// What one `LsaGetLogonSessionData` call returned, copied out of the LSA buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LsaReply {
-    status: NTSTATUS,
-    session: Option<CopiedSession>,
-    released: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CopiedSession {
-    logon_id: WindowsLogonSessionId,
-    logon_time: i64,
-}
-
-/// The one accepted reading of a query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionState {
-    Present { logon_time: i64 },
-    Absent,
-}
+mod observation;
+#[cfg(test)]
+use observation::SessionState;
+use observation::{CopiedSession, LsaReply, initiating_logon_time, observe, session_ended};
 
 fn query_logon_session(session: WindowsLogonSessionId) -> Result<LsaReply, &'static str> {
     let luid = session.to_luid();
@@ -283,56 +267,6 @@ unsafe fn copy_session(
         logon_id: WindowsLogonSessionId::from_luid(logon_id),
         logon_time,
     })
-}
-
-fn observe(
-    session: WindowsLogonSessionId,
-    reply: Result<LsaReply, &'static str>,
-) -> Result<SessionState, WindowsLogonSessionError> {
-    let malformed = |detail| WindowsLogonSessionError::Malformed { session, detail };
-    let reply = reply.map_err(malformed)?;
-    if !reply.released {
-        return Err(malformed("its LSA buffer could not be released"));
-    }
-    match (reply.status, reply.session) {
-        (STATUS_SUCCESS, Some(copied)) if copied.logon_id == session => Ok(SessionState::Present {
-            logon_time: copied.logon_time,
-        }),
-        (STATUS_SUCCESS, Some(_)) => Err(malformed("the returned data names another session")),
-        (STATUS_SUCCESS, None) => Err(malformed("success returned no session data")),
-        (STATUS_NO_SUCH_LOGON_SESSION, _) => Ok(SessionState::Absent),
-        (status, _) => Err(WindowsLogonSessionError::QueryStatus { session, status }),
-    }
-}
-
-fn initiating_logon_time(
-    session: WindowsLogonSessionId,
-    state: SessionState,
-) -> Result<WindowsLogonTime, WindowsLogonSessionError> {
-    match state {
-        SessionState::Present { logon_time } => {
-            WindowsLogonTime::new(logon_time).ok_or(WindowsLogonSessionError::Unrecordable {
-                session,
-                detail: "its logon time is zero or negative",
-            })
-        }
-        SessionState::Absent => Err(WindowsLogonSessionError::Unrecordable {
-            session,
-            detail: "no such logon session exists",
-        }),
-    }
-}
-
-fn session_ended(
-    session: WindowsLogonSessionId,
-    recorded: WindowsLogonTime,
-    state: SessionState,
-) -> Result<(), WindowsLogonSessionError> {
-    match state {
-        SessionState::Absent => Ok(()),
-        SessionState::Present { logon_time } if logon_time != recorded.get() => Ok(()),
-        SessionState::Present { .. } => Err(WindowsLogonSessionError::SessionLive { session }),
-    }
 }
 
 #[cfg(test)]
