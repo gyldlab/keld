@@ -104,9 +104,14 @@ struct ServerInner {
     /// Serialises the instance's terminal transitions: the one-shot
     /// ([`WindowsNamedPipeServer::consume`]), the cancel, the re-arm and the
     /// close. Each holds it only across its flag checks and non-blocking
-    /// Win32 calls, never across a wait. Lock order: `lifecycle` before
-    /// `pipe`; `pipe` is never held while `lifecycle` is taken.
+    /// Win32 calls, never across a wait. Lock order: `lifecycle` -> `io_issue`
+    /// -> `pipe`; no caller acquires an outer lock while holding pipe.
     lifecycle: Mutex<()>,
+    /// Serializes the final cancellation check with ReadFile/WriteFile issue.
+    /// Unlike lifecycle, this lock is not held by a cancelling one-shot test
+    /// gate, so a peer handshake can progress up to its consume boundary.
+    /// Dropped before any OVERLAPPED wait or completion observation.
+    io_issue: Mutex<()>,
     cancel_event: OwnedHandle,
     connect_event: OwnedEvent,
     connected: AtomicBool,
@@ -136,6 +141,9 @@ struct ServerInner {
     /// before it takes the lifecycle lock.
     #[cfg(test)]
     before_consume: Mutex<Option<TestConsumeGate>>,
+    /// Test-only pause between the last cancellation precheck and I/O submission.
+    #[cfg(test)]
+    after_stream_cancel_check: Mutex<Option<TestConsumeGate>>,
     /// Test witness: reported once by a thread that finds the lifecycle lock
     /// held and is about to wait for it.
     #[cfg(test)]
@@ -344,6 +352,7 @@ impl WindowsNamedPipeServer {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
                 lifecycle: Mutex::new(()),
+                io_issue: Mutex::new(()),
                 cancel_event,
                 connect_event,
                 connected: AtomicBool::new(false),
@@ -359,6 +368,8 @@ impl WindowsNamedPipeServer {
                 cancel_gate: Mutex::new(None),
                 #[cfg(test)]
                 before_consume: Mutex::new(None),
+                #[cfg(test)]
+                after_stream_cancel_check: Mutex::new(None),
                 #[cfg(test)]
                 lifecycle_waiter: Mutex::new(None),
             }),
@@ -483,6 +494,14 @@ impl WindowsNamedPipeServer {
         }
         #[cfg(test)]
         wait_at_test_consume_gate(&self.inner.cancel_gate);
+        // Cancelling and late overlapped submission share this short lock.
+        // Holding lifecycle while waiting for io_issue preserves the one-shot
+        // ordering; peer I/O needs only io_issue and can reach consume().
+        let _io_issue = self
+            .inner
+            .io_issue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.inner.cancelled.store(true, Ordering::Release);
         // SAFETY: the cancellation event handle remains live in `inner`.
         if unsafe { SetEvent(self.raw_cancel_event()) } == 0 {
@@ -598,6 +617,7 @@ impl WindowsNamedPipeServer {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
                 lifecycle: Mutex::new(()),
+                io_issue: Mutex::new(()),
                 cancel_event,
                 connect_event,
                 connected: AtomicBool::new(true),
@@ -613,6 +633,8 @@ impl WindowsNamedPipeServer {
                 cancel_gate: Mutex::new(None),
                 #[cfg(test)]
                 before_consume: Mutex::new(None),
+                #[cfg(test)]
+                after_stream_cancel_check: Mutex::new(None),
                 #[cfg(test)]
                 lifecycle_waiter: Mutex::new(None),
             }),
@@ -1065,6 +1087,8 @@ impl Read for WindowsNamedPipeStream {
             return Ok(0);
         }
         self.refuse_if_cancelled()?;
+        #[cfg(test)]
+        wait_at_test_consume_gate(&self.inner.after_stream_cancel_check);
         let timeout = effective_timeout(
             *self
                 .read_timeout
@@ -1077,6 +1101,14 @@ impl Read for WindowsNamedPipeStream {
         )?;
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
+        // Serialize the final cancellation check and native ReadFile submission
+        // with cancel, without blocking the in-flight one-shot lifecycle.
+        let issuance = self
+            .inner
+            .io_issue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.refuse_if_cancelled()?;
         let result = overlapped_io(
             &self.read_event,
             self.raw_pipe()?,
@@ -1088,6 +1120,7 @@ impl Read for WindowsNamedPipeStream {
                 unsafe { ReadFile(handle, bytes, len, ptr::null_mut(), overlapped) }
             },
             buf.as_mut_ptr().cast(),
+            issuance,
         );
         match result {
             Err(error) if matches!(error.raw_os_error(), Some(109 | 232 | 233)) => Ok(0),
@@ -1102,6 +1135,8 @@ impl Write for WindowsNamedPipeStream {
             return Ok(0);
         }
         self.refuse_if_cancelled()?;
+        #[cfg(test)]
+        wait_at_test_consume_gate(&self.inner.after_stream_cancel_check);
         let timeout = effective_timeout(
             *self
                 .write_timeout
@@ -1114,6 +1149,14 @@ impl Write for WindowsNamedPipeStream {
         )?;
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
+        // A cancelling server cannot race between this final check and the
+        // native WriteFile issuance; no issuance lock crosses a pending wait.
+        let issuance = self
+            .inner
+            .io_issue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.refuse_if_cancelled()?;
         overlapped_io(
             &self.write_event,
             self.raw_pipe()?,
@@ -1125,6 +1168,7 @@ impl Write for WindowsNamedPipeStream {
                 unsafe { WriteFile(handle, bytes, len, ptr::null_mut(), overlapped) }
             },
             buf.as_ptr().cast_mut().cast(),
+            issuance,
         )
     }
 
@@ -1140,15 +1184,22 @@ fn overlapped_io(
     buffer_len: usize,
     start: impl FnOnce(*mut core::ffi::c_void, *mut u8, u32, *mut OVERLAPPED) -> i32,
     bytes: *mut u8,
+    issuance: MutexGuard<'_, ()>,
 ) -> io::Result<usize> {
     event.reset()?;
     let mut overlapped = event.overlapped();
     let len = u32::try_from(buffer_len.min(u32::MAX as usize)).map_err(io::Error::other)?;
+    // The caller owns io_issue from its last cancellation check through this
+    // overlapped Win32 submission. Capture GetLastError BEFORE unlocking;
+    // mutex operations must not clobber the native result.
     let started = start(handle, bytes, len, &raw mut overlapped);
+    let start_error = (started == 0).then(io::Error::last_os_error);
+    drop(issuance);
+    // No issuance lock is held across completion observation or a pending wait.
     if started != 0 {
         return observed_bytes(handle, &mut overlapped);
     }
-    let error = io::Error::last_os_error();
+    let error = start_error.ok_or_else(|| io::Error::other("native start lost its OS error"))?;
     if error.raw_os_error() != Some(ERROR_IO_PENDING.cast_signed()) {
         return Err(error);
     }
@@ -1524,6 +1575,154 @@ mod cancellation_tests {
     /// millisecond rounds up, a whole one stays exact, zero waits one
     /// millisecond (never a busy poll), an unbounded wait is `INFINITE`, and
     /// an overlong one saturates below it. Oracle: literal millisecond values.
+    /// Native failure-first: cancellation after the last precheck but before
+    /// `ReadFile` must not schedule new pending I/O which `CancelIoEx` already missed.
+    /// The actual connected peer stays silent; 900ms is a bounded red-case
+    /// escape limit, not the expected behaviour (`ERROR_OPERATION_ABORTED` 995).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the two Win32 read/write cancellation windows and observations remain visible in one adversarial scenario"
+    )]
+    #[test]
+    fn cancelled_stream_refuses_a_read_submitted_after_the_cancel_raced_its_precheck() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::{PoisonError, mpsc};
+        use std::thread;
+
+        use super::{WaitOutcome, WindowsNamedPipeServer};
+        use crate::bootstrap::{TestConsumeGate, random_test_locator};
+
+        let endpoint = format!(
+            r"\\.\pipe\keld-gh905-cancel-{}",
+            random_test_locator().expect("fresh unique native pipe")
+        );
+        let server = WindowsNamedPipeServer::bind(&endpoint).expect("bind real native pipe");
+        let _client = WindowsNamedPipeServer::connect_client(&endpoint)
+            .expect("connect a silent native peer");
+        assert_eq!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(3)))
+                .expect("accept silent peer"),
+            WaitOutcome::Ready
+        );
+        let mut stream = server.stream().expect("unconsumed server end");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(900)))
+            .expect("bounded red-case read deadline");
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release) = mpsc::channel();
+        *server
+            .inner
+            .after_stream_cancel_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(TestConsumeGate { entered, release });
+
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut buffer = [0_u8; 1];
+            let result = stream.read(&mut buffer);
+            result_tx.send(result).expect("report bounded native read");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("read passed cancellation precheck but has not issued ReadFile");
+        let cancelled_at = Instant::now();
+        server.cancel().expect("cancel unconsumed pipe");
+        assert!(
+            cancelled_at.elapsed() < Duration::from_millis(500),
+            "cancellation must not wait for an unsubmitted or pending read"
+        );
+        assert!(!server.consume(), "cancel must refuse the one-shot");
+        let released_at = Instant::now();
+        release_tx
+            .send(())
+            .expect("release read to actual Win32 submission");
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("native read must finish, never hang");
+        reader.join().expect("join bounded native reader");
+        let error = result.expect_err("a cancelled pipe must not admit a later read");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(995),
+            "a future read after cancel cannot escape CancelIoEx: {error}"
+        );
+        assert!(
+            released_at.elapsed() < Duration::from_millis(500),
+            "the late submission must refuse promptly rather than wait 900ms"
+        );
+
+        // A buffered write has the same admission race. A one-byte WriteFile
+        // could otherwise complete normally AFTER cancel and disclose a byte
+        // to a pipe whose unconsumed one-shot has already been refused.
+        let endpoint = format!(
+            r"\\.\pipe\keld-gh905-write-{}",
+            random_test_locator().expect("fresh write endpoint")
+        );
+        let server = WindowsNamedPipeServer::bind(&endpoint).expect("bind write pipe");
+        let mut client = WindowsNamedPipeServer::connect_client(&endpoint)
+            .expect("connect a silent receiving peer");
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("bound direct client byte oracle");
+        assert_eq!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(3)))
+                .expect("accept receiving peer"),
+            WaitOutcome::Ready
+        );
+        let mut stream = server.stream().expect("unconsumed write stream");
+        stream
+            .set_write_timeout(Some(Duration::from_millis(900)))
+            .expect("bound native write");
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release) = mpsc::channel();
+        *server
+            .inner
+            .after_stream_cancel_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(TestConsumeGate { entered, release });
+
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let writer = thread::spawn(move || {
+            result_tx
+                .send(stream.write(&[0x45]))
+                .expect("report native write outcome");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("write passed cancellation check but not WriteFile");
+        let cancel_at = Instant::now();
+        server.cancel().expect("cancel unconsumed write instance");
+        assert!(cancel_at.elapsed() < Duration::from_millis(500));
+        assert!(!server.consume(), "write one-shot must be refused");
+        let write_unblocked_at = Instant::now();
+        release_tx
+            .send(())
+            .expect("release actual WriteFile submission");
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("native late write must complete promptly");
+        writer.join().expect("join native writer");
+        let error = result.expect_err("post-cancel write must not send a payload");
+        assert_eq!(error.raw_os_error(), Some(995), "{error}");
+        assert!(
+            write_unblocked_at.elapsed() < Duration::from_millis(500),
+            "post-cancel write cannot wait until its 900ms deadline"
+        );
+        // Independently observe the peer's real named pipe, not just the
+        // server-side error: a cancelled write must have emitted no byte.
+        let mut observed = [0_u8; 1];
+        let receive = client
+            .read(&mut observed)
+            .expect_err("cancelled unconsumed stream sent no byte to peer");
+        assert_eq!(
+            receive.raw_os_error(),
+            Some(121),
+            "silent connected peer times out without receiving a byte: {receive}"
+        );
+    }
+
     #[test]
     fn a_wait_timeout_rounds_a_fractional_millisecond_up_and_never_down() {
         assert_eq!(
