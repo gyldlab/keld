@@ -62,7 +62,11 @@ use windows_sys::Win32::System::Threading::{
 
 // Re-export from the original module path: existing crate public API and
 // named-pipe client callers keep one token-fact reader, with no new privileges.
+mod deadline_policy;
 mod token_facts;
+use deadline_policy::{
+    connect_deadline_error, duration_to_wait_ms, effective_timeout, validate_timeout,
+};
 #[cfg(test)]
 use token_facts::{
     U32TokenClass, elevation_type_from_raw, exact_token_information_length, luid_value,
@@ -1424,55 +1428,10 @@ fn pipe_flags(handle: &OwnedHandle) -> io::Result<u32> {
     Ok(flags)
 }
 
-/// The wait timeout for `timeout`, in whole milliseconds rounded up, so a wait
-/// bounded by a deadline never reports that deadline elapsed before it has
-/// (a truncated fraction would end the wait early by up to one millisecond);
-/// `None` is `INFINITE`.
-fn duration_to_wait_ms(timeout: Option<Duration>) -> u32 {
-    let Some(timeout) = timeout else {
-        return INFINITE;
-    };
-    let fraction = u128::from(timeout.subsec_nanos() % 1_000_000 != 0);
-    let millis = (timeout.as_millis() + fraction)
-        .max(1)
-        .min(u128::from(INFINITE - 1));
-    u32::try_from(millis).unwrap_or(INFINITE - 1)
-}
-
 /// `ERROR_OPERATION_ABORTED`, the code a cancelled pending operation reports:
 /// the one error for I/O or a one-shot that a cancel of the instance refused.
 pub(crate) fn operation_aborted() -> io::Error {
     io::Error::from_raw_os_error(ERROR_OPERATION_ABORTED.cast_signed())
-}
-
-fn connect_deadline_error() -> io::Error {
-    io::Error::from_raw_os_error(ERROR_SEM_TIMEOUT.cast_signed())
-}
-
-fn validate_timeout(timeout: Option<Duration>) -> io::Result<()> {
-    if timeout == Some(Duration::ZERO) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "zero named-pipe I/O timeout is invalid",
-        ));
-    }
-    Ok(())
-}
-
-fn effective_timeout(
-    configured: Option<Duration>,
-    absolute_deadline: Option<Instant>,
-) -> io::Result<Option<Duration>> {
-    let Some(deadline) = absolute_deadline else {
-        return Ok(configured);
-    };
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| io::Error::from_raw_os_error(ERROR_SEM_TIMEOUT.cast_signed()))?;
-    Ok(Some(
-        configured.map_or(remaining, |timeout| timeout.min(remaining)),
-    ))
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -1552,11 +1511,14 @@ pub(crate) fn current_process_query_token() -> io::Result<OwnedHandle> {
 
 #[cfg(test)]
 mod cancellation_tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use windows_sys::Win32::System::Threading::INFINITE;
 
-    use super::{CancelledOperation, duration_to_wait_ms, timeout_io_result};
+    use super::{
+        CancelledOperation, connect_deadline_error, duration_to_wait_ms, effective_timeout,
+        timeout_io_result, validate_timeout,
+    };
 
     /// A deadline-bounded wait never ends before its deadline: a fractional
     /// millisecond rounds up, a whole one stays exact, zero waits one
@@ -1588,6 +1550,70 @@ mod cancellation_tests {
                 .raw_os_error(),
             Some(121)
         );
+    }
+
+    #[test]
+    fn absolute_deadline_clamps_per_stream_timeout_and_expired_refuses() {
+        assert_eq!(
+            validate_timeout(Some(Duration::ZERO))
+                .expect_err("zero timeout must be rejected")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        validate_timeout(None).expect("an unbounded timeout is permitted");
+        validate_timeout(Some(Duration::from_nanos(1)))
+            .expect("one nonzero nanosecond remains a legal configured timeout");
+
+        let short = Duration::from_millis(23);
+        assert_eq!(effective_timeout(None, None).expect("unbounded"), None);
+        assert_eq!(
+            effective_timeout(Some(short), None).expect("no absolute deadline"),
+            Some(short)
+        );
+
+        // The configured per-I/O limit cannot be extended by a later absolute
+        // deadline; the exact 23ms is independent of the wall-clock sample.
+        let distant = Instant::now()
+            .checked_add(Duration::from_mins(2))
+            .expect("bounded distant deadline");
+        assert_eq!(
+            effective_timeout(Some(short), Some(distant)).expect("short configured limit"),
+            Some(short)
+        );
+
+        // Conversely, a long per-I/O limit cannot extend the enclosing
+        // absolute one. Verify an independently bounded positive duration,
+        // rather than reconstructing the production clock algorithm.
+        let enclosing = Instant::now()
+            .checked_add(Duration::from_mins(1))
+            .expect("bounded enclosing deadline");
+        let observed = effective_timeout(Some(Duration::from_mins(5)), Some(enclosing))
+            .expect("enclosing deadline still live")
+            .expect("an absolute deadline must bound a write");
+        assert!(observed > Duration::ZERO);
+        assert!(observed <= Duration::from_mins(1), "{observed:?}");
+
+        // An unconfigured stream must still have a finite enclosing deadline;
+        // otherwise a silent peer can wait forever despite caller cancellation.
+        let unconfigured = effective_timeout(None, Some(enclosing))
+            .expect("enclosing deadline remains live")
+            .expect("absolute deadline must bound an unconfigured stream");
+        assert!(unconfigured > Duration::ZERO);
+        assert!(unconfigured <= Duration::from_mins(1), "{unconfigured:?}");
+
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("monotonic instant subtraction");
+        let error = effective_timeout(Some(short), Some(expired))
+            .expect_err("a passed absolute deadline cannot start new I/O");
+        assert_eq!(error.raw_os_error(), Some(121));
+        assert_eq!(
+            effective_timeout(None, Some(expired))
+                .expect_err("expired enclosing deadline refuses even unconfigured I/O")
+                .raw_os_error(),
+            Some(121)
+        );
+        assert_eq!(connect_deadline_error().raw_os_error(), Some(121));
     }
 }
 
