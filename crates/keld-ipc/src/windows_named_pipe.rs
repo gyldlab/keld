@@ -100,7 +100,10 @@ pub(crate) enum WaitOutcome {
 
 #[derive(Debug)]
 struct ServerInner {
-    pipe: Mutex<Option<OwnedHandle>>,
+    // Each in-flight stream I/O clones the SAME owned HANDLE allocation.
+    // A terminal close removes the named endpoint without freeing that
+    // HANDLE until its final overlapped completion has been observed.
+    pipe: Mutex<Option<Arc<OwnedHandle>>>,
     /// Serialises the instance's terminal transitions: the one-shot
     /// ([`WindowsNamedPipeServer::consume`]), the cancel, the re-arm and the
     /// close. Each holds it only across its flag checks and non-blocking
@@ -144,6 +147,10 @@ struct ServerInner {
     /// Test-only pause between the last cancellation precheck and I/O submission.
     #[cfg(test)]
     after_stream_cancel_check: Mutex<Option<TestConsumeGate>>,
+    /// Deterministic test pause after borrowing the raw pipe HANDLE and
+    /// before the native read/write syscall can issue. No production gate.
+    #[cfg(test)]
+    after_raw_pipe_borrow: Mutex<Option<TestConsumeGate>>,
     /// Test witness: reported once by a thread that finds the lifecycle lock
     /// held and is about to wait for it.
     #[cfg(test)]
@@ -350,7 +357,7 @@ impl WindowsNamedPipeServer {
 
         Ok(Self {
             inner: Arc::new(ServerInner {
-                pipe: Mutex::new(Some(pipe)),
+                pipe: Mutex::new(Some(Arc::new(pipe))),
                 lifecycle: Mutex::new(()),
                 io_issue: Mutex::new(()),
                 cancel_event,
@@ -370,6 +377,8 @@ impl WindowsNamedPipeServer {
                 before_consume: Mutex::new(None),
                 #[cfg(test)]
                 after_stream_cancel_check: Mutex::new(None),
+                #[cfg(test)]
+                after_raw_pipe_borrow: Mutex::new(None),
                 #[cfg(test)]
                 lifecycle_waiter: Mutex::new(None),
             }),
@@ -536,10 +545,17 @@ impl WindowsNamedPipeServer {
     pub(crate) fn close_terminal(&self) -> io::Result<()> {
         let _lifecycle = self.lock_lifecycle();
         self.inner.consumed.store(true, Ordering::Release);
+        // Keep terminal close behind any read/write's brief native issuance.
+        // Lock order lifecycle -> io_issue -> pipe; no lock crosses a wait.
+        let _io_issue = self
+            .inner
+            .io_issue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.cancel_pending_io()?;
-        // SAFETY: the server owns the live handle and all pending operations
-        // were cancelled; their owners retain state until they observe
-        // completion. Disconnect does not free an OVERLAPPED or its buffer.
+        // SAFETY: a pending operation independently pins the same HANDLE
+        // allocation until its completion is observed. Disconnect cannot
+        // free the source HANDLE while a stream still owns that pin.
         if self.inner.connected.swap(false, Ordering::AcqRel)
             && unsafe { DisconnectNamedPipe(self.raw_pipe()?) } == 0
         {
@@ -615,7 +631,7 @@ impl WindowsNamedPipeServer {
         let connect_event = OwnedEvent::new()?;
         Ok(WindowsNamedPipeStream {
             inner: Arc::new(ServerInner {
-                pipe: Mutex::new(Some(pipe)),
+                pipe: Mutex::new(Some(Arc::new(pipe))),
                 lifecycle: Mutex::new(()),
                 io_issue: Mutex::new(()),
                 cancel_event,
@@ -635,6 +651,8 @@ impl WindowsNamedPipeServer {
                 before_consume: Mutex::new(None),
                 #[cfg(test)]
                 after_stream_cancel_check: Mutex::new(None),
+                #[cfg(test)]
+                after_raw_pipe_borrow: Mutex::new(None),
                 #[cfg(test)]
                 lifecycle_waiter: Mutex::new(None),
             }),
@@ -788,7 +806,7 @@ impl WindowsNamedPipeServer {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(AsRawHandle::as_raw_handle)
+            .map(|pipe| pipe.as_ref().as_raw_handle())
             .ok_or_else(closed_pipe_error)
     }
 
@@ -891,15 +909,15 @@ impl WindowsNamedPipeStream {
     }
 
     pub(crate) fn peer_process_id(&self) -> io::Result<u32> {
-        let pipe = self.raw_pipe()?;
+        let pipe = self.pinned_pipe()?;
         let mut pid = 0_u32;
         // SAFETY: the connected pipe handle stays owned by `self`, and `pid` is
         // writable storage. The selected API queries the opposite endpoint.
         let succeeded = unsafe {
             if self.local_is_server {
-                GetNamedPipeClientProcessId(pipe, &raw mut pid)
+                GetNamedPipeClientProcessId(pipe.as_raw_handle(), &raw mut pid)
             } else {
-                GetNamedPipeServerProcessId(pipe, &raw mut pid)
+                GetNamedPipeServerProcessId(pipe.as_raw_handle(), &raw mut pid)
             }
         };
         if succeeded == 0 {
@@ -923,15 +941,15 @@ impl WindowsNamedPipeStream {
     }
 
     pub(crate) fn peer_session_id(&self) -> io::Result<u32> {
-        let pipe = self.raw_pipe()?;
+        let pipe = self.pinned_pipe()?;
         let mut session_id = 0_u32;
         // SAFETY: the connected pipe handle stays owned by `self`, and the
         // output is writable storage. Query the opposite endpoint's session.
         let succeeded = unsafe {
             if self.local_is_server {
-                GetNamedPipeClientSessionId(pipe, &raw mut session_id)
+                GetNamedPipeClientSessionId(pipe.as_raw_handle(), &raw mut session_id)
             } else {
-                GetNamedPipeServerSessionId(pipe, &raw mut session_id)
+                GetNamedPipeServerSessionId(pipe.as_raw_handle(), &raw mut session_id)
             }
         };
         if succeeded == 0 {
@@ -941,10 +959,10 @@ impl WindowsNamedPipeStream {
     }
 
     pub(crate) fn is_inheritable(&self) -> io::Result<bool> {
-        let pipe = self.raw_pipe()?;
+        let pipe = self.pinned_pipe()?;
         let mut flags = 0_u32;
         // SAFETY: pipe remains owned by the connected stream and flags is writable.
-        if unsafe { GetHandleInformation(pipe, &raw mut flags) } == 0 {
+        if unsafe { GetHandleInformation(pipe.as_raw_handle(), &raw mut flags) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(flags & HANDLE_FLAG_INHERIT != 0)
@@ -965,10 +983,10 @@ impl WindowsNamedPipeStream {
                 "client token facts require the local server endpoint",
             ));
         }
-        let pipe = self.raw_pipe()?;
+        let pipe = self.pinned_pipe()?;
         // SAFETY: `pipe` is the retained connected server endpoint; Windows
         // impersonates the context of the client that wrote its last message.
-        if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
+        if unsafe { ImpersonateNamedPipeClient(pipe.as_raw_handle()) } == 0 {
             return Err(io::Error::last_os_error());
         }
         let facts = (|| {
@@ -1070,13 +1088,13 @@ impl WindowsNamedPipeStream {
         Ok(())
     }
 
-    fn raw_pipe(&self) -> io::Result<*mut core::ffi::c_void> {
+    fn pinned_pipe(&self) -> io::Result<Arc<OwnedHandle>> {
         self.inner
             .pipe
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(AsRawHandle::as_raw_handle)
+            .cloned()
             .ok_or_else(closed_pipe_error)
     }
 }
@@ -1109,9 +1127,12 @@ impl Read for WindowsNamedPipeStream {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.refuse_if_cancelled()?;
+        let pinned_pipe = self.pinned_pipe()?;
+        #[cfg(test)]
+        wait_at_test_consume_gate(&self.inner.after_raw_pipe_borrow);
         let result = overlapped_io(
             &self.read_event,
-            self.raw_pipe()?,
+            pinned_pipe.as_raw_handle(),
             timeout,
             buf.len(),
             |handle, bytes, len, overlapped| {
@@ -1122,6 +1143,9 @@ impl Read for WindowsNamedPipeStream {
             buf.as_mut_ptr().cast(),
             issuance,
         );
+        // The same native HANDLE, not a duplicate or detached raw pointer,
+        // stays owned until GetOverlappedResult has observed its completion.
+        drop(pinned_pipe);
         match result {
             Err(error) if matches!(error.raw_os_error(), Some(109 | 232 | 233)) => Ok(0),
             other => other,
@@ -1157,9 +1181,10 @@ impl Write for WindowsNamedPipeStream {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.refuse_if_cancelled()?;
-        overlapped_io(
+        let pinned_pipe = self.pinned_pipe()?;
+        let result = overlapped_io(
             &self.write_event,
-            self.raw_pipe()?,
+            pinned_pipe.as_raw_handle(),
             timeout,
             buf.len(),
             |handle, bytes, len, overlapped| {
@@ -1169,7 +1194,9 @@ impl Write for WindowsNamedPipeStream {
             },
             buf.as_ptr().cast_mut().cast(),
             issuance,
-        )
+        );
+        drop(pinned_pipe);
+        result
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -1720,6 +1747,152 @@ mod cancellation_tests {
             receive.raw_os_error(),
             Some(121),
             "silent connected peer times out without receiving a byte: {receive}"
+        );
+    }
+
+    /// Native failure-first: a terminal close must not invalidate a pipe
+    /// HANDLE already borrowed by an in-flight reader before `ReadFile` starts.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the Win32 source-HANDLE pin and terminal-close interleaving remain observable in one bounded scenario"
+    )]
+    #[test]
+    fn terminal_close_keeps_borrowed_stream_handle_live_until_read_is_observed() {
+        use std::io::Read as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use std::sync::{PoisonError, mpsc};
+        use std::thread;
+
+        use crate::bootstrap::{TestConsumeGate, random_test_locator};
+        use windows_sys::Win32::Foundation::GetHandleInformation;
+
+        use super::{WaitOutcome, WindowsNamedPipeServer, process_handle_count};
+
+        // The first native pipe/ACL lookup can initialize process-wide OS
+        // caches. Warm the same bind/accept/close path before measuring leaks;
+        // the comparison then counts only this adversarial race's handles.
+        let warm_endpoint = format!(
+            r"\\.\pipe\keld-gh910-warm-{}",
+            random_test_locator().expect("fresh native warmup pipe")
+        );
+        let warm_server = WindowsNamedPipeServer::bind(&warm_endpoint).expect("warm native server");
+        let warm_client =
+            WindowsNamedPipeServer::connect_client(&warm_endpoint).expect("warm native client");
+        assert_eq!(
+            warm_server
+                .accept_until(Some(Instant::now() + Duration::from_secs(3)))
+                .expect("warm native accept"),
+            WaitOutcome::Ready
+        );
+        warm_server.close_terminal().expect("warm terminal close");
+        drop(warm_client);
+        drop(warm_server);
+
+        let baseline = process_handle_count().expect("warmed-up kernel handle count");
+        let endpoint = format!(
+            r"\\.\pipe\keld-gh910-close-{}",
+            random_test_locator().expect("fresh native pipe identity")
+        );
+        let server = WindowsNamedPipeServer::bind(&endpoint).expect("bind named pipe");
+        let client = WindowsNamedPipeServer::connect_client(&endpoint).expect("silent peer");
+        assert_eq!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(3)))
+                .expect("real server accepted silent client"),
+            WaitOutcome::Ready
+        );
+        let mut stream = server.stream().expect("live server stream");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(850)))
+            .expect("bounded native read");
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release) = mpsc::channel();
+        *server
+            .inner
+            .after_raw_pipe_borrow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(TestConsumeGate { entered, release });
+
+        let (read_tx, read_rx) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            read_tx
+                .send(stream.read(&mut byte))
+                .expect("send native read observation");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reader actually borrowed native HANDLE before ReadFile");
+
+        // Borrow the SAME raw OS handle independently while the reader is
+        // parked. The handle must stay valid until the I/O owner observes its
+        // completion even if the terminal owner discards its reference.
+        let raw = server
+            .inspect_owned_pipe(|owned| Ok(owned.as_raw_handle()))
+            .expect("native handle pinned before terminal close");
+        let mut flags = 0_u32;
+        // SAFETY: borrowed HANDLE belongs to a retained server pipe and the
+        // output variable is live and writable during this synchronous query.
+        assert_ne!(
+            unsafe { GetHandleInformation(raw.cast(), &raw mut flags) },
+            0,
+            "borrowed native pipe handle starts valid"
+        );
+
+        let (close_tx, close_rx) = mpsc::sync_channel(1);
+        let closing = server.clone();
+        let closer = thread::spawn(move || {
+            close_tx
+                .send(closing.close_terminal())
+                .expect("report terminal close result");
+        });
+        // A correct implementation may hold terminal close behind the
+        // short io_issue guard. If it completes before release, the in-flight
+        // read MUST still pin the original owned kernel HANDLE.
+        let early_close = match close_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(result) => Some(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(error) => panic!("terminal close reporter disconnected: {error}"),
+        };
+        let raw_stayed_valid = if early_close.is_some() {
+            // SAFETY: this is exactly the raw HANDLE borrowed by the parked
+            // read, and flags is a live writable output. A stale value returns
+            // ERROR_INVALID_HANDLE; no dereference or ownership transfer.
+            (unsafe { GetHandleInformation(raw.cast(), &raw mut flags) }) != 0
+        } else {
+            true
+        };
+        release_tx
+            .send(())
+            .expect("release source reader after close race is staged");
+        let observation = read_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("native read has a finite terminal outcome");
+        reader.join().expect("native reader joined");
+        let terminal = match early_close {
+            Some(result) => result,
+            None => close_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("terminal close finishes after reader issuance"),
+        };
+        closer.join().expect("terminal owner joined");
+        drop(client);
+        drop(server);
+
+        terminal.expect("terminal close succeeds without destroying live I/O state");
+        assert!(
+            raw_stayed_valid,
+            "terminal close disposed the HANDLE between raw borrow and native ReadFile"
+        );
+        match observation {
+            Ok(0) => {}
+            Err(error) if matches!(error.raw_os_error(), Some(995 | 109 | 232 | 233)) => {}
+            other => panic!("terminal read used a disposed/wrong HANDLE: {other:?}"),
+        }
+        assert_eq!(
+            process_handle_count().expect("final native handle count"),
+            baseline,
+            "terminal close and a racing read must not leak any pipe/event handle"
         );
     }
 
