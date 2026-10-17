@@ -50,10 +50,10 @@ ci-route:
 # agent-context's workspace.py check also runs hosted, but only a developer
 # checkout has task records for it to validate.
 [parallel]
-ci-policy: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
+ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
 [parallel]
-ci-policy-full: agents-md atomic-protocol agent-context-test agent-context ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene
+ci-policy-full: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene
 
 mermaid-ci:
     #!/usr/bin/env bash
@@ -140,6 +140,69 @@ work-clean *args:
 
 work-check:
     {{python_command}} -B tools/workspace.py check
+
+# Source-versioned executable outside target/ survives full cache deletion.
+[private]
+cache-tool-exec mode *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo_root=$(git rev-parse --show-toplevel)
+    cd "$repo_root"
+    source_stamp() {
+        local dir="$1"
+        {
+            git hash-object "$dir/worktree_cache.rs"
+            git hash-object "$dir/worktree_cache_delete.rs"
+            git hash-object "$dir/worktree_cache_delete_tests.rs"
+            rustc -vV
+        } | git hash-object --stdin
+    }
+    stamp=$(source_stamp tools)
+    base="$HOME/.cache/keld/worktree-tool/$stamp"
+    mkdir -p "$base"
+    name="worktree-cache"
+    if [[ "{{os()}}" == "windows" ]]; then name="worktree-cache.exe"; fi
+    binary="$base/$name"
+    if [[ ! -x "$binary" ]]; then
+        scratch=$(mktemp -d "$base/.build.XXXXXXXX")
+        trap 'rm -rf "$scratch"' EXIT
+        # Compile a verified immutable source snapshot, never mutable checkout bytes.
+        cp tools/worktree_cache.rs tools/worktree_cache_delete.rs tools/worktree_cache_delete_tests.rs "$scratch/"
+        [[ "$(source_stamp "$scratch")" == "$stamp" ]] || {
+            echo "cache source changed during snapshot; refusing compilation" >&2; exit 1;
+        }
+        rustc --edition=2024 -D warnings -C opt-level=s -C strip=symbols "$scratch/worktree_cache.rs" -o "$scratch/$name"
+        if ! ln "$scratch/$name" "$binary" 2>/dev/null; then
+            [[ -x "$binary" ]] || { echo "cache binary publication failed" >&2; exit 1; }
+        fi
+    fi
+    [[ "$(source_stamp tools)" == "$stamp" ]] || {
+        echo "cache source changed during lookup; refusing stale executable" >&2; exit 1;
+    }
+    # set positional-arguments includes the named mode as $1.
+    shift
+    "$binary" "{{mode}}" . "$@"
+
+# Read-only census of every registered Git worktree build cache.
+cache-check *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just cache-tool-exec check "$@"
+
+# Explicit --all or --worktree PATH with --yes is required for deletion.
+cache-delete *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just cache-tool-exec delete "$@"
+
+# Native tests compile without the workspace Cargo graph.
+cache-check-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scratch=$(mktemp -d)
+    trap 'rm -rf "$scratch"' EXIT
+    rustc --edition=2024 -D warnings --test tools/worktree_cache.rs -o "$scratch/cache-tests"
+    "$scratch/cache-tests"
 
 work-test:
     {{python_command}} -B tools/test_workspace.py
