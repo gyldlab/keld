@@ -143,7 +143,7 @@ paragraph:
   open handles, or whose replacement target has open handles, cannot be renamed
   ([FILE_RENAME_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
   `ms.date` 2021-11-22), so a pre-authentication reader could fail the writer's
-  `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`. Rejected: a POSIX-semantics rename through
+  the writer's then-current `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`. Rejected in that historical decision: a POSIX-semantics rename through
   `SetFileInformationByHandle`, which would change the landed durable primitive in
   every mode and need an `unsafe` amendment; and documenting the blocked-replace
   residual.
@@ -447,14 +447,18 @@ semantic change requires a new schema/version and wire review. The contract reus
 existing strict semantic-version floor. There is no release-sequence, expiry, or
 security-epoch field to validate. Adding one also requires a new manifest version.
 
-Current durability inputs are Microsoft `FlushFileBuffers` and
-`MoveFileExW(MOVEFILE_WRITE_THROUGH)`, POSIX synchronized I/O and directory
-cache requirements, and Apple's `F_FULLFSYNC`. They define adapter order;
-implementation still needs real-OS crash-cut evidence for each admitted filesystem.
-Windows lease sharing and lock lifetime follow the documented [`CreateFileW` share
-compatibility and handle-close rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew);
-record replacement uses only the documented same-volume [`MoveFileExW` replace-existing/
-write-through flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw). Explicit UAC owner
+Current durability inputs are Microsoft's `FlushFileBuffers`,
+[`NtCreateFile` `FILE_WRITE_THROUGH` metadata barrier](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilea)
+and [`NtSetInformationFile(FileRenameInformation)`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+handle-relative rename, POSIX synchronized I/O and directory-cache requirements,
+and Apple's `F_FULLFSYNC`. They define adapter order; real-OS crash-cut evidence
+remains necessary for each admitted filesystem. Process-crash cuts alone do not
+establish sudden power-loss equivalence of the new Windows rename adapter; a separate
+physical durability proof remains pending. Windows lease sharing and lock
+lifetime follow the documented [`CreateFileW` sharing and handle-close
+rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew);
+record replacement uses only the fixed typed slot set with replace-existing under
+the same retained same-volume parent after protected sibling flush/readback. Explicit UAC owner
 assignment follows Microsoft's [`TOKEN_OWNER` valid-owner-group rule](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_token_owner)
 and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object); the candidate still runs in the initiating user's ordinary session under
 [UAC](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works).
@@ -578,13 +582,16 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     journal binds the verified helper image and health-channel identities; replay,
     endpoint substitution/reuse, helper substitution, mixed artifact set or path
     substitution fails.
-11. Windows stages each complete version in a unique sibling directory, flushes every
-    file handle, closes stage handles, then publishes the absent final directory with
-    same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Journal/pointer records use
-    same-directory temporary files, file flush and replace/write-through. Neither path
-    uses copy-across-volume or claims a directory-handle flush. The implementation
-    reopens and reads back every tree digest, journal, pointer and policy before
-    advancing, and real crash cuts qualify the filesystem. Linux later uses file
+11. Windows stages each complete version in a unique sibling directory, flushes
+    writable files and closes stage handles. The absent final version and typed
+    journal/pointer replacement use `NtCreateFile` on the exact nofollow source with
+    `FILE_WRITE_THROUGH`, then `NtSetInformationFile(FileRenameInformation)` with
+    one checked destination component under the same retained parent handle.
+    Publication refuses an existing destination; only fixed mutable slots can be
+    replaced under the writer lease after pending-sibling flush/readback. Neither
+    path copies across volumes, re-resolves ambient paths, or claims a directory
+    handle flush. Reopen and verify every tree digest, journal, pointer and policy
+    before advancing; real crash cuts qualify the filesystem. Linux later uses file
     `fsync`, same-filesystem rename and parent-directory
     `fsync`; macOS later adds `F_FULLFSYNC` before rename plus
     directory synchronization. An unsupported barrier, remote filesystem or failed
@@ -1457,15 +1464,16 @@ artifact-identity encoding of the candidate and `n` its byte length. The receipt
 the attempt, its private health channel and the exact candidate; recovery recomputes
 the digest from the journal's own fields and halts on a mismatch.
 
-Windows replaces fixed mutable record slots through a narrow same-parent
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` adapter; the existing
-absent-target version-directory publication remains separate. A transition writes a
-new protected sibling with the mode's exact DACL, flushes and reads it back, closes
-conflicting record pins, performs the fixed replacement under the stable lease, then
-reopens/reads back the exact bytes and descriptor before the next step. It does not
-truncate in place, copy across volumes, schedule work after reboot, or accept caller
-paths/flags. A replacement error is effect-aware; it does not claim the old bytes stayed
-unchanged after a possible publication.
+Windows replaces only fixed mutable record slots through a narrow retained-parent
+`NtCreateFile` (nofollow, `FILE_WRITE_THROUGH`) source and synchronous
+`NtSetInformationFile(FileRenameInformation)` destination with the typed
+replace-existing flag; absent-target version publication remains separate. A
+transition writes a protected pending sibling with the mode's exact DACL, flushes
+and reads back its bytes, closes conflicting record pins, performs the fixed
+replacement under the writer lease, then reopens and verifies bytes and descriptor.
+It never truncates in place, copies across volumes, resolves ambient paths, schedules
+work after reboot or accepts caller paths/flags. A replacement fault is effect-aware
+and cannot presume that the old bytes remained unchanged.
 
 Startup without a journal validates current, both known-good slots, their complete
 markers/policies and the floor. A valid current must equal last-known-good or
@@ -2803,10 +2811,12 @@ The only successful initialization order is:
    writable handle's final flush and protected readback. Create `.complete` with its
    final MachineSystem descriptor, write and flush it, then verify its exact bytes and
    descriptor.
-4. Close rename-blocking stage handles while retaining protected ancestors. Publish to
-   the absent final version name using same-volume `MoveFileExW` with only
-   `MOVEFILE_WRITE_THROUGH`; no replacement or cross-volume-copy flags. Reopen and
-   validate all content, policy, marker, descriptors and exact extracted-tree bytes.
+4. Close rename-blocking stage handles while retaining protected ancestors.
+   Publish the absent final version with `NtCreateFile` on the nofollow source using
+   `FILE_WRITE_THROUGH` and synchronous `NtSetInformationFile(FileRenameInformation)`
+   with one checked destination name under the same retained versions-directory
+   handle. Replacement and cross-volume copy are forbidden. Reopen and validate
+   all content, policy, marker, descriptors and exact extracted-tree bytes.
 5. Seed floor, current and LKG in order: each uses a fresh same-parent temporary file,
    final protection, writable-handle flush, close, absent-target write-through rename
    and protected readback. Any conflicting target or incomplete prior state refuses.

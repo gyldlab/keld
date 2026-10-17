@@ -316,7 +316,7 @@ fn record_replacement_requires_a_generated_sibling_and_a_file_destination() {
     }
     assert!(
         replace_record_slot(&parent, &pending, RecordSlot::Floor).is_err(),
-        "MOVEFILE_REPLACE_EXISTING refuses a directory destination"
+        "typed handle-relative replacement refuses a directory destination"
     );
     for (leaf, bytes) in [
         ("current", &b"previous"[..]),

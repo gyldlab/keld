@@ -1213,19 +1213,19 @@ authenticated boot read, and the typed `WriterActive` refusal of every other con
 separately requires proof that the prior process family exited. `bootstrap.lock`
 remains KEL-266's initializer marker.
 
-Windows keeps absent-target version-directory publication separate from mutable-record
-replacement. A fixed typed adapter replaces only prevalidated journal/floor/current/
-known-good slots in the same parent with
-`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`; it writes, flushes and reads
-back a protected sibling first, closes conflicting mutable-record pins, replaces under
-the stable lease, then reopens and verifies exact bytes and profile before advancing.
-It never truncates in place, copies across volumes, schedules work after reboot or
-accepts caller paths/flags. A failure after replacement is effect-aware and does not
-claim the old bytes stayed unchanged. The `keld-update` crate rule still keeps
-`publish_new` absent-target-only and permits only the separate fixed-slot replacement
-adapter, which refuses every leaf outside journal/floor/current/last-known-good/
-previous-known-good before the system call. Its exact diff requires independent
-unsafe/security review.
+Windows keeps absent-target version publication separate from mutable-record
+replacement. Both use `NtCreateFile` to open the exact source without following a
+reparse point, relative to the retained same-volume parent handle with
+`FILE_WRITE_THROUGH`, then synchronous `NtSetInformationFile(FileRenameInformation)`
+with one checked destination component relative to that same `RootDirectory`.
+`publish_new` refuses an occupied target; the fixed-slot replacement adapter permits
+only journal/floor/current/last-known-good/previous-known-good and sets replace-existing
+under the writer lease after flushing and reading back the protected pending sibling
+and closing conflicting record pins. Reopen and verify exact bytes and profile before
+advancing. Neither path truncates in place, resolves ambient paths, copies across
+volumes, schedules work after reboot or accepts caller paths/flags. A replacement
+failure is effect-aware; it does not claim old bytes stayed unchanged. All updater
+unsafe remains in `windows_fs.rs` and requires independent security review.
 
 **Health identity.** A candidate reports over a private channel whose identity
 `keld-update` mints inside the lease-holding attempt owner for the journaled attempt.
@@ -1306,22 +1306,26 @@ state.
 same-filesystem condition is unavailable, and each support cell retains native crash-cut
 evidence.
 
-- Windows: require a supported local volume. Stage the entire version as one unique
-  sibling directory under `versions/`; create `tree/`, `content.tar`
-  and `.complete` there in that order, call `FlushFileBuffers` on every
-  writable file handle, close all stage handles, then publish the absent final version
-  directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`; an update does so
-  only after its `publish-pending` journal is durable. Reopen the
-  final directory and read back every digest, policy and marker before floor and pointer
-  publication. Journal/pointer record replacement separately uses a
-  same-directory temporary file, `FlushFileBuffers`, and same-volume
-  `MoveFileExW` with replace-existing plus write-through. Neither path sets
-  `MOVEFILE_COPY_ALLOWED` or claims directory-handle `FlushFileBuffers`.
-  Real crash-cut evidence must establish this admitted filesystem cell before support.
-  Microsoft documents the
-  [file flush](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
-  and [write-through move](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-movefileexw)
-  contracts.
+- Windows: require a supported fixed local NTFS volume. Stage the entire version
+  as one unique sibling directory under `versions/`; create `tree/`,
+  `content.tar` and `.complete` in order, call `FlushFileBuffers` on each
+  writable file handle, and close the stage handles. Publish the absent final version
+  with `NtCreateFile` (nofollow and `FILE_WRITE_THROUGH`) for the source and synchronous
+  `NtSetInformationFile(FileRenameInformation)` for one checked destination component,
+  both relative to the same retained directory handle. An update publishes only
+  after its `publish-pending` journal is durable; reopen and read back all digests,
+  policy and marker before floor/pointer advancement. Journal/pointer replacement
+  separately uses a same-directory protected temporary file, `FlushFileBuffers`,
+  and the same handle-relative rename with the typed replace-existing flag.
+  Neither path copies across volumes, schedules reboot work, reconstructs ambient
+  paths or claims directory-handle `FlushFileBuffers`. Native process-crash cuts
+  establish journal/rename ordering, not sudden power-loss equivalence with the old
+  `MoveFileExW` adapter; independent physical persistence proof remains pending.
+  The contract does not waive that durability gate. Microsoft's
+  [file flush](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
+  [write-through NTFS metadata](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilea)
+  and [native rename](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+  contracts govern the adapter.
 - Linux, after its package predecessor: `fsync` each file,
   same-filesystem `rename`, then `fsync` every directory whose entry
   changed, bottom-up. POSIX notes that directory synchronization is required for
