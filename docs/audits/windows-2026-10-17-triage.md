@@ -1,0 +1,24 @@
+# KELD #824 — Windows path-level architecture and security triage (not signoff)
+
+The ledger generator itself is excluded from its own snapshot to avoid recursive output; review its code separately in this PR. The root justfile and exact .config/nextest.toml / .agents testing policy inputs are forcibly included as CI-critical Windows acceptance surfaces. The generated documents are likewise excluded. This tracked snapshot was generated from exact Windows DRAFT parent ffdba0e907b366d2552379d9f0fbf60727dbbf3a (#886), by:
+
+    python -B tools/windows_architecture_ledger.py --ref ffdba0e907b366d2552379d9f0fbf60727dbbf3a --output docs/audits/windows-2026-10-17-triage.csv
+    python -B tools/windows_architecture_ledger.py --ref ffdba0e907b366d2552379d9f0fbf60727dbbf3a --output docs/audits/windows-2026-10-17-triage.csv --check
+
+**307 path candidates**: 106 Rust production-or-fixture files, 149 test paths, 33 support files, and 19 CI/tooling paths. All 307 are explicitly PENDING_INDEPENDENT_SEMANTIC_REVIEW. No automated risk signal, source digest, test pass, or historic ledger is a security/architecture disposition. This is a *Windows-focused queue*, not the full tracked-file #824 census. It intentionally over-includes incidental Windows references and may omit relevant cross-platform authority contracts: the full A–F census and manual classification remain required.
+
+## Evidence/owner review protocol
+
+Every row binds an exact Git blob OID, byte count, source/fixture/CI class, a *candidate* component owner (not verified), syntactic risk signals, and evidence still required. For each row, a future independent reviewer must record: source and reader ownership, explicit imports and unsafe allowlist, kernel/ACL/reparse/lease/process identity boundaries, supported interfaces, negative controls, exact test/ignored/subprocess selectors, native Windows and cross-platform evidence, disposition and reviewer identity. Don't mark reviewed on this generated CSV merely because a PR shipped.
+
+**Priority 1: Windows protected update and process authority.** windows_baseline/activate.rs, load.rs, initialize.rs, locate.rs, windows_extraction.rs, windows_fs.rs, windows_job.rs, windows_lpac.rs, WebView2 navigation and guard Authenticode/token code. Keep windows_fs.rs the mandated updater unsafe Win32 owner; keep all WinVerifyTrust/Crypt32 pinned image state in guard's original FFI owner. Never split unsafe without an explicit authorized allowlist change and native security proof.
+
+**Priority 2: native test owner and proof identity.** Large Windows baseline transaction/writer/locate modules and Job/LPAC/IPC subprocess test hierarchies: use responsibility-local modules, not a renamed giant tests.rs; preserve exact ignored selectors and real process/NTFS effects. Critical weak oracle remains: case-alias test currently fails at another census guard and does not independently falsify eq_ignore_ascii_case in protected version retirement; don't claim it proves that guard.
+
+**Priority 3: hosted/signed-install release.** #814 intermittent WebView2 Windows Server 2025 KELD-WV-005 initial navigation timeout and missing complete renderer beacon remains without a proven causal fix even after real Tao adapter/wake regression, strict CI. Preserve 15s deadline. Signed-installed Windows binary Authenticode, exact executable identity, AppContainer/LPAC, elevation, UAC and protected updater owner tests require actual trust and package evidence, not fabricated signatures. Separately owned macOS Guardian pre-registration process-orphan acceptance is outside Windows closeout.
+
+## Stack provenance and limitations
+
+The already native-validated, unmerged Windows draft stack through #882 (e01bcdc45e96723a6fa39b74bf2b777ff47ad6cf) had 597/597 updater/runtime/guard native passes with 50 configured skips, and successful exact-head hosted CI. The immediate parent #886 (ffdba0e9) extracts authenticated initial baseline publication and passed native 466/466 updater/runtime cases (47 configured skips), warning-denied Clippy, hygiene 130/130, fmt and source-census. The old #839 review ledger was **closed unmerged**, and cannot silently become current reviewer evidence. These facts do not prove that all 307 rows were manually audited.
+
+The CSV's owner/risk columns are **queues for review**, never approvals. After every source change, regenerate and validate against the new exact Git HEAD, audit additions/deletions, and preserve prior dispositions only if the exact blob remains identical and a named independent reviewer affirms their scope. This document does not authorize a PR merge.
