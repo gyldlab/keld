@@ -2166,7 +2166,7 @@ fn install_app_navigation_handler(
 ) -> Result<(), WvError> {
     let starting_diagnostic = Arc::clone(&diagnostic);
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-        let (completion, web_error) = if let Some(args) = args {
+        let (completion, web_error, navigation_id) = if let Some(args) = args {
             // SAFETY: WebView2 invokes the handler on the creating STA with live
             // COM event args and writes IsSuccess into a local BOOL out-parameter.
             let mut succeeded = BOOL::default();
@@ -2183,10 +2183,22 @@ fn install_app_navigation_handler(
             } else {
                 None
             };
-            (result, status)
+            // SAFETY: WebView2 owns the navigation args during this STA
+            // callback. Only the opaque ID is read, never a URI or content.
+            let mut id = 0_u64;
+            let navigation_id = unsafe { args.NavigationId(&raw mut id) }.map(|()| id);
+            (result, status, navigation_id)
         } else {
-            (Err(windows::core::Error::from(E_POINTER)), None)
+            (
+                Err(windows::core::Error::from(E_POINTER)),
+                None,
+                Err(windows::core::Error::from(E_POINTER)),
+            )
         };
+        diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_completed_id(navigation_id);
         dispatch_app_navigation_completion_with_proxy(
             completion,
             web_error,
@@ -2206,11 +2218,19 @@ fn install_app_navigation_handler(
 
     // Observe the first real NavigationStarting callback before any content
     // is dispatched. Do not read or emit its URL, origin, or frame content.
-    let starting_handler = NavigationStartingEventHandler::create(Box::new(move |_, _| {
+    let starting_handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+        // SAFETY: NavigationStarting supplies live event-local COM args on
+        // this same STA. Read the identity only; no URL or frame data.
+        let navigation_id = if let Some(args) = args {
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
         starting_diagnostic
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .navigation_starting();
+            .navigation_starting(navigation_id);
         Ok(())
     }));
     let mut starting_token = 0_i64;
