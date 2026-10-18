@@ -9,6 +9,7 @@ use windows::core::Result as ComResult;
 pub(super) struct FirstNavigationDiagnostic {
     created: Instant,
     dispatch_attempted: Option<Instant>,
+    navigation_started: Option<Instant>,
     loop_setup_started: Option<Instant>,
     first_loop_turn: Option<Instant>,
     phase: &'static str,
@@ -22,6 +23,7 @@ impl FirstNavigationDiagnostic {
         Self {
             created: now,
             dispatch_attempted: None,
+            navigation_started: None,
             loop_setup_started: None,
             first_loop_turn: None,
             phase: "window-creation",
@@ -33,6 +35,16 @@ impl FirstNavigationDiagnostic {
     pub(super) fn dispatch_attempted(&mut self) {
         self.dispatch_attempted = Some(Instant::now());
         self.record("navigation-dispatch-attempted");
+    }
+
+    // An actual WebView2 NavigationStarting COM callback is distinct from
+    // Keld calling NavigateToString and from Tao entering its first loop turn.
+    // Only the first callback is relevant to startup diagnostics.
+    pub(super) fn navigation_starting(&mut self) {
+        if self.navigation_started.is_none() {
+            self.navigation_started = Some(Instant::now());
+            self.record("navigation-starting");
+        }
     }
 
     pub(super) fn loop_setup_started(&mut self) {
@@ -96,6 +108,9 @@ impl FirstNavigationDiagnostic {
         let dispatch_attempt_ms = self
             .dispatch_attempted
             .map(|at| at.saturating_duration_since(self.created).as_millis());
+        let navigation_start_ms = self
+            .navigation_started
+            .map(|at| at.saturating_duration_since(self.created).as_millis());
         let loop_ms = self
             .loop_setup_started
             .map(|at| at.saturating_duration_since(self.created).as_millis());
@@ -108,11 +123,12 @@ impl FirstNavigationDiagnostic {
             .as_millis();
         let detail = self.detail.as_deref().unwrap_or("none");
         format!(
-            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
+            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} navigation_start_at_ms={:?} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
             self.phase,
             phase_ms,
             since_created,
             dispatch_attempt_ms,
+            navigation_start_ms,
             loop_ms,
             first_loop_turn_ms,
             detail
@@ -144,6 +160,38 @@ mod tests {
             diag.first_loop_turn, first,
             "later callbacks cannot rewrite the first-turn clock"
         );
+    }
+
+    #[test]
+    fn navigation_start_callback_is_distinct_from_dispatch_and_first_loop_turn() {
+        let mut diag = FirstNavigationDiagnostic::new();
+        diag.dispatch_attempted();
+        let before = diag.snapshot();
+        assert!(before.contains("navigation_start_at_ms=None"), "{before}");
+        assert!(before.contains("first_loop_turn_at_ms=None"), "{before}");
+
+        diag.navigation_starting();
+        let first_start = diag.navigation_started;
+        let during = diag.snapshot();
+        assert!(during.contains("phase=navigation-starting"), "{during}");
+        assert!(during.contains("navigation_start_at_ms=Some("), "{during}");
+        assert!(during.contains("first_loop_turn_at_ms=None"), "{during}");
+        diag.navigation_starting();
+        assert_eq!(diag.navigation_started, first_start);
+
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        assert!(diag.completed(Ok(true), None, &ready, &failed));
+        let completed = diag.snapshot();
+        assert!(
+            completed.contains("navigation_start_at_ms=Some("),
+            "{completed}"
+        );
+        assert!(
+            completed.contains("phase=navigation-completed"),
+            "{completed}"
+        );
+        assert!(!completed.contains("http://"), "{completed}");
     }
 
     #[test]
