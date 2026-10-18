@@ -10,6 +10,12 @@ pub(super) struct FirstNavigationDiagnostic {
     created: Instant,
     dispatch_attempted: Option<Instant>,
     navigation_started: Option<Instant>,
+    // Opaque WebView2 IDs stay in memory only; snapshots expose equality,
+    // never a URL, HTML, a profile path, or an individual navigation ID.
+    starting_navigation_id: Option<u64>,
+    completed_navigation_id: Option<u64>,
+    starting_id_error: Option<String>,
+    completed_id_error: Option<String>,
     loop_setup_started: Option<Instant>,
     first_loop_turn: Option<Instant>,
     terminal: bool,
@@ -25,6 +31,10 @@ impl FirstNavigationDiagnostic {
             created: now,
             dispatch_attempted: None,
             navigation_started: None,
+            starting_navigation_id: None,
+            completed_navigation_id: None,
+            starting_id_error: None,
+            completed_id_error: None,
             loop_setup_started: None,
             first_loop_turn: None,
             terminal: false,
@@ -44,11 +54,32 @@ impl FirstNavigationDiagnostic {
     // An actual WebView2 NavigationStarting COM callback is distinct from
     // Keld calling NavigateToString and from Tao entering its first loop turn.
     // Only the first callback is relevant to startup diagnostics.
-    pub(super) fn navigation_starting(&mut self) {
+    pub(super) fn navigation_starting(&mut self, navigation_id: ComResult<u64>) {
         if self.dispatch_attempted.is_some() && self.navigation_started.is_none() && !self.terminal
         {
             self.navigation_started = Some(Instant::now());
+            match navigation_id {
+                Ok(id) => self.starting_navigation_id = Some(id),
+                Err(error) => {
+                    self.starting_id_error = Some(format!("{:#010x}", error.code().0));
+                }
+            }
             self.record("navigation-starting");
+        }
+    }
+
+    /// Observe the completion's opaque navigation identity before committing
+    /// its existing result. This is diagnostic only: it must not change
+    /// `NavigationReady` delivery or the established first-failure contract.
+    pub(super) fn navigation_completed_id(&mut self, navigation_id: ComResult<u64>) {
+        if self.terminal {
+            return;
+        }
+        match navigation_id {
+            Ok(id) => self.completed_navigation_id = Some(id),
+            Err(error) => {
+                self.completed_id_error = Some(format!("{:#010x}", error.code().0));
+            }
         }
     }
 
@@ -136,8 +167,16 @@ impl FirstNavigationDiagnostic {
             .saturating_duration_since(self.created)
             .as_millis();
         let detail = self.detail.as_deref().unwrap_or("none");
+        // Equality, not individual IDs, is the only identity data emitted.
+        // None means a callback or COM identity getter was unavailable.
+        let navigation_ids_match = self
+            .starting_navigation_id
+            .zip(self.completed_navigation_id)
+            .map(|(start, completed)| start == completed);
+        let start_id_error = self.starting_id_error.as_deref().unwrap_or("none");
+        let completed_id_error = self.completed_id_error.as_deref().unwrap_or("none");
         format!(
-            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} navigation_start_at_ms={:?} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
+            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} navigation_start_at_ms={:?} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={} navigation_ids_match={:?} navigation_start_id_hresult={} navigation_completed_id_hresult={}",
             self.phase,
             phase_ms,
             since_created,
@@ -145,7 +184,10 @@ impl FirstNavigationDiagnostic {
             navigation_start_ms,
             loop_ms,
             first_loop_turn_ms,
-            detail
+            detail,
+            navigation_ids_match,
+            start_id_error,
+            completed_id_error
         )
     }
 }
@@ -179,7 +221,7 @@ mod tests {
     #[test]
     fn navigation_start_callback_is_distinct_from_dispatch_and_first_loop_turn() {
         let mut diag = FirstNavigationDiagnostic::new();
-        diag.navigation_starting();
+        diag.navigation_starting(Ok(17));
         let undispatched = diag.snapshot();
         assert!(
             undispatched.contains("navigation_start_at_ms=None"),
@@ -190,13 +232,13 @@ mod tests {
         assert!(before.contains("navigation_start_at_ms=None"), "{before}");
         assert!(before.contains("first_loop_turn_at_ms=None"), "{before}");
 
-        diag.navigation_starting();
+        diag.navigation_starting(Ok(17));
         let first_start = diag.navigation_started;
         let during = diag.snapshot();
         assert!(during.contains("phase=navigation-starting"), "{during}");
         assert!(during.contains("navigation_start_at_ms=Some("), "{during}");
         assert!(during.contains("first_loop_turn_at_ms=None"), "{during}");
-        diag.navigation_starting();
+        diag.navigation_starting(Ok(17));
         assert_eq!(diag.navigation_started, first_start);
 
         let ready = AtomicBool::new(false);
@@ -221,7 +263,7 @@ mod tests {
         let mut completed = FirstNavigationDiagnostic::new();
         completed.dispatch_attempted();
         assert!(completed.completed(Ok(true), None, &ready, &failed));
-        completed.navigation_starting();
+        completed.navigation_starting(Ok(17));
         let snapshot = completed.snapshot();
         assert!(
             snapshot.contains("phase=navigation-completed"),
@@ -236,7 +278,7 @@ mod tests {
         // That later setup must never erase the terminal result and permit
         // an unrelated NavigationStarting callback to impersonate startup.
         completed.loop_setup_started();
-        completed.navigation_starting();
+        completed.navigation_starting(Ok(17));
         let snapshot = completed.snapshot();
         assert!(
             snapshot.contains("phase=navigation-completed"),
@@ -251,7 +293,7 @@ mod tests {
         let mut expired = FirstNavigationDiagnostic::new();
         expired.dispatch_attempted();
         expired.deadline_elapsed();
-        expired.navigation_starting();
+        expired.navigation_starting(Ok(17));
         let snapshot = expired.snapshot();
         assert!(
             snapshot.contains("phase=navigation-deadline-elapsed"),
@@ -263,7 +305,7 @@ mod tests {
         );
 
         expired.loop_setup_started();
-        expired.navigation_starting();
+        expired.navigation_starting(Ok(17));
         let snapshot = expired.snapshot();
         assert!(
             snapshot.contains("phase=navigation-deadline-elapsed"),
@@ -272,6 +314,47 @@ mod tests {
         assert!(
             snapshot.contains("navigation_start_at_ms=None"),
             "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn navigation_ids_are_correlated_without_exposing_opaque_identifiers() {
+        let mut matching = FirstNavigationDiagnostic::new();
+        matching.dispatch_attempted();
+        matching.navigation_starting(Ok(872_341_901));
+        matching.navigation_completed_id(Ok(872_341_901));
+        let match_evidence = matching.snapshot();
+        assert!(
+            match_evidence.contains("navigation_ids_match=Some(true)"),
+            "{match_evidence}"
+        );
+        assert!(!match_evidence.contains("872341901"), "{match_evidence}");
+
+        let mut mismatched = FirstNavigationDiagnostic::new();
+        mismatched.dispatch_attempted();
+        mismatched.navigation_starting(Ok(41));
+        mismatched.navigation_completed_id(Ok(42));
+        assert!(
+            mismatched
+                .snapshot()
+                .contains("navigation_ids_match=Some(false)"),
+            "a different navigation must not appear correlated"
+        );
+
+        let mut unavailable = FirstNavigationDiagnostic::new();
+        unavailable.dispatch_attempted();
+        unavailable.navigation_starting(Err(windows::core::Error::from(
+            windows::Win32::Foundation::E_POINTER,
+        )));
+        unavailable.navigation_completed_id(Ok(42));
+        let unavailable_evidence = unavailable.snapshot();
+        assert!(
+            unavailable_evidence.contains("navigation_ids_match=None"),
+            "{unavailable_evidence}"
+        );
+        assert!(
+            unavailable_evidence.contains("navigation_start_id_hresult=0x80004003"),
+            "{unavailable_evidence}"
         );
     }
 
