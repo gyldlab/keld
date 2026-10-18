@@ -1141,7 +1141,7 @@ mod tests {
 
     /// Native Windows COM proof: the actual `create_app`/`NavigateToString`
     /// subscription, not a direct call to the phase reducer, must observe
-    /// WebView2's first NavigationStarting callback before NavigationReady.
+    /// `WebView2`'s first `NavigationStarting` callback before `NavigationReady`.
     /// Removing `add_NavigationStarting` must make this test RED while leaving
     /// the ordinary renderer-ready path alive.
     #[test]
@@ -1185,7 +1185,23 @@ mod tests {
             let ready = readiness
                 .join()
                 .map_err(|_| failure("native navigation readiness owner panicked"))?;
+            // Only reclaim this exact test-owned root after the shipping
+            // engine has proved its profile release. Keep failed-release
+            // fixtures for investigation; do not hide a browser/lease leak.
+            // In particular, the deliberate missing-subscription RED still
+            // cleans up because navigation and release succeeded independently.
+            let released = !plan.control_dir.exists();
+            if run.is_ok() && released {
+                std::fs::remove_dir_all(&root).map_err(failure)?;
+            } else {
+                eprintln!("KELD_FIRST_NAV_RETAINED {}", root.display());
+            }
             run?;
+            if !released {
+                return Err(failure(
+                    "successful real navigation did not release its profile",
+                ));
+            }
             if !ready {
                 return Err(failure("no real initial NavigationReady was observed"));
             }
@@ -1206,13 +1222,8 @@ mod tests {
             if evidence.contains(&canary) || evidence.contains("<title>") {
                 return Err(failure("navigation diagnostics exposed test HTML content"));
             }
-            if plan.control_dir.exists() {
-                return Err(failure(
-                    "successful real navigation did not release its profile",
-                ));
-            }
             println!("KELD_FIRST_NAV_START {evidence}");
-            std::fs::remove_dir_all(&root).map_err(failure)
+            Ok(())
         })
     }
 
