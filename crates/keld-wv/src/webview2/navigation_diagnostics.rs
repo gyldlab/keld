@@ -12,6 +12,7 @@ pub(super) struct FirstNavigationDiagnostic {
     navigation_started: Option<Instant>,
     loop_setup_started: Option<Instant>,
     first_loop_turn: Option<Instant>,
+    terminal: bool,
     phase: &'static str,
     phase_at: Instant,
     detail: Option<String>,
@@ -26,6 +27,7 @@ impl FirstNavigationDiagnostic {
             navigation_started: None,
             loop_setup_started: None,
             first_loop_turn: None,
+            terminal: false,
             phase: "window-creation",
             phase_at: now,
             detail: None,
@@ -33,22 +35,18 @@ impl FirstNavigationDiagnostic {
     }
 
     pub(super) fn dispatch_attempted(&mut self) {
-        self.dispatch_attempted = Some(Instant::now());
-        self.record("navigation-dispatch-attempted");
+        if !self.terminal {
+            self.dispatch_attempted = Some(Instant::now());
+            self.record("navigation-dispatch-attempted");
+        }
     }
 
     // An actual WebView2 NavigationStarting COM callback is distinct from
     // Keld calling NavigateToString and from Tao entering its first loop turn.
     // Only the first callback is relevant to startup diagnostics.
     pub(super) fn navigation_starting(&mut self) {
-        let terminal = matches!(
-            self.phase,
-            "navigation-completed"
-                | "navigation-failed"
-                | "navigation-completed-com-error"
-                | "navigation-deadline-elapsed"
-        );
-        if self.dispatch_attempted.is_some() && self.navigation_started.is_none() && !terminal {
+        if self.dispatch_attempted.is_some() && self.navigation_started.is_none() && !self.terminal
+        {
             self.navigation_started = Some(Instant::now());
             self.record("navigation-starting");
         }
@@ -56,7 +54,9 @@ impl FirstNavigationDiagnostic {
 
     pub(super) fn loop_setup_started(&mut self) {
         self.loop_setup_started = Some(Instant::now());
-        self.record("message-loop-setup-started");
+        if !self.terminal {
+            self.record("message-loop-setup-started");
+        }
     }
 
     // Record exactly the first Tao callback; the loop can be constructed long
@@ -68,7 +68,10 @@ impl FirstNavigationDiagnostic {
     }
 
     pub(super) fn deadline_elapsed(&mut self) {
-        self.record("navigation-deadline-elapsed");
+        if !self.terminal {
+            self.terminal = true;
+            self.record("navigation-deadline-elapsed");
+        }
     }
 
     fn record(&mut self, phase: &'static str) {
@@ -85,6 +88,10 @@ impl FirstNavigationDiagnostic {
         ready: &AtomicBool,
         failed: &AtomicBool,
     ) -> bool {
+        if self.terminal {
+            return false;
+        }
+        self.terminal = true;
         match result {
             Ok(true) => {
                 self.record("navigation-completed");
@@ -225,9 +232,37 @@ mod tests {
             "{snapshot}"
         );
 
+        // A synchronous COM completion may precede Tao run-loop setup.
+        // That later setup must never erase the terminal result and permit
+        // an unrelated NavigationStarting callback to impersonate startup.
+        completed.loop_setup_started();
+        completed.navigation_starting();
+        let snapshot = completed.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-completed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("loop_setup_at_ms=Some("), "{snapshot}");
+
         let mut expired = FirstNavigationDiagnostic::new();
         expired.dispatch_attempted();
         expired.deadline_elapsed();
+        expired.navigation_starting();
+        let snapshot = expired.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-deadline-elapsed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+
+        expired.loop_setup_started();
         expired.navigation_starting();
         let snapshot = expired.snapshot();
         assert!(
