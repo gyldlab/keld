@@ -41,7 +41,14 @@ impl FirstNavigationDiagnostic {
     // Keld calling NavigateToString and from Tao entering its first loop turn.
     // Only the first callback is relevant to startup diagnostics.
     pub(super) fn navigation_starting(&mut self) {
-        if self.navigation_started.is_none() {
+        let terminal = matches!(
+            self.phase,
+            "navigation-completed"
+                | "navigation-failed"
+                | "navigation-completed-com-error"
+                | "navigation-deadline-elapsed"
+        );
+        if self.dispatch_attempted.is_some() && self.navigation_started.is_none() && !terminal {
             self.navigation_started = Some(Instant::now());
             self.record("navigation-starting");
         }
@@ -165,6 +172,12 @@ mod tests {
     #[test]
     fn navigation_start_callback_is_distinct_from_dispatch_and_first_loop_turn() {
         let mut diag = FirstNavigationDiagnostic::new();
+        diag.navigation_starting();
+        let undispatched = diag.snapshot();
+        assert!(
+            undispatched.contains("navigation_start_at_ms=None"),
+            "a pre-dispatch callback must not impersonate the app's initial navigation: {undispatched}"
+        );
         diag.dispatch_attempted();
         let before = diag.snapshot();
         assert!(before.contains("navigation_start_at_ms=None"), "{before}");
@@ -192,6 +205,39 @@ mod tests {
             "{completed}"
         );
         assert!(!completed.contains("http://"), "{completed}");
+    }
+
+    #[test]
+    fn late_navigation_start_does_not_replace_a_terminal_startup_phase() {
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let mut completed = FirstNavigationDiagnostic::new();
+        completed.dispatch_attempted();
+        assert!(completed.completed(Ok(true), None, &ready, &failed));
+        completed.navigation_starting();
+        let snapshot = completed.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-completed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+
+        let mut expired = FirstNavigationDiagnostic::new();
+        expired.dispatch_attempted();
+        expired.deadline_elapsed();
+        expired.navigation_starting();
+        let snapshot = expired.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-deadline-elapsed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
     }
 
     #[test]
