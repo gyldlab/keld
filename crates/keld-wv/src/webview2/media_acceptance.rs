@@ -1139,6 +1139,83 @@ mod tests {
         engine.run_app_until_quit(commands_rx, mpsc::channel().0)
     }
 
+    /// Native Windows COM proof: the actual `create_app`/`NavigateToString`
+    /// subscription, not a direct call to the phase reducer, must observe
+    /// WebView2's first NavigationStarting callback before NavigationReady.
+    /// Removing `add_NavigationStarting` must make this test RED while leaving
+    /// the ordinary renderer-ready path alive.
+    #[test]
+    #[ignore = "requires actual Windows WebView2 initial-navigation COM callbacks"]
+    fn windows_first_navigation_start_is_observed_by_real_com_callback() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            use crate::profile::{EphemeralProfile, WebProfileSelection};
+
+            let root = profile_fixture_root("first-navigation-start");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let selection =
+                WebProfileSelection::ephemeral_dev(EphemeralProfile::from_host_random([88; 32])?);
+            let plan = super::super::windows_profile_plan(&root, selection)?;
+            let mut engine = profile_fixture_engine(&root, selection)?;
+            let navigation = Arc::clone(&engine.navigation_diagnostic);
+            let canary = format!("private-navigation-canary-{}", std::process::id());
+            let spec = WebviewSpec {
+                initial: NavTarget::Html(format!("<!doctype html><title>{canary}</title>")),
+                ..blank_spec()
+            };
+            let (events_tx, events_rx) = mpsc::channel();
+            engine.create_app(&spec, events_tx)?;
+
+            // Only a real production NavigationReady authorizes the Quit.
+            // A missing callback is not fixed by sleeping or relaxing the
+            // 15-second shipping navigation deadline; it remains a test RED.
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let readiness = thread::spawn(move || {
+                let ready = matches!(
+                    events_rx.recv_timeout(Duration::from_secs(20)),
+                    Ok(crate::AppWindowEvent::NavigationReady)
+                );
+                let command = if ready {
+                    crate::AppWindowCommand::Quit
+                } else {
+                    crate::AppWindowCommand::Fatal
+                };
+                commands_tx.send(command).is_ok() && ready
+            });
+            let run = engine.run_app_until_quit(commands_rx, mpsc::channel().0);
+            let ready = readiness
+                .join()
+                .map_err(|_| failure("native navigation readiness owner panicked"))?;
+            run?;
+            if !ready {
+                return Err(failure("no real initial NavigationReady was observed"));
+            }
+            let evidence = navigation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot();
+            if !evidence.contains("navigation_start_at_ms=Some(") {
+                return Err(failure(format!(
+                    "real COM NavigationStarting was not observed: {evidence}"
+                )));
+            }
+            if !evidence.contains("first_loop_turn_at_ms=Some(") {
+                return Err(failure(format!(
+                    "WebView2 navigation must outlive a real Tao callback: {evidence}"
+                )));
+            }
+            if evidence.contains(&canary) || evidence.contains("<title>") {
+                return Err(failure("navigation diagnostics exposed test HTML content"));
+            }
+            if plan.control_dir.exists() {
+                return Err(failure(
+                    "successful real navigation did not release its profile",
+                ));
+            }
+            println!("KELD_FIRST_NAV_START {evidence}");
+            std::fs::remove_dir_all(&root).map_err(failure)
+        })
+    }
+
     fn assert_saved_media_state(
         profile: &super::super::ICoreWebView2Profile4,
         origin: &str,
