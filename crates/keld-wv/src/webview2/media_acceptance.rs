@@ -1152,6 +1152,24 @@ mod tests {
 
             let root = profile_fixture_root("first-navigation-start");
             std::fs::create_dir_all(&root).map_err(failure)?;
+            // A failed browser/profile release must remain inspectable. This
+            // guard reports early setup errors as well as runtime errors;
+            // only a separately proven successful release authorizes cleanup.
+            struct FixtureRetention<'a> {
+                path: &'a Path,
+                cleaned: bool,
+            }
+            impl Drop for FixtureRetention<'_> {
+                fn drop(&mut self) {
+                    if !self.cleaned && self.path.exists() {
+                        eprintln!("KELD_FIRST_NAV_RETAINED {}", self.path.display());
+                    }
+                }
+            }
+            let mut retention = FixtureRetention {
+                path: &root,
+                cleaned: false,
+            };
             let selection =
                 WebProfileSelection::ephemeral_dev(EphemeralProfile::from_host_random([88; 32])?);
             let plan = super::super::windows_profile_plan(&root, selection)?;
@@ -1193,8 +1211,7 @@ mod tests {
             let released = !plan.control_dir.exists();
             if run.is_ok() && released {
                 std::fs::remove_dir_all(&root).map_err(failure)?;
-            } else {
-                eprintln!("KELD_FIRST_NAV_RETAINED {}", root.display());
+                retention.cleaned = true;
             }
             run?;
             if !released {
@@ -1216,7 +1233,7 @@ mod tests {
             }
             if !evidence.contains("first_loop_turn_at_ms=Some(") {
                 return Err(failure(format!(
-                    "WebView2 navigation must outlive a real Tao callback: {evidence}"
+                    "the real Tao event callback was never observed: {evidence}"
                 )));
             }
             if evidence.contains(&canary) || evidence.contains("<title>") {
