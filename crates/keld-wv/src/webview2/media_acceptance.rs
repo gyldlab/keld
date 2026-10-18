@@ -1150,8 +1150,6 @@ mod tests {
         run_with_watchdog(FIXTURE_DEADLINE, || {
             use crate::profile::{EphemeralProfile, WebProfileSelection};
 
-            let root = profile_fixture_root("first-navigation-start");
-            std::fs::create_dir_all(&root).map_err(failure)?;
             // A failed browser/profile release must remain inspectable. This
             // guard reports early setup errors as well as runtime errors;
             // only a separately proven successful release authorizes cleanup.
@@ -1166,6 +1164,8 @@ mod tests {
                     }
                 }
             }
+            let root = profile_fixture_root("first-navigation-start");
+            std::fs::create_dir_all(&root).map_err(failure)?;
             let mut retention = FixtureRetention {
                 path: &root,
                 cleaned: false,
