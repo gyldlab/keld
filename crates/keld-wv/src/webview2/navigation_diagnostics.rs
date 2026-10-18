@@ -69,10 +69,10 @@ impl FirstNavigationDiagnostic {
     }
 
     /// Observe the completion's opaque navigation identity before committing
-    /// its existing result. This is diagnostic only: it must not change
-    /// `NavigationReady` delivery or the established first-failure contract.
+    /// its existing result. Ignore pre-dispatch callbacks: they cannot belong
+    /// to the initial app navigation and must not become its identity witness.
     pub(super) fn navigation_completed_id(&mut self, navigation_id: ComResult<u64>) {
-        if self.terminal {
+        if self.terminal || self.dispatch_attempted.is_none() {
             return;
         }
         match navigation_id {
@@ -119,7 +119,9 @@ impl FirstNavigationDiagnostic {
         ready: &AtomicBool,
         failed: &AtomicBool,
     ) -> bool {
-        if self.terminal {
+        // Ignore callbacks received before the application dispatches its
+        // initial navigation; do not mark readiness or finish the startup.
+        if self.terminal || self.dispatch_attempted.is_none() {
             return false;
         }
         self.terminal = true;
@@ -359,6 +361,47 @@ mod tests {
     }
 
     #[test]
+    fn pre_dispatch_completion_cannot_claim_initial_ready_or_terminal_failure() {
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let mut diagnostic = FirstNavigationDiagnostic::new();
+
+        // A WebView2 callback unrelated to app navigation can arrive after
+        // handler registration but before shipping navigate_initial().
+        diagnostic.navigation_completed_id(Ok(101));
+        assert!(!diagnostic.completed(Ok(true), None, &ready, &failed));
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(!diagnostic.terminal);
+        assert!(diagnostic.completed_navigation_id.is_none());
+
+        assert!(!diagnostic.completed(
+            Ok(false),
+            Some(String::from("CONNECTION_ABORTED")),
+            &ready,
+            &failed,
+        ));
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(!diagnostic.terminal);
+
+        // Pre-dispatch callbacks must not consume the terminal latch. The
+        // first dispatched app navigation still gets its actual outcome.
+        diagnostic.dispatch_attempted();
+        diagnostic.navigation_starting(Ok(202));
+        diagnostic.navigation_completed_id(Ok(202));
+        assert!(diagnostic.completed(Ok(true), None, &ready, &failed));
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(
+            diagnostic
+                .snapshot()
+                .contains("navigation_ids_match=Some(true)"),
+            "the real app event pair must still correlate"
+        );
+    }
+
+    #[test]
     fn phase_names_distinguish_dispatch_attempt_from_loop_setup() {
         let mut diag = FirstNavigationDiagnostic::new();
         diag.dispatch_attempted();
@@ -397,6 +440,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let mut diag = FirstNavigationDiagnostic::new();
+        diag.dispatch_attempted();
         assert!(!diag.completed(
             Ok(false),
             Some("CONNECTION_ABORTED".to_owned()),
@@ -409,6 +453,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let mut diag = FirstNavigationDiagnostic::new();
+        diag.dispatch_attempted();
         assert!(diag.completed(Ok(true), None, &ready, &failed));
         assert!(!diag.completed(Ok(true), None, &ready, &failed));
         assert!(ready.load(Ordering::Acquire));

@@ -4419,6 +4419,55 @@ mod tests {
     }
 
     #[test]
+    fn pre_dispatch_completed_callback_never_sends_application_ready() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{self, TryRecvError};
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        diagnostic.lock().unwrap().dispatch_attempted();
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(super::AppWindowEvent::NavigationReady)
+        ));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
     fn com_callback_error_wakes_ui_loop_and_finishes_with_typed_navigation_failure() {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4429,6 +4478,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Err(windows::core::Error::from(
                 windows::Win32::Foundation::E_POINTER,
@@ -4504,6 +4554,9 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        // Simulate shipping's initial navigate_initial() attempt before
+        // injecting the native COM error into the real Tao proxy.
+        diagnostic.lock().unwrap().dispatch_attempted();
 
         super::dispatch_app_navigation_completion_with_proxy(
             Err(windows::core::Error::from(
@@ -4576,6 +4629,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Ok(true),
             None,
