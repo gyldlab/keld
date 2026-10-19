@@ -75,6 +75,10 @@ impl FirstNavigationDiagnostic {
         if self.terminal || self.dispatch_attempted.is_none() {
             return;
         }
+        // A later callback must not inherit an earlier completion's ID or
+        // getter error when WebView2 reports another navigation.
+        self.completed_navigation_id = None;
+        self.completed_id_error = None;
         match navigation_id {
             Ok(id) => self.completed_navigation_id = Some(id),
             Err(error) => {
@@ -122,6 +126,17 @@ impl FirstNavigationDiagnostic {
         // Ignore callbacks received before the application dispatches its
         // initial navigation; do not mark readiness or finish the startup.
         if self.terminal || self.dispatch_attempted.is_none() {
+            return false;
+        }
+        // WebView2 can interleave completions for different navigations.
+        // A proven unequal pair must not mark the initial app navigation
+        // ready, nor consume its terminal latch. Missing IDs preserve the
+        // existing callback result handling and original startup deadline.
+        if matches!(
+            (self.starting_navigation_id, self.completed_navigation_id),
+            (Some(start), Some(completed)) if start != completed
+        ) {
+            self.record("navigation-completion-id-mismatch");
             return false;
         }
         self.terminal = true;
@@ -399,6 +414,93 @@ mod tests {
                 .contains("navigation_ids_match=Some(true)"),
             "the real app event pair must still correlate"
         );
+    }
+
+    #[test]
+    fn mismatched_post_dispatch_completion_cannot_claim_initial_navigation() {
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let mut diagnostic = FirstNavigationDiagnostic::new();
+        diagnostic.dispatch_attempted();
+        diagnostic.navigation_starting(Ok(41));
+        diagnostic.navigation_completed_id(Ok(42));
+
+        assert!(
+            !diagnostic.completed(Ok(true), None, &ready, &failed),
+            "another navigation's completion must not commit initial ready"
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(!diagnostic.terminal);
+        assert!(
+            diagnostic
+                .snapshot()
+                .contains("navigation_ids_match=Some(false)"),
+            "opaque mismatch remains observable without exposing IDs"
+        );
+
+        diagnostic.navigation_completed_id(Ok(41));
+        assert!(diagnostic.completed(Ok(true), None, &ready, &failed));
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let mut diagnostic = FirstNavigationDiagnostic::new();
+        diagnostic.dispatch_attempted();
+        diagnostic.navigation_starting(Ok(71));
+        diagnostic.navigation_completed_id(Ok(72));
+        assert!(!diagnostic.completed(
+            Ok(false),
+            Some(String::from("CONNECTION_ABORTED")),
+            &ready,
+            &failed
+        ));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(!diagnostic.terminal);
+
+        diagnostic.navigation_completed_id(Ok(71));
+        assert!(!diagnostic.completed(
+            Ok(false),
+            Some(String::from("CONNECTION_ABORTED")),
+            &ready,
+            &failed
+        ));
+        assert!(failed.load(Ordering::Acquire));
+        assert!(!ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn navigation_id_getter_error_clears_stale_completion_identity() {
+        let mut diag = FirstNavigationDiagnostic::new();
+        diag.dispatch_attempted();
+        diag.navigation_starting(Ok(91));
+        diag.navigation_completed_id(Ok(92));
+        assert!(diag.snapshot().contains("navigation_ids_match=Some(false)"));
+
+        // A separate callback with a failed getter must not inherit the prior
+        // mismatched ID. The real callback's COM failure remains terminal.
+        diag.navigation_completed_id(Err(windows::core::Error::from(
+            windows::Win32::Foundation::E_POINTER,
+        )));
+        let snapshot = diag.snapshot();
+        assert!(snapshot.contains("navigation_ids_match=None"), "{snapshot}");
+        assert!(
+            snapshot.contains("navigation_completed_id_hresult=0x80004003"),
+            "{snapshot}"
+        );
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        assert!(!diag.completed(
+            Err(windows::core::Error::from(
+                windows::Win32::Foundation::E_POINTER
+            )),
+            None,
+            &ready,
+            &failed,
+        ));
+        assert!(failed.load(Ordering::Acquire));
+        assert!(!ready.load(Ordering::Acquire));
     }
 
     #[test]
