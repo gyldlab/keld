@@ -122,6 +122,35 @@ fn sid_header_must_be_bounded_before_win32_sid_validation() {
     }
 }
 
+/// A complete SID can be present in this test's owned allocation even when
+/// the Windows-reported token buffer stops halfway through its declared
+/// subauthorities. Refuse using that returned length *before* the raw-pointer
+/// Win32 predicate; the later `GetLengthSid` range check is too late.
+#[test]
+fn sid_subauthorities_must_be_bounded_before_win32_sid_validation() {
+    // S-1-5-21-42: Revision=1, SubAuthorityCount=2, authority=5, two RIDs.
+    // The complete 16-byte SID is safely contained inside backing storage;
+    // only the OS-reported used length changes between negative controls.
+    let sid_bytes: [u8; 16] = [1, 2, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 42, 0, 0, 0];
+    let mut padded_backing = [0_usize; 4];
+    for (index, chunk) in sid_bytes.chunks(std::mem::size_of::<usize>()).enumerate() {
+        let mut word = [0_u8; std::mem::size_of::<usize>()];
+        word[..chunk.len()].copy_from_slice(chunk);
+        padded_backing[index] = usize::from_ne_bytes(word);
+    }
+    let sid = padded_backing.as_ptr().cast::<u8>().cast_mut().cast();
+    assert_eq!(
+        validate_sid_in_token_buffer(&padded_backing, sid_bytes.len(), sid)
+            .expect("a fully bounded valid SID must still be accepted"),
+        sid_bytes.len()
+    );
+    for returned in [8_usize, 12, 15] {
+        let error = validate_sid_in_token_buffer(&padded_backing, returned, sid)
+            .expect_err("the unreturned RID bytes cannot be read by Win32");
+        assert_eq!(error.to_string(), "token SID subauthorities are truncated");
+    }
+}
+
 /// The anonymous logon token belongs to the well-known anonymous logon session
 /// (winnt.h `ANONYMOUS_LOGON_LUID` is `{ 0x3e6, 0x0 }`) and its user is
 /// ANONYMOUS LOGON (S-1-5-7), so the reader reports the queried token's own

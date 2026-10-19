@@ -336,9 +336,9 @@ pub(super) fn validate_sid_in_token_buffer(
         .ok_or_else(|| io::Error::other("token SID header is outside its allocation"))?;
     let declared_size = SID_HEADER_BYTES + count * std::mem::size_of::<u32>();
     if declared_size > available {
-        return Err(io::Error::other(
-            "token SID extends beyond the returned buffer",
-        ));
+        // Distinguish pre-Win32 rejection from the defensive post-validation
+        // GetLengthSid check, so tests cannot pass after moving this guard.
+        return Err(io::Error::other("token SID subauthorities are truncated"));
     }
     // SAFETY: the complete declared SID is now inside the live returned
     // TokenUser/TokenIntegrity buffer, so Win32 may read its header and RIDs.
