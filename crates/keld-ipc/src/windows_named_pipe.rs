@@ -66,7 +66,7 @@ mod token_facts;
 #[cfg(test)]
 use token_facts::{
     U32TokenClass, elevation_type_from_raw, exact_token_information_length, luid_value,
-    validate_sid_in_token_buffer,
+    token_information_buffer_words, validate_sid_in_token_buffer,
 };
 pub use token_facts::{
     WindowsPeerTokenFacts, WindowsTokenElevationType, query_windows_peer_token_facts,

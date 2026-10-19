@@ -25,7 +25,8 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use super::{
     U32TokenClass, WindowsTokenElevationType, current_process_query_token, elevation_type_from_raw,
-    exact_token_information_length, luid_value, validate_sid_in_token_buffer,
+    exact_token_information_length, luid_value, token_information_buffer_words,
+    validate_sid_in_token_buffer,
 };
 use crate::query_windows_peer_token_facts;
 
@@ -99,6 +100,29 @@ fn fixed_size_classes_refuse_any_other_returned_length() {
         assert_eq!(
             error.to_string(),
             "TokenStatistics returned an unexpected size"
+        );
+    }
+}
+
+#[test]
+fn token_information_size_is_bounded_before_vector_allocation() {
+    // The kernel's initial GetTokenInformation length is an untrusted size
+    // report. This pure test never tries to allocate the suggested bytes.
+    // A one-MiB limit matches the separate machine-token owner.
+    const MAX: u32 = 1024 * 1024;
+    let native_word = u32::try_from(std::mem::size_of::<usize>()).expect("native word");
+    assert_eq!(token_information_buffer_words(1).expect("one byte"), 1);
+    assert_eq!(
+        token_information_buffer_words(MAX).expect("the cap is admitted"),
+        usize::try_from(MAX / native_word).expect("one MiB fits usize"),
+    );
+    for reported in [MAX + 1, u32::MAX] {
+        let error = token_information_buffer_words(reported)
+            .expect_err("an oversized GetTokenInformation size cannot reach Vec");
+        assert_eq!(
+            error.to_string(),
+            "token information request exceeds 1 MiB",
+            "required bytes: {reported}",
         );
     }
 }
