@@ -23,27 +23,27 @@ an automatic semantic-review disposition.
   locator/stage/writer native tests, signed-installed acceptance helpers and
   Rust/Just build-cache tooling. A changed blob is *not* automatically reviewed.
 - Exact-blob supported semantic dispositions after the additional **19 October**
-  independent read-only source review: **seven justified no-change** paths and
-  **two conditional risks**. **313 candidates await independent semantic
-  review; 315 remain not closed** (313 pending plus two conditional risks).
-  Only three exact historical blobs were newly reviewed; no claim that every
-  Windows file, a shipping privilege path or the whole program is complete.
+  independent read-only source reviews: **eight justified no-change** paths and
+  **three conditional risks**. **311 candidates await independent semantic
+  review; 314 remain not closed** (311 pending plus three conditional risks).
+  Exactly five historical Git blobs were newly reviewed in two bounded
+  source-review waves; this does not establish shipping privilege closure or
+  whole-program completion.
 
-## Exact source-review evidence and two bounded conditional risks
+## Exact source-review evidence and three bounded conditional risks
 
 The original **six** attestations from the earlier
 [#824 per-file review receipt](https://github.com/gyldlab/keld/issues/824#issuecomment-6248828406)
-remain byte-identical; a separate, independently authored
-[19 October pinned-blob review](https://github.com/gyldlab/keld/issues/824#issuecomment-6259406772)
-adds exactly **three** reviews at the same #937 source SHA. All nine rows
-carry exact Git blob OIDs, public reviewer citations, responsible owners and
-independent failure-first falsifiers in
-`windows-2026-10-18-reviewed-blobs.csv`. The remaining 313 paths stay
-pending. Those three new entries are `windows_machine/initiating_token.rs`
-(conditional release-integration risk), `windows_job/process_peer.rs`
-(source-reviewed no-change) and `windows_extraction/lpac_probe.rs`
-(test-fixture-only no-change). Other newer-source reviews did not have the
-same historical blob ID and are **not** implicitly promoted.
+remain byte-identical. Two independently authored **19 October** source reviews
+add exactly **five** historical Git-blob dispositions: [three retained-token,
+process-peer and LPAC fixture owners](https://github.com/gyldlab/keld/issues/824#issuecomment-6259406772)
+and [two installed executable locator/lexical grammar owners](https://github.com/gyldlab/keld/issues/824#issuecomment-6259722511).
+All eleven exact-source rows carry Git blob IDs, public reviewer citations,
+responsible owners and separately falsifiable negative controls in
+`windows-2026-10-18-reviewed-blobs.csv`. The remaining **311** paths stay
+pending. In particular the historical `windows_authenticode.rs` source and
+all four previously encountered changed-since-#937 source files have **not**
+been automatically promoted or silently treated as reviewed.
 
 `crates/keld-runtime/src/windows_lpac.rs` at blob
 `63e2df931b576bddf7daf4464f897b7e0077f023`, lines 257–336:
@@ -78,6 +78,33 @@ probes real LPAC stage mutation denial against positive RolePrivate writes.
 Neither source-only review establishes signed-installed production acceptance.
 The new reviewer **inspected** these native selector contracts but did not
 claim that those tests were rerun in this docs-only review.
+
+`crates/keld-update/src/windows_baseline/locate.rs`, exact historical blob
+`50a7567625ffcfd8eb5438c89e1c2dfaf52cacb7`, checks the located
+installation's protected record, signer/app claims, pinned ancestor
+volume/file IDs and selected image's exact opened-file identity
+(lines 64–94, 124–155, 162–218, 234–337 and 340–399). Its shipping
+`keld-core/src/app_session.rs:2892–2945` caller reuses one Authenticode-
+verified image handle and reads the embedded expectation through that
+handle. The source-only review found no intra-locator substitution bypass.
+However the caller begins with the pathname returned by `current_exe()`
+before it opens the image by name. The harder S9d **kernel-mapped running-image
+identity versus subsequently opened verified file** guarantee has not been
+established by this source code or the available native selected-file
+identity tests. The conditional disposition is a **missing installed-process
+acceptance dependency, not a demonstrated active exploit or an authorization
+to bypass the read-only selection gate**.
+
+`crates/keld-update/src/windows_baseline/locate/layout.rs`, historical
+blob `660e2e6ac42461ddd562be311730c030432d1459`, is a pure authority-free
+lexical selector: lines 17–45 reject nonlocal drives, UNC, parent/dot and
+non-UTF-8 components, while lines 46–81 enforce the closed executable choice,
+case-exact versions/tree names, strict SemVer and non-provenance update root.
+Its two source-authored native negative selectors live at lines 91–124. This
+row is reviewed **no-change**, not evidence of signed-installed tree identity.
+The Authenticode DER output-buffer bounds and original Windows Server 2025
+navigation issue remain separately pending; neither is implied reviewed by
+this additional locator pass.
 
 ## Existing integration evidence, not new claims
 
