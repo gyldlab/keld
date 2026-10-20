@@ -72,6 +72,10 @@ fn sample_original_kernel_exit(witness: &mut ProcessExitObserver) -> ExitPhase {
     }
 }
 
+fn resample_original_kernel_exit(stage: ExitPhase) -> bool {
+    matches!(stage, ExitPhase::NotSampled | ExitPhase::NoEvent)
+}
+
 fn safe_quit_http_label(stage: u8) -> &'static str {
     match stage {
         0 => "no_http_quit_observed",
@@ -101,13 +105,19 @@ pub(super) fn wait_for_auth_cli_quit(
             // before its original 20-second exit/output deadline is checked.
             last_live_http = observation.quit_progress.load(Ordering::Acquire);
             for (stage, witness) in last_live_kernel.iter_mut().zip(native_exits.iter_mut()) {
-                if *stage != ExitPhase::Observed {
+                // Refusal is sticky: a later empty read cannot erase a
+                // failed native kernel observation. An observed original exit
+                // is also retained without consuming a second event.
+                if resample_original_kernel_exit(*stage) {
                     *stage = sample_original_kernel_exit(witness);
                 }
             }
         })
     }));
-    eprintln!(
+    // Original CLI deadline/panic always wins: even failure to write this
+    // optional redacted diagnostic must not replace the first source error.
+    let _ = writeln!(
+        std::io::stderr().lock(),
         "KELD_KEL89_ORIGINAL_KERNEL_QUIT_PHASE cli_outcome={} last_live_http_stage={} host_exit={} guardian_exit={} bun_exit={} descendant_exit={}",
         if result.is_ok() {
             "cli_exited"
@@ -148,7 +158,10 @@ pub(super) fn wait_for_auth_cli_quit(
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitPhase, cli_tail_contains_marker, sample_original_kernel_exit};
+    use super::{
+        ExitPhase, cli_tail_contains_marker, resample_original_kernel_exit,
+        sample_original_kernel_exit,
+    };
     use crate::support::PROCESS_DEADLINE;
     use crate::support::process::ProcessExitObserver;
     use std::process::{Child, Command, Stdio};
@@ -162,6 +175,14 @@ mod tests {
             }
             let _ = self.0.wait();
         }
+    }
+
+    #[test]
+    fn native_observer_refusal_can_never_be_overwritten_by_later_no_event() {
+        assert!(resample_original_kernel_exit(ExitPhase::NotSampled));
+        assert!(resample_original_kernel_exit(ExitPhase::NoEvent));
+        assert!(!resample_original_kernel_exit(ExitPhase::Unproved));
+        assert!(!resample_original_kernel_exit(ExitPhase::Observed));
     }
 
     #[test]
