@@ -160,9 +160,29 @@ pub fn resolve_hello_title(args: &[String], project_root: Option<&Path>) -> Stri
         .unwrap_or_else(|| DEFAULT_HELLO_TITLE.to_owned())
 }
 
+/// Whether `keld-host` argv selects the hello diagnostic window.
+///
+/// This is the one hello position rule, identical on every OS: `--hello` may
+/// appear anywhere after argv0, so `--hello --title <name>` and
+/// `--title <name> --hello` are the same command. argv0 is the program path
+/// and never selects hello. Selection is not admission: the caller must then
+/// refuse every token [`host_hello_unknown_arg`] reports, which includes
+/// `--hello` in `--title`'s value position (`--title --hello`).
+#[must_use]
+pub fn host_hello_requested<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .skip(1)
+        .any(|arg| arg.as_ref() == "--hello")
+}
+
 /// First argv token `keld-host --hello` does not accept.
 ///
-/// Allowed after argv0: `--hello`, `--title <name>`, `--title=<name>`.
+/// Allowed after argv0, in any order (see [`host_hello_requested`]):
+/// `--hello`, `--title <name>`, `--title=<name>`.
 /// `--title` with no following value is still consumed (title resolution
 /// treats it as absent). `--title` followed by a token that starts with `-`
 /// does not consume that token as a title; the token is the unknown arg.
@@ -198,8 +218,8 @@ where
 mod tests {
     use super::{
         DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, entry_from_config_ts,
-        hello_title_from_args, host_hello_unknown_arg, read_config_entry, renderer_from_config_ts,
-        resolve_hello_title, title_from_config_ts,
+        hello_title_from_args, host_hello_requested, host_hello_unknown_arg, read_config_entry,
+        renderer_from_config_ts, resolve_hello_title, title_from_config_ts,
     };
 
     #[test]
@@ -256,6 +276,39 @@ mod tests {
         assert_eq!(
             host_hello_unknown_arg(["keld-host", "--hello", "--title"]),
             None
+        );
+    }
+
+    #[test]
+    fn host_hello_position_is_order_free_after_argv0() {
+        for args in [
+            &["keld-host", "--hello"][..],
+            &["keld-host", "--hello", "--title", "Acme"],
+            &["keld-host", "--title", "Acme", "--hello"],
+            &["keld-host", "--title=Acme", "--hello"],
+        ] {
+            assert!(host_hello_requested(args), "{args:?}");
+            assert_eq!(host_hello_unknown_arg(args), None, "{args:?}");
+        }
+        assert_eq!(
+            resolve_hello_title(
+                &["keld-host", "--title", "Acme", "--hello"].map(String::from),
+                None
+            ),
+            "Acme"
+        );
+    }
+
+    #[test]
+    fn host_hello_is_not_selected_by_argv0_or_a_title_value() {
+        assert!(!host_hello_requested(["keld-host"]));
+        assert!(!host_hello_requested(["--hello"]));
+        assert!(!host_hello_requested(["keld-host", "--title=--hello"]));
+        // A value-position `--hello` selects the hello parser, which refuses it.
+        assert!(host_hello_requested(["keld-host", "--title", "--hello"]));
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--title", "--hello"]),
+            Some(String::from("--hello"))
         );
     }
 

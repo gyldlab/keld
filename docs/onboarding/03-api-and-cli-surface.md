@@ -295,7 +295,9 @@ rendering `HELLO_HTML`, and blocks until you close it. Equivalent to
 `just hello` / `cargo run -p keld-host --bin keld-host -- --hello`, which goes through the host binary
 instead of the CLI. Extra arguments are `KELD-CLI-044` (exit 2) so a typo cannot
 open the tao event loop. `keld-host --hello` accepts optional `--title <name>` /
-`--title=<name>` and rejects anything else the same way.
+`--title=<name>`, in any order after the program path, and rejects anything else the
+same way. `keld_core::host_hello_requested` owns that one position rule on every OS;
+`--title --hello` is refused because a `--title` value may not start with `-`.
 
 This document did not run it (it blocks on a window). Off macOS/Windows/Linux the call
 returns `WvError::UnsupportedPlatform`, whose `Display` impl in
