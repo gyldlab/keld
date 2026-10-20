@@ -103,6 +103,36 @@ fn fixed_size_classes_refuse_any_other_returned_length() {
     }
 }
 
+#[test]
+fn token_information_size_is_bounded_before_vector_allocation() {
+    // The kernel's initial GetTokenInformation length is an untrusted size
+    // report. The refused sizes below never reach an allocation. The peer
+    // reader sizes its buffer through keld-guard's single bound.
+    let max = u32::try_from(keld_guard::MAX_TOKEN_INFORMATION_BYTES).expect("bound fits u32");
+    assert_eq!(max, 1024 * 1024);
+    let native_word = u32::try_from(std::mem::size_of::<usize>()).expect("native word");
+    let (one, one_capacity) = keld_guard::bounded_token_information_buffer(1).expect("one byte");
+    assert_eq!((one.len(), one_capacity), (1, native_word));
+    let (cap, cap_capacity) =
+        keld_guard::bounded_token_information_buffer(max).expect("the cap is admitted");
+    assert_eq!(
+        (cap.len(), cap_capacity),
+        (
+            usize::try_from(max / native_word).expect("one MiB fits usize"),
+            max
+        ),
+    );
+    for reported in [max + 1, u32::MAX] {
+        let error = keld_guard::bounded_token_information_buffer(reported)
+            .expect_err("an oversized GetTokenInformation size cannot reach Vec");
+        assert_eq!(
+            error.to_string(),
+            "token information request exceeds 1 MiB",
+            "required bytes: {reported}",
+        );
+    }
+}
+
 /// The token buffer may contain a pointer to its final byte, but a complete
 /// Windows SID header occupies eight bytes before any subauthorities. Refuse
 /// the incomplete returned span *before* calling Win32 `IsValidSid`: the OS

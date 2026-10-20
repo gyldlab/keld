@@ -256,17 +256,10 @@ fn token_information_buffer(
     if required == 0 {
         return Err(io::Error::last_os_error());
     }
-    let required_usize = usize::try_from(required).map_err(io::Error::other)?;
-    let word = std::mem::size_of::<usize>();
-    let words = required_usize
-        .checked_add(word - 1)
-        .ok_or_else(|| io::Error::other("token information buffer size overflow"))?
-        / word;
-    let mut buffer = vec![0_usize; words];
-    let capacity = words
-        .checked_mul(word)
-        .ok_or_else(|| io::Error::other("token information buffer capacity overflow"))?;
-    let capacity_u32 = u32::try_from(capacity).map_err(io::Error::other)?;
+    // keld-guard owns the 1 MiB bound and the aligned allocation for every Windows
+    // token reader; the untrusted first-query length is refused before allocation.
+    let (mut buffer, capacity_u32) = keld_guard::bounded_token_information_buffer(required)?;
+    let capacity = usize::try_from(capacity_u32).map_err(io::Error::other)?;
     let mut returned = 0_u32;
     // SAFETY: `buffer` is usize-aligned and writable for `capacity_u32` bytes;
     // its returned length is checked before any structure or SID is read.
