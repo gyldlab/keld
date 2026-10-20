@@ -25,8 +25,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use super::{
     U32TokenClass, WindowsTokenElevationType, current_process_query_token, elevation_type_from_raw,
-    exact_token_information_length, luid_value, token_information_buffer_words,
-    validate_sid_in_token_buffer,
+    exact_token_information_length, luid_value, validate_sid_in_token_buffer,
 };
 use crate::query_windows_peer_token_facts;
 
@@ -107,17 +106,24 @@ fn fixed_size_classes_refuse_any_other_returned_length() {
 #[test]
 fn token_information_size_is_bounded_before_vector_allocation() {
     // The kernel's initial GetTokenInformation length is an untrusted size
-    // report. This pure test never tries to allocate the suggested bytes.
-    // A one-MiB limit matches the separate machine-token owner.
-    const MAX: u32 = 1024 * 1024;
+    // report. The refused sizes below never reach an allocation. The peer
+    // reader sizes its buffer through keld-guard's single bound.
+    let max = u32::try_from(keld_guard::MAX_TOKEN_INFORMATION_BYTES).expect("bound fits u32");
+    assert_eq!(max, 1024 * 1024);
     let native_word = u32::try_from(std::mem::size_of::<usize>()).expect("native word");
-    assert_eq!(token_information_buffer_words(1).expect("one byte"), 1);
+    let (one, one_capacity) = keld_guard::bounded_token_information_buffer(1).expect("one byte");
+    assert_eq!((one.len(), one_capacity), (1, native_word));
+    let (cap, cap_capacity) =
+        keld_guard::bounded_token_information_buffer(max).expect("the cap is admitted");
     assert_eq!(
-        token_information_buffer_words(MAX).expect("the cap is admitted"),
-        usize::try_from(MAX / native_word).expect("one MiB fits usize"),
+        (cap.len(), cap_capacity),
+        (
+            usize::try_from(max / native_word).expect("one MiB fits usize"),
+            max
+        ),
     );
-    for reported in [MAX + 1, u32::MAX] {
-        let error = token_information_buffer_words(reported)
+    for reported in [max + 1, u32::MAX] {
+        let error = keld_guard::bounded_token_information_buffer(reported)
             .expect_err("an oversized GetTokenInformation size cannot reach Vec");
         assert_eq!(
             error.to_string(),

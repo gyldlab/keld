@@ -243,24 +243,6 @@ pub(super) fn elevation_type_from_raw(
     }
 }
 
-/// Computes the aligned word count for a Windows-reported token-information
-/// size. Deliberately pure so a forged large size can be tested without ever
-/// allocating a multi-gigabyte buffer.
-pub(super) fn token_information_buffer_words(required: u32) -> io::Result<usize> {
-    // Equal to the bounded Windows machine-token owner's maximum. An
-    // untrusted first-query length cannot request an unbounded allocation.
-    const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
-    let bytes = usize::try_from(required).map_err(io::Error::other)?;
-    if bytes > MAX_TOKEN_INFORMATION_BYTES {
-        return Err(io::Error::other("token information request exceeds 1 MiB"));
-    }
-    let word = std::mem::size_of::<usize>();
-    bytes
-        .checked_add(word - 1)
-        .ok_or_else(|| io::Error::other("token information buffer size overflow"))
-        .map(|rounded| rounded / word)
-}
-
 fn token_information_buffer(
     token: windows_sys::Win32::Foundation::HANDLE,
     class: windows_sys::Win32::Security::TOKEN_INFORMATION_CLASS,
@@ -274,12 +256,10 @@ fn token_information_buffer(
     if required == 0 {
         return Err(io::Error::last_os_error());
     }
-    let words = token_information_buffer_words(required)?;
-    let mut buffer = vec![0_usize; words];
-    let capacity = words
-        .checked_mul(std::mem::size_of::<usize>())
-        .ok_or_else(|| io::Error::other("token information buffer capacity overflow"))?;
-    let capacity_u32 = u32::try_from(capacity).map_err(io::Error::other)?;
+    // keld-guard owns the 1 MiB bound and the aligned allocation for every Windows
+    // token reader; the untrusted first-query length is refused before allocation.
+    let (mut buffer, capacity_u32) = keld_guard::bounded_token_information_buffer(required)?;
+    let capacity = usize::try_from(capacity_u32).map_err(io::Error::other)?;
     let mut returned = 0_u32;
     // SAFETY: `buffer` is usize-aligned and writable for `capacity_u32` bytes;
     // its returned length is checked before any structure or SID is read.
