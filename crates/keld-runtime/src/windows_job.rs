@@ -2677,7 +2677,7 @@ mod process_id_snapshot;
 #[cfg(test)]
 use self::process_id_snapshot::{
     JOB_PROCESS_ID_LIST_GROWTH_LIMIT, JOB_PROCESS_ID_LIST_HEADER_WORDS,
-    JOB_PROCESS_ID_LIST_INITIAL_IDS,
+    JOB_PROCESS_ID_LIST_INITIAL_IDS, JOB_PROCESS_ID_LIST_MAX_IDS,
 };
 use self::process_id_snapshot::{WindowsJobProcessIdSnapshot, list_job_process_ids};
 #[cfg(test)]
