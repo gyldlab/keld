@@ -75,6 +75,7 @@ fn native_host_s_refuses_kgc1_spawned_without_late_registered_or_bun_exec() {
                 entered: entered_tx,
                 release: release_rx,
                 received_prepare: None,
+                received_idle: None,
                 received_spawned: Some(spawned_tx),
             },
         )

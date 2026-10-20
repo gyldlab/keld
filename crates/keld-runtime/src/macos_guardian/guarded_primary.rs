@@ -373,6 +373,7 @@ impl GuardedPrimary {
                 }
             }
         }
+        self.interrupt_stalled_worker_after_reap(status.is_some(), deadline);
         let worker_failed = if let Err(error) = self.join_worker_with_shutdown_proof() {
             failures.push(error);
             true
@@ -518,6 +519,38 @@ impl GuardedPrimary {
             ));
         }
         Ok(())
+    }
+
+    fn interrupt_stalled_worker_after_reap(&self, guardian_reaped: bool, deadline: Instant) {
+        // Only the retained Child terminal status proves it is safe to
+        // interrupt a worker whose peer may still be the actual Guardian.
+        // Give the existing EOF and CLEAR protocol its full original budget.
+        if !guardian_reaped {
+            return;
+        }
+        // Keep mutex acquisition disjoint. CONTROL_CLEAR takes the
+        // generation lock before recovery; retaining a recovery temporary
+        // across the generation check would invert the lock order.
+        let acknowledged = lock_recovery(&self.recovery_decision).shutdown_acknowledged;
+        if !acknowledged || lock_generation(&self.current_generation).is_some() {
+            return;
+        }
+        while self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+            && Instant::now() < deadline
+        {
+            thread::yield_now();
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            lock_recovery(&self.recovery_decision).guardian_reaped_shutdown_at =
+                Some(Instant::now());
+        }
     }
 
     pub(super) fn join_worker(&mut self) -> Result<(), RuntimeError> {

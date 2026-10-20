@@ -31,6 +31,7 @@ fn held_registered_ack(release_ack: bool) {
                 entered: entered_tx,
                 release: release_rx,
                 received_prepare: None,
+                received_idle: None,
                 received_spawned: None,
             },
         )
