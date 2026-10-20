@@ -302,11 +302,12 @@ fn sid_bytes_in_token_buffer(
     Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), sid_length) }.to_vec())
 }
 
-fn validate_sid_in_token_buffer(
+pub(super) fn validate_sid_in_token_buffer(
     buffer: &[usize],
     returned: usize,
     sid: windows_sys::Win32::Security::PSID,
 ) -> io::Result<usize> {
+    const SID_HEADER_BYTES: usize = 8;
     let start = buffer.as_ptr() as usize;
     let end = start
         .checked_add(returned)
@@ -317,7 +318,30 @@ fn validate_sid_in_token_buffer(
             "token SID pointer is outside the returned buffer",
         ));
     }
-    // SAFETY: SID begins within a live returned TokenUser/TokenIntegrity buffer.
+    // IsValidSid takes a raw pointer but no buffer length. Establish that its
+    // entire SID header and all declared DWORD subauthorities are inside the
+    // returned token bytes BEFORE passing the pointer to Win32. Being merely
+    // inside the final byte is insufficient for the eight-byte SID header.
+    let available = end - sid_start;
+    if available < SID_HEADER_BYTES {
+        return Err(io::Error::other("token SID header is truncated"));
+    }
+    // SubAuthorityCount is byte 1 of the SID header. Read it from the aligned
+    // owning usize words without dereferencing an untrusted SID pointer.
+    let count_offset = sid_start - start + 1;
+    let width = std::mem::size_of::<usize>();
+    let count = buffer
+        .get(count_offset / width)
+        .map(|word| usize::from(word.to_ne_bytes()[count_offset % width]))
+        .ok_or_else(|| io::Error::other("token SID header is outside its allocation"))?;
+    let declared_size = SID_HEADER_BYTES + count * std::mem::size_of::<u32>();
+    if declared_size > available {
+        // Distinguish pre-Win32 rejection from the defensive post-validation
+        // GetLengthSid check, so tests cannot pass after moving this guard.
+        return Err(io::Error::other("token SID subauthorities are truncated"));
+    }
+    // SAFETY: the complete declared SID is now inside the live returned
+    // TokenUser/TokenIntegrity buffer, so Win32 may read its header and RIDs.
     if unsafe { IsValidSid(sid) } == 0 {
         return Err(io::Error::other("token SID is invalid"));
     }

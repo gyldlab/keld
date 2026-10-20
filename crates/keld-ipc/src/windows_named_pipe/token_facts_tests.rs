@@ -25,7 +25,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 use super::{
     U32TokenClass, WindowsTokenElevationType, current_process_query_token, elevation_type_from_raw,
-    exact_token_information_length, luid_value,
+    exact_token_information_length, luid_value, validate_sid_in_token_buffer,
 };
 use crate::query_windows_peer_token_facts;
 
@@ -100,6 +100,54 @@ fn fixed_size_classes_refuse_any_other_returned_length() {
             error.to_string(),
             "TokenStatistics returned an unexpected size"
         );
+    }
+}
+
+/// The token buffer may contain a pointer to its final byte, but a complete
+/// Windows SID header occupies eight bytes before any subauthorities. Refuse
+/// the incomplete returned span *before* calling Win32 `IsValidSid`: the OS
+/// predicate does not take a buffer length and must never probe past it.
+#[test]
+fn sid_header_must_be_bounded_before_win32_sid_validation() {
+    let padded_backing = [0_usize; 4];
+    let base = padded_backing.as_ptr().cast::<u8>();
+    for (returned, offset) in [(7_usize, 0_usize), (8, 7)] {
+        // The pointer is inside this 32-byte *allocated* fixture, so even the
+        // unfixed Win32 call cannot dereference beyond the fixture. Only the
+        // shorter OS-reported returned span is intentionally malformed.
+        let sid = base.wrapping_add(offset).cast_mut().cast();
+        let error = validate_sid_in_token_buffer(&padded_backing, returned, sid)
+            .expect_err("a truncated SID header must refuse before Win32 validation");
+        assert_eq!(error.to_string(), "token SID header is truncated");
+    }
+}
+
+/// A complete SID can be present in this test's owned allocation even when
+/// the Windows-reported token buffer stops halfway through its declared
+/// subauthorities. Refuse using that returned length *before* the raw-pointer
+/// Win32 predicate; the later `GetLengthSid` range check is too late.
+#[test]
+fn sid_subauthorities_must_be_bounded_before_win32_sid_validation() {
+    // S-1-5-21-42: Revision=1, SubAuthorityCount=2, authority=5, two RIDs.
+    // The complete 16-byte SID is safely contained inside backing storage;
+    // only the OS-reported used length changes between negative controls.
+    let sid_bytes: [u8; 16] = [1, 2, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 42, 0, 0, 0];
+    let mut padded_backing = [0_usize; 4];
+    for (index, chunk) in sid_bytes.chunks(std::mem::size_of::<usize>()).enumerate() {
+        let mut word = [0_u8; std::mem::size_of::<usize>()];
+        word[..chunk.len()].copy_from_slice(chunk);
+        padded_backing[index] = usize::from_ne_bytes(word);
+    }
+    let sid = padded_backing.as_ptr().cast::<u8>().cast_mut().cast();
+    assert_eq!(
+        validate_sid_in_token_buffer(&padded_backing, sid_bytes.len(), sid)
+            .expect("a fully bounded valid SID must still be accepted"),
+        sid_bytes.len()
+    );
+    for returned in [8_usize, 12, 15] {
+        let error = validate_sid_in_token_buffer(&padded_backing, returned, sid)
+            .expect_err("the unreturned RID bytes cannot be read by Win32");
+        assert_eq!(error.to_string(), "token SID subauthorities are truncated");
     }
 }
 
