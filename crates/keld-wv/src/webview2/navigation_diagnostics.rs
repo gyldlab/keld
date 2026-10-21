@@ -12,6 +12,7 @@ pub(super) struct FirstNavigationDiagnostic {
     navigation_started: Option<Instant>,
     loop_setup_started: Option<Instant>,
     first_loop_turn: Option<Instant>,
+    navigation_start_observer_error: Option<i32>,
     terminal: bool,
     phase: &'static str,
     phase_at: Instant,
@@ -27,6 +28,7 @@ impl FirstNavigationDiagnostic {
             navigation_started: None,
             loop_setup_started: None,
             first_loop_turn: None,
+            navigation_start_observer_error: None,
             terminal: false,
             phase: "window-creation",
             phase_at: now,
@@ -50,6 +52,15 @@ impl FirstNavigationDiagnostic {
             self.navigation_started = Some(Instant::now());
             self.record("navigation-starting");
         }
+    }
+
+    /// Records that the diagnostic-only `NavigationStarting` observer could not be
+    /// registered. Startup continues without it: the observer only timestamps the
+    /// first callback, so its absence is evidence in the snapshot, not a fault of the
+    /// navigation itself. A snapshot then reports the failed registration's HRESULT
+    /// instead of an unexplained `navigation_start_at_ms=None`.
+    pub(super) fn navigation_start_unobserved(&mut self, hresult: i32) {
+        self.navigation_start_observer_error = Some(hresult);
     }
 
     pub(super) fn loop_setup_started(&mut self) {
@@ -79,8 +90,14 @@ impl FirstNavigationDiagnostic {
         self.phase_at = Instant::now();
     }
 
-    /// Returns true only for the first successful navigation notification.
-    /// Any COM failure is a typed startup failure, never an absent callback.
+    /// Records the first terminal navigation outcome, then latches.
+    ///
+    /// The first completion (success, navigation failure or COM error), or an
+    /// earlier [`Self::deadline_elapsed`], makes the diagnostic terminal. Every
+    /// later completion is ignored and returns false: it cannot rewrite the
+    /// recorded phase or detail, re-signal `ready`, or set `failed` after startup.
+    /// Returns true only for the first successful navigation notification. Any COM
+    /// failure is a typed startup failure, never an absent callback.
     pub(super) fn completed(
         &mut self,
         result: ComResult<bool>,
@@ -136,13 +153,18 @@ impl FirstNavigationDiagnostic {
             .saturating_duration_since(self.created)
             .as_millis();
         let detail = self.detail.as_deref().unwrap_or("none");
+        let start_observer = self.navigation_start_observer_error.map_or_else(
+            || "registered".to_owned(),
+            |hresult| format!("failed:{hresult:#010x}"),
+        );
         format!(
-            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} navigation_start_at_ms={:?} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
+            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} navigation_start_at_ms={:?} navigation_start_observer={} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
             self.phase,
             phase_ms,
             since_created,
             dispatch_attempt_ms,
             navigation_start_ms,
+            start_observer,
             loop_ms,
             first_loop_turn_ms,
             detail
@@ -272,6 +294,45 @@ mod tests {
         assert!(
             snapshot.contains("navigation_start_at_ms=None"),
             "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn failed_navigation_start_observer_is_reported_without_failing_startup() {
+        let mut diag = FirstNavigationDiagnostic::new();
+        diag.dispatch_attempted();
+        assert!(
+            diag.snapshot()
+                .contains("navigation_start_observer=registered"),
+            "{}",
+            diag.snapshot()
+        );
+        diag.navigation_start_unobserved(windows::Win32::Foundation::E_FAIL.0);
+        let unobserved = diag.snapshot();
+        assert!(
+            unobserved.contains("navigation_start_observer=failed:0x80004005"),
+            "{unobserved}"
+        );
+        assert!(
+            unobserved.contains("navigation_start_at_ms=None"),
+            "{unobserved}"
+        );
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        assert!(
+            diag.completed(Ok(true), None, &ready, &failed),
+            "a missing diagnostic observer must not block the navigation outcome"
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        let completed = diag.snapshot();
+        assert!(
+            completed.contains("phase=navigation-completed"),
+            "{completed}"
+        );
+        assert!(
+            completed.contains("navigation_start_observer=failed:0x80004005"),
+            "{completed}"
         );
     }
 

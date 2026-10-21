@@ -1,9 +1,10 @@
 //! Registered guardian host-side lifecycle and owned shutdown handling.
+use super::process_group::{GroupIdentity, observe_group_identity, terminate_attested_group};
 use super::{
     Child, ChildStdin, ChildStdout, ExitStatus, GUARDIAN_SHUTDOWN_DEADLINE, GuardianReport,
     Instant, RuntimeError, SUPERVISED_QUIT_ACCEPTED, Write, collapse_failures, io, lifecycle_error,
     read_supervised_quit_ack, reject_host_registration, require_close_on_exec,
-    set_liveness_nonblocking, terminate_registered_group, validate_group_leader,
+    set_liveness_nonblocking,
 };
 
 /// Host-owned handle for one registered private guardian.
@@ -16,7 +17,7 @@ pub struct HostGuardian {
     child: Child,
     liveness_writer: Option<ChildStdin>,
     quit_ack_reader: Option<ChildStdout>,
-    group_pid: Option<u32>,
+    group: Option<GroupIdentity>,
 }
 
 impl HostGuardian {
@@ -24,33 +25,38 @@ impl HostGuardian {
         mut child: Child,
         liveness_writer: ChildStdin,
         quit_ack_reader: Option<ChildStdout>,
-        group_pid: u32,
+        group: GroupIdentity,
     ) -> Result<Self, RuntimeError> {
-        if let Err(error) = validate_group_leader(group_pid) {
-            return Err(reject_host_registration(
+        if let Err(error) = require_same_registered_group(group) {
+            // The bootstrap already obtained the original kernel birth. If
+            // the leader exited between its proof and constructing this
+            // handle, close Guardian custody and still clean its surviving
+            // descendants. terminate_attested_group itself refuses a live
+            // mismatched/reused identity; no unverified PID may be signaled.
+            return Err(reject_proven_registration(
                 child,
                 liveness_writer,
-                (group_pid != 0).then_some(group_pid),
+                group,
                 error,
             ));
         }
         if let Err(error) = require_close_on_exec(&liveness_writer) {
-            return Err(reject_host_registration(
+            return Err(reject_proven_registration(
                 child,
                 liveness_writer,
-                Some(group_pid),
+                group,
                 error,
             ));
         }
         match child.try_wait() {
-            Ok(Some(status)) => return Err(unexpected_guardian_exit(group_pid, status)),
+            Ok(Some(status)) => return Err(unexpected_guardian_exit(group, status)),
             Ok(None) => {}
             Err(source) => {
                 let error = lifecycle_error("macOS guardian process-handle inspection", source);
-                return Err(reject_host_registration(
+                return Err(reject_proven_registration(
                     child,
                     liveness_writer,
-                    Some(group_pid),
+                    group,
                     error,
                 ));
             }
@@ -59,7 +65,7 @@ impl HostGuardian {
             child,
             liveness_writer: Some(liveness_writer),
             quit_ack_reader,
-            group_pid: Some(group_pid),
+            group: Some(group),
         })
     }
 
@@ -72,7 +78,10 @@ impl HostGuardian {
     /// Registered Bun process-group leader.
     #[must_use]
     pub const fn group_pid(&self) -> Option<u32> {
-        self.group_pid
+        match self.group {
+            Some(group) => Some(group.pid),
+            None => None,
+        }
     }
 
     /// Polls for an unexpected guardian exit while the host remains live.
@@ -94,8 +103,8 @@ impl HostGuardian {
         };
         if let Some(status) = status {
             self.liveness_writer.take();
-            let group_pid = self.take_registered_group()?;
-            return Err(unexpected_guardian_exit(group_pid, status));
+            let group = self.take_registered_group()?;
+            return Err(unexpected_guardian_exit(group, status));
         }
         Ok(())
     }
@@ -119,8 +128,8 @@ impl HostGuardian {
             }
         };
         self.liveness_writer.take();
-        let group_pid = self.take_registered_group()?;
-        Err(unexpected_guardian_exit(group_pid, status))
+        let group = self.take_registered_group()?;
+        Err(unexpected_guardian_exit(group, status))
     }
 
     /// Records an accepted KEL-96 Quit before its correlated reply can let
@@ -187,8 +196,8 @@ impl HostGuardian {
                             "guardian did not exit before the shutdown deadline",
                         ),
                     )];
-                    if let Some(group_pid) = self.group_pid.take()
-                        && let Err(error) = terminate_registered_group(group_pid)
+                    if let Some(group) = self.group.take()
+                        && let Err(error) = terminate_attested_group(group)
                     {
                         failures.push(error);
                     }
@@ -215,19 +224,19 @@ impl HostGuardian {
                 }
             }
         };
-        let group_pid = self.take_registered_group()?;
+        let group = self.take_registered_group()?;
         if status.success() {
             // Guardian status zero is not proof of group retirement.
             // Finish the host's fail-safe before reporting clean shutdown.
-            terminate_registered_group(group_pid)?;
+            terminate_attested_group(group)?;
             Ok(status)
         } else {
-            Err(unexpected_guardian_exit(group_pid, status))
+            Err(unexpected_guardian_exit(group, status))
         }
     }
 
     fn require_active(&self) -> Result<u32, RuntimeError> {
-        self.group_pid.ok_or_else(|| {
+        self.group.map(|group| group.pid).ok_or_else(|| {
             lifecycle_error(
                 "macOS guardian terminal owner reuse",
                 io::Error::new(
@@ -238,8 +247,8 @@ impl HostGuardian {
         })
     }
 
-    fn take_registered_group(&mut self) -> Result<u32, RuntimeError> {
-        self.group_pid.take().ok_or_else(|| {
+    fn take_registered_group(&mut self) -> Result<GroupIdentity, RuntimeError> {
+        self.group.take().ok_or_else(|| {
             lifecycle_error(
                 "macOS guardian terminal owner reuse",
                 io::Error::new(
@@ -253,8 +262,8 @@ impl HostGuardian {
     fn fail_observation(&mut self, phase: &'static str, source: io::Error) -> RuntimeError {
         self.liveness_writer.take();
         let mut failures = vec![lifecycle_error(phase, source)];
-        if let Some(group_pid) = self.group_pid.take()
-            && let Err(error) = terminate_registered_group(group_pid)
+        if let Some(group) = self.group.take()
+            && let Err(error) = terminate_attested_group(group)
         {
             failures.push(error);
         }
@@ -301,13 +310,42 @@ impl GuardianReport {
     }
 }
 
-fn unexpected_guardian_exit(group_pid: u32, status: ExitStatus) -> RuntimeError {
-    let cleanup_error = terminate_registered_group(group_pid)
+fn unexpected_guardian_exit(group: GroupIdentity, status: ExitStatus) -> RuntimeError {
+    let cleanup_error = terminate_attested_group(group)
         .err()
         .map(|error| io::Error::other(error.to_string()));
     RuntimeError::GuardianExited {
-        group_pid,
+        group_pid: group.pid,
         exit_code: status.code(),
         cleanup_error,
+    }
+}
+
+fn require_same_registered_group(group: GroupIdentity) -> Result<(), RuntimeError> {
+    if observe_group_identity(group.pid)? == group {
+        Ok(())
+    } else {
+        Err(lifecycle_error(
+            "macOS guardian registration identity changed",
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "group leader changed after authenticated host registration",
+            ),
+        ))
+    }
+}
+
+fn reject_proven_registration(
+    child: Child,
+    liveness_writer: ChildStdin,
+    group: GroupIdentity,
+    error: RuntimeError,
+) -> RuntimeError {
+    // Close host authority and wait for Guardian cleanup first. A leftover
+    // Bun group is then killed ONLY if its original kernel birth still matches.
+    let primary = reject_host_registration(child, liveness_writer, error);
+    match terminate_attested_group(group) {
+        Ok(()) => primary,
+        Err(cleanup) => collapse_failures(vec![primary, cleanup]),
     }
 }

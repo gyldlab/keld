@@ -309,7 +309,7 @@ and limited lifecycle compatibility are implemented. KELD is ready for
 
 | Area | Current boundary |
 |---|---|
-| Permissions | Manifest parsing and guard-before-handler checks exist. The scoped filesystem broker is wire-tested but not connected to the production host; the broader native-service surface is unfinished. |
+| Permissions | Manifest parsing and guard-before-handler checks exist. The retained filesystem broker and guarded host route are implemented for `fs.read`/`write` calls on the canonical app link (macOS-verified project-policy capture; absent-policy all-denied fallback). This guard applies only to brokered calls; direct Bun `node:fs` does not pass through the broker and is not denied by it (OS sandbox containment is separate and not yet fully qualified). Non-macOS policy producers, renderer forwarding, and broader native services remain unfinished. |
 | Process isolation | Linux strict launch is implemented for the current primary process. Full strict-profile admission across platforms remains incomplete; authenticated IPC alone is not a complete sandbox. |
 | Building and shipping apps | `keld build`, packaged releases, installers, signing, and signed updates are not available yet. |
 
@@ -327,6 +327,7 @@ Built by [GYLDLAB](https://github.com/gyldlab), in the open.
 | Explore performance | [KELD Benches](https://github.com/gyldlab/keld-benches) |
 | Review technical audits | [Public audit registry](docs/audits/README.md) |
 | Work with a coding agent | [llms.txt](llms.txt) · [Local read-only MCP server setup](docs/onboarding/07-mcp-server.md) |
+| Discover and use Just commands | [Task runner & command guide](docs/onboarding/05-development-guide.md#33-discovering-and-running-just-commands) |
 | Make a contribution | [Contributing](CONTRIBUTING.md) · [Open issues](https://github.com/gyldlab/keld/issues) |
 
 A useful first contribution is a real run report: OS, source revision, Bun

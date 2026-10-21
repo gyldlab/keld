@@ -9,7 +9,7 @@
 
 mod guarded_primary;
 pub use self::guarded_primary::{GuardedPrimary, GuardedPrimaryUpdate};
-use self::guarded_primary::{RegisteredPrimaryGeneration, lock_generation, take_generation};
+use self::guarded_primary::{RegisteredPrimaryGeneration, lock_generation};
 
 mod error;
 use self::error::{collapse_failures, lifecycle_error, nix_io_error};
@@ -26,10 +26,20 @@ mod generation_wire;
 mod host_control;
 
 mod process_group;
+#[cfg(test)]
+use self::process_group::terminate_registered_group;
 use self::process_group::{
-    reap_pending_guardian, reject_host_registration, terminate_registered_group,
-    validate_group_leader, validate_group_pid,
+    reap_pending_guardian, reject_host_registration, validate_group_leader, validate_group_pid,
 };
+
+mod spawn_admission;
+use self::spawn_admission::SpawnAdmission;
+
+mod registration_ack;
+use self::registration_ack::{AwaitHostGroupRetention, HOST_GROUP_RETAINED_ACK};
+
+mod authenticated_runner;
+use self::authenticated_runner::run_with_authenticated_registration;
 
 mod guarded_lease;
 #[cfg(test)]
@@ -47,9 +57,11 @@ pub use self::bootstrap::GuardianBootstrap;
 
 mod supervision_runner;
 pub use self::supervision_runner::run_guarded_primary;
+#[cfg(test)]
+use self::supervision_runner::run_with_registration;
 use self::supervision_runner::{
     connect_guardian_registration, fail_before_child, run_supervised_with_registration,
-    run_with_registration, write_group_registration,
+    write_group_registration,
 };
 
 mod generation_host;
@@ -97,9 +109,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-
-#[cfg(test)]
-use nix::errno::Errno;
 
 use keld_ipc::link::handshake_client;
 use keld_ipc::{
@@ -168,11 +177,10 @@ where
         Ok(registration) => registration,
         Err(error) => return Err(fail_before_child(error, revoke_registered_resources)),
     };
-    run_with_registration(
+    run_with_authenticated_registration(
         command,
         liveness,
-        registration,
-        |_| Ok(()),
+        AwaitHostGroupRetention::new(registration),
         revoke_registered_resources,
     )
 }
@@ -213,7 +221,7 @@ where
     };
     run_supervised_with_registration(
         liveness,
-        registration,
+        AwaitHostGroupRetention::new(registration),
         quit_ack,
         command_factory,
         |_| Ok(()),

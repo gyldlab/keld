@@ -108,11 +108,14 @@ jobs:
             // Tiers ascending order mein — max = us tier ki upper-bound (inclusive) line count.
             // Naya tier add karna ho toh: label pehle GitHub pe banao, phir yahan array mein daalo.
             const SIZE_TIERS = [
-              { name: "size/XS", max: 9 },
-              { name: "size/S", max: 49 },
-              { name: "size/M", max: 199 },
-              { name: "size/L", max: 499 },
-              { name: "size/XL", max: Infinity },
+              { name: "size/XS", max: 19 },
+              { name: "size/S", max: 99 },
+              { name: "size/M", max: 399 },
+              { name: "size/L", max: 999 },
+              { name: "size/XL", max: 1999 },
+              { name: "size/2XL", max: 3999 },
+              { name: "size/3XL", max: 7999 },
+              { name: "size/4XL", max: Infinity },
             ];
             const ALL_SIZE_LABELS = SIZE_TIERS.map((t) => t.name);
 

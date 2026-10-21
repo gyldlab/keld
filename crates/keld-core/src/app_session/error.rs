@@ -4,7 +4,7 @@ use std::fmt;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::io;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use keld_guard::ManifestError;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -18,7 +18,7 @@ pub struct HostAppError {
     pub(super) code: &'static str,
     pub(super) phase: &'static str,
     pub(super) detail: String,
-    pub(super) fix: &'static str,
+    fix: &'static str,
     pub(super) resources: StartupResourceSnapshot,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     pub(super) manifest_source: Option<Box<ManifestError>>,
@@ -146,14 +146,63 @@ impl std::error::Error for HostAppError {
 pub(super) fn startup_resource_snapshot() -> StartupResourceSnapshot {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        StartupResourceSnapshot {
-            listener: LISTENER_ATTEMPTS.load(Ordering::Acquire),
-            child: CHILD_ATTEMPTS.load(Ordering::Acquire),
-            window: WINDOW_ATTEMPTS.load(Ordering::Acquire),
-        }
+        snapshot_counters(&LISTENER_ATTEMPTS, &CHILD_ATTEMPTS, &WINDOW_ATTEMPTS)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         StartupResourceSnapshot::default()
+    }
+}
+
+/// Maps each attempt counter to its own snapshot field; the process-global counters
+/// are passed in so the field mapping is testable without racing other tests.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn snapshot_counters(
+    listener: &AtomicU32,
+    child: &AtomicU32,
+    window: &AtomicU32,
+) -> StartupResourceSnapshot {
+    StartupResourceSnapshot {
+        listener: listener.load(Ordering::Acquire),
+        child: child.load(Ordering::Acquire),
+        window: window.load(Ordering::Acquire),
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+mod tests {
+    use std::sync::atomic::AtomicU32;
+
+    use super::{HostAppError, StartupResourceSnapshot, snapshot_counters};
+
+    #[test]
+    fn startup_resource_snapshot_maps_each_counter_to_its_own_field() {
+        let snapshot = snapshot_counters(
+            &AtomicU32::new(11),
+            &AtomicU32::new(22),
+            &AtomicU32::new(33),
+        );
+        assert_eq!(snapshot.listener, 11, "listener field");
+        assert_eq!(snapshot.child, 22, "child field");
+        assert_eq!(snapshot.window, 33, "window field");
+
+        let error = HostAppError {
+            resources: snapshot,
+            ..HostAppError::new("KELD-CORE-037", "phase", "detail", "fix")
+        };
+        assert_eq!(
+            error.resources,
+            StartupResourceSnapshot {
+                listener: 11,
+                child: 22,
+                window: 33,
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with("[startup-resource-attempts listener=11 child=22 window=33]"),
+            "{error}"
+        );
     }
 }

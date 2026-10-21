@@ -3649,3 +3649,18 @@ fn deleting_codeowners_file_fails() {
     assert!(error.contains("CODEOWNERS"), "{error}");
     assert!(error.contains("Restore"), "{error}");
 }
+
+#[test]
+fn job_level_keys_after_steps_are_found_and_nested_if_is_ignored() {
+    let block = "  job:\n    runs-on: ubuntu-latest\n    steps:\n      - name: one\n        if: ${{ nested }}\n        run: echo\n    if: ${{ always() }}\n    continue-on-error: true\n";
+    assert_eq!(
+        workflow_job_level_if(block).as_deref(),
+        Some("${{ always() }}")
+    );
+    assert_eq!(
+        workflow_job_level_property(block, "continue-on-error").as_deref(),
+        Some("true")
+    );
+    let nested_only = "  job:\n    steps:\n      - name: one\n        if: ${{ nested }}\n";
+    assert_eq!(workflow_job_level_if(nested_only), None);
+}

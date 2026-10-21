@@ -81,10 +81,12 @@ def assess_change(kind, old_path, new_path, old, current, policy):
         finding = "removed"
     elif old is None and new_over:
         finding = "new-above-proposed-cap"
+    elif old is not None and old_over and not new_over:
+        # Checked before growth: a file back under both caps is never a block even
+        # when one axis grew on the way (e.g. fewer lines, more bytes).
+        finding = "legacy-now-within-proposal"
     elif old is not None and old_over and grew:
         finding = "grandfathered-growth"
-    elif old is not None and old_over and not new_over:
-        finding = "legacy-now-within-proposal"
     elif old is not None and old_over and (
         (current["physical_lines"] or 0) < (old["physical_lines"] or 0)
         or (current["bytes"] or 0) < (old["bytes"] or 0)

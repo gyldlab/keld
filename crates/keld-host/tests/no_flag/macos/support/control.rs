@@ -77,12 +77,54 @@ pub(crate) fn wait_child_output_observing(
         }
         assert!(
             Instant::now() < deadline,
-            "child exceeded exit/output deadline (status={status:?}, stdout_bytes={}, stderr_bytes={})",
+            "child exceeded exit/output deadline (status={status:?}, stdout_bytes={}, stderr_bytes={}, stderr_markers={:?})",
             stdout.bytes.len(),
             stderr.bytes.len(),
+            redacted_stderr_markers(&stderr.bytes),
         );
         thread::yield_now();
     }
+}
+
+/// Reveal only fixed marker names on failure. Raw host stderr may contain
+/// temporary file paths or runtime bootstrap details; never print its body.
+fn redacted_stderr_markers(stderr: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .take(24)
+        .map(|line| {
+            line.split_whitespace()
+                .next()
+                .filter(|word| {
+                    matches!(
+                        *word,
+                        "KELD_KEL142_BIND"
+                            | "KELD_KEL140_PUBLIC_APP_COMPONENT"
+                            | "KELD_KEL140_PUBLIC_QUIT_REQUEST"
+                            | "KELD_KEL140_PUBLIC_FS_RETIRED"
+                    )
+                })
+                .unwrap_or("[redacted]")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
+    let markers = redacted_stderr_markers(
+        b"KELD_KEL140_PUBLIC_QUIT_REQUEST calls=0 secret=value\nuntrusted /tmp/secret-material\nKELD_KEL142_BIND nonce=private\nKELD_KEL_BROKEN/path should-not-print\nKELD_KELSECRET_ABC123PRIVATE\n",
+    );
+    assert_eq!(
+        markers,
+        [
+            "KELD_KEL140_PUBLIC_QUIT_REQUEST",
+            "[redacted]",
+            "KELD_KEL142_BIND",
+            "[redacted]",
+            "[redacted]"
+        ]
+    );
 }
 
 struct ReapOnDrop(Child);

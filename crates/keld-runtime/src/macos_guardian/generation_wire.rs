@@ -157,7 +157,22 @@ impl GenerationControlReader {
         &mut self,
         reader: &mut (impl Read + ?Sized),
     ) -> Result<Option<GenerationControlRecord>, RuntimeError> {
+        self.poll_until(reader, None)
+    }
+
+    /// Only the initial authenticated Guardian record is constrained by the
+    /// caller's original bootstrap deadline. Check inside the incremental
+    /// read loop so a hostile byte-drip cannot avoid the outer host poll or
+    /// extend admission by the separate per-record framing budget.
+    pub(super) fn poll_until(
+        &mut self,
+        reader: &mut (impl Read + ?Sized),
+        first_record_deadline: Option<Instant>,
+    ) -> Result<Option<GenerationControlRecord>, RuntimeError> {
         loop {
+            if first_record_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(initial_generation_record_timeout());
+            }
             match reader.read(&mut self.bytes[self.filled..]) {
                 Ok(0) => {
                     return Err(lifecycle_error(
@@ -169,17 +184,16 @@ impl GenerationControlReader {
                     ));
                 }
                 Ok(read) => {
+                    if first_record_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        return Err(initial_generation_record_timeout());
+                    }
                     if self.filled == 0 {
                         self.started = Some(Instant::now());
                     }
                     self.filled += read;
-                    if self.filled == GENERATION_CONTROL_RECORD_LEN {
-                        self.filled = 0;
-                        self.started = None;
-                        let record = decode_generation_control(&self.bytes)?;
-                        self.bytes.fill(0);
-                        return Ok(Some(record));
-                    }
+                    // The final read must obey the same per-record deadline
+                    // as every partial read. Completing the frame does not
+                    // erase the retained start time or authorize a late ACK.
                     if self
                         .started
                         .is_some_and(|started| started.elapsed() >= GUARDIAN_SHUTDOWN_DEADLINE)
@@ -191,6 +205,13 @@ impl GenerationControlReader {
                                 "generation-control record exceeded its read deadline",
                             ),
                         ));
+                    }
+                    if self.filled == GENERATION_CONTROL_RECORD_LEN {
+                        self.filled = 0;
+                        self.started = None;
+                        let record = decode_generation_control(&self.bytes)?;
+                        self.bytes.fill(0);
+                        return Ok(Some(record));
                     }
                 }
                 Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
@@ -218,6 +239,16 @@ impl GenerationControlReader {
             }
         }
     }
+}
+
+pub(super) fn initial_generation_record_timeout() -> RuntimeError {
+    lifecycle_error(
+        "macOS guardian initial generation registration deadline",
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "authenticated Guardian supplied no complete first KGC1 record before its original deadline",
+        ),
+    )
 }
 
 fn decode_generation_control(

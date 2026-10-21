@@ -1,19 +1,36 @@
+//! Real host-generation control fixture, with one owner for relay/host thread cleanup.
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::Instant;
+
+use super::private_record_relay::private_record_relay;
+use super::records_and_cut_types::{
+    COLLECTION, DeliveryCut, RelayCommand, RelayReceipt, timed_pair,
+};
+use super::{
+    GuardedPrimaryUpdate, RecoveryState, RegisteredPrimaryGeneration, RuntimeError, Supervisor,
+    lock_generation, lock_recovery, run_generation_host,
+};
+
 // Test control custody only. The actual production host owner remains
 // run_generation_host; the relay never mints or chooses authority.
-struct ControlPlane {
-    host: Option<JoinHandle<Result<(), RuntimeError>>>,
-    relay: Option<JoinHandle<Result<(), RuntimeError>>>,
-    commands: Sender<RelayCommand>,
-    receipts: Receiver<RelayReceipt>,
-    recovery: Arc<Mutex<RecoveryState>>,
-    updates: Receiver<GuardedPrimaryUpdate>,
-    consumption_probe: Option<UnixStream>,
-    current: Arc<Mutex<Option<RegisteredPrimaryGeneration>>>,
-    guardian_control: Option<UnixStream>,
+pub(super) struct ControlPlane {
+    pub(super) host: Option<JoinHandle<Result<(), RuntimeError>>>,
+    pub(super) relay: Option<JoinHandle<Result<(), RuntimeError>>>,
+    pub(super) commands: Sender<RelayCommand>,
+    pub(super) receipts: Receiver<RelayReceipt>,
+    pub(super) recovery: Arc<Mutex<RecoveryState>>,
+    pub(super) updates: Receiver<GuardedPrimaryUpdate>,
+    pub(super) consumption_probe: Option<UnixStream>,
+    pub(super) current: Arc<Mutex<Option<RegisteredPrimaryGeneration>>>,
+    pub(super) guardian_control: Option<UnixStream>,
 }
 
 impl ControlPlane {
-    fn start(cut: DeliveryCut) -> Self {
+    pub(super) fn start(cut: DeliveryCut) -> Self {
         let (host_control, relay_host) = timed_pair();
         let (guardian_control, relay_guardian) = timed_pair();
         // This clone observes FIONREAD only, never consumes bytes.
@@ -31,10 +48,15 @@ impl ControlPlane {
         let host_recovery = Arc::clone(&recovery);
         let host = thread::spawn(move || {
             run_generation_host(
+                super::super::super::generation_host::GenerationHostAdmission::new(
+                    std::process::id(), // actual child groups originate in this test process
+                    Instant::now() + super::GUARDIAN_SHUTDOWN_DEADLINE,
+                ),
                 host_control,
                 &updates_tx,
                 &host_current,
                 &host_recovery,
+                None,
                 None,
             )
         });
@@ -61,6 +83,10 @@ impl Drop for ControlPlane {
     fn drop(&mut self) {
         lock_recovery(&self.recovery).deny();
         self.consumption_probe.take();
+        // Disconnect the relay command channel before joining, so a relay
+        // parked in `recv_timeout(COLLECTION)` returns now, not after the
+        // full collection window. Already-queued commands are still received.
+        drop(std::mem::replace(&mut self.commands, mpsc::channel().0));
         if let Some(stream) = self.guardian_control.take() {
             let _ = stream.shutdown(Shutdown::Both);
         }
@@ -74,7 +100,7 @@ impl Drop for ControlPlane {
     }
 }
 
-fn await_initial_registration(
+pub(super) fn await_initial_registration(
     supervisor: &Supervisor,
     current: &Mutex<Option<RegisteredPrimaryGeneration>>,
 ) -> u32 {

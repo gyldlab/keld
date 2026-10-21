@@ -201,3 +201,65 @@ fn an_entry_already_pending_deletion_is_not_found() {
     drop(doomed);
     assert!(!path.exists());
 }
+
+/// The *same retained parent object* can gain a mount-point after opening.
+/// Neither relative deletion path may follow that live reparse to outside data.
+#[test]
+fn live_parent_reparse_cannot_redirect_relative_file_or_tree_deletion() {
+    use super::support::{clear_mount_point_on_open_directory, set_mount_point_on_open_directory};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA,
+    };
+
+    let fixture = tempfile::tempdir().expect("live parent-reparse deletion fixture");
+    let original = fixture.path().join("retained-empty");
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir(&original).expect("empty parent, eligible for a mount-point");
+    std::fs::create_dir_all(outside.join("retired-tree")).expect("outside tree");
+    std::fs::write(outside.join("victim"), b"keep-file").expect("outside file");
+    std::fs::write(outside.join("retired-tree").join("victim"), b"keep-tree")
+        .expect("outside nested file");
+    std::fs::write(outside.join("ambient-control"), b"control").expect("outside control");
+
+    let parent = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&original)
+        .expect("pin the real parent before its mutation");
+    let hostile = OpenOptions::new()
+        .access_mode(FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&original)
+        .expect("independent writable handle to that same directory");
+    set_mount_point_on_open_directory(&hostile, &outside);
+    assert_eq!(
+        std::fs::read(original.join("victim")).expect("live reparse is effective"),
+        b"keep-file"
+    );
+    // Positive control: an ambient delete really reaches the outside target.
+    std::fs::remove_file(original.join("ambient-control"))
+        .expect("ambient deletion follows the adversarial mount-point");
+    assert!(!outside.join("ambient-control").exists());
+
+    let file_result = remove_file_relative(&parent, "victim");
+    let tree_result = remove_directory_tree(&parent, "retired-tree");
+    let outside_file = std::fs::read(outside.join("victim"));
+    let outside_tree = std::fs::read(outside.join("retired-tree").join("victim"));
+    clear_mount_point_on_open_directory(&hostile);
+    drop(hostile);
+    drop(parent);
+
+    assert!(
+        file_result.is_err(),
+        "empty retained parent has no file: {file_result:?}"
+    );
+    assert!(
+        tree_result.is_err(),
+        "empty retained parent has no tree: {tree_result:?}"
+    );
+    assert_eq!(outside_file.expect("outside file survives"), b"keep-file");
+    assert_eq!(outside_tree.expect("outside tree survives"), b"keep-tree");
+}

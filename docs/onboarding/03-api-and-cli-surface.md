@@ -38,7 +38,8 @@ the required sibling executables.
 Every verb is matched by hand in
 [`crates/keld-cli/src/main.rs`](../../crates/keld-cli/src/main.rs) — there is no
 `clap`, no flag parser, and no subcommand framework. Arguments are read positionally
-from `std::env::args()`.
+from `std::env::args_os()` and decoded by `keld_core::unicode_args` on every OS: a
+non-Unicode argument is **`KELD-CLI-051`**, exit **2**, before any verb is selected.
 
 | Invocation | Implemented in | Effect |
 |---|---|---|
@@ -358,7 +359,7 @@ exits **2**. The server opens no network listener.
 
 | Today (verified) | Specified target |
 |---|---|
-| `0` success, `1` general failure, `2` for `keld mcp` misuse, unknown `create`/`dev`/`doctor`/`hello` flags (`KELD-CLI-044`), reserved verbs (`KELD-CLI-045`), and unknown verbs (`KELD-CLI-046`) | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
+| `0` success, `1` general failure, `2` for `keld mcp` misuse, unknown `create`/`dev`/`doctor`/`hello` flags (`KELD-CLI-044`), reserved verbs (`KELD-CLI-045`), unknown verbs (`KELD-CLI-046`), and non-Unicode arguments (`KELD-CLI-051`) | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
 | `keld doctor --json` emits a findings array | `--json` on anything with parseable output (same section) |
 
 The full target exit-code and machine-readable-output contract is not implemented yet.
@@ -377,6 +378,7 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-044` | `flags.rs` | unknown `create` / `dev` / `doctor` / `hello` flag (exit 2); `--template` / `--watch` / `--permissions` are not live |
 | `KELD-CLI-045` | `verb.rs` | reserved verb `build` / `migrate` / `gen` / `ext` is not implemented (exit 2) |
 | `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
+| `KELD-CLI-051` | `keld_core::unicode_args` ([`argv.rs`](../../crates/keld-core/src/argv.rs)) | a process argument, including the program path, is not valid Unicode; refused by position without echoing its bytes (exit 2) |
 | `KELD-IPC-001..007` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline · HELLO session token |
 | `KELD-WV-001..008,010` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id · WebView2 runtime · Linux GPU preparation |
 | `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |

@@ -632,6 +632,22 @@ pub(crate) trait GenerationLease: Send + 'static {
 
     /// Revokes every capability owned by this attempt before returning.
     fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError>;
+
+    /// Revokes an already spawned attempt while retaining its exact direct
+    /// child wait owner. Ordinary leases use the same revocation contract.
+    /// macOS Guardian KGC1 may need to reap its original leader after native
+    /// SIGKILL and BEFORE claiming group retirement to the host: a Darwin
+    /// zombie can keep `killpg(..., 0)` at EPERM despite no live member.
+    fn revoke_with_child(
+        self,
+        cause: RevocationCause,
+        _child: &mut Child,
+    ) -> Result<(), RuntimeError>
+    where
+        Self: Sized,
+    {
+        self.revoke(cause)
+    }
 }
 
 /// Fresh command and host-owned authority for one supervisor attempt.
@@ -945,7 +961,7 @@ impl Supervisor {
                     let Ok(mut preparer) = preparer_rx.recv() else {
                         return;
                     };
-                    let (child, lease) = match preparer.prepare(1).and_then(spawn_prepared) {
+                    let (mut child, lease) = match preparer.prepare(1).and_then(spawn_prepared) {
                         Ok(initial) => initial,
                         Err(error) => {
                             let _ = startup_tx.send(Err(error));
@@ -953,8 +969,7 @@ impl Supervisor {
                         }
                     };
                     if startup_tx.send(Ok(())).is_err() {
-                        let _ = lease.revoke(RevocationCause::Shutdown);
-                        let mut child = child;
+                        let _ = lease.revoke_with_child(RevocationCause::Shutdown, &mut child);
                         let _ = child.kill();
                         let _ = child.wait();
                         return;
@@ -1273,10 +1288,11 @@ fn supervise<P>(
     loop {
         let pid = child.id();
         if let Err(error) = lease.child_spawned(pid, attempt) {
-            let terminal = match lease.revoke(RevocationCause::AdmissionFailed) {
-                Ok(()) => error,
-                Err(revocation_error) => revocation_error,
-            };
+            let terminal =
+                match lease.revoke_with_child(RevocationCause::AdmissionFailed, &mut child) {
+                    Ok(()) => error,
+                    Err(revocation_error) => revocation_error,
+                };
             let _ = child.kill();
             let _ = child.wait();
             *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -1299,7 +1315,9 @@ fn supervise<P>(
                 let injected_capture_error = lease.injected_capture_retirement_failure();
                 #[cfg(not(test))]
                 let injected_capture_error = None;
-                let revocation_error = lease.revoke(RevocationCause::CaptureFailed).err();
+                let revocation_error = lease
+                    .revoke_with_child(RevocationCause::CaptureFailed, &mut child)
+                    .err();
                 let _ = child.kill();
                 let _ = child.wait();
                 let capture_error =
@@ -1327,7 +1345,9 @@ fn supervise<P>(
                     let injected_capture_error = lease.injected_capture_retirement_failure();
                     #[cfg(not(test))]
                     let injected_capture_error = None;
-                    let revocation_error = lease.revoke(RevocationCause::WaitFailed).err();
+                    let revocation_error = lease
+                        .revoke_with_child(RevocationCause::WaitFailed, &mut child)
+                        .err();
                     let _ = child.kill();
                     let _ = child.wait();
                     let capture_error = capture_finish_error(
@@ -1352,7 +1372,9 @@ fn supervise<P>(
             let injected_capture_error = lease.injected_capture_retirement_failure();
             #[cfg(not(test))]
             let injected_capture_error = None;
-            let revocation_error = lease.revoke(RevocationCause::AdmissionFailed).err();
+            let revocation_error = lease
+                .revoke_with_child(RevocationCause::AdmissionFailed, &mut child)
+                .err();
             let _ = child.kill();
             let _ = child.wait();
             let capture_error =
@@ -1378,7 +1400,9 @@ fn supervise<P>(
             let injected_capture_error = lease.injected_capture_retirement_failure();
             #[cfg(not(test))]
             let injected_capture_error = None;
-            let revocation_error = lease.revoke(RevocationCause::Shutdown).err();
+            let revocation_error = lease
+                .revoke_with_child(RevocationCause::Shutdown, &mut child)
+                .err();
             let _ = child.kill();
             let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
                 phase: "child shutdown wait",
@@ -1423,7 +1447,7 @@ fn supervise<P>(
                 let injected_capture_error = lease.injected_capture_retirement_failure();
                 #[cfg(not(test))]
                 let injected_capture_error = None;
-                let revocation_error = lease.revoke(restart_cause).err();
+                let revocation_error = lease.revoke_with_child(restart_cause, &mut child).err();
                 let _ = child.kill();
                 let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
                     phase: "child restart wait",
@@ -1469,7 +1493,9 @@ fn supervise<P>(
                 if !accepted {
                     record_self_termination(crash_ledger, output, pid, code);
                 }
-                let revoke_error = lease.revoke(RevocationCause::ChildExited).err();
+                let revoke_error = lease
+                    .revoke_with_child(RevocationCause::ChildExited, &mut child)
+                    .err();
                 // Revocation failure wins because it means generation authority
                 // may remain live. Capture retirement is still attempted first,
                 // and neither failure may erase the already-observed exit fact
@@ -1544,7 +1570,11 @@ fn supervise<P>(
         attempt += 1;
         match preparer.prepare(attempt) {
             Ok(next_prepared_child) if stop_was_requested(shutdown, accepted_shutdown) => {
-                let PreparedChild { lease, .. } = next_prepared_child;
+                // Drop the never-spawned command before revoking, as
+                // spawn_prepared does on spawn failure: its pre-exec closure
+                // can hold the lease's only child-side admission descriptor.
+                let PreparedChild { command, lease } = next_prepared_child;
+                drop(command);
                 if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
                     *terminal_error
                         .lock()
@@ -1559,7 +1589,9 @@ fn supervise<P>(
                 Ok((next_child, next_lease)) => {
                     if stop_was_requested(shutdown, accepted_shutdown) {
                         let mut next_child = next_child;
-                        if let Err(error) = next_lease.revoke(RevocationCause::Shutdown) {
+                        if let Err(error) =
+                            next_lease.revoke_with_child(RevocationCause::Shutdown, &mut next_child)
+                        {
                             *terminal_error
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner) = Some(error);

@@ -1,3 +1,16 @@
+use std::io::{self, Write as _};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use super::super::{
+    CONTROL_CLEAR, CONTROL_PREPARE, CONTROL_PREPARED, GENERATION_CONTROL_POLL,
+    GUARDIAN_SHUTDOWN_DEADLINE, GenerationControlPeer, GenerationControlReader,
+    GenerationControlRecord, GuardedPrimary, HostGenerationState, RecoveryState,
+    SUPERVISED_QUIT_ACK_DEADLINE, control_exchange, finish_generation_control_eof, lock_recovery,
+    read_generation_control, runtime_io_kind, write_generation_control,
+};
+
 fn owned_acknowledgment_primary() -> GuardedPrimary {
     // This owns a real ACK pipe peer, not a guardian/native mock claim.
     // The staged-Host case above separately proves the actual guardian.
@@ -8,7 +21,7 @@ if (first.done || first.value.byteLength !== 1 || first.value[0] !== 81) process
 process.stdout.write("KQA");
 while (!(await input.read()).done) {}
 "#;
-    let mut child = Command::new("bun")
+    let mut child = Command::new(super::test_support::verified_real_bun())
         .args(["-e", script])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -27,6 +40,10 @@ while (!(await input.read()).done) {}
         updates_rx,
         worker: None,
         shutdown_attributed: false,
+        shutdown_failed: false,
+        shutdown_sent: None,
+        #[cfg(test)]
+        shutdown_denial_fence: None,
     }
 }
 
@@ -67,12 +84,16 @@ fn control_eof_acknowledgment_is_order_independent_and_attributed() {
         }
         let result = reader.join().expect("one owned EOF reader joins");
         let status = primary.shutdown().expect("ACK peer EOF and owned reap");
+        let repeat_status = primary
+            .shutdown()
+            .expect("a successful attributed shutdown remains an idempotent success");
         println!(
             "KEL143_RUNTIME_ACK_EOF ack_first={ack_first} ack_at_eof={observed} peer_status={status:?}"
         );
         assert_eq!(observed, ack_first);
         result.expect("either ordered actual EOF/ACK completes cleanly");
         assert!(status.success());
+        assert!(repeat_status.success());
     }
 }
 
