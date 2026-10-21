@@ -48,7 +48,7 @@
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
 
-use navigation_diagnostics::FirstNavigationDiagnostic;
+use navigation_diagnostics::{FirstNavigationDiagnostic, record_navigation_start_registration};
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -2222,12 +2222,7 @@ fn install_app_navigation_handler(
     // The observer is diagnostic only (unlike the NavigationCompleted handler
     // above, which gates Ready), so a failed registration is recorded in the
     // first-navigation snapshot instead of failing webview creation.
-    if let Err(error) = registered {
-        diagnostic_for_observer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .navigation_start_unobserved(error.code().0);
-    }
+    record_navigation_start_registration(registered, &diagnostic_for_observer);
     Ok(())
 }
 
