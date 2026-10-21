@@ -140,8 +140,19 @@
   before child creation, prevents the liveness reader from reaching Bun, runs a
   fresh command in an isolated process group, revokes registered resources on
   every post-start failure, signals the group once, and waits its direct child.
-  `HostGuardian` consumes the group identity on every terminal path, so an API
-  retry cannot signal a reused PGID. Unexpected guardian exit produces
+  `HostGuardian` teardown is terminal: closing its original liveness writer
+  forbids an API retry that could signal a recycled PGID. In the separate,
+  **unmerged** macOS hardening draft
+  [#948](https://github.com/gyldlab/keld/pull/948), successful birth-attested
+  native cleanup releases the stored group identity, but failed cleanup
+  retains the original kernel-birth witness and reports the failure;
+  retention does not reopen that closed session or guarantee a later `Drop`
+  rescue. Generic KGR1 orderly shutdown documents signal/Guardian-wait
+  outcomes, not dual kernel group-absence proof. The distinct **unmerged**
+  [#945](https://github.com/gyldlab/keld/pull/945) KGC1 `CONTROL_CLEAR`
+  fix requires both original-leader `getpgid` and full-group `kill(-PGID, 0)`
+  to return `ESRCH` inside the original deadline before acknowledging
+  `CLEARED` or admitting a successor. Unexpected guardian exit produces
   `KELD-RUNTIME-013` only after the host fail-safe; orderly shutdown closes the
   same writer. The KEL-96 supervised variant may first write one fixed
   non-authority accepted-Quit byte through that host-exclusive pipe; the
@@ -155,7 +166,9 @@
   KEL-78 `run` path continues to reject all pipe data. KEL-96 now provides its first shipping caller by composing the
   existing `Supervisor` inside the guardian and consuming the result from the
   no-flag host owner. The guardian still does not implement App Sandbox or
-  Strict admission.
+  Strict admission. It also does not provide kernel-pinned custody for detached
+  new-session descendants or survival after simultaneous host/Guardian death;
+  those guarantees require a separately reviewed native OS custodian.
 - **Linux strict mechanism (KEL-78/T4):**
   `keld_runtime::linux_strict` constructs one unprivileged, fail-closed role
   boundary through a validated root-owned non-setuid/capability Bubblewrap and
