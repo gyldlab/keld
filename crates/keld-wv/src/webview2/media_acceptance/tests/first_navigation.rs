@@ -102,6 +102,13 @@ fn windows_first_navigation_start_is_observed_by_real_com_callback() -> Result<(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot();
+        // A failed observer registration is reported distinctly (#958), not as an
+        // unobserved NavigationStarting callback.
+        if !evidence.contains("navigation_start_observer=registered") {
+            return Err(failure(format!(
+                "the NavigationStarting observer was not registered: {evidence}"
+            )));
+        }
         if !evidence.contains("navigation_start_at_ms=Some(") {
             return Err(failure(format!(
                 "real COM NavigationStarting was not observed: {evidence}"
