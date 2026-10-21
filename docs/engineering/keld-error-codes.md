@@ -218,7 +218,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: Webview creation failed
-- fix: On macOS ensure WKWebView is available (10.13+); on Windows inspect the WebView2 HRESULT, profile permissions and controller state. An actual missing Evergreen runtime is reported separately as KELD-WV-008.
+- fix: On macOS ensure WKWebView is available (10.13+); on Windows inspect the WebView2 HRESULT, profile permissions and controller state.
 
 ## KELD-WV-004
 
