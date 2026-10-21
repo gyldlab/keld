@@ -2165,6 +2165,7 @@ fn install_app_navigation_handler(
     wake: EventLoopProxy<WindowsLoopEvent>,
 ) -> Result<(), WvError> {
     let starting_diagnostic = Arc::clone(&diagnostic);
+    let diagnostic_for_observer = Arc::clone(&diagnostic);
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
         let (completion, web_error) = if let Some(args) = args {
             // SAFETY: WebView2 invokes the handler on the creating STA with live
@@ -2216,8 +2217,18 @@ fn install_app_navigation_handler(
     let mut starting_token = 0_i64;
     // SAFETY: callback, COM webview and token remain on their creating STA;
     // WebView2 retains the registered handler for the webview lifetime.
-    unsafe { webview.add_NavigationStarting(&starting_handler, &raw mut starting_token) }
-        .map_err(|error| WvError::Webview(format!("navigation starting handler: {error}")))
+    let registered =
+        unsafe { webview.add_NavigationStarting(&starting_handler, &raw mut starting_token) };
+    // The observer is diagnostic only (unlike the NavigationCompleted handler
+    // above, which gates Ready), so a failed registration is recorded in the
+    // first-navigation snapshot instead of failing webview creation.
+    if let Err(error) = registered {
+        diagnostic_for_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_start_unobserved(error.code().0);
+    }
+    Ok(())
 }
 
 /// One live webview and the host window it fills (v0: one per window).
