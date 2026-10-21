@@ -11,6 +11,9 @@ NEW = "crates/keld-ipc/src/link/tests/handshake.rs"
 NESTED = "crates/keld-ipc/src/bootstrap/named_pipe_tests/generation_deadline.rs"
 EXISTING = "crates/keld-ipc/src/link/deadline_contract_tests.rs"
 PRODUCTION = "crates/keld-ipc/src/link.rs"
+ROOT_TESTS = "crates/keld-update/src/tests.rs"
+ROOT_NAMED_TESTS = "crates/keld-x/src/a_tests.rs"
+ROOT_PRODUCTION = "crates/keld-x/src/lib.rs"
 
 
 class TestDiffGuard(unittest.TestCase):
@@ -61,6 +64,16 @@ class TestDiffGuard(unittest.TestCase):
         head = self.commit()
         self.assertEqual([], guard.violations(self.repo, base, head))
 
+    def test_base_moving_after_fork_is_not_attributed_to_head(self):
+        self.put(EXISTING, "use super::*;\n")
+        fork = self.commit()
+        self.put(EXISTING, "use super::{connected_pair};\n")
+        moved_base = self.commit()
+        self.run_git("checkout", "-q", fork)
+        self.put(PRODUCTION, "pub fn example() {}\n")
+        head = self.commit()
+        self.assertEqual([], guard.violations(self.repo, moved_base, head))
+
     def test_nested_test_paths_and_fixture_precedence(self):
         self.assertTrue(guard.is_owner_test(NESTED))
         self.assertTrue(guard.is_owner_test(NEW))
@@ -94,6 +107,106 @@ class TestDiffGuard(unittest.TestCase):
         self.put(NEW, "use super::{read_frame, *};\n")
         head = self.commit()
         self.assertEqual([(NEW, 1)], guard.violations(self.repo, base, head))
+
+    def test_crate_root_owner_test_paths_are_recognized(self):
+        # Review finding on #746: crates/<c>/src/tests.rs and <name>_tests.rs have
+        # four path parts and were skipped by a `len(parts) < 5` check.
+        self.assertTrue(guard.is_owner_test(ROOT_TESTS))
+        self.assertTrue(guard.is_owner_test("crates/keld-pack/src/tests.rs"))
+        self.assertTrue(guard.is_owner_test(ROOT_NAMED_TESTS))
+        # Deeper owner tests keep working.
+        self.assertTrue(guard.is_owner_test("crates/keld-update/src/foo/tests.rs"))
+        self.assertTrue(guard.is_owner_test("crates/keld-native/src/auth/browser_tests.rs"))
+        # Negative controls: crate-root production, lookalikes and other layouts.
+        self.assertFalse(guard.is_owner_test(ROOT_PRODUCTION))
+        self.assertFalse(guard.is_owner_test("crates/keld-x/src/a_tests_helper.rs"))
+        self.assertFalse(guard.is_owner_test("crates/keld-x/src/tests.txt"))
+        self.assertFalse(guard.is_owner_test("crates/keld-x/tests.rs"))
+        self.assertFalse(guard.is_owner_test("crates/keld-x/tests/integration.rs"))
+        self.assertFalse(guard.is_owner_test("tools/tests.rs"))
+
+    def test_crate_root_owner_test_added_glob_fails_and_production_does_not(self):
+        self.put(ROOT_TESTS, "use std::time::Duration;\n")
+        self.put(ROOT_PRODUCTION, "pub fn lib() {}\n")
+        base = self.commit()
+        self.put(ROOT_TESTS, "use std::time::Duration;\nuse super::*;\n")
+        self.put(ROOT_NAMED_TESTS, "use super::*;\n")
+        self.put(ROOT_PRODUCTION, "pub fn lib() {}\nuse super::*;\n")
+        glob = self.commit()
+        self.assertEqual([(ROOT_TESTS, 2), (ROOT_NAMED_TESTS, 1)],
+                         sorted(guard.violations(self.repo, base, glob),
+                                key=lambda found: found[0] != ROOT_TESTS))
+        self.put(ROOT_TESTS, "use std::time::Duration;\nuse super::{helper};\n")
+        self.put(ROOT_NAMED_TESTS, "use super::{helper};\n")
+        explicit = self.commit()
+        self.assertEqual([], guard.violations(self.repo, glob, explicit))
+
+    def test_unchanged_crate_root_legacy_glob_does_not_block(self):
+        self.put(ROOT_TESTS, "use super::*;\n")
+        base = self.commit()
+        self.put(ROOT_TESTS, "use super::*;\nfn extra() {}\n")
+        head = self.commit()
+        self.assertEqual([], guard.violations(self.repo, base, head))
+
+    def test_quote_char_literals_do_not_hide_a_later_glob_import(self):
+        # Review finding on #746: the `"` inside '"' / b'"' opened a fake string.
+        self.assertEqual({2}, guard.active_glob_lines("const Q: char = '\"';\nuse super::*;\n"))
+        self.assertEqual({2}, guard.active_glob_lines("let q = b'\"';\nuse super::*;\n"))
+        # Escaped forms of the same literals.
+        self.assertEqual({2}, guard.active_glob_lines("let q = '\\\"';\nuse super::*;\n"))
+        self.assertEqual({2}, guard.active_glob_lines("let q = '\\u{22}';\nuse super::*;\n"))
+        self.assertEqual({2}, guard.active_glob_lines("let q = b'\\x22';\nuse super::*;\n"))
+        # A glob inside a real multi-line string after the literal stays masked: the
+        # masker must not flip string/code state in either direction.
+        self.assertEqual(set(), guard.active_glob_lines(
+            "let q = '\"';\nlet s = \"\nuse super::*;\n\";\n"))
+        # The glob is still found when the literal and the import share a line range.
+        self.assertEqual({3}, guard.active_glob_lines(
+            "fn f() { let a = '\"'; let b = '\"'; }\n\nuse super::*;\n"))
+
+    def test_char_literal_handling_keeps_strings_comments_and_lifetimes_masked(self):
+        # Negative controls: the char-literal state must not unmask anything real.
+        self.assertEqual(set(), guard.active_glob_lines("let q = '\"'; // use super::*;\n"))
+        self.assertEqual(set(), guard.active_glob_lines("let q = '\"'; /* use super::*; */\n"))
+        # An escaped single-quote char literal must not swallow the next line.
+        self.assertEqual({2}, guard.active_glob_lines("let q = '\\'';\nuse super::*;\n"))
+        self.assertEqual({2}, guard.active_glob_lines("let q = '\\\\';\nuse super::*;\n"))
+        # Lifetimes and labels stay in the normal state and never hide code.
+        self.assertEqual({2}, guard.active_glob_lines(
+            "fn f<'a>(x: &'a str) {}\nuse super::*;\n"))
+        self.assertEqual({2}, guard.active_glob_lines(
+            "struct S<'a, 'b>(&'a u8, &'b u8);\nuse super::*;\n"))
+        self.assertEqual({2}, guard.active_glob_lines(
+            "fn g() { 'outer: loop { break 'outer; } }\nuse super::*;\n"))
+        # A plain glob is unchanged.
+        self.assertEqual({1}, guard.active_glob_lines("use super::*;\n"))
+
+    def test_string_line_continuation_keeps_line_numbers(self):
+        # Found while validating the masker over every tracked Rust file: a string
+        # literal ending a line with a backslash (line continuation) dropped one
+        # newline from the masked text, so every later line number drifted (up to
+        # 18 lines in crates/keld-guard/src/lib.rs).
+        content = 'const MSG: &str = "first \\\n    second \\\n    third";\nuse super::*;\n'
+        self.assertEqual({4}, guard.active_glob_lines(content))
+        crlf = 'const MSG: &str = "first \\\r\n    second";\r\nuse super::*;\r\n'
+        self.assertEqual({3}, guard.active_glob_lines(crlf))
+
+    def test_added_glob_after_string_line_continuation_is_still_flagged(self):
+        # False negative before the fix: the added glob was reported one line early,
+        # so it never intersected the added line and the gate passed.
+        self.put(NEW, 'const MSG: &str = "first \\\n    second";\n')
+        base = self.commit()
+        self.put(NEW, 'const MSG: &str = "first \\\n    second";\nuse super::*;\n')
+        head = self.commit()
+        self.assertEqual([(NEW, 3)], guard.violations(self.repo, base, head))
+
+    def test_legacy_glob_after_string_line_continuation_is_not_misattributed(self):
+        # False positive before the fix: the legacy glob drifted onto the added line.
+        self.put(NEW, 'const MSG: &str = "first \\\n    second";\nuse super::*;\n')
+        base = self.commit()
+        self.put(NEW, 'const MSG: &str = "first \\\n    second";\nfn added() {}\nuse super::*;\n')
+        head = self.commit()
+        self.assertEqual([], guard.violations(self.repo, base, head))
 
     def test_source_only_legacy_removed_and_added_in_different_file(self):
         self.put(EXISTING, "use super::*;\n")

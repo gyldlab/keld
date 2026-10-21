@@ -14,7 +14,18 @@ trap cleanup EXIT
 
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
-"$repo_root/tools/ci_webkitgtk_apt.sh" test
+# This apt archive self-test owns Linux filesystem semantics. Under Windows
+# Git Bash, `ln -s` need not create the POSIX directory symlink that `test -L`
+# inspects, so the Linux-only negative oracle is not meaningful there. The
+# mandatory Ubuntu change-router job still executes it.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "info: WebKitGTK apt native symlink test runs on Ubuntu CI"
+        ;;
+    *)
+        "$repo_root/tools/ci_webkitgtk_apt.sh" test
+        ;;
+esac
 "$repo_root/tools/agents_md.sh" test
 
 result_for_paths() {

@@ -21,6 +21,42 @@ fn keld() -> Command {
     Command::new(keld_bin())
 }
 
+/// Runs `keld <arg>` and asserts the registered non-Unicode refusal: exit 2,
+/// `KELD-CLI-051` naming argv position 1, and no panic or other CLI code.
+fn assert_non_unicode_argv_refused(arg: std::ffi::OsString) {
+    let output = keld()
+        .arg(arg)
+        .output()
+        .expect("spawn with a test-owned non-Unicode argument");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("CLI reports fixed UTF-8 refusals");
+    assert!(
+        stderr.contains("KELD-CLI-051: process argument 1 is not valid Unicode."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-CLI-044"), "{stderr}");
+    assert!(!stderr.contains("KELD-CLI-046"), "{stderr}");
+    assert!(!stderr.contains("panicked at"), "{stderr}");
+}
+
+#[cfg(windows)]
+#[test]
+fn malformed_windows_utf16_cli_argv_refuses_before_command_selection() {
+    use std::os::windows::ffi::OsStringExt as _;
+
+    // An unpaired surrogate is valid native Windows argv but not Unicode.
+    assert_non_unicode_argv_refused(std::ffi::OsString::from_wide(&[0xd800]));
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_unix_cli_argv_refuses_before_command_selection() {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    // Unix argv is arbitrary bytes; std::env::args() panics on 0xFF.
+    assert_non_unicode_argv_refused(std::ffi::OsString::from_vec(vec![0xff]));
+}
+
 fn empty_path_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("empty PATH dir")
 }

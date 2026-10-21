@@ -185,6 +185,39 @@
   does not create a second restart loop. Other named roles and unproved profile
   or artifact combinations remain fail-closed.
 
+### 1.0 Platform-scoped runtime unsafe contracts
+
+This section is conditional guidance for native runtime owners. Read it when editing
+the named Windows Job/LPAC, macOS Guardian registration/pre-exec, or Linux strict
+paths. The always-loaded [crate AGENTS.md](../../crates/keld-runtime/AGENTS.md) is the
+sole exact-path/operation production `unsafe` allowlist (root AGENTS.md); this section
+adds no sanction and owns only rationale, resource and native-proof details.
+
+**Windows Job Win32 FFI and KEL-270 scope.** The exact file list and KEL-270 Win32 API whitelist live only in the crate AGENTS.md; change them there with independent `unsafe` gate evidence.
+
+**macOS Guardian pre-exec/host-retention seam.** `macos_guardian/spawn_admission.rs` only. Before fork, the parent creates the pipes, owns their exact descriptor identities and starts the reporter; the pre-exec closure may use only fixed-stack `close`, `getpid`, `write`, `poll`, `read` and `_exit` with no heap allocation, Rust locks or general I/O. The child closes every inherited parent-only permit writer **before** waiting, and runs no Bun code without an authenticated host-retention response. Reporter registration errors send explicit denial, never a release byte. Guard with real macOS/Bun crash-and-denial tests, exact test discovery, and warning-denied Clippy. This is not proof of cleanup for a SIGSTOP-suspended pre-exec child or detached descendants; those require a separately owned containment design.
+
+**macOS registered-child kernel proof.** `macos_guardian/process_group.rs` uses read-only, exact-size `proc_pidinfo(PROC_PIDTBSDINFO)` to verify a reported KGR1/KGC1 group leader is the retained Guardian's actual direct child before the host's exec-retention ACK. The host retains the kernel process-start seconds/microseconds and real UID with that group; before a host-side fail-safe `killpg`, it rechecks the leader's PID, PGID and birth. A live leader with a changed birth refuses the signal. If the original leader is gone and no group exists, cleanup is already satisfied. If that original leader is reaped but the group still contains descendants, the host preserves group-wide cleanup: Darwin's PID allocator retains an occupied PGID while members exist. An inaccessible live leader or mismatched identity still fails closed. Pre-registration rejection never accepts arbitrary numeric kill authority. Real macOS adversarial tests cover birth mismatch with outsider survival, original leader reaped with descendant cleanup, authenticated malformed/zero-byte KGR1 and initial KGC1, and pre-/post-ACK Bun processes.
+
+**Guardian-side birth-attested group custody and native retirement.** The one-group, supervised and generation leases independently retain a `LocalGroupWitness` (original macOS kernel child PID, real UID and birth time) sampled by the Guardian's parent-side pre-exec reporter **before** it sends authenticated KGR1/KGC1 group records. The Guardian consumes this witness on local revoke rather than trusting a stale numeric `group_pid`; a discovered but unproven PID fails closed and cannot authorize a group signal. Existing test-only synthetic control fixtures have an explicitly cfg(test)-limited legacy raw-PGID path, not a shipping bypass. The host's KGC1 `CONTROL_CLEARED` cannot discard its birth-attested group custody merely because a Guardian reported `CONTROL_REVOKED` and claimed `CLEAR`: the host independently retires the still-enrolled group **before** publishing CLEARED and allowing successor preparation. Native real Bun + same-PGID descendant tests prove the wrong-order CLEAR no longer silently strands the group, and a Guardian-local corrupted birth witness cannot kill another test-owned group. These checks remain read-then-signal observations, not kernel-pinned atomic group handles.
+
+**macOS live-generation shutdown: reap before `CONTROL_CLEAR`.** A native CI failure on `dev_lifecycle::dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host` exposed a distinct kernel scheduling cut. After the Guardian performs an authorized birth-attested `SIGKILL` on the actual Bun group, the original leader can remain as an *unreaped zombie* owned by the Guardian's retained `Child`. Darwin may then report no inspectable leader through `proc_pidinfo`/`getpgid` while `killpg(group, 0)` yields `EPERM` rather than `ESRCH`. The host **must** reject that ambiguous group state, not falsely claim a clear or relax its outsider-signal protections. Guardian KGC1 now uses a private spawned-child revocation path: revoke the exact role/IPC lease, signal only the originally attested group, wait/reap the **same owned direct `Child`** within the existing shutdown deadline, and only then request host `CONTROL_CLEAR`. The host still independently retires the enrolled group before sending `CONTROL_CLEARED`, and failed original-child reaping prevents that ACK. Today that host retirement is a birth-attested `killpg(SIGKILL)` whose success means the signal was delivered, not that the group is gone: after a delivered `killpg` the host does not wait for `kill(-pgid, 0)` to report `ESRCH`, so a signalled member can still be exiting when `CONTROL_CLEARED` is sent. A bounded wait for `ESRCH` exists only on the path where the original leader is no longer inspectable and the group probe returns `EPERM` (at most a quarter of the shutdown deadline); `EPERM` alone never certifies absence. The post-kill absence wait is not implemented and remains open on #947 / review thread r4308763083. Other supervisor leases retain their existing default revocation behavior, and pre-spawn error paths retain ordinary lease-only cleanup. A real macOS test with authenticated KGC1, Bun and a same-PGID `/bin/sleep` descendant reproduced the original `UnexpectedEof` plus unproven-leader error **before** the change, passed afterward, and returned to red when the exact post-signal original-child reap was deliberately removed. This is a bounded cleanup-order repair, not a lifetime-pinned PGID handle, process-escape guarantee or wider timeout.
+
+**Authenticated Guardian startup versus host shutdown.** Guarded Guardian validates the host-only liveness descriptor **before** establishing authenticated KGC1 control. A legitimate immediate `S` after authentication but before a first supervisor generation receives exactly one `KSA`, then requires bounded host EOF; an early `Q` or duplicate/conflicting shutdown byte is rejected without a forged acknowledgment. Native subprocess cuts after private authentication **and** immediately after the no-pending-S probe (before synchronous first-PREPARE startup) prove that a real S write/flush receives KSA and the Guardian exits without executing Bun. The post-probe case first failed because host recovery denial rejected initial PREPARE before the Guardian could read S. On that exact startup-failure path, the Guardian now distinguishes authenticated S from bare EOF, sends KSA only after real S, and requires bounded host EOF. The host accepts only its privately typed first-PREPARE recovery-denial result after verified KSA, permanent initial denial, and absence of a registered group. The host retains its original recovery mutex through the physical S write/flush so a control worker cannot observe denied recovery before the actual orderly byte is queued; it drops the lock before reading KSA or joining the worker. A Guardian that has already received an authentic initial `CONTROL_PREPARED` stores that admission fact and cannot reinterpret a later local factory/spawn/codec error—even `UnexpectedEof`—as the host denying initial PREPARE. Native adversarial tests exercise a held real after-PREPARED failing factory and a complete first KGC1 PREPARE decoded by the host while its denial-before-S mutex remains held; mutation controls independently demonstrate false-clean startup failure and early denial exposure when each check is removed. No new timeout, privilege, wire record or public API was introduced. These exercised cuts do not establish every later shutdown interleaving. The no-flag host therefore cancels an unbound startup after dev-lease loss with that orderly S, never Q; a real host test with the lease closed before Bound failed with the Guardian's missing KQA and passes with S. When a stop arrives after a successor was prepared but before it was spawned, the Supervisor drops the unspawned command (and with it the only child-side pre-exec PID writer) before revoking its lease, so revoke proceeds at pipe EOF instead of waiting out the PID-receipt deadline that would overrun the host's own Guardian-exit deadline.
+
+**Post-shutdown `CONTROL_SPAWNED` admission.** An already minted `CONTROL_PREPARED` locator does not grant future execution. The host now holds the same recovery decision mutex across native `SPAWNED` lineage/birth validation, registered-generation retention and the complete `CONTROL_REGISTERED` write. The physical host `S` is serialized against that release: if permanent denial wins first, no `REGISTERED` or Bun pre-exec permit may be emitted. A late, real Guardian-child `SPAWNED` takes temporary birth-attested host custody, terminates that native group and revokes its prepared role lease before reporting a fatal refused-registration result. Unexpected, malformed or foreign-PID records never gain signal authority. A failure-first real macOS test stops the Guardian reporter before its KGC1 `SPAWNED`, flushes the host's actual S, and independently witnesses the host decoding the full post-S SPAWNED record, verifying the original Guardian-child kernel birth, refusing the corresponding REGISTERED gate, retiring the group and observing no Bun JavaScript marker. The pre-fix host wrongly reached REGISTERED; after the fix the native denied child does not receive an exec permit. This intentionally **does not promise clean KSA** when an initial native spawn was already in flight: the host reports that shutdown cut as a terminal startup/refusal if it cannot attribute the acknowledgment, rather than certifying an unfinished generation. A separate real-process KGC1 state regression proves that after `REVOKE` consumes the prepared lease, a later `SPAWNED` cannot use even a genuine test-owned live child as a native signaling target; removing the missing-lease guard makes the test fail. This latter test exercises host recovery state, not a physical S writer. Existing read-then-signal PGID limitations remain; no kernel-pinned group handle or outside-process custody was introduced.
+
+**macOS reaped-member ambiguity after Guardian CLEAR.** The later hosted macOS `dev_lifecycle::dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host` run exposed another kernel timing cut even with the original Bun `Child` reaped: a killed same-group descendant can temporarily remain a zombie under a different parent. The registered leader then yields `getpgid(leader) == ESRCH`, while `kill(-PGID, 0)` yields `EPERM` until that member is itself reaped. The previous host fail-closed path returned immediately, closed authenticated KGC1, and made the Guardian's orderly shutdown fatal. The host now retries **only that ambiguous, read-only absence probe** for at most one quarter of the existing five-second shutdown deadline, using the existing control polling interval. It accepts retirement only on genuine `ESRCH`; if a signallable group is observed at the FIRST probe with the original leader already missing, the original retained-group kill path still applies; after any EPERM ambiguity, only ESRCH can succeed and a newly signallable group fails closed. No EPERM is accepted as absence, no unknown group gains kill authority, and the shipping timeout remains unchanged. A deterministic macOS test with two real test-owned same-group children, the original leader reaped and the killed second member temporarily left as a zombie, reproduced the exact previous `registered group identity unavailable` fault before the patch and passed after it. That local proof does not yet imply a green hosted macOS rerun or atomic kernel custody.
+
+**macOS containment limit and stronger packaged owner.** The birth check is a point-in-time observation, **not** an atomic kernel-bound signal handle: there remains a check-to-`killpg` race, and a denied unknown group may contain legitimate escaped descendants. A process group alone cannot prevent a Bun child calling `setsid`/changing groups, guarantee that a `SIGSTOP`-suspended pre-exec child promptly processes pipe EOF, or clean up when both the host and Guardian are killed after Bun exec. macOS offers no portable unprivileged parent-death kill primitive in this raw executable-adjacent stage. Apple's app-bundled XPC/launchd custody and `AbandonProcessGroup` rules are a distinct packaged, independently validated candidate (KEL-78 primary-source ledger M13), not an authorized implicit dependency of the raw-stage Guardian. Do not admit a `strict` containment state or claim universal descendant cleanup until that separate lifecycle, signing/sandbox and adversarial OS evidence exists.
+
+Native negative controls explicitly demonstrate both unsolved schedules: a real Bun + same-group descendant remains live when **host and Guardian** are killed together after exec, and a real Bun `detached: true` child moves to a separate process group/session and survives ordinary Guardian cleanup. Each test observes the escape before its separate birth-attested test-only rescue. Neither test is evidence of universal containment. Launchd/XPC requires a new signed packaged-owner design with explicit lifecycle, app-sandbox and installation approvals; no raw-stage fallback may silently register a persistent OS service.
+
+The platform-scoped rules above do not waive the common default-deny host
+contract. Native acceptance must exercise real process-group, FD inheritance and
+cleanup behavior. Test-layout and OS evidence are owned by .agents/test-layout.md
+and .agents/testing.md, respectively.
+
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
 The runtime accepts only host-declared roles. A role declaration names a trusted bundled
@@ -1213,19 +1246,19 @@ authenticated boot read, and the typed `WriterActive` refusal of every other con
 separately requires proof that the prior process family exited. `bootstrap.lock`
 remains KEL-266's initializer marker.
 
-Windows keeps absent-target version-directory publication separate from mutable-record
-replacement. A fixed typed adapter replaces only prevalidated journal/floor/current/
-known-good slots in the same parent with
-`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`; it writes, flushes and reads
-back a protected sibling first, closes conflicting mutable-record pins, replaces under
-the stable lease, then reopens and verifies exact bytes and profile before advancing.
-It never truncates in place, copies across volumes, schedules work after reboot or
-accepts caller paths/flags. A failure after replacement is effect-aware and does not
-claim the old bytes stayed unchanged. The `keld-update` crate rule still keeps
-`publish_new` absent-target-only and permits only the separate fixed-slot replacement
-adapter, which refuses every leaf outside journal/floor/current/last-known-good/
-previous-known-good before the system call. Its exact diff requires independent
-unsafe/security review.
+Windows keeps absent-target version publication separate from mutable-record
+replacement. Both use `NtCreateFile` to open the exact source without following a
+reparse point, relative to the retained same-volume parent handle with
+`FILE_WRITE_THROUGH`, then synchronous `NtSetInformationFile(FileRenameInformation)`
+with one checked destination component relative to that same `RootDirectory`.
+`publish_new` refuses an occupied target; the fixed-slot replacement adapter permits
+only journal/floor/current/last-known-good/previous-known-good and sets replace-existing
+under the writer lease after flushing and reading back the protected pending sibling
+and closing conflicting record pins. Reopen and verify exact bytes and profile before
+advancing. Neither path truncates in place, resolves ambient paths, copies across
+volumes, schedules work after reboot or accepts caller paths/flags. A replacement
+failure is effect-aware; it does not claim old bytes stayed unchanged. All updater
+unsafe remains in `windows_fs.rs` and requires independent security review.
 
 **Health identity.** A candidate reports over a private channel whose identity
 `keld-update` mints inside the lease-holding attempt owner for the journaled attempt.
@@ -1306,22 +1339,26 @@ state.
 same-filesystem condition is unavailable, and each support cell retains native crash-cut
 evidence.
 
-- Windows: require a supported local volume. Stage the entire version as one unique
-  sibling directory under `versions/`; create `tree/`, `content.tar`
-  and `.complete` there in that order, call `FlushFileBuffers` on every
-  writable file handle, close all stage handles, then publish the absent final version
-  directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`; an update does so
-  only after its `publish-pending` journal is durable. Reopen the
-  final directory and read back every digest, policy and marker before floor and pointer
-  publication. Journal/pointer record replacement separately uses a
-  same-directory temporary file, `FlushFileBuffers`, and same-volume
-  `MoveFileExW` with replace-existing plus write-through. Neither path sets
-  `MOVEFILE_COPY_ALLOWED` or claims directory-handle `FlushFileBuffers`.
-  Real crash-cut evidence must establish this admitted filesystem cell before support.
-  Microsoft documents the
-  [file flush](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
-  and [write-through move](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-movefileexw)
-  contracts.
+- Windows: require a supported fixed local NTFS volume. Stage the entire version
+  as one unique sibling directory under `versions/`; create `tree/`,
+  `content.tar` and `.complete` in order, call `FlushFileBuffers` on each
+  writable file handle, and close the stage handles. Publish the absent final version
+  with `NtCreateFile` (nofollow and `FILE_WRITE_THROUGH`) for the source and synchronous
+  `NtSetInformationFile(FileRenameInformation)` for one checked destination component,
+  both relative to the same retained directory handle. An update publishes only
+  after its `publish-pending` journal is durable; reopen and read back all digests,
+  policy and marker before floor/pointer advancement. Journal/pointer replacement
+  separately uses a same-directory protected temporary file, `FlushFileBuffers`,
+  and the same handle-relative rename with the typed replace-existing flag.
+  Neither path copies across volumes, schedules reboot work, reconstructs ambient
+  paths or claims directory-handle `FlushFileBuffers`. Native process-crash cuts
+  establish journal/rename ordering, not sudden power-loss equivalence with the old
+  `MoveFileExW` adapter; independent physical persistence proof remains pending.
+  The contract does not waive that durability gate. Microsoft's
+  [file flush](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
+  [write-through NTFS metadata](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilea)
+  and [native rename](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+  contracts govern the adapter.
 - Linux, after its package predecessor: `fsync` each file,
   same-filesystem `rename`, then `fsync` every directory whose entry
   changed, bottom-up. POSIX notes that directory synchronization is required for

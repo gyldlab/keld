@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::AsRawHandle as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO,
@@ -170,5 +170,75 @@ pub(super) fn clear_mount_point_on_open_directory(directory: &File) {
         0,
         "remove fixture reparse data: {}",
         std::io::Error::last_os_error()
+    );
+}
+
+/// Builds one sibling-rename fixture and retains its real parent with deliberate
+/// delete sharing, so a later step can rename it. `original` holds the real source
+/// (and an optional prior destination); `outside` holds a decoy source and a
+/// destination sentinel. Returns `(root, parent, original, moved, outside)`.
+pub(super) fn rename_fixture(
+    source: &str,
+    destination: &str,
+    prior_destination: Option<&[u8]>,
+) -> (tempfile::TempDir, File, PathBuf, PathBuf, PathBuf) {
+    let fixture = tempfile::tempdir().expect("relative rename fixture");
+    let original = fixture.path().join("original");
+    let moved = fixture.path().join("moved");
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir(&original).expect("real original parent");
+    std::fs::create_dir(&outside).expect("hostile outside directory");
+    std::fs::write(original.join(source), b"retained authenticated bytes")
+        .expect("prepare real source before renaming parent");
+    if let Some(prior) = prior_destination {
+        std::fs::write(original.join(destination), prior).expect("original typed destination");
+    }
+    std::fs::write(outside.join(source), b"outside decoy source").expect("outside decoy");
+    std::fs::write(outside.join(destination), b"outside destination sentinel")
+        .expect("outside destination");
+    let parent = retained_directory(&original);
+    (fixture, parent, original, moved, outside)
+}
+
+/// Moves the real retained parent to `moved` and plants a junction at its vacated
+/// `original` spelling that resolves to `outside`, then checks both spellings.
+pub(super) fn substitute_parent_spelling(
+    original: &Path,
+    moved: &Path,
+    outside: &Path,
+    source: &str,
+) {
+    std::fs::rename(original, moved).expect("rename nonempty parent while pinned");
+    junction(original, outside);
+    assert_eq!(
+        std::fs::read(original.join(source)).expect("hostile alias reads outside decoy"),
+        b"outside decoy source"
+    );
+    assert_eq!(
+        std::fs::read(moved.join(source)).expect("real retained source"),
+        b"retained authenticated bytes"
+    );
+}
+
+/// The rename consumed the real source and wrote its bytes to the destination in
+/// the retained (moved) parent, and left the outside decoy and sentinel untouched.
+pub(super) fn assert_rename_stayed_in_retained_parent(
+    moved: &Path,
+    outside: &Path,
+    source: &str,
+    destination: &str,
+) {
+    assert!(!moved.join(source).exists(), "real source must be consumed");
+    assert_eq!(
+        std::fs::read(moved.join(destination)).expect("destination in retained parent"),
+        b"retained authenticated bytes"
+    );
+    assert_eq!(
+        std::fs::read(outside.join(source)).expect("outside decoy source"),
+        b"outside decoy source"
+    );
+    assert_eq!(
+        std::fs::read(outside.join(destination)).expect("outside destination sentinel"),
+        b"outside destination sentinel"
     );
 }

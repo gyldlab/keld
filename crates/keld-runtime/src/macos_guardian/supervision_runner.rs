@@ -1,14 +1,23 @@
 //! Supervised child execution and authenticated private group registration.
-use super::{
-    AsFd, CapturedOutput, Command, CommandExt, CrashLedger, Duration, GENERATION_CONTROL_POLL,
-    GenerationControlPeer, GenerationControlReader, GuardedPrimaryPreparer, GuardianReport,
-    REGISTRATION_ENV, REGISTRATION_LEN, REGISTRATION_MAGIC, Read, RestartPolicy, RuntimeError,
-    Stdio, SupervisedGuardianPreparer, Supervisor, SupervisorOutcome, Write,
-    await_guarded_primary_liveness, await_host_death, collapse_failures, handshake_client, io,
-    lifecycle_error, observe_supervised_liveness, parse_app_link, set_liveness_nonblocking,
-    terminate_registered_group, validate_group_pid, validate_liveness_bootstrap,
+use super::generation_host::runtime_io_kind;
+use super::host_liveness::{
+    observe_failed_initial_preparation_shutdown, observe_pre_generation_shutdown,
 };
-use std::sync::atomic::AtomicBool;
+use super::{
+    AsFd, CapturedOutput, Command, CrashLedger, Duration, GENERATION_CONTROL_POLL,
+    GenerationControlPeer, GenerationControlReader, GuardedPrimaryPreparer, REGISTRATION_ENV,
+    REGISTRATION_LEN, REGISTRATION_MAGIC, Read, RestartPolicy, RuntimeError,
+    SupervisedGuardianPreparer, Supervisor, SupervisorOutcome, Write,
+    await_guarded_primary_liveness, collapse_failures, handshake_client, io, lifecycle_error,
+    observe_supervised_liveness, parse_app_link, set_liveness_nonblocking,
+    validate_liveness_bootstrap,
+};
+#[cfg(test)]
+use super::{
+    CommandExt, GuardianReport, Stdio, await_host_death, terminate_registered_group,
+    validate_group_pid,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(super) fn run_supervised_with_registration<R, W, C, A, S, F>(
@@ -121,6 +130,7 @@ where
     Ok((leader_pid, crash_ledger, output))
 }
 
+#[cfg(test)]
 pub(super) fn run_with_registration<R, W, S, F>(
     mut command: Command,
     mut liveness: R,
@@ -301,17 +311,32 @@ where
     C: FnMut(&str) -> Result<Command, RuntimeError> + Send + 'static,
     A: Write,
 {
+    // Validate the host-exclusive liveness pipe BEFORE authenticating the
+    // Guardian registration stream. Once authentication completes, the host
+    // is allowed to send Q/S and close its writer at any moment. The old
+    // ordering treated a legitimate early Q/S as malformed bootstrap data
+    // and could turn concurrent startup/shutdown into a spurious failure.
+    validate_liveness_bootstrap(&mut liveness)?;
     let control = connect_guardian_registration()?;
+    #[cfg(test)]
+    super::tests::bootstrap_shutdown_race::hold_guardian_after_authenticated_control()?;
     control
         .set_read_timeout(Some(GENERATION_CONTROL_POLL))
         .map_err(|source| lifecycle_error("macOS guardian generation control deadline", source))?;
     control
         .set_write_timeout(Some(GENERATION_CONTROL_POLL))
         .map_err(|source| lifecycle_error("macOS guardian generation control deadline", source))?;
-    validate_liveness_bootstrap(&mut liveness)?;
+    if observe_pre_generation_shutdown(&mut liveness, &mut quit_ack)? {
+        // The authenticated Host requested shutdown before any generation
+        // could execute Bun. KSA and actual host EOF are already observed.
+        return Ok(CapturedOutput::default());
+    }
+    #[cfg(test)]
+    super::tests::bootstrap_shutdown_race::hold_guardian_after_idle_probe()?;
     let host_unavailable = Arc::new(AtomicBool::new(false));
     let preparation_cancelled = Arc::new(AtomicBool::new(false));
-    let supervisor = Supervisor::start_prepared(
+    let initial_prepared = Arc::new(AtomicBool::new(false));
+    let supervisor = match Supervisor::start_prepared(
         RestartPolicy::default(),
         GuardedPrimaryPreparer {
             command_factory,
@@ -321,8 +346,41 @@ where
             })),
             host_unavailable: Arc::clone(&host_unavailable),
             preparation_cancelled: Arc::clone(&preparation_cancelled),
+            initial_prepared: Arc::clone(&initial_prepared),
         },
-    )?;
+    ) {
+        Ok(supervisor) => supervisor,
+        Err(startup_error) => {
+            // The first startup result is synchronous. On Err, no initial
+            // child was handed to the supervisor and Bun has not executed.
+            // A concurrent real host S wins its pre-generation shutdown
+            // attribution; a bare host EOF or unrelated startup failure
+            // must not forge KSA or turn a genuine error into success.
+            // Only host-rejected first PREPARE has this EOF shape before a
+            // genuine PREPARED response. Once PREPARED was admitted, a local
+            // factory/codec/spawn failure must remain fatal even if the host
+            // concurrently sent S; a KSA there would mask real startup loss.
+            let host_rejected_first_prepare = !initial_prepared.load(Ordering::Acquire)
+                && matches!(
+                    runtime_io_kind(&startup_error),
+                    Some(io::ErrorKind::UnexpectedEof)
+                );
+            if host_rejected_first_prepare {
+                match observe_failed_initial_preparation_shutdown(&mut liveness, &mut quit_ack) {
+                    Ok(true) => return Ok(CapturedOutput::default()),
+                    Ok(false) => {}
+                    Err(control_error) => {
+                        // Malformed Q, duplicate S, acknowledgment I/O failure
+                        // or an unclosed writer is an independent fault.
+                        // Preserve the original authenticated KGC1 failure;
+                        // never overwrite its security/protocol provenance.
+                        return Err(collapse_failures(vec![startup_error, control_error]));
+                    }
+                }
+            }
+            return Err(startup_error);
+        }
+    };
 
     set_liveness_nonblocking(&liveness, true)?;
     let (liveness_result, quit_accepted, host_dead) = await_guarded_primary_liveness(

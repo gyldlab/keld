@@ -34,9 +34,8 @@ use keld_ipc::{
 use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild, nul_terminated_wide};
 
 use windows_sys::Win32::Foundation::{
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_PARAMETER, FILETIME,
-    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, GetHandleInformation, HANDLE,
+    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 #[cfg(test)]
 use windows_sys::Win32::Foundation::{ERROR_CANCELLED, S_FALSE, S_OK};
@@ -65,12 +64,21 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_TERMINATE, SetWaitableTimer, TerminateProcess, WaitForSingleObject,
 };
 
+#[cfg(test)]
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+
 const HOST_START_TOKEN_V1: &[u8; 10] = b"KELDHOST/1";
 /// Fixed one-shot stage-cleanup signal written by a live `keld dev` launcher.
 pub const WINDOWS_DEV_STAGE_CLEANUP_RELEASE_V1: &[u8; 14] = b"KELD-CLEANUP/1";
 const LIFECYCLE_ATTEMPT_HANDOFF_LEN: usize = 8 + 1 + 32 + 32 + 8 + 8;
 const LIFECYCLE_ATTEMPT_ACK_LEN: usize = 8 + 32 + 32 + 4;
 const LIFECYCLE_QUERY_HANDOFF_LEN: usize = 8 + 1 + 32 + 32 + 8;
+
+mod lifecycle_frames;
+use lifecycle_frames::{
+    encode_lifecycle_attempt_ack, encode_lifecycle_attempt_handoff, encode_lifecycle_query_handoff,
+    encode_lifecycle_query_receipt,
+};
 
 /// Result of the cleanup helper's private launcher pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2779,70 +2787,11 @@ fn open_lifecycle_transfer_target(
     }
 }
 
-fn encode_lifecycle_attempt_handoff(
-    binding: WindowsLifecycleBinding,
-    remote_job: usize,
-    remote_lease: usize,
-) -> Result<[u8; LIFECYCLE_ATTEMPT_HANDOFF_LEN], WindowsHostJobError> {
-    let remote_job = u64::try_from(remote_job).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle attempt handoff record",
-            "remote Job handle exceeds the wire integer width",
-        )
-    })?;
-    let remote_lease = u64::try_from(remote_lease).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle attempt handoff record",
-            "remote lease handle exceeds the wire integer width",
-        )
-    })?;
-    let mut record = [0_u8; LIFECYCLE_ATTEMPT_HANDOFF_LEN];
-    record[..8].copy_from_slice(b"KELD-HO1");
-    record[8] = WindowsLifecyclePurpose::CoordinatorToKeeper as u8;
-    record[9..41].copy_from_slice(binding.attempt_id());
-    record[41..73].copy_from_slice(binding.lifecycle_channel_id());
-    record[73..81].copy_from_slice(&remote_job.to_le_bytes());
-    record[81..89].copy_from_slice(&remote_lease.to_le_bytes());
-    Ok(record)
-}
-
 fn terminate_incomplete_lifecycle_keeper(reason: &str) -> ! {
     eprintln!(
         "KELD-RUNTIME-014: malformed or incomplete one-shot keeper handoff ({reason}); terminating so unknown remote handles close"
     );
     std::process::abort();
-}
-
-fn encode_lifecycle_query_handoff(
-    binding: WindowsLifecycleBinding,
-    remote_query: usize,
-) -> Result<[u8; LIFECYCLE_QUERY_HANDOFF_LEN], WindowsHostJobError> {
-    let remote_query = u64::try_from(remote_query).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle successor query offer",
-            "remote query handle exceeds the wire integer width",
-        )
-    })?;
-    let mut record = [0_u8; LIFECYCLE_QUERY_HANDOFF_LEN];
-    record[..8].copy_from_slice(b"KELD-QO1");
-    record[8] = WindowsLifecyclePurpose::KeeperToSuccessor as u8;
-    record[9..41].copy_from_slice(binding.attempt_id());
-    record[41..73].copy_from_slice(binding.lifecycle_channel_id());
-    record[73..81].copy_from_slice(&remote_query.to_le_bytes());
-    Ok(record)
-}
-
-fn encode_lifecycle_query_receipt(
-    magic: [u8; 8],
-    binding: WindowsLifecycleBinding,
-    active_processes: u32,
-) -> [u8; LIFECYCLE_ATTEMPT_ACK_LEN] {
-    let mut receipt = [0_u8; LIFECYCLE_ATTEMPT_ACK_LEN];
-    receipt[..8].copy_from_slice(&magic);
-    receipt[8..40].copy_from_slice(binding.attempt_id());
-    receipt[40..72].copy_from_slice(binding.lifecycle_channel_id());
-    receipt[72..76].copy_from_slice(&active_processes.to_le_bytes());
-    receipt
 }
 
 fn terminate_lifecycle_transfer_target(
@@ -3010,18 +2959,6 @@ fn attenuate_keeper_activation_lease(
     Ok(reduced)
 }
 
-fn encode_lifecycle_attempt_ack(
-    binding: WindowsLifecycleBinding,
-    active_processes: u32,
-) -> [u8; LIFECYCLE_ATTEMPT_ACK_LEN] {
-    let mut acknowledgement = [0_u8; LIFECYCLE_ATTEMPT_ACK_LEN];
-    acknowledgement[..8].copy_from_slice(b"KELD-HR1");
-    acknowledgement[8..40].copy_from_slice(binding.attempt_id());
-    acknowledgement[40..72].copy_from_slice(binding.lifecycle_channel_id());
-    acknowledgement[72..76].copy_from_slice(&active_processes.to_le_bytes());
-    acknowledgement
-}
-
 fn process_token_facts(
     process: HANDLE,
 ) -> Result<keld_ipc::WindowsPeerTokenFacts, WindowsHostJobError> {
@@ -3098,6 +3035,10 @@ impl std::error::Error for WindowsHostJobError {
         Some(&self.source)
     }
 }
+
+mod host_death_census;
+pub use host_death_census::WindowsExitCensus;
+use host_death_census::{exit_census, open_census_member};
 
 /// The host's own host-death Job, held as a capability (KEL-53 §4 "Candidate
 /// release after commit", *Handle ownership*; Architecture 06 §1).
@@ -3206,237 +3147,6 @@ impl WindowsHostDeathJob {
     }
 }
 
-/// Witness of one host-death census (KEL-53 §4 "Candidate release after
-/// commit", *Census and policy*): what the final clean snapshot showed and what
-/// the census did on the way there.
-///
-/// It is also the proof that [`WindowsLaunchedProcess::detach`] takes by value
-/// (*Launch-record detach*). Only [`WindowsHostDeathJob::release_for_exit`]
-/// constructs it, after the attempt-Job clear its argument witnesses and the
-/// host-death clear it performs, and it is neither `Clone` nor `Copy`, so one
-/// census admits one detach. Outside this crate it cannot be built:
-///
-/// ```compile_fail,E0451
-/// let forged = keld_runtime::windows_job::WindowsExitCensus {
-///     family: 1,
-///     terminated: 0,
-///     snapshots: 1,
-/// };
-/// ```
-///
-/// nor cloned:
-///
-/// ```compile_fail,E0277
-/// fn twice(census: &keld_runtime::windows_job::WindowsExitCensus) {
-///     let _copy: keld_runtime::windows_job::WindowsExitCensus = Clone::clone(census);
-/// }
-/// ```
-///
-/// nor spent twice. The example that compiles detaches one record with one
-/// census; the one below it differs only in the second `detach` of the same
-/// census, which pins every other part of the snippet, and rustdoc checks the
-/// error code on nightly builds only:
-///
-/// ```no_run
-/// use keld_runtime::windows_job::{WindowsExitCensus, WindowsLaunchedProcess};
-/// fn detach(record: WindowsLaunchedProcess, census: WindowsExitCensus) {
-///     let _ = record.detach(census);
-/// }
-/// ```
-///
-/// ```compile_fail,E0382
-/// use keld_runtime::windows_job::{WindowsExitCensus, WindowsLaunchedProcess};
-/// fn detach(
-///     first: WindowsLaunchedProcess,
-///     second: WindowsLaunchedProcess,
-///     census: WindowsExitCensus,
-/// ) {
-///     let _ = first.detach(census);
-///     let _ = second.detach(census);
-/// }
-/// ```
-#[derive(Debug, PartialEq, Eq)]
-pub struct WindowsExitCensus {
-    /// Members of the released family in the final snapshot: processes in both
-    /// the host-death Job and the released attempt Job, the host excluded.
-    family: u32,
-    /// Members outside the family that the census terminated through the handles
-    /// it opened, over every snapshot. A member found already exited is not
-    /// counted; the next snapshot no longer lists it.
-    terminated: u32,
-    /// Snapshots of the host-death Job's process-ID list, the final clean one
-    /// included.
-    snapshots: u32,
-}
-
-impl WindowsExitCensus {
-    /// Members of the released family in the final snapshot: processes in both
-    /// the host-death Job and the released attempt Job, the host excluded.
-    #[must_use]
-    pub const fn family(&self) -> u32 {
-        self.family
-    }
-
-    /// Members outside the family that the census terminated through the handles
-    /// it opened, over every snapshot. A member found already exited is not
-    /// counted; the next snapshot no longer lists it.
-    #[must_use]
-    pub const fn terminated(&self) -> u32 {
-        self.terminated
-    }
-
-    /// Snapshots of the host-death Job's process-ID list, the final clean one
-    /// included.
-    #[must_use]
-    pub const fn snapshots(&self) -> u32 {
-        self.snapshots
-    }
-}
-
-/// The rights the census needs on one listed member: classification through
-/// `IsProcessInJob`, the exit wait and, outside the family, termination.
-const CENSUS_MEMBER_RIGHTS: u32 =
-    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE;
-/// Bound on one wait for a member whose termination was denied, before the
-/// next snapshot. The deadline refusal covers a member that never exits.
-const CENSUS_DENIED_MEMBER_WAIT: Duration = Duration::from_millis(25);
-
-/// Opens one member of the host-death Job by the ID a snapshot listed, with
-/// exactly the census rights. This is the census's only lookup of that reusable
-/// ID: it classifies, waits and terminates through the handle returned here.
-///
-/// An ID that names no process object fails with `ERROR_INVALID_PARAMETER`, the
-/// status the census reads as "exited after the snapshot". An exited member
-/// whose object another open handle still keeps alive opens like a live one;
-/// its handle is signaled, and the census classifies it as any other member.
-/// Which of the two an exited ID shows depends on handles other processes
-/// hold, so the census relies on both.
-fn open_census_member(process_id: u32) -> io::Result<OwnedHandle> {
-    // SAFETY: OpenProcess reads no caller memory; a numeric ID that names no
-    // process object makes it fail. A non-null result is one fresh owning
-    // handle, converted exactly once below.
-    let raw = unsafe { OpenProcess(CENSUS_MEMBER_RIGHTS, 0, process_id) };
-    if raw.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `raw` is the fresh non-null owning handle returned above.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
-}
-
-/// The host-death census of [`WindowsHostDeathJob::release_for_exit`]. The
-/// Jobs' owners retain both handles through the call.
-fn exit_census(
-    host_death_job: HANDLE,
-    attempt_job: HANDLE,
-    deadline: Instant,
-    mut snapshot_ids: impl FnMut() -> Result<WindowsJobProcessIdSnapshot, WindowsHostJobError>,
-    mut open_member: impl FnMut(u32) -> io::Result<OwnedHandle>,
-) -> Result<WindowsExitCensus, WindowsHostJobError> {
-    let own_process_id = std::process::id();
-    let mut terminated = 0_u32;
-    let mut snapshots = 0_u32;
-    loop {
-        snapshots = snapshots.saturating_add(1);
-        let snapshot = snapshot_ids()?;
-        // The kernel's count and list agree except while a membership change is in
-        // flight (KEL-270 F54); such a snapshot is retaken under the deadline, like
-        // one with an exited or reused ID, and is never a refusal.
-        let mut clean = snapshot.is_settled();
-        let mut family = 0_u32;
-        let mut terminating = Vec::new();
-        let mut denied = Vec::new();
-        for process_id in snapshot.ids {
-            if process_id == own_process_id {
-                continue;
-            }
-            let member = match open_member(process_id) {
-                Ok(member) => member,
-                Err(source)
-                    if source.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) =>
-                {
-                    // The member exited after the snapshot; the next one omits it.
-                    clean = false;
-                    continue;
-                }
-                Err(source) => {
-                    return Err(WindowsHostJobError {
-                        phase: "host-death census member open",
-                        source,
-                    });
-                }
-            };
-            let raw = member.as_raw_handle().cast();
-            if !process_in_job(raw, host_death_job, "host-death census Job membership")? {
-                // The listed ID was reused by a process outside the Job.
-                clean = false;
-                continue;
-            }
-            if process_in_job(raw, attempt_job, "host-death census family membership")? {
-                family = family.saturating_add(1);
-                continue;
-            }
-            clean = false;
-            if process_signaled(raw).map_err(|source| WindowsHostJobError {
-                phase: "host-death census member state query",
-                source,
-            })? {
-                // Already terminated; the list removes it on its own.
-                continue;
-            }
-            // SAFETY: `member` is the live handle this census opened with
-            // PROCESS_TERMINATE; the call reads no caller memory. The member is a
-            // process of the host's own Job outside the released family, which
-            // closing that Job at exit would terminate in the same way.
-            if unsafe { TerminateProcess(raw, 1) } == 0 {
-                // Denied, as for a protected process: it stays in the next
-                // snapshot and the deadline refusal covers it.
-                denied.push(member);
-                continue;
-            }
-            terminated = terminated.saturating_add(1);
-            terminating.push(member);
-        }
-        for member in &terminating {
-            wait_handle_until(
-                member.as_raw_handle().cast(),
-                deadline,
-                "host-death census member exit",
-            )?;
-        }
-        if clean {
-            return Ok(WindowsExitCensus {
-                family,
-                terminated,
-                snapshots,
-            });
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(WindowsHostJobError::contract(
-                "host-death census",
-                format!(
-                    "the deadline passed with a member outside the released family or in \
-                     transition still in the host-death Job after {snapshots} snapshot(s); \
-                     not released"
-                ),
-            ));
-        }
-        if let Some(member) = denied.first() {
-            // A member the census could not terminate paces the next snapshot
-            // through a bounded wait on its own handle, in case it exits on its
-            // own; nothing here waits for a member that is already signaled.
-            let bound = now
-                .checked_add(CENSUS_DENIED_MEMBER_WAIT)
-                .map_or(deadline, |bound| bound.min(deadline));
-            wait_handle_bounded(
-                member.as_raw_handle().cast(),
-                bound,
-                "host-death census denied-member wait",
-            )?;
-        }
-    }
-}
-
 /// Installs the one process-lifetime Windows Job that reaps Bun descendants
 /// when the host dies abnormally, and returns it as the [`WindowsHostDeathJob`]
 /// capability.
@@ -3522,7 +3232,6 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::os::windows::io::AsHandle as _;
     use std::os::windows::process::CommandExt as _;
-    use std::path::Path;
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -5673,108 +5382,6 @@ mod tests {
 
     mod claimant_binding;
 
-    /// A same-token `cmd.exe /d /c exit 7`, created suspended and not recorded.
-    fn same_token_exit_command() -> WindowsSuspendedChild {
-        let system32 = system32();
-        let environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR"]
-            .into_iter()
-            .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
-            .collect();
-        WindowsSuspendedChild::spawn_same_token(
-            &system32.join("cmd.exe"),
-            &[
-                OsString::from("/d"),
-                OsString::from("/c"),
-                OsString::from("exit 7"),
-            ],
-            &environment,
-            &system32,
-        )
-        .expect("create a same-token child suspended")
-    }
-
-    #[test]
-    fn a_membership_proof_must_name_both_the_process_id_and_the_creation_time() {
-        // Seam-injected: forged proofs that each match one of the two facts.
-        let mut launched =
-            WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the launch");
-        let process_id = launched.child().id();
-        let creation_time = launched.creation_time;
-        for forged in [
-            WindowsJobMembership {
-                process_id,
-                creation_time: creation_time ^ 1,
-            },
-            WindowsJobMembership {
-                process_id: process_id ^ 4,
-                creation_time,
-            },
-        ] {
-            let refusal = launched
-                .resume(&forged)
-                .expect_err("a proof that matches only one fact refuses");
-            assert!(
-                refusal
-                    .to_string()
-                    .contains("the attempt-Job membership proof names another process"),
-                "{forged:?}: {refusal}"
-            );
-            assert!(
-                !launched.has_exited().expect("query the launch"),
-                "{forged:?}: the refused launch stays suspended"
-            );
-        }
-        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
-        let membership = job
-            .assign_child(launched.child())
-            .expect("assign the launch");
-        launched
-            .resume(&membership)
-            .expect("the real proof resumes the launch");
-        assert_eq!(launched.wait(10_000).expect("the launch exits"), 7);
-    }
-
-    #[test]
-    fn a_launch_record_names_only_a_never_resumed_child() {
-        let mut child = same_token_exit_command();
-        child
-            .resume_held()
-            .expect("spend the resume below the launch record");
-        let refusal = WindowsLaunchedProcess::record(child)
-            .expect_err("a resumed child has no launch record");
-        assert!(
-            refusal.to_string().contains(
-                "the child was already resumed, so its Job membership can no longer precede its first instruction"
-            ),
-            "{refusal}"
-        );
-    }
-
-    #[test]
-    fn suspended_child_owns_the_sole_resume_thread_call() {
-        // KEL-53 §5 reuse decision: one suspended-child type owns the only
-        // primary-thread resume, so a later launch path cannot add a second one.
-        // It counts the identifier, not one call spelling: an alias or a
-        // qualified path must still name it, so the import and the one call
-        // are the only two occurrences.
-        let needle = concat!("Resume", "Thread");
-        let mut calls = Vec::new();
-        let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(&directory).expect("list a source directory") {
-                let path = entry.expect("read a source entry").path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.extension().is_some_and(|extension| extension == "rs") {
-                    let source = std::fs::read_to_string(&path).expect("read a source file");
-                    let count = source.matches(needle).count();
-                    if count != 0 {
-                        let name = path.file_name().expect("file name").to_string_lossy();
-                        calls.push((name.into_owned(), count));
-                    }
-                }
-            }
-        }
-        assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 2)]);
-    }
+    mod suspended_launch;
+    use suspended_launch::same_token_exit_command;
 }

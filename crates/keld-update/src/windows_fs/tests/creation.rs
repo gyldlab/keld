@@ -4,6 +4,9 @@ use super::super::{
     create_directory_relative, create_file_relative_exclusive_with_profile,
     duplicate_activation_lease_for_keeper, publish_new,
 };
+use super::support::{
+    assert_rename_stayed_in_retained_parent, rename_fixture, substitute_parent_spelling,
+};
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::os::windows::fs::OpenOptionsExt as _;
@@ -145,4 +148,166 @@ fn reduced_activation_lease_handle_retains_share_zero_without_write_access() {
         .share_mode(FILE_SHARE_READ)
         .open(&path)
         .expect("writer exclusion ends when the final duplicate closes");
+}
+
+/// An empty retained parent refuses the outside-only source before publication.
+/// This is an early-open negative, NOT a destination `RootDirectory` oracle; the
+/// nonempty reparented positive test below independently exercises both sides.
+#[test]
+fn live_reparse_parent_cannot_redirect_absent_publication() {
+    use super::support::{clear_mount_point_on_open_directory, set_mount_point_on_open_directory};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    };
+    let fixture = tempfile::tempdir().expect("live publisher parent fixture");
+    let original = fixture.path().join("retained-empty");
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir(&original).expect("empty retained parent");
+    std::fs::create_dir(&outside).expect("outside");
+    std::fs::write(outside.join("prepared"), b"outside source").expect("outside source");
+    std::fs::write(outside.join("ambient"), b"ambient control").expect("outside control");
+    let parent = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&original)
+        .expect("pin parent");
+    let hostile = OpenOptions::new()
+        .access_mode(FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&original)
+        .expect("hostile descriptor");
+    set_mount_point_on_open_directory(&hostile, &outside);
+    assert_eq!(
+        std::fs::read(original.join("prepared")).expect("reparse effective"),
+        b"outside source"
+    );
+    std::fs::rename(original.join("ambient"), original.join("ambient-moved"))
+        .expect("ambient rename reaches outside");
+    assert!(outside.join("ambient-moved").is_file());
+
+    let result = super::super::publish_new(&parent, "prepared", "published");
+    let outside_source = std::fs::read(outside.join("prepared"));
+    let outside_target = std::fs::read(outside.join("published"));
+    clear_mount_point_on_open_directory(&hostile);
+    drop(hostile);
+    drop(parent);
+
+    assert!(
+        result.is_err(),
+        "outside source was wrongly admitted: {result:?}"
+    );
+    assert_eq!(
+        outside_source.expect("outside source retained"),
+        b"outside source"
+    );
+    assert!(
+        outside_target.is_err(),
+        "outside destination must stay absent"
+    );
+}
+
+/// An absent retained pending record refuses before typed destination replacement.
+/// The real-source positive case below tests destination `RootDirectory` handling.
+#[test]
+fn live_reparse_parent_cannot_redirect_typed_record_replacement() {
+    use super::super::{RecordSlot, replace_record_slot};
+    use super::support::{clear_mount_point_on_open_directory, set_mount_point_on_open_directory};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_WRITE,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    };
+
+    let fixture = tempfile::tempdir().expect("live record parent fixture");
+    let original = fixture.path().join("retained-empty");
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir(&original).expect("empty retained parent");
+    std::fs::create_dir(&outside).expect("outside");
+    let pending = format!("pending-{}", "a".repeat(64));
+    std::fs::write(outside.join(&pending), b"outside pending").expect("outside prepared record");
+    std::fs::write(outside.join("current"), b"outside current").expect("outside pointer");
+    let parent = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&original)
+        .expect("retain actual empty update parent");
+    let hostile = OpenOptions::new()
+        .access_mode(FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&original)
+        .expect("independent writable handle");
+    set_mount_point_on_open_directory(&hostile, &outside);
+    assert_eq!(
+        std::fs::read(original.join("current")).expect("live mount-point redirects paths"),
+        b"outside current"
+    );
+
+    let result = replace_record_slot(&parent, &pending, RecordSlot::Current);
+    let outside_pending = std::fs::read(outside.join(&pending));
+    let outside_current = std::fs::read(outside.join("current"));
+    clear_mount_point_on_open_directory(&hostile);
+    drop(hostile);
+    drop(parent);
+
+    assert!(
+        result.is_err(),
+        "outside preparation wrongly admitted: {result:?}"
+    );
+    assert_eq!(
+        outside_pending.expect("outside preparation stays"),
+        b"outside pending"
+    );
+    assert_eq!(
+        outside_current.expect("outside pointer stays"),
+        b"outside current"
+    );
+}
+
+/// Opens the real source BEFORE the pathname is redirected. The original
+/// directory can be renamed because this deliberate primitive fixture permits
+/// delete sharing; production's stronger retained pins do not permit the move.
+fn replaced_spelling_with_pinned_source(
+    source: &str,
+    destination: &str,
+    prior_destination: Option<&[u8]>,
+) -> (
+    tempfile::TempDir,
+    File,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let (fixture, parent, original, moved, outside) =
+        rename_fixture(source, destination, prior_destination);
+    substitute_parent_spelling(&original, &moved, &outside, source);
+    (fixture, parent, original, moved, outside)
+}
+
+#[test]
+fn publication_uses_pinned_source_and_destination_after_parent_path_substitution() {
+    let (_fixture, parent, original, moved, outside) =
+        replaced_spelling_with_pinned_source("prepared", "published", None);
+    publish_new(&parent, "prepared", "published")
+        .expect("publish real source into retained parent despite hostile pathname");
+    assert_rename_stayed_in_retained_parent(&moved, &outside, "prepared", "published");
+    drop(parent);
+    std::fs::remove_dir(original).expect("remove junction, not its target");
+}
+
+#[test]
+fn typed_replacement_uses_pinned_source_and_destination_after_parent_path_substitution() {
+    use super::super::{RecordSlot, replace_record_slot};
+
+    let pending = format!("pending-{}", "a".repeat(64));
+    let (_fixture, parent, original, moved, outside) =
+        replaced_spelling_with_pinned_source(&pending, "current", Some(b"prior current"));
+    replace_record_slot(&parent, &pending, RecordSlot::Current)
+        .expect("replace typed record under retained parent despite hostile pathname");
+    assert_rename_stayed_in_retained_parent(&moved, &outside, &pending, "current");
+    drop(parent);
+    std::fs::remove_dir(original).expect("remove junction, not its target");
 }

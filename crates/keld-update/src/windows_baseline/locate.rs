@@ -8,7 +8,7 @@
 //! self-anchor"), never a free-form name.
 
 use std::io;
-use std::path::{Component, Path, PathBuf, Prefix};
+use std::path::Path;
 
 use cap_fs_ext::{DirExt as _, MetadataExt as _};
 use cap_std::fs::{Dir, File};
@@ -20,6 +20,9 @@ use super::{
 use crate::windows_extraction::{ensure_regular, open_ancestors};
 use crate::windows_fs::qualified_volume_root;
 use crate::{ExpectedAppIdentity, UpdateError, WindowsLocatedImage, records};
+
+mod layout;
+use layout::LocatedLayout;
 
 const PROVENANCE: &str = "install-provenance";
 
@@ -332,82 +335,6 @@ fn admit_record(
     };
     trust.require_direct_owner()?;
     Ok((record_file, trust))
-}
-
-/// The installation layout a locator names; every component is checked lexically.
-#[derive(Debug)]
-struct LocatedLayout {
-    install_root: PathBuf,
-    update_name: String,
-    version: String,
-}
-
-impl LocatedLayout {
-    fn parse(image: WindowsLocatedImage, locator: &Path) -> Result<Self, UpdateError> {
-        let mut components = locator.components();
-        let Some(Component::Prefix(prefix)) = components.next() else {
-            return Err(binding(
-                image,
-                "locator",
-                "not an absolute local drive path",
-            ));
-        };
-        if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
-            || components.next() != Some(Component::RootDir)
-        {
-            return Err(binding(
-                image,
-                "locator",
-                "not an absolute local drive path",
-            ));
-        }
-        let mut names = Vec::new();
-        for component in components {
-            let Component::Normal(name) = component else {
-                return Err(binding(image, "locator", "contains a non-normal component"));
-            };
-            names.push(
-                name.to_str()
-                    .ok_or_else(|| binding(image, "locator", "not UTF-8"))?
-                    .to_owned(),
-            );
-        }
-        let [install @ .., update, versions, version, tree, file] = names.as_slice() else {
-            return Err(binding(image, "locator", "too few components"));
-        };
-        if install.is_empty() {
-            return Err(binding(image, "locator", "install root is a volume root"));
-        }
-        if file != image.file_name() || tree != "tree" || versions != "versions" {
-            return Err(binding(
-                image,
-                "locator",
-                format!(
-                    "path must end in exactly versions\\<version>\\tree\\{}",
-                    image.file_name()
-                ),
-            ));
-        }
-        if update.eq_ignore_ascii_case(PROVENANCE) {
-            return Err(binding(
-                image,
-                "locator",
-                "update root conflicts with provenance",
-            ));
-        }
-        records::strict_version(version)
-            .map_err(|_| binding(image, "locator", "version directory is not strict SemVer"))?;
-        let mut install_root = PathBuf::from(prefix.as_os_str());
-        install_root.push(Path::new(r"\"));
-        for name in install {
-            install_root.push(name);
-        }
-        Ok(Self {
-            install_root,
-            update_name: update.clone(),
-            version: version.clone(),
-        })
-    }
 }
 
 /// Volume serial number and file ID of an open object.

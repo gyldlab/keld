@@ -330,6 +330,33 @@ fn expired_waiver_is_not_silent() {
 }
 
 #[test]
+fn waiver_is_valid_through_its_inclusive_expiry_day() {
+    // `Waiver::expires_on` is the inclusive last valid date: scoring on that
+    // day admits the waiver; the next day rejects it.
+    let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+    denom.cells.truncate(1);
+    let mut record = parse_ok();
+    record.result = Verdict::Waived;
+    record.waiver = Some(Waiver {
+        owner: "release".to_owned(),
+        reason: "gap".to_owned(),
+        expires_on: AS_OF,
+    });
+    let board = score(&denom, std::slice::from_ref(&record), AS_OF)
+        .expect("waiver must be valid on its expiry day");
+    assert_eq!(board.waived, 1);
+    assert_eq!(board.passed, 0);
+
+    let day_after = CivilDate {
+        day: AS_OF.day + 1,
+        ..AS_OF
+    };
+    let err = score(&denom, &[record], day_after).expect_err("expired the day after");
+    assert_eq!(err.code(), "KELD-COMPAT-006");
+    assert!(err.to_string().contains("expired on 2026-08-19"), "{err}");
+}
+
+#[test]
 fn empty_cells_score_is_not_complete_and_not_one_hundred_percent() {
     // parse_denominator already rejects `cells: []`. score must too: a
     // hand-built empty Vec used to yield passed==n==0, complete=true, "0/0".

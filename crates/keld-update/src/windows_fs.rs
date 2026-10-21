@@ -5,15 +5,14 @@
 
 use std::fs::File;
 use std::io;
-use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::PathBuf;
 use std::ptr;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+    FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_WRITE_THROUGH, FileRenameInformation, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, ERROR_NO_MORE_FILES, GetHandleInformation, HANDLE_FLAG_INHERIT,
@@ -29,8 +28,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, FILE_TRAVERSE, FileAttributeTagInfo, FileDispositionInfoEx,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetDriveTypeW,
     GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE,
-    SetFileInformationByHandle, VOLUME_NAME_GUID, WRITE_DAC,
+    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, VOLUME_NAME_GUID, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -222,26 +220,12 @@ impl RecordSlot {
     }
 }
 
-/// Publishes to an absent sibling using the retained parent's actual volume path.
+/// Publishes to an absent sibling under the retained parent HANDLE.
+///
+/// Unlike a pathname reconstructed from the parent, the source and destination
+/// remain bound to the retained directory even if its live reparse data changes.
 pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io::Result<()> {
-    let (source, destination) = sibling_paths(parent, source, destination)?;
-    // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
-    // this synchronous call and are distinct single-component siblings under the
-    // retained parent's observed volume-GUID path. The caller retains protected
-    // ancestry and either exclusive bootstrap ownership or the share-zero activation
-    // writer lease. The sole fixed flag requests write-through; replacement,
-    // cross-volume copy and delayed work are absent.
-    let success = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if success == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    rename_relative(parent, source, destination, false)
 }
 
 /// Replaces one fixed activation record slot with a prepared same-parent sibling.
@@ -256,54 +240,136 @@ pub(crate) fn replace_record_slot(parent: &File, source: &str, slot: RecordSlot)
             "replacement source must be a generated pending record sibling",
         ));
     }
-    let (source, destination) = sibling_paths(parent, source, slot.leaf())?;
-    // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
-    // this synchronous call and are distinct single-component siblings under the
-    // retained parent's observed volume-GUID path. The destination is one fixed
-    // record slot; the flags are exactly replace-existing plus write-through, so a
-    // directory destination fails and copy, cross-volume and delayed work are absent.
-    let success = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if success == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    rename_relative(parent, source, slot.leaf(), true)
 }
 
-/// Builds checked NUL-terminated sibling paths under the retained parent's volume path.
-fn sibling_paths(
+/// Atomically renames one entry under one retained parent, with no ambient path
+/// lookup. The source's NT open is write-through: NTFS flushes metadata changes
+/// (including a rename) made through a `FILE_WRITE_THROUGH` handle. This targets
+/// the prior same-volume write-through durability intent without pathname re-resolution;
+/// sudden power-loss equivalence still requires separate physical durability proof.
+/// No copy, fallback, retry or delayed work is permitted.
+///
+/// `FileRenameInfo`'s `RootDirectory` resolves the *destination* relative to the same
+/// pinned parent whose `RootDirectory` resolved the source. Replacement is a typed
+/// choice by the two callers, never inferred from an attacker-supplied name.
+fn rename_relative(
     parent: &File,
     source: &str,
     destination: &str,
-) -> io::Result<(Vec<u16>, Vec<u16>)> {
+    replace: bool,
+) -> io::Result<()> {
     if source.eq_ignore_ascii_case(destination) {
         return Err(unsupported(
             "publication source and destination must differ",
         ));
     }
-    for component in [source, destination] {
-        if component.contains('/') {
-            return Err(unsupported("publication requires one component"));
-        }
-        keld_guard::validate_windows_package_paths(&[component]).map_err(io::Error::other)?;
+    let (source_name, _) = validated_relative_name(source)?;
+    let (destination_name, _) = validated_relative_name(destination)?;
+    // Test seam: a pathname-based rename would already have resolved its paths here.
+    // It sits before the source open because NTFS refuses to rename a directory
+    // while any child is open, so after that open the parent cannot be substituted.
+    #[cfg(test)]
+    run_before_rename_binding();
+    let source =
+        open_units_for_delete_with_options(parent, source_name, DeletePurpose::Remove, true)?
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "publication source is absent")
+            })?;
+
+    // FILE_RENAME_INFORMATION has a trailing, variable-length UTF-16 name. Allocate
+    // at least its full struct size, plus the validated name and a terminator.
+    // u64 storage provides the pointer alignment required by HANDLE fields.
+    let name_bytes = destination_name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| unsupported("rename component too long"))?;
+    let required = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName)
+        .checked_add(name_bytes)
+        .and_then(|length| length.checked_add(size_of::<u16>()))
+        .ok_or_else(|| unsupported("rename buffer too long"))?;
+    let buffer_size = required.max(size_of::<FILE_RENAME_INFORMATION>());
+    let size = u32::try_from(buffer_size).map_err(io::Error::other)?;
+    let mut storage = vec![0_u64; buffer_size.div_ceil(size_of::<u64>())];
+    let name_length = u32::try_from(name_bytes).map_err(io::Error::other)?;
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: storage is writable, 8-byte aligned and large enough for the
+    // complete FILE_RENAME_INFORMATION header, the checked UTF-16 name and a trailing
+    // zero. Each field is written in place through `addr_of_mut!`, so no whole-struct
+    // copy overwrites the zero-filled padding or terminator with undefined bytes:
+    // every byte of the buffer is initialized. The union is set through its full
+    // 32-bit `Flags` member (on little-endian Windows targets the BOOLEAN
+    // `ReplaceIfExists` aliases its low byte), so its high bytes are zero rather
+    // than undefined. The pointers target this one owned buffer, which stays live
+    // through the synchronous NtSetInformationFile call.
+    unsafe {
+        ptr::addr_of_mut!((*info).Anonymous).write(FILE_RENAME_INFORMATION_0 {
+            Flags: u32::from(replace),
+        });
+        ptr::addr_of_mut!((*info).RootDirectory).write(parent.as_raw_handle().cast());
+        ptr::addr_of_mut!((*info).FileNameLength).write(name_length);
+        ptr::copy_nonoverlapping(
+            destination_name.as_ptr(),
+            ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+            destination_name.len(),
+        );
     }
-    let parent = String::from_utf16(&normalized_guid_path(parent)?).map_err(io::Error::other)?;
-    let path = |component: &str| -> io::Result<Vec<u16>> {
-        let mut path = PathBuf::from(&parent);
-        path.push(component);
-        let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
-        if units.contains(&0) || units.len() >= MAX_WINDOWS_PATH_UNITS {
-            return Err(unsupported("publication path is invalid or too long"));
-        }
-        units.push(0);
-        Ok(units)
+    // SAFETY: source is the live DELETE-access synchronous file handle opened
+    // without following a reparse point relative to parent. NtSetInformationFile
+    // honors the live RootDirectory handle for the single-component destination,
+    // unlike the Win32 FileRenameInfo wrapper, which may re-resolve relative
+    // names against the ambient current directory. The aligned initialized
+    // buffer and IO_STATUS_BLOCK out-parameter live through the syscall. The
+    // FILE_WRITE_THROUGH source open flushes NTFS rename metadata before return.
+    let mut io_status = IO_STATUS_BLOCK {
+        Anonymous: IO_STATUS_BLOCK_0 {
+            Status: STATUS_SUCCESS,
+        },
+        Information: 0,
     };
-    Ok((path(source)?, path(destination)?))
+    let status = unsafe {
+        NtSetInformationFile(
+            source.file().as_raw_handle().cast(),
+            &raw mut io_status,
+            info.cast(),
+            size,
+            FileRenameInformation,
+        )
+    };
+    if status < 0 {
+        // SAFETY: this status-to-DOS-error conversion takes no pointers or ownership.
+        let error = unsafe { RtlNtStatusToDosError(status) };
+        return Err(io::Error::from_raw_os_error(error.cast_signed()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only seam: one action that `rename_relative` runs on this thread after
+    /// validating both names and before opening the source or binding the destination.
+    static BEFORE_RENAME_BINDING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Installs the one-shot action for the next relative rename on this thread.
+#[cfg(test)]
+fn set_before_rename_binding(action: impl FnOnce() + 'static) {
+    BEFORE_RENAME_BINDING.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+/// Whether the installed action is still waiting to run on this thread.
+#[cfg(test)]
+fn before_rename_binding_pending() -> bool {
+    BEFORE_RENAME_BINDING.with(|slot| slot.borrow().is_some())
+}
+
+#[cfg(test)]
+fn run_before_rename_binding() {
+    let action = BEFORE_RENAME_BINDING.with(|slot| slot.borrow_mut().take());
+    if let Some(action) = action {
+        action();
+    }
 }
 
 fn volume_guid_root(path: &[u16]) -> io::Result<[u16; VOLUME_GUID_ROOT_UNITS + 1]> {
@@ -684,8 +750,19 @@ pub(crate) fn child_names(directory: &File) -> io::Result<Vec<String>> {
 
 fn open_units_for_delete(
     parent: &File,
+    name: Vec<u16>,
+    purpose: DeletePurpose,
+) -> io::Result<Option<DeletableEntry>> {
+    open_units_for_delete_with_options(parent, name, purpose, false)
+}
+
+/// The write-through form is used only for metadata-changing relative renames.
+/// Existing relative deletion keeps its original access and I/O mode unchanged.
+fn open_units_for_delete_with_options(
+    parent: &File,
     mut name: Vec<u16>,
     purpose: DeletePurpose,
+    write_through: bool,
 ) -> io::Result<Option<DeletableEntry>> {
     // An empty relative name would reopen the parent itself.
     if name.is_empty() {
@@ -735,7 +812,9 @@ fn open_units_for_delete(
             0,
             purpose.share(),
             FILE_OPEN,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | if write_through { FILE_WRITE_THROUGH } else { 0 },
             ptr::null(),
             0,
         )

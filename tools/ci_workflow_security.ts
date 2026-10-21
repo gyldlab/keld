@@ -333,6 +333,10 @@ export function checkWorkflowSecurity(source: string): void {
   checkWebkitgtkAptCache(jobs, stepsByJob);
   const dependencies = stepsByJob.get("dependency-review");
   if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
+  const changes = stepsByJob.get("changes");
+  if (!changes) fail("the changes job must exist.");
+  namedStep(changes, "Test module import ownership");
+  namedStep(changes, "Source budget tool tests");
   const review = requiredAction(dependencies, "Review dependency vulnerabilities", "actions/dependency-review-action", {
     "base-ref": baseRef, "head-ref": headRef, "fail-on-severity": "low",
     "fail-on-scopes": "runtime, development, unknown", "vulnerability-check": "true",

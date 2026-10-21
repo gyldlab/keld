@@ -102,27 +102,138 @@ not a drive-by lockfile bump.
 `bans` and `sources` pass. `deny.toml`'s `[graph] targets` includes Darwin triples, so
 CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 
-### 3.3 `just` targets, and the raw commands if you skip `just`
+### 3.3 Discovering and running `just` commands
 
-| `just` target | Equivalent command |
-|---|---|
-| `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` |
-| `just fmt` | `cargo fmt --all` |
-| `just fmt-check` | `cargo fmt --all --check` |
-| `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
-| `just test` | `cargo nextest run --workspace --profile ci` |
-| `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
-| `just deny` | `cargo deny check` |
-| `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
-| `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
-| `just ci` | Full local gate; the `justfile` `ci` recipe and the gate groups it names are the sole source of its inventory and order. |
-| `just ci-full` | `just ci` with full-corpus Mermaid validation and pinned rendering forced. |
+[`just`](https://github.com/casey/just) is KELD's canonical command runner, executing
+recipes defined in the root [`justfile`](../../justfile). It requires minimum version
+**1.55.0** (`cargo install just --locked`).
+
+#### 3.3.1 Minimal first-run discovery workflow
+
+Newcomers can inspect and discover available recipes safely without executing unintended
+actions:
+
+```bash
+just --version       # verify minimum version (1.55.0+)
+just --list          # discover all public recipes with descriptions
+just --show ci       # inspect the CI entrypoint without executing it
+just fmt-check       # fast, non-mutating formatting check
+```
+
+The `ci` recipe delegates to `tools/ci_local.py`. `just --show ci` displays
+that entrypoint, not the full gate dependency list. To inspect the actual
+gates and their dependencies, read `ci-inventory`, `ci-policy`, and the
+referenced recipes in the root [`justfile`](../../justfile).
+
+When optional tools are missing, specific fallbacks apply to individual components
+(e.g., `cargo test --workspace` can run a partial workspace test suite when
+`cargo-nextest` is unavailable; headless Linux needs `xvfb-run -a cargo test --workspace`
+for GTK/WebKit host tests),
+but raw Cargo commands cannot replace the complete pinned `just ci` gate (which runs
+independent policy gates, TypeScript compilation, formatting, clippy, docs, and dependency
+verification). Similarly, Mermaid diagram rendering in `just ci-full` and
+`just mermaid-render-check` strictly requires a Docker-compatible engine; raw Cargo commands
+cannot render SVG diagrams. State unavailable tools and skipped gates honestly rather
+than claiming a full gate pass.
+
+#### 3.3.2 Task-oriented command guide
+
+Recipes are grouped by developer task and lifecycle stage:
+
+- **Diagnostic backend vs. product demo:**
+  - `just hello`: opens the diagnostic backend window (Phase 1 slice) to verify native
+    host webview initialization.
+  - *Note:* `just hello` is **not** the application demo. To experience the real app session,
+    follow [Run the current demo](README.md#run-the-current-demo) using
+    `keld create → doctor → dev`.
+- **Fast edit loop (rapid local feedback):**
+  - `just fmt-check`: verifies Rust code formatting without touching files (fast check).
+  - `just fmt`: formats Rust files in place (**modifies tracked source files**).
+  - `just clippy`: runs workspace lints with warnings treated as errors (`-D warnings`).
+  - Scoped tests: `cargo nextest run -p <crate> -- <filter>` runs focused tests without
+    the full suite overhead.
+- **Pre-PR verification gates:**
+  - `just ci`: standard local pre-PR gate. Runs independent policy gates in parallel,
+    followed by TypeScript compilation, formatting checks, clippy, workspace tests,
+    documentation builds, and supply-chain checks. On Windows, execute within Git Bash
+    for shell-based recipe compatibility.
+  - `just ci-full`: full assurance mode. Runs `just ci` with full-corpus Mermaid validation
+    and digest-pinned container rendering (requires a Docker-compatible engine).
+- **Docs, architecture, and generated sources:**
+  - `just llms` (**tracked file-mutating** generator) · `just llms-check` · `just llms-test`:
+    maintains the agent-readable `llms.txt` and `llms-full.txt` corpus.
+  - `just product-status` (**tracked file-mutating** generator) · `just product-status-check` ·
+    `just product-status-test`: renders the Markdown view from the canonical TSV ledger.
+  - `just doc-placeholders-check` · `just doc-placeholders-test`: enforces that no template
+    placeholders reach checked-in prose.
+  - `just mermaid-check` · `just mermaid-test` · `just mermaid-render-check`: validates
+    Mermaid diagrams and renders SVG assets via container.
+- **Managed worktrees & session helpers:**
+  - `just work-start <tracker-id> <slug> [--session <id>]`: allocates an isolated task
+    worktree under `.keld-work/worktrees/<task-name>` (e.g.,
+    `just work-start kel-245 workspace --session manual-session-1`).
+  - `just work-status [--sizes]`: inspects active worktrees, task allocations, and session
+    evidence without modifying state (`--sizes` reports disk usage).
+  - `just work-run <task-name> --session <id> -- <command>`: executes a command inside the
+    designated task worktree (e.g.,
+    `just work-run kel-245-workspace --session manual-session-1 -- just ci`).
+  - `just work-finish <task-name> --session <id> --receipt <receipt-path>`: checks and
+    concludes an active task record with a closeout receipt.
+  - `just work-clean <task-name> --session <id> [--apply --receipt <receipt-path>]`:
+    dry-run inspection of scratch by default. With `--apply` and a matching receipt, deletes
+    **only admitted, released-session scratch** under `.keld-work/tmp/` (primary session scratch)
+    and, when present, the legacy path `.keld-work/sessions/<session>/scratch`. It **preserves**
+    the Git worktree, branch, caches, and evidence; it does *not* retire or remove the Git worktree.
+- **Optional maintainer-only / network workflows:**
+  - `just research-sync` · `just hooks-install`: maintainer research synchronization and
+    checkout hook installation. These recipes are **strictly optional** and not required
+    for public external contributions.
+
+#### 3.3.3 Command properties & safety reference
+
+| Recipe | Primary fallback | Filesystem impact | Cost | Notes |
+|---|---|---|---|---|
+| `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` | Writes `target/` artifacts | Moderate | Diagnostic window only; not the app-session demo |
+| `just fmt-check` | `cargo fmt --all --check` then `tools/fmt_included.sh test` and `--check` | None (read-only) | Fast | Fails on unformatted code |
+| `just fmt` | `cargo fmt --all` then `tools/fmt_included.sh` | **Modifies tracked files** | Fast | Overwrites unformatted Rust files in place |
+| `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | Writes `target/` artifacts | Moderate | Warnings treated as errors |
+| `just test` | `cargo nextest run --workspace --profile ci` (Linux: `xvfb-run -a`; partial fallback: `cargo test --workspace`, on headless Linux `xvfb-run -a cargo test --workspace`) | Writes `target/` artifacts | Heavy | Nextest enforces zero retries; Linux host suite requires virtual display (`xvfb-run -a`); raw `cargo test` is partial fallback |
+| `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Writes `target/doc/` | Moderate | Builds rustdoc without dependencies |
+| `just deny` | `cargo deny check` and helper bans check | None | Fast | Workspace check plus `crates/keld-updater-helper/deny.toml check bans`; requires `cargo-deny` |
+| `just ci` | None (runs full declared gate inventory) | Writes `target/` artifacts | Heavy | Sole gate inventory defined in `justfile`; use Git Bash on Windows |
+| `just ci-full` | `just ci` + container Mermaid render | Writes `target/` + assets | Heavy | Requires Docker-compatible engine |
+| `just llms` | `rustc ... tools/llms_docs.rs` | **Modifies tracked files** | Fast | Regenerates `llms.txt` and `llms-full.txt` from sources |
+| `just product-status` | `rustc ... tools/product_status.rs` | **Modifies tracked files** | Fast | Regenerates Markdown view from canonical TSV ledger |
+| `just work-clean` | `tools/workspace.py clean "$@"` | **Deletes scratch only with `--apply`** | Fast | Dry run by default; `--apply` removes session scratch, preserving worktree/branch |
 
 `just ci` is the local mirror of routed CI, minus the three-OS matrix and the manual Mermaid
 visual-inspection/report step. Its independent policy gates run in parallel. TypeScript
 then runs, followed by the Rust gates one at a time, so load-sensitive tests do not share
 the parallel policy load. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
 cross-platform code, CI usually agrees.
+
+#### 3.3.4 Raw command reference
+
+If you develop without `just`, use an executable raw alternative only where one is
+listed. **No maintained raw equivalent** means the full recipe is not available as a
+supported standalone command; use `just` rather than treating a partial command as
+a passing gate. Multi-step recipes (such as `just deny`) and Linux display
+wrappers require every listed step. The `just ci` row below is a canonical
+policy statement, **not** an executable raw substitute:
+
+| `just` target | Raw alternative or availability |
+|---|---|
+| `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` |
+| `just fmt` | `cargo fmt --all` then `tools/fmt_included.sh` |
+| `just fmt-check` | `cargo fmt --all --check` then `tools/fmt_included.sh test` and `tools/fmt_included.sh --check` |
+| `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `just test` | `cargo nextest run --workspace --profile ci` (Linux requires virtual display: `xvfb-run -a cargo nextest run --workspace --profile ci`) |
+| `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
+| `just deny` | `cargo deny check && cargo deny --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans` |
+| `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | **No maintained raw equivalent** — use the `just` recipes; rendering also requires a Docker-compatible engine. |
+| `just llms-test` / `just llms-check` | **No maintained raw equivalent** — use the `just` recipes for generated-corpus tests and freshness. |
+| `just ci` | Full local gate; the `justfile` `ci` recipe and the gate groups it names are the sole source of its inventory and order. |
+| `just ci-full` | **No maintained raw equivalent** — use `just ci-full` for the full-corpus Mermaid check and pinned rendering. |
 
 ---
 
@@ -132,7 +243,7 @@ cross-platform code, CI usually agrees.
 cargo nextest run --workspace --profile ci     # the gate; no retries, a flake fails here
 cargo nextest run -p keld-ipc                  # one crate
 cargo nextest run -p keld-ipc -- frame         # one crate, substring filter
-cargo test --workspace                         # fallback if nextest is unavailable
+cargo test --workspace                         # partial fallback; on headless Linux use xvfb-run -a cargo test --workspace
 ```
 
 The `ci` profile declares no retries, so a test that fails once fails the gate. That is
@@ -182,7 +293,7 @@ job count and trigger details. Its stable responsibilities are:
 
 | Job | Runner(s) | What it does |
 |---|---|---|
-| `rustfmt` | ubuntu | `cargo fmt --all --check` |
+| `rustfmt` | ubuntu | `cargo fmt --all --check`, then `tools/fmt_included.sh test` and `--check` for `include!`d and macro-body `#[path]` files `cargo fmt` never visits |
 | `clippy + test` | ubuntu **and** macos **and** windows, `fail-fast: false` | `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo nextest run --workspace --profile ci`; plus `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS: -D warnings` on ubuntu only |
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
 | `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |

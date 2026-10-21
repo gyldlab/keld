@@ -1,54 +1,51 @@
-#[derive(Debug, Clone, Copy)]
-enum PreparationAttribution {
-    Accepted,
-    Requested,
-    Unattributed,
-}
+use std::io::{self, Write as _};
+use std::os::unix::process::ExitStatusExt as _;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
-struct GatedUnmarkedFailurePreparer {
-    initial: Option<Command>,
-    entered_tx: mpsc::Sender<()>,
-    release_rx: mpsc::Receiver<()>,
-    phase: &'static str,
-    kind: io::ErrorKind,
-    owned: bool,
-}
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::Pid;
 
-impl ChildPreparer for GatedUnmarkedFailurePreparer {
-    type Lease = crate::NoLease;
+use super::super::{
+    REGISTRATION_ENV, RuntimeError, SUPERVISED_QUIT_ACK, SupervisedGuardianPreparer,
+    lifecycle_error, run, run_supervised_with_registration, run_with_registration,
+};
+use super::test_support::{assert_gone, liveness_pipe, long_running_command};
 
-    fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
-        if attempt == 1 {
-            return Ok(PreparedChild {
-                command: self.initial.take().expect("one initial command").into(),
-                lease: crate::NoLease,
-            });
+fn await_stopped_child(pid: u32, deadline: Instant) {
+    loop {
+        let output = Command::new("/bin/ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+            .expect("inspect stopped child state");
+        if String::from_utf8(output.stdout)
+            .expect("process state is UTF-8")
+            .trim()
+            .starts_with('T')
+        {
+            break;
         }
-        assert_eq!(attempt, 2, "the failed preparation must not be retried");
-        self.entered_tx.send(()).expect("observe successor prepare");
-        self.release_rx
-            .recv()
-            .expect("controlled preparation release");
-        if self.owned {
-            return Err(interrupted_successor_preparation(attempt));
-        }
-        Err(RuntimeError::Lifecycle {
-            phase: self.phase,
-            source: io::Error::new(self.kind, "controlled successor preparation failure"),
-        })
+        assert!(Instant::now() < deadline, "child never stopped");
+        std::thread::yield_now();
     }
 }
 
-fn guardian_exchange(
-    guardian: &mut std::os::unix::net::UnixStream,
-    request: &GenerationControlRecord,
-    expected: u8,
-) -> GenerationControlRecord {
-    write_generation_control(guardian, request).expect("write guardian control request");
-    let response = read_generation_control(guardian).expect("read guardian control response");
-    assert_eq!(response.kind, expected);
-    assert_eq!(response.attempt, request.attempt);
-    response
+struct AckSender(mpsc::Sender<[u8; SUPERVISED_QUIT_ACK.len()]>);
+
+impl io::Write for AckSender {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let ack: [u8; SUPERVISED_QUIT_ACK.len()] = bytes.try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "unexpected acknowledgment size")
+        })?;
+        self.0.send(ack).map_err(io::Error::other)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[test]

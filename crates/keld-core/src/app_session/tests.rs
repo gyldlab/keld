@@ -66,18 +66,22 @@ keld_native::keld_native_fs_observer_items! {
     };
 }
 
+// Defined under `cfg(all(debug_assertions, windows))`, so the import follows it;
+// a release-profile Windows test build has no such item to import.
+#[cfg(all(debug_assertions, windows))]
+use super::TestSessionSeam;
+
 #[cfg(windows)]
 use super::{
-    GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation, TestSessionSeam,
-    ValidatedAppIdentity, WINDOWS_SHARING_VIOLATION, WebView2Engine, WindowsBootMode,
-    WindowsDevLeaseMonitor, WindowsProfileMode, await_windows_quit_peer_close_until,
-    clear_windows_handle_inheritance, current_windows_executable, decode_digest,
-    installed_package_error, publish_windows_lease_result, receive_direct_owner_reply,
-    remove_windows_dev_stage_with, run_direct_startup_if_session_running,
-    select_windows_boot_route_with, select_windows_profile_mode, start_direct_dev_lease_tail,
-    target_error, validate_installed_current_exe, validate_installed_from_verified,
-    validate_windows_boot_files, verified_windows_image, windows_identity_error,
-    windows_lease_pipe_is_live,
+    GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation, ValidatedAppIdentity,
+    WINDOWS_SHARING_VIOLATION, WebView2Engine, WindowsBootMode, WindowsDevLeaseMonitor,
+    WindowsProfileMode, await_windows_quit_peer_close_until, clear_windows_handle_inheritance,
+    current_windows_executable, decode_digest, installed_package_error,
+    publish_windows_lease_result, receive_direct_owner_reply, remove_windows_dev_stage_with,
+    run_direct_startup_if_session_running, select_windows_boot_route_with,
+    select_windows_profile_mode, start_direct_dev_lease_tail, target_error,
+    validate_installed_current_exe, validate_installed_from_verified, validate_windows_boot_files,
+    verified_windows_image, windows_identity_error, windows_lease_pipe_is_live,
 };
 
 include!("tests/app_identity_and_shared_probes.rs");

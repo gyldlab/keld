@@ -4372,13 +4372,16 @@ fn await_bound_generation(
         if let Some(lease) = dev_lease.as_deref_mut()
             && lease.poll_lost()?
         {
-            guardian.deny_recovery();
-            guardian
-                .accept_shutdown()
-                .map_err(|source| app_runtime("accepted startup cancellation", &source))?;
-            guardian
-                .shutdown()
-                .map_err(|source| app_guardian_fatal("accepted startup cancellation", &source))?;
+            // Lease loss is a host shutdown, not a Bun-accepted Quit. Before
+            // the first generation exists the Guardian refuses Q; orderly S
+            // is acknowledged at every startup stage and denies recovery
+            // under the lock that orders it against initial PREPARE.
+            guardian.shutdown().map_err(|source| {
+                app_guardian_fatal(
+                    "orderly shutdown after dev lease loss before Bound",
+                    &source,
+                )
+            })?;
             return Ok(None);
         }
         let now = Instant::now();

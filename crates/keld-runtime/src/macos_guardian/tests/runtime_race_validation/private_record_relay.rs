@@ -1,4 +1,18 @@
-fn private_record_relay(
+use std::io::{self, Write as _};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
+
+use super::records_and_cut_types::{
+    COLLECTION, ControlFields, RelayCommand, RelayReceipt, receive_record,
+};
+use super::{
+    CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARED, CONTROL_REVOKE, RuntimeError,
+    lifecycle_error, runtime_io_kind, write_generation_control,
+};
+
+pub(super) fn private_record_relay(
     mut host: UnixStream,
     mut guardian: UnixStream,
     commands: &Receiver<RelayCommand>,
