@@ -5,7 +5,15 @@
 //! because it needs that fixture's real `WebView2` engine, test-owned profile root and
 //! watchdog; the contract it proves belongs to `webview2::navigation_diagnostics`.
 
-use super::*;
+use std::path::Path;
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::Duration;
+
+use super::super::{FIXTURE_DEADLINE, blank_spec, failure};
+use super::{profile_fixture_engine, profile_fixture_root};
+use crate::webview2::tests::run_with_watchdog;
+use crate::{NavTarget, WebviewSpec, WvError};
 
 /// Native Windows COM proof: the actual `create_app`/`NavigateToString`
 /// subscription, not a direct call to the phase reducer, must observe
