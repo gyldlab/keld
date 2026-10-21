@@ -2,6 +2,7 @@
 //! No URLs, profile paths, origins, or renderer content enter diagnostics.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use windows::core::Result as ComResult;
@@ -172,9 +173,28 @@ impl FirstNavigationDiagnostic {
     }
 }
 
+/// Settles the registration of the diagnostic-only `NavigationStarting` observer.
+///
+/// A failed registration is recorded in `diagnostic` (see
+/// [`FirstNavigationDiagnostic::navigation_start_unobserved`]) and is never an error:
+/// this returns `()`, so webview creation cannot fail through it. Only the
+/// `NavigationCompleted` registration, which gates `Ready`, is fatal.
+pub(super) fn record_navigation_start_registration(
+    registration: ComResult<()>,
+    diagnostic: &Mutex<FirstNavigationDiagnostic>,
+) {
+    if let Err(error) = registration {
+        diagnostic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .navigation_start_unobserved(error.code().0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FirstNavigationDiagnostic;
+    use super::{FirstNavigationDiagnostic, record_navigation_start_registration};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -334,6 +354,40 @@ mod tests {
             completed.contains("navigation_start_observer=failed:0x80004005"),
             "{completed}"
         );
+    }
+
+    #[test]
+    fn injected_navigation_start_registration_failure_is_recorded_and_startup_still_completes() {
+        let diagnostic = Mutex::new(FirstNavigationDiagnostic::new());
+        diagnostic
+            .lock()
+            .expect("diagnostic lock")
+            .dispatch_attempted();
+        record_navigation_start_registration(Ok(()), &diagnostic);
+        let registered = diagnostic.lock().expect("diagnostic lock").snapshot();
+        assert!(
+            registered.contains("navigation_start_observer=registered"),
+            "{registered}"
+        );
+
+        // The injected failure stands in for `add_NavigationStarting` returning an
+        // HRESULT; the install path hands that result to this same function.
+        let injected = windows::core::Error::from(windows::Win32::Foundation::E_ACCESSDENIED);
+        record_navigation_start_registration(Err(injected), &diagnostic);
+        let mut diag = diagnostic.lock().expect("diagnostic lock");
+        let unobserved = diag.snapshot();
+        assert!(
+            unobserved.contains("navigation_start_observer=failed:0x80070005"),
+            "{unobserved}"
+        );
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        assert!(
+            diag.completed(Ok(true), None, &ready, &failed),
+            "a failed observer registration must not block the navigation outcome"
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
     }
 
     #[test]
