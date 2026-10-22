@@ -17,6 +17,23 @@ unsafe extern "C" {
     fn kill_process(pid: i32, signal: i32) -> i32;
 }
 
+/// Read-only native liveness observation for bounded macOS test diagnostics.
+/// `kill(pid, 0)` does not signal, mint PID authority or wait for an external
+/// helper; unlike `/bin/kill -0`, this cannot block on subprocess startup/reap.
+/// A numeric PID may be reused, so this is only a visibility hint, not custody.
+pub(crate) fn process_exists_native(pid: u32) -> bool {
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    if raw <= 1 {
+        return false;
+    }
+    // SAFETY: Darwin kill(2) with signal zero performs only the kernel
+    // existence/permission check for this positive, checked PID; no signal
+    // is delivered and no raw process-group broadcast is possible.
+    unsafe { kill_process(raw, 0) == 0 }
+}
+
 #[test]
 fn shipping_launch_cleanup_reaps_each_owned_process_group() {
     let cli = Command::new("/bin/sleep")

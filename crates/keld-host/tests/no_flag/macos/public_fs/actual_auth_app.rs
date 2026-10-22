@@ -544,7 +544,11 @@ fn observed_auth_family(app_ready: &Value, cli_pid: u32) -> SmokeResult<[u32; 4]
     Ok([host, guardian, bun, descendant])
 }
 
-fn verify_completed_auth_quit(output: &std::process::Output, project: &Path) -> SmokeResult<()> {
+fn verify_completed_auth_quit(
+    output: &std::process::Output,
+    project: &Path,
+    case: &Case,
+) -> SmokeResult<()> {
     require(
         output.status.success(),
         format!(
@@ -553,7 +557,7 @@ fn verify_completed_auth_quit(output: &std::process::Output, project: &Path) -> 
         ),
     )?;
     require(
-        quit_diagnostics::completed_quit_checkpoints_visible(project),
+        quit_diagnostics::completed_quit_checkpoints_visible(project, case.name),
         "successful auth Quit did not expose fixed HTTP and correlated lifecycle checkpoints",
     )
 }
@@ -638,7 +642,7 @@ fn run_case(
         case,
         [host, guardian, bun, descendant],
     );
-    verify_completed_auth_quit(&output, &project.root)?;
+    verify_completed_auth_quit(&output, &project.root, case)?;
     let exits = [
         host_exit.wait(),
         guardian_exit.wait(),
