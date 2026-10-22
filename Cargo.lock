@@ -1642,6 +1642,7 @@ name = "keld-runtime"
 version = "0.0.1"
 dependencies = [
  "keld-compat",
+ "keld-guard",
  "keld-ipc",
  "landlock",
  "nix",
