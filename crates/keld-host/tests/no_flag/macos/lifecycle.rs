@@ -1,5 +1,5 @@
+use crate::support::guardian_exit::GuardianExitWitness;
 use crate::support::native_window::native_windows;
-use crate::support::process::ProcessExitObserver;
 use crate::support::process::await_process_gone;
 use crate::support::process::kill_pid;
 use crate::support::product::{GuardianPidStage, LiveCycle, ProductFixture, guardian_pid_stage};
@@ -89,8 +89,11 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
     // BEFORE Bun receives the real Quit command. This is observation only.
     // A nonchild NOTE_EXITSTATUS registration can be unavailable under the
     // kernel's permission rules. Keep the original T1B Quit acceptance alive
-    // and report only an unproved diagnostic if registration was refused.
-    let mut guardian_exit = ProcessExitObserver::try_arm(guardian_pid).ok();
+    // and report only a refused-registration diagnostic in that case. The
+    // seal read runs immediately before the QUIT write, so a queued exit is
+    // classified as pre-Quit rather than as a post-Quit observation.
+    let mut guardian_exit = GuardianExitWitness::register(guardian_pid);
+    guardian_exit.seal_before_quit_release();
     orderly
         .control_writer
         .write_all(b"QUIT\n")
@@ -128,7 +131,7 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
 /// acknowledgment, UI Quit, or complete process-group cleanup.
 fn wait_orderly_host_with_native_guardian_receipt(
     cycle: &mut LiveCycle,
-    guardian_exit: &mut Option<ProcessExitObserver>,
+    guardian_exit: &mut GuardianExitWitness,
 ) -> Output {
     let guardian_pid = cycle.guardian_pid;
     // The actual Host wait captures its own 20s deadline after pipe setup.
@@ -137,11 +140,6 @@ fn wait_orderly_host_with_native_guardian_receipt(
     let witness_deadline = Instant::now() + EVENT_DEADLINE;
     let mut last_stage = GuardianPidStage::Unproved;
     let mut saw_guardian_absent = false;
-    let mut exit_event = if guardian_exit.is_some() {
-        GuardianExitEventPhase::NoEvent
-    } else {
-        GuardianExitEventPhase::Unproved
-    };
     let mut next_sample = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
         cycle.wait_host_observing(|| {
@@ -149,22 +147,9 @@ fn wait_orderly_host_with_native_guardian_receipt(
             if before_native_poll >= witness_deadline || before_native_poll < next_sample {
                 return;
             }
-            if exit_event == GuardianExitEventPhase::NoEvent
-                && let Some(registered_exit) = guardian_exit.as_mut()
-            {
-                let received = registered_exit.try_poll_exit();
-                // A native event delivered after the original observation cut
-                // is unproved, even if it is otherwise a valid NOTE_EXITSTATUS.
-                exit_event = if Instant::now() >= witness_deadline {
-                    GuardianExitEventPhase::Unproved
-                } else {
-                    match received {
-                        Ok(Some(_)) => GuardianExitEventPhase::Observed,
-                        Ok(None) => GuardianExitEventPhase::NoEvent,
-                        Err(_) => GuardianExitEventPhase::Unproved,
-                    }
-                };
-            }
+            // One shared classifier: a read ending past the observation cut
+            // is unproved, even for an otherwise valid NOTE_EXITSTATUS.
+            guardian_exit.poll(witness_deadline);
             if !saw_guardian_absent {
                 last_stage = guardian_pid_stage(guardian_pid);
                 if last_stage == GuardianPidStage::Absent {
@@ -193,29 +178,13 @@ fn wait_orderly_host_with_native_guardian_receipt(
             };
             // Fixed enum only: no PID, token, filesystem path or raw Host output.
             eprintln!("KEL96_T1B_NATIVE_GUARDIAN_PHASE stage={stage}");
-            eprintln!("KEL96_T1B_NATIVE_EXIT_EVENT stage={}", exit_event.marker());
+            eprintln!(
+                "KEL96_T1B_NATIVE_EXIT_EVENT stage={}",
+                guardian_exit.marker()
+            );
         }
         resume_unwind(failure)
     })
-}
-
-/// Test-only observations about one pre-Quit kernel process subscription.
-/// No event means no exit was observed; it does not prove the Guardian lived.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GuardianExitEventPhase {
-    NoEvent,
-    Observed,
-    Unproved,
-}
-
-impl GuardianExitEventPhase {
-    const fn marker(self) -> &'static str {
-        match self {
-            Self::NoEvent => "guardian_exit_event_not_observed",
-            Self::Observed => "guardian_exit_event_observed_before_host_deadline",
-            Self::Unproved => "guardian_exit_event_unproved",
-        }
-    }
 }
 
 #[cfg(test)]

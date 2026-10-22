@@ -312,12 +312,15 @@ pub(crate) struct ProcessExitObserver {
     pid: u32,
     queue: std::os::fd::OwnedFd,
     observed_status: Option<std::process::ExitStatus>,
+    /// Test seam: the next native read reports the kernel's EINTR outcome.
+    interrupt_next_read: bool,
 }
 
 impl ProcessExitObserver {
     const FILTER: i16 = -5; // EVFILT_PROC
     const EXIT_FLAGS: u32 = 0x8000_0000 | 0x0400_0000; // NOTE_EXIT | NOTE_EXITSTATUS
     const ERROR_FLAG: u16 = 0x4000; // EV_ERROR
+    const EINTR: i32 = 4; // <sys/errno.h>
 
     pub(crate) fn arm(pid: u32) -> Self {
         Self::try_arm(pid).expect("fixture-admitted native process exit observer")
@@ -403,12 +406,31 @@ impl ProcessExitObserver {
             pid,
             queue,
             observed_status: None,
+            interrupt_next_read: false,
         })
     }
 
     /// Read an already armed process-exit event without delaying Host shutdown.
-    /// No event never proves the original process is still live.
+    /// No event never proves the original process is still live. An
+    /// interrupted read is reported as no event; retry loops rely on that.
     pub(crate) fn try_poll_exit(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self.try_read_exit() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+            outcome => outcome,
+        }
+    }
+
+    /// Make the next [`Self::try_read_exit`] see `kevent64` return -1 with
+    /// `EINTR`. The real read still runs first; only an empty result is
+    /// replaced, so arm it while the process is provably live.
+    pub(crate) fn interrupt_next_read(&mut self) {
+        self.interrupt_next_read = true;
+    }
+
+    /// The one zero-time native read. Unlike [`Self::try_poll_exit`], an
+    /// interrupted read stays an `Interrupted` error, so an ordering witness
+    /// never mistakes a read that did not complete for a proven-empty queue.
+    pub(crate) fn try_read_exit(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         use std::os::fd::AsRawFd as _;
         if let Some(status) = self.observed_status {
             return Ok(Some(status));
@@ -433,16 +455,18 @@ impl ProcessExitObserver {
                 &raw const no_wait,
             )
         };
+        // The seam replaces only a real empty read: an event is never dropped.
+        let interrupted = std::mem::take(&mut self.interrupt_next_read) && received == 0;
+        let received = if interrupted { -1 } else { received };
         if received == 0 {
             return Ok(None);
         }
         if received < 0 {
-            let error = std::io::Error::last_os_error();
-            return if error.kind() == std::io::ErrorKind::Interrupted {
-                Ok(None)
+            return Err(if interrupted {
+                std::io::Error::from_raw_os_error(Self::EINTR)
             } else {
-                Err(error)
-            };
+                std::io::Error::last_os_error()
+            });
         }
         if received != 1
             || event.ident != u64::from(self.pid)

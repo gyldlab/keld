@@ -3,6 +3,7 @@ pub(crate) mod control;
 #[cfg(feature = "profile-test-hooks")]
 pub(crate) mod cross_user;
 pub(crate) mod dev_cycle;
+pub(crate) mod guardian_exit;
 pub(crate) mod invalid_stage;
 pub(crate) mod lease_descriptors;
 pub(crate) mod native_window;

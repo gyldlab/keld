@@ -138,6 +138,10 @@ impl QuitBodyReceipt {
         }
     }
 
+    pub(super) fn is_verified(&self) -> bool {
+        self.observed && !self.invalid
+    }
+
     pub(super) fn assert_verified(&self) {
         assert!(
             self.observed && !self.invalid,
