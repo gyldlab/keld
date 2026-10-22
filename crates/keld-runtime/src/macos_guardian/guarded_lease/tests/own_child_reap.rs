@@ -175,7 +175,7 @@ fn guardian_revoke_never_clears_a_group_held_by_a_zombie_it_does_not_reap() {
 /// context. The wrapper hides `raw_os_error()`, so the exact denial is
 /// asserted through the one classifier: once the group is really gone,
 /// `reconcile_denied_signal_after_reap` must accept this very error.
-fn assert_signal_phase_eperm(error: &RuntimeError) {
+pub(super) fn assert_signal_phase_eperm(error: &RuntimeError) {
     assert!(
         matches!(
             error,
@@ -200,7 +200,7 @@ fn assert_signal_phase_eperm(error: &RuntimeError) {
 /// After the group is proven gone, the one classifier still recognises the
 /// returned error as the exact signal-phase denial (and nothing else would
 /// be reconciled into success).
-fn assert_classified_as_denied_signal(identity: GroupIdentity, error: RuntimeError) {
+pub(super) fn assert_classified_as_denied_signal(identity: GroupIdentity, error: RuntimeError) {
     reconcile_denied_signal_after_reap(
         identity,
         error,
