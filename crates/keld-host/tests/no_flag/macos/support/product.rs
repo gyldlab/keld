@@ -237,6 +237,44 @@ pub(crate) struct LiveCycle {
     pub(crate) group_gone: bool,
 }
 
+/// Native kernel presence of the already-attested Guardian process after Q.
+/// Present includes a zombie or a reused PID; only ESRCH is affirmative proof
+/// that the original process number is no longer in the kernel process table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuardianPidStage {
+    Present,
+    Absent,
+    Unproved,
+}
+
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn probe_pid_zero(pid: i32, signal: i32) -> i32;
+}
+
+/// Read native process presence without signaling it or trusting a stale PID
+/// as authority. Only ESRCH proves that this process number is absent.
+pub(crate) fn guardian_pid_stage(pid: u32) -> GuardianPidStage {
+    let Ok(pid) = i32::try_from(pid) else {
+        return GuardianPidStage::Unproved;
+    };
+    if pid <= 1 || i32::try_from(std::process::id()).ok() == Some(pid) {
+        return GuardianPidStage::Unproved;
+    }
+    // SAFETY: kill(pid, 0) checks existence/permission without delivering a
+    // signal. The T1B caller first attests the Guardian's actual Host parent;
+    // the syscall never gains process-kill or process-group authority.
+    if unsafe { probe_pid_zero(pid, 0) } == 0 {
+        GuardianPidStage::Present
+    } else if std::io::Error::last_os_error().raw_os_error() == Some(3) {
+        // Darwin's ESRCH=3: the process entry is absent. Other errors such as
+        // EPERM are never rewritten as successful retirement.
+        GuardianPidStage::Absent
+    } else {
+        GuardianPidStage::Unproved
+    }
+}
+
 impl LiveCycle {
     pub(crate) fn assert_live_product(&mut self) {
         assert_ne!(self.host_pid, self.guardian_pid);
