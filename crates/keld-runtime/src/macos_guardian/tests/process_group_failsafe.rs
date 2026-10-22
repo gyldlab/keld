@@ -1,12 +1,14 @@
 // Group-leader disappearance does not establish group disappearance. An
 // unrelated process in the same private group can outlive the original leader.
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
+use std::os::fd::AsFd as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Instant;
 
 use nix::errno::Errno;
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
@@ -45,6 +47,81 @@ impl Drop for TestOwnedGroupChild {
 // SIGKILL-targeted same-group member has actually transitioned to zombie.
 // Read only the state of the member retained by THIS exact Child owner. A
 // leader's wait status alone never proves a zombie-only EPERM group.
+// The /bin/ps direct Child can exit while another inherited stdout writer is
+// still alive. Waiting for its Child exit therefore does NOT make the pipe read
+// bounded. Use the same original monotonic cleanup clock for every byte read.
+fn bounded_native_state_byte<R: std::io::Read + std::os::fd::AsFd>(
+    reader: &mut R,
+    deadline: Instant,
+) -> Option<u8> {
+    let raw =
+        fcntl(reader.as_fd(), FcntlArg::F_GETFL).expect("inspect owned native observer pipe flags");
+    fcntl(
+        reader.as_fd(),
+        FcntlArg::F_SETFL(OFlag::from_bits_truncate(raw) | OFlag::O_NONBLOCK),
+    )
+    .expect("make owned native observer pipe nonblocking");
+    let mut first = [0_u8; 1];
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "native process-state pipe exceeded original cleanup deadline"
+        );
+        match reader.read(&mut first) {
+            Ok(0) => return None,
+            Ok(1) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "native state byte arrived after original cleanup deadline"
+                );
+                return Some(first[0]);
+            }
+            Ok(_) => unreachable!("one-byte native state read returned multiple bytes"),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                thread::yield_now();
+            }
+            Err(error) => panic!(
+                "native state pipe read failed with class {:?}",
+                error.kind()
+            ),
+        }
+    }
+}
+
+#[test]
+fn silent_owned_native_state_pipe_cannot_block_past_its_monotonic_deadline() {
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+    let (mut reader, silent_peer) = UnixStream::pair().expect("owned native Unix pipe pair");
+    let deadline = Instant::now() + Duration::from_millis(70);
+    let timed_out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bounded_native_state_byte(&mut reader, deadline)
+    }));
+    drop(silent_peer);
+    assert!(
+        timed_out.is_err(),
+        "a live byte-silent native writer cannot block the test observer"
+    );
+}
+
+#[test]
+fn native_state_pipe_receives_exact_first_byte() {
+    use std::os::unix::net::UnixStream;
+    let (mut reader, mut writer) = UnixStream::pair().expect("owned native Unix pipe pair");
+    writer
+        .write_all(b"Z")
+        .expect("one owned process-state byte");
+    assert_eq!(
+        bounded_native_state_byte(&mut reader, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE),
+        Some(b'Z')
+    );
+}
+
 fn native_member_is_zombie(member_pid: u32, deadline: Instant) -> bool {
     assert!(
         Instant::now() < deadline,
@@ -73,19 +150,15 @@ fn native_member_is_zombie(member_pid: u32, deadline: Instant) -> bool {
             ),
         }
     };
-    let mut first = [0_u8; 1];
-    let read = observer
-        .0
-        .stdout
-        .as_mut()
-        .expect("original read-only observer stdout")
-        .read(&mut first)
-        .expect("read one native state byte from reaped observer");
-    assert!(
-        Instant::now() < deadline,
-        "native process-state result arrived after the original cleanup deadline"
+    let first = bounded_native_state_byte(
+        observer
+            .0
+            .stdout
+            .as_mut()
+            .expect("original read-only observer stdout"),
+        deadline,
     );
-    status.success() && read == 1 && first[0] == b'Z'
+    status.success() && first == Some(b'Z')
 }
 
 fn await_owned_native_zombie(member: &Child, deadline: Instant) {
