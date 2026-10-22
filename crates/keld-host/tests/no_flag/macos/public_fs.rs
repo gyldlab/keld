@@ -33,6 +33,8 @@ mod outcomes;
 mod policy_startup;
 #[path = "public_fs/preclick.rs"]
 mod preclick;
+#[path = "public_fs/private_diagnostics.rs"]
+mod private_diagnostics;
 #[path = "public_fs/process_image.rs"]
 mod process_image;
 #[path = "public_fs/project.rs"]
@@ -44,6 +46,10 @@ use observer::{Observation, RecoveryCommand, RecoveryPhase};
 use outcomes::{
     assert_component_outcomes, assert_component_trace, assert_handler_attribution,
     assert_natural_outcomes, assert_page_outcomes,
+};
+use private_diagnostics::{
+    Phase as PrivatePhase, assert_private_eq, assert_private_ne, assert_report_phase,
+    host_exit_summary, observed_marker, output_summary,
 };
 use process_image::process_image_path;
 use project::{
@@ -106,10 +112,10 @@ fn renderer_public_fs_recovers_same_document_after_real_bun_loss() {
             .to_owned()
     };
     for key in ["documentNonce", "javascriptToken"] {
-        assert_ne!(
-            document(&recovered, key),
-            document(&relaunched, key),
-            "healthy new launch must create a new volatile {key}"
+        assert_private_ne(
+            &document(&recovered, key),
+            &document(&relaunched, key),
+            &format!("healthy new launch must create a new volatile {key}"),
         );
     }
 }
@@ -129,10 +135,10 @@ fn renderer_pending_public_fs_call_rejects_once_and_rebinds_replaced_root() {
             .expect("actual document")["documentNonce"]
             .clone()
     };
-    assert_ne!(
-        document(&recovered),
-        document(&relaunched),
-        "healthy relaunch creates a new document"
+    assert_private_ne(
+        &document(&recovered),
+        &document(&relaunched),
+        "healthy relaunch creates a new document",
     );
 }
 
@@ -237,15 +243,7 @@ fn run_launch_with_descendant_quit(
                     .expect("independently attributed product family"),
             );
         }
-        eprintln!(
-            "KELD_KEL140_PUBLIC_WITNESS policy={:?} launch={launch} host={host_pid} window={:?} identities={:?} policy_sha256={} host_sha256={} reports={:?} exercise={exercise:?}",
-            fixture.policy,
-            evidence.window,
-            evidence.family,
-            prepared.digest,
-            prepared.host_digest,
-            evidence.reports,
-        );
+        eprintln!("{}", PrivatePhase::PublicWitness.marker());
     }));
     if observation_result.is_err() {
         // Capture pipes even if the host exited first. Fallback is never success.
@@ -270,10 +268,7 @@ fn run_launch_with_descendant_quit(
         &observer,
         observation_result.is_ok(),
     );
-    eprintln!(
-        "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
-        fixture.policy, evidence.click, evidence.reports,
-    );
+    eprintln!("{}", host_exit_summary(&output, evidence.reports.len()));
     if let Err(failure) = observation_result {
         resume_unwind(failure);
     }
@@ -285,10 +280,7 @@ fn run_launch_with_descendant_quit(
         retirement::assert_after_quit(&output, &evidence, &prepared.target);
     }
     cleanup.bun_group = None;
-    eprintln!(
-        "KELD_KEL140_PUBLIC_CLEANUP launch={launch} exact_stage={} family_gone=true window_gone=true fixture_drop_pending=true",
-        stage.root().display(),
-    );
+    eprintln!("{}", PrivatePhase::PublicCleanup.marker());
     evidence
 }
 
@@ -366,8 +358,11 @@ fn record_recovery_boot(mut report: Value, journal: &mut Vec<Value>) -> Recovery
         .expect("boot report object")
         .remove("appLink");
     report["endpoint"] = json!(endpoint);
-    assert_eq!(report["phase"], "recovery-app-boot", "{report:?}");
-    eprintln!("KELD_KEL140_RECOVERY_BOOT {report}");
+    assert_eq!(
+        report["phase"], "recovery-app-boot",
+        "unexpected recovery bootstrap phase"
+    );
+    eprintln!("{}", observed_marker(&report, PrivatePhase::RecoveryBoot));
     journal.push(report);
     boot
 }
@@ -400,7 +395,11 @@ fn observe_recovery_before_loss(
             .reports
             .recv_timeout(EVENT_DEADLINE)
             .expect("actual pending renderer request");
-        assert_eq!(started["phase"], "recovery-pending-start", "{started}");
+        assert_report_phase(
+            &started,
+            "recovery-pending-start",
+            PrivatePhase::RecoveryPage,
+        );
         assert_eq!(
             started["requests"]
                 .as_array()
@@ -416,10 +415,18 @@ fn observe_recovery_before_loss(
             .reports
             .recv_timeout(EVENT_DEADLINE)
             .expect("actual application handler HTTP barrier");
-        assert_eq!(admitted["phase"], "recovery-handler-pending", "{admitted}");
+        assert_report_phase(
+            &admitted,
+            "recovery-handler-pending",
+            PrivatePhase::RecoveryPage,
+        );
         assert_eq!(admitted["barrier"], "application-handler-only");
         assert_eq!(pid(&admitted, "pid"), first_bun);
-        assert_eq!(admitted["nonce"], started["requests"][2]["nonce"]);
+        assert_private_eq(
+            &admitted["nonce"],
+            &started["requests"][2]["nonce"],
+            "pending handler request nonce",
+        );
         assert_completed_recovery_files(prepared, RecoveryPhase::Pending);
         evidence.reports.extend([started, admitted]);
         Some(fixture.replace_recovery_anchor(prepared))
@@ -464,7 +471,7 @@ fn await_recovery_after_loss(
                         boot = Some(generation_boot);
                     }
                 }
-                _ => panic!("unexpected pending recovery observation: {report}"),
+                _ => panic!("unexpected pending recovery observation kind"),
             }
         }
         (
@@ -546,7 +553,7 @@ fn observe_recovery_actions(
         .reports
         .recv_timeout(EVENT_DEADLINE)
         .expect("G2 public whenReady returned after fresh host admission");
-    assert_eq!(ready["phase"], "app-ready", "{ready}");
+    assert_report_phase(&ready, "app-ready", PrivatePhase::RecoveryBoot);
     assert_eq!(pid(&ready, "pid"), successor_boot.pid);
     let successor = ProcessFamily {
         bun: successor_boot.pid,
@@ -593,10 +600,7 @@ fn observe_recovery_actions(
         "same document; no second initial-page observation"
     );
     observer.send_recovery_command(RecoveryCommand::Quit(successor.bun));
-    eprintln!(
-        "KELD_KEL140_RECOVERY_CONSUMER host={host_pid} window={:?} first_bun={} second_bun={} input_actions=0 completed_witness=[1,2] interrupted_effect_acceptance=false blocked_syscall_acceptance=false full_kel143_acceptance=false",
-        evidence.window, first.bun, successor.bun,
-    );
+    eprintln!("{}", PrivatePhase::RecoveryConsumer.marker());
 }
 
 /// Independent old/new-root effects remain separate from reported G2 success.
@@ -710,7 +714,7 @@ try {
 "#;
     let (old_endpoint, old_token) = old_link.rsplit_once('#').expect("G1 bootstrap");
     let (endpoint, token) = successor_link.rsplit_once('#').expect("G2 bootstrap");
-    assert_ne!(old_endpoint, endpoint, "fresh endpoint");
+    assert_private_ne(old_endpoint, endpoint, "fresh endpoint");
     assert!(old_token != token, "fresh possession token");
     assert!(
         UnixStream::connect(old_endpoint).is_err(),
@@ -733,9 +737,12 @@ try {
     let output = wait_child_output(probe, EVENT_DEADLINE);
     assert!(
         output.status.success(),
-        "server-side stale-token refusal failed: {output:?}"
+        "server-side stale-token refusal failed"
     );
-    assert_eq!(output.stdout, b"RETIRED_TOKEN_SERVER_EOF_NO_REPLY\n");
+    assert!(
+        output.stdout == b"RETIRED_TOKEN_SERVER_EOF_NO_REPLY\n",
+        "unexpected stale-token refusal protocol record"
+    );
 }
 
 fn await_recovery_page(
@@ -750,9 +757,9 @@ fn await_recovery_page(
     assert_eq!(
         report["phase"],
         format!("recovery-{}", phase.as_str()),
-        "{report}"
+        "unexpected recovery renderer phase"
     );
-    eprintln!("KELD_KEL140_RECOVERY_PAGE {report}");
+    eprintln!("{}", observed_marker(&report, PrivatePhase::RecoveryPage));
     evidence.reports.push(report.clone());
     report
 }
@@ -773,9 +780,10 @@ fn assert_collected_recovery_terminals(
 
 fn assert_pending_recovery_rejection(report: &Value, initial_document: &Value) {
     for key in ["documentNonce", "javascriptToken", "initial"] {
-        assert_eq!(
-            report[key], initial_document[key],
-            "same pending renderer {key}"
+        assert_private_eq(
+            &report[key],
+            &initial_document[key],
+            &format!("same pending renderer {key}"),
         );
     }
     let request = &report["requests"][2];
@@ -792,12 +800,13 @@ fn assert_pending_recovery_rejection(report: &Value, initial_document: &Value) {
         .iter()
         .filter(|terminal| terminal["nonce"] == request["nonce"])
         .collect();
-    assert_eq!(
-        old,
-        [
+    assert_private_eq(
+        &old,
+        &[
             &json!({"nonce":request["nonce"],"ok":false,"code":"KELD-WV-011",
-        "detail":"application link ended before the renderer reply"})
-        ]
+        "detail":"application link ended before the renderer reply"}),
+        ],
+        "old pending request bridge terminal",
     );
     assert_eq!(
         terminals.len(),
@@ -817,7 +826,11 @@ fn assert_recovery_phase(
     prepared: &PreparedLaunch,
 ) {
     for key in ["documentNonce", "javascriptToken", "initial"] {
-        assert_eq!(initial_document[key], report[key], "same renderer {key}");
+        assert_private_eq(
+            &initial_document[key],
+            &report[key],
+            &format!("same renderer {key}"),
+        );
     }
     for key in ["documentNonce", "javascriptToken"] {
         let value = report[key].as_str().expect("renderer-created identity");
@@ -919,7 +932,7 @@ fn observe_component_actions(
             .reports
             .recv_timeout(EVENT_DEADLINE)
             .expect("actual public-main FS result");
-        eprintln!("KELD_KEL140_OBSERVATION {result}");
+        eprintln!("{}", observed_marker(&result, PrivatePhase::Observation));
         evidence.reports.push(result);
     }
     assert!(
@@ -977,8 +990,8 @@ fn observe_pointer_actions(
             .expect("retained click result")
             .status
             .success(),
-        "{:?}",
-        evidence.click
+        "real CoreGraphics pointer action failed: {}",
+        output_summary(evidence.click.as_ref().expect("retained click result"))
     );
     observer.await_page_result(&mut evidence.reports);
     assert_page_outcomes(
@@ -1012,7 +1025,7 @@ fn await_ready(
             .reports
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .expect("app Ready and installed page listener observations");
-        eprintln!("KELD_KEL140_OBSERVATION {report}");
+        eprintln!("{}", observed_marker(&report, PrivatePhase::Observation));
         // Retain the observation before any identity assertion can unwind.
         evidence.reports.push(report.clone());
         if report["phase"] == "app-ready" {
@@ -1034,7 +1047,7 @@ fn await_ready(
             report["phase"] == "app-ready"
                 || report["phase"] == "page-ready"
                 || (exercise != Exercise::RendererPointer && report["phase"] == "app-result"),
-            "{report}"
+            "unexpected public application Ready/Result phase"
         );
     }
 }
@@ -1061,17 +1074,13 @@ fn assert_app_identity(
     assert_eq!(parent_process(descendant), bun);
     assert_eq!(process_group(bun), bun);
     assert_eq!(process_group(descendant), bun);
-    let executable = Command::new("/bin/ps")
+    let _executable = Command::new("/bin/ps")
         .args(["-p", &bun.to_string(), "-o", "comm="])
         .output()
         .expect("process display diagnostic");
-    eprintln!("KELD_KEL140_PROCESS_DISPLAY pid={bun} ps_output={executable:?}");
+    eprintln!("{}", PrivatePhase::ProcessDisplay.marker());
     let image = process_image_path(bun);
-    eprintln!(
-        "KELD_KEL140_PROCESS_IMAGE_MATCH pid={bun} kernel_image={} reported_image={}",
-        image.display(),
-        report["executable"]
-    );
+    eprintln!("{}", PrivatePhase::ProcessImageMatch.marker());
     assert_eq!(
         fs::canonicalize(&image).expect("kernel Bun image"),
         fs::canonicalize(report["executable"].as_str().expect("app executable"))
@@ -1091,7 +1100,10 @@ fn assert_product_quit(
     host_pid: u32,
     exercise: Exercise,
 ) {
-    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.status.success(),
+        "public application failed its expected orderly exit"
+    );
     let stderr = std::str::from_utf8(&output.stderr).expect("host diagnostic UTF-8");
     let expected_calls = match exercise {
         Exercise::RendererPointer | Exercise::RendererNativeJoint => 3,
@@ -1106,9 +1118,18 @@ fn assert_product_quit(
         "KELD_KEL142_KIPC_CALL webview=",
         "KELD_KEL140_PUBLIC_HANDLER ",
     ] {
-        assert_eq!(stderr.matches(marker).count(), expected_calls, "{stderr}");
+        assert_eq!(
+            stderr.matches(marker).count(),
+            expected_calls,
+            "{marker} count; {}",
+            host_exit_summary(output, evidence.reports.len())
+        );
     }
-    assert!(stderr.contains("KELD_KEL142_BIND webview="), "{stderr}");
+    assert!(
+        stderr.contains("KELD_KEL142_BIND webview="),
+        "KELD_KEL142_BIND missing; {}",
+        host_exit_summary(output, evidence.reports.len())
+    );
     let quit_calls = if matches!(
         exercise,
         Exercise::RendererRecovery
@@ -1123,7 +1144,8 @@ fn assert_product_quit(
         stderr.contains(&format!(
             "KELD_KEL140_PUBLIC_QUIT_REQUEST calls={quit_calls}"
         )),
-        "{stderr}"
+        "KELD_KEL140_PUBLIC_QUIT_REQUEST calls={quit_calls} missing; {}",
+        host_exit_summary(output, evidence.reports.len())
     );
     let ProcessFamily {
         bun,
@@ -1192,12 +1214,13 @@ fn assert_recovery_trace(stderr: &str, evidence: &LaunchEvidence) {
     );
     for (index, handler) in handlers.iter().enumerate() {
         let first_generation = if pending { index < 3 } else { index < 2 };
-        assert_eq!(
+        assert_private_eq(
             handler,
             &json!({"call":result["requests"][index]["count"],
             "pid":if first_generation { first.bun } else { successor.bun },
             "action":result["requests"][index]["action"],
-            "nonce":result["requests"][index]["nonce"]})
+            "nonce":result["requests"][index]["nonce"]}),
+            "recovery handler trace record",
         );
     }
     for (index, outcome) in outcomes.iter().enumerate() {
@@ -1206,11 +1229,12 @@ fn assert_recovery_trace(stderr: &str, evidence: &LaunchEvidence) {
         } else {
             index
         };
-        assert_eq!(
+        assert_private_eq(
             outcome,
             &json!({"call":result["requests"][request]["count"],
             "nonce":result["requests"][request]["nonce"],
-            "outcome":result["outcomes"][request]["outcome"]})
+            "outcome":result["outcomes"][request]["outcome"]}),
+            "recovery outcome trace record",
         );
     }
 }
@@ -1270,7 +1294,7 @@ impl JointReportJournal {
         } else {
             assert!(
                 JOINT_REPORT_PHASES.contains(&phase),
-                "unexpected joint report: {report}"
+                "unexpected joint report phase"
             );
             assert!(
                 self.phases.insert(phase.to_owned()),
@@ -1350,7 +1374,7 @@ impl JointReportJournal {
                 Err(std::sync::mpsc::TryRecvError::Empty
                     | std::sync::mpsc::TryRecvError::Disconnected)
             ),
-            "HTTP observer queued a report beyond the eight-row journal: {late_report:?}"
+            "HTTP observer queued a report beyond the eight-row journal (payload withheld)"
         );
     }
 }
@@ -1529,7 +1553,10 @@ fn kel143_staged_public_fs_fixture_producer() {
         "consumer retained stage before producer fallback"
     );
     while let Ok(report) = observation.reports.try_recv() {
-        eprintln!("KELD_KEL143_STAGED_FIXTURE_OBSERVATION {report}");
+        eprintln!(
+            "{}",
+            observed_marker(&report, PrivatePhase::StagedFixtureObservation)
+        );
     }
     drop(observation);
     println!(

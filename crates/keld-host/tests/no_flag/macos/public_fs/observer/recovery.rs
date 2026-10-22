@@ -1,5 +1,6 @@
 //! The recovery fixture's one-generation-at-a-time HTTP command and wait owner.
 use super::respond;
+use crate::public_fs::private_diagnostics::route_summary;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpStream;
@@ -100,7 +101,10 @@ impl RecoveryObserver {
             assert!(self.quits.insert(pid, stream).is_none());
             assert!(self.quits.len() <= 2);
         } else {
-            panic!("unexpected recovery fixture route {path}");
+            panic!(
+                "KELD_KEL140_RECOVERY_UNEXPECTED_ROUTE {}",
+                route_summary(path)
+            );
         }
         self.respond_ready();
         None

@@ -1,4 +1,5 @@
 //! Public-main local admission after Quit; native handler-entry absence is unobserved.
+use super::private_diagnostics::{Phase, assert_private_ne, assert_report_phase};
 use super::project::{CONTENT, Exercise, Policy, PublicFsProject};
 use super::{
     LaunchEvidence, observer::Observation, outcomes::assert_component_outcomes, run_launch,
@@ -29,10 +30,10 @@ fn public_app_fs_after_quit_is_locally_refused_without_effect_and_relaunches() {
                 .expect("renderer-created identity")
                 .to_owned()
         };
-        assert_ne!(
-            document_identity(&retired),
-            document_identity(&relaunched),
-            "healthy relaunch reused old volatile {key}"
+        assert_private_ne(
+            &document_identity(&retired),
+            &document_identity(&relaunched),
+            &format!("healthy relaunch reused old volatile {key}"),
         );
     }
     assert_ne!(
@@ -112,7 +113,7 @@ fn run_launch_without_window_census(
             .reports
             .recv_timeout(EVENT_DEADLINE)
             .expect("real public FS component result before Quit");
-        assert_eq!(result["phase"], "app-result", "{result}");
+        assert_report_phase(&result, "app-result", Phase::Observation);
         evidence.reports.push(result);
     }
     assert_component_outcomes(

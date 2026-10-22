@@ -34,8 +34,7 @@ pub(super) fn process_image_path(pid: u32) -> PathBuf {
     let prefix_end =
         usize::try_from(returned).map_or(0, |length| length.saturating_add(1).min(bytes.len()));
     eprintln!(
-        "KELD_KEL140_PROCESS_IMAGE_CENSUS pid={pid} returned={returned} error={error:?} raw_bytes={:?}",
-        &bytes[..prefix_end]
+        "KELD_KEL140_PROCESS_IMAGE_CENSUS pid={pid} returned={returned} error={error:?} raw_len={prefix_end}"
     );
     assert!(
         returned > 0,
