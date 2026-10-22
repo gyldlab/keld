@@ -986,6 +986,8 @@ fn serve_page_requests(
 mod tests {
     use super::*;
 
+    mod first_navigation;
+
     #[test]
     fn media_http_idle_preconnect_cannot_block_page_and_release() {
         use std::net::TcpStream;
