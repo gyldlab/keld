@@ -9,6 +9,8 @@ const outside = __OUTSIDE__;
 const content = new Uint8Array(__CONTENT__);
 const automaticComponent = __AUTOMATIC_COMPONENT__;
 const retireAfterQuit = __RETIRE_AFTER_QUIT__;
+// Test-owned local socket capability, never shipping app authority.
+const quitBodyReceipt: { port: number; nonce: string } | null = __QUIT_BODY_RECEIPT__;
 type DescendantQuitInputs = { python: string; helper: string; control: string; token: string };
 const descendantQuit = __DESCENDANT_QUIT__ as DescendantQuitInputs | null;
 const naturalCase: "deny-read" | "links-limits" | "traversal-bounds" | null = __NATURAL_CASE__;
@@ -260,13 +262,41 @@ if (automaticComponent) {
     headers: { "Content-Type": "text/plain" }, body });
   if (!observed.ok) throw new Error("public natural-case observation refused");
 }
+// The standalone native test executes this exact real Bun Quit verifier.
+// KELD_QUIT_BODY_FUNCTION_BEGIN
+type QuitBodyReceiptInput = { port: number; nonce: string };
+async function acceptActualQuitBody(
+  quit: Response, receipt: QuitBodyReceiptInput | null,
+): Promise<void> {
+  if (!quit.ok) throw new Error("invalid sample quit command");
+  console.error("KELD_KEL140_QUIT_HTTP_HEADERS_OK");
+  if (await quit.text() !== "quit") throw new Error("invalid sample quit command");
+  console.error("KELD_KEL140_QUIT_HTTP_BODY_OK");
+  // Only the selected native acceptance fixture has this one-use capability.
+  // It reaches an independent native socket AFTER the real HTTP body check
+  // and BEFORE the KIPC lifecycle Quit call.
+  if (receipt !== null) {
+    const witness = await fetch("http://127.0.0.1:" + receipt.port +
+      "/keld-body-verified/" + receipt.nonce);
+    if (!witness.ok || await witness.text() !== "ack") {
+      throw new Error("native Quit body receipt was not acknowledged");
+    }
+  }
+}
+// KELD_QUIT_BODY_FUNCTION_END
+
 // The observer retains this stream without blocking other page observations.
 const quit = await fetch(base + (recoveryInputs || nativeJoint
   ? "/recovery-quit/" + process.pid : "/quit"));
-if (!quit.ok) throw new Error("invalid sample quit command");
-console.error("KELD_KEL140_QUIT_HTTP_HEADERS_OK");
-if (await quit.text() !== "quit") throw new Error("invalid sample quit command");
-console.error("KELD_KEL140_QUIT_HTTP_BODY_OK");
+if (quitBodyReceipt !== null) {
+  await acceptActualQuitBody(quit, quitBodyReceipt);
+} else {
+  // Keep the original no-receipt fixture path inline: no extra async hop.
+  if (!quit.ok) throw new Error("invalid sample quit command");
+  console.error("KELD_KEL140_QUIT_HTTP_HEADERS_OK");
+  if (await quit.text() !== "quit") throw new Error("invalid sample quit command");
+  console.error("KELD_KEL140_QUIT_HTTP_BODY_OK");
+}
 console.error("KELD_KEL140_PUBLIC_QUIT_REQUEST calls=" + handlerCalls);
 const pendingQuit = app.quit();
 if (retireAfterQuit) {

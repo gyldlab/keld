@@ -179,6 +179,22 @@ impl PublicFsProject {
         self.prepare_for(launch, port, Exercise::PublicAppComponent)
     }
 
+    /// Only the selected native causal witness arms a separate test-owned port.
+    pub(super) fn prepare_component_with_quit_body_receipt(
+        &self,
+        launch: usize,
+        port: u16,
+        receipt_port: u16,
+        token: &str,
+    ) -> PreparedLaunch {
+        self.prepare_for_with_receipt(
+            launch,
+            port,
+            Exercise::PublicAppComponent,
+            Some((receipt_port, token)),
+        )
+    }
+
     pub(super) fn prepare_natural(&self, launch: usize, port: u16) -> PreparedLaunch {
         self.prepare_for(launch, port, Exercise::PublicAppNaturalCases)
     }
@@ -307,6 +323,16 @@ impl PublicFsProject {
     }
 
     fn prepare_for(&self, launch: usize, port: u16, exercise: Exercise) -> PreparedLaunch {
+        self.prepare_for_with_receipt(launch, port, exercise, None)
+    }
+
+    fn prepare_for_with_receipt(
+        &self,
+        launch: usize,
+        port: u16,
+        exercise: Exercise,
+        quit_body_receipt: Option<(u16, &str)>,
+    ) -> PreparedLaunch {
         let target = self.allowed.join(format!("result-{launch}.bin"));
         let natural =
             (exercise == Exercise::PublicAppNaturalCases).then(|| self.natural_inputs(launch));
@@ -329,6 +355,7 @@ impl PublicFsProject {
             exercise,
             natural.as_ref(),
             recovery.as_ref(),
+            quit_body_receipt,
         );
         let (stage, digest, host_digest) = self.stage_and_verify_inputs();
         let bun_image = expected_source_bun_image(stage.root());
@@ -351,7 +378,12 @@ impl PublicFsProject {
         exercise: Exercise,
         natural: Option<&NaturalInputs>,
         recovery: Option<&RecoveryInputs>,
+        quit_body_receipt: Option<(u16, &str)>,
     ) {
+        let receipt_config = quit_body_receipt.map_or(
+            Value::Null,
+            |(port, nonce)| json!({"port": port, "nonce": nonce}),
+        );
         let recovery_config = recovery.map_or(Value::Null, |input| {
             json!({"after":input.after,"witness":input.witness,
                 "afterContent":RECOVERY_AFTER_CONTENT,"pendingHandler":input.pending_handler})
@@ -396,6 +428,7 @@ impl PublicFsProject {
             )
             .replace("__DESCENDANT_QUIT__", &self.descendant_quit.to_string())
             .replace("__RECOVERY_INPUTS__", &recovery_config.to_string())
+            .replace("__QUIT_BODY_RECEIPT__", &receipt_config.to_string())
             .replace(
                 "__NATIVE_JOINT__",
                 if exercise == Exercise::RendererNativeJoint {

@@ -37,6 +37,8 @@ mod preclick;
 mod process_image;
 #[path = "public_fs/project.rs"]
 mod project;
+#[path = "public_fs/quit_body_receipt.rs"]
+mod quit_body_receipt;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -50,6 +52,7 @@ use project::{
     CONTENT, Exercise, Policy, PreparedLaunch, PublicFsProject, RECOVERY_AFTER_CONTENT, SENTINEL,
     TITLE,
 };
+use quit_body_receipt::QuitBodyReceipt;
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessFamily {
@@ -120,7 +123,10 @@ fn renderer_public_fs_recovers_same_document_after_real_bun_loss() {
 fn renderer_pending_public_fs_call_rejects_once_and_rebinds_replaced_root() {
     let fixture = PublicFsProject::new(Policy::Narrow);
     let recovered = run_launch(&fixture, 0, Exercise::RendererPendingRecovery);
-    let relaunched = run_launch(&fixture, 1, Exercise::PublicAppComponent);
+    // Bind before shipping Host spawn; only the second ordinary app is armed.
+    let mut receipt = QuitBodyReceipt::arm();
+    let relaunched =
+        run_launch_with_quit_body_receipt(&fixture, 1, Exercise::PublicAppComponent, &mut receipt);
     let document = |evidence: &LaunchEvidence| {
         evidence
             .reports
@@ -157,13 +163,22 @@ fn wait_public_host_with_phase(
     child: std::process::Child,
     observer: &Observation,
     observation_succeeded: bool,
+    mut body_receipt: Option<&mut QuitBodyReceipt>,
 ) -> Output {
     let mut last_live_http_quit_stage = 0_u8;
+    let mut last_live_bun_body_stage = "not_armed";
+    // Conservative bound begins BEFORE the original Host wait begins; nothing
+    // accepted here can evade the original EVENT_DEADLINE inside that wait.
+    let receipt_deadline = Instant::now() + EVENT_DEADLINE;
     let host_exit = catch_unwind(AssertUnwindSafe(|| {
         wait_child_output_observing(child, EVENT_DEADLINE, || {
             last_live_http_quit_stage = observer
                 .quit_progress
                 .load(std::sync::atomic::Ordering::Acquire);
+            if let Some(receipt) = body_receipt.as_deref_mut() {
+                receipt.poll(receipt_deadline);
+                last_live_bun_body_stage = receipt.stage();
+            }
         })
     }));
     host_exit.unwrap_or_else(|failure| {
@@ -175,7 +190,9 @@ fn wait_public_host_with_phase(
                 _ => "invalid_observer_stage",
             };
             // Fixed phase enum only; never reveal HTTP/IPC data or native IDs.
-            eprintln!("KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage={stage}");
+            eprintln!(
+                "KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage={stage} bun_body_stage={last_live_bun_body_stage}"
+            );
         }
         resume_unwind(failure)
     })
@@ -185,7 +202,57 @@ fn run_launch_with_descendant_quit(
     fixture: &PublicFsProject,
     launch: usize,
     exercise: Exercise,
+    descendant: Option<&mut descendant_quit::DescendantQuit>,
+) -> LaunchEvidence {
+    run_launch_with_causal_receipt(fixture, launch, exercise, descendant, None)
+}
+
+fn run_launch_with_quit_body_receipt(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
+    receipt: &mut QuitBodyReceipt,
+) -> LaunchEvidence {
+    run_launch_with_causal_receipt(fixture, launch, exercise, None, Some(receipt))
+}
+
+/// Select the original test application for each exercise. Only an
+/// explicitly armed component launch receives a test-only native receipt.
+fn prepare_public_fs_exercise(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
+    port: u16,
+    body_receipt: Option<&QuitBodyReceipt>,
+) -> PreparedLaunch {
+    match exercise {
+        Exercise::RendererPointer => fixture.prepare(launch, port),
+        Exercise::RendererRecovery => fixture.prepare_recovery(launch, port),
+        Exercise::RendererPendingRecovery => fixture.prepare_pending_recovery(launch, port),
+        Exercise::PublicAppComponent => {
+            if let Some(receipt) = body_receipt.as_ref() {
+                fixture.prepare_component_with_quit_body_receipt(
+                    launch,
+                    port,
+                    receipt.port(),
+                    receipt.token(),
+                )
+            } else {
+                fixture.prepare_component(launch, port)
+            }
+        }
+        Exercise::PublicAppNaturalCases => fixture.prepare_natural(launch, port),
+        Exercise::PublicAppRetirement => fixture.prepare_retirement(launch, port),
+        Exercise::RendererNativeJoint => fixture.prepare_native_joint(launch, port),
+    }
+}
+
+fn run_launch_with_causal_receipt(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
     mut descendant: Option<&mut descendant_quit::DescendantQuit>,
+    mut body_receipt: Option<&mut QuitBodyReceipt>,
 ) -> LaunchEvidence {
     let observer = if matches!(
         exercise,
@@ -195,17 +262,13 @@ fn run_launch_with_descendant_quit(
     } else {
         Observation::bind()
     };
-    let prepared = match exercise {
-        Exercise::RendererPointer => fixture.prepare(launch, observer.port),
-        Exercise::RendererRecovery => fixture.prepare_recovery(launch, observer.port),
-        Exercise::RendererPendingRecovery => {
-            fixture.prepare_pending_recovery(launch, observer.port)
-        }
-        Exercise::PublicAppComponent => fixture.prepare_component(launch, observer.port),
-        Exercise::PublicAppNaturalCases => fixture.prepare_natural(launch, observer.port),
-        Exercise::PublicAppRetirement => fixture.prepare_retirement(launch, observer.port),
-        Exercise::RendererNativeJoint => fixture.prepare_native_joint(launch, observer.port),
-    };
+    let prepared = prepare_public_fs_exercise(
+        fixture,
+        launch,
+        exercise,
+        observer.port,
+        body_receipt.as_deref(),
+    );
     let stage = &prepared.stage;
     if exercise != Exercise::RendererPointer {
         assert!(
@@ -269,6 +332,7 @@ fn run_launch_with_descendant_quit(
         cleanup.cli.take().expect("capture host before unwind"),
         &observer,
         observation_result.is_ok(),
+        body_receipt.as_deref_mut(),
     );
     eprintln!(
         "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
@@ -279,6 +343,11 @@ fn run_launch_with_descendant_quit(
     }
     if let Err(failure) = descendant_result {
         resume_unwind(failure);
+    }
+    // Require the independent Bun-authored *native* receipt, not the
+    // observer's response-written phase or an untrusted Host log string.
+    if let Some(receipt) = body_receipt.as_ref() {
+        receipt.assert_verified();
     }
     assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
     if exercise == Exercise::PublicAppRetirement {
