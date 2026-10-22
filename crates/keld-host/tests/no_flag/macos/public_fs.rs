@@ -508,7 +508,7 @@ fn observe_recovery_actions(
     );
     // Until every independent census above passes, fallback cleanup retains
     // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
-    cleanup.bun_group = Some(successor_boot.pid);
+    cleanup.record_bun_group(successor_boot.pid, first.guardian);
     assert_retired_credentials(&first_boot.app_link, &successor_boot.app_link, prepared);
     observer.send_recovery_command(RecoveryCommand::Admit(successor_boot.pid));
     let ready = observer
@@ -996,7 +996,7 @@ fn await_ready(
             assert_app_identity(&report, family, host_pid, prepared);
             // Ordinary app data gains fallback custody only after the
             // independent live host/guardian/group/image/link census passes.
-            cleanup.bun_group = Some(bun);
+            cleanup.record_bun_group(bun, guardian);
             evidence.family = Some(family);
         }
         assert!(

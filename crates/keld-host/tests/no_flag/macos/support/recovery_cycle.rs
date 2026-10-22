@@ -88,7 +88,7 @@ impl RecoveryCycle {
         assert_eq!(process_group(current.bun_pid), current.bun_pid);
         assert_eq!(process_group(current.descendant_pid), current.bun_pid);
         let first_group = current.bun_pid;
-        cleanup.bun_group = Some(first_group);
+        cleanup.record_bun_group(first_group, current.guardian_pid);
         let mut cycle = Self {
             host: Some(cleanup.release()),
             dev_lease_writer,
