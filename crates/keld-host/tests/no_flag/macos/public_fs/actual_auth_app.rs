@@ -598,10 +598,12 @@ fn run_case(
     let active_listener = verify_call_before_quit(case, &result, bun, host)?;
     // Independent OS exits are armed before the ordinary observer releases
     // the app's public Quit. App JSON/PIDs are never counted as cleanup proof.
-    let host_exit = ProcessExitObserver::arm(host);
-    let guardian_exit = ProcessExitObserver::arm(guardian);
-    let bun_exit = ProcessExitObserver::arm(bun);
-    let descendant_exit = ProcessExitObserver::arm(descendant);
+    let mut native_exits = [
+        ProcessExitObserver::arm(host),
+        ProcessExitObserver::arm(guardian),
+        ProcessExitObserver::arm(bun),
+        ProcessExitObserver::arm(descendant),
+    ];
     observation.quit.send(())?;
     let cli_child = cleanup.cli.take().ok_or("missing retained CLI owner")?;
     let output = wait_for_auth_cli_quit(
@@ -610,6 +612,7 @@ fn run_case(
         &project.root,
         case,
         [host, guardian, bun, descendant],
+        &mut native_exits,
     );
     require(
         output.status.success(),
@@ -618,12 +621,7 @@ fn run_case(
             output.status.code()
         ),
     )?;
-    let exits = [
-        host_exit.wait(),
-        guardian_exit.wait(),
-        bun_exit.wait(),
-        descendant_exit.wait(),
-    ];
+    let exits = native_exits.map(ProcessExitObserver::wait);
     assert_product_cleanup(
         &exits,
         [cli_pid, host, guardian, bun, descendant],
