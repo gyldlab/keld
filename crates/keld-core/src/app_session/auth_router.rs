@@ -27,6 +27,10 @@ pub(super) struct AuthSession {
     tail: super::AtomicBool,
     ownership_fault: super::AtomicBool,
     completion: Mutex<(bool, bool)>, // (physically drained, Quit requested)
+    // Hold only the real worker's final gate in native tests; production has
+    // no synthetic terminal event, queue or callback authority.
+    #[cfg(test)]
+    tail_exit_test_gate: Mutex<Option<(mpsc::SyncSender<()>, Receiver<()>)>>,
 }
 
 impl AuthSession {
@@ -38,7 +42,22 @@ impl AuthSession {
             tail: super::AtomicBool::new(false),
             ownership_fault: super::AtomicBool::new(false),
             completion: Mutex::new((false, false)),
+            #[cfg(test)]
+            tail_exit_test_gate: Mutex::new(None),
         })
+    }
+
+    #[cfg(test)]
+    fn hold_real_worker_before_final_tail_for_test(&self) {
+        let gate = self
+            .tail_exit_test_gate
+            .lock()
+            .expect("native Auth tail fixture gate")
+            .take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.recv_timeout(std::time::Duration::from_secs(5));
+        }
     }
 
     pub(super) fn admission(
@@ -482,7 +501,18 @@ fn run_worker(
         // stop_for_host_tail may emit even when no operation needed polling.
         publish_events(&mut events, &mut operations, handle, session, &mut failure);
         if tail_started && operations.is_empty() {
-            return finish_worker_tail(receiver, handle, session, failure);
+            #[cfg(test)]
+            session.hold_real_worker_before_final_tail_for_test();
+            // Ordinary errors already published Fatal through record_failure.
+            // A *new* error while finalizing physical leases (e.g. a poisoned
+            // pending-caller lock) otherwise exits this worker without either
+            // a successful drained/Quit receipt or a terminal UI wake.
+            let fatal_already_sent = failure.is_some();
+            let terminal = finish_worker_tail(receiver, handle, session, failure);
+            if terminal.is_err() && !fatal_already_sent {
+                let _ = handle.window_commands.send(AppWindowCommand::Fatal);
+            }
+            return terminal;
         }
         let incoming = receiver.recv_timeout(APP_LINK_READER_POLL);
         let work = match incoming {
