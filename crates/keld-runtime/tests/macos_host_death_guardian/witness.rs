@@ -33,16 +33,22 @@ impl EofWitness {
 
     pub(super) fn accept_before(&mut self, deadline: Instant) {
         loop {
+            assert!(
+                Instant::now() < deadline,
+                "EOF witness accept deadline expired"
+            );
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    // Accept can succeed after the original budget expires;
+                    // no accepted stream becomes proof of timely readiness.
+                    assert!(
+                        Instant::now() < deadline,
+                        "EOF witness accept deadline expired"
+                    );
                     self.stream = Some(stream);
                     return;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "peer did not connect its EOF witness before the deadline"
-                    );
                     thread::yield_now();
                 }
                 Err(error) => panic!("accept EOF witness: {error}"),
@@ -152,8 +158,37 @@ impl Drop for EofWitness {
 
 #[cfg(test)]
 mod tests {
+    use super::super::support::Fixture;
     use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
+
+    #[test]
+    fn already_queued_eof_peer_cannot_bypass_expired_accept_deadline() {
+        let fixture = Fixture::new();
+        let mut witness = EofWitness::bind(&fixture.control);
+        let _peer = UnixStream::connect(witness.path()).expect("queue real private EOF peer");
+        // A successful native accept after this fixed original deadline must
+        // NOT turn expired custody proof into a false readiness success.
+        let expired = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock permits short negative test offset");
+        let outcome = catch_unwind(AssertUnwindSafe(|| witness.accept_before(expired)));
+        let panic = outcome.expect_err("expired queued witness must be refused");
+        let detail = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string panic");
+        assert!(
+            detail.contains("EOF witness accept deadline expired"),
+            "expired native connection was not rejected by original deadline: {detail}"
+        );
+        assert!(
+            witness.stream.is_none(),
+            "expired connection must not become an accepted EOF witness"
+        );
+    }
 
     #[test]
     fn fragmented_eof_witness_cannot_renew_original_deadline() {
