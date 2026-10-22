@@ -1,0 +1,42 @@
+{
+  "baseline_paths": 77,
+  "baseline_review_commit": "899e287ea487f38ec1cd347f7c9db8f1927348ef",
+  "baseline_review_status_counts": {
+    "fix-in-draft-950": 2,
+    "fix-in-draft-952": 1,
+    "fix-in-draft-953": 4,
+    "reviewed-blocked-cross-owner": 1,
+    "reviewed-limited": 2,
+    "reviewed-negative-boundary": 2,
+    "reviewed-no-change": 59,
+    "reviewed-qualification-gap": 1,
+    "scoped-verified-and-reviewed": 5
+  },
+  "baseline_source_review_rows": 77,
+  "current_stacked_tip": "46b91848db10f81156cebe0c6c34dec90082eaba",
+  "current_tip_category_counts": {
+    "B": 18,
+    "C": 61
+  },
+  "current_tip_paths": 79,
+  "current_tip_relation_counts": {
+    "added": 2,
+    "modified": 7,
+    "unchanged": 70
+  },
+  "full_suite_source": "PR #953 tip native macOS 479/479 passed, five skipped; independently reviewed and hosted status must be verified separately",
+  "new_paths": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs",
+    "crates/keld-runtime/tests/macos_host_death_guardian/support/tests.rs"
+  ],
+  "schema_version": 1,
+  "source_review_definition": "Exact Git blob, responsibility, callers, invariant, compiled selector or helper, source-level issue and disposition. Source review alone does not establish end-to-end Mac OS custody or whole-repo #824 acceptance.",
+  "unresolved_native_limits": [
+    "simultaneous host and Guardian death after Bun exec",
+    "detached Bun new-session descendants",
+    "no kernel-pinned process group custodian and reused PID/PGID observation races",
+    "GuardedPrimary Child.kill failure / blocked worker join requires Core #834 owner-custody coordination",
+    "public-FS second-launch host quit intermittent timeout root cause unproven",
+    "installed/signed GUI native acceptance unqualified"
+  ]
+}
