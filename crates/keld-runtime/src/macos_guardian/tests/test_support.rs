@@ -151,20 +151,64 @@ pub(super) fn verified_real_bun() -> std::path::PathBuf {
 /// authenticated KGR1/KGC1 registration exchange. Both crash scenarios use
 /// this observer; the product still owns the pre-exec child and permit.
 pub(super) fn await_spawned_gate(listener: &UnixListener) -> (UnixStream, i32, u32) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    await_spawned_gate_until(listener, Instant::now() + Duration::from_secs(10), |_| {})
+}
+
+/// Private native fixture observation only; no alternate registration owner.
+#[derive(Clone, Copy, Debug)]
+enum SpawnedGateStage {
+    BeforeAccept,
+    AfterAccept,
+    BeforeByte { received: usize },
+    AfterByte { byte: u8 },
+}
+
+fn await_spawned_gate_until(
+    listener: &UnixListener,
+    deadline: Instant,
+    mut observe: impl FnMut(SpawnedGateStage),
+) -> (UnixStream, i32, u32) {
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "Guardian never reached pre-exec gate before original deadline"
+        );
+        observe(SpawnedGateStage::BeforeAccept);
         match listener.accept() {
             Ok((mut stream, _)) => {
+                observe(SpawnedGateStage::AfterAccept);
+                // The native accept can complete after the original caller's
+                // ten-second deadline even when its last poll began in time.
+                assert!(
+                    Instant::now() < deadline,
+                    "native gate accept completed after original deadline"
+                );
                 stream
                     .set_nonblocking(true)
                     .expect("bounded record observer");
-                let record_deadline = Instant::now() + Duration::from_secs(5);
                 let mut bytes = Vec::with_capacity(80);
                 loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "pre-exec PID receipt exceeded original deadline before native byte"
+                    );
+                    observe(SpawnedGateStage::BeforeByte {
+                        received: bytes.len(),
+                    });
                     let mut byte = [0_u8; 1];
                     match stream.read(&mut byte) {
-                        Ok(1) if byte[0] == b'\n' => break,
+                        Ok(1) if byte[0] == b'\n' => {
+                            observe(SpawnedGateStage::AfterByte { byte: byte[0] });
+                            // A successful LF read is still a native operation
+                            // and must not bypass the original shared clock.
+                            assert!(
+                                Instant::now() < deadline,
+                                "native pre-exec LF completed after original deadline"
+                            );
+                            break;
+                        }
                         Ok(1) => {
+                            observe(SpawnedGateStage::AfterByte { byte: byte[0] });
                             bytes.push(byte[0]);
                             assert!(bytes.len() <= 80, "bounded native PID record");
                         }
@@ -178,8 +222,8 @@ pub(super) fn await_spawned_gate(listener: &UnixListener) -> (UnixStream, i32, u
                         Ok(_) => unreachable!("one-byte receipt read"),
                     }
                     assert!(
-                        Instant::now() < record_deadline,
-                        "pre-exec PID receipt exceeded its total deadline"
+                        Instant::now() < deadline,
+                        "native pre-exec byte poll exceeded original deadline"
                     );
                     thread::yield_now();
                 }
@@ -191,6 +235,10 @@ pub(super) fn await_spawned_gate(listener: &UnixListener) -> (UnixStream, i32, u
                 assert!(words.next().is_none(), "unexpected gate receipt: {receipt}");
                 assert!(pid > 1 && pid != nix::unistd::getpgrp().as_raw());
                 assert!(guardian > 1);
+                assert!(
+                    Instant::now() < deadline,
+                    "native pre-exec PID record parsed after original deadline"
+                );
                 return (stream, pid, guardian);
             }
             Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
@@ -204,6 +252,10 @@ pub(super) fn await_spawned_gate(listener: &UnixListener) -> (UnixStream, i32, u
         }
     }
 }
+
+#[cfg(test)]
+#[path = "test_support/spawned_gate_deadline_tests.rs"]
+mod spawned_gate_deadline_tests;
 
 /// Native process-image oracle, independent of JS startup and marker writes.
 /// Used only with a previously observed, test-owned live child PID.
