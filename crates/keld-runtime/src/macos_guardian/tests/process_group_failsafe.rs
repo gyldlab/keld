@@ -3,7 +3,7 @@
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::Instant;
 
@@ -32,15 +32,78 @@ use self::native_descendant::spawn_held_native_descendant;
 // leaves an unrelated native process alive after panic/unwind.
 struct TestOwnedGroupChild(Child);
 
+// Even if inspecting the *retained* direct Child itself fails, do not
+// transfer its wait to an unbounded blocking operation without first trying
+// SIGKILL through that same Child handle. Only a verified/cached exit can
+// suppress the exact-child kill. This is never authority over an observed PID.
+fn kill_owned_child_unless_reaped(
+    child: &mut Child,
+    inspection: &std::io::Result<Option<ExitStatus>>,
+) {
+    if !matches!(inspection, Ok(Some(_))) {
+        let _ = child.kill();
+    }
+}
+
 impl Drop for TestOwnedGroupChild {
     fn drop(&mut self) {
-        // A test may have reaped its owned Child already. Never issue a late
-        // numeric-PID kill after wait() could have released that identity.
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-        }
+        // This test owns the Child handle until wait completes. A failed
+        // try_wait is NOT proof the Child exited or that a signal is unsafe.
+        let inspection = self.0.try_wait();
+        kill_owned_child_unless_reaped(&mut self.0, &inspection);
         let _ = self.0.wait();
     }
+}
+
+#[test]
+fn inspection_failure_still_kills_and_reaps_exact_native_child() {
+    let mut owned = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("original direct owned native Child"),
+    );
+    assert!(
+        owned
+            .0
+            .try_wait()
+            .expect("new Child is still live")
+            .is_none(),
+        "test must start with one genuinely live directly owned process"
+    );
+    // Fault injection covers Child::try_wait's typed inspection error path,
+    // while the signal and reaping use the actual retained native Child.
+    kill_owned_child_unless_reaped(
+        &mut owned.0,
+        &Err(std::io::Error::other(
+            "injected owned Child inspection failure",
+        )),
+    );
+    // This is the existing five-second Guardian cleanup budget, not a new
+    // scheduler-sensitive 300ms magic timeout on loaded hosted Macs.
+    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    let mut observed = None;
+    while Instant::now() < deadline {
+        if let Some(status) = owned.0.try_wait().expect("inspect real native exit") {
+            observed = Some(status);
+            break;
+        }
+        thread::yield_now();
+    }
+    // Always clean up the exact Child before making the negative assertion.
+    // A mutant that skips the kill cannot strand a native process on RED.
+    if observed.is_none() {
+        let _ = owned.0.kill();
+        let _ = owned.0.wait();
+    }
+    assert_eq!(
+        observed.and_then(|status| status.signal()),
+        Some(9),
+        "failed inspection must still SIGKILL/reap the actual retained direct Child"
+    );
 }
 
 // Darwin may finish reaping a group leader before an independently owned,
