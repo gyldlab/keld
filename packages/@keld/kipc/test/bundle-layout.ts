@@ -1,6 +1,7 @@
 /**
  * App-layout runner for the GH-527 §4.2 and #653 staging tests: builds an app
- * layout in a fresh directory, runs it with Bun against a live Unix listener,
+ * layout in a fresh directory, runs it with Bun against a Unix-domain socket on
+ * Linux/macOS or a Windows named-pipe listener,
  * and reports stdout, the listener's connection count and an evaluation
  * counter. Each run is its own process, because a realm opens one link.
  */
