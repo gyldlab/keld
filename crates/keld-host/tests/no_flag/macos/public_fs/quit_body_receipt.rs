@@ -1,4 +1,5 @@
-//! One-use, test-owned real TCP witness for Bun's completed HTTP /quit body read.
+//! One-use, test-owned real TCP witness after Bun consumes a Response body.
+//! Pair it with the independent /quit GET receipt to prove HTTP provenance.
 //!
 //! The listener is armed before Host spawn. The parent polls it only while the
 //! real Host Child is live; it is not a Host stderr marker, protocol reply or
@@ -174,6 +175,7 @@ mod native_bun_reply_tests {
     /// clock assertion panics. No detached server can outlive its test.
     struct QuitServerOwner {
         stop: Arc<AtomicBool>,
+        actual_get: Arc<AtomicBool>,
         join: Option<thread::JoinHandle<()>>,
     }
 
@@ -181,11 +183,19 @@ mod native_bun_reply_tests {
         fn start(listener: TcpListener, body: &'static str) -> Self {
             let stop = Arc::new(AtomicBool::new(false));
             let stopped = Arc::clone(&stop);
-            let join = thread::spawn(move || serve_real_quit(&listener, body, &stopped));
+            let actual_get = Arc::new(AtomicBool::new(false));
+            let observed_get = Arc::clone(&actual_get);
+            let join =
+                thread::spawn(move || serve_real_quit(&listener, body, &stopped, &observed_get));
             Self {
                 stop,
+                actual_get,
                 join: Some(join),
             }
+        }
+
+        fn observed_actual_get(&self) -> bool {
+            self.actual_get.load(Ordering::Acquire)
         }
 
         fn stop_and_join(&mut self) {
@@ -207,7 +217,12 @@ mod native_bun_reply_tests {
 
     /// Parses real native HTTP request bytes, with no synthetic observer
     /// state. The only variable is the reply body, not the Bun source code.
-    fn serve_real_quit(listener: &TcpListener, body: &'static str, stop: &AtomicBool) {
+    fn serve_real_quit(
+        listener: &TcpListener,
+        body: &'static str,
+        stop: &AtomicBool,
+        actual_get: &AtomicBool,
+    ) {
         let deadline = Instant::now() + EVENT_DEADLINE;
         let mut peer = loop {
             if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
@@ -241,33 +256,56 @@ mod native_bun_reply_tests {
             request.starts_with(b"GET /quit HTTP/1.1\r\n"),
             "native Bun client must request the actual Quit route"
         );
+        actual_get.store(true, Ordering::Release);
         peer.set_write_timeout(Some(std::time::Duration::from_millis(100)))
             .expect("bounded HTTP response writer");
         write!(peer, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
             .expect("real native Quit HTTP body response");
     }
 
-    /// Real Bun fetch + the exact helper text used by the staged Keld app.
-    /// The standalone path isolates the first HTTP causal hop from Mac GUI TCC.
-    fn run_native_quit_body_probe(body: &'static str) -> (bool, bool) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("native owned Quit server");
-        let port = listener.local_addr().expect("native Quit port").port();
-        listener.set_nonblocking(true).expect("bounded quit accept");
-        let mut server = QuitServerOwner::start(listener, body);
-        let mut receipt = QuitBodyReceipt::arm();
-        let source = include_str!("../../../fixtures/public_fs_app.ts");
-        let body_function = source
+    #[derive(Clone, Copy)]
+    enum ReplySource {
+        ActualGet,
+        WithoutGet,
+    }
+
+    struct NativeProbe {
+        completed: bool,
+        native_receipt: bool,
+        actual_get: bool,
+    }
+
+    fn native_bun_body_script(port: u16, source: ReplySource, receipt: &QuitBodyReceipt) -> String {
+        let fixture_source = include_str!("../../../fixtures/public_fs_app.ts");
+        let body_function = fixture_source
             .split_once("// KELD_QUIT_BODY_FUNCTION_BEGIN\n")
             .expect("shared real Bun body-validation function begins")
             .1
             .split_once("// KELD_QUIT_BODY_FUNCTION_END")
             .expect("shared real Bun body-validation function ends")
             .0;
-        let script = format!(
-            "{body_function}\nconst reply = await fetch('http://127.0.0.1:{port}/quit');\nawait acceptActualQuitBody(reply, {{port:{},nonce:'{}'}});\nconsole.log('KELD_NATIVE_BODY_VERIFIED');",
+        // Missing-GET mutation supplies a matching Response without making any
+        // HTTP /quit request. Independent GET evidence must remain absent.
+        let response = match source {
+            ReplySource::ActualGet => format!("await fetch('http://127.0.0.1:{port}/quit')"),
+            ReplySource::WithoutGet => "new Response('quit')".to_owned(),
+        };
+        format!(
+            "{body_function}\nconst reply = {response};\nawait acceptActualQuitBody(reply, {{port:{},nonce:'{}'}});\nconsole.log('KELD_NATIVE_BODY_VERIFIED');",
             receipt.port(),
             receipt.token()
-        );
+        )
+    }
+
+    /// Real Bun + the exact helper text used by the staged Keld app.
+    /// The standalone path isolates the first HTTP causal hop from Mac GUI TCC.
+    fn run_native_quit_body_probe(body: &'static str, source: ReplySource) -> NativeProbe {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("native owned Quit server");
+        let port = listener.local_addr().expect("native Quit port").port();
+        listener.set_nonblocking(true).expect("bounded quit accept");
+        let mut server = QuitServerOwner::start(listener, body);
+        let mut receipt = QuitBodyReceipt::arm();
+        let script = native_bun_body_script(port, source, &receipt);
         let mut child = ChildOwner(Some(
             Command::new("bun")
                 .args(["-e", &script])
@@ -296,6 +334,7 @@ mod native_bun_reply_tests {
             thread::yield_now();
         };
         server.stop_and_join();
+        let actual_get = server.observed_actual_get();
         let output = child
             .0
             .take()
@@ -304,10 +343,11 @@ mod native_bun_reply_tests {
             .expect("collect exact native Bun child output");
         assert_eq!(status, output.status);
         let verified_stdout = output.stdout == b"KELD_NATIVE_BODY_VERIFIED\n";
-        (
-            status.success() && verified_stdout,
-            receipt.stage() == "bun_body_verified",
-        )
+        NativeProbe {
+            completed: status.success() && verified_stdout,
+            native_receipt: receipt.stage() == "bun_body_verified",
+            actual_get,
+        }
     }
 
     #[test]
@@ -343,24 +383,53 @@ mod native_bun_reply_tests {
 
     #[test]
     fn real_bun_verified_quit_body_sends_exact_native_receipt() {
-        let (completed, native_receipt) = run_native_quit_body_probe("quit");
+        let evidence = run_native_quit_body_probe("quit", ReplySource::ActualGet);
         assert!(
-            completed,
+            evidence.completed,
             "real Bun must consume correct Quit body and finish"
         );
         assert!(
-            native_receipt,
+            evidence.native_receipt,
             "native OS receipt must come from post-body Bun"
+        );
+        assert!(
+            evidence.actual_get,
+            "server must observe actual HTTP /quit GET"
         );
     }
 
     #[test]
     fn real_bun_wrong_quit_body_cannot_mint_native_receipt() {
-        let (completed, native_receipt) = run_native_quit_body_probe("wrong");
-        assert!(!completed, "real Bun must refuse the wrong HTTP Quit body");
+        let evidence = run_native_quit_body_probe("wrong", ReplySource::ActualGet);
         assert!(
-            !native_receipt,
+            !evidence.completed,
+            "real Bun must refuse the wrong HTTP Quit body"
+        );
+        assert!(
+            !evidence.native_receipt,
             "wrong HTTP body must never publish a native receipt"
+        );
+        assert!(evidence.actual_get, "wrong-body case still uses real GET");
+    }
+
+    #[test]
+    fn real_bun_missing_get_cannot_satisfy_joint_quit_evidence() {
+        let evidence = run_native_quit_body_probe("quit", ReplySource::WithoutGet);
+        assert!(
+            evidence.completed,
+            "constructed HTTP response is readable by Bun"
+        );
+        assert!(
+            evidence.native_receipt,
+            "a constructed response can reach the nonce receipt without real GET"
+        );
+        assert!(
+            !evidence.actual_get,
+            "the independent HTTP server must observe no /quit GET"
+        );
+        assert!(
+            !(evidence.actual_get && evidence.native_receipt),
+            "missing GET cannot satisfy both independent native receipt conditions"
         );
     }
 }
