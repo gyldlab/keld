@@ -100,6 +100,9 @@ fn redacted_stderr_markers(stderr: &[u8]) -> Vec<String> {
                         *word,
                         "KELD_KEL142_BIND"
                             | "KELD_KEL140_PUBLIC_APP_COMPONENT"
+                            | "KELD_KEL140_APP_RESULT_HTTP_OK"
+                            | "KELD_KEL140_QUIT_HTTP_HEADERS_OK"
+                            | "KELD_KEL140_QUIT_HTTP_BODY_OK"
                             | "KELD_KEL140_PUBLIC_QUIT_REQUEST"
                             | "KELD_KEL140_PUBLIC_FS_RETIRED"
                     )
@@ -113,7 +116,7 @@ fn redacted_stderr_markers(stderr: &[u8]) -> Vec<String> {
 #[test]
 fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
     let markers = redacted_stderr_markers(
-        b"KELD_KEL140_PUBLIC_QUIT_REQUEST calls=0 secret=value\nuntrusted /tmp/secret-material\nKELD_KEL142_BIND nonce=private\nKELD_KEL_BROKEN/path should-not-print\nKELD_KELSECRET_ABC123PRIVATE\n",
+        b"KELD_KEL140_PUBLIC_QUIT_REQUEST calls=0 secret=value\nuntrusted /tmp/secret-material\nKELD_KEL142_BIND nonce=private\nKELD_KEL140_APP_RESULT_HTTP_OK path=secret\nKELD_KEL140_QUIT_HTTP_HEADERS_OK token=secret\nKELD_KEL140_QUIT_HTTP_BODY_OK body=private\nKELD_KEL140_QUIT_HTTP_BODY_OK_FORGED secret\nKELD_KEL_BROKEN/path should-not-print\nKELD_KELSECRET_ABC123PRIVATE\n",
     );
     assert_eq!(
         markers,
@@ -121,6 +124,10 @@ fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
             "KELD_KEL140_PUBLIC_QUIT_REQUEST",
             "[redacted]",
             "KELD_KEL142_BIND",
+            "KELD_KEL140_APP_RESULT_HTTP_OK",
+            "KELD_KEL140_QUIT_HTTP_HEADERS_OK",
+            "KELD_KEL140_QUIT_HTTP_BODY_OK",
+            "[redacted]",
             "[redacted]",
             "[redacted]"
         ]
