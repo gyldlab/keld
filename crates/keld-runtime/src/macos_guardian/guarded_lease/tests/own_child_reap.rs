@@ -17,8 +17,8 @@ use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
 
 use super::super::super::process_group::{
-    LocalGroupWitness, TestGroupSignalPoint, install_test_group_signal_hook,
-    retire_own_child_group, validate_guardian_child_group,
+    GroupIdentity, LocalGroupWitness, TestGroupSignalPoint, install_test_group_signal_hook,
+    reconcile_denied_signal_after_reap, retire_own_child_group, validate_guardian_child_group,
 };
 use super::super::super::{GUARDIAN_SHUTDOWN_DEADLINE, RuntimeError};
 use super::{
@@ -170,8 +170,11 @@ fn guardian_revoke_never_clears_a_group_held_by_a_zombie_it_does_not_reap() {
     assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
 }
 
-/// The denied-signal path's error contract: the one signal's typed
-/// signal-phase EPERM.
+/// The denied-signal path's error contract (the stack's form, D3): the one
+/// signal's typed signal-phase EPERM, carrying the absence owner's reason as
+/// context. The wrapper hides `raw_os_error()`, so the exact denial is
+/// asserted through the one classifier: once the group is really gone,
+/// `reconcile_denied_signal_after_reap` must accept this very error.
 fn assert_signal_phase_eperm(error: &RuntimeError) {
     assert!(
         matches!(
@@ -179,10 +182,31 @@ fn assert_signal_phase_eperm(error: &RuntimeError) {
             RuntimeError::Lifecycle {
                 phase: "macOS guardian process-group signal",
                 source,
-            } if source.raw_os_error() == Some(nix::libc::EPERM)
+            } if source.kind() == std::io::ErrorKind::PermissionDenied
         ),
         "typed signal-phase EPERM: {error:?}"
     );
+    let text = error.to_string();
+    assert!(
+        text.contains("Operation not permitted"),
+        "the kernel's denial stays visible: {text}"
+    );
+    assert!(
+        text.contains("original group absence remains unproven after the shutdown budget"),
+        "the absence owner's reason is kept as context: {text}"
+    );
+}
+
+/// After the group is proven gone, the one classifier still recognises the
+/// returned error as the exact signal-phase denial (and nothing else would
+/// be reconciled into success).
+fn assert_classified_as_denied_signal(identity: GroupIdentity, error: RuntimeError) {
+    reconcile_denied_signal_after_reap(
+        identity,
+        error,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
+    )
+    .expect("the returned error is the exact signal-phase EPERM");
 }
 
 /// Negative control for the DENIED path: the Guardian's own signal is denied
@@ -193,6 +217,8 @@ fn guardian_denied_signal_never_clears_a_group_held_by_a_zombie_it_does_not_reap
     let mut leader = sleeper(0);
     let group = raw(leader.0.id());
     let mut other = sleeper(group);
+    let identity = validate_guardian_child_group(leader.0.id(), std::process::id())
+        .expect("kernel birth of the owned leader");
     let witness = enrolled(&leader);
     let _hook = install_test_group_signal_hook(
         leader.0.id(),
@@ -219,6 +245,7 @@ fn guardian_denied_signal_never_clears_a_group_held_by_a_zombie_it_does_not_reap
         Some(9)
     );
     assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
+    assert_classified_as_denied_signal(identity, error);
 }
 
 /// A fresh live process joins the group (kept in existence by a zombie the
@@ -287,6 +314,8 @@ fn assert_no_signal_reaches_a_process_that_joins_during_the_reap(denied: bool) {
     let error = retired.expect_err("a group that turned live after the reap is not ours");
     if denied {
         assert_signal_phase_eperm(&error);
+        assert_eq!(kill(Pid::from_raw(-group), None), Err(Errno::ESRCH));
+        assert_classified_as_denied_signal(identity, error);
     } else {
         assert!(
             error

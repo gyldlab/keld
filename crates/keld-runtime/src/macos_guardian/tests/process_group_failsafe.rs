@@ -16,34 +16,17 @@ use super::super::process_group::{
     terminate_registered_group, validate_guardian_child_group,
 };
 
+use super::test_support::await_held_zombie_group;
+
 mod cleanup_authority;
 mod exiting_member_race;
 mod native_descendant;
+mod shared_absence;
 use self::native_descendant::spawn_held_native_descendant;
 
 // Test-owned direct Child identity ensures a failing negative oracle never
 // leaves an unrelated native process alive after panic/unwind.
 struct TestOwnedGroupChild(Child);
-
-/// Await the kernel's zombie-only state of a group whose test-owned members
-/// were killed with `SIGKILL` but not reaped: `kill(-g, 0)` turns from Ok (a member is
-/// still exiting) to EPERM (every member is `SZOMB`). Polling is the awaited
-/// condition; the existing shutdown deadline is only a kill switch.
-fn await_zombie_only_group(raw: i32) {
-    let deadline = std::time::Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    loop {
-        match kill(Pid::from_raw(-raw), None) {
-            Err(Errno::EPERM) => return,
-            Ok(()) => {}
-            other => panic!("group left the zombie-only path: {other:?}"),
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "killed members never became a zombie-only group"
-        );
-        thread::yield_now();
-    }
-}
 
 impl Drop for TestOwnedGroupChild {
     fn drop(&mut self) {
@@ -223,11 +206,8 @@ fn assert_unreaped_native_member_remains_denied(
         nix::unistd::getpgid(Some(Pid::from_raw(raw))),
         Err(Errno::ESRCH)
     );
-    assert_eq!(
-        kill(Pid::from_raw(-raw), None),
-        Err(Errno::EPERM),
-        "the other parent's held zombie must still make the group ambiguous"
-    );
+    // The other parent's held zombie must make the group ambiguous.
+    await_held_zombie_group(Pid::from_raw(raw));
     assert!(
         reconcile_denied_signal_after_reap(original, denied(), std::time::Instant::now()).is_err(),
         "reaping only the original leader cannot prove a whole group is gone"
@@ -398,10 +378,8 @@ fn reaped_leader_with_temporarily_unreaped_dead_member_clears_without_false_host
         Err(Errno::ESRCH),
         "original leader birth is gone before host CLEAR"
     );
-    // Darwin must report a temporarily zombie-only group as ambiguous. A
-    // SIGKILLed member is still *exiting* (found, so Ok) for a moment before
-    // it becomes SZOMB; await that kernel state rather than racing it.
-    await_zombie_only_group(group_raw);
+    // Darwin must report a temporarily zombie-only group as ambiguous.
+    await_held_zombie_group(Pid::from_raw(group_raw));
     // A separate actual OS Child owner holds the killed group member until
     // the *shipping* fallback has observed its own first ESRCH + EPERM pair.
     // This exact receipt, rather than a sleep or scheduler hope, prevents a
@@ -463,7 +441,7 @@ fn reaped_leader_with_persistently_unreaped_member_must_not_claim_clear() {
         nix::unistd::getpgid(Some(Pid::from_raw(raw))),
         Err(Errno::ESRCH)
     );
-    await_zombie_only_group(raw);
+    await_held_zombie_group(Pid::from_raw(raw));
 
     let error = terminate_attested_group(original)
         .expect_err("unreaped zombie-only group is not a proven-empty native group");
