@@ -302,10 +302,18 @@ pub(super) fn validate_guardian_child_group(
 /// One call sends at most ONE group signal ([`signal_attested_group_once`]).
 /// This is per call: a later call on the same retained birth (after a failed
 /// CLEAR, at shutdown/Drop or `fail_current_generation`) starts its own
-/// decision, exactly as before; one signal per *generation* is not enforced
-/// here.
+/// decision; one signal per *generation* is enforced by the retained owner
+/// (`GuardedPrimary`'s spent authority), not here.
 pub(super) fn terminate_attested_group(group: GroupIdentity) -> Result<(), RuntimeError> {
-    let reap_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4;
+    terminate_attested_group_until(group, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4)
+}
+
+/// [`terminate_attested_group`] with a caller-owned absolute reap deadline,
+/// so a retained owner can bound every attempt by one shared budget.
+pub(super) fn terminate_attested_group_until(
+    group: GroupIdentity,
+    reap_deadline: Instant,
+) -> Result<(), RuntimeError> {
     match observe_group_identity(group.pid) {
         Ok(current) if current == group => signal_attested_group_once(group, reap_deadline),
         Ok(_) => Err(lifecycle_error(
@@ -322,7 +330,8 @@ pub(super) fn terminate_attested_group(group: GroupIdentity) -> Result<(), Runti
             // signallable through a same-group descendant. Every other state,
             // including Darwin's ambiguous zombie-only EPERM, goes to the one
             // absence owner, which never signals and accepts only dual ESRCH
-            // within a quarter of the existing shutdown deadline.
+            // within the caller's reap deadline (a quarter of the existing
+            // shutdown deadline unless a retained owner shares one budget).
             if probe_group_absence(raw) == (Err(Errno::ESRCH), Ok(())) {
                 return signal_attested_group_once(group, reap_deadline);
             }
