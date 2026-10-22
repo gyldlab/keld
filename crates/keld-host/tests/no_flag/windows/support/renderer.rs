@@ -117,7 +117,7 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
             }
         }
         let remaining = deadline
-            .map(|deadline| renderer_beacon_remaining(deadline, now()))
+            .map(|deadline| renderer_beacon_remaining(deadline, now(), BeaconPhase::IntakeWait))
             .transpose()?;
 
         let mut index = 0;
@@ -143,7 +143,9 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
                         format!("set renderer beacon reply stream blocking: {error}")
                     })?;
                     let write_timeout = deadline
-                        .map(|deadline| renderer_beacon_remaining(deadline, now()))
+                        .map(|deadline| {
+                            renderer_beacon_remaining(deadline, now(), BeaconPhase::ReplyWrite)
+                        })
                         .transpose()?
                         .unwrap_or(PRODUCT_DEADLINE);
                     matched
@@ -173,12 +175,32 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
     }
 }
 
+/// Which wait an absolute beacon deadline elapsed in; it owns the error wording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BeaconPhase {
+    /// Accepting and reading connections until the exact request arrives.
+    IntakeWait,
+    /// The exact request matched; writing its reply.
+    ReplyWrite,
+}
+
 pub(crate) fn renderer_beacon_remaining(
     deadline: Instant,
     now: Instant,
+    phase: BeaconPhase,
 ) -> Result<Duration, String> {
     deadline
         .checked_duration_since(now)
         .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| "renderer beacon deadline elapsed before the exact request".to_owned())
+        .ok_or_else(|| {
+            match phase {
+                BeaconPhase::IntakeWait => {
+                    "renderer beacon deadline elapsed before the exact request; phase=intake_wait"
+                }
+                BeaconPhase::ReplyWrite => {
+                    "renderer beacon deadline elapsed before replying to the exact request; phase=reply_write"
+                }
+            }
+            .to_owned()
+        })
 }
