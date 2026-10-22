@@ -1,0 +1,43 @@
+{
+  "all_77_source_complete": false,
+  "changed_blobs_pending": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs",
+    "crates/keld-runtime/src/macos_guardian/process_group.rs",
+    "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs"
+  ],
+  "current_guardian_paths": 78,
+  "evidence_exact_blob_verified": true,
+  "followon_parent_head": "a2952a0f95eb58fe50de335601383294eccd0d59",
+  "followon_parent_pr": "https://github.com/gyldlab/keld/pull/956",
+  "historical_949_head": "899e287ea487f38ec1cd347f7c9db8f1927348ef",
+  "historical_columns_preserved": true,
+  "historical_paths": 77,
+  "limited_integration_reviews": 5,
+  "merge_authorized": false,
+  "native_tests_rerun_for_documentation": false,
+  "new_production_reviews": 4,
+  "new_review_entries": 9,
+  "new_source_path_pending": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs"
+  ],
+  "parallel_review_reconciliation": {
+    "candidate_commit": "fed5ddb4",
+    "candidate_not_inherited_by_pr_956": true,
+    "not_new_to_entire_parallel_program": true,
+    "pr_953": "https://github.com/gyldlab/keld/pull/953",
+    "pr_955": "https://github.com/gyldlab/keld/pull/955"
+  },
+  "parent_existing_source_review_entries": 12,
+  "remaining_pending_historical_full_review": 49,
+  "schema_version": 1,
+  "status_counts_historical_77": {
+    "changed-since-949-pending": 3,
+    "historical-scoped-only": 4,
+    "pending-source-review": 49,
+    "source-reviewed-limited": 5,
+    "source-reviewed-new": 7,
+    "source-reviewed-production-followon": 4,
+    "source-reviewed-reused": 5
+  },
+  "underlying_source_tip": "77b1c5aef9202a6cc0d84195fc1f4c32e1eb1cba"
+}
