@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn injected_navigation_start_registration_failure_is_recorded_and_startup_still_completes() {
+    fn injected_navigation_start_registration_failure_is_recorded_and_never_an_error() {
         let diagnostic = Mutex::new(FirstNavigationDiagnostic::new());
         diagnostic
             .lock()
@@ -373,21 +373,16 @@ mod tests {
         // The injected failure stands in for `add_NavigationStarting` returning an
         // HRESULT; the install path hands that result to this same function.
         let injected = windows::core::Error::from(windows::Win32::Foundation::E_ACCESSDENIED);
-        record_navigation_start_registration(Err(injected), &diagnostic);
-        let mut diag = diagnostic.lock().expect("diagnostic lock");
-        let unobserved = diag.snapshot();
+        // Non-fatal by type: binding the result to `()` stops compiling if the
+        // function ever returns an error webview creation could propagate.
+        // (`completed()` never reads the observer state, so asserting on it would
+        // pass whatever this injected.)
+        let () = record_navigation_start_registration(Err(injected), &diagnostic);
+        let unobserved = diagnostic.lock().expect("diagnostic lock").snapshot();
         assert!(
             unobserved.contains("navigation_start_observer=failed:0x80070005"),
             "{unobserved}"
         );
-        let ready = AtomicBool::new(false);
-        let failed = AtomicBool::new(false);
-        assert!(
-            diag.completed(Ok(true), None, &ready, &failed),
-            "a failed observer registration must not block the navigation outcome"
-        );
-        assert!(ready.load(Ordering::Acquire));
-        assert!(!failed.load(Ordering::Acquire));
     }
 
     #[test]
