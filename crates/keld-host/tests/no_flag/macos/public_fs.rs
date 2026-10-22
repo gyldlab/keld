@@ -247,6 +247,124 @@ fn prepare_public_fs_exercise(
     }
 }
 
+// This pre-Quit witness is a CI-visible diagnostic, not the OS lineage oracle.
+// Never format the source-attested PIDs, window IDs, hashes, URLs or raw reports.
+// Those remain available to the independent assertions in observe_launch and
+// assert_product_quit, not to hosted stderr.
+fn report_public_launch_witness(evidence: &LaunchEvidence) {
+    eprintln!(
+        "KELD_KEL140_PUBLIC_WITNESS stage=pre_quit_observed reports={} windows={} family_attested={}",
+        evidence.reports.len(),
+        evidence.window.len(),
+        evidence.family.is_some(),
+    );
+}
+
+// The same function called by the product fixture must emit only fixed labels
+// and counts, even when it receives plausible private native observations.
+// The child is bounded/reaped by the existing original Host-test wait owner.
+#[test]
+fn public_launch_witness_private_data_never_reaches_stderr() {
+    const CHILD_ENV: &str = "KELD_KEL140_PRIVACY_WITNESS_CHILD";
+    const CHILD_MARKER: &str = "KELD_KEL140_PRIVACY_WITNESS_CHILD_ENTERED";
+    const SAFE_LINE: &str = "KELD_KEL140_PUBLIC_WITNESS stage=pre_quit_observed reports=1 windows=1 family_attested=true";
+    if matches!(std::env::var(CHILD_ENV).as_deref(), Ok("1")) {
+        let evidence = LaunchEvidence {
+            reports: vec![json!({
+                "phase": "page-ready",
+                "endpoint": "unix:///tmp/keld-witness-secret-root-DO_NOT_LOG/private.sock",
+                "url": "https://private-witness.invalid/DO_NOT_LOG_TOKEN",
+                "documentNonce": "DO_NOT_LOG_DOCUMENT_NONCE",
+            })],
+            family: Some(ProcessFamily {
+                bun: 324_987_652,
+                descendant: 318_276_465,
+                guardian: 315_928_374,
+            }),
+            window: vec![314_159_265],
+            ..LaunchEvidence::default()
+        };
+        report_public_launch_witness(&evidence);
+        println!("{CHILD_MARKER}");
+        return;
+    }
+
+    // no_flag_macos is the integration target; libtest selectors begin with
+    // its child module, not the target crate name.
+    let selector = "public_fs::public_launch_witness_private_data_never_reaches_stderr";
+    let child = Command::new(std::env::current_exe().expect("owned native test binary"))
+        .args(["--exact", selector, "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn owned native privacy-witness process");
+    let output = wait_child_output(child, EVENT_DEADLINE);
+    assert!(
+        output.status.success(),
+        "native privacy witness child failed"
+    );
+    let stdout = std::str::from_utf8(&output.stdout).expect("child selector stdout");
+    assert_eq!(
+        stdout.matches(CHILD_MARKER).count(),
+        1,
+        "one exact child selector must execute"
+    );
+    let stderr = std::str::from_utf8(&output.stderr).expect("child witness stderr");
+    // Comparing captured stderr with assert_eq! would expose the private
+    // sentinel and OS identifiers when this leak regression deliberately REDs.
+    // Keep the failure message fixed and never format the actual payload.
+    assert!(
+        stderr.trim() == SAFE_LINE,
+        "native privacy witness emitted a nonconforming stderr record"
+    );
+    for private in [
+        "324987652",
+        "318276465",
+        "315928374",
+        "314159265",
+        "/tmp/keld-witness-secret-root-DO_NOT_LOG",
+        "https://private-witness.invalid/DO_NOT_LOG_TOKEN",
+        "DO_NOT_LOG_DOCUMENT_NONCE",
+    ] {
+        assert!(
+            !stderr.contains(private),
+            "native witness stderr revealed a private source field"
+        );
+    }
+
+    // If the production call is reverted to the old inline raw eprintln,
+    // the native reporter test alone would miss the bypass. Pin its callsite.
+    let source = include_str!("public_fs.rs");
+    let body = source
+        .rsplit_once("fn run_launch_with_causal_receipt(")
+        .expect("shipping launch callsite")
+        .1
+        .split_once("\nfn observe_launch(")
+        .expect("bounded launch body")
+        .0;
+    assert_eq!(
+        body.matches("report_public_launch_witness(&evidence);")
+            .count(),
+        1,
+        "pre-Quit launch must call the privacy-checked reporter"
+    );
+    assert_eq!(
+        body.matches("KELD_KEL140_PUBLIC_WITNESS").count(),
+        0,
+        "no raw inline witness logging may bypass the privacy reporter"
+    );
+    let pre_quit = body
+        .split_once("\n    if observation_result.is_err() {")
+        .expect("pre-Quit observation boundary")
+        .0;
+    assert!(
+        !pre_quit.contains("eprintln!("),
+        "no pre-Quit inline diagnostic may bypass the checked reporter"
+    );
+}
+
 fn run_launch_with_causal_receipt(
     fixture: &PublicFsProject,
     launch: usize,
@@ -300,15 +418,7 @@ fn run_launch_with_causal_receipt(
                     .expect("independently attributed product family"),
             );
         }
-        eprintln!(
-            "KELD_KEL140_PUBLIC_WITNESS policy={:?} launch={launch} host={host_pid} window={:?} identities={:?} policy_sha256={} host_sha256={} reports={:?} exercise={exercise:?}",
-            fixture.policy,
-            evidence.window,
-            evidence.family,
-            prepared.digest,
-            prepared.host_digest,
-            evidence.reports,
-        );
+        report_public_launch_witness(&evidence);
     }));
     if observation_result.is_err() {
         // Capture pipes even if the host exited first. Fallback is never success.
