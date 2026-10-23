@@ -561,10 +561,18 @@ jobs:
           done
 
   bun-test:
-    name: bun test (TypeScript)
-    runs-on: ubuntu-latest
+    name: bun test (TypeScript, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     needs: changes
+    # Every OS that runs a Bun role runs its package suites (GH-1095 AT-B1,
+    # AT-B2, AT-API2a; #1111). The matrix is static: the router owns whether
+    # the lane runs, not where. `CI required` reads the aggregate result, so a
+    # failure on any OS fails the lane.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     # This lane owns the package compiler and Bun runtime contracts. Its only
     # inputs are those package trees, so a Rust-only diff skips it and a
     # TypeScript diff runs it (tools/ci_changes.sh, `ts` output). Job-level `if`
