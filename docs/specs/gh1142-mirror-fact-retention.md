@@ -1,10 +1,17 @@
 # Spec: retain the applied mirror fact until its ring record is dispatched
-Status: draft
+Status: approved
 Linear: GH-1142 (#517), child of GH-449 · Owner: @amishabenramani · Updated: 2026-10-24
 
-This is an exact-content amendment proposal, not implementation or approval.
-The approved GH-531 and GH-527 contracts remain operative until exact-content
-owner approval; this draft alone authorizes no mirror storage or production consumer.
+**Scoped owner approval recorded — 2026-10-24:** the user approved PR #1143's
+reviewed technical commit `ad857aa3e26b42ff9ffc7d22c6449d8ebe99c588`, tree
+`627016d5b1b842b8251f652262f984b9ab18f67a`, file SHA-256
+`5fa690e57feafdf238ca16240b86242c9ab1ecdb76df65aab41b841f4d63fdd1`.
+The [conversation approval record](https://github.com/gyldlab/keld/issues/1142#issuecomment-6374810328)
+binds these exact technical bytes after independent review and the local docs gate.
+This carrier changes approval/tracking metadata only. The approved amendment governs
+the scoped GH-531/GH-527 correction; the same GH-449 implementation PR reconciles
+their owning paragraphs before landing. Production attachment still requires the
+source-specific heap/alias proof, and no native or implementation pass is asserted.
 
 ## 1. Goal & non-goals
 
@@ -162,7 +169,7 @@ feature lands. Caller/source qualification remains with each production consumer
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 / GH-1142: independently review and publish this exact draft; obtain the one
+- [x] T1 / GH-1142: independently review and publish this exact draft; obtain the one
   scoped approval in §10. Existing approved owners stay operative meanwhile.
 - [ ] T2 / held GH-449 T1: after approval, amend both owners with provenance and
   implement/test the helper using the existing Rust-host/Bun-role integration owner.
@@ -207,8 +214,6 @@ an attributed registered benchmark are required before any measured performance 
 
 ## 10. Open questions
 
-Approve this exact scoped memory/ownership correction to GH-531 §4.d and GH-527
-§4.6/§9, retaining source-specific heap qualification before production attachment?
-Recommendation: accept the correction after exact-diff review. Acceptance permits the
-bounded helper work, not an unqualified consumer or native release; deferral leaves the
-mirror absent while codec-only development and existing transport work continue.
+None. The exact scoped correction was approved in the record above. Acceptance permits
+the bounded helper work while retaining source-specific heap qualification before
+production attachment; it grants no unqualified consumer or native release.
