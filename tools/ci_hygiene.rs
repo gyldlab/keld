@@ -127,9 +127,14 @@ const DOC_PLACEHOLDER_COMMANDS: &[&str] = &[
 /// The `hygiene` recipe's hello-command regression, run by the hosted hygiene job (#650).
 const HELLO_COMMAND_COMMANDS: &[&str] = &["python3 -B tools/test_hello_command.py"];
 
+/// The public audit verifiers and their mutation suites, in `audit-docs` then
+/// `audit-docs-test` order. The Windows architecture closeout ledger is checked
+/// here so its pinned snapshot cannot drift silently (#942).
 const AUDIT_DOC_COMMANDS: &[&str] = &[
     "python3 -B docs/audits/verify.py",
+    "python3 -B tools/windows_architecture_closeout.py --check",
     "python3 -B docs/audits/test_verify.py",
+    "python3 -B tools/test_windows_architecture_closeout.py",
 ];
 
 const AGENT_CONTEXT_COMMANDS: &[&str] = &[
@@ -419,15 +424,11 @@ fn check_root_audit_contract(root: &Path) -> Result<(), String> {
             })?,
         );
     }
-    let expected = [
-        "{{python_command}} -B docs/audits/verify.py",
-        "{{python_command}} -B docs/audits/test_verify.py",
-    ];
-    if commands
+    let expected: Vec<String> = AUDIT_DOC_COMMANDS
         .iter()
-        .map(String::as_str)
-        .ne(expected.iter().copied())
-    {
+        .map(|command| command.replacen("python3 ", "{{python_command}} ", 1))
+        .collect();
+    if commands != expected {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` `audit-docs:` must run the verifier and mutation suite exactly."
         ));

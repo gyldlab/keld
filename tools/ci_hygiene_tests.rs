@@ -257,7 +257,9 @@ fn valid_workflow() -> String {
             "        if: needs.changes.outputs.docs == 'true'",
             "        run: |",
             "          python3 -B docs/audits/verify.py",
+            "          python3 -B tools/windows_architecture_closeout.py --check",
             "          python3 -B docs/audits/test_verify.py",
+            "          python3 -B tools/test_windows_architecture_closeout.py",
             "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
@@ -461,7 +463,9 @@ fn complete_fixture() -> TempDir {
                 "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
                 "audit-docs:\n",
                 "    {{python_command}} -B docs/audits/verify.py\n",
+                "    {{python_command}} -B tools/windows_architecture_closeout.py --check\n",
                 "    {{python_command}} -B docs/audits/test_verify.py\n",
+                "    {{python_command}} -B tools/test_windows_architecture_closeout.py\n",
                 "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
                 "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
                 "mermaid-ci:\n",
@@ -684,6 +688,33 @@ fn public_audit_gate_is_mandatory_locally_and_in_docs_ci() {
     );
     let error = check(temp.path()).expect_err("audit mutation suite must run in docs CI");
     assert!(error.contains("Public audit registry contracts"), "{error}");
+
+    // #942: the Windows closeout ledger check and its tests run in both lanes.
+    for command in [
+        "python3 -B tools/windows_architecture_closeout.py --check",
+        "python3 -B tools/test_windows_architecture_closeout.py",
+    ] {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(&format!("          {command}\n"), "", 1),
+        );
+        let error = check(temp.path()).expect_err("closeout ledger must run in docs CI");
+        assert!(error.contains("Public audit registry contracts"), "{error}");
+
+        let temp = complete_fixture();
+        let local = command.replacen("python3 ", "{{python_command}} ", 1);
+        temp.write(
+            JUSTFILE,
+            &read(temp.path(), JUSTFILE).expect("just fixture").replacen(
+                &format!("    {local}\n"),
+                "",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("closeout ledger must run in audit-docs");
+        assert!(error.contains("audit-docs"), "{error}");
+    }
 
     let temp = complete_fixture();
     let workflow = valid_workflow().replacen(

@@ -92,9 +92,11 @@ agents-md:
 # Live Git publication history/ancestry is not a tracked-file diff input.
 audit-docs: audit-docs-test
     {{python_command}} -B docs/audits/verify.py
+    {{python_command}} -B tools/windows_architecture_closeout.py --check
 
 audit-docs-test:
     {{python_command}} -B docs/audits/test_verify.py
+    {{python_command}} -B tools/test_windows_architecture_closeout.py
 
 # KEL-145: one canonical atomic problem-solving protocol plus narrow references.
 atomic-protocol:
