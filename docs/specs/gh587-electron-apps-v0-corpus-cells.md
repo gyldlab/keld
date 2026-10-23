@@ -1,8 +1,8 @@
 # Spec: electron-apps-v0 product-run cells and trusted provenance (GH-587)
 
-Status: draft
-Approval gate: independent exact-source review and repository-owner sign-off are required before implementation or merge.
-Disposition: DO NOT MERGE. This draft is a proposed product evidence contract, not approved production implementation or an admitted product receipt.
+Status: approved
+Human approval: [GH #587 exact-source receipt](https://github.com/gyldlab/keld/issues/587#issuecomment-6376877459) approves implementation of the reviewed design at SHA-256 `8113b8689b8ab570bd9d3142f6b9afbc4453427c41adc67aebff5120efa7652a` (PR #1146 head `11b5420b2db43b9813fb46bc6fb91b6279158557`); this header/status update changes no approved design decision.
+Disposition: DO NOT MERGE. Approved **specification** is not implemented production code, an authenticated product receipt, a product compatibility pass or merge/release authorization.
 Linear: GH-587 (#517 GitHub tracker of record) · Owner: @0monish / GYLDLAB · Updated: 2026-10-24
 Source baseline: `b4e9f4f2e0dc88ccb14407e4e839b50fabb6be50` (origin/main). Downstream consumer: GH-588 / KEL-78.
 
@@ -182,7 +182,7 @@ X02-T6, not this draft, proposes a product id as committed only through one revi
 
 ## 6. Tasks (ordered vertical deliverables, no placeholders)
 
-- [ ] **T1 — GH-587 specification:** publish the exact-content draft here and repair architecture 04 section 6; independently review provenance, kind/denominator semantics and one-owner rules; stop for explicit spec approval. No product record, new runtime receipt, or merge.
+- [x] **T1 — GH-587 specification:** publish the exact-content draft here and repair architecture 04 section 6; independently review provenance, kind/denominator semantics and one-owner rules; receive exact-source human spec approval. No product record, new runtime receipt, or merge.
 - [ ] **T2 — X02-T5 receipt reader:** following T1 approval, extend the existing `corpus_runs` child-module receipt/record admission, validate actual collector provenance and Host generation identity, and kill forged-output, stale-G1, G2-reset, source-pin, executable-digest and wrong-label controls. Preserve existing harness tests/records. No second scorer.
 - [ ] **T3 — X02-T4 actual first app run:** reverify both **preselected** draw.io desktop/webapp source pins, full dependency/lockfile closure and exact configured-and-one-behavioral-edit patch/path census; qualify Mac app activation/open/edit/save/unsaved-prompt on real OS with independent effects, pinned active renderer/document generations from GH #541/#552/#542 and immutable evidence, leaving unqualified navigation-generation or uncited app-only claims `unknown` pending their separate owners. Install remains `unknown` until KEL-141 supplies a real distribution. Do not claim cross-platform parity from Mac.
 - [ ] **T4 — X02-T6 commit/admit product partition:** only after the receipt reader and honest per-cell observations or explicit `unknown`/red dispositions are qualified, commit the relevant *single-kind* v1 manifest, denominator, named cases and any applicable exact-byte receipts. Add an explicit **new** code-to-scoreboard committed-id consistency and attributable named-reviewer admission gate (whitelist-only, docs-only and reviewer-omission negatives); record the actual GitHub reviewer handle and exact-source approval in the PR. Do not claim a global cross-kind score.
@@ -233,11 +233,6 @@ No runtime change or performance claim in this PR. Later actual app observation/
 
 ## 10. Open questions
 
-**Approval gates—not permission to implement from draft:**
+None outstanding for **T2's bounded, fail-closed receipt-consumer scope**. The owner has selected the section 4.1 cooperating-app trust model (not hostile same-UID attestation), the separate single-kind corpus partitions, existing KEL-74 profile mapping, and no global cross-kind product percentage. The exact reviewed design received human approval as recorded above.
 
-1. **Trust boundary under uncontained Legacy:** prove a concrete collector-to-immutable-artifact custody mechanism which is not solely a same-UID child-writable file; choose a bounded cooperative-app trust statement or a stronger separately privileged/attested collector and record the supported adversary. Until demonstrated, product admission remains `unknown` and forged-runtime/G2 reset tests must stay RED. No implementation may present plain stdout or a self-asserted file as host origin.
-2. **Cross-kind product reporting:** the selected physically separate v1 kind partitions are backward-compatible but currently have no approved cross-kind aggregation. Do not publish an overall `electron-apps-v0` percentage. An owner seeking a single mixed-kind manifest must submit a separate explicit schema amendment and denominator migration proof.
-3. **Product-app source and Electron citation:** reverify the **already planned** draw.io desktop and webapp commits from approved R1 §4.9, their independently pinned lockfile/dependency closure and the one reviewed awaited-dialog edit with exact patch/path census before T3. These pinned plans are not executed evidence. For each cell, name a pinned *applicable* Electron documentation oracle if one exists; otherwise leave it `unknown` until GH-532/GH-566 explicitly approves a new app-source oracle rule. No guessed file path, dialog API or product pass can close this question.
-4. **Distribution:** until KEL-141 supplies a real prebuilt artifact, install is `unknown` and product completion is withheld. A dev-stage launch cannot be used to approve a release or first install.
-5. **Owner approval:** Status remains **draft** pending independent exact-source review and repository-owner human approval under `docs/agents/spec-template.md`. The KEL-78 R1 approval does not implicitly approve this new receipt/collector design.
-6. **GUI identity owner:** GH #541/#552/#542 must qualify the Host-owned window/WebView and document/navigation generation, stale-renderer refusal and app page/source identity before product activation or GUI-workflow passes. Until then these cells remain `unknown`; no GH-587-local identity counter, wildcard IPC grant or same-Bun page fallback is authorized.
+**External implementation and product-acceptance gates remain open, not implicit approvals:** actual Host-origin current G2 effective-state observation (#588), independent collector custody (unqualified hostile same-UID authenticity remains `unknown`), source/pin/patch and applicable Electron citation review (GH-532/566 and X02-T4), native Host-owned WebView/navigation-generation enforcement (#541/#552/#542), and KEL-141 prebuilt distribution for any install pass. T2 must preserve `ProductRecordsNeedReceipt` when producer provenance is absent. No first-proof product pass, cross-kind score, runtime API, or merge is authorized merely by this design approval.
