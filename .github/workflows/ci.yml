@@ -170,7 +170,8 @@ jobs:
   check:
     name: clippy + test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # GH-1081 [DO NOT MERGE]: research-only; 10 repeated experiment iterations.
+    timeout-minutes: 180
     needs: changes
     env:
       # The one source for this leg's Ubuntu WebKitGTK packages: the cache key
@@ -306,23 +307,55 @@ jobs:
       - name: Worktree cache tool provenance test
         shell: bash
         run: bash tools/cache_tool_provenance_test.sh
-      - name: test
+      # GH-1081 [DO NOT MERGE]: round-2 XTEST input for the Linux reload/typing rows.
+      - name: GH-1081 install xdotool (research only)
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 15
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends xdotool
+      # GH-1081 [DO NOT MERGE]: research-only narrowing on a never-merge draft PR.
+      # Round 5 (KEL-79 origin experiments X4-X9) runs, GH1081_ITERATIONS times
+      # with --no-fail-fast and GUI rows one at a time: the gh1081_r5 rows (the
+      # isolated origin-lab harness, a keld-wv example built first), the round-4
+      # X0 engine census row (provenance), and each OS's real-host
+      # crash-recovery control row (macOS round-1 E4 typed draft; Windows/Linux
+      # round-2 typed draft). The round-4 X1-X3 matrix rows and the macOS
+      # round-3 request-stage rows are recorded (run 40002434390) and leave the
+      # loop. Every other package's tests are skipped. It refuses to run
+      # anywhere but that PR's branch.
+      - name: GH-1081 build origin lab (research only)
+        shell: bash
+        run: cargo build -p keld-wv --example gh1081_origin_lab
+      - name: test (GH-1081 research narrowing, never merge)
         shell: bash
         env:
-          KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
-          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
+          GH1081_ITERATIONS: "10"
+          GH1081_REF: ${{ github.head_ref || github.ref }}
         run: |
-          packages="$KELD_CI_PACKAGES"
-          if [ "${{ matrix.os }}" = ubuntu-latest ]; then
-            packages="$KELD_CI_UBUNTU_PACKAGES"
+          if [ "$GH1081_REF" != agent/gh-1081-crash-recovery-r1 ]; then
+            echo "::error::GH-1081 research narrowing reached $GH1081_REF; it must never leave its draft PR. Revert .github/workflows/ci.yml."
+            exit 1
           fi
-          for package in $packages; do
-            if [ "${{ matrix.os }}" = ubuntu-latest ] && [ "$package" = keld-host ]; then
-              xvfb-run -a cargo nextest run -p "$package" --profile ci --no-tests=pass
+          lab="$GITHUB_WORKSPACE/target/debug/examples/gh1081_origin_lab"
+          case "${{ matrix.os }}" in
+            macos-latest) filter='binary(no_flag_macos) & (test(/gh1081_r5_/) | test(/gh1081_r4_macos_x0_engine_census/) | test(/gh1081_e4_typed_draft_document_and_heap_survive_bun_crash/))' ;;
+            windows-latest) filter='binary(no_flag_windows) & (test(/gh1081_r5_/) | test(/gh1081_r4_windows_x0_engine_census/) | test(/gh1081_r2_windows_typed_draft_survives_bun_crash/))'; lab="$lab.exe" ;;
+            ubuntu-latest) filter='binary(no_flag_linux) & (test(/gh1081_r5_/) | test(/gh1081_r4_linux_x0_engine_census/) | test(/gh1081_r2_linux_typed_draft_survives_bun_crash/))' ;;
+          esac
+          export GH1081_ORIGIN_LAB="$lab"
+          echo "GH1081_ORIGIN_LAB=$GH1081_ORIGIN_LAB"
+          cargo nextest list -p keld-host --profile ci -E "$filter"
+          failed=0
+          for iteration in $(seq 1 "$GH1081_ITERATIONS"); do
+            echo "GH1081_ITERATION_BEGIN $iteration/$GH1081_ITERATIONS os=${{ matrix.os }} sha=$GITHUB_SHA"
+            if [ "${{ matrix.os }}" = ubuntu-latest ]; then
+              xvfb-run -a --server-args='-screen 0 1280x800x24' cargo nextest run -p keld-host --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
             else
-              cargo nextest run -p "$package" --profile ci --no-tests=pass
+              cargo nextest run -p keld-host --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
             fi
+            echo "GH1081_ITERATION_END $iteration/$GH1081_ITERATIONS failed_iterations=$failed"
           done
+          echo "GH1081_SUMMARY os=${{ matrix.os }} iterations=$GH1081_ITERATIONS failed_iterations=$failed"
+          [ "$failed" -eq 0 ]
       - name: Windows media guard acceptance (KEL-132)
         if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')
         shell: pwsh
@@ -1044,6 +1077,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # GH-1081 [DO NOT MERGE]: this research PR must never pass the required check.
+      - name: GH-1081 never-merge guard
+        run: |
+          echo "::error::GH-1081 crash-recovery research PR: disposable, never merge."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

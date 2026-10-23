@@ -97,7 +97,7 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
     wait_process_identity_gone(&g2.descendant, Instant::now() + PRODUCT_DEADLINE);
 }
 
-fn accept_generation(
+pub(crate) fn accept_generation(
     listener: &UnixListener,
     host: &mut Child,
 ) -> (

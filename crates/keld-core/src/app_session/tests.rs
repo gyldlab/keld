@@ -108,3 +108,5 @@ include!("tests/recovered_events_and_echo.rs");
 include!("tests/ready_recovery.rs");
 include!("tests/failed_ready_and_cli_lease.rs");
 include!("tests/terminal_cleanup_and_windows_shutdown.rs");
+// GH-1081 round-3 research records (never merged; draft PR #1082).
+include!("tests/gh1081_r3_echo_stages.rs");
