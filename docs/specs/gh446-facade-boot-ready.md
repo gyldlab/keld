@@ -122,10 +122,10 @@ The names below are proposed.
    *NC:* removing the `window_ready` replay in successor install leaves the successor's `whenReady` pending past its echo fence.
 9. **Recovered generation, compat side.** The `electron-app-v1` cell `app.ready.recovered-generation` is recorded `unknown` on macOS. It is uncited (gh532 rule 6), because Electron has no corresponding supervised main-process recovery contract to cite. Its mapped today-test asserts that a fresh role process observes exactly one replayed `Ready`. *NC:* names #449's keld-core test of gh531 criterion 46: deleting the registry's adoption arm makes a successor `Create` allocate a new native window while an eligible survivor exists. This is an adoption invariant (D7), not a cap on legitimate application-created windows.
 10. **Renderer boots and the KEL-237 gate.** On the final diff, these pass unchanged:
-    - `successor_reader_waits_for_retired_fs_drain_before_ready_and_call` (the "G2 Ready replay", `app_session.rs:8633`);
-    - `recovered_generation_orders_window_events_once_across_installation` (9599);
-    - `retired_generation_eof_cannot_fail_or_replace_the_successor` (9540);
-    - `failed_initial_ready_write_denies_recovery_before_successor` (10597);
+    - `successor_reader_waits_for_retired_fs_drain_before_ready_and_call` (the G2 Ready replay, under `app_session/tests/`);
+    - `recovered_generation_orders_window_events_once_across_installation`;
+    - `retired_generation_eof_cannot_fail_or_replace_the_successor`;
+    - `failed_initial_ready_write_denies_recovery_before_successor`;
     - `pre_ready_bun_crash_is_startup_failure_not_a_recovered_window`;
     - the macOS, Linux and Windows no-flag lifecycle cycles;
     - `lifecycle_corpus_rust_oracles_execute`, which runs the cell `app.when-ready.host-ready-gate` → `when_ready_does_not_resolve_before_host_ready_event`.
@@ -141,12 +141,12 @@ The names below are proposed.
 
     *NC:* signalling `Ready` when the coordinator starts, before the install result, writes `Ready`.
 15. **Bounded wait for the `Init` turn.** Given a schema-2 coordinator whose deadline has passed and which has received no `HostInitialized`, when it waits, then:
-    - it returns `KELD-CORE-037`, with the detail "the UI loop did not deliver its first turn within 15 s";
+    - it constructs `KELD-CORE-037`, with the detail "the UI loop did not deliver its first turn within 15 s", and passes the error by borrow to the terminal function after bounded cleanup;
     - it writes no `Ready`;
     - it denies recovery and invokes the existing bounded, UI-independent authority/child cleanup owners;
     - it calls the binary-owned terminal function exactly once, preserving main-thread custody and leaving the dev stage intact when release is unproved (AC20).
 
-    *NC:* an unbounded `recv()` never returns. The test detects this with a bounded join on the coordinator thread's result channel, never a sleep.
+    *NC:* an unbounded `recv()` never reaches the terminal callback. The test uses a bounded observation of that callback receiving the typed error, not an assertion that the diverging path returns normally. AC20 exercises actual termination in a child: one `TERMINAL_ENTERED` record, failure exit, and no `COORDINATOR_RETURNED` marker. A mutation that returns `Err(037)` instead of invoking the terminal function fails that oracle.
 16. **Window calls before Ready (an edge F02-T2 must satisfy).** `Subscribe` to `window` is accepted before Ready (gh531 "Subscription before the table"). Given a facade boot whose first `Ready` write has not happened, when a role whose link is subscribed to `window` sends `Create` or any other window call, then the reply is `KELD-CORE-040` and no native window is created. An unsubscribed link gets `KELD-CORE-045` instead, because that check runs first. *NC:* marking the registry ready when it is constructed serves that `Create`. This spec decides the rule (D4). Its test lands with the first window call, in F02-T2 (gh531 criterion 14 "Before Ready", amended by #657).
 17. **Entry-evaluation ordering is qualified, not inferred.** Run separate CJS and native-ESM synchronous-entry fixtures, plus a target-derived fixture whose imported dependency invokes `whenReady()` during evaluation before the entry registers its own `ready` listener. For each qualified graph, record dependency start/end, entry start/end, Ready delivery and both public callbacks; neither callback runs before synchronous graph evaluation completes, and the listener sees one event. Coalesce HELLO acceptance and Ready in one transport delivery and separately delay listener attachment. *NCs:* dispatch Ready before listener installation; replace the host-ready gate with an already-resolved promise; or omit a dependency from the target-derived fixture. Awaited ESM setup is a separate Electron behavior, not implied by a synchronous test (D5, §4.12). Owner: #445/#446 for lifecycle scheduling; any loader change needs a separately reviewed boundary and must preserve native `@keld/api` callers that await filesystem/auth readiness.
 18. **One usable public facade-ready state (#449).** With raw host Ready received but the correlated window `Subscribe` acceptance held, `app.isReady()` remains false, `whenReady()` remains pending and `ready` has not fired. After every replayed `Created` fact is applied and the accepted `Subscribed` reply is processed, all three agree, and a constructor in either callback succeeds. Repeat with zero survivors, with survivors, and on successor install where Ready precedes reader startup. A refused subscription fails closed. *NCs:* resolve on raw Ready, mark ready when Subscribe is merely sent, or move the reply ahead of replay. Keep this facade composition out of the shared native API readiness policy.
@@ -521,7 +521,7 @@ startup trigger writes another Ready (AC6).
     first measurement action is to record time to `Init` in T1's AC4 run on the
     physical Mac.
   - **On expiry.**
-    1. Return `KELD-CORE-037` with the detail "the UI loop did not deliver its first
+    1. Construct `KELD-CORE-037` with the detail "the UI loop did not deliver its first
        turn within 15 s". No `Ready` is written.
     2. Deny recovery and invoke the existing bounded router/guardian paths to retire
        authority, close the link and endpoint, and terminate/reap Bun. Those owners
@@ -533,16 +533,20 @@ startup trigger writes another Ready (AC6).
     came.
   - **What the exit leaves behind: host death for the profile store.** Before `Init`,
     the engine already exists, and `WkWebViewEngine::new` opened the profile store
-    (`crates/keld-wv/src/wkwebview/macos_profile.rs:231-259`). Releasing it,
-    `clean_shutdown` (`macos_profile.rs:339`), needs the AppKit main thread, which is
+    (`crates/keld-wv/src/wkwebview/macos_profile.rs`, `MacProfileOwner::new`). Releasing it,
+    `clean_shutdown`, needs the AppKit main thread, which is
     the stuck thread. So no clean-shutdown path exists here, and this spec claims none.
     - In a persistent-profile boot, the terminal function's `exit(1)` is host death for
-      the profile. The store's lifecycle record stays `Starting`. The next launch in
+      the profile. The store's lifecycle record remains `Running`, which
+      `PersistentProfile::open` committed before engine construction returned
+      (`macos_profile.rs`, successful-open lifecycle write). The next launch in
       the same boot finds a dead non-idle owner and quarantines the store, and a
       same-boot quarantine refuses with `KELD-WV-009` until the next reboot. This is
-      the existing profile-lock recovery path (`crates/keld-wv/src/profile.rs`
-      `next_lifecycle_action`, 1668-1700), unchanged here.
-    - An ephemeral-dev profile keeps no durable state (`macos_profile.rs:262-271`).
+      the existing profile-lock recovery path (`crates/keld-wv/src/profile/lifecycle.rs`,
+      `next_lifecycle_action`), unchanged here. An implementation child fixture must
+      inspect `lifecycle.v1` before relaunch: quarantine alone cannot distinguish
+      Starting from Running, because both are non-idle states.
+    - An ephemeral-dev profile keeps no durable profile state (`MacProfileOwner::new`).
   - **The terminal function and current custody contract.** The ordinary
     `run_guarded` result remains `Result<(), HostRunFailure>`. Its retained macOS
     payload stays `!Send`; the ordinary `main` tail reports by borrow, skips stage
@@ -685,11 +689,15 @@ schema-2 generation can have a window.
 
 ### 4.8 D8 — Wire
 
-**Decision.** None. `LifecycleEvent::Ready` stays `0x00` on channel 3, and its doc
-already reads "ready for the app process to create windows / run". For schema-2 boots
-the host never writes `LastWindowClosed`; window-all-closed belongs to the gh531
-registry ("For facade boots the existing `LastWindowClosed` variant is not used",
-gh531 §4.i Public surface).
+**Decision.** No Ready wire change. `LifecycleEvent::Ready` stays `0x00` on channel 3,
+and its doc already reads "ready for the app process to create windows / run".
+Schema-2 boots do not use the legacy keld-wv
+`AppWindowEvent::LastWindowClosed` UI milestone. The gh531 registry owns the
+last-window decision and causes the host to write the distinct wire
+`LifecycleEvent::LastWindowClosed`, ordered after the final `Destroyed` according to
+gh531 criterion 32, ordering rule 5 and T11, including its deferred-last-window rule.
+An initially empty facade boot produces no synthetic last-window notification.
+The existing facade `window-all-closed` and default-Quit contract is preserved.
 
 **Rejected:** *A new `HostInitialized` lifecycle variant.* It has no consumer, and
 Electron has one `ready`.
@@ -772,8 +780,11 @@ On Windows and Linux it is an unrun lane, reported `unknown` (gh566 D13).
 **KEL-96 §4.5.** Append:
 
 > For schema-2 boots the host creates no window, so step 1 is not this coordinator's:
-> window counting and `window-all-closed` belong to the gh531 window registry, and the
-> host writes no `LastWindowClosed`. Steps 2–5 apply unchanged.
+> window counting belongs to the gh531 registry, and the legacy
+> `AppWindowEvent::LastWindowClosed` UI milestone is unused. The registry still causes
+> the host to write `LifecycleEvent::LastWindowClosed` after the final `Destroyed`
+> under gh531 criterion 32 and T11, preserving `window-all-closed` and default Quit.
+> An initially empty facade boot does not synthesize that event. Steps 2–5 apply unchanged.
 
 **KEL-139 "Recovery".** Append:
 
@@ -809,7 +820,7 @@ renderer navigation;" with:
 
 **Architecture 06 §1, macOS no-flag primary.** Append:
 
-> A schema-2 boot (GH-446) creates no native window: the same router writes `Ready` on
+> A schema-2 boot (GH-446) creates no native window on its own: the same router writes `Ready` on
 > the UI loop's `Init` turn, and a successor generation still receives `Ready` after its
 > fresh HELLO.
 
@@ -955,6 +966,20 @@ shipping compatibility receipt must name which executable actually ran. The admi
 target dependency graph and its evaluation timing remain AC17's qualification work;
 this source inventory alone is not a draw.io launch PASS.
 
+The bounded graph inspection found no top-level await in the entry and its nine
+relative main modules; the full transitive closure and integrity-pinned package bytes
+remain unqualified. AC17's imported dependency that calls `whenReady()` early is an
+adversarial case, not a claim that an inspected draw.io dependency makes that call.
+One concrete target requirement is pre-Ready enumeration: the entry calls
+`contextMenu(...)` before its Ready registration, and the locked
+[`electron-context-menu` 5.1.0 entry](https://github.com/sindresorhus/electron-context-menu/blob/v5.1.0/index.js)
+calls `BrowserWindow.getAllWindows()` and registers `browser-window-created`.
+Therefore #449 must keep static mirror enumeration usable before public Ready,
+without a Host Create call or synchronous wait for subscription. It reflects facts
+already applied to the mirror; only the readiness barrier promises complete replay.
+The constructor guard and host pre-Ready call refusal remain unchanged. This
+publisher-tag source check is not a full npm-tarball byte or target-runtime receipt.
+
 ## 5. Boundaries
 
 **Implement in:**
@@ -1037,7 +1062,7 @@ under the current user instruction.
 | 12 | `app.ready.emitted-once` and `app.when-ready.is-ready-agreement` (`electron-app-v1`, #656) and `app.when-ready.host-ready-gate` run unchanged; "before any window" is AC4's keld-host test | unchanged cells |
 | 13 | review of T1 against §4.10. Recompute the KEL-96 header using `awk '/KEL96_DECISIONS_V1_START/{f=1;next}/KEL96_DECISIONS_V1_END/{f=0}f' docs/specs/kel96-no-flag-host-boot.md \| shasum -a 256`; preserve the separately recorded original D1–D11 approval digest | deterministic exact bytes, reviewed provenance |
 | 14 | `closed_event_channel_before_host_initialized_is_startup_failure`; keld-core router unit | echo fence; dropped sender, no timing |
-| 15 | `init_wait_expiry_is_typed_startup_failure`; keld-core router unit with a terminal test double | past deadline; bounded join on the result channel |
+| 15 | `init_wait_expiry_is_typed_startup_failure`; bounded terminal-callback observation plus AC20 child fixture | past deadline; typed error received once; no ordinary-return marker |
 | 16 | `create_before_ready_is_refused_with_040` in F02-T2 (#449) | registry unit, no GUI |
 | 17 | synchronous CJS, synchronous native ESM, early dependency lifecycle call, coalesced HELLO/Ready and delayed-listener fixtures; a separate awaited-ESM comparison probe | explicit evaluation and delivery markers, controlled fences; no generic ESM PASS from a CJS test |
 | 18 | `public_ready_waits_for_subscribed_replay` in #449, both Ready/Subscribe arrival orders, empty/nonempty replay and refusal | hold/release the correlated reply and inspect all three public observables |

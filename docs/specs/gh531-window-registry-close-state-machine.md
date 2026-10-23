@@ -235,6 +235,13 @@ fail. "Owner" is the implementing ticket.
     `getPosition()`, `isMaximized()` and `isFullScreen()` reads leave the app-link frame
     counter unchanged in both directions. *NC:* implementing any getter as a host round
     trip fails. Owner: F02-T2.
+    Static `BrowserWindow.getAllWindows()` also remains usable before public Ready
+    and returns the currently applied mirror entries without a host call or a wait
+    for Subscribe. Complete replay is promised only by criterion 20's readiness
+    barrier. This is required by the pinned draw.io context-menu initialization
+    (gh446 §4.12). *NC:* applying the constructor's pre-Ready refusal to static
+    enumeration, or waiting synchronously for subscription from that getter, fails
+    the pre-Ready entry fixture. No pre-Ready Host `Create` is authorized by this rule.
 18. **Per-window causal order.** Given the host writes `Bounds(r)` and then
     `CloseRequested` for one window, inside the `'close'` listener `getSize()` and
     `getPosition()` equal `r`. *NC:* dispatching `'close'` before the preceding `Bounds`
