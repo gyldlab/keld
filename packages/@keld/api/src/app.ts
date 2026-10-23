@@ -76,9 +76,12 @@ function ensureLink(): Promise<LifecycleLink> {
   if (linkPromise) return linkPromise;
   const envLink = process.env.KELD_APP_LINK;
   if (!envLink) {
+    // KELD-CLI-010 is the registry code for this condition wherever it is detected
+    // (the hello template reports it the same way); KELD-IPC-007 stays reserved for
+    // a rejected HELLO session token.
     return Promise.reject(
       new Error(
-        "KELD-IPC-007: KELD_APP_LINK is unset. Run under a Keld host so the host mints <endpoint>#<64 hex chars>.",
+        "KELD-CLI-010: KELD_APP_LINK is unset — run the app with `keld dev` (or under a Keld host that mints <endpoint>#<64 hex chars>), not `bun` directly.",
       ),
     );
   }

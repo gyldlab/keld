@@ -50,6 +50,13 @@ async function waitChildOrKill(
 }
 
 describe("app.quit vs Electron void", () => {
+  // The title below is pinned by the frozen `electron-lifecycle-v0` corpus cell
+  // `app.quit.return-contract` (crates/keld-compat/fixtures/lifecycle-corpus/corpus.json;
+  // gh532 AC11 keeps that manifest and its records byte-identical), so it still names
+  // KELD-IPC-007 although GH-1118 moved the unset-link code to KELD-CLI-010. The cell
+  // proves the return contract: a Promise carrying a typed KELD rejection, never silent
+  // void. The exact code is the next test's contract. Retitle this case together with
+  // the corpus when a v1 lifecycle manifest supersedes v0.
   test("returns Promise<void> so unset KELD_APP_LINK is KELD-IPC-007, not silent void", async () => {
     const prev = process.env.KELD_APP_LINK;
     delete process.env.KELD_APP_LINK;
@@ -57,7 +64,36 @@ describe("app.quit vs Electron void", () => {
       const { app } = await import("./app");
       const result = app.quit();
       expect(result).toBeInstanceOf(Promise);
-      await expect(result).rejects.toThrow("KELD-IPC-007");
+      const rejection: unknown = await result.then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(rejection).toBeInstanceOf(Error);
+      expect((rejection as Error).message).toMatch(/^KELD-[A-Z]+-?\d{3}: /);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.KELD_APP_LINK;
+      } else {
+        process.env.KELD_APP_LINK = prev;
+      }
+    }
+  });
+
+  test("an unset KELD_APP_LINK rejects with KELD-CLI-010, the registry code for that condition", async () => {
+    const prev = process.env.KELD_APP_LINK;
+    delete process.env.KELD_APP_LINK;
+    try {
+      const { app } = await import("./app");
+      const rejection: unknown = await app.quit().then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(rejection).toBeInstanceOf(Error);
+      const message = (rejection as Error).message;
+      // GH-1118: the shared @keld/api owner reports the unset link under KELD-CLI-010.
+      expect(message).toContain("KELD-CLI-010");
+      // Negative control: KELD-IPC-007 is reserved for a rejected HELLO session token.
+      expect(message).not.toContain("KELD-IPC-007");
     } finally {
       if (prev === undefined) {
         delete process.env.KELD_APP_LINK;

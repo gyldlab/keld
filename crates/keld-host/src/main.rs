@@ -169,7 +169,9 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
     match args.get(1).map(String::as_str) {
         Some("--keld-profile-identity-fixture-v1") => {
             if args.len() != 2 {
-                eprintln!("KELD-WV-009: malformed private profile identity fixture invocation.");
+                eprintln!(
+                    "KELD-CORE-044: malformed private profile identity fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                );
                 process::exit(2);
             }
             match keld_core::app_session::macos_profile_identity_fixture_report() {
@@ -183,7 +185,9 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         }
         Some("--keld-profile-presence-fixture-v1") => {
             if args.len() != 2 {
-                eprintln!("KELD-WV-009: malformed private profile presence fixture invocation.");
+                eprintln!(
+                    "KELD-CORE-044: malformed private profile presence fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                );
                 process::exit(2);
             }
             match keld_core::app_session::macos_profile_store_presence_fixture_report() {
@@ -197,7 +201,9 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         }
         Some("--keld-profile-purge-fixture-v1") => {
             if args.len() != 2 {
-                eprintln!("KELD-WV-009: malformed private profile purge fixture invocation.");
+                eprintln!(
+                    "KELD-CORE-044: malformed private profile purge fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                );
                 process::exit(2);
             }
             match keld_core::app_session::macos_profile_purge_fixture() {
@@ -211,7 +217,9 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         }
         Some("--keld-profile-webview-fixture-v1") => {
             if args.len() != 2 {
-                eprintln!("KELD-WV-009: malformed private profile WebView fixture invocation.");
+                eprintln!(
+                    "KELD-CORE-044: malformed private profile WebView fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                );
                 process::exit(2);
             }
             if let Err(error) = keld_core::app_session::run_macos_profile_webview_fixture() {
@@ -234,11 +242,15 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
     #[cfg(feature = "kel135-profile-test-root")]
     {
         if args.len() != 2 {
-            eprintln!("KELD-CORE-037: profile test-root probe arguments are malformed.");
+            eprintln!(
+                "KELD-CORE-044: profile test-root probe arguments are malformed. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+            );
             process::exit(2);
         }
         let Some(root) = env::var_os("KELD_PROFILE_TEST_ROOT") else {
-            eprintln!("KELD-CORE-037: profile test-root probe has no selected root.");
+            eprintln!(
+                "KELD-CORE-044: profile test-root probe has no selected root. Set KELD_PROFILE_TEST_ROOT before launching the probe."
+            );
             process::exit(2);
         };
         println!("KELD_PROFILE_TEST_ROOT_FEATURE {}", root.to_string_lossy());
@@ -246,7 +258,9 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
     }
     #[cfg(not(feature = "kel135-profile-test-root"))]
     {
-        eprintln!("KELD-CORE-037: profile test-root probe is unavailable in this host.");
+        eprintln!(
+            "KELD-CORE-044: profile test-root probe is unavailable in this host. Build the debug host with `kel135-profile-test-root` to use it."
+        );
         process::exit(2);
     }
 }
@@ -255,24 +269,24 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
 fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), String> {
     if args.len() != 4 {
         return Err(String::from(
-            "KELD-CORE-037: private Windows dev-stage cleanup invocation is malformed. Launch it only through `keld dev`.",
+            "KELD-CORE-044: private Windows dev-stage cleanup invocation is malformed. Launch it only through `keld dev`.",
         ));
     }
     let root = PathBuf::from(&args[2]);
     let host_pid = args[3].to_string_lossy().parse::<u32>().map_err(|source| {
         format!(
-            "KELD-CORE-037: private Windows dev-stage cleanup PID is invalid: {source}. Relaunch through `keld dev`."
+            "KELD-CORE-044: private Windows dev-stage cleanup PID is invalid: {source}. Relaunch through `keld dev`."
         )
     })?;
     let attempt_job =
         keld_runtime::windows_job::WindowsProcessJob::adopt_cleanup_observer_from_stderr(host_pid)
-            .map_err(|error| format!("KELD-CORE-037: cleanup Job admission failed: {error}."))?;
+            .map_err(|error| format!("KELD-CORE-046: cleanup Job admission failed: {error}. Let the staged host exit, remove the stage by hand if it remains, and relaunch through `keld dev`."))?;
     let cleanup = keld_core::app_session::WindowsDevStageCleanup::prepare(&root, host_pid)
         .map_err(|error| error.to_string())?;
     println!("KELD_WINDOWS_DEV_STAGE_CLEANUP_READY");
     std::io::stdout().flush().map_err(|source| {
         format!(
-            "KELD-CORE-037: private Windows dev-stage cleanup readiness failed: {source}. Relaunch through `keld dev`."
+            "KELD-CORE-046: private Windows dev-stage cleanup readiness failed: {source}. Relaunch through `keld dev`."
         )
     })?;
     let signal = keld_runtime::windows_job::WindowsProcessJob::await_cleanup_release_v1();
@@ -291,7 +305,7 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
         attempt_job.terminate_and_wait_attached(std::time::Duration::from_secs(30))
     };
     family_cleanup.map_err(|error| {
-        format!("KELD-CORE-037: attempt process-family cleanup failed: {error}.")
+        format!("KELD-CORE-046: attempt process-family cleanup failed: {error}. Let the staged host exit, remove the stage by hand if it remains, and relaunch through `keld dev`.")
     })?;
     cleanup
         .wait_and_delete_after_family_exit(&attempt_job)
@@ -302,10 +316,10 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
             | keld_runtime::windows_job::WindowsCleanupReleaseSignal::LauncherLost,
         ) => Ok(()),
         Ok(keld_runtime::windows_job::WindowsCleanupReleaseSignal::Malformed) => Err(String::from(
-            "KELD-CORE-037: malformed cleanup release was refused after safely reaping the exact attempt.",
+            "KELD-CORE-046: malformed cleanup release was refused after safely reaping the exact attempt. Relaunch through `keld dev`; only its release pipe may end the sentinel.",
         )),
         Err(error) => Err(format!(
-            "KELD-CORE-037: cleanup control pipe failed; exact attempt was safely reaped: {error}."
+            "KELD-CORE-046: cleanup control pipe failed; exact attempt was safely reaped: {error}. Relaunch through `keld dev`."
         )),
     }
 }
@@ -349,17 +363,17 @@ fn dev_stage_cleanup_root_for(
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     if args.len() != 6 {
         return Err(String::from(
-            "KELD-CORE-037: private guardian invocation is malformed. Launch it only through the validated no-flag host.",
+            "KELD-CORE-044: private guardian invocation is malformed. Launch it only through the validated no-flag host.",
         ));
     }
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
         .parse::<u64>()
-        .map_err(|source| format!("KELD-CORE-037: invalid private entry device — {source}. Relaunch the validated no-flag host."))?;
+        .map_err(|source| format!("KELD-CORE-044: invalid private entry device — {source}. Relaunch the validated no-flag host."))?;
     let expected_ino = args[5]
         .parse::<u64>()
-        .map_err(|source| format!("KELD-CORE-037: invalid private entry inode — {source}. Relaunch the validated no-flag host."))?;
+        .map_err(|source| format!("KELD-CORE-044: invalid private entry inode — {source}. Relaunch the validated no-flag host."))?;
     // The guardian is the last process executing from the staged directory:
     // the host parent exits when its CLI lease closes. Re-derive the exact
     // nonce from this executable rather than trusting the role argument.
@@ -457,19 +471,19 @@ fn reconcile_guardian_result<T>(
 fn guardian_stage_cleanup_root(argument: &Path) -> Result<PathBuf, String> {
     let executable = env::current_exe().map_err(|source| {
         format!(
-            "KELD-CORE-037: guardian stage identity failed — {source}. Relaunch through `keld dev`."
+            "KELD-CORE-045: guardian stage identity failed — {source}. Relaunch through `keld dev`."
         )
     })?;
     let expected = dev_stage_cleanup_root_for(&executable, Some(std::ffi::OsStr::new("stdin-v1")))
-        .ok_or_else(|| String::from("KELD-CORE-037: guardian is not executing from a validated private dev stage. Relaunch through `keld dev`."))?;
+        .ok_or_else(|| String::from("KELD-CORE-045: guardian is not executing from a validated private dev stage. Relaunch through `keld dev`."))?;
     let argument = argument.canonicalize().map_err(|source| {
         format!(
-            "KELD-CORE-037: guardian stage identity failed — {source}. Relaunch through `keld dev`."
+            "KELD-CORE-045: guardian stage identity failed — {source}. Relaunch through `keld dev`."
         )
     })?;
     if argument != expected {
         return Err(String::from(
-            "KELD-CORE-037: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
+            "KELD-CORE-045: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
         ));
     }
     Ok(expected)
@@ -536,7 +550,7 @@ mod tests {
         // attributable to the stage result alone and not to the inode check.
         let error = guardian_bun_command(
             &Err(String::from(
-                "KELD-CORE-037: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
+                "KELD-CORE-045: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
             )),
             temp.path(),
             relative,

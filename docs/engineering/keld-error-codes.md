@@ -910,6 +910,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
 
+## KELD-CORE-044
+
+- crate: keld-host
+- message: A private keld-host role was invoked outside its contract: malformed arguments, or a role this build does not carry
+- fix: Never launch a private role by hand. `keld dev` launches the Windows cleanup sentinel, the validated no-flag host launches the macOS guardian, and the KEL-135 acceptance harness launches the profile fixtures and probe, each with its exact arguments; build the debug host with the feature a test role needs.
+
+## KELD-CORE-045
+
+- crate: keld-host
+- message: The macOS guardian refused to run outside its validated private dev stage
+- fix: Relaunch through `keld dev`. The guardian runs only from its own executable's owner-private `.keld/dev/<nonce>` stage and refuses a stage argument that names any other directory; do not copy or move the staged host.
+
+## KELD-CORE-046
+
+- crate: keld-host
+- message: The Windows dev-stage cleanup sentinel failed before it released the staged attempt's process family and stage
+- fix: Let the staged host exit, remove the named `.keld/dev/<nonce>` stage by hand if it remains, and relaunch through `keld dev`; the message names the failed step (Job admission, readiness, process-family reap, or release pipe) to report if it repeats.
+
 ## KELD-UPDATE-001
 
 - crate: keld-update

@@ -374,3 +374,55 @@ fn api_emitter_is_scanned_without_a_rust_shadow() {
         "the production application emitter must be covered without a Rust copy"
     );
 }
+
+/// GH-1118: one condition, one code. An unset `KELD_APP_LINK` in the app process is
+/// `KELD-CLI-010` wherever it is detected (the hello template and `@keld/api`), and
+/// `KELD-IPC-007` stays reserved for a rejected HELLO session token.
+#[test]
+fn unset_app_link_is_cli_010_at_every_emitter() {
+    let root = workspace_root();
+    for rel in [
+        "crates/keld-cli/templates/hello/src/main-body.ts",
+        "packages/@keld/api/src/app.ts",
+    ] {
+        let text = fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let sites: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("KELD_APP_LINK is unset"))
+            .collect();
+        assert!(
+            !sites.is_empty(),
+            "{rel}: the unset-link emitter moved or was reworded; point this test at it"
+        );
+        for line in sites {
+            assert_eq!(
+                extract_keld_codes(line),
+                vec!["KELD-CLI-010".to_owned()],
+                "{rel} reports an unset KELD_APP_LINK under the wrong code: {line}"
+            );
+        }
+    }
+
+    // Negative control: the registry still keeps the two conditions apart, so the
+    // assertion above cannot pass by the two headings having merged.
+    let text = fs::read_to_string(registry_path()).expect("read registry");
+    let entries = parse_registry(&text).unwrap_or_else(|e| panic!("registry parse: {e}"));
+    let find = |code: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.code == code)
+            .unwrap_or_else(|| panic!("{code} missing from {REGISTRY_REL}"))
+    };
+    assert!(
+        find("KELD-CLI-010")
+            .message
+            .contains("KELD_APP_LINK is unset"),
+        "{:?}",
+        find("KELD-CLI-010").message
+    );
+    assert!(
+        find("KELD-IPC-007").message.contains("HELLO"),
+        "{:?}",
+        find("KELD-IPC-007").message
+    );
+}

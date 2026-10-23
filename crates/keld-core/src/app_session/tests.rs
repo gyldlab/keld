@@ -108,3 +108,4 @@ include!("tests/recovered_events_and_echo.rs");
 include!("tests/ready_recovery.rs");
 include!("tests/failed_ready_and_cli_lease.rs");
 include!("tests/terminal_cleanup_and_windows_shutdown.rs");
+include!("tests/windows_dev_stage_cleanup.rs");
