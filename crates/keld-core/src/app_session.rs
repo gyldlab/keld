@@ -5659,12 +5659,12 @@ const RENDERER_REFUSED: &str = "KELD-WV-011";
 /// The renderer code for a call with no admitted generation (S8): the host
 /// attempted no write, so the call is definitely not dispatched.
 #[cfg(target_os = "macos")]
-const RENDERER_NOT_DISPATCHED: &str = "KELD-WV-012";
+const RENDERER_NOT_DISPATCHED: &str = "KELD-WV-011";
 
 /// The renderer code for a call whose CALL write the host attempted (S9,
 /// S10, S10b, S15): the handler may have run, so the outcome is unknown.
 #[cfg(target_os = "macos")]
-const RENDERER_OUTCOME_UNKNOWN: &str = "KELD-WV-013";
+const RENDERER_OUTCOME_UNKNOWN: &str = "KELD-WV-011";
 
 /// Why `begin_echo_call` refused a renderer Echo call (GH-1095 §4.2, S5–S9).
 ///

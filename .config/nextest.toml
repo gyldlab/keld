@@ -26,6 +26,8 @@
 # gate command against a deliberately failing test and asserting one attempt.
 
 [profile.ci]
+# DO NOT MERGE: report every hosted arm under the mutation.
+fail-fast = false
 
 # Per-test termination bound: a hung test is killed and reported as TIMEOUT after
 # period x terminate-after = 10 minutes, instead of running until the 45-minute
