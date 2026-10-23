@@ -1,10 +1,10 @@
 # Spec: exact channel grants and host-owned navigation identity
 
-Status: draft — prepared under repository-owner delegation; exact-content decision record pending; not implementation authorization
+Status: approved contract, unmerged — explicit repository-owner delegation; separate implementation gates remain
 
 Tracker: [GH #541](https://github.com/gyldlab/keld/issues/541), F04-T7. Reference: KEL-102. Implementing owners: [#552](https://github.com/gyldlab/keld/issues/552), F04-T8, and [#542](https://github.com/gyldlab/keld/issues/542), F04-T9. Contract owner: GYLDLAB. Reviewed: 2026-10-23.
 
-Source pin: `442f3ebcef777f204cec7073932dc06edfab3a2e` (immutable review baseline). Final main was `3503a8aa383427dcf50ccbf6653c4298e7fb8aad`; the [comparison](https://github.com/gyldlab/keld/compare/442f3ebcef777f204cec7073932dc06edfab3a2e...3503a8aa383427dcf50ccbf6653c4298e7fb8aad) changes only two KEL-254 Windows files, with no change to any reviewed source or proposed documentation target. Original KEL-102 and KEL-142 approval records remain scoped to their original content. No new approval is claimed. The exact amendment approval must be recorded as a KEL-102 comment ID before #541 can satisfy its gate. No merge is authorized by this document.
+Source pin: `442f3ebcef777f204cec7073932dc06edfab3a2e` (immutable review baseline). The approved technical commit is `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26`, based on `ef491ebd67ae794e004977a6d6578cdbb7235d61`. Since the review pin, main changed two KEL-254 Windows files, the Tokio lock entry and its CI-input digest; no reviewed Keld source or proposed documentation target changed. Original KEL-102 and KEL-142 approval records remain scoped to their original content. New exact-content decision: KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`; decision SHA-256 `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`. The digest covers the decision JSON line, excluding its newline, and its five-file manifest binds the approved technical content. This follow-up records provenance and tracker metadata only. Independent-human approval is not claimed. No implementation or merge is authorized by this document.
 
 ## 1. Goal & non-goals
 
@@ -14,7 +14,7 @@ Observable result: a current, host-authenticated main-frame document may forward
 
 Non-goals:
 
-- Implementing #552 or #542 from an unapproved amendment; each retains its own implementation-spec gate.
+- Implementing #552 or #542 under this contract approval alone; each retains its own implementation-spec gate.
 - Changing the KIPC frame format, allocating v2 wire fields, selecting endpoint codecs, or defining credit constants. #540 owns those contracts; #465/#543/#544 implement them.
 - General window/web grants, media permission enablement, role grants, a new core WebView registry, or a second permission evaluator.
 - Claiming Electron navigation equivalence without the recorded oracle owned by #551. Keld tests alone do not establish it.
@@ -268,7 +268,7 @@ Keep shared wire/schema changes and other owners' branches within their recorded
 
 ### Execution order
 
-1. Finish #541 exact-content review, including the explicit proposed clarifications in §10 and paired architecture/spec edits. Record the owner decision on KEL-102. Run the documentation gates on the final full-checkout diff.
+1. Preserve the recorded #541 exact-content decision, including the explicit clarifications in §10 and paired architecture/spec edits. Complete final documentation/review gates and the still-open #541 merge acceptance; merge intent remains do-not-merge.
 2. In parallel, finish #464's failing-first conformance corpus and #540's protocol specification. Their drafting has no open native dependency on #541. Freeze their common identity/channel interface before integration.
 3. After #541, approve and implement #552, explicitly including its narrow core forwarding adapter and P02/N02/N09b composition tests. After #541 and #464, approve and implement #542, explicitly including native attempt correlation and the restricted bind gate N11. Policy unit work may proceed independently, but the composed #552 zero-write claim waits for the trusted #542 stamp/liveness seam and the #540 transport contract. Require the accepted T4 shared-dispatch evidence before claiming #552's repository-wide acceptance criterion.
 4. Integrate #465/#543/#544 and #466 only after their recorded predecessors. Consume approved #1096/#1105 changes with their owner if available; do not allocate substitute errors.
@@ -287,11 +287,11 @@ Keep shared wire/schema changes and other owners' branches within their recorded
 | #543 | #464, #540, #542 | All open |
 | #544 | #464, #540 | Both open |
 | #466 | #464, #465, #543, #540, #552, #542, #544, #473, #597 | All open except #597 |
-| #459 | #458, #449, #567 | All open; contractual #542 edge absent from native tracking |
-| #499 | #497, #586, #452, #453, #491, #420 | All open except #420; contractual #541 edge absent from native tracking |
+| #459 | #458, #449, #567, #542 | All open; contractual #542 edge added and read back on 2026-10-23 |
+| #499 | #497, #586, #452, #453, #491, #420, #541 | All open except #420; contractual #541 edge added and read back on 2026-10-23 |
 | #551 | #494, #464, #495 | Later recorded-oracle milestone; do not turn it into an invented first-proof blocker |
 
-The two missing native edges are reconciliation findings for the tracker owners. They were not silently added. Unassigned issues do not imply permission to take over active related PRs. #1095/#1096/#1105 retain their existing ownership.
+Under the owner-delegated decision, the two contractual dependencies were added to native tracking and read back without removing existing predecessors. The owning issues receive explicit handoffs; no implementation claim or ownership transfer is made. Unassigned issues do not imply permission to take over active related PRs. #1095/#1096/#1105 retain their existing ownership.
 
 ## 7. Test acceptance and independent controls
 
@@ -365,7 +365,7 @@ Permission model and public API: **required** for #541/#552/#542. Wire protocol:
 
 Documentation: the companion patch changes architecture 03, an included source. In a complete checkout, regenerate with the repository's current generator, then run `just llms-test` and `just llms-check`. Do not hand-edit `llms-full.txt`. Rust format, warning-denied clippy, applicable full tests and required CI remain future implementation gates. None are claimed passed here.
 
-No CodeRabbit or formal repository review approval is claimed by this draft. Applicable approval, source, CI and native-platform gates require their own recorded artifacts; unavailable tooling does not waive them.
+The delegated decision records independent isolated permission/public-API and navigation/lifetime reviews, each with no blocking specification defect, plus independent refutation of the initial-construction allegation. Review bytes were bound to the approved technical commit. Final provenance changes require exact-final-diff review. No CodeRabbit review, full CI or native qualification is claimed by this contract approval; unavailable tooling does not waive those gates.
 
 ## 9. Perf impact
 
@@ -373,7 +373,7 @@ No measured performance gain is claimed. The policy allow path remains allocatio
 
 ## 10. Exact-content approval selections and remaining gates
 
-The proposed behavior is concrete. The owner approval should explicitly cover these selections together with the full diff/digest:
+The recorded owner-delegated decision approves these nine selections together with the exact technical content manifest:
 
 1. Decoded exact `el:` literals; reject U+002A and controls; strict windows shape; no wildcard/normalization authority.
 2. Incoming channel grants only; authenticated outbound reply/send remains destination/lifetime-gated.
@@ -385,8 +385,8 @@ The proposed behavior is concrete. The owner approval should explicitly cover th
 8. KEL-142 wording reconciliation, KEL-143 recovery separation, the KEL-102/T4 media-integration gate, and coordination with approved/unmerged #1096/#1105.
 9. Assign #542 the narrow first-proof trusted application-document binding gate and native attempt correlation, and #552 the core forwarding adapter plus composed zero-write test. These are explicit proposed scope clarifications to approve; full #460 policy and #538 surface ownership stay separate. Fresh navigation identity alone does not prove content eligibility.
 
-Open approval artifacts: the new KEL-102 comment ID and exact approved content digest do not yet exist. Open implementation artifacts: #552 and #542 approved specifications, their failing-first executed tests, the final source/CI gates, and real macOS evidence. These missing artifacts prevent implementation/security qualification; they do not prevent review of this draft.
+Approval artifact: KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`, decision SHA-256 `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`, binds technical commit `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26` and all five file blobs/hashes. Its permitted metadata follow-up does not change requirements or waive gates. Open implementation artifacts: #552 and #542 approved specifications, their failing-first executed tests, final source/CI gates, and real macOS evidence. These missing artifacts prevent implementation/security qualification. #541 remains open until its actual merge acceptance; no merge is authorized.
 
 ### Assessment
 
-**GO for exact-content decision recording and parallel #540/#464 specification/test-corpus work. NO-GO for enabling arbitrary Electron IPC, claiming #552/#542 complete, or claiming the MVP security boundary qualified.** This documentation change supplies the proposed contract and acceptance plan. It supplies no implementation or native qualification, and each implementing owner must satisfy its separate specification and evidence gates.
+**GO for the approved contract and parallel #540/#464 specification/test-corpus work. NO-GO for enabling arbitrary Electron IPC, claiming #552/#542 complete, or claiming the MVP security boundary qualified.** This documentation change supplies the approved contract and acceptance plan. It supplies no implementation or native qualification, and each implementing owner must satisfy its separate specification and evidence gates.

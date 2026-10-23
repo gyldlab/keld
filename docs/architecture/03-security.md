@@ -73,11 +73,12 @@ cannot grant any authority.
 One file. Reviewed like a lockfile. Path and URL wildcard rules are scoped
 below; they do not authorize wildcard channel grants.
 
-**Pending channel amendment:** [GH #541](../specs/gh541-channel-grants-navigation.md)
-proposes exact incoming `el:` literals with no wildcard authority. The example
-below uses illustrative literals, not a draw.io channel census. The amendment is
-unapproved; the current evaluator still ignores `windows` and denies non-AppProcess
-principals. This example is not a claim that channel grants are live.
+**Approved channel contract, unimplemented:**
+[GH #541](../specs/gh541-channel-grants-navigation.md) defines exact incoming `el:`
+literals with no wildcard authority and records the separate delegated approval.
+The example below uses illustrative literals, not a draw.io channel census.
+The current evaluator still ignores `windows` and denies non-AppProcess principals.
+Channel grants require the separately approved #552/#542 implementation and evidence.
 
 **v0 parser boundary:** `parse_manifest`, disk `load_manifest`, and MCP permission
 explain accept at most 64 KiB. JSONC block comments must terminate, and decoded object
@@ -180,8 +181,8 @@ manifest decoder.
   uniqueness. Neither lexical rule resolves filesystem aliases.
 - **Schema-declared channels:** a channel's declared native capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants. This schema-layer rule
-  does not interpret opaque Electron application payloads. The pending GH #541
-  amendment instead proposes exact `windows.<w>.channels` literals for incoming
+  does not interpret opaque Electron application payloads. The approved GH #541
+  contract defines exact `windows.<w>.channels` literals for incoming
   Electron message routes, with denial before Bun. A route grant does not grant a
   native capability; every native operation requested by Bun still requires its
   own native guard decision. Channel evaluation remains unimplemented until its

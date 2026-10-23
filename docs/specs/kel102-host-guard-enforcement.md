@@ -9,17 +9,19 @@ Decision digest: `sha256:868aaef5991a03ce4e394943d96f6ead62e725444ad66280a906a60
 `approval_mode`: `explicit-user-delegation-recorded-by-executing-codex`
 `approval_authoring_base_sha`: `60842b1679c56138339edb2f518d3ed77a582beb`
 
-> **Unapproved companion amendment proposal (GH #541).** The approved status,
-> decision JSON, digest, and approval source above belong to the original contract.
+> **Approved companion contract, unmerged (GH #541).** The status, decision
+> JSON, digest and approval source above belong to the original contract.
 > The [exact channel-grant/navigation amendment](gh541-channel-grants-navigation.md)
-> is a separate draft and does not inherit that approval. Its exact content needs
-> repository-owner approval recorded as a new KEL-102 comment ID. Until that gate
-> passes, the window/channel non-goals and original core-dispatch restriction below
-> remain in force. The proposal would remove only the incoming exact `el:` channel
-> slice from those non-goals and permit one registered renderer-to-Bun adapter in
-> core to call `dispatch_privileged`; core would still never call `evaluate`, match
-> grants, or mint permits. General window/web, native, media and role authority are
-> not added. GH #552 and #542 retain their separate implementation-spec gates.
+> has its own delegated decision: KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`,
+> decision SHA-256 `2da2c23a53848d618f08612a1106d53283b7488601be7fd3eaa5ed95038df5af`.
+> Its approved technical content is `7e0c1b89c4767f2e6625cd2bfc4d36d86b30fc26`; the companion
+> links the decision that binds all five file blobs/hashes and permits metadata-only
+> follow-up. Its scope removes
+> only the incoming exact `el:` channel slice from the original non-goals and permits
+> one registered renderer-to-Bun adapter in core to call `dispatch_privileged`;
+> core still never calls `evaluate`, matches grants or mints permits. General
+> window/web, native, media and role authority are not added. No product change or
+> merge is authorized here; GH #552 and #542 retain separate implementation-spec gates.
 
 ## 1. Goal & non-goals
 
@@ -733,15 +735,16 @@ owners into T2 would create unused scaffolding or implement later tasks early.
       specification first. Its first vertical slice must prove
       revocation-before-reprovision; no polling or per-call file reread.
 
-- [ ] **Proposed `KEL-102/T7` — unapproved, blocked:** exact window channel
-      grants and the shared navigation identity, under
+- [ ] **`KEL-102/T7` — contract approved; implementation blocked:** exact window
+      channel grants and the shared navigation identity, under
       [GH #541's companion amendment](gh541-channel-grants-navigation.md).
-      First obtain the exact-content owner approval and new KEL-102 comment ID;
-      then execute the separately approved GH #552 and #542 vertical slices and
-      their named transport integrations. The approved amendment, not the original
-      decision digest, must authorize the narrowly changed non-goals and core
-      dispatcher caller. This task does not complete media T4, role T5 or OS
-      containment, and does not authorize product changes while still draft.
+      Exact-content decision: KEL-102 comment `8fa29b34-bdb6-470f-9f97-9cdf0aa1d0eb`.
+      GH #541 remains open for merge acceptance under do-not-merge. GH #552 and
+      #542 require their separately approved vertical-slice specifications and
+      named transport integrations. The amendment's decision, not the historical
+      decision digest, authorizes the narrowly changed non-goals and core dispatcher
+      caller at the contract level. This task does not complete media T4, role T5
+      or OS containment, and this approval alone does not authorize product changes.
 
 Task-specific predecessor artifacts:
 
