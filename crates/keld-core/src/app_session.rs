@@ -3,9 +3,13 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
 mod error;
+mod profile_preflight;
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+pub use self::boot_contract::renderer_boot_schema;
 pub use self::error::HostAppError;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 use self::error::startup_resource_snapshot;
+pub(crate) use self::profile_preflight::reject_diagnostic_profile;
 
 #[cfg(all(test, windows))]
 use self::boot_contract::decode_digest;
@@ -373,6 +377,8 @@ enum HandoverWait {
 /// Opaque host-owned selection minted only from a validated owner-private dev stage
 /// or, on Windows, from the authenticated installed package that holds the host.
 pub struct ValidatedBootSelection {
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    schema: u8,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     app: AppBootSelection,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1356,6 +1362,7 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     let permissions_file =
         open_relative_file(&root_fd, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
+        schema: parsed.schema,
         app: AppBootSelection {
             root,
             name: parsed.name,
@@ -1418,6 +1425,7 @@ fn validate_windows_boot_files(
     let permissions_file =
         open_relative_file_windows(&root, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
+        schema: parsed.schema,
         app: AppBootSelection {
             root,
             name: parsed.name,
@@ -1858,33 +1866,54 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostRunFailu
     #[cfg(target_os = "macos")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
         // This explicit diagnostic/test path remains incapable of registering
         // a privileged channel. It never serves as recovery from run_guarded.
-        drop((permissions_file, permissions_digest));
-        run_app(app, None)
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        let profile = profile_preflight::validate_renderer_profile(schema, &verified, true)?;
+        run_app(app, None, profile)
     }
     #[cfg(windows)]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
-        drop((permissions_file, permissions_digest));
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_renderer_profile(schema, &verified, true)?;
         run_app_direct(app, None).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "linux")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
-        drop((permissions_file, permissions_digest));
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_renderer_profile(schema, &verified, true)?;
         run_app_direct(app, None).map_err(HostRunFailure::from)
     }
 }
@@ -1914,6 +1943,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
     #[cfg(windows)]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -1921,6 +1951,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_renderer_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         run_app_direct(app, Some(&guard_snapshot)).map_err(HostRunFailure::from)
@@ -1928,6 +1959,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
     #[cfg(target_os = "macos")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -1935,12 +1967,13 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        let profile = profile_preflight::validate_renderer_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         // The owner stays in this frame while run_app performs every startup,
         // event-loop, and ordered-cleanup step. run_app receives only a borrow,
         // so it cannot destroy the verified session policy early.
-        let mut result = run_app(app, Some(&guard_snapshot));
+        let mut result = run_app(app, Some(&guard_snapshot), profile);
         if let Err(failure) = &mut result
             && let Some(retained) = &mut failure.retained
         {
@@ -1951,6 +1984,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
     #[cfg(target_os = "linux")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -1958,6 +1992,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostRunFailure> {
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_renderer_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         run_app_direct(app, Some(&guard_snapshot)).map_err(HostRunFailure::from)
@@ -2296,6 +2331,7 @@ impl SessionShutdownState {
 fn run_app(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
+    admitted_profile: keld_guard::ProfileState,
 ) -> Result<(), HostRunFailure> {
     let mut dev_lease = DevHostLease::from_environment()?;
     let shutdown = SessionShutdownState::new();
@@ -2334,6 +2370,9 @@ fn run_app(
         .env_remove(DEV_LEASE_ENV)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Freeze the pure policy decision before execution. Failed disclosure must
+    // refuse startup rather than run an undisclosed Legacy role.
+    profile_preflight::disclose_profile(admitted_profile, false)?;
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     let pending = GuardianBootstrap::spawn_supervised(guardian_command)
         .map_err(|source| app_runtime("guardian bootstrap", &source))?;
@@ -2396,6 +2435,21 @@ fn run_app(
             )
         })
         .map_err(|source| app_io("window event coordinator", &source))?;
+
+    // Actual authentication and router binding precede this diagnostic. It is
+    // not a product receipt: child output shares the sink; GH-587 owns collection.
+    if let Err(primary) = profile_preflight::disclose_profile(admitted_profile, true) {
+        return cleanup_window_start_failure(
+            &primary,
+            guard_snapshot,
+            window_events_tx,
+            event_coordinator,
+            None,
+            (router, presentation_owner, main_thread),
+            guardian_owner,
+        )
+        .map_err(HostRunFailure::from);
+    }
 
     let (renderer_requests_tx, renderer_requests_rx) = mpsc::sync_channel(1);
     let (renderer_outcomes_tx, renderer_outcomes_rx) = mpsc::channel();
