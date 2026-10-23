@@ -1,7 +1,7 @@
 //! v1 record runs, product runs, the pending/divergence split and per-platform
 //! admission (gh532 AC2, AC7–AC9, AC12, AC17; gh566 C5, C6, C10, D7, D11, D13).
 
-use keld_compat::evidence::{AuthorityProfile, CellKey, EvidenceRecord, Platform};
+use keld_compat::evidence::{AuthorityProfile, CellKey, EvidenceError, EvidenceRecord, Platform};
 use serde_json::{Value, json};
 
 use super::v1_fixture::{
@@ -148,17 +148,20 @@ fn keys(corpus: &Corpus, indexes: &[usize]) -> Vec<CellKey> {
         .collect()
 }
 
-/// gh532 AC8 and AC12: a product record's label follows its receipt state exactly, and
-/// each rejection names the state and the label.
+/// gh532 AC8 and AC12: a product record's label follows its receipt state
+/// exactly. The approved authority-label oracle is an INDEPENDENT literal
+/// table: consulting `state.required_label()` here would let a broken production
+/// mapping change both the test's expectation and its actual result.
 #[test]
 fn product_run_labels_follow_the_receipt_state() {
     let corpus = product();
     let cells = keys(&corpus, &[0]);
-    for state in [
-        ProfileState::Unverified,
-        ProfileState::Legacy,
-        ProfileState::Strict,
+    for (state, expected_label, expected_state) in [
+        (ProfileState::Unverified, "unverified", "unverified"),
+        (ProfileState::Legacy, "legacy_sandbox_off", "legacy"),
+        (ProfileState::Strict, "strict_bun", "strict"),
     ] {
+        assert_eq!(state.token(), expected_state);
         for label in [
             AuthorityProfile::Unverified,
             AuthorityProfile::LegacySandboxOff,
@@ -172,17 +175,17 @@ fn product_run_labels_follow_the_receipt_state() {
             };
             let records = [record(&corpus, 0, Platform::Macos, "pass", label.as_str())];
             let result = corpus.validate_product_run(&receipt, &records, V1_RECORDS_AS_OF);
-            if label == state.required_label() {
-                result.unwrap_or_else(|error| panic!("{}: {error}", state.token()));
+            if label.as_str() == expected_label {
+                result.unwrap_or_else(|error| panic!("{expected_state}: {error}"));
             } else {
                 assert!(
                     matches!(
                         &result,
                         Err(CorpusError::LabelMismatch { receipt_state, label: found, .. })
-                            if *receipt_state == state.token() && *found == label.as_str()
+                            if *receipt_state == expected_state && *found == label.as_str()
                     ),
                     "{} × {}: {result:?}",
-                    state.token(),
+                    expected_state,
                     label.as_str()
                 );
             }
@@ -225,6 +228,100 @@ fn product_run_covers_exactly_the_receipt_cells() {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// GH-587 C15: the product receipt must cover a real nonempty set of cells.
+/// A zero-cell receipt cannot create even an incomplete valid run/scoreboard.
+/// This is only the **test-local receipt shape**; no collector attestation exists.
+#[test]
+fn empty_product_receipt_is_refused_before_any_scoring() {
+    let corpus = product();
+    let receipt = ProductReceipt {
+        state: ProfileState::Unverified,
+        cells: &[],
+    };
+    assert!(matches!(
+        corpus.validate_product_run(&receipt, &[], V1_RECORDS_AS_OF),
+        Err(CorpusError::EmptyProductReceipt { .. })
+    ));
+}
+
+/// GH-587 C15: [A,A] with one real A must not be accepted just because each
+/// receipt entry separately finds the same record. Do not equate membership
+/// with exact one-to-one product coverage.
+#[test]
+fn duplicated_product_receipt_cell_is_refused_before_scoring() {
+    let corpus = product();
+    let duplicated = keys(&corpus, &[0, 0]);
+    let receipt = ProductReceipt {
+        state: ProfileState::Unverified,
+        cells: &duplicated,
+    };
+    let records = [record(&corpus, 0, Platform::Macos, "pass", "unverified")];
+    assert!(matches!(
+        corpus.validate_product_run(&receipt, &records, V1_RECORDS_AS_OF),
+        Err(CorpusError::DuplicateProductReceiptCell { cell, .. })
+            if cell == format!("{}/{}", duplicated[0].operation_id, duplicated[0].oracle_id)
+    ));
+}
+
+/// KEL-74 separately rejects two RECORDS for one genuinely unique receipt
+/// cell. Product receipt cardinality cannot replace the scorer's independent
+/// record-uniqueness check.
+#[test]
+fn duplicate_product_records_still_fail_the_existing_keld74_scorer() {
+    let corpus = product();
+    let one_cell = keys(&corpus, &[0]);
+    let receipt = ProductReceipt {
+        state: ProfileState::Unverified,
+        cells: &one_cell,
+    };
+    let records = [
+        record(&corpus, 0, Platform::Macos, "pass", "unverified"),
+        record(&corpus, 0, Platform::Macos, "pass", "unverified"),
+    ];
+    assert!(matches!(
+        corpus.validate_product_run(&receipt, &records, V1_RECORDS_AS_OF),
+        Err(CorpusError::Evidence(EvidenceError::DuplicateCell { .. }))
+    ));
+}
+
+/// GH-587 C15: uniqueness is the FULL (`operation_id`, `oracle_id`) key.
+/// Two distinct oracles for one operation are not duplicate product cells.
+/// A faulty deduper keyed only by `operation_id` must fail this positive control.
+#[test]
+fn product_receipt_keeps_distinct_oracles_of_one_operation() {
+    let manifest = edit(|m| {
+        m["corpus_id"] = json!(V1_PRODUCT.corpus_id);
+        m["panel"] = json!("product");
+        let mut twin = m["cells"][0].clone();
+        twin["oracle_id"] = json!("electron-v44.4.5.app.when-ready-twin");
+        m["cells"]
+            .as_array_mut()
+            .expect("v1 corpus cells")
+            .push(twin);
+    });
+    let corpus =
+        parse_with(&V1_PRODUCT, &manifest, &store()).expect("valid distinct-oracle product corpus");
+    let covered = keys(&corpus, &[0, 4]);
+    assert_eq!(covered[0].operation_id, covered[1].operation_id);
+    assert_ne!(covered[0].oracle_id, covered[1].oracle_id);
+    let receipt = ProductReceipt {
+        state: ProfileState::Unverified,
+        cells: &covered,
+    };
+    let records = [
+        record(&corpus, 0, Platform::Macos, "pass", "unverified"),
+        record(&corpus, 4, Platform::Macos, "pass", "unverified"),
+    ];
+    let board = corpus
+        .validate_product_run(&receipt, &records, V1_RECORDS_AS_OF)
+        .expect("distinct product cell keys both retain structural coverage")
+        .into_board();
+    assert_eq!(board.passed(), 2);
+    // Direct structural admission is still not an authenticated product run;
+    // the committed-product registry remains fail-closed without Host origin.
+    assert!(!board.complete());
+}
+
 /// gh566 C6 and D7: each run kind refuses the other panel, and committed product records
 /// fail closed until X02-T5's receipt reader exists.
 #[test]
@@ -236,6 +333,21 @@ fn product_records_need_receipt() {
         state: ProfileState::Unverified,
         cells: &receipt_cells,
     };
+    // A test-local shape-valid ProductReceipt is NOT an authenticated Host
+    // observation. Direct structure validation is not committed product
+    // evidence and must not enable the release-facing product run path.
+    let test_only_record = record(&product, 0, Platform::Macos, "pass", "unverified");
+    product
+        .validate_product_run(
+            &receipt,
+            std::slice::from_ref(&test_only_record),
+            V1_RECORDS_AS_OF,
+        )
+        .expect("test-only structural receipt is well formed, not authenticated");
+    assert!(matches!(
+        validate_committed_runs(&product, &[vec![test_only_record]]),
+        Err(CorpusError::ProductRecordsNeedReceipt { .. })
+    ));
     assert!(matches!(
         showcase.validate_product_run(&receipt, &[], V1_RECORDS_AS_OF),
         Err(CorpusError::NotProductPanel { .. })
