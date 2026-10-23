@@ -1,12 +1,14 @@
 # Spec: Explicit legacy compatibility profile
 
-Status: approved — owner-delegated design decision; implementation pending
+Status: approved — R1 owner-delegated compiled-boot composition correction; implementation pending
 
 Linear: KEL-78 · Existing owner: GYLDLAB · Specification: GH #586 · Implementation: GH #588
 
-Updated: 2026-10-23 · Source baseline: `3503a8aa383427dcf50ccbf6653c4298e7fb8aad`
+Updated: 2026-10-24 · Source baseline: `3503a8aa383427dcf50ccbf6653c4298e7fb8aad`
 
 Approval provenance: on 2026-10-23 the repository owner explicitly delegated the remaining decisions and publication of the reviewed specification to the issue agent. This amendment records that new delegated design decision under KEL-78; the earlier Windows T3 and unverified-vocabulary approvals did not approve these new details. The exact committed content and independent review evidence are recorded on KEL-78 and the specification PR. This approval does not waive implementation tests, native qualification, independent review gates, or the explicit do-not-merge instruction.
+
+R1 revision: the previous approval binds `eba60d2215a7fa2543b3673e20cd90fa7dbde555`, not these revised bytes. Cross-contract reconciliation against approved Ready PR #657 at `bb43e474577297f0792740676994aa153e5df1dd` found that both specifications assigned incompatible meanings to schema 2. R1 preserves Ready's version and separates the profile-bearing combinations in §4.4. The narrow uncontained-admission and receipt-dependency clarifications preserve the decisions already recorded on KEL-78. Under the continuing owner delegation, R1's technical content was independently reviewed through the permission-model, public-API and compiled-contract lenses with no surviving blocker; its exact committed bytes and review receipts are recorded on #1120/KEL-78. This is a new design approval, not inherited approval of changed bytes, runtime implementation or native proof. Current main `f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f` still implements only schema 1. The PR remains draft and do-not-merge. [S21][S22]
 
 ## 1. Goal and non-goals
 
@@ -49,7 +51,7 @@ The #586 specification PR and refreshed owning issue briefs record this reconcil
 | Profile states, strict OS admission, forfeiture | KEL-78, existing strict-profile specification | Concrete declaration and its product integration |
 | Host-minted identity and broker authorization | Architecture 03; KEL-75/KEL-102 | No grant or principal semantics |
 | Permissions parsing and verified snapshot | `keld-guard`; KEL-102 | One optional, presence-sensitive profile property |
-| Compiled boot contract | KEL-96/KEL-102 | Version 2 required for an explicit profile |
+| Compiled boot contract | KEL-96/KEL-102; GH #446 for window ownership | Distinct profile-bearing versions composed with renderer/facade ownership (§4.4) |
 | Evidence labels and scoring | KEL-74; approved GH-532 | Bind product labels to admitted state; retain existing scoring |
 | Migration output and acceptance | X02 / GH #497, #499 | Consume this location and explicit-acceptance requirement |
 | Product receipts and first proof | GH #587, #500, #589 | Consume runtime provenance; no inferred legacy |
@@ -64,9 +66,9 @@ Each criterion has a falsifier in section 7.
 2. **Presence matters:** an absent property means no declared request and follows the existing unverified/default path. Null, wrong types, other strings, duplicate decoded keys, or invalid JSONC are errors.
 3. **No inference:** Electron sandbox options, fuses, package/app names, platform, environment, CLI flags, import failures, missing primitives, and failed strict proofs never activate legacy.
 4. **Verified consumption:** the host derives its request from the same retained, digest-verified manifest used by broker authorization. It never reopens a path or trusts a child-supplied profile.
-5. **Version admission:** a profile-bearing manifest requires compiled boot schema 2. A supporting host refuses schema 1 plus an explicit profile and schema 2 without one. An old schema-1-only host refuses the new descriptor before application execution.
-6. **Real legacy launch:** on the qualified macOS primary-role path, explicit legacy reaches `admit(Legacy)`; common launch validation, authenticated links, guard checks, and enrolled lifecycle cleanup still run.
-7. **Strict unchanged:** a strict request reaches the existing strict admission checks. Missing, stale, incomplete, mismatched, or wrong-layer proof, missing primitive, or unexpected grant refuses launch. No unconfined replacement starts.
+5. **Version admission:** a profile-bearing manifest requires schema 3 for a renderer-declared boot or schema 4 for a facade boot. Schemas 1 and 2 retain their respective renderer/facade meanings without an explicit profile. A supporting host refuses declaration/version or closed-shape mismatches before resources; a reader that lacks profile support refuses 3 and 4 rather than ignoring their declarations (§4.4).
+6. **Real legacy launch:** on the qualified macOS primary-role path, explicit legacy reaches the Guard-owned requested-state admission dispatcher through `admit_uncontained(Legacy)` (§4.5); common launch validation, authenticated links, guard checks, and enrolled lifecycle cleanup still run. Qualified containment paths retain the full `admit()` API.
+7. **Strict unchanged:** a qualified candidate uses the existing full strict admission checks. Missing, stale, incomplete, mismatched, or wrong-layer proof, missing primitive, or unexpected grant refuses launch. The known-uncontained macOS primary path instead calls `admit_uncontained(Strict)` and refuses with `KELD-GUARD008` before execution, without fabricated proof inputs (§4.5). No unconfined replacement starts.
 8. **Recovery frozen:** the selected request and policy snapshot remain fixed for a host session. Every successor generation uses them. Strict proof/admission is rechecked for each candidate generation.
 9. **Fresh transitions:** removing legacy takes effect only after the old host session and links are retired and a fresh host captures new policy. Without successful strict admission, the new run is unverified. Setting strict requires the normal strict proof.
 10. **Truthful evidence:** product legacy receipts map to `legacy_sandbox_off`; strict primary receipts map to `strict_bun`; unverified receipts map to `unverified`. Rejected launches cannot emit successful admission or workflow evidence.
@@ -87,7 +89,7 @@ A principal is an identity minted by the host for a specific role or WebView gen
 |---|---|---|---|
 | Declaration | Guard parser; manifest bytes | Unique root string → declared request | Invalid/null/duplicate fails parsing |
 | Artifact/config identity | Existing boot/KEL-102 loader | Retained bytes + expected digest → VerifiedManifest | Byte substitution fails before resources |
-| Runtime capability | Boot compiler and reader | Versioned descriptor + manifest → supported contract | Old reader rejects schema 2 |
+| Runtime capability | Boot compiler and reader | Window ownership + verified declaration + supported version → admitted contract | Old reader rejects profile-bearing 3/4; shape or presence mismatch refuses |
 | Identity/authentication | Existing host/role supervisor | Host-owned enrollment and handshake → bound link | Forged or foreign link rejected |
 | Broker authorization | Guard/native dispatch | Principal + channel + arguments → allow/deny | Denied request has no handler side effect |
 | OS containment | KEL-78 strict admission | Exact artifact/profile/platform + proof → Strict or error | Missing/wrong-layer proof prevents execution |
@@ -143,7 +145,7 @@ Reserve the security-profile property at the known alternate policy locations `/
 
 The boot producer rejects a literal root security-profile declaration in its supported app-config syntax with guidance to move it to the permissions manifest. It must reuse the existing root-property scanning owner rather than execute TypeScript or add line-prefix security parsing. Dynamic/unsupported config syntax cannot become another profile source.
 
-The existing 64 KiB manifest limit, JSONC comment handling, recursive decoded-key uniqueness, UTF-8 rules, and unrelated unknown-key behavior remain intact. An implementation must distinguish missing from explicit null; a naive optional-enum decoder that treats null as missing violates this contract. [S5][S14]
+The existing 64 KiB manifest limit, JSONC comment handling, recursive decoded-key uniqueness, UTF-8 rules, and unrelated unknown-key behavior remain intact. The document must be a JSON object; positional array deserialization is not another manifest syntax. An implementation must distinguish missing from explicit null; a naive optional-enum decoder that treats null as missing violates this contract. [S5][S14]
 
 Required type shape, owned by `keld-guard`:
 
@@ -182,23 +184,38 @@ The request is application-session policy. The first admitted product receipt co
 
 This is a required part of #588. Older hosts ignore unknown manifest properties, including `profile`. The manifest key alone is therefore insufficient to make those hosts respect a strict request. [S5]
 
-Use the existing `keld.boot.json` version discriminator:
+Use the existing `keld.boot.json` version discriminator. Window ownership and the explicit security request are independent inputs. Ready's approved schema 2 is already a closed, windowless facade shape; it must not acquire the renderer-bearing meaning from the earlier revision of this amendment. Preserve it and assign the two profile-bearing combinations distinct versions. [S21]
 
-| Descriptor | Verified manifest | Supporting host behavior |
-|---|---|---|
-| Schema 1 | No explicit profile | Preserve existing path |
-| Schema 1 | Explicit profile | Reject: profile requires schema 2 |
-| Schema 2 | Explicit strict or legacy | Parse and enforce this contract |
-| Schema 2 | No explicit profile | Reject inconsistent compiled input |
-| Unsupported schema | Any | Existing boot-schema rejection |
+| Window ownership selected by the existing config owner | Verified root profile | Exact compiled version | Exact closed shape |
+|---|---|---|---|
+| Renderer-declared | Absent | 1 | Existing `schema`, `name`, `entry`, `renderer`, `permissions`, optional `auth` |
+| Facade (`initialWindow: "none"`, GH #446) | Absent | 2 | GH #446's `schema`, `name`, `entry`, `permissions`; no `renderer` or `auth` |
+| Renderer-declared | Valid strict or legacy | 3 | Schema 1's fields and validation, including optional `auth`, with `schema: 3` |
+| Facade (`initialWindow: "none"`, GH #446) | Valid strict or legacy | 4 | Schema 2's fields and validation, with `schema: 4`; no `renderer` or `auth` |
 
-Schema 2 retains the existing descriptor fields and exact validation. It adds no duplicate `profile` value. Its semantic requirement is that the host supports and enforces the explicit profile from the verified permissions bytes. The compiler emits schema 2 if and only if that manifest contains a valid explicit declaration.
+No descriptor carries a second `profile` value. The existing verified permissions bytes remain the sole selection source. The compiler selects one exact row from the captured configuration and permissions; it does not execute TypeScript, infer facade mode from a missing renderer, or infer a security request from the version alone. A malformed declaration fails before version selection.
 
-The current schema-1-only reader already rejects `schema != 1` with `KELD-CORE-035` before application launch. New readers retain the parsed version until they can check it against the verified manifest. Keep schema-1 descriptors without profiles compatible. Do not turn a failed schema-2 launch into schema 1 or strip the declaration as a repair. [S15]
+Supporting readers retain the exact parsed version through verified-policy preflight and enforce all of these predicates before creating an application child, listener, or window:
+
+- Versions 1/2 require absence of a root profile; an explicit declaration is a version mismatch, not an ignored extension.
+- Versions 3/4 require a valid explicit declaration; absence is inconsistent compiled input.
+- Versions 1/3 require a renderer and keep its existing validation; versions 2/4 forbid the renderer field even when null. The optional auth carrier remains available only in 1/3. Unknown or duplicate decoded fields, non-object documents, invalid UTF-8, and oversized input remain errors.
+- Dispatch uses an exact supported-version set, not a numeric range or `schema >= 3`. A future version cannot enter a current profile or Ready branch by ordering alone.
+- A recognized shape is not proof that its platform, window mode or role is implemented. Refuse unsupported combinations before resources. Reuse the boot-schema error for unsupported versions/mismatches and the owning unsupported-platform error for a valid but unavailable mode.
+
+The current schema-1-only reader already rejects `schema != 1` with `KELD-CORE-035`. A Ready-only reader supporting exactly 1/2 must likewise reject 3/4. Thus a profile-bearing facade cannot silently run under an old Ready implementation that ignores unknown manifest keys. Tests must bind both reader capability sets, with an actual previous artifact where available; a hypothetical 1/2 reader model is a compatibility contract test, not an executed historical artifact. [S15][S21]
+
+**Partial rollout:** #588 may prepare and qualify the renderer/profile row 3 before GH #446 implements facade startup. That producer emits only supported rows and must refuse a requested facade/profile combination; it must never manufacture a renderer or emit 3 for it. Neither 2 nor 4 is executable until the complete GH #446 Ready/window-ownership consumer exists. The later facade/profile integration emits and consumes 4 atomically with profile preflight, mandatory disclosure and GH #446's unchanged Ready/recovery/custody rules. Reserving 4 is not permission to add an accepting stub or to claim draw.io activation. Removing a profile from a fresh, fully supported facade session selects 2, not 1; window ownership must not change as a side effect of the profile edit.
+
+If GH #446's schema-2 implementation is integrated first, its producer and verified host preflight must already recognize-and-refuse an explicit root security profile. It need not activate profiles or support 3/4, but it cannot silently accept a declaration that it does not enforce. This is an integration prerequisite for newly introduced schema-2 support, not a claim that old, unmodified schema-1 artifacts can be repaired retroactively.
+
+**Rejected alternatives:** repurpose 2 (conflicts with its approved closed shape); permit explicit profiles in 2 (a Ready-only old reader could ignore Strict); infer mode from field presence or try a different parser after an error (changes ownership on malformed input); add a second manifest profile value to the descriptor (two authority sources); use one extensible new union for every combination (unneeded rewrite of both closed contracts). Versions 3/4 reuse the existing shapes with a deliberate compatibility barrier. There is no automatic downgrade from 3/4 to 1/2, no declaration stripping, and no retry in another mode.
 
 Migration and generated artifacts must pin a supporting compiler and host pair. New code cannot retroactively make an old compiler plus old host understand a future key. Hand-editing the key into such an old installation is unsupported. Build/release producers inherit this requirement.
 
-Every execution entry point must use common profile preflight. In particular, `run_unprivileged` currently discards the permissions descriptor for a diagnostic session. It must reject schema 2 and reject any explicit profile discovered in schema 1 through the shared verified preflight; it cannot honor a strict/legacy request by ignoring it. Valid profile-free diagnostic execution remains separately labelled unverified. Shared preflight intentionally moves malformed or digest-mismatched diagnostic policy from an ignored input to a refusal. The compiler also parses captured manifest bytes to choose the schema, so malformed input may fail during compilation instead of later host startup; tests must preserve refusal while documenting this earlier error phase. [S16]
+Every execution entry point must use common profile preflight. In particular, `run_unprivileged` currently discards the permissions descriptor for a diagnostic session. It must refuse explicit-profile versions 3/4 and any explicit declaration presented through 1/2; its renderer-only diagnostic path also cannot execute facade versions 2/4. For a supported profile-free diagnostic input, retain the same verified manifest integrity check. The high-level `HostOwnedHelloSession` diagnostic entry used directly by CLI dev helpers must also refuse an explicit project profile before creating a listener or child: use the existing bounded manifest loader for a direct project input, and the retained digest-verifying loader when a compiled descriptor supplies a digest. Never invent verified provenance for a direct input without one. Missing-file behavior stays with the existing entry's contract; malformed/unreadable policy is not absence.
+
+Valid profile-free diagnostic execution remains separately labelled unverified. Shared preflight intentionally moves malformed or digest-mismatched diagnostic policy from an ignored input to a refusal. The compiler also parses captured manifest bytes to choose the schema, so malformed input may fail during compilation instead of later host startup; tests must preserve refusal while documenting this earlier error phase. [S16]
 
 This is a narrowly scoped compiled-contract version amendment requiring KEL-96/KEL-102 review. It is not a public kipc frame change.
 
@@ -208,13 +225,15 @@ This is a narrowly scoped compiled-contract version amendment requiring KEL-96/K
 2. Load the permissions through the existing retained-handle, digest-verifying loader. Parse the same bytes once.
 3. Check boot version against declaration presence. Reject invalid or unsupported combinations before creating an application child, listener, or window.
 4. Freeze the requested state in the existing host-session policy snapshot. Retain the permissions digest as its identity.
-5. For explicit Legacy, call the existing `admit()` with Legacy and use the qualified legacy launch path. Do not treat this pure state result as proof of a successful launch.
-6. For Strict, gather the actual candidate artifact/platform/profile/proof inputs and call the unchanged strict checks. Their failure ends the attempt; there is no unsandboxed retry.
+5. For explicit Legacy on the known-uncontained macOS primary path, call `admit_uncontained(Legacy)`, which shares the existing requested-state dispatcher; full candidate/proof paths keep `admit()`. Do not fabricate proof identities to call the full API, and do not treat either pure state result as proof of a successful launch.
+6. For Strict on a qualified containment path, gather the actual candidate artifact/platform/profile/proof inputs and call the unchanged full `admit()` checks. On the known-uncontained macOS primary path, call `admit_uncontained(Strict)` and refuse with the existing missing-primitive error before execution. Either failure ends the attempt; there is no unsandboxed retry or fabricated proof identity.
 7. Emit the canonical legacy forfeiture on the real launch path before releasing application execution, explicitly marked as a requested profile until admission succeeds. Use the existing role/supervisor path for enrollment, link authentication, guard-before-handler dispatch, and generation revocation. Only after the actual required launch/bind events may the host expose an admitted receipt.
 8. On recovery, retain the same requested profile and permissions snapshot. Revalidate candidate-specific strict admission and proof freshness. Never reread user-editable configuration to downgrade a running strict session.
 9. To change profile or grants, retire the full host session and links, then capture new policy in a fresh host. A renderer reload or Bun restart alone cannot switch policy.
 
 Separate digests: the permissions content digest identifies configuration bytes; the strict proof's profile digest identifies its OS containment policy; the artifact digest identifies the executable under proof. One is not a substitute for another.
+
+**Known-uncontained primary path:** the current macOS launcher has no qualified Strict containment or complete candidate proof identity. It must not manufacture artifact/profile digests merely to call the full proof API. A narrow Guard-owned `admit_uncontained(requested: ProfileState) -> Result<ProfileState, AdmissionError>` may share the existing requested-state dispatcher and return only Unverified or Legacy. Strict must fail with the existing missing-primitive error (`KELD-GUARD008`); if the primitive check ever stops rejecting, absent proof must still fail with `KELD-GUARD011`, never admit Strict. This entry describes a positively known uncontained path, not a fallback after `admit()` fails. The full qualified-path `admit()` and its ordered proof checks remain unchanged. Recovery reuses the frozen request through the same admission owner. This adds no successful Strict mode and supplies no runtime or product receipt by itself.
 
 No declaration must not disable an existing Windows/Linux containment mechanism. The existing default runtime behavior remains intact. The new declared-profile reporting path maps omission to Unverified; it never invents a strict claim from platform choice. Existing separately qualified strict platform fixtures and their evidence are not relabelled by this amendment.
 
@@ -282,6 +301,8 @@ Do not change the JSON array into a wrapper object or make MCP use a different p
 
 For product evidence, the run receipt binds the selected declaration/policy snapshot, actual effective state, role generation, artifact/runtime identity, platform/engine, and behavioral evidence. A strict receipt additionally binds the existing strict ProofIdentity: artifact digest, OS ProfileDigest, OS, archive identity, and policy generation/freshness or its matching immutable archive reference. The permissions digest never substitutes for this containment proof. Use the existing corpus receipt owner; do not create a competing universal ledger or expose link tokens. The KEL-74 record schema stays `keld.compat.evidence/v1`.
 
+**Unresolved collection dependency:** GH #587 owns the product receipt format and trusted collection boundary. Application stdout/stderr is forwarded into host diagnostics, so an application can print a receipt-shaped line there. Such a line is not authoritative host evidence. The #587 consumer must distinguish an actual host-origin admitted result from forged application output and bind it to the exact role/runtime/artifact. Until that contract and reader exist, do not introduce an unused private receipt structure, label diagnostics as receipts, emit synthetic successful corpus records, or declare P1 receipt/P2 acceptance complete. This is a named dependency, not a waiver of the receipt criteria. [S23]
+
 Scoring rules remain:
 
 - Preserve a genuine unverified run as unverified.
@@ -326,6 +347,7 @@ They do not invent `keld.build.ts`, `keld.compat.ts`, bunfig aliases, or `tsconf
 |---|---|
 | [#452](https://github.com/gyldlab/keld/issues/452) | Session facts, legacy paths and declared role environment |
 | [#453](https://github.com/gyldlab/keld/issues/453) | Single-instance declaration and host-owned lock |
+| [#446](https://github.com/gyldlab/keld/issues/446) | Facade Ready and app-owned first window; compose its schema-2 mode with explicit profile as schema 4 under §4.4 |
 | [#491](https://github.com/gyldlab/keld/issues/491) | Inert updater adapter |
 | [#541](https://github.com/gyldlab/keld/issues/541), [#552](https://github.com/gyldlab/keld/issues/552), [#542](https://github.com/gyldlab/keld/issues/542) | Permission amendment, exact channel enforcement and host-owned navigation generations; implementation/integration pending |
 | [#497](https://github.com/gyldlab/keld/issues/497), [#499](https://github.com/gyldlab/keld/issues/499) | Output/key-owner contract and hand-authored fixture |
@@ -361,7 +383,7 @@ No new production unsafe operation or dependency is required by this design. If 
 
 | Order | Owner | Vertical deliverable | Exit observable |
 |---|---|---|---|
-| P0 | #586 / KEL-78, with KEL-96/KEL-102/KEL-74 review | Exact-content spec; single location; schema-2 admission; stale unverified wording reconciled | Approved spec and consistent governing references |
+| P0 | #586 / KEL-78, with KEL-96/KEL-102/KEL-74 review | Exact-content spec; single location; unambiguous version/mode/profile matrix; stale unverified wording reconciled | Approved spec and consistent governing references |
 | P1 | #588 | Parser, boot version, verified host selection, macOS primary receipt, and mandatory runtime/dev plus doctor disclosure on all already-live applicable surfaces, landed together | Real legacy launch prints forfeiture before app execution; old-host, invalid-input, strict-refusal and no-inference controls pass |
 | P2 | #588 with KEL-78 T6/KEL-74 consumers | Downstream receipt-to-scoreboard integration and its report tests | Correct receipt binding and forfeiture; no relabelling/mixed aggregation; existing unverified scoring preserved |
 | P3 | #497/#499/#587/#500 owners | Hand-authored draw.io artifact, accepted declaration, receipt contract and initially honest corpus cells | Exact fixture reproducible; unimplemented/unknown cells remain visible |
@@ -369,6 +391,8 @@ No new production unsafe operation or dependency is required by this design. If 
 | Later independent integration | Build/release and X02 migration owners | Real build/release disclosure and migration acceptance UX | Actual commands consume contract; no stub accepted as completion |
 
 P1 is atomic across producer, consumer, and disclosure: do not ship parser acceptance while the runtime silently ignores the request, or an active legacy mode before its required visible forfeiture exists. P1 and P2 may be separate reviewed PRs, but the macOS runtime portion of #588 is not complete until both land and the live required surfaces pass. Neither #588 nor KEL-78 T6 may claim its original full build/reporting acceptance complete while build remains reserved. Any approved milestone split must be recorded explicitly on the owning tracker; a runtime milestone is not silent closure of the deferred command requirement.
+
+A coherent launch/admission/disclosure draft can be prepared and tested while #587 is pending, but it remains draft/do-not-merge and cannot satisfy full P1 or P2. The renderer/profile proof does not qualify schema 4: facade/profile activation additionally needs the accepted GH #446 consumer and the cross-combination tests in §4.4. No parser-only, receipt-shaped log, or placeholder collector completes either boundary.
 
 The profile-dependent macOS activation work need not wait for macOS strict T2c or the complete build/migrate product. It must wait for honest explicit legacy admission. Full first-proof completion cannot claim an install pass from a development stage; KEL-141's qualifying prebuilt artifact remains the install dependency. [S19]
 
@@ -390,9 +414,9 @@ Failure-first means the intended observable fails on the pre-feature implementat
 | P08 | Misplaced security profile | Location error, no alternate authority source | Accept nested/app-config fallback |
 | P09 | Malformed JSONC, unterminated comment, oversized bytes, invalid UTF-8 | Existing specific boundary failures | Bypass common parser/ceiling |
 | P10 | Profile changed after staged digest | Integrity failure before app resources | Reopen by path or hash different bytes |
-| P11 | New profile-bearing schema 2 on old host | KELD-CORE-035; no application marker/PID | Downgrade schema to 1 automatically |
-| P12 | New host: schema1+profile or schema2+absent | Mismatch rejection before resources | Skip version/presence cross-check |
-| P13 | Old schema1, no profile | Existing behavior preserved | Require a new declaration unconditionally |
+| P11 | Profile-bearing 3/4 on a schema-1-only reader and a Ready-only 1/2 reader | Unsupported-version refusal before application marker/PID; distinguish actual old artifact from a 1/2 contract model | Downgrade 3→1 or 4→2 automatically |
+| P12 | All four §4.4 rows, both explicit values, wrong presence, forbidden renderer/auth, duplicate/non-object input, unknown version, and unsupported facade/profile rollout | Each supported pair selects its exact version/shape; all invalid or unsupported combinations refuse before resources | Independently swap the producer's mode mapping, omit the consumer presence check, accept a numeric range, or fabricate a renderer |
+| P13 | Profile-free schema1 and, after GH #446 qualification, profile-free schema2 | Existing mode and semantics preserved; fresh profile removal maps 3→1 and 4→2 without changing window ownership | Require a new declaration unconditionally or turn profile removal into a mode change |
 | P14 | Existing missing-file dev fallback vs unreadable file | Only ENOENT uses old all-deny path | Treat every read failure as absence |
 
 Parser fixtures include unchanged unrelated manifest grants and unknown fields to prove the profile addition does not silently tighten or loosen unrelated grammar.
@@ -431,7 +455,7 @@ Strict variants retain the full current negative matrix: artifact, profile diges
 | R02 | Strict configuration without admission | Requested strict; admission not performed/not verified; no effective runtime state asserted | Use raw config as effective state or invent an Unverified run |
 | R03 | Doctor JSON/MCP | Same finding array and actionable errors | New wrapper or divergent parser |
 | R04 | Unverified product receipt | Record preserved as unverified | Drop run or label legacy/strict |
-| R05 | Legacy product record without explicit admitted receipt | Rejected | Trust record's self-label |
+| R05 | Legacy product record without explicit admitted receipt, including an application-printed receipt lookalike | Rejected by the GH #587 trusted collector/reader | Trust record's self-label or a line from forwarded app output |
 | R06 | Homogeneous unverified board | Existing behavior and label retained | Blanket score exclusion or promotion |
 | R07 | Mixed authority board | No percentage, not complete, no single profile | Select first record's label |
 | R08 | Reserved build today | Existing typed failure | Return success from formatter stub |
@@ -454,7 +478,7 @@ No product/native tests or mutation experiments were run while drafting this spe
 |---|---|---|
 | Permission model | Yes | KEL-78 owner; explicit forfeiture, no new grant, no fallback |
 | Public API | Yes | Manifest grammar/accessor, reporting, compatibility behavior |
-| Wire/compiled protocol | Yes, private boot descriptor | KEL-96/KEL-102 schema-2 producer/consumer and version-skew refusal |
+| Wire/compiled protocol | Yes, private boot descriptor | KEL-96/KEL-102 exact 1/2/3/4 composition, producer/consumer and version-skew refusal |
 | Unsafe | None expected | Reuse current platform mechanisms; new unsafe is separately gated |
 | Dependency | None expected | Reuse current parser/runtime/scorer |
 
@@ -468,19 +492,19 @@ No speedup or numeric overhead is claimed. If the integration materially changes
 
 ## 10. Open questions, approved decisions, and handoff
 
-### 10.1 Approved decisions
+### 10.1 Prior approval and R1 decisions
 
-Open questions: none. Under the repository owner's 2026-10-23 delegation, this amendment selects:
+Under the repository owner's continuing 2026-10-23 delegation, this revision approves the following target after independent review of the corrected technical content. The new R1 approval, not the old eba60d22 approval, covers the schema correction and the added public admission entry:
 
 1. Root `keld.permissions.jsonc.profile` is the sole authoring location.
 2. Only strict/legacy are configurable; absence remains unverified/default and never implies legacy.
-3. Schema 2 is required for explicit-profile compiled boots; schema 1 remains for no-profile inputs.
+3. Schema 2 remains GH #446's no-profile facade contract. Explicit profiles use 3 for renderer boots and 4 for facade boots; profile-free renderer inputs remain 1. Unsupported combinations refuse (§4.4).
 4. Strict admission and all independent guard/identity/lifecycle/renderer/native/updater owners remain intact.
 5. Legacy explicitly forfeits OS containment and is qualified first for the macOS primary role.
 6. KEL-74's current unverified evidence/scoring contract is preserved; stale #586/#588 exclusions are superseded.
 7. The staged PR sequence and test matrix govern implementation; build/migrate integration is reported pending until those commands are real.
 
-There is no unresolved choice of key location, scoring vocabulary, or version rule. KEL-78 remains the owner. Independent review of the new public contract, permission boundary, and KEL-96/KEL-102 compiled-boot seam remains required on each final PR diff; no additional user-choice gate is created.
+No further user choice is requested. KEL-78 remains the profile owner; GH #446 remains the facade Ready owner. The independent review found and resolved the earlier literal-API obligations that contradicted `admit_uncontained`; AC6/AC7 and §4.5 now state the same routing rule. The reviewed content digest and new delegated approval are published on #1120/KEL-78, with the matrix correction handed to #446/#588. Each implementation PR still requires independent review of its exact final public contract, permission boundary and compiled-boot seam. Design approval neither changes the explicit no-merge instruction nor supplies any implementation or OS evidence.
 
 ### 10.2 Verified blockers and first completion checks
 
@@ -488,7 +512,9 @@ There is no unresolved choice of key location, scoring vocabulary, or version ru
 |---|---|---|---|
 | #586 integration pending | Approved design is not yet integrated into main | KEL-78/#586 publish the exact reviewed amendment and reconcile old briefs; preserve do-not-merge | Repository PR and consistent tracker decision receipts; main integration remains separately gated |
 | Key currently ignored | Merely editing permissions does not select Legacy/Strict | #588 extend existing parser and actual host preflight atomically | Explicit declaration changes real admitted receipt |
-| Old host ignores profile | New strict request could be ignored on unsupported runtime | #588 plus KEL-96/KEL-102 implement schema-2 pairing | Previous host refuses new artifact before app execution |
+| Old host ignores profile | New strict request could be ignored on unsupported runtime | #588 plus KEL-96/KEL-102 implement 3/4 pairing without repurposing Ready's 2 | Previous host refuses new artifact before app execution |
+| Competing schema-2 meanings | Renderer/profile and facade/no-profile cannot share a closed version | #586 corrects its own assignment; #446 keeps Ready ownership; independent review covers §4.4 | Reviewed exact four-row matrix and consistent producer/consumer tests |
+| Product receipt collector absent | Forwarded application output can forge a diagnostic receipt lookalike | #587 defines trusted host-origin collection and exact artifact binding, then #588 consumes it | Forged-app-output negative control fails while a real bound-host receipt succeeds |
 | Generic admit is not a live proof | Returning Legacy alone proves no launch/auth/guard behavior | #588 wire existing host/session path | Real macOS bound child plus permitted/denied calls |
 | macOS strict T2c unqualified | Explicit strict cannot be promised for draw.io today | Existing KEL-78 strict owner continues signed-helper hostile proof separately | Exact artifact/profile archive passes strict checks |
 | Build/migrate reserved | Their future output cannot be claimed complete now | Existing command owners consume this contract; use hand-authored fixture first | Real commands execute and report honestly |
@@ -522,6 +548,9 @@ All source links below are pinned to the inspected commit. Main advanced from `4
 [S18]: https://github.com/gyldlab/keld/issues/497#issuecomment-6026217139
 [S19]: https://github.com/gyldlab/keld/issues/589
 [S20]: https://github.com/gyldlab/keld/issues/420#issuecomment-6022061800
+[S21]: https://github.com/gyldlab/keld/blob/bb43e474577297f0792740676994aa153e5df1dd/docs/specs/gh446-facade-boot-ready.md
+[S22]: https://github.com/gyldlab/keld/compare/3503a8aa383427dcf50ccbf6653c4298e7fb8aad...f19c8847787aaf0e9a14e07c0af008fc5a4c2a1f
+[S23]: https://github.com/gyldlab/keld/issues/587#issuecomment-6371500644
 
 Additional owning links: [GH #588](https://github.com/gyldlab/keld/issues/588), [GH #499](https://github.com/gyldlab/keld/issues/499), [GH #587](https://github.com/gyldlab/keld/issues/587), [GH #500](https://github.com/gyldlab/keld/issues/500), [approved vocabulary PR #612](https://github.com/gyldlab/keld/pull/612), [direct-update legacy refusal](https://github.com/gyldlab/keld/blob/3503a8aa383427dcf50ccbf6653c4298e7fb8aad/docs/architecture/06-runtime-and-tooling.md#L1098-L1103).
 

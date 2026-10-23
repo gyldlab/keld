@@ -2,15 +2,17 @@
 
 ## 1. keld-runtime: Bun as a supervised component
 
-**Approved explicit-profile target (KEL-78 / GH #586, implementation GH #588):**
+**Explicit-profile target (KEL-78 / GH #586, implementation GH #588):**
 the [profile amendment](../specs/kel78-explicit-legacy-profile.md#44-boot-version-compatibility-and-downgrade-prevention)
-requires private compiled boot schema 2 when verified permissions declare a
-profile. Schema 1 remains the current implementation and the no-profile
-compatibility format. Supporting producers/readers must enforce the version and
-declaration together before application execution, including alternate diagnostic
-entries; no schema downgrade or implicit legacy fallback is allowed. The
-descriptor carries no second profile value. Public kipc and role bootstrap remain
-unchanged. This target is not a claim of implemented admission or OS qualification.
+R1 correction separates renderer/profile schema 3 from facade/profile schema 4,
+preserving current schema 1 and GH #446's no-profile facade schema 2. This
+correction has a separate delegated design approval on #1120/KEL-78. Producers/readers must
+enforce window mode, exact version and verified declaration together before
+application execution, including alternate diagnostic entries. Unsupported
+combinations refuse; there is no schema downgrade or implicit legacy fallback.
+The descriptor carries no second profile value. Public kipc and role bootstrap
+remain unchanged. This target is not a claim of implemented admission, facade
+startup or OS qualification.
 
 - **Contract, not embedding.** Bun has no stable embedding C API (oven-sh/bun#12017 /
   #14252 remain unshipped; bun:ffi is explicitly experimental). Keld therefore treats

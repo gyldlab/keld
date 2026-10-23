@@ -573,9 +573,12 @@ The amendment owns presence-sensitive parsing, the security-forfeit matrix,
 reporting, migration acceptance, and the existing unverified evidence mapping.
 
 Wire/protocol: public kipc and `KELD_APP_LINK=<endpoint>#<64 hex chars>` are unchanged.
-The amendment requires private compiled boot schema 2 for explicit-profile inputs,
-with schema 1 retained for no-profile inputs. That producer/consumer change has
-a separate compiled-protocol review gate under KEL-96/KEL-102.
+The amendment's R1 composition correction reserves schema 3 for explicit-profile
+renderer boots and 4 for explicit-profile facade boots. Schema 1 remains the
+no-profile renderer format; GH #446's schema 2 remains the no-profile facade
+contract. R1's separate delegated design approval is recorded on #1120/KEL-78; it
+does not repurpose Ready's version. Producer/consumer and unsupported-version refusal
+remain a separate compiled-protocol review gate under KEL-96/KEL-102.
 
 ### Packaging and reporting
 
